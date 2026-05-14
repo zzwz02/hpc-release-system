@@ -150,12 +150,13 @@
     const currentReleaseId = () => $("release").value || state.release?.id || "";
     const releaseDecisionLabels = {
       release: "release：进入 release note/RST/QA",
-      no_release: "no_release：本周期不发布，也不纳入 CICD 管控",
-      cicd_only: "cicd_only：不发布文档，但纳入 CICD 构建/测试管控",
+      cicd_only: "cicd_only：仅纳入 CICD 构建/测试管控",
       stopped: "stopped：停止维护/停止发布"
     };
     const releaseDecisionOptions = Object.keys(releaseDecisionLabels);
-    const releaseDecisionOrder = { release: 0, cicd_only: 1, no_release: 2, stopped: 3 };
+    const releaseDecisionOrder = { release: 0, cicd_only: 1, stopped: 2 };
+    const docTargetLabels = { manual: "HPC", ai4sci: "AI4Sci" };
+    const docTargetOptions = Object.keys(docTargetLabels);
 
     async function api(path, options = {}) {
       const res = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
@@ -316,8 +317,8 @@
         <div class="form">
           <label>官方名称<input id="officialName" value="${esc(app.official_name)}"></label>
           <label>Owner<input id="owners" value="${esc((app.owners || []).join(","))}" ${currentUser().role === "RM" ? "" : "disabled"}></label>
-          <label>文档归属<select id="docTarget">${["manual","ai4sci","both","none"].map(v => `<option ${app.doc_target===v?"selected":""}>${v}</option>`).join("")}</select></label>
-          <label>类型<input id="type" value="${esc(app.type)}"></label>
+          <label>类型<select id="docTarget">${docTargetOptions.map(v => `<option value="${v}" ${app.doc_target===v?"selected":""}>${esc(docTargetLabels[v])}</option>`).join("")}</select></label>
+          <label>App类型<input id="type" value="${esc(app.type)}"></label>
           <label>Gerrit URL<input id="gitUrl" value="${esc(app.git_url)}"></label>
           <label>Branch<input id="gitBranch" value="${esc(app.git_branch)}"></label>
           <label>Release决策<select id="decision">${releaseDecisionOptions.map(v => `<option value="${v}" ${snap.release_decision===v?"selected":""}>${esc(releaseDecisionLabels[v])}</option>`).join("")}</select></label>
@@ -325,14 +326,9 @@
           <label>X86芯片<input value="${esc(snap.x86_chips)}" disabled></label>
           <label>ARM芯片<input value="${esc(snap.arm_chips)}" disabled></label>
         </div>
-        <p class="muted small">release 会进入正式发布、文档生成和 QA；no_release 只记录本周期不发布，不要求 CICD/RST 信息；cicd_only 不进入正式发布和文档，但需要补齐 app_info 与 CICD 构建/测试/infra 信息；stopped 表示停止维护或停止发布。</p>
+        <p class="muted small">类型为 HPC 时生成到 HPC Manual；类型为 AI4Sci 时生成到 AI4Sci User Guide。release 会进入正式发布、文档生成和 QA；cicd_only 仅纳入 CICD 构建/测试管控；stopped 表示停止维护或停止发布。</p>
         <p class="muted small">app_info 来源：${appInfoSource(snap)}</p>
         <label>描述<textarea id="description">${esc(app.description)}</textarea></label>
-        <h3>CICD / Infra 字段</h3>
-        <label><input id="cicdEnabled" type="checkbox" ${snap.cicd?.enabled || snap.release_decision === "cicd_only" ? "checked" : ""}> 纳入 CICD 管控</label>
-        ${textArea("cicdBuild","CICD build 配置",snap.cicd?.build)}
-        ${textArea("cicdTest","CICD test 配置",snap.cicd?.test)}
-        ${textArea("cicdInfraNote","Infra 备注",snap.cicd?.infra_note)}
         <h3>app_info diff</h3>
         <div class="table"><table>${renderDiffs(snap)}</table></div>
         ${diffActions}
@@ -347,7 +343,6 @@
     }
 
     function docArea(key, label, value) { return `<label>${label}<textarea data-doc="${key}">${esc(value || "")}</textarea></label>`; }
-    function textArea(id, label, value) { return `<label>${label}<textarea id="${id}">${esc(value || "")}</textarea></label>`; }
     function appInfoSource(snap) {
       const info = snap.app_info || {};
       if (!info.source_type) return "未提供";
@@ -406,12 +401,6 @@
       const snapshotUpdate = {
         release_decision: $("decision").value,
         doc: Object.fromEntries([...document.querySelectorAll("[data-doc]")].map(el => [el.dataset.doc, el.value])),
-        cicd: {
-          enabled: $("decision").value === "cicd_only" || $("cicdEnabled").checked,
-          build: $("cicdBuild").value,
-          test: $("cicdTest").value,
-          infra_note: $("cicdInfraNote").value
-        },
         test_docs
       };
       if (confirmOwner) snapshotUpdate.owner_confirmed = true;
@@ -477,9 +466,10 @@
         const official_name = prompt("官方 app/模型名称"); if (!official_name) return;
         const git_url = prompt("Gerrit URL"); if (!git_url) return;
         const git_branch = prompt("Branch"); if (!git_branch) return;
+        const app_type = prompt("类型，必须填写 HPC 或 AI4Sci"); if (!["HPC", "AI4Sci"].includes(app_type)) return alert("类型无效，未创建 app");
         const release_decision = prompt(`Release 决策，必须填写以下之一：\n${releaseDecisionOptions.map(v => "- " + releaseDecisionLabels[v]).join("\n")}`);
         if (!releaseDecisionOptions.includes(release_decision)) return alert("Release 决策无效，未创建 app");
-        const r = await post("/api/apps/new", { release_id: currentReleaseId(), official_name, git_url, git_branch, release_decision, doc_target: "manual" });
+        const r = await post("/api/apps/new", { release_id: currentReleaseId(), official_name, git_url, git_branch, release_decision, doc_target: app_type === "AI4Sci" ? "ai4sci" : "manual" });
         selectedApp = r.app_id; await loadState();
       };
     }

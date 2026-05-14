@@ -182,24 +182,23 @@ class Handler(BaseHTTPRequestHandler):
                     app_update = body["app"]
                     for key in ["official_name", "type", "description", "git_url", "git_branch", "doc_target"]:
                         if key in app_update:
-                            app[key] = app_update[key]
+                            app[key] = core.normalize_doc_target(app_update[key]) if key == "doc_target" else app_update[key]
                     if "owners" in app_update:
                         app["owners"] = app_update["owners"]
                     core.save_app(conn, app)
                 def mutate(snapshot: dict) -> None:
                     snap_update = body.get("snapshot", {})
                     if "release_decision" in snap_update:
-                        if snap_update["release_decision"] not in core.RELEASE_DECISIONS:
+                        decision = core.normalize_release_decision(snap_update["release_decision"])
+                        if decision not in core.RELEASE_DECISIONS:
                             raise ValueError(f"Invalid release_decision: {snap_update['release_decision']}")
-                        snapshot["release_decision"] = snap_update["release_decision"]
+                        snapshot["release_decision"] = decision
                     if "owner_confirmed" in snap_update:
                         if self.role() != "Owner":
                             raise PermissionError("Owner confirmation must be submitted by an Owner")
                         snapshot["owner_confirmed"] = snap_update["owner_confirmed"]
                     if "doc" in snap_update:
                         snapshot.setdefault("doc", {}).update(snap_update["doc"])
-                    if "cicd" in snap_update:
-                        snapshot.setdefault("cicd", {}).update(snap_update["cicd"])
                     if "diff_confirm_all" in snap_update and snap_update["diff_confirm_all"]:
                         if self.role() != "Owner":
                             raise PermissionError("app_info diff confirmation must be submitted by an Owner")

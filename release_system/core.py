@@ -124,6 +124,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    conn.execute("UPDATE apps SET doc_target = 'manual' WHERE doc_target NOT IN ('manual', 'ai4sci')")
     ensure_default_user(conn)
     conn.commit()
 
@@ -144,7 +145,26 @@ DEFAULT_USERS: tuple[tuple[str, str, str], ...] = (
     ("owner_test", "owner_test", "Owner"),
 )
 
-RELEASE_DECISIONS = {"release", "no_release", "cicd_only", "stopped"}
+RELEASE_DECISIONS = {"release", "cicd_only", "stopped"}
+DOC_TARGETS = {"manual", "ai4sci"}
+
+
+def normalize_release_decision(value: str | None) -> str:
+    decision = (value or "release").strip()
+    return "stopped" if decision == "no_release" else decision
+
+
+def normalize_doc_target(value: str | None) -> str:
+    target = (value or "manual").strip()
+    aliases = {
+        "HPC": "manual",
+        "hpc": "manual",
+        "manual": "manual",
+        "AI4Sci": "ai4sci",
+        "ai4sci": "ai4sci",
+        "AI4SCI": "ai4sci",
+    }
+    return aliases.get(target, "manual")
 
 
 def ensure_default_user(conn: sqlite3.Connection) -> None:
@@ -254,7 +274,7 @@ def app_from_row(existing: dict[str, Any] | None, *, app_id: str, name: str) -> 
         "description": "",
         "git_url": "",
         "git_branch": "",
-        "doc_target": "manual",
+        "doc_target": "",
         "owners": [],
         "aliases": [],
         "created_by": "import",
@@ -306,6 +326,7 @@ def row_to_app(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     data["owners"] = loads_json(data.pop("owners_json"), [])
     data["aliases"] = loads_json(data.pop("aliases_json"), [])
+    data["doc_target"] = normalize_doc_target(data.get("doc_target"))
     return data
 
 
@@ -337,7 +358,7 @@ def save_app(conn: sqlite3.Connection, app: dict[str, Any]) -> None:
             app.get("description", ""),
             app.get("git_url", ""),
             app.get("git_branch", ""),
-            app.get("doc_target", "manual"),
+            normalize_doc_target(app.get("doc_target")),
             dumps_json(sorted(set(app.get("owners", [])))),
             dumps_json(sorted(set(app.get("aliases", [])))),
             app.get("created_by", "import"),
@@ -413,7 +434,6 @@ def base_snapshot(app: dict[str, Any], release_row: dict[str, str] | None = None
             "test_result": "",
             "limitations": "",
         },
-        "cicd": {"enabled": False, "build": "", "test": "", "infra_note": ""},
         "app_info": None,
         "app_info_diffs": [],
         "test_docs": [],
@@ -683,11 +703,13 @@ def add_new_app_request(
     doc_target: str = "manual",
 ) -> str:
     """Create a new app from owner-provided fields plus submitter owner."""
-    release_decision = (release_decision or "").strip()
-    if not official_name or not git_url or not git_branch or not release_decision or not owner:
+    raw_decision = (release_decision or "").strip()
+    if not official_name or not git_url or not git_branch or not raw_decision or not owner:
         raise ValueError("New app requires official_name, git_url, git_branch, release_decision, and submitter owner")
+    release_decision = normalize_release_decision(raw_decision)
     if release_decision not in RELEASE_DECISIONS:
         raise ValueError(f"Invalid release_decision: {release_decision}")
+    doc_target = normalize_doc_target(doc_target)
     release = get_release(conn, release_id)
     if release.get("state") in {"qa_open", "release_locked"}:
         raise RuntimeError("New apps cannot be added after QA starts")
@@ -959,7 +981,7 @@ def apply_app_info(
 
 
 def blockers_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
-    decision = snapshot.get("release_decision")
+    decision = normalize_release_decision(snapshot.get("release_decision"))
     if decision not in {"release", "cicd_only"}:
         return []
     blockers: list[str] = []
@@ -972,15 +994,6 @@ def blockers_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
     if not snapshot.get("app_info"):
         blockers.append("缺少可追溯 AppInfoSnapshot")
     if decision != "release":
-        cicd = snapshot.get("cicd", {})
-        if not cicd.get("enabled"):
-            blockers.append("CICD app 未启用 CICD 配置")
-        if not cicd.get("build"):
-            blockers.append("缺少 CICD build 配置")
-        if not cicd.get("test"):
-            blockers.append("缺少 CICD test 配置")
-        if not cicd.get("infra_note"):
-            blockers.append("缺少 Infra 备注")
         return blockers
     if any(not diff.get("confirmed") for diff in snapshot.get("app_info_diffs", [])):
         blockers.append("app_info 差异未确认")
@@ -988,7 +1001,7 @@ def blockers_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
         blockers.append("缺少 对应官方版本")
     if not snapshot.get("x86_chips"):
         blockers.append("缺少 X86支持芯片系列")
-    if app.get("doc_target") in {"manual", "ai4sci", "both"}:
+    if normalize_doc_target(app.get("doc_target")) in DOC_TARGETS:
         doc = snapshot.get("doc", {})
         required = {
             "intro": "基本介绍",
@@ -1017,6 +1030,8 @@ def blockers_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
 
 
 def refresh_snapshot_gate_status(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
+    snapshot["release_decision"] = normalize_release_decision(snapshot.get("release_decision"))
+    snapshot.pop("cicd", None)
     blockers = blockers_for(app, snapshot)
     snapshot["blockers"] = blockers
     if snapshot.get("release_decision") != "release":
@@ -1223,8 +1238,8 @@ def generate_artifacts(conn: sqlite3.Connection, release_id: str, *, final: bool
     rows = release_rows(conn, release, admitted_only=final)
     artifacts = {
         "release_note": render_release_note(release, rows),
-        "manual": render_guide("HPC Manual App 章节", [(a, s) for a, s in rows if a.get("doc_target") in {"manual", "both"}]),
-        "ai4sci": render_guide("AI4Sci User Guide App 章节", [(a, s) for a, s in rows if a.get("doc_target") in {"ai4sci", "both"}]),
+        "manual": render_guide("HPC Manual App 章节", [(a, s) for a, s in rows if normalize_doc_target(a.get("doc_target")) == "manual"]),
+        "ai4sci": render_guide("AI4Sci User Guide App 章节", [(a, s) for a, s in rows if normalize_doc_target(a.get("doc_target")) == "ai4sci"]),
         "data": dumps_json({"release": release, "apps": list_apps(conn), "generated_at": now(), "final": final}),
     }
     names = {

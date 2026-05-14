@@ -13,15 +13,16 @@
 - 首次初始化导入 release CSV 和 owner CSV。
 - release CSV 中同名但版本/branch 不同的条目会作为独立 app variant 导入；同一版本/branch 的 x86 和 ARM 行会合并到同一个 snapshot。
 - 首次维护 alias mapping 和 app-owner 映射。
-- 后续 release 从上一版本克隆 app、owner、文档字段、测试说明、CICD 配置和 app-info 来源信息。
-- 新增 app 申请必须填写官方 app/模型名称、Gerrit URL、branch 和 release 决策；提交者自动成为初始 owner。
+- 后续 release 从上一版本克隆 app、owner、类型、文档字段、测试说明和 app-info 来源信息。
+- 新增 app 申请必须填写官方 app/模型名称、Gerrit URL、branch、类型和 release 决策；提交者自动成为初始 owner。
 - 上传新的 `app_info.json`，自动解析版本、X86/ARM 支持芯片、build/test target 和所有 `test_cmd`。
 - `app_info.json` 可由 owner 上传，也可从 app 的 Gerrit URL/branch 拉取；Gerrit 拉取会记录 branch commit id，上传会标注上传人和文件名。
 - 与上一版本 `app_info.json` 做 diff，并要求 owner 确认差异。
 - 为每个 `app_info.json` `test_cmd` 维护测试数据集、测试内容、结果查看方式和通过标准。
 - Owner 可新增 `app_info.json` 中没有的 owner-added 测试项，且同样必须补齐命令和测试说明。
 - QA 准入检查会阻塞未确认 diff、缺失 `AppInfoSnapshot`、缺失测试说明、缺失文档字段或 owner 未确认的 release app。
-- `no_release` 表示本周期不发布且不纳入 CICD 管控；`cicd_only` 表示不进入 release/RST/QA，但必须填写 owner、git、app_info、CICD build/test 和 Infra 备注。
+- 类型只包含 `HPC` 和 `AI4Sci`：`HPC` 生成到 HPC Manual，`AI4Sci` 生成到 AI4Sci User Guide。
+- `cicd_only` 表示仅纳入 CICD 构建/测试管控，不进入 release/RST/QA；`stopped` 表示停止维护或停止发布。
 - QA 打开后普通关键字段修改会被拒绝；后续应扩展为 change request 审批工作流。
 - Release lock 要求 release app 已准入 QA 且 QA passed。
 - 预览 RST 可在 lock 前反复生成；最终 RST 只能由 Release lock 生成，lock 后快照和最终 artifacts 不可变。

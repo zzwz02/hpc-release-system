@@ -301,7 +301,7 @@ class CoreWorkflowTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             core.update_snapshot(self.conn, release_id, app_id, lambda s: s.update({"version": "bad"}))
 
-    def test_cicd_only_requires_infra_fields(self) -> None:
+    def test_cicd_only_requires_app_info_but_not_infra_fields(self) -> None:
         release_id, app_id = self.import_initial()
 
         def cicd(snapshot: dict) -> None:
@@ -310,7 +310,7 @@ class CoreWorkflowTests(unittest.TestCase):
         core.update_snapshot(self.conn, release_id, app_id, cicd)
         blockers = core.run_admission_check(self.conn, release_id)[app_id]
         self.assertIn("缺少可追溯 AppInfoSnapshot", blockers)
-        self.assertIn("缺少 CICD build 配置", blockers)
+        self.assertFalse(any("CICD" in item or "Infra" in item for item in blockers))
 
     def test_owner_added_test_requires_command_and_docs(self) -> None:
         release_id, app_id = self.import_initial()
@@ -369,11 +369,13 @@ class CoreWorkflowTests(unittest.TestCase):
             git_url="ssh://gerrit/new",
             git_branch="maca",
             release_decision="cicd_only",
+            doc_target="ai4sci",
             owner="李四",
         )
         app = core.get_app(self.conn, app_id)
         self.assertEqual(app["owners"], ["李四"])
         self.assertEqual(app["git_url"], "ssh://gerrit/new")
+        self.assertEqual(app["doc_target"], "ai4sci")
         self.assertEqual(core.get_release(self.conn, release_id)["snapshots"][app_id]["release_decision"], "cicd_only")
         with self.assertRaises(ValueError):
             core.add_new_app_request(
@@ -393,16 +395,16 @@ class CoreWorkflowTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             core.update_release_deadline(self.conn, release_id, "20260601")
 
-    def test_no_release_is_not_cicd_only(self) -> None:
+    def test_no_release_is_normalized_to_stopped(self) -> None:
         release_id, app_id = self.import_initial()
 
         def no_release(snapshot: dict) -> None:
             snapshot["release_decision"] = "no_release"
-            snapshot["cicd"]["enabled"] = True
 
         core.update_snapshot(self.conn, release_id, app_id, no_release)
         blockers = core.run_admission_check(self.conn, release_id)[app_id]
         self.assertEqual(blockers, [])
+        self.assertEqual(core.get_release(self.conn, release_id)["snapshots"][app_id]["release_decision"], "stopped")
 
     def test_delete_app_removes_unlocked_snapshots_and_blocks_locked_releases(self) -> None:
         release_id, app_id = self.import_initial()
