@@ -235,6 +235,45 @@ def app_from_row(existing: dict[str, Any] | None, *, app_id: str, name: str) -> 
     return base
 
 
+def combined_release_row(rows: list[dict[str, str]]) -> dict[str, str]:
+    """Combine per-arch CSV rows for the same app/version/branch variant."""
+    combined = dict(rows[0]) if rows else {}
+    x86_chips: list[str] = []
+    arm_chips: list[str] = []
+    hpcc_chips: list[str] = []
+    archs: list[str] = []
+    for row in rows:
+        arch = (row.get("arch") or "").lower()
+        chips = split_list(row.get("maca_chip"))
+        if "arm" in arch or "aarch" in arch:
+            arm_chips.extend(chips)
+        else:
+            x86_chips.extend(chips)
+        hpcc_chips.extend(split_list(row.get("hpcc_chip")))
+        if row.get("arch"):
+            archs.append(row["arch"])
+    combined["_x86_chips"] = join_list(x86_chips)
+    combined["_arm_chips"] = join_list(arm_chips)
+    combined["maca_chip"] = combined["_x86_chips"] or combined.get("maca_chip", "")
+    combined["hpcc_chip"] = join_list(hpcc_chips) or combined.get("hpcc_chip", "")
+    combined["arch"] = join_list(archs) or combined.get("arch", "")
+    return combined
+
+
+def variant_app_id(base_id: str, version: str, branch: str, used_ids: set[str]) -> str:
+    suffix = normalize_name(version) or normalize_name(branch) or "variant"
+    candidate = f"{base_id}_{suffix}" if suffix else base_id
+    branch_suffix = normalize_name(branch)
+    if candidate in used_ids and branch_suffix and branch_suffix not in candidate:
+        candidate = f"{candidate}_{branch_suffix}"
+    index = 2
+    original = candidate
+    while candidate in used_ids:
+        candidate = f"{original}_{index}"
+        index += 1
+    return candidate
+
+
 def row_to_app(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     data["owners"] = loads_json(data.pop("owners_json"), [])
@@ -435,25 +474,68 @@ def import_initial_rows(
 ) -> str:
     aliases = parse_alias_lines(alias_text)
     apps: dict[str, dict[str, Any]] = {app["id"]: app for app in list_apps(conn)}
-    owner_by_id: dict[str, dict[str, str]] = {}
-
-    for row in release_rows:
-        app_id = canonical_id(row.get("app_name", ""), aliases)
-        app = app_from_row(apps.get(app_id), app_id=app_id, name=row.get("app_name", ""))
-        app["git_url"] = app.get("git_url") or row.get("git_url", "")
-        app["git_branch"] = app.get("git_branch") or row.get("git_branch", "")
-        apps[app_id] = app
-
+    owner_by_base: dict[str, list[dict[str, str]]] = {}
+    owner_by_base_version: dict[tuple[str, str], list[dict[str, str]]] = {}
     for row in owner_rows:
-        app_id = canonical_id(row.get("名称", ""), aliases)
-        owner_by_id[app_id] = row
-        app = app_from_row(apps.get(app_id), app_id=app_id, name=row.get("名称", ""))
-        app["category"] = app.get("category") or row.get("类别", "")
-        app["type"] = app.get("type") or row.get("类型", "")
-        app["description"] = app.get("description") or row.get("描述", "")
-        app["doc_target"] = app.get("doc_target") or infer_doc_target(row.get("类别", ""), row.get("类型", ""))
-        app["owners"] = sorted(set(app.get("owners", []) + split_list(row.get("Owner"))))
+        base_id = canonical_id(row.get("名称", ""), aliases)
+        owner_by_base.setdefault(base_id, []).append(row)
+        owner_by_base_version.setdefault((base_id, row.get("对应官方版本", "")), []).append(row)
+
+    release_groups: dict[tuple[str, str, str], list[dict[str, str]]] = {}
+    for row in release_rows:
+        base_id = canonical_id(row.get("app_name", ""), aliases)
+        key = (base_id, row.get("app_version", ""), row.get("git_branch", ""))
+        release_groups.setdefault(key, []).append(row)
+    variants_by_base: dict[str, int] = {}
+    for base_id, _, _ in release_groups:
+        variants_by_base[base_id] = variants_by_base.get(base_id, 0) + 1
+
+    release_row_by_app: dict[str, dict[str, str]] = {}
+    owner_row_by_app: dict[str, dict[str, str]] = {}
+    release_base_ids: set[str] = set()
+    used_ids: set[str] = set()
+    for (base_id, version, branch), rows in release_groups.items():
+        release_base_ids.add(base_id)
+        app_id = base_id if variants_by_base[base_id] == 1 else variant_app_id(base_id, version, branch, used_ids)
+        used_ids.add(app_id)
+        rel_row = combined_release_row(rows)
+        selected_owner_rows = owner_by_base_version.get((base_id, version)) or owner_by_base.get(base_id, [])
+        owner_row = selected_owner_rows[0] if selected_owner_rows else {}
+        display_name = rows[0].get("app_name", "")
+        if variants_by_base[base_id] > 1:
+            display_name = f"{display_name} {version or branch}".strip()
+        app = app_from_row(apps.get(app_id), app_id=app_id, name=display_name)
+        app["official_name"] = rows[0].get("app_name", "") or app.get("official_name") or display_name
+        app["git_url"] = app.get("git_url") or rel_row.get("git_url", "")
+        app["git_branch"] = app.get("git_branch") or rel_row.get("git_branch", "")
+        if owner_row:
+            app["category"] = app.get("category") or owner_row.get("类别", "")
+            app["type"] = app.get("type") or owner_row.get("类型", "")
+            app["description"] = app.get("description") or owner_row.get("描述", "")
+            app["doc_target"] = app.get("doc_target") or infer_doc_target(owner_row.get("类别", ""), owner_row.get("类型", ""))
+        owners: list[str] = []
+        for selected in selected_owner_rows:
+            owners.extend(split_list(selected.get("Owner")))
+        app["owners"] = sorted(set(app.get("owners", []) + owners))
         apps[app_id] = app
+        release_row_by_app[app_id] = rel_row
+        owner_row_by_app[app_id] = owner_row
+
+    for base_id, rows in owner_by_base.items():
+        if base_id in release_base_ids:
+            continue
+        owner_row = rows[0]
+        app = app_from_row(apps.get(base_id), app_id=base_id, name=owner_row.get("名称", ""))
+        app["category"] = app.get("category") or owner_row.get("类别", "")
+        app["type"] = app.get("type") or owner_row.get("类型", "")
+        app["description"] = app.get("description") or owner_row.get("描述", "")
+        app["doc_target"] = app.get("doc_target") or infer_doc_target(owner_row.get("类别", ""), owner_row.get("类型", ""))
+        owners: list[str] = []
+        for selected in rows:
+            owners.extend(split_list(selected.get("Owner")))
+        app["owners"] = sorted(set(app.get("owners", []) + owners))
+        apps[base_id] = app
+        owner_row_by_app[base_id] = owner_row
 
     for app in apps.values():
         save_app(conn, app)
@@ -473,8 +555,12 @@ def import_initial_rows(
     save_release(conn, first_release)
 
     for app in apps.values():
-        rel_row = next((row for row in release_rows if canonical_id(row.get("app_name", ""), aliases) == app["id"]), {})
-        snapshot = base_snapshot(app, rel_row, owner_by_id.get(app["id"], {}))
+        rel_row = release_row_by_app.get(app["id"], {})
+        snapshot = base_snapshot(app, rel_row, owner_row_by_app.get(app["id"], {}))
+        if rel_row.get("_x86_chips"):
+            snapshot["x86_chips"] = rel_row["_x86_chips"]
+        if rel_row.get("_arm_chips"):
+            snapshot["arm_chips"] = rel_row["_arm_chips"]
         save_snapshot(conn, release_id, app["id"], snapshot)
 
     conn.commit()
@@ -501,6 +587,7 @@ def create_release_from_previous(conn: sqlite3.Connection, name: str, *, maca_ve
     for app in list_apps(conn):
         old = previous["snapshots"].get(app["id"]) if previous else None
         snapshot = json.loads(json.dumps(old)) if old else base_snapshot(app)
+        snapshot.pop("app_meta", None)
         snapshot.update({"owner_confirmed": False, "rm_admitted": False, "qa_status": "not_checked", "locked": False, "blockers": [], "change_requests": []})
         save_snapshot(conn, release_id, app["id"], snapshot)
     conn.commit()

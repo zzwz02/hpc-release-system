@@ -77,6 +77,17 @@ APP_INFO_ARM = {
     },
 }
 
+DUP_RELEASE_CSV = """app_name,app_version,maca_chip,hpcc_chip,arch,maca_version,git_url,git_branch
+foo,1,c500,,x86,3.7.0,ssh://gerrit/foo,main
+foo,1,c600,,arm,3.7.0,ssh://gerrit/foo,main
+foo,2,n300,,x86,3.7.0,ssh://gerrit/foo,release-2
+"""
+
+DUP_OWNER_CSV = """类别,id,名称,Owner,类型,描述,对应官方版本,X86支持芯片系列,ARM支持芯片类型,备注,开发者社区发布情况,开发者社区发布包支持python版本,开发者社区发布包支持的底层框架及版本,ARM / Kylin sanity,Ubuntu sanity / 兼容性sanity
+HPC APP,1,foo,Alice,solver,Foo v1,1,,,,,,,
+HPC APP,2,foo,Bob,solver,Foo v2,2,,,,,,,
+"""
+
 
 class CoreWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -213,6 +224,10 @@ class CoreWorkflowTests(unittest.TestCase):
         rows = core.release_rows(self.conn, core.get_release(self.conn, release_id), admitted_only=True)
         self.assertEqual(rows[0][0]["name"], original_name)
         self.assertNotEqual(rows[0][0]["name"], "Changed Amber")
+        next_release = core.create_release_from_previous(self.conn, "next")
+        next_rows = core.release_rows(self.conn, core.get_release(self.conn, next_release))
+        self.assertEqual(next_rows[0][0]["name"], "Changed Amber")
+        self.assertNotIn("app_meta", core.get_release(self.conn, next_release)["snapshots"][app_id])
         with self.assertRaises(RuntimeError):
             core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V2, source="unit")
         with self.assertRaises(RuntimeError):
@@ -307,6 +322,25 @@ class CoreWorkflowTests(unittest.TestCase):
         app = core.get_app(self.conn, app_id)
         self.assertEqual(app["owners"], ["李四"])
         self.assertEqual(app["git_url"], "ssh://gerrit/new")
+
+    def test_initial_import_preserves_multi_version_variants_and_combines_arches(self) -> None:
+        release_id = core.import_initial_rows(
+            self.conn,
+            core.parse_csv_text(DUP_RELEASE_CSV),
+            core.parse_csv_text(DUP_OWNER_CSV),
+            release_name="variant-release",
+        )
+        apps = {app["id"]: app for app in core.list_apps(self.conn)}
+        self.assertIn("foo_1", apps)
+        self.assertIn("foo_2", apps)
+        self.assertEqual(apps["foo_1"]["owners"], ["Alice"])
+        self.assertEqual(apps["foo_2"]["owners"], ["Bob"])
+
+        release = core.get_release(self.conn, release_id)
+        snap_v1 = release["snapshots"]["foo_1"]
+        self.assertEqual(snap_v1["x86_chips"], "c500")
+        self.assertEqual(snap_v1["arm_chips"], "c600")
+        self.assertEqual(apps["foo_2"]["git_branch"], "release-2")
 
 
 if __name__ == "__main__":

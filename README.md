@@ -6,6 +6,7 @@
 
 - 本地账号/session 登录。默认 RM 账号：`rm` / `rm`。
 - 首次初始化导入 release CSV 和 owner CSV。
+- release CSV 中同名但版本/branch 不同的条目会作为独立 app variant 导入；同一版本/branch 的 x86 和 ARM 行会合并到同一个 snapshot。
 - 首次维护 alias mapping 和 app-owner 映射。
 - 后续 release 从上一版本克隆 app、owner、文档字段、测试说明、CICD 配置和 app-info 来源信息。
 - 新增 app 申请只需要官方 app/模型名称、Gerrit URL、branch；提交者自动成为初始 owner。
