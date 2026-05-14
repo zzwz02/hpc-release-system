@@ -62,6 +62,10 @@ class Handler(BaseHTTPRequestHandler):
                     raise PermissionError("Invalid username or password")
                 self.send_json({"ok": True}, cookies=[f"hpc_session={token}; HttpOnly; SameSite=Strict; Path=/"])
                 return
+            if parsed.path == "/api/logout":
+                core.logout_session(core.connect(DB_PATH), self.session_token())
+                self.send_json({"ok": True}, cookies=["hpc_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"])
+                return
             if parsed.path == "/api/admin/clear-db":
                 self.require_admin()
                 body = self.json_body()

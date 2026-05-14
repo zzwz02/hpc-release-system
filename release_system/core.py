@@ -193,6 +193,12 @@ def session_user(conn: sqlite3.Connection, token: str | None) -> dict[str, str] 
     return dict(row) if row else None
 
 
+def logout_session(conn: sqlite3.Connection, token: str | None) -> None:
+    if token:
+        conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        conn.commit()
+
+
 def audit(conn: sqlite3.Connection, message: str, user: str = "system", role: str = "system") -> None:
     conn.execute(
         "INSERT INTO audit(ts, user, role, message) VALUES (?, ?, ?, ?)",

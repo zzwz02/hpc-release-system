@@ -51,6 +51,7 @@
     <strong>HPC App 发布信息协作系统</strong>
     <span id="loginBox">用户 <input id="loginUser" value="rm"> 密码 <input id="loginPass" type="password" value="rm"> <button id="loginBtn">登录</button></span>
     <span id="meBox" class="muted"></span>
+    <button id="logoutBtn" hidden>退出登录</button>
     <span>Release</span><select id="release"></select>
     <button id="refresh">刷新</button>
   </header>
@@ -345,6 +346,7 @@
         $(b.dataset.view).classList.add("active");
       });
       $("loginBtn").onclick = login;
+      $("logoutBtn").onclick = logout;
       $("refresh").onclick = () => loadState();
       $("release").onchange = () => loadState($("release").value);
       $("search").oninput = renderApps;
@@ -375,14 +377,28 @@
       await loadState();
     }
 
+    async function logout() {
+      await post("/api/logout", {});
+      state = { apps: [], releases: [], release: null, artifacts: [], user: null };
+      selectedApp = "";
+      $("release").innerHTML = "";
+      showLoggedOut();
+      renderRoleChrome();
+      renderSummary();
+      renderApps();
+      renderDetail();
+    }
+
     function showLoggedIn(user) {
       $("loginBox").style.display = "none";
       $("meBox").textContent = `${user.role} / ${user.username}`;
+      $("logoutBtn").hidden = false;
     }
 
     function showLoggedOut() {
       $("loginBox").style.display = "";
       $("meBox").textContent = "未登录";
+      $("logoutBtn").hidden = true;
     }
 
     bind();

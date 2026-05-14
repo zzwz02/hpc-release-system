@@ -364,6 +364,13 @@ class CoreWorkflowTests(unittest.TestCase):
         self.assertIsNotNone(core.authenticate(self.conn, "owner_test", "owner_test"))
         self.assertIsNotNone(core.authenticate(self.conn, "admin", "admin-test-password"))
 
+    def test_logout_session_removes_token(self) -> None:
+        token = core.authenticate(self.conn, "rm", "rm")
+        self.assertIsNotNone(token)
+        self.assertEqual(core.session_user(self.conn, token)["username"], "rm")
+        core.logout_session(self.conn, token)
+        self.assertIsNone(core.session_user(self.conn, token))
+
 
 if __name__ == "__main__":
     unittest.main()
