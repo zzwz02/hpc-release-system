@@ -142,6 +142,7 @@
   <script>
     let state = { apps: [], releases: [], release: null, artifacts: [] };
     let selectedApp = "";
+    let autoRefreshTimer = null;
 
     const $ = id => document.getElementById(id);
     const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
@@ -154,6 +155,7 @@
       stopped: "stopped：停止维护/停止发布"
     };
     const releaseDecisionOptions = Object.keys(releaseDecisionLabels);
+    const releaseDecisionOrder = { release: 0, cicd_only: 1, no_release: 2, stopped: 3 };
 
     async function api(path, options = {}) {
       const res = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
@@ -176,6 +178,29 @@
       render();
     }
 
+    function activeView() {
+      return document.querySelector(".tab.active")?.dataset.view || "";
+    }
+
+    function formFieldFocused() {
+      const tag = document.activeElement?.tagName;
+      return ["INPUT", "TEXTAREA", "SELECT"].includes(tag);
+    }
+
+    function canAutoRefresh() {
+      return !!state.user && !document.hidden && !formFieldFocused() && ["dashboard", "apps", "admin"].includes(activeView());
+    }
+
+    function refreshIfIdle() {
+      if (!canAutoRefresh()) return;
+      loadState().catch(() => showLoggedOut());
+    }
+
+    function startAutoRefresh() {
+      if (autoRefreshTimer) return;
+      autoRefreshTimer = setInterval(refreshIfIdle, 15000);
+    }
+
     function releaseSnap(appId) { return state.release?.snapshots?.[appId] || null; }
     function appById(id) { return state.apps.find(a => a.id === id); }
     function currentUser() { return state.user || {}; }
@@ -183,6 +208,12 @@
     function isOwner() { return currentUser().role === "Owner"; }
     function canEdit(app) { return currentUser().role === "RM" || (currentUser().role === "Owner" && (app.owners || []).includes(currentUser().username)); }
     function pill(status) { const cls = status === "eligible" || status === "in_qa" ? "ok" : status === "blocked" ? "bad" : "warnp"; return `<span class="pill ${cls}">${esc(status || "not_checked")}</span>`; }
+    function appSortName(app) { return String(app.name || app.official_name || app.id || "").toLowerCase(); }
+    function compareAppRows(a, b) {
+      const decisionDiff = (releaseDecisionOrder[a.snap?.release_decision] ?? 99) - (releaseDecisionOrder[b.snap?.release_decision] ?? 99);
+      if (decisionDiff) return decisionDiff;
+      return appSortName(a.app).localeCompare(appSortName(b.app), "zh-CN");
+    }
 
     function render() {
       renderRoleChrome();
@@ -252,6 +283,7 @@
       let rows = state.apps.map(app => ({ app, snap: releaseSnap(app.id) })).filter(x => x.snap);
       if (currentUser().role === "Owner") rows = rows.filter(x => (x.app.owners || []).includes(currentUser().username));
       if (q) rows = rows.filter(x => [x.app.name, x.app.type, (x.app.owners || []).join(",")].join(" ").toLowerCase().includes(q));
+      rows.sort(compareAppRows);
       $("appTable").innerHTML = `<thead><tr><th>App</th><th>Owner</th><th>决策</th><th>QA</th><th>未确认Diff</th></tr></thead><tbody>${rows.map(({app,snap}) => `
         <tr data-app="${esc(app.id)}" class="${selectedApp === app.id ? "selected" : ""}">
           <td><b>${esc(app.name)}</b><div class="small muted">${esc(app.type || app.category || "")}</div></td>
@@ -391,6 +423,9 @@
         snapshot: snapshotUpdate
       });
       await loadState();
+      if (!confirmOwner) {
+        alert(confirmDiffs ? "diff 确认已保存" : "保存成功");
+      }
       if (confirmOwner) {
         const updated = releaseSnap(app.id) || result.snapshot || {};
         const blockers = updated.blockers || result.blockers || [];
@@ -417,6 +452,8 @@
         $(b.dataset.view).classList.add("active");
         if (["dashboard", "apps"].includes(b.dataset.view)) loadState().catch(err => alert(err.message));
       });
+      document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshIfIdle(); });
+      window.addEventListener("focus", refreshIfIdle);
       $("loginBtn").onclick = login;
       $("logoutBtn").onclick = logout;
       $("refresh").onclick = () => loadState();
@@ -461,10 +498,12 @@
     async function login() {
       await post("/api/login", { username: $("loginUser").value, password: $("loginPass").value });
       await loadState();
+      startAutoRefresh();
     }
 
     async function logout() {
       await post("/api/logout", {});
+      if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
       state = { apps: [], releases: [], release: null, artifacts: [], user: null };
       selectedApp = "";
       $("release").innerHTML = "";
@@ -488,7 +527,7 @@
     }
 
     bind();
-    loadState().catch(() => showLoggedOut());
+    loadState().then(startAutoRefresh).catch(() => showLoggedOut());
   </script>
 </body>
 </html>
