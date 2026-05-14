@@ -6,21 +6,22 @@
 
 - 本地账号/session 登录。默认 RM 账号：`rm` / `rm`；默认调试 Owner：`owner_test` / `owner_test`；默认 Admin 用户：`admin`，密码来自环境变量 `HPC_ADMIN_PASSWORD` 或本地忽略文件 `admin_password.local`。
 - RM 可见“初始化/周期”“RST”和全部 app；Owner 只可见“总览”和自己名下的“App 工作台”；Admin 只可见“管理”页。
-- Admin 可备份并清空数据库；清空会先复制当前 `release_system.db` 为 `release_system_admin_backup_*.sqlite`，再删除 app、release、snapshot、artifact 和审计数据，默认账号保留。
+- Admin 可备份并清空数据库，也可备份后删除单个未锁定 app；清空会先复制当前 `release_system.db` 为 `release_system_admin_backup_*.sqlite`，再删除 app、release、snapshot、artifact 和审计数据，默认账号保留。
 - “提交 Owner 确认”由 app owner 点击，表示该 app 本轮 release 信息、app_info diff 和 test_cmd 说明已补齐，可提交 RM 做 QA 准入。
 - “QA 通过”由 RM 在 QA 测试完成后点击，用于把 app 标记为 `qa_passed`，这是 Release Lock 的必要条件。
+- RM 可在“初始化/周期”中直接修改当前 release 的 deadline，release lock 后不可再改。
 - 首次初始化导入 release CSV 和 owner CSV。
 - release CSV 中同名但版本/branch 不同的条目会作为独立 app variant 导入；同一版本/branch 的 x86 和 ARM 行会合并到同一个 snapshot。
 - 首次维护 alias mapping 和 app-owner 映射。
 - 后续 release 从上一版本克隆 app、owner、文档字段、测试说明、CICD 配置和 app-info 来源信息。
-- 新增 app 申请只需要官方 app/模型名称、Gerrit URL、branch；提交者自动成为初始 owner。
+- 新增 app 申请必须填写官方 app/模型名称、Gerrit URL、branch 和 release 决策；提交者自动成为初始 owner。
 - 上传新的 `app_info.json`，自动解析版本、X86/ARM 支持芯片、build/test target 和所有 `test_cmd`。
 - `app_info.json` 可由 owner 上传，也可从 app 的 Gerrit URL/branch 拉取；Gerrit 拉取会记录 branch commit id，上传会标注上传人和文件名。
 - 与上一版本 `app_info.json` 做 diff，并要求 owner 确认差异。
 - 为每个 `app_info.json` `test_cmd` 维护测试数据集、测试内容、结果查看方式和通过标准。
 - Owner 可新增 `app_info.json` 中没有的 owner-added 测试项，且同样必须补齐命令和测试说明。
 - QA 准入检查会阻塞未确认 diff、缺失 `AppInfoSnapshot`、缺失测试说明、缺失文档字段或 owner 未确认的 release app。
-- `cicd_only` app 必须填写 owner、git、app_info、CICD build/test 和 Infra 备注。
+- `no_release` 表示本周期不发布且不纳入 CICD 管控；`cicd_only` 表示不进入 release/RST/QA，但必须填写 owner、git、app_info、CICD build/test 和 Infra 备注。
 - QA 打开后普通关键字段修改会被拒绝；后续应扩展为 change request 审批工作流。
 - Release lock 要求 release app 已准入 QA 且 QA passed。
 - 预览 RST 可在 lock 前反复生成；最终 RST 只能由 Release lock 生成，lock 后快照和最终 artifacts 不可变。

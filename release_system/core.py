@@ -144,6 +144,8 @@ DEFAULT_USERS: tuple[tuple[str, str, str], ...] = (
     ("owner_test", "owner_test", "Owner"),
 )
 
+RELEASE_DECISIONS = {"release", "no_release", "cicd_only", "stopped"}
+
 
 def ensure_default_user(conn: sqlite3.Connection) -> None:
     for username, password, role in DEFAULT_USERS:
@@ -354,6 +356,34 @@ def list_apps(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [row_to_app(row) for row in conn.execute("SELECT * FROM apps ORDER BY name")]
 
 
+def locked_releases_for_app(conn: sqlite3.Connection, app_id: str) -> list[str]:
+    return [
+        row["name"]
+        for row in conn.execute(
+            """
+            SELECT releases.name
+            FROM releases
+            JOIN snapshots ON snapshots.release_id = releases.id
+            WHERE snapshots.app_id = ? AND releases.state = 'release_locked'
+            ORDER BY releases.created_at
+            """,
+            (app_id,),
+        )
+    ]
+
+
+def delete_app(conn: sqlite3.Connection, app_id: str, *, user: str = "admin", role: str = "Admin") -> dict[str, Any]:
+    app = get_app(conn, app_id)
+    locked_releases = locked_releases_for_app(conn, app_id)
+    if locked_releases:
+        raise RuntimeError(f"App is used by locked releases and cannot be deleted: {', '.join(locked_releases)}")
+    conn.execute("DELETE FROM artifacts WHERE final = 0")
+    conn.execute("DELETE FROM apps WHERE id = ?", (app_id,))
+    conn.commit()
+    audit(conn, f"删除 app：{app['name']} ({app_id})", user=user, role=role)
+    return app
+
+
 def base_snapshot(app: dict[str, Any], release_row: dict[str, str] | None = None, owner_row: dict[str, str] | None = None) -> dict[str, Any]:
     release_row = release_row or {}
     owner_row = owner_row or {}
@@ -419,6 +449,26 @@ def save_release(conn: sqlite3.Connection, release: dict[str, Any]) -> None:
             release.get("locked_at", ""),
         ),
     )
+
+
+def update_release_deadline(
+    conn: sqlite3.Connection,
+    release_id: str,
+    deadline: str,
+    *,
+    user: str = "system",
+    role: str = "system",
+) -> dict[str, Any]:
+    release = get_release(conn, release_id)
+    if release.get("state") == "release_locked":
+        raise RuntimeError("Release is locked and immutable")
+    deadline = (deadline or "").strip()
+    if deadline and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", deadline):
+        raise ValueError("Deadline must be empty or YYYY-MM-DD")
+    conn.execute("UPDATE releases SET deadline = ? WHERE id = ?", (deadline, release_id))
+    conn.commit()
+    audit(conn, f"更新 release deadline：{release['name']} -> {deadline or '空'}", user=user, role=role)
+    return get_release(conn, release_id)
 
 
 def release_is_locked(conn: sqlite3.Connection, release_id: str) -> bool:
@@ -628,12 +678,16 @@ def add_new_app_request(
     official_name: str,
     git_url: str,
     git_branch: str,
+    release_decision: str,
     owner: str,
     doc_target: str = "manual",
 ) -> str:
-    """Create a new app from the three owner-provided fields plus submitter owner."""
-    if not official_name or not git_url or not git_branch or not owner:
-        raise ValueError("New app requires official_name, git_url, git_branch, and submitter owner")
+    """Create a new app from owner-provided fields plus submitter owner."""
+    release_decision = (release_decision or "").strip()
+    if not official_name or not git_url or not git_branch or not release_decision or not owner:
+        raise ValueError("New app requires official_name, git_url, git_branch, release_decision, and submitter owner")
+    if release_decision not in RELEASE_DECISIONS:
+        raise ValueError(f"Invalid release_decision: {release_decision}")
     release = get_release(conn, release_id)
     if release.get("state") in {"qa_open", "release_locked"}:
         raise RuntimeError("New apps cannot be added after QA starts")
@@ -654,6 +708,7 @@ def add_new_app_request(
     }
     save_app(conn, app)
     snapshot = base_snapshot(app)
+    snapshot["release_decision"] = release_decision
     snapshot["change_requests"].append({"id": new_id("chg"), "type": "new_app", "status": "submitted", "created_at": now(), "owner": owner})
     save_snapshot(conn, release_id, app_id, snapshot)
     conn.commit()
@@ -905,7 +960,7 @@ def apply_app_info(
 
 def blockers_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
     decision = snapshot.get("release_decision")
-    if decision not in {"release", "cicd_only"} and not (decision == "no_release" and snapshot.get("cicd", {}).get("enabled")):
+    if decision not in {"release", "cicd_only"}:
         return []
     blockers: list[str] = []
     if not app.get("owners"):

@@ -360,7 +360,7 @@ class CoreWorkflowTests(unittest.TestCase):
         self.assertEqual(snapshot["app_info"]["source_type"], "gerrit_fetch")
         self.assertEqual(snapshot["app_info"]["commit_id"], "abc123")
 
-    def test_new_app_request_three_fields(self) -> None:
+    def test_new_app_request_requires_release_decision(self) -> None:
         release_id, _ = self.import_initial()
         app_id = core.add_new_app_request(
             self.conn,
@@ -368,11 +368,67 @@ class CoreWorkflowTests(unittest.TestCase):
             official_name="New Model",
             git_url="ssh://gerrit/new",
             git_branch="maca",
+            release_decision="cicd_only",
             owner="李四",
         )
         app = core.get_app(self.conn, app_id)
         self.assertEqual(app["owners"], ["李四"])
         self.assertEqual(app["git_url"], "ssh://gerrit/new")
+        self.assertEqual(core.get_release(self.conn, release_id)["snapshots"][app_id]["release_decision"], "cicd_only")
+        with self.assertRaises(ValueError):
+            core.add_new_app_request(
+                self.conn,
+                release_id,
+                official_name="Bad Model",
+                git_url="ssh://gerrit/bad",
+                git_branch="maca",
+                release_decision="",
+                owner="李四",
+            )
+
+    def test_update_release_deadline(self) -> None:
+        release_id, _ = self.import_initial()
+        release = core.update_release_deadline(self.conn, release_id, "2026-06-01", user="rm", role="RM")
+        self.assertEqual(release["deadline"], "2026-06-01")
+        with self.assertRaises(ValueError):
+            core.update_release_deadline(self.conn, release_id, "20260601")
+
+    def test_no_release_is_not_cicd_only(self) -> None:
+        release_id, app_id = self.import_initial()
+
+        def no_release(snapshot: dict) -> None:
+            snapshot["release_decision"] = "no_release"
+            snapshot["cicd"]["enabled"] = True
+
+        core.update_snapshot(self.conn, release_id, app_id, no_release)
+        blockers = core.run_admission_check(self.conn, release_id)[app_id]
+        self.assertEqual(blockers, [])
+
+    def test_delete_app_removes_unlocked_snapshots_and_blocks_locked_releases(self) -> None:
+        release_id, app_id = self.import_initial()
+        core.generate_artifacts(self.conn, release_id)
+        deleted = core.delete_app(self.conn, app_id, user="admin", role="Admin")
+        self.assertEqual(deleted["id"], app_id)
+        self.assertEqual(core.list_apps(self.conn), [])
+        self.assertEqual(core.get_release(self.conn, release_id)["snapshots"], {})
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0], 0)
+
+        release_id, app_id = self.import_initial()
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+
+        def ready(snapshot: dict) -> None:
+            snapshot["owner_confirmed"] = True
+            snapshot["doc"].update({"image_usage": "i", "binary_usage": "b", "env_setup": "e", "test_method": "t", "test_result": "r"})
+            for doc in snapshot["test_docs"]:
+                doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p"})
+
+        core.update_snapshot(self.conn, release_id, app_id, ready)
+        core.run_admission_check(self.conn, release_id)
+        core.open_qa(self.conn, release_id)
+        core.mark_qa_passed(self.conn, release_id, app_id)
+        core.lock_release(self.conn, release_id)
+        with self.assertRaises(RuntimeError):
+            core.delete_app(self.conn, app_id, user="admin", role="Admin")
 
     def test_initial_import_preserves_multi_version_variants_and_combines_arches(self) -> None:
         release_id = core.import_initial_rows(

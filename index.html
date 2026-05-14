@@ -87,6 +87,10 @@
             <label>Deadline <input id="newDeadline" type="date"></label>
           </div>
           <div class="row">
+            <label>当前 Release Deadline <input id="editDeadline" type="date"></label>
+            <button id="saveDeadline">保存 Deadline</button>
+          </div>
+          <div class="row">
             <button class="primary" id="createRelease">从上版克隆新 Release</button>
             <button class="good" id="admission">运行 QA 准入</button>
             <button class="warn" id="openQa">打开 QA</button>
@@ -127,6 +131,9 @@
           <input id="clearConfirm" placeholder="输入：CLEAR_DATABASE" style="min-width:220px">
           <button class="danger" id="clearDb">备份并清空数据库</button>
         </div>
+        <h3>删除单个 App</h3>
+        <p class="muted small">删除前会自动备份数据库；已进入 release_locked 的 app 不允许删除。</p>
+        <div class="table"><table id="adminAppTable"></table></div>
         <div class="log" id="adminLog"></div>
       </div></div>
     </section>
@@ -140,6 +147,13 @@
     const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
     const headers = () => ({ "Content-Type": "application/json" });
     const currentReleaseId = () => $("release").value || state.release?.id || "";
+    const releaseDecisionLabels = {
+      release: "release：进入 release note/RST/QA",
+      no_release: "no_release：本周期不发布，也不纳入 CICD 管控",
+      cicd_only: "cicd_only：不发布文档，但纳入 CICD 构建/测试管控",
+      stopped: "stopped：停止维护/停止发布"
+    };
+    const releaseDecisionOptions = Object.keys(releaseDecisionLabels);
 
     async function api(path, options = {}) {
       const res = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
@@ -177,6 +191,7 @@
       renderReleases();
       renderApps();
       renderDetail();
+      renderAdmin();
     }
 
     function renderRoleChrome() {
@@ -217,6 +232,19 @@
 
     function renderReleases() {
       $("releaseTable").innerHTML = table(["Release", "状态", "来源", "Deadline"], state.releases.map(r => [r.name, r.state, r.source, r.deadline]));
+      if ($("editDeadline")) $("editDeadline").value = state.release?.deadline || "";
+    }
+
+    function renderAdmin() {
+      if (!$("adminAppTable")) return;
+      $("adminAppTable").innerHTML = `<thead><tr><th>App</th><th>Owner</th><th>Gerrit</th><th>操作</th></tr></thead><tbody>${state.apps.map(app => `
+        <tr>
+          <td><b>${esc(app.name)}</b><div class="small muted">${esc(app.id)}</div></td>
+          <td>${esc((app.owners || []).join(","))}</td>
+          <td>${esc(app.git_url || "")}<div class="small muted">${esc(app.git_branch || "")}</div></td>
+          <td><button class="danger" data-delete-app="${esc(app.id)}">删除</button></td>
+        </tr>`).join("") || `<tr><td colspan="4" class="muted">无数据</td></tr>`}</tbody>`;
+      document.querySelectorAll("[data-delete-app]").forEach(btn => btn.onclick = () => deleteApp(btn.dataset.deleteApp));
     }
 
     function renderApps() {
@@ -228,7 +256,7 @@
         <tr data-app="${esc(app.id)}" class="${selectedApp === app.id ? "selected" : ""}">
           <td><b>${esc(app.name)}</b><div class="small muted">${esc(app.type || app.category || "")}</div></td>
           <td>${esc((app.owners || []).join(","))}</td>
-          <td>${esc(snap.release_decision)}</td>
+          <td>${esc(releaseDecisionLabels[snap.release_decision] || snap.release_decision)}</td>
           <td>${pill(snap.qa_status)}</td>
           <td>${(snap.app_info_diffs || []).filter(d => !d.confirmed).length}</td>
         </tr>`).join("") || `<tr><td colspan="5" class="muted">无数据</td></tr>`}</tbody>`;
@@ -260,13 +288,19 @@
           <label>类型<input id="type" value="${esc(app.type)}"></label>
           <label>Gerrit URL<input id="gitUrl" value="${esc(app.git_url)}"></label>
           <label>Branch<input id="gitBranch" value="${esc(app.git_branch)}"></label>
-          <label>Release决策<select id="decision">${["release","no_release","cicd_only","stopped"].map(v => `<option ${snap.release_decision===v?"selected":""}>${v}</option>`).join("")}</select></label>
+          <label>Release决策<select id="decision">${releaseDecisionOptions.map(v => `<option value="${v}" ${snap.release_decision===v?"selected":""}>${esc(releaseDecisionLabels[v])}</option>`).join("")}</select></label>
           <label>版本<input value="${esc(snap.version)}" disabled></label>
           <label>X86芯片<input value="${esc(snap.x86_chips)}" disabled></label>
           <label>ARM芯片<input value="${esc(snap.arm_chips)}" disabled></label>
         </div>
+        <p class="muted small">release 会进入正式发布、文档生成和 QA；no_release 只记录本周期不发布，不要求 CICD/RST 信息；cicd_only 不进入正式发布和文档，但需要补齐 app_info 与 CICD 构建/测试/infra 信息；stopped 表示停止维护或停止发布。</p>
         <p class="muted small">app_info 来源：${appInfoSource(snap)}</p>
         <label>描述<textarea id="description">${esc(app.description)}</textarea></label>
+        <h3>CICD / Infra 字段</h3>
+        <label><input id="cicdEnabled" type="checkbox" ${snap.cicd?.enabled || snap.release_decision === "cicd_only" ? "checked" : ""}> 纳入 CICD 管控</label>
+        ${textArea("cicdBuild","CICD build 配置",snap.cicd?.build)}
+        ${textArea("cicdTest","CICD test 配置",snap.cicd?.test)}
+        ${textArea("cicdInfraNote","Infra 备注",snap.cicd?.infra_note)}
         <h3>app_info diff</h3>
         <div class="table"><table>${renderDiffs(snap)}</table></div>
         ${diffActions}
@@ -281,6 +315,7 @@
     }
 
     function docArea(key, label, value) { return `<label>${label}<textarea data-doc="${key}">${esc(value || "")}</textarea></label>`; }
+    function textArea(id, label, value) { return `<label>${label}<textarea id="${id}">${esc(value || "")}</textarea></label>`; }
     function appInfoSource(snap) {
       const info = snap.app_info || {};
       if (!info.source_type) return "未提供";
@@ -339,6 +374,12 @@
       const snapshotUpdate = {
         release_decision: $("decision").value,
         doc: Object.fromEntries([...document.querySelectorAll("[data-doc]")].map(el => [el.dataset.doc, el.value])),
+        cicd: {
+          enabled: $("decision").value === "cicd_only" || $("cicdEnabled").checked,
+          build: $("cicdBuild").value,
+          test: $("cicdTest").value,
+          infra_note: $("cicdInfraNote").value
+        },
         test_docs
       };
       if (confirmOwner) snapshotUpdate.owner_confirmed = true;
@@ -383,6 +424,7 @@
       $("search").oninput = renderApps;
       $("importBtn").onclick = async () => { $("initLog").textContent = "导入中..."; const r = await post("/api/import-initial", { release_csv: await readFile("releaseCsv"), owner_csv: await readFile("ownerCsv"), alias_text: $("aliasText").value, release_name: $("initReleaseName").value }); $("initLog").textContent = "导入完成：" + r.release_id; await loadState(r.release_id); };
       $("createRelease").onclick = async () => { const r = await post("/api/releases/create", { name: $("newReleaseName").value, maca_version: $("newMacaVersion").value, deadline: $("newDeadline").value }); await loadState(r.release_id); };
+      $("saveDeadline").onclick = async () => { await post("/api/releases/deadline", { release_id: currentReleaseId(), deadline: $("editDeadline").value }); await loadState(); alert("Deadline 已更新"); };
       $("admission").onclick = async () => { await post("/api/releases/admission", { release_id: currentReleaseId() }); await loadState(); };
       $("openQa").onclick = async () => { await post("/api/releases/open-qa", { release_id: currentReleaseId() }); await loadState(); };
       $("lockRelease").onclick = async () => { await post("/api/releases/lock", { release_id: currentReleaseId() }); await loadState(); };
@@ -398,9 +440,22 @@
         const official_name = prompt("官方 app/模型名称"); if (!official_name) return;
         const git_url = prompt("Gerrit URL"); if (!git_url) return;
         const git_branch = prompt("Branch"); if (!git_branch) return;
-        const r = await post("/api/apps/new", { release_id: currentReleaseId(), official_name, git_url, git_branch, doc_target: "manual" });
+        const release_decision = prompt(`Release 决策，必须填写以下之一：\n${releaseDecisionOptions.map(v => "- " + releaseDecisionLabels[v]).join("\n")}`);
+        if (!releaseDecisionOptions.includes(release_decision)) return alert("Release 决策无效，未创建 app");
+        const r = await post("/api/apps/new", { release_id: currentReleaseId(), official_name, git_url, git_branch, release_decision, doc_target: "manual" });
         selectedApp = r.app_id; await loadState();
       };
+    }
+
+    async function deleteApp(appId) {
+      const app = appById(appId);
+      if (!app) return;
+      const confirmText = prompt(`删除 app 会先备份数据库，并删除所有未锁定 release 中的相关 snapshot。\n\n请输入 app_id 确认删除：${appId}`);
+      if (confirmText !== appId) return;
+      const r = await post("/api/admin/apps/delete", { app_id: appId, confirm: confirmText });
+      $("adminLog").textContent = `已删除 ${r.deleted.name}，备份文件：${r.backup}`;
+      if (selectedApp === appId) selectedApp = "";
+      await loadState();
     }
 
     async function login() {

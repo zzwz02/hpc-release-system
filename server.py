@@ -100,6 +100,18 @@ class Handler(BaseHTTPRequestHandler):
                 release_id = core.create_release_from_previous(core.connect(DB_PATH), body["name"], maca_version=body.get("maca_version", ""), deadline=body.get("deadline", ""))
                 self.send_json({"release_id": release_id})
                 return
+            if parsed.path == "/api/releases/deadline":
+                self.require_rm()
+                body = self.json_body()
+                release = core.update_release_deadline(
+                    core.connect(DB_PATH),
+                    body["release_id"],
+                    body.get("deadline", ""),
+                    user=self.user(),
+                    role=self.role(),
+                )
+                self.send_json({"release": release})
+                return
             if parsed.path == "/api/releases/admission":
                 self.require_rm()
                 body = self.json_body()
@@ -131,6 +143,15 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.json_body()
                 self.send_json(core.gerrit_push_plan(core.connect(DB_PATH), body["release_id"]))
                 return
+            if parsed.path == "/api/admin/apps/delete":
+                self.require_admin()
+                body = self.json_body()
+                if body.get("confirm") != body.get("app_id"):
+                    raise RuntimeError("删除确认必须等于 app_id")
+                backup = backup_database()
+                deleted = core.delete_app(core.connect(DB_PATH), body["app_id"], user=self.user(), role=self.role())
+                self.send_json({"ok": True, "deleted": deleted, "backup": backup.name})
+                return
             if parsed.path == "/api/apps/new":
                 if self.role() != "Owner":
                     raise PermissionError("Only Owner can submit new app requests")
@@ -141,6 +162,7 @@ class Handler(BaseHTTPRequestHandler):
                     official_name=body["official_name"],
                     git_url=body["git_url"],
                     git_branch=body["git_branch"],
+                    release_decision=body["release_decision"],
                     owner=self.user(),
                     doc_target=body.get("doc_target", "manual"),
                 )
@@ -167,6 +189,8 @@ class Handler(BaseHTTPRequestHandler):
                 def mutate(snapshot: dict) -> None:
                     snap_update = body.get("snapshot", {})
                     if "release_decision" in snap_update:
+                        if snap_update["release_decision"] not in core.RELEASE_DECISIONS:
+                            raise ValueError(f"Invalid release_decision: {snap_update['release_decision']}")
                         snapshot["release_decision"] = snap_update["release_decision"]
                     if "owner_confirmed" in snap_update:
                         if self.role() != "Owner":
