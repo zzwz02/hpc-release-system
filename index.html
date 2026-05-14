@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HPC App 发布信息协作系统</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f6f7f9; color: #172033; font: 14px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
+    header { position: sticky; top: 0; z-index: 3; background: #1f2937; color: white; padding: 10px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    header strong { font-size: 18px; margin-right: 8px; }
+    input, select, textarea, button { font: inherit; border-radius: 6px; border: 1px solid #cbd5e1; padding: 7px 8px; }
+    header input, header select { background: #111827; color: white; border-color: #4b5563; }
+    button { background: white; cursor: pointer; font-weight: 600; }
+    button.primary { background: #2563eb; color: white; border-color: #2563eb; }
+    button.good { background: #16803c; color: white; border-color: #16803c; }
+    button.warn { background: #fff7ed; color: #7c2d12; border-color: #fdba74; }
+    button.danger { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+    main { padding: 16px; display: grid; gap: 14px; }
+    .tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+    .tab.active { border-color: #2563eb; color: #2563eb; }
+    .view { display: none; }
+    .view.active { display: block; }
+    .grid { display: grid; grid-template-columns: 390px minmax(0, 1fr); gap: 14px; align-items: start; }
+    .panel { background: white; border: 1px solid #d8dde6; border-radius: 8px; box-shadow: 0 1px 2px rgba(18,24,40,.08); overflow: hidden; }
+    .panel h2, .panel h3 { margin: 0; padding: 11px 13px; border-bottom: 1px solid #d8dde6; background: #fbfcfe; font-size: 15px; }
+    .body { padding: 13px; display: grid; gap: 11px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+    label { display: grid; gap: 4px; font-weight: 600; color: #334155; }
+    textarea { width: 100%; min-height: 68px; resize: vertical; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 8px; border-bottom: 1px solid #d8dde6; text-align: left; vertical-align: top; }
+    th { background: #f8fafc; color: #475569; font-size: 12px; }
+    tr.selected { background: #eff6ff; }
+    .table { overflow: auto; max-height: 560px; border: 1px solid #d8dde6; border-radius: 8px; }
+    .muted { color: #607086; }
+    .small { font-size: 12px; }
+    .pill { display: inline-block; padding: 3px 7px; border-radius: 999px; font-size: 12px; background: #f8fafc; border: 1px solid #d8dde6; }
+    .ok { color: #166534; background: #f0fdf4; border-color: #bbf7d0; }
+    .bad { color: #991b1b; background: #fef2f2; border-color: #fecaca; }
+    .warnp { color: #92400e; background: #fffbeb; border-color: #fde68a; }
+    .log, .artifact { font-family: Consolas, monospace; white-space: pre-wrap; background: #0f172a; color: #dbeafe; border-radius: 6px; padding: 10px; min-height: 120px; }
+    .artifact { width: 100%; min-height: 430px; background: white; color: #172033; }
+    @media (max-width: 1100px) { .grid, .form { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>HPC App 发布信息协作系统</strong>
+    <span id="loginBox">用户 <input id="loginUser" value="rm"> 密码 <input id="loginPass" type="password" value="rm"> <button id="loginBtn">登录</button></span>
+    <span id="meBox" class="muted"></span>
+    <span>Release</span><select id="release"></select>
+    <button id="refresh">刷新</button>
+  </header>
+  <main>
+    <div class="tabs">
+      <button class="tab active" data-view="dashboard">总览</button>
+      <button class="tab" data-view="init">初始化/周期</button>
+      <button class="tab" data-view="apps">App 工作台</button>
+      <button class="tab" data-view="artifacts">RST</button>
+    </div>
+
+    <section id="dashboard" class="view active">
+      <div class="panel"><h2>总览</h2><div class="body" id="summary"></div></div>
+      <div class="panel" style="margin-top:14px"><h2>阻断项</h2><div class="body"><div class="table"><table id="blockers"></table></div></div></div>
+    </section>
+
+    <section id="init" class="view">
+      <div class="grid">
+        <div class="panel"><h2>首次初始化</h2><div class="body">
+          <p class="muted small">CSV、alias mapping、app-owner 映射只需首次维护；后续 release 从上一版本克隆。</p>
+          <label>Release CSV <input id="releaseCsv" type="file" accept=".csv"></label>
+          <label>Owner CSV <input id="ownerCsv" type="file" accept=".csv"></label>
+          <label>Alias mapping <textarea id="aliasText" placeholder="aimodels=ai-models&#10;boltz=Boltz-2"></textarea></label>
+          <label>Release 名称 <input id="initReleaseName" placeholder="initial-release"></label>
+          <button class="primary" id="importBtn">导入初始化数据</button>
+          <div class="log" id="initLog"></div>
+        </div></div>
+        <div class="panel"><h2>发布周期</h2><div class="body">
+          <div class="form">
+            <label>新 Release 名称 <input id="newReleaseName"></label>
+            <label>MACA/HPC 版本 <input id="newMacaVersion"></label>
+            <label>Deadline <input id="newDeadline" type="date"></label>
+          </div>
+          <div class="row">
+            <button class="primary" id="createRelease">从上版克隆新 Release</button>
+            <button class="good" id="admission">运行 QA 准入</button>
+            <button class="warn" id="openQa">打开 QA</button>
+            <button class="danger" id="lockRelease">Release Lock</button>
+          </div>
+          <div class="table"><table id="releaseTable"></table></div>
+        </div></div>
+      </div>
+    </section>
+
+    <section id="apps" class="view">
+      <div class="grid">
+        <div class="panel"><h2>App 列表</h2><div class="body">
+          <div class="row"><input id="search" placeholder="搜索 app/owner/type" style="flex:1"><button id="newApp">新增 app</button></div>
+          <div class="table"><table id="appTable"></table></div>
+        </div></div>
+        <div class="panel"><h2 id="detailTitle">App 详情</h2><div class="body" id="detail"></div></div>
+      </div>
+    </section>
+
+    <section id="artifacts" class="view">
+      <div class="panel"><h2>RST / release-data</h2><div class="body">
+        <div class="row">
+          <button class="primary" id="preview">生成预览</button>
+          <button data-kind="release_note" class="download">查看 release note</button>
+          <button data-kind="manual" class="download">查看 HPC Manual</button>
+          <button data-kind="ai4sci" class="download">查看 AI4Sci</button>
+          <button data-kind="data" class="download">查看 release-data</button>
+        </div>
+        <textarea id="artifactText" class="artifact" readonly></textarea>
+      </div></div>
+    </section>
+  </main>
+
+  <script>
+    let state = { apps: [], releases: [], release: null, artifacts: [] };
+    let selectedApp = "";
+
+    const $ = id => document.getElementById(id);
+    const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+    const headers = () => ({ "Content-Type": "application/json" });
+    const currentReleaseId = () => $("release").value || state.release?.id || "";
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) {
+        if (res.status === 401) showLoggedOut();
+        throw new Error(data.error || res.statusText);
+      }
+      return data;
+    }
+
+    async function post(path, body) {
+      return api(path, { method: "POST", body: JSON.stringify(body) });
+    }
+
+    async function loadState(releaseId = currentReleaseId()) {
+      const qs = releaseId ? "?release_id=" + encodeURIComponent(releaseId) : "";
+      state = await api("/api/state" + qs);
+      showLoggedIn(state.user);
+      render();
+    }
+
+    function releaseSnap(appId) { return state.release?.snapshots?.[appId] || null; }
+    function appById(id) { return state.apps.find(a => a.id === id); }
+    function currentUser() { return state.user || {}; }
+    function canEdit(app) { return currentUser().role === "RM" || (currentUser().role === "Owner" && (app.owners || []).includes(currentUser().username)); }
+    function pill(status) { const cls = status === "eligible" || status === "in_qa" ? "ok" : status === "blocked" ? "bad" : "warnp"; return `<span class="pill ${cls}">${esc(status || "not_checked")}</span>`; }
+
+    function render() {
+      renderReleaseSelect();
+      renderSummary();
+      renderReleases();
+      renderApps();
+      renderDetail();
+    }
+
+    function renderReleaseSelect() {
+      const cur = currentReleaseId();
+      $("release").innerHTML = state.releases.map(r => `<option value="${esc(r.id)}">${esc(r.name)}</option>`).join("");
+      if (cur) $("release").value = cur;
+    }
+
+    function renderSummary() {
+      const rows = state.apps.map(app => ({ app, snap: releaseSnap(app.id) })).filter(x => x.snap);
+      const blocked = rows.flatMap(x => (x.snap.blockers || []).map(b => [x.app.name, b, x.snap.qa_status]));
+      $("summary").innerHTML = `<div class="row">
+        <span class="pill">Apps: ${rows.length}</span>
+        <span class="pill">Release: ${rows.filter(x => x.snap.release_decision === "release").length}</span>
+        <span class="pill bad">阻塞: ${blocked.length}</span>
+        <span class="pill ok">QA: ${rows.filter(x => ["eligible","in_qa"].includes(x.snap.qa_status)).length}</span>
+        <span class="pill">当前: ${esc(state.release?.name || "无")}</span>
+      </div>`;
+      $("blockers").innerHTML = table(["App", "阻断项", "状态"], blocked);
+    }
+
+    function renderReleases() {
+      $("releaseTable").innerHTML = table(["Release", "状态", "来源", "Deadline"], state.releases.map(r => [r.name, r.state, r.source, r.deadline]));
+    }
+
+    function renderApps() {
+      const q = $("search").value.toLowerCase().trim();
+      let rows = state.apps.map(app => ({ app, snap: releaseSnap(app.id) })).filter(x => x.snap);
+      if (currentUser().role === "Owner") rows = rows.filter(x => (x.app.owners || []).includes(currentUser().username));
+      if (q) rows = rows.filter(x => [x.app.name, x.app.type, (x.app.owners || []).join(",")].join(" ").toLowerCase().includes(q));
+      $("appTable").innerHTML = `<thead><tr><th>App</th><th>Owner</th><th>决策</th><th>QA</th><th>未确认Diff</th></tr></thead><tbody>${rows.map(({app,snap}) => `
+        <tr data-app="${esc(app.id)}" class="${selectedApp === app.id ? "selected" : ""}">
+          <td><b>${esc(app.name)}</b><div class="small muted">${esc(app.type || app.category || "")}</div></td>
+          <td>${esc((app.owners || []).join(","))}</td>
+          <td>${esc(snap.release_decision)}</td>
+          <td>${pill(snap.qa_status)}</td>
+          <td>${(snap.app_info_diffs || []).filter(d => !d.confirmed).length}</td>
+        </tr>`).join("") || `<tr><td colspan="5" class="muted">无数据</td></tr>`}</tbody>`;
+      document.querySelectorAll("[data-app]").forEach(tr => tr.onclick = () => { selectedApp = tr.dataset.app; render(); });
+    }
+
+    function renderDetail() {
+      const app = appById(selectedApp);
+      const snap = app ? releaseSnap(app.id) : null;
+      if (!app || !snap) { $("detailTitle").textContent = "App 详情"; $("detail").innerHTML = "<p class='muted'>请选择 app。</p>"; return; }
+      const disabled = !canEdit(app) || snap.locked ? "disabled" : "";
+      $("detailTitle").textContent = app.name;
+      $("detail").innerHTML = `
+        <div class="row"><button class="primary" id="saveApp" ${disabled}>保存</button><button class="good" id="confirmOwner" ${disabled}>Owner确认</button><button id="qaPass" class="good">QA通过</button><button id="uploadInfo" ${disabled}>上传 app_info</button><input id="appInfoFile" type="file" accept=".json" ${disabled}></div>
+        <div class="form">
+          <label>官方名称<input id="officialName" value="${esc(app.official_name)}"></label>
+          <label>Owner<input id="owners" value="${esc((app.owners || []).join(","))}" ${currentUser().role === "RM" ? "" : "disabled"}></label>
+          <label>文档归属<select id="docTarget">${["manual","ai4sci","both","none"].map(v => `<option ${app.doc_target===v?"selected":""}>${v}</option>`).join("")}</select></label>
+          <label>类型<input id="type" value="${esc(app.type)}"></label>
+          <label>Gerrit URL<input id="gitUrl" value="${esc(app.git_url)}"></label>
+          <label>Branch<input id="gitBranch" value="${esc(app.git_branch)}"></label>
+          <label>Release决策<select id="decision">${["release","no_release","cicd_only","stopped"].map(v => `<option ${snap.release_decision===v?"selected":""}>${v}</option>`).join("")}</select></label>
+          <label>版本<input value="${esc(snap.version)}" disabled></label>
+          <label>X86芯片<input value="${esc(snap.x86_chips)}" disabled></label>
+        </div>
+        <label>描述<textarea id="description">${esc(app.description)}</textarea></label>
+        <h3>app_info diff</h3>
+        <div class="table"><table>${renderDiffs(snap)}</table></div>
+        <button id="confirmDiffs" ${disabled}>确认全部 diff</button>
+        <h3>文档字段</h3>
+        ${docArea("intro","基本介绍",snap.doc.intro)}${docArea("image_usage","镜像使用方法",snap.doc.image_usage)}${docArea("binary_usage","二进制包使用方法",snap.doc.binary_usage)}${docArea("env_setup","环境搭建",snap.doc.env_setup)}${docArea("test_method","测试方法",snap.doc.test_method)}${docArea("test_result","测试结果查看",snap.doc.test_result)}${docArea("limitations","已知限制",snap.doc.limitations)}
+        <h3>test_cmd 说明</h3>
+        <div id="testDocs">${renderTestDocs(snap)}</div>
+        <button id="addOwnerTest" ${disabled}>新增 owner-added 测试项</button>
+        <h3>阻断项</h3><ul>${(snap.blockers || []).map(b => `<li>${esc(b)}</li>`).join("") || "<li class='muted'>暂无</li>"}</ul>`;
+      bindDetail(app, snap);
+    }
+
+    function docArea(key, label, value) { return `<label>${label}<textarea data-doc="${key}">${esc(value || "")}</textarea></label>`; }
+    function renderDiffs(snap) { return table(["类型","字段","旧值","新值","确认"], (snap.app_info_diffs || []).map(d => [d.type, d.field, JSON.stringify(d.old_value), JSON.stringify(d.new_value), d.confirmed ? "已确认" : "未确认"])); }
+    function renderTestDocs(snap) {
+      return (snap.test_docs || []).map(d => `<div class="panel" style="margin-bottom:10px"><h3>${esc(d.path)} ${d.owner_added ? "<span class='pill'>owner-added</span>" : ""} ${d.stale ? "<span class='pill warnp'>stale</span>" : ""}</h3><div class="body">
+        <label>命令<textarea data-test="${d.id}" data-field="command" ${d.owner_added ? "" : "disabled"}>${esc(d.command || "")}</textarea></label>
+        <label>测试数据集<textarea data-test="${d.id}" data-field="dataset">${esc(d.dataset || "")}</textarea></label>
+        <label>测试内容<textarea data-test="${d.id}" data-field="content">${esc(d.content || "")}</textarea></label>
+        <label>结果查看<textarea data-test="${d.id}" data-field="result_view">${esc(d.result_view || "")}</textarea></label>
+        <label>通过标准<textarea data-test="${d.id}" data-field="pass_criteria">${esc(d.pass_criteria || "")}</textarea></label>
+        <label><input type="checkbox" data-test="${d.id}" data-field="stale" ${d.stale ? "" : "checked"}> 测试说明已更新</label>
+      </div></div>`).join("") || "<p class='muted'>上传 app_info 后生成测试项。</p>";
+    }
+
+    function table(headers, rows) { return `<thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${headers.length}" class="muted">无数据</td></tr>`}</tbody>`; }
+
+    function bindDetail(app, snap) {
+      $("saveApp").onclick = () => saveApp(app, false);
+      $("confirmOwner").onclick = () => saveApp(app, true);
+      $("qaPass").onclick = async () => { await post("/api/apps/qa-pass", { release_id: currentReleaseId(), app_id: app.id }); await loadState(); };
+      $("confirmDiffs").onclick = async () => { await saveApp(app, false, true); };
+      $("addOwnerTest").onclick = async () => {
+        snap.test_docs.push({ id: "new_" + Date.now(), path: "owner_added." + (snap.test_docs.length + 1), owner_added: true, command: "", dataset: "", content: "", result_view: "", pass_criteria: "" });
+        renderDetail();
+      };
+      $("uploadInfo").onclick = async () => {
+        const file = $("appInfoFile").files[0]; if (!file) return alert("请选择 app_info.json");
+        await post("/api/app-info", { release_id: currentReleaseId(), app_id: app.id, source: file.name, app_info: await file.text() });
+        await loadState();
+      };
+    }
+
+    async function saveApp(app, confirmOwner = false, confirmDiffs = false) {
+      const snap = releaseSnap(app.id);
+      const test_docs = [...document.querySelectorAll("[data-test][data-field]")].reduce((acc, el) => {
+        const id = el.dataset.test; let item = acc.find(x => x.id === id); if (!item) acc.push(item = { id });
+        if (id.startsWith("new_")) item.owner_added = true;
+        if (el.dataset.field === "stale") item.stale = !el.checked; else item[el.dataset.field] = el.value;
+        return acc;
+      }, []);
+      await post("/api/apps/update", {
+        release_id: currentReleaseId(),
+        app_id: app.id,
+        app: { official_name: $("officialName").value, type: $("type").value, description: $("description").value, git_url: $("gitUrl").value, git_branch: $("gitBranch").value, doc_target: $("docTarget").value, owners: $("owners").value.split(/[,，、;；/]+/).map(x => x.trim()).filter(Boolean) },
+        snapshot: { release_decision: $("decision").value, owner_confirmed: confirmOwner || snap.owner_confirmed, diff_confirm_all: confirmDiffs, doc: Object.fromEntries([...document.querySelectorAll("[data-doc]")].map(el => [el.dataset.doc, el.value])), test_docs }
+      });
+      await loadState();
+    }
+
+    async function readFile(id) { const f = $(id).files[0]; return f ? await f.text() : ""; }
+
+    async function showArtifact(kind) {
+      const res = await fetch(`/api/artifacts/${kind}?release_id=${encodeURIComponent(currentReleaseId())}`, { headers: headers() });
+      $("artifactText").value = res.ok ? await res.text() : "未生成 artifact";
+    }
+
+    function bind() {
+      document.querySelectorAll(".tab").forEach(b => b.onclick = () => { document.querySelectorAll(".tab,.view").forEach(x => x.classList.remove("active")); b.classList.add("active"); $(b.dataset.view).classList.add("active"); });
+      $("loginBtn").onclick = login;
+      $("refresh").onclick = () => loadState();
+      $("release").onchange = () => loadState($("release").value);
+      $("search").oninput = renderApps;
+      $("importBtn").onclick = async () => { $("initLog").textContent = "导入中..."; const r = await post("/api/import-initial", { release_csv: await readFile("releaseCsv"), owner_csv: await readFile("ownerCsv"), alias_text: $("aliasText").value, release_name: $("initReleaseName").value }); $("initLog").textContent = "导入完成：" + r.release_id; await loadState(r.release_id); };
+      $("createRelease").onclick = async () => { const r = await post("/api/releases/create", { name: $("newReleaseName").value, maca_version: $("newMacaVersion").value, deadline: $("newDeadline").value }); await loadState(r.release_id); };
+      $("admission").onclick = async () => { await post("/api/releases/admission", { release_id: currentReleaseId() }); await loadState(); };
+      $("openQa").onclick = async () => { await post("/api/releases/open-qa", { release_id: currentReleaseId() }); await loadState(); };
+      $("lockRelease").onclick = async () => { await post("/api/releases/lock", { release_id: currentReleaseId() }); await loadState(); };
+      $("preview").onclick = async () => { await post("/api/artifacts/generate", { release_id: currentReleaseId(), final: false }); await loadState(); };
+      document.querySelectorAll(".download").forEach(b => b.onclick = () => showArtifact(b.dataset.kind));
+      $("newApp").onclick = async () => {
+        const official_name = prompt("官方 app/模型名称"); if (!official_name) return;
+        const git_url = prompt("Gerrit URL"); if (!git_url) return;
+        const git_branch = prompt("Branch"); if (!git_branch) return;
+        const r = await post("/api/apps/new", { release_id: currentReleaseId(), official_name, git_url, git_branch, doc_target: "manual" });
+        selectedApp = r.app_id; await loadState();
+      };
+    }
+
+    async function login() {
+      await post("/api/login", { username: $("loginUser").value, password: $("loginPass").value });
+      await loadState();
+    }
+
+    function showLoggedIn(user) {
+      $("loginBox").style.display = "none";
+      $("meBox").textContent = `${user.role} / ${user.username}`;
+    }
+
+    function showLoggedOut() {
+      $("loginBox").style.display = "";
+      $("meBox").textContent = "未登录";
+    }
+
+    bind();
+    loadState().catch(() => showLoggedOut());
+  </script>
+</body>
+</html>
