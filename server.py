@@ -233,7 +233,7 @@ class Handler(BaseHTTPRequestHandler):
                     source_type="gerrit_fetch",
                     commit_id=commit_id,
                 )
-                self.send_json({"snapshot": snapshot})
+                self.send_json({"snapshot": snapshot, "commit_id": commit_id, "source": snapshot.get("app_info", {}).get("source", "")})
                 return
         except Exception as exc:
             self.send_json({"error": str(exc)}, status=400)

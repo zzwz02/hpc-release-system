@@ -318,8 +318,13 @@
       };
       if ($("fetchInfo")) $("fetchInfo").onclick = async () => {
         if (!confirm(`从 Gerrit 拉取 ${app.git_url} ${app.git_branch} 的 app_info.json？`)) return;
-        await post("/api/app-info/fetch", { release_id: currentReleaseId(), app_id: app.id });
-        await loadState();
+        try {
+          const result = await post("/api/app-info/fetch", { release_id: currentReleaseId(), app_id: app.id });
+          await loadState();
+          alert(`Gerrit app_info.json 拉取成功。\n\ncommit: ${result.commit_id || "未知"}\nsource: ${result.source || ""}`);
+        } catch (err) {
+          alert(`Gerrit app_info.json 拉取失败：\n\n${err.message}`);
+        }
       };
     }
 
