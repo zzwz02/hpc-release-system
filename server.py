@@ -188,8 +188,10 @@ class Handler(BaseHTTPRequestHandler):
                                 item.setdefault("path", f"owner_added.{len(by_id) + 1}")
                                 snapshot.setdefault("test_docs", []).append(item)
                 updated = core.update_snapshot(conn, body["release_id"], body["app_id"], mutate)
+                core.refresh_snapshot_gate_status(core.get_app(conn, body["app_id"]), updated)
+                core.save_snapshot(conn, body["release_id"], body["app_id"], updated)
                 conn.commit()
-                self.send_json({"snapshot": updated})
+                self.send_json({"snapshot": updated, "blockers": updated.get("blockers", []), "qa_status": updated.get("qa_status")})
                 return
             if parsed.path == "/api/apps/qa-pass":
                 self.require_rm()
@@ -228,6 +230,7 @@ class Handler(BaseHTTPRequestHandler):
             apps = [app for app in apps if user["username"] in app.get("owners", [])]
         payload = {"apps": apps, "releases": releases, "release": None, "artifacts": [], "user": user}
         if release_id:
+            core.refresh_release_status(conn, release_id)
             release = core.get_release(conn, release_id)
             if user["role"] == "Owner":
                 visible = {app["id"] for app in apps}

@@ -125,6 +125,24 @@ class CoreWorkflowTests(unittest.TestCase):
         self.assertIn("owner 未确认", blockers)
         self.assertTrue(any("测试数据集" in item for item in blockers))
 
+    def test_refresh_release_status_updates_live_blockers_without_admission(self) -> None:
+        release_id, app_id = self.import_initial()
+        release = core.get_release(self.conn, release_id)
+        self.assertEqual(release["state"], "owner_filling")
+        self.assertEqual(release["snapshots"][app_id]["blockers"], [])
+
+        live = core.refresh_release_status(self.conn, release_id)
+        self.assertTrue(any("AppInfoSnapshot" in item for item in live[app_id]))
+        release = core.get_release(self.conn, release_id)
+        self.assertEqual(release["state"], "owner_filling")
+        self.assertEqual(release["snapshots"][app_id]["qa_status"], "blocked")
+        self.assertTrue(any("AppInfoSnapshot" in item for item in release["snapshots"][app_id]["blockers"]))
+
+        core.update_snapshot(self.conn, release_id, app_id, lambda snapshot: snapshot.update({"owner_confirmed": True}))
+        live = core.refresh_release_status(self.conn, release_id)
+        self.assertTrue(any("AppInfoSnapshot" in item for item in live[app_id]))
+        self.assertFalse(any(item == "owner 未确认" for item in live[app_id]))
+
     def test_complete_snapshot_can_enter_qa_and_generate_rst(self) -> None:
         release_id, app_id = self.import_initial()
         core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")

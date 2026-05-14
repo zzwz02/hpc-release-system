@@ -943,6 +943,37 @@ def blockers_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
     return blockers
 
 
+def refresh_snapshot_gate_status(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
+    blockers = blockers_for(app, snapshot)
+    snapshot["blockers"] = blockers
+    if snapshot.get("release_decision") != "release":
+        snapshot["qa_status"] = "not_in_release"
+    elif blockers:
+        snapshot["qa_status"] = "blocked"
+    elif snapshot.get("rm_admitted") and snapshot.get("qa_status") in {"in_qa", "qa_passed", "passed"}:
+        snapshot["qa_status"] = snapshot.get("qa_status")
+    else:
+        snapshot["qa_status"] = "eligible"
+    return blockers
+
+
+def refresh_release_status(conn: sqlite3.Connection, release_id: str, *, persist: bool = True) -> dict[str, list[str]]:
+    release = get_release(conn, release_id)
+    apps = {app["id"]: app for app in list_apps(conn)}
+    results: dict[str, list[str]] = {}
+    for app_id, snapshot in release["snapshots"].items():
+        app = apps.get(app_id)
+        if not app:
+            continue
+        blockers = refresh_snapshot_gate_status(app, snapshot)
+        results[app_id] = blockers
+        if persist and release.get("state") != "release_locked":
+            save_snapshot(conn, release_id, app_id, snapshot)
+    if persist and release.get("state") != "release_locked":
+        conn.commit()
+    return results
+
+
 def run_admission_check(conn: sqlite3.Connection, release_id: str) -> dict[str, list[str]]:
     release = get_release(conn, release_id)
     if release.get("state") == "release_locked":
@@ -952,16 +983,7 @@ def run_admission_check(conn: sqlite3.Connection, release_id: str) -> dict[str, 
         snapshot = release["snapshots"].get(app["id"])
         if not snapshot:
             continue
-        blockers = blockers_for(app, snapshot)
-        snapshot["blockers"] = blockers
-        if snapshot.get("release_decision") != "release":
-            snapshot["qa_status"] = "not_in_release"
-        elif blockers:
-            snapshot["qa_status"] = "blocked"
-        elif snapshot.get("rm_admitted") and snapshot.get("qa_status") in {"in_qa", "qa_passed", "passed"}:
-            snapshot["qa_status"] = snapshot.get("qa_status")
-        else:
-            snapshot["qa_status"] = "eligible"
+        blockers = refresh_snapshot_gate_status(app, snapshot)
         save_snapshot(conn, release_id, app["id"], snapshot)
         results[app["id"]] = blockers
     conn.execute("UPDATE releases SET state = ? WHERE id = ?", ("qa_admission_check", release_id))
