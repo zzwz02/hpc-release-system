@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import io
 import mimetypes
 import os
 import secrets
 import shutil
+import subprocess
+import tarfile
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -204,7 +207,32 @@ class Handler(BaseHTTPRequestHandler):
                 conn = core.connect(DB_PATH)
                 app = core.get_app(conn, body["app_id"])
                 self.require_owner_or_rm(app)
-                snapshot = core.apply_app_info(conn, body["release_id"], body["app_id"], body["app_info"], source=body.get("source", "api"))
+                snapshot = core.apply_app_info(
+                    conn,
+                    body["release_id"],
+                    body["app_id"],
+                    body["app_info"],
+                    source=body.get("source", "owner upload"),
+                    source_type="owner_upload",
+                    uploaded_by=self.user(),
+                )
+                self.send_json({"snapshot": snapshot})
+                return
+            if parsed.path == "/api/app-info/fetch":
+                body = self.json_body()
+                conn = core.connect(DB_PATH)
+                app = core.get_app(conn, body["app_id"])
+                self.require_owner_or_rm(app)
+                raw, commit_id = fetch_app_info_from_gerrit(app["git_url"], app["git_branch"])
+                snapshot = core.apply_app_info(
+                    conn,
+                    body["release_id"],
+                    body["app_id"],
+                    raw,
+                    source=f"{app['git_url']} {app['git_branch']}:app_info.json",
+                    source_type="gerrit_fetch",
+                    commit_id=commit_id,
+                )
                 self.send_json({"snapshot": snapshot})
                 return
         except Exception as exc:
@@ -333,6 +361,31 @@ def backup_database() -> Path:
     backup = ROOT / f"release_system_admin_backup_{stamp}.sqlite"
     shutil.copy2(DB_PATH, backup)
     return backup
+
+
+def run_git(args: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=True)
+
+
+def fetch_app_info_from_gerrit(git_url: str, branch: str) -> tuple[str, str]:
+    if not git_url or not branch:
+        raise RuntimeError("Gerrit URL 和 branch 不能为空")
+    try:
+        ref = run_git(["git", "ls-remote", git_url, branch])
+        line = ref.stdout.decode("utf-8", errors="replace").splitlines()[0]
+        commit_id = line.split()[0]
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, IndexError) as exc:
+        raise RuntimeError(f"无法获取 Gerrit commit id: {exc}") from exc
+    try:
+        archive = run_git(["git", "archive", f"--remote={git_url}", commit_id, "app_info.json"], timeout=120)
+        with tarfile.open(fileobj=io.BytesIO(archive.stdout), mode="r:*") as tar:
+            member = tar.getmember("app_info.json")
+            extracted = tar.extractfile(member)
+            if not extracted:
+                raise RuntimeError("archive 中 app_info.json 为空")
+            return extracted.read().decode("utf-8"), commit_id
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, tarfile.TarError, KeyError, UnicodeDecodeError) as exc:
+        raise RuntimeError(f"无法从 Gerrit 拉取 app_info.json: {exc}") from exc
 
 
 def main() -> None:

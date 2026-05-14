@@ -244,7 +244,8 @@
       const actions = [
         `<button class="primary" id="saveApp" ${disabled}>保存</button>`,
         isRM() ? `<button id="qaPass" class="good" title="QA 测试通过后由 RM 标记，作为 Release Lock 的必要条件">QA 通过</button>` : "",
-        `<button id="uploadInfo" ${disabled}>上传 app_info</button><input id="appInfoFile" type="file" accept=".json" ${disabled}>`
+        `<button id="uploadInfo" ${disabled}>上传 app_info</button><input id="appInfoFile" type="file" accept=".json" ${disabled}>`,
+        `<button id="fetchInfo" ${disabled}>从 Gerrit 拉取 app_info</button>`
       ].filter(Boolean).join("");
       const diffActions = isOwner() ? `<button id="confirmDiffs" ${ownerOnlyDisabled}>确认全部 diff</button>` : "";
       const ownerTestActions = isOwner() ? `<button id="addOwnerTest" ${ownerOnlyDisabled}>新增 owner-added 测试项</button>` : "";
@@ -262,7 +263,9 @@
           <label>Release决策<select id="decision">${["release","no_release","cicd_only","stopped"].map(v => `<option ${snap.release_decision===v?"selected":""}>${v}</option>`).join("")}</select></label>
           <label>版本<input value="${esc(snap.version)}" disabled></label>
           <label>X86芯片<input value="${esc(snap.x86_chips)}" disabled></label>
+          <label>ARM芯片<input value="${esc(snap.arm_chips)}" disabled></label>
         </div>
+        <p class="muted small">app_info 来源：${appInfoSource(snap)}</p>
         <label>描述<textarea id="description">${esc(app.description)}</textarea></label>
         <h3>app_info diff</h3>
         <div class="table"><table>${renderDiffs(snap)}</table></div>
@@ -278,6 +281,13 @@
     }
 
     function docArea(key, label, value) { return `<label>${label}<textarea data-doc="${key}">${esc(value || "")}</textarea></label>`; }
+    function appInfoSource(snap) {
+      const info = snap.app_info || {};
+      if (!info.source_type) return "未提供";
+      if (info.source_type === "gerrit_fetch") return `Gerrit 拉取；commit=${info.commit_id || "未知"}；${info.source || ""}`;
+      if (info.source_type === "owner_upload") return `Owner 上传；上传人=${info.uploaded_by || "未知"}；文件=${info.source || ""}`;
+      return `${info.source_type}: ${info.source || ""}`;
+    }
     function renderDiffs(snap) { return table(["类型","字段","旧值","新值","确认"], (snap.app_info_diffs || []).map(d => [d.type, d.field, JSON.stringify(d.old_value), JSON.stringify(d.new_value), d.confirmed ? "已确认" : "未确认"])); }
     function renderTestDocs(snap) {
       return (snap.test_docs || []).map(d => `<div class="panel" style="margin-bottom:10px"><h3>${esc(d.path)} ${d.owner_added ? "<span class='pill'>owner-added</span>" : ""} ${d.stale ? "<span class='pill warnp'>stale</span>" : ""}</h3><div class="body">
@@ -304,6 +314,11 @@
       if ($("uploadInfo")) $("uploadInfo").onclick = async () => {
         const file = $("appInfoFile").files[0]; if (!file) return alert("请选择 app_info.json");
         await post("/api/app-info", { release_id: currentReleaseId(), app_id: app.id, source: file.name, app_info: await file.text() });
+        await loadState();
+      };
+      if ($("fetchInfo")) $("fetchInfo").onclick = async () => {
+        if (!confirm(`从 Gerrit 拉取 ${app.git_url} ${app.git_branch} 的 app_info.json？`)) return;
+        await post("/api/app-info/fetch", { release_id: currentReleaseId(), app_id: app.id });
         await loadState();
       };
     }

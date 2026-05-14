@@ -15,6 +15,7 @@
 - 后续 release 从上一版本克隆 app、owner、文档字段、测试说明、CICD 配置和 app-info 来源信息。
 - 新增 app 申请只需要官方 app/模型名称、Gerrit URL、branch；提交者自动成为初始 owner。
 - 上传新的 `app_info.json`，自动解析版本、X86/ARM 支持芯片、build/test target 和所有 `test_cmd`。
+- `app_info.json` 可由 owner 上传，也可从 app 的 Gerrit URL/branch 拉取；Gerrit 拉取会记录 branch commit id，上传会标注上传人和文件名。
 - 与上一版本 `app_info.json` 做 diff，并要求 owner 确认差异。
 - 为每个 `app_info.json` `test_cmd` 维护测试数据集、测试内容、结果查看方式和通过标准。
 - Owner 可新增 `app_info.json` 中没有的 owner-added 测试项，且同样必须补齐命令和测试说明。

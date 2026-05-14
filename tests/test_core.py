@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
+import tarfile
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 
 import server
@@ -329,6 +332,34 @@ class CoreWorkflowTests(unittest.TestCase):
         self.assertIn("c500", parsed["arm_chips"])
         self.assertNotIn("c500", parsed["x86_chips"])
 
+    def test_app_info_source_metadata_and_arm_snapshot_update(self) -> None:
+        release_id, app_id = self.import_initial()
+        snapshot = core.apply_app_info(
+            self.conn,
+            release_id,
+            app_id,
+            APP_INFO_ARM,
+            source="app_info.json",
+            source_type="owner_upload",
+            uploaded_by="owner_test",
+        )
+        self.assertEqual(snapshot["arm_chips"], "c500")
+        self.assertEqual(snapshot["x86_chips"], "c500,x301")
+        self.assertEqual(snapshot["app_info"]["source_type"], "owner_upload")
+        self.assertEqual(snapshot["app_info"]["uploaded_by"], "owner_test")
+
+        snapshot = core.apply_app_info(
+            self.conn,
+            release_id,
+            app_id,
+            APP_INFO_V1,
+            source="ssh://gerrit/repo maca:app_info.json",
+            source_type="gerrit_fetch",
+            commit_id="abc123",
+        )
+        self.assertEqual(snapshot["app_info"]["source_type"], "gerrit_fetch")
+        self.assertEqual(snapshot["app_info"]["commit_id"], "abc123")
+
     def test_new_app_request_three_fields(self) -> None:
         release_id, _ = self.import_initial()
         app_id = core.add_new_app_request(
@@ -388,6 +419,31 @@ class CoreWorkflowTests(unittest.TestCase):
         self.assertEqual(core.session_user(self.conn, token)["username"], "rm")
         core.logout_session(self.conn, token)
         self.assertIsNone(core.session_user(self.conn, token))
+
+    def test_fetch_app_info_from_gerrit_records_commit_payload(self) -> None:
+        payload = json.dumps(APP_INFO_V1).encode("utf-8")
+        archive = BytesIO()
+        with tarfile.open(fileobj=archive, mode="w") as tar:
+            info = tarfile.TarInfo("app_info.json")
+            info.size = len(payload)
+            tar.addfile(info, BytesIO(payload))
+
+        def fake_run_git(args: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess[bytes]:
+            if args[:2] == ["git", "ls-remote"]:
+                return subprocess.CompletedProcess(args, 0, stdout=b"abc123\trefs/heads/maca\n", stderr=b"")
+            if args[:2] == ["git", "archive"]:
+                self.assertIn("abc123", args)
+                return subprocess.CompletedProcess(args, 0, stdout=archive.getvalue(), stderr=b"")
+            raise AssertionError(args)
+
+        old = server.run_git
+        server.run_git = fake_run_git
+        try:
+            raw, commit_id = server.fetch_app_info_from_gerrit("ssh://gerrit/repo", "maca")
+        finally:
+            server.run_git = old
+        self.assertEqual(commit_id, "abc123")
+        self.assertEqual(json.loads(raw)["app_version"], "22")
 
 
 if __name__ == "__main__":

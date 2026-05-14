@@ -859,7 +859,17 @@ def mark_qa_passed(conn: sqlite3.Connection, release_id: str, app_id: str) -> di
     return snapshot
 
 
-def apply_app_info(conn: sqlite3.Connection, release_id: str, app_id: str, raw: str | dict[str, Any], *, source: str = "upload") -> dict[str, Any]:
+def apply_app_info(
+    conn: sqlite3.Connection,
+    release_id: str,
+    app_id: str,
+    raw: str | dict[str, Any],
+    *,
+    source: str = "upload",
+    source_type: str = "owner_upload",
+    commit_id: str = "",
+    uploaded_by: str = "",
+) -> dict[str, Any]:
     release = get_release(conn, release_id)
     if release.get("state") == "qa_open":
         raise RuntimeError("QA is open; app_info changes require RM-approved reduction workflow")
@@ -873,7 +883,15 @@ def apply_app_info(conn: sqlite3.Connection, release_id: str, app_id: str, raw: 
     if old_parsed is None:
         old_parsed = (snapshot.get("app_info") or {}).get("parsed")
     diffs = diff_app_info(old_parsed, parsed) if old_parsed is not None else []
-    snapshot["app_info"] = {"source": source, "synced_at": now(), "raw": parsed["raw"], "parsed": parsed}
+    snapshot["app_info"] = {
+        "source": source,
+        "source_type": source_type,
+        "synced_at": now(),
+        "commit_id": commit_id,
+        "uploaded_by": uploaded_by,
+        "raw": parsed["raw"],
+        "parsed": parsed,
+    }
     snapshot["app_info_diffs"] = diffs
     snapshot["version"] = parsed.get("app_version") or snapshot.get("version", "")
     snapshot["x86_chips"] = join_list(parsed.get("x86_chips", [])) or snapshot.get("x86_chips", "")
