@@ -109,6 +109,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(core.gerrit_push_plan(core.connect(DB_PATH), body["release_id"]))
                 return
             if parsed.path == "/api/apps/new":
+                if self.role() != "Owner":
+                    raise PermissionError("Only Owner can submit new app requests")
                 body = self.json_body()
                 app_id = core.add_new_app_request(
                     core.connect(DB_PATH),
@@ -141,14 +143,19 @@ class Handler(BaseHTTPRequestHandler):
                     core.save_app(conn, app)
                 def mutate(snapshot: dict) -> None:
                     snap_update = body.get("snapshot", {})
-                    for key in ["release_decision", "owner_confirmed"]:
-                        if key in snap_update:
-                            snapshot[key] = snap_update[key]
+                    if "release_decision" in snap_update:
+                        snapshot["release_decision"] = snap_update["release_decision"]
+                    if "owner_confirmed" in snap_update:
+                        if self.role() != "Owner":
+                            raise PermissionError("Owner confirmation must be submitted by an Owner")
+                        snapshot["owner_confirmed"] = snap_update["owner_confirmed"]
                     if "doc" in snap_update:
                         snapshot.setdefault("doc", {}).update(snap_update["doc"])
                     if "cicd" in snap_update:
                         snapshot.setdefault("cicd", {}).update(snap_update["cicd"])
                     if "diff_confirm_all" in snap_update and snap_update["diff_confirm_all"]:
+                        if self.role() != "Owner":
+                            raise PermissionError("app_info diff confirmation must be submitted by an Owner")
                         for diff in snapshot.get("app_info_diffs", []):
                             diff["confirmed"] = True
                     if "test_docs" in snap_update:

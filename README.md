@@ -5,6 +5,9 @@
 ## 当前能力
 
 - 本地账号/session 登录。默认 RM 账号：`rm` / `rm`。
+- RM 可见“初始化/周期”“RST”和全部 app；Owner 只可见“总览”和自己名下的“App 工作台”。
+- “提交 Owner 确认”由 app owner 点击，表示该 app 本轮 release 信息、app_info diff 和 test_cmd 说明已补齐，可提交 RM 做 QA 准入。
+- “QA 通过”由 RM 在 QA 测试完成后点击，用于把 app 标记为 `qa_passed`，这是 Release Lock 的必要条件。
 - 首次初始化导入 release CSV 和 owner CSV。
 - release CSV 中同名但版本/branch 不同的条目会作为独立 app variant 导入；同一版本/branch 的 x86 和 ARM 行会合并到同一个 snapshot。
 - 首次维护 alias mapping 和 app-owner 映射。

@@ -21,6 +21,7 @@
     .tab.active { border-color: #2563eb; color: #2563eb; }
     .view { display: none; }
     .view.active { display: block; }
+    [hidden] { display: none !important; }
     .grid { display: grid; grid-template-columns: 390px minmax(0, 1fr); gap: 14px; align-items: start; }
     .panel { background: white; border: 1px solid #d8dde6; border-radius: 8px; box-shadow: 0 1px 2px rgba(18,24,40,.08); overflow: hidden; }
     .panel h2, .panel h3 { margin: 0; padding: 11px 13px; border-bottom: 1px solid #d8dde6; background: #fbfcfe; font-size: 15px; }
@@ -55,10 +56,10 @@
   </header>
   <main>
     <div class="tabs">
-      <button class="tab active" data-view="dashboard">总览</button>
-      <button class="tab" data-view="init">初始化/周期</button>
-      <button class="tab" data-view="apps">App 工作台</button>
-      <button class="tab" data-view="artifacts">RST</button>
+      <button class="tab active" data-view="dashboard" data-roles="RM,Owner">总览</button>
+      <button class="tab" data-view="init" data-roles="RM">初始化/周期</button>
+      <button class="tab" data-view="apps" data-roles="RM,Owner">App 工作台</button>
+      <button class="tab" data-view="artifacts" data-roles="RM">RST</button>
     </div>
 
     <section id="dashboard" class="view active">
@@ -66,7 +67,7 @@
       <div class="panel" style="margin-top:14px"><h2>阻断项</h2><div class="body"><div class="table"><table id="blockers"></table></div></div></div>
     </section>
 
-    <section id="init" class="view">
+    <section id="init" class="view" data-roles="RM">
       <div class="grid">
         <div class="panel"><h2>首次初始化</h2><div class="body">
           <p class="muted small">CSV、alias mapping、app-owner 映射只需首次维护；后续 release 从上一版本克隆。</p>
@@ -97,14 +98,14 @@
     <section id="apps" class="view">
       <div class="grid">
         <div class="panel"><h2>App 列表</h2><div class="body">
-          <div class="row"><input id="search" placeholder="搜索 app/owner/type" style="flex:1"><button id="newApp">新增 app</button></div>
+          <div class="row"><input id="search" placeholder="搜索 app/owner/type" style="flex:1"><button id="newApp" data-roles="Owner">新增 app</button></div>
           <div class="table"><table id="appTable"></table></div>
         </div></div>
         <div class="panel"><h2 id="detailTitle">App 详情</h2><div class="body" id="detail"></div></div>
       </div>
     </section>
 
-    <section id="artifacts" class="view">
+    <section id="artifacts" class="view" data-roles="RM">
       <div class="panel"><h2>RST / release-data</h2><div class="body">
         <div class="row">
           <button class="primary" id="preview">生成预览</button>
@@ -151,15 +152,35 @@
     function releaseSnap(appId) { return state.release?.snapshots?.[appId] || null; }
     function appById(id) { return state.apps.find(a => a.id === id); }
     function currentUser() { return state.user || {}; }
+    function isRM() { return currentUser().role === "RM"; }
+    function isOwner() { return currentUser().role === "Owner"; }
     function canEdit(app) { return currentUser().role === "RM" || (currentUser().role === "Owner" && (app.owners || []).includes(currentUser().username)); }
     function pill(status) { const cls = status === "eligible" || status === "in_qa" ? "ok" : status === "blocked" ? "bad" : "warnp"; return `<span class="pill ${cls}">${esc(status || "not_checked")}</span>`; }
 
     function render() {
+      renderRoleChrome();
       renderReleaseSelect();
       renderSummary();
       renderReleases();
       renderApps();
       renderDetail();
+    }
+
+    function renderRoleChrome() {
+      const role = currentUser().role || "";
+      document.querySelectorAll("[data-roles]").forEach(el => {
+        const allowed = el.dataset.roles.split(",").map(x => x.trim()).includes(role);
+        el.hidden = !allowed;
+      });
+      const activeTab = document.querySelector(".tab.active");
+      if (!activeTab || activeTab.hidden) {
+        const next = document.querySelector(".tab:not([hidden])");
+        document.querySelectorAll(".tab,.view").forEach(x => x.classList.remove("active"));
+        if (next) {
+          next.classList.add("active");
+          $(next.dataset.view).classList.add("active");
+        }
+      }
     }
 
     function renderReleaseSelect() {
@@ -206,9 +227,18 @@
       const snap = app ? releaseSnap(app.id) : null;
       if (!app || !snap) { $("detailTitle").textContent = "App 详情"; $("detail").innerHTML = "<p class='muted'>请选择 app。</p>"; return; }
       const disabled = !canEdit(app) || snap.locked ? "disabled" : "";
+      const ownerOnlyDisabled = !isOwner() || !canEdit(app) || snap.locked ? "disabled" : "";
+      const actions = [
+        `<button class="primary" id="saveApp" ${disabled}>保存</button>`,
+        isOwner() ? `<button class="good" id="confirmOwner" ${ownerOnlyDisabled} title="确认本 app 的 release 信息已补齐，可提交 RM 做 QA 准入">提交 Owner 确认</button>` : "",
+        isRM() ? `<button id="qaPass" class="good" title="QA 测试通过后由 RM 标记，作为 Release Lock 的必要条件">QA 通过</button>` : "",
+        `<button id="uploadInfo" ${disabled}>上传 app_info</button><input id="appInfoFile" type="file" accept=".json" ${disabled}>`
+      ].filter(Boolean).join("");
+      const diffActions = isOwner() ? `<button id="confirmDiffs" ${ownerOnlyDisabled}>确认全部 diff</button>` : "";
+      const ownerTestActions = isOwner() ? `<button id="addOwnerTest" ${ownerOnlyDisabled}>新增 owner-added 测试项</button>` : "";
       $("detailTitle").textContent = app.name;
       $("detail").innerHTML = `
-        <div class="row"><button class="primary" id="saveApp" ${disabled}>保存</button><button class="good" id="confirmOwner" ${disabled}>Owner确认</button><button id="qaPass" class="good">QA通过</button><button id="uploadInfo" ${disabled}>上传 app_info</button><input id="appInfoFile" type="file" accept=".json" ${disabled}></div>
+        <div class="row">${actions}</div>
         <div class="form">
           <label>官方名称<input id="officialName" value="${esc(app.official_name)}"></label>
           <label>Owner<input id="owners" value="${esc((app.owners || []).join(","))}" ${currentUser().role === "RM" ? "" : "disabled"}></label>
@@ -223,12 +253,12 @@
         <label>描述<textarea id="description">${esc(app.description)}</textarea></label>
         <h3>app_info diff</h3>
         <div class="table"><table>${renderDiffs(snap)}</table></div>
-        <button id="confirmDiffs" ${disabled}>确认全部 diff</button>
+        ${diffActions}
         <h3>文档字段</h3>
         ${docArea("intro","基本介绍",snap.doc.intro)}${docArea("image_usage","镜像使用方法",snap.doc.image_usage)}${docArea("binary_usage","二进制包使用方法",snap.doc.binary_usage)}${docArea("env_setup","环境搭建",snap.doc.env_setup)}${docArea("test_method","测试方法",snap.doc.test_method)}${docArea("test_result","测试结果查看",snap.doc.test_result)}${docArea("limitations","已知限制",snap.doc.limitations)}
         <h3>test_cmd 说明</h3>
         <div id="testDocs">${renderTestDocs(snap)}</div>
-        <button id="addOwnerTest" ${disabled}>新增 owner-added 测试项</button>
+        ${ownerTestActions}
         <h3>阻断项</h3><ul>${(snap.blockers || []).map(b => `<li>${esc(b)}</li>`).join("") || "<li class='muted'>暂无</li>"}</ul>`;
       bindDetail(app, snap);
     }
@@ -249,15 +279,15 @@
     function table(headers, rows) { return `<thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${headers.length}" class="muted">无数据</td></tr>`}</tbody>`; }
 
     function bindDetail(app, snap) {
-      $("saveApp").onclick = () => saveApp(app, false);
-      $("confirmOwner").onclick = () => saveApp(app, true);
-      $("qaPass").onclick = async () => { await post("/api/apps/qa-pass", { release_id: currentReleaseId(), app_id: app.id }); await loadState(); };
-      $("confirmDiffs").onclick = async () => { await saveApp(app, false, true); };
-      $("addOwnerTest").onclick = async () => {
+      if ($("saveApp")) $("saveApp").onclick = () => saveApp(app, false);
+      if ($("confirmOwner")) $("confirmOwner").onclick = () => saveApp(app, true);
+      if ($("qaPass")) $("qaPass").onclick = async () => { await post("/api/apps/qa-pass", { release_id: currentReleaseId(), app_id: app.id }); await loadState(); };
+      if ($("confirmDiffs")) $("confirmDiffs").onclick = async () => { await saveApp(app, false, true); };
+      if ($("addOwnerTest")) $("addOwnerTest").onclick = async () => {
         snap.test_docs.push({ id: "new_" + Date.now(), path: "owner_added." + (snap.test_docs.length + 1), owner_added: true, command: "", dataset: "", content: "", result_view: "", pass_criteria: "" });
         renderDetail();
       };
-      $("uploadInfo").onclick = async () => {
+      if ($("uploadInfo")) $("uploadInfo").onclick = async () => {
         const file = $("appInfoFile").files[0]; if (!file) return alert("请选择 app_info.json");
         await post("/api/app-info", { release_id: currentReleaseId(), app_id: app.id, source: file.name, app_info: await file.text() });
         await loadState();
@@ -272,11 +302,18 @@
         if (el.dataset.field === "stale") item.stale = !el.checked; else item[el.dataset.field] = el.value;
         return acc;
       }, []);
+      const snapshotUpdate = {
+        release_decision: $("decision").value,
+        doc: Object.fromEntries([...document.querySelectorAll("[data-doc]")].map(el => [el.dataset.doc, el.value])),
+        test_docs
+      };
+      if (confirmOwner) snapshotUpdate.owner_confirmed = true;
+      if (confirmDiffs) snapshotUpdate.diff_confirm_all = true;
       await post("/api/apps/update", {
         release_id: currentReleaseId(),
         app_id: app.id,
         app: { official_name: $("officialName").value, type: $("type").value, description: $("description").value, git_url: $("gitUrl").value, git_branch: $("gitBranch").value, doc_target: $("docTarget").value, owners: $("owners").value.split(/[,，、;；/]+/).map(x => x.trim()).filter(Boolean) },
-        snapshot: { release_decision: $("decision").value, owner_confirmed: confirmOwner || snap.owner_confirmed, diff_confirm_all: confirmDiffs, doc: Object.fromEntries([...document.querySelectorAll("[data-doc]")].map(el => [el.dataset.doc, el.value])), test_docs }
+        snapshot: snapshotUpdate
       });
       await loadState();
     }
@@ -289,7 +326,12 @@
     }
 
     function bind() {
-      document.querySelectorAll(".tab").forEach(b => b.onclick = () => { document.querySelectorAll(".tab,.view").forEach(x => x.classList.remove("active")); b.classList.add("active"); $(b.dataset.view).classList.add("active"); });
+      document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
+        if (b.hidden) return;
+        document.querySelectorAll(".tab,.view").forEach(x => x.classList.remove("active"));
+        b.classList.add("active");
+        $(b.dataset.view).classList.add("active");
+      });
       $("loginBtn").onclick = login;
       $("refresh").onclick = () => loadState();
       $("release").onchange = () => loadState($("release").value);
