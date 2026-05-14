@@ -139,10 +139,18 @@ def verify_password(password: str, encoded: str) -> bool:
     return secrets.compare_digest(hash_password(password, salt).split("$", 1)[1], expected)
 
 
+DEFAULT_USERS: tuple[tuple[str, str, str], ...] = (
+    ("rm", "rm", "RM"),
+    ("owner_test", "owner_test", "Owner"),
+)
+
+
 def ensure_default_user(conn: sqlite3.Connection) -> None:
-    if conn.execute("SELECT 1 FROM users WHERE username = ?", ("rm",)).fetchone():
-        return
-    conn.execute("INSERT INTO users(username, password_hash, role) VALUES (?, ?, ?)", ("rm", hash_password("rm"), "RM"))
+    for username, password, role in DEFAULT_USERS:
+        conn.execute(
+            "INSERT INTO users(username, password_hash, role) VALUES (?, ?, ?) ON CONFLICT(username) DO NOTHING",
+            (username, hash_password(password), role),
+        )
 
 
 def create_user(conn: sqlite3.Connection, username: str, password: str, role: str = "Owner") -> None:
@@ -151,6 +159,18 @@ def create_user(conn: sqlite3.Connection, username: str, password: str, role: st
         (username, hash_password(password), role),
     )
     conn.commit()
+
+
+def clear_business_data(conn: sqlite3.Connection, *, user: str = "admin", role: str = "Admin") -> None:
+    """Clear release data while preserving user accounts."""
+    conn.execute("DELETE FROM artifacts")
+    conn.execute("DELETE FROM snapshots")
+    conn.execute("DELETE FROM releases")
+    conn.execute("DELETE FROM apps")
+    conn.execute("DELETE FROM audit")
+    ensure_default_user(conn)
+    conn.commit()
+    audit(conn, "数据库已清空，默认账号已保留", user=user, role=role)
 
 
 def authenticate(conn: sqlite3.Connection, username: str, password: str) -> str | None:

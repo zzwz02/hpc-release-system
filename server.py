@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
+import secrets
+import shutil
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -11,6 +15,7 @@ from release_system import core
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = ROOT / "release_system.db"
+ADMIN_PASSWORD_FILE = ROOT / "admin_password.local"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -56,6 +61,17 @@ class Handler(BaseHTTPRequestHandler):
                 if not token:
                     raise PermissionError("Invalid username or password")
                 self.send_json({"ok": True}, cookies=[f"hpc_session={token}; HttpOnly; SameSite=Strict; Path=/"])
+                return
+            if parsed.path == "/api/admin/clear-db":
+                self.require_admin()
+                body = self.json_body()
+                if body.get("confirm") not in {"清空数据库", "CLEAR_DATABASE"}:
+                    raise RuntimeError("确认文本必须是：清空数据库 或 CLEAR_DATABASE")
+                username = self.user()
+                role = self.role()
+                backup = backup_database()
+                core.clear_business_data(core.connect(DB_PATH), user=username, role=role)
+                self.send_json({"ok": True, "backup": backup.name})
                 return
             if parsed.path == "/api/import-initial":
                 self.require_rm()
@@ -267,12 +283,49 @@ class Handler(BaseHTTPRequestHandler):
         if self.role() != "RM":
             raise PermissionError("RM role required")
 
+    def require_admin(self) -> None:
+        if self.role() != "Admin":
+            raise PermissionError("Admin role required")
+
     def require_owner_or_rm(self, app: dict) -> None:
         if self.role() == "RM":
             return
         if self.role() == "Owner" and self.user() in app.get("owners", []):
             return
         raise PermissionError("Owner permission required")
+
+
+def read_admin_password_file() -> str:
+    if not ADMIN_PASSWORD_FILE.exists():
+        return ""
+    for line in ADMIN_PASSWORD_FILE.read_text(encoding="utf-8").splitlines():
+        if line.startswith("password="):
+            return line.split("=", 1)[1].strip()
+    return ADMIN_PASSWORD_FILE.read_text(encoding="utf-8").strip()
+
+
+def ensure_admin_user(conn) -> str:
+    if conn.execute("SELECT 1 FROM users WHERE username = ?", ("admin",)).fetchone():
+        return ""
+    password = os.environ.get("HPC_ADMIN_PASSWORD", "").strip()
+    source = "HPC_ADMIN_PASSWORD"
+    if not password:
+        password = read_admin_password_file()
+        source = str(ADMIN_PASSWORD_FILE)
+    if not password:
+        password = secrets.token_urlsafe(24)
+        ADMIN_PASSWORD_FILE.write_text(f"username=admin\npassword={password}\n", encoding="utf-8")
+        source = str(ADMIN_PASSWORD_FILE)
+    core.create_user(conn, "admin", password, "Admin")
+    return source
+
+
+def backup_database() -> Path:
+    core.connect(DB_PATH).close()
+    stamp = time.strftime("%Y%m%d%H%M%S")
+    backup = ROOT / f"release_system_admin_backup_{stamp}.sqlite"
+    shutil.copy2(DB_PATH, backup)
+    return backup
 
 
 def main() -> None:
@@ -282,7 +335,11 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
-    core.connect(DB_PATH).close()
+    conn = core.connect(DB_PATH)
+    admin_source = ensure_admin_user(conn)
+    conn.close()
+    if admin_source:
+        print(f"Admin user created. Password source: {admin_source}")
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Serving http://{args.host}:{args.port}")
     server.serve_forever()

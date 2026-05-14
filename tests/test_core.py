@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
+import server
 from release_system import core
 
 
@@ -341,6 +343,26 @@ class CoreWorkflowTests(unittest.TestCase):
         self.assertEqual(snap_v1["x86_chips"], "c500")
         self.assertEqual(snap_v1["arm_chips"], "c600")
         self.assertEqual(apps["foo_2"]["git_branch"], "release-2")
+
+    def test_default_debug_users_admin_bootstrap_and_clear_business_data(self) -> None:
+        self.assertIsNotNone(core.authenticate(self.conn, "rm", "rm"))
+        self.assertIsNotNone(core.authenticate(self.conn, "owner_test", "owner_test"))
+        os.environ["HPC_ADMIN_PASSWORD"] = "admin-test-password"
+        try:
+            source = server.ensure_admin_user(self.conn)
+        finally:
+            os.environ.pop("HPC_ADMIN_PASSWORD", None)
+        self.assertEqual(source, "HPC_ADMIN_PASSWORD")
+        self.assertIsNotNone(core.authenticate(self.conn, "admin", "admin-test-password"))
+
+        release_id, _ = self.import_initial()
+        self.assertEqual(len(core.list_releases(self.conn)), 1)
+        self.assertEqual(len(core.list_apps(self.conn)), 1)
+        core.clear_business_data(self.conn, user="admin", role="Admin")
+        self.assertEqual(core.list_releases(self.conn), [])
+        self.assertEqual(core.list_apps(self.conn), [])
+        self.assertIsNotNone(core.authenticate(self.conn, "owner_test", "owner_test"))
+        self.assertIsNotNone(core.authenticate(self.conn, "admin", "admin-test-password"))
 
 
 if __name__ == "__main__":

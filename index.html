@@ -60,6 +60,7 @@
       <button class="tab" data-view="init" data-roles="RM">初始化/周期</button>
       <button class="tab" data-view="apps" data-roles="RM,Owner">App 工作台</button>
       <button class="tab" data-view="artifacts" data-roles="RM">RST</button>
+      <button class="tab" data-view="admin" data-roles="Admin">管理</button>
     </div>
 
     <section id="dashboard" class="view active">
@@ -115,6 +116,17 @@
           <button data-kind="data" class="download">查看 release-data</button>
         </div>
         <textarea id="artifactText" class="artifact" readonly></textarea>
+      </div></div>
+    </section>
+
+    <section id="admin" class="view" data-roles="Admin">
+      <div class="panel"><h2>系统管理</h2><div class="body">
+        <p class="muted small">清空数据库会先备份当前 SQLite 文件，然后删除 app、release、snapshot、artifact 和审计数据；默认账号会保留。</p>
+        <div class="row">
+          <input id="clearConfirm" placeholder="输入：CLEAR_DATABASE" style="min-width:220px">
+          <button class="danger" id="clearDb">备份并清空数据库</button>
+        </div>
+        <div class="log" id="adminLog"></div>
       </div></div>
     </section>
   </main>
@@ -343,6 +355,12 @@
       $("lockRelease").onclick = async () => { await post("/api/releases/lock", { release_id: currentReleaseId() }); await loadState(); };
       $("preview").onclick = async () => { await post("/api/artifacts/generate", { release_id: currentReleaseId(), final: false }); await loadState(); };
       document.querySelectorAll(".download").forEach(b => b.onclick = () => showArtifact(b.dataset.kind));
+      $("clearDb").onclick = async () => {
+        if (!confirm("确认要备份并清空数据库？")) return;
+        const r = await post("/api/admin/clear-db", { confirm: $("clearConfirm").value });
+        $("adminLog").textContent = "已清空，备份文件：" + r.backup;
+        await loadState();
+      };
       $("newApp").onclick = async () => {
         const official_name = prompt("官方 app/模型名称"); if (!official_name) return;
         const git_url = prompt("Gerrit URL"); if (!git_url) return;
