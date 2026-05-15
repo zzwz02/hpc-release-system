@@ -4,7 +4,7 @@
 
 ## 1. 目标
 
-构建一个内部发布信息协作系统。系统数据库是 release lock 前的工作主数据源，负责维护 app 发布信息、owner 填写内容、`app_info.json` 快照、QA 准入状态和生成 RST 文档所需信息。
+构建一个内部发布信息协作系统。系统数据库是 release lock 前的工作主数据源，负责维护 app 发布信息、owner 填写内容、`app_info.json` 快照、QA 状态、发布门禁和生成 RST 文档所需信息。
 
 数据源关系：
 
@@ -17,8 +17,8 @@
 - Release note、HPC Manual、AI4Sci User Guide 信息缺失且更新不及时。
 - 每个 app owner 必须在每次 release 前补全和确认信息。
 - 新增 app 必须提供 Gerrit URL 和 branch，系统据此获取 `app_info.json`。
-- 停止发布的 app 必须通过系统及时通知 RM、QA 和 Infra。
-- 只有信息补全且 owner 已确认的 app 才能进入 QA。
+- 停止发布的 app 必须通过系统状态、导出表和 Manager Review CSV 及时让 RM、QA 和相关 infra 成员可见。
+- Release 决策为 `release` 的 app 进入 QA 测试范围；最终发布输出要求 QA OK 和文档/发布门禁 OK。
 - 发布锁定后，本次 release 的所有快照不可变。
 
 ## 2. 输入数据
@@ -33,7 +33,7 @@ CSV 使用规则：
 
 - Release CSV 和 owner CSV 只需要在系统第一次初始化时由 RM 导入。
 - Alias mapping 和 app-owner 映射也只需要在系统第一次初始化时维护。
-- 后续每次发布时，系统默认从上一个 release 版本克隆 app、alias mapping、app-owner 映射、文档字段、测试说明、CICD 配置和 app-info 来源信息。
+- 后续每次发布时，系统默认从上一个 release 版本克隆 app、alias mapping、app-owner 映射、文档字段、测试说明和 app-info 来源信息。
 - 新 release 只需要 owner 做增量确认、修改、新增 app 申请、停止发布申请和必要的 app-info 更新。
 - RM 仍可在特殊情况下手动重新导入 CSV，但这应作为管理员修复动作，而不是每次 release 的标准流程。
 
@@ -64,7 +64,7 @@ Owner：
 - 初版使用本地账号登录。
 - 只看到自己名下的 app。
 - 一个 app 支持多个 owner 共有，共同 owner 都可以编辑。
-- 发布锁定前可以编辑 app 发布信息、文档字段、发布决策和 CICD 元数据。
+- 发布锁定前、doc deadline 前可以编辑 app 文档字段、测试说明、发布决策、`App类型` 和 `描述（30字内）`。
 - 可以提交新增 app、停止发布和 QA 期间修改申请。
 
 Release Manager：
@@ -72,16 +72,17 @@ Release Manager：
 - 首次初始化时导入 release CSV 和 owner CSV；后续 release 默认沿用上一版本信息。
 - 首次初始化时维护 alias mapping 和 app-owner 映射；后续 release 默认沿用上一版本映射。
 - 创建 release 周期和 deadline。
-- 审查信息完整性并准入 QA。
+- 查看实时发布待办/门禁，导出 release 决策为 `release` 的 app 测试范围 CSV，交给 QA 获取测试范围。
 - 审批新增 app、停止发布和 QA 期间关键字段删减。
 - 锁定 release 快照。
-- 生成最终 RST 并推送 Gerrit change。
+- 生成 RST 预览、Manager Review CSV、最终 RST，并准备 Gerrit review 流程。
 
-Infra：
+QA：
 
-- 查看 CICD 相关 app 元数据。
-- 查看不 release 但仍进入 CICD 的 app。
-- 不控制 release 准入。
+- 在 QA 页面查看 release 决策为 `release` 的 app。
+- 上传当前 release 的 QA log。
+- 标注 `qa_passed`、`has_issues` 或 `cannot_release`；`has_issues` 需要填写问题说明，并会合并到已知限制。
+- 不负责修改 owner 文档字段。
 
 ## 4. 核心数据模型
 
@@ -89,7 +90,7 @@ Infra：
 
 - 稳定 app 身份。
 - 字段：标准名称、别名、类别、类型、描述、官方版本、支持芯片、支持架构、`git_url`、`git_branch`、生命周期状态、文档归属。
-- 文档归属取值：`manual`、`ai4sci`、`both`、`none`。
+- 文档归属取值只包含 `manual` 和 `ai4sci`。界面显示为 `HPC` 和 `AI4Sci`：`HPC` 生成到 HPC Manual，`AI4Sci` 生成到 AI4Sci User Guide。
 
 `AppOwner`
 
@@ -104,7 +105,7 @@ Infra：
 `ReleaseAppSnapshot`
 
 - 某 app 在某 release 周期内的发布快照。
-- 字段：release/no-release 决策、no-release 原因、owner 确认、RM 准入、QA 状态、文档完整度、选定芯片、选定架构、是否冻结。
+- 字段：`release`/`cicd_only`/`stopped` 决策、owner 确认、QA 状态、文档完整度、选定芯片、选定架构、是否冻结、发布待办/门禁项。
 
 `AppInfoSnapshot`
 
@@ -114,7 +115,7 @@ Infra：
 `AppInfoDiff`
 
 - 新 release 拉取到新的 `app_info.json` 后，与上一个 release 的 `AppInfoSnapshot` 自动对比得到的差异。
-- 字段：差异类型、新值、旧值、影响字段、是否影响 QA 准入、owner 确认状态、RM 处理状态。
+- 字段：差异类型、新值、旧值、影响字段、是否影响发布门禁、owner 确认状态、RM 处理状态。
 - 差异类型至少包括：app version 变化、支持芯片变化、支持架构变化、build target 变化、test target 变化、`test_cmd` 新增/删除/修改、enabled 状态变化、JSON 结构异常。
 
 `TestCaseDocumentation`
@@ -131,15 +132,16 @@ Infra：
 `GeneratedArtifact`
 
 - 生成的 RST 或 release-data 导出。
-- 字段：artifact 类型、release 周期、预览/最终标志、内容 hash、生成时间、Gerrit project、Gerrit change URL、Gerrit patch set、状态。
+- 字段：artifact 类型、release 周期、预览/最终标志、生成时间、内容、文件名、Gerrit project、Gerrit change URL、Gerrit patch set、状态。
+- 当前 artifact 类型包括：release note RST、HPC Manual RST、AI4Sci User Guide RST、release-data JSON、Manager Review CSV。
 
 ## 5. 必填字段
 
 Release note 字段：
 
 - App 名称。
-- 类型。
-- 描述。
+- App 类型。
+- 描述（30 字内）。
 - 对应官方版本，优先从 `app_info.json` 自动解析。
 - `X86支持芯片系列`，优先从 `app_info.json` 自动解析。
 - `ARM支持芯片类型`，优先从 `app_info.json` 自动解析。
@@ -153,9 +155,9 @@ Release note 字段：
 - `X86支持芯片系列` 从 `app_info.json` 中 x86/amd64 架构下 enabled 的 build/test 支持芯片自动获取。
 - `ARM支持芯片类型` 从 `app_info.json` 中 arm/aarch64 架构下 enabled 的 build/test 支持芯片自动获取。
 - 系统自动预填这些字段，owner 负责确认。
-- Release app 进入 QA 必须有可追溯的 `AppInfoSnapshot`，不能用手填字段替代。
+- Release app 进入最终发布输出必须有可追溯的 `AppInfoSnapshot`，不能用手填字段替代。
 - 如果 `app_info.json` 缺失或结构异常，系统生成阻断项，由 owner 上传 JSON 或 RM 协调修复。
-- 手工 app-info 例外只能用于 no-release+CICD 或独立紧急审计场景，不能作为新增 app 正常进入 QA 的路径。
+- 手工 app-info 上传可作为 Gerrit 拉取失败时的兜底来源，但需要标注为 owner 上传，不能冒充 Gerrit 拉取快照。
 
 HPC Manual 和 AI4Sci User Guide 字段：
 
@@ -170,19 +172,17 @@ HPC Manual 和 AI4Sci User Guide 字段：
 
 HPC Manual 和 AI4Sci User Guide 都使用完整 app 文档模板。两份文档中的 app 章节都不能只维护“介绍 + 版本”。
 
-不 release 但进入 CICD 的 app 必填字段：
+非 release 决策 app：
 
 - Owner。
 - `git_url`。
 - `git_branch`。
-- `app_info.json` 或等价手填 app-info 字段。
-- CICD 构建和测试配置。
-- Infra 备注。
-- 除非该 app 选择 release，否则不要求填写 RST 文档字段。
+- Release 决策为 `cicd_only` 或 `stopped` 的 app 不进入 QA 表单，不生成 RST，不要求填写 RST 文档字段。
+- Manager Review CSV 仍会列出这些 app，方便 RM 和 manager 看到完整状态。
 
 ## 6. 测试说明强制规则
 
-这是 QA 准入门禁。
+这是发布门禁，也是 QA 复现测试所需信息。
 
 系统会解析 `app_info.json` 中所有测试命令，包括所有相关的 `app_test.*.test_cmd`。
 
@@ -204,14 +204,15 @@ Owner 可以新增 `app_info.json` 中没有的测试项：
 - 新增测试项也必须填写测试数据集、测试内容、结果查看方式和通过标准。
 - 新增测试项不能替代 `app_info.json` 已有 `test_cmd` 的说明。
 
-QA 准入规则：
+发布门禁规则：
 
-- Release app 必须完成所有解析出的 `test_cmd` 说明，否则不能进入 QA。
+- Release app 必须完成所有解析出的 `test_cmd` 说明，否则不能进入最终发布输出。
 - 如果 `app_info.json` 发生变化，导致 `test_cmd` 新增、删除或变化，系统会把对应测试说明标记为 stale，要求 owner 重新确认。
 - 新 release 拉取到新的 `app_info.json` 后，系统必须标出与上一版本 `app_info.json` 的差异，并要求 owner 确认差异。
-- 未确认的 `AppInfoDiff` 会阻塞该 app 进入 QA。
-- 如果没有可用且可追溯的 `AppInfoSnapshot`，RM 必须阻止 release app 进入 QA。
-- 手工 app-info 例外只适用于 no-release+CICD 或独立紧急审计场景，不适用于新增 app 正常进入 QA。
+- 未确认的 `AppInfoDiff` 会阻塞该 app 进入最终发布输出。
+- 如果没有可用且可追溯的 `AppInfoSnapshot`，系统必须阻止 release app 进入最终发布输出。
+- Release 决策不是 `release` 的 app 不显示 QA 未测试，不进入 QA 表单，发布待办/门禁项为空。
+- `has_issues` 表示 QA 存在已知问题但允许发布；其问题说明会合并到已知限制，供 RST 和 Manager Review CSV 使用。
 
 可选一致性检查：
 
@@ -235,23 +236,24 @@ QA 准入规则：
 后续每次发布流程：
 
 1. RM 创建新的 `ReleaseCycle`。
-2. 系统从上一个 release 版本克隆 app、alias mapping、app-owner 映射、release note 字段、Manual/AI4Sci 文档字段、测试说明、CICD 配置和 app-info 来源信息。
+2. 系统从上一个 release 版本克隆 app、alias mapping、app-owner 映射、release note 字段、Manual/AI4Sci 文档字段、测试说明和 app-info 来源信息。
 3. 系统按当前 `git_url + git_branch` 拉取新的 `app_info.json`。
 4. 系统将新的 `app_info.json` 与上一版本 `AppInfoSnapshot` 对比，生成 `AppInfoDiff`。
 5. 系统标记需要 owner 复核的字段，包括版本变化、芯片/架构变化、build/test 配置变化、`test_cmd` 变化、上个 release 的 warning 和 stale 字段。
 6. Owner 查看差异，高亮确认每项 `AppInfoDiff`，并补齐新增或变化的测试说明。
-7. Owner 只做增量更新和本次 release 确认。
+7. Owner 点击“保存并提交 Owner 确认”。系统实时显示该 app 的发布待办/门禁项。
 8. 新增 app、停止发布、owner 变化和关键字段变化通过变更申请进入 RM review；owner 变化属于例外变更，不是每次 release 的常规维护项。
-9. 系统运行 QA 准入检查。
-10. RM 将完整且已确认的 app 准入 QA。
-11. QA 只测试已准入 app。
-12. QA 期间的修改按 QA 修改策略控制。
-13. RM 锁定 release。
-14. 系统冻结所有 release 快照。
-15. 系统生成 release note、HPC Manual、AI4Sci User Guide RST。
-16. 系统将 RST 推送到官方 docs Gerrit。
-17. 系统将 owner 填写信息和冻结快照推送到 release-data Gerrit。
-18. RM review RST 并合入官方 docs 仓库。
+9. RM 导出 release 决策为 `release` 的 app 测试范围 CSV，手动下载/拉取 app_info 形成 QA 测试范围。
+10. QA 只测试 release 决策为 `release` 的 app，并在 QA 页面上传测试 log、标注 QA 状态。
+11. RM 可随时在总览和 App 工作台查看实时发布待办/门禁。
+12. 测试尾声 RM 在 RST 页面生成预览；预览只包含当前可发布 app。
+13. RM 在 RST 页面生成 Manager Review CSV。CSV 覆盖当前 release 的所有 app，字段由复选框选择。
+14. 部门 manager review 后，RM 锁定 release。
+15. 系统冻结所有 release 快照。
+16. 系统生成最终 release note、HPC Manual、AI4Sci User Guide RST 和 release-data JSON。
+17. 系统将 RST 推送到官方 docs Gerrit。
+18. 系统将 owner 填写信息和冻结快照推送到 release-data Gerrit。
+19. RM review RST 并合入官方 docs 仓库。
 
 `app_info.json` 差异展示：
 
@@ -261,7 +263,7 @@ QA 准入规则：
 - `test_cmd` 新增会生成新的必填测试说明任务。
 - `test_cmd` 删除会提示 owner 确认是否删除对应测试说明或保留为 owner-added 测试项。
 - `test_cmd` 修改会将对应测试说明标记为 stale，要求 owner 更新数据集、测试内容、结果查看方式和通过标准。
-- Owner 必须逐项确认差异；未确认差异阻塞 QA 准入。
+- Owner 必须逐项确认差异；未确认差异阻塞最终发布输出。
 
 ## 8. 新增 App 和停止发布流程
 
@@ -278,9 +280,9 @@ QA 准入规则：
 
 进入 release 阶段：
 
-- 如果该新增 app 选择进入当前 release，owner 必须补全 release note、Manual/AI4Sci、测试说明和 CICD 必填字段。
-- 新增 app 进入 QA 前必须有可追溯的 `AppInfoSnapshot`。
-- 审批通过后，新增 app 进入正常 owner 确认和 QA 准入流程。
+- 如果该新增 app 选择进入当前 release，owner 必须补全 release note、Manual/AI4Sci 和测试说明必填字段。
+- 新增 app 进入最终发布输出前必须有可追溯的 `AppInfoSnapshot`。
+- 审批通过后，新增 app 进入正常 owner 确认、QA 测试和发布门禁流程。
 - Deadline 后提交的新增 app 默认不进入当前 release。
 
 停止发布：
@@ -288,8 +290,8 @@ QA 准入规则：
 - Owner 提交停止发布请求，包含原因和生效 release。
 - RM 在发布周期开始 deadline 前检查完整性和影响。
 - 审批通过后，该 app 从本 release QA 和生成 RST 中排除。
-- 系统通知 owner、RM、QA 和 Infra。
-- 停止发布状态流转：`停止申请` -> `RM 审批` -> `停止生效` -> `通知 QA/Infra`。
+- 系统通过总览、App 工作台和 Manager Review CSV 让 owner、RM、QA 和相关 infra 成员看到停止发布状态。
+- 停止发布状态流转：`停止申请` -> `RM 审批` -> `停止生效` -> `状态可见`。
 
 ## 9. QA 修改策略
 
@@ -302,7 +304,7 @@ QA 期间：
 
 - Owner 可以提交修改申请。
 - 非关键文案修改仅限错别字、格式、链接展示文字、备注等不影响测试、发布范围、安装/运行方式、结果查看和用户使用的信息，可直接应用并记录审计。
-- 关键字段修改必须由 RM 审批，并重新触发 QA 准入检查。
+- 关键字段修改必须由 RM 审批，并重新触发发布门禁检查。
 - QA 开始后，release 范围只允许删减。
 - QA 开始后，release 范围不允许扩大。
 
@@ -312,7 +314,7 @@ QA 期间：
 - 从某个 app 的 release 范围中移除芯片。
 - 从某个 app 的 release 范围中移除架构。
 - 取消某种二进制包、镜像或发布形态。
-- 将 app 标记为 no-release，但保留 CICD 元数据。
+- 将 app 标记为 `cicd_only` 或 `stopped`，使其退出本 release 的 QA 和 RST 输出。
 
 QA 开始后禁止的新增：
 
@@ -343,13 +345,12 @@ QA 开始后禁止的新增：
 - 二进制包使用方法。
 - 安装命令和运行命令。
 - Manual/AI4Sci 中会影响用户执行或 QA 复现的说明。
-- CICD 配置。
 - 文档归属。
 
 发布锁定：
 
 - 所有快照变为不可变。
-- Owner、RM、QA、Infra 都不能修改已锁定的本 release 数据。
+- Owner、RM、QA 和相关 infra 成员都不能修改已锁定的本 release 数据。
 - 锁定后如果必须修正，只能进入下一 release，或创建独立 hotfix/release 快照；不得修改原 locked snapshot。
 
 ## 10. Gerrit 和 Artifact 流程
@@ -358,12 +359,23 @@ QA 开始后禁止的新增：
 
 - 发布锁定前，一键生成只创建系统内部预览。
 - 预览包括 release note、HPC Manual、AI4Sci User Guide RST。
+- RST 预览只包含当前可发布 app；未就绪 app 不进入 RST 预览，只保留在发布待办/门禁中。
+- 可发布条件：release 决策为 `release`、Owner 已确认、文档/测试说明/app_info/diff 等非 QA 门禁清空、QA 状态为 `qa_passed` 或 `has_issues`。
 - Release 未锁定时，预览可重复生成。
+
+Manager Review CSV：
+
+- RST 页面提供 `Manager Review CSV` 子 tab。
+- RM 通过复选框选择输出字段。
+- 默认字段：App、版本号、Owner、支持芯片类型、是否可发布、不可发布原因、已知限制。
+- 可选字段还包括：官方名称、文档类型、App类型、X86支持芯片、ARM支持芯片、Release决策、QA状态、Owner确认、Gerrit URL、Branch。
+- CSV 覆盖当前 release 的所有 app，包括 `release`、`cicd_only` 和 `stopped`。
+- 生成文件名为 `manager_review.csv`，用于部门 manager review 当前发布范围、风险和未发布原因。
 
 最终生成：
 
 - 发布锁定会冻结所有快照。
-- 系统只从冻结快照生成最终 RST。
+- 系统只从冻结快照生成最终 RST，且最终 RST 只包含可发布 app。
 - 系统保存最终 RST 的内容 hash。
 
 Gerrit 推送：
@@ -381,7 +393,7 @@ Gerrit 推送：
 - `草稿`
 - `已导入数据`
 - `Owner 填写中`
-- `QA 准入检查`
+- `发布门禁检查`
 - `QA 进行中`
 - `QA 重新检查`
 - `等待发布锁定`
@@ -423,7 +435,7 @@ Change request 状态：
 - `停止申请`
 - `停止已审批`
 - `停止已生效`
-- `已通知 QA/Infra`
+- `状态已同步`
 
 Artifact 状态：
 
@@ -443,7 +455,7 @@ Artifact 状态：
 
 - 首次初始化导入 release CSV 后，验证 121 行和 102 个唯一 app。
 - 首次初始化导入 owner CSV 后，验证 117 行和 112 个唯一名称。
-- 后续 release 创建时，验证系统能从上一版本克隆 app、alias mapping、app-owner 映射、文档字段、测试说明、CICD 配置和 app-info 来源信息。
+- 后续 release 创建时，验证系统能从上一版本克隆 app、alias mapping、app-owner 映射、文档字段、测试说明和 app-info 来源信息。
 - 检测 alias mismatch，要求 RM 处理有歧义的名称映射。
 - 检测无 owner 的 app，以及 owner 表中无对应 release app 的名称。
 
@@ -451,7 +463,7 @@ Artifact 状态：
 
 - Owner 只需提交官方 app/模型名称、`git_url` 和 `git_branch`。
 - 提交人自动成为初始 owner。
-- 系统必须能从 `app_info.json` 解析 `对应官方版本`、`X86支持芯片系列`、`ARM支持芯片类型`，否则新增 app 不能进入 QA。
+- 系统必须能从 `app_info.json` 解析 `对应官方版本`、`X86支持芯片系列`、`ARM支持芯片类型`，否则新增 app 不能进入最终发布输出。
 
 权限校验：
 
@@ -462,16 +474,16 @@ Artifact 状态：
 
 完整性校验：
 
-- Release app 缺少 release note 必填字段时，不能进入 QA。
-- Release app 缺少所属 Manual 或 AI4Sci 文档字段时，不能进入 QA。
-- Release app 未为每个 `app_info.json` `test_cmd` 填写完整测试说明时，不能进入 QA。
-- Release app 没有可追溯 `AppInfoSnapshot` 时，不能进入 QA。
-- 未确认的 `AppInfoDiff` 会阻塞该 app 进入 QA。
-- No-release 但 CICD app 不要求 RST 字段，但必须填写 CICD 和 app-info 字段。
+- Release app 缺少 App类型、描述（30字内）、版本、支持芯片等 release note 必填字段时，不能进入最终发布输出。
+- Release app 缺少所属 Manual 或 AI4Sci 文档字段时，不能进入最终发布输出。
+- Release app 未为每个 `app_info.json` `test_cmd` 填写完整测试说明时，不能进入最终发布输出。
+- Release app 没有可追溯 `AppInfoSnapshot` 时，不能进入最终发布输出。
+- 未确认的 `AppInfoDiff` 会阻塞该 app 进入最终发布输出。
+- `cicd_only` 和 `stopped` app 不要求 RST 字段，不进入 QA 表单，不显示 QA 未测试。
 
 QA 校验：
 
-- 未确认 app 不进入 QA。
+- 未确认 app 不进入最终发布输出。
 - QA 期间关键字段删减必须经 RM 审批并重检。
 - QA 期间测试说明、测试数据集、结果查看、环境搭建、镜像/二进制包使用方法、安装/运行命令都按关键字段处理。
 - QA 期间禁止扩大 release 范围。
@@ -480,6 +492,8 @@ QA 校验：
 Artifact 校验：
 
 - 发布锁定前可以生成预览。
+- RST 预览和最终 RST 都只包含可发布 app。
+- Manager Review CSV 必须包含当前 release 的所有 app，并按 RM 选择的字段输出。
 - 最终 RST 只从冻结快照生成。
 - 最终 RST 推送到官方 docs Gerrit。
 - 冻结后的 owner data 和 release 快照推送到 release-data Gerrit。
@@ -489,7 +503,7 @@ Artifact 校验：
 ## 13. V1 假设
 
 - 初版使用本地账号，不接 LDAP/SSO。
-- 初版只记录 CICD 配置，不由系统触发实际流水线。
+- 初版不触发实际流水线；`cicd_only` 仅作为 release 决策，表示不进入 RST/QA/发布输出。
 - 通知使用站内待办加 SMTP 邮件。
 - RST 推送到官方 docs Gerrit 仓库。
 - Owner 填写信息和冻结快照推送到独立 release-data Gerrit 仓库。
