@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import csv
+import io
 import json
 import os
 import subprocess
@@ -345,6 +347,40 @@ class CoreWorkflowTests(unittest.TestCase):
         self.assertIn("app_name,version,gerrit_url,branch,owners", csv_text)
         self.assertIn("amber", csv_text)
         self.assertNotIn("OtherApp", csv_text)
+
+    def test_generate_manager_review_csv_includes_all_apps_and_selected_fields(self) -> None:
+        release_id, app_id = self.import_initial()
+        other_id = core.add_new_app_request(
+            self.conn,
+            release_id,
+            official_name="OtherApp",
+            git_url="ssh://other",
+            git_branch="main",
+            release_decision="cicd_only",
+            owner="x",
+        )
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        core.update_snapshot(self.conn, release_id, app_id, _fill_ready)
+        core.qa_set_status(self.conn, release_id, app_id, "has_issues", issue_note="known regression")
+        csv_text = core.generate_manager_review_csv(
+            self.conn,
+            release_id,
+            ["app_name", "version", "owners", "releasable", "not_releasable_reason", "known_limitations"],
+        )
+        rows = list(csv.DictReader(io.StringIO(csv_text)))
+        by_name = {row["App"]: row for row in rows}
+        self.assertEqual(set(by_name), {"amber", "OtherApp"})
+        self.assertEqual(by_name["amber"]["是否可发布"], "是")
+        self.assertEqual(by_name["amber"]["不可发布原因"], "")
+        self.assertIn("QA 备注：known regression", by_name["amber"]["已知限制"])
+        self.assertEqual(by_name["OtherApp"]["是否可发布"], "否")
+        self.assertIn("cicd_only", by_name["OtherApp"]["不可发布原因"])
+        artifact = self.conn.execute(
+            "SELECT name, content FROM artifacts WHERE release_id = ? AND kind = 'manager_review'",
+            (release_id,),
+        ).fetchone()
+        self.assertEqual(artifact["name"], "manager_review.csv")
+        self.assertIn(other_id, core.get_release(self.conn, release_id)["snapshots"])
 
     # --- update_snapshot deadline gating ---
 

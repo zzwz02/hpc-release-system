@@ -101,9 +101,12 @@ class Handler(BaseHTTPRequestHandler):
                         self.send_error(404, "artifact not found")
                         return
                     self.send_response(200)
-                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    content_type = "text/csv; charset=utf-8-sig" if row["name"].lower().endswith(".csv") else "text/plain; charset=utf-8"
+                    self.send_header("Content-Type", content_type)
                     self.send_header("Content-Disposition", f"attachment; filename={row['name']}")
                     self.end_headers()
+                    if row["name"].lower().endswith(".csv"):
+                        self.wfile.write("﻿".encode("utf-8"))
                     self.wfile.write(row["content"].encode("utf-8"))
                     return
             except PermissionError as exc:
@@ -204,6 +207,18 @@ class Handler(BaseHTTPRequestHandler):
                         raise RuntimeError("Final artifacts 只能通过最终 lock 生成")
                     artifacts = core.generate_artifacts(self.conn(), body["release_id"], final=False)
                     self.send_json({"artifacts": list(artifacts)})
+                    return
+                if parsed.path == "/api/artifacts/manager-review":
+                    self.require_rm()
+                    body = self.json_body()
+                    content = core.generate_manager_review_csv(
+                        self.conn(),
+                        body["release_id"],
+                        body.get("fields") or None,
+                        user=self.user(),
+                        role=self.role(),
+                    )
+                    self.send_json({"artifact": "manager_review", "bytes": len(content.encode("utf-8"))})
                     return
                 if parsed.path == "/api/gerrit/plan":
                     self.require_rm()

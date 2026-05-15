@@ -245,6 +245,34 @@ NON_RELEASE_DECISIONS = {"cicd_only", "stopped"}
 DOC_TARGETS = {"manual", "ai4sci"}
 QA_STATUSES = {"not_checked", "qa_passed", "has_issues", "cannot_release"}
 MAX_APP_DESCRIPTION_CHARS = 30
+MANAGER_REVIEW_FIELDS = [
+    ("app_name", "App"),
+    ("official_name", "官方名称"),
+    ("doc_target", "文档类型"),
+    ("app_type", "App类型"),
+    ("version", "版本号"),
+    ("owners", "Owner"),
+    ("chip_support", "支持芯片类型"),
+    ("x86_chips", "X86支持芯片"),
+    ("arm_chips", "ARM支持芯片"),
+    ("release_decision", "Release决策"),
+    ("qa_status", "QA状态"),
+    ("owner_confirmed", "Owner确认"),
+    ("releasable", "是否可发布"),
+    ("not_releasable_reason", "不可发布原因"),
+    ("known_limitations", "已知限制"),
+    ("gerrit_url", "Gerrit URL"),
+    ("git_branch", "Branch"),
+]
+DEFAULT_MANAGER_REVIEW_FIELDS = [
+    "app_name",
+    "version",
+    "owners",
+    "chip_support",
+    "releasable",
+    "not_releasable_reason",
+    "known_limitations",
+]
 
 
 def normalize_release_decision(value: str | None) -> str:
@@ -1563,6 +1591,76 @@ def _merged_limitations(snapshot: dict[str, Any]) -> str:
     return text
 
 
+def _chip_support_text(snapshot: dict[str, Any]) -> str:
+    parts = []
+    if snapshot.get("x86_chips"):
+        parts.append(f"X86: {snapshot['x86_chips']}")
+    if snapshot.get("arm_chips"):
+        parts.append(f"ARM: {snapshot['arm_chips']}")
+    if snapshot.get("hpcc_chip"):
+        parts.append(f"HPCC: {snapshot['hpcc_chip']}")
+    return "; ".join(parts)
+
+
+def _not_releasable_reason(snapshot: dict[str, Any]) -> str:
+    decision = normalize_release_decision(snapshot.get("release_decision"))
+    if _qualifies_for_final(snapshot):
+        return ""
+    if decision != "release":
+        return f"Release决策为 {decision}"
+    missing = snapshot.get("missing_items", [])
+    return "；".join(missing) if missing else "未满足发布条件"
+
+
+def render_manager_review_csv(
+    conn: sqlite3.Connection,
+    release: dict[str, Any],
+    fields: list[str] | None = None,
+) -> str:
+    """Return manager-review CSV for all apps in the release snapshots."""
+    field_labels = dict(MANAGER_REVIEW_FIELDS)
+    selected = fields or DEFAULT_MANAGER_REVIEW_FIELDS
+    if not selected:
+        raise ValueError("至少选择一个输出字段")
+    invalid = [field for field in selected if field not in field_labels]
+    if invalid:
+        raise ValueError(f"未知 Manager Review 字段: {', '.join(invalid)}")
+
+    apps = {app["id"]: app for app in list_apps(conn)}
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow([field_labels[field] for field in selected])
+    rows = []
+    for app_id, snapshot in release["snapshots"].items():
+        app = snapshot.get("app_meta") or apps.get(app_id)
+        if not app:
+            continue
+        rows.append((app, snapshot))
+    rows.sort(key=lambda item: item[0].get("name", "").lower())
+    for app, snapshot in rows:
+        values = {
+            "app_name": app.get("name", ""),
+            "official_name": app.get("official_name", ""),
+            "doc_target": "AI4Sci" if normalize_doc_target(app.get("doc_target")) == "ai4sci" else "HPC",
+            "app_type": app.get("type", ""),
+            "version": snapshot.get("version", ""),
+            "owners": ",".join(app.get("owners", [])),
+            "chip_support": _chip_support_text(snapshot),
+            "x86_chips": snapshot.get("x86_chips", ""),
+            "arm_chips": snapshot.get("arm_chips", ""),
+            "release_decision": normalize_release_decision(snapshot.get("release_decision")),
+            "qa_status": snapshot.get("qa_status", "not_checked"),
+            "owner_confirmed": "是" if snapshot.get("owner_confirmed") else "否",
+            "releasable": "是" if _qualifies_for_final(snapshot) else "否",
+            "not_releasable_reason": _not_releasable_reason(snapshot),
+            "known_limitations": _merged_limitations(snapshot),
+            "gerrit_url": app.get("git_url", ""),
+            "git_branch": app.get("git_branch", ""),
+        }
+        writer.writerow([values[field] for field in selected])
+    return out.getvalue()
+
+
 def _render_guide_entries(rows: list[tuple[dict[str, Any], dict[str, Any]]], *, stopped: bool = False) -> str:
     out = ""
     for app, snapshot in rows:
@@ -1662,6 +1760,44 @@ def generate_artifacts(conn: sqlite3.Connection, release_id: str, *, final: bool
         event="generate_artifacts",
     )
     return artifacts
+
+
+def generate_manager_review_csv(
+    conn: sqlite3.Connection,
+    release_id: str,
+    fields: list[str] | None = None,
+    *,
+    user: str = "rm",
+    role: str = "RM",
+) -> str:
+    release = get_release(conn, release_id)
+    if release.get("released_locked"):
+        raise RuntimeError("Release 已最终锁定，Manager Review CSV 不可重新生成")
+    refresh_missing_items(conn, release_id)
+    release = get_release(conn, release_id)
+    content = render_manager_review_csv(conn, release, fields)
+    conn.execute(
+        """
+        INSERT INTO artifacts(release_id, kind, name, content, final, generated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(release_id, kind) DO UPDATE SET
+          name=excluded.name,
+          content=excluded.content,
+          final=excluded.final,
+          generated_at=excluded.generated_at
+        """,
+        (release_id, "manager_review", "manager_review.csv", content, 0, now()),
+    )
+    conn.commit()
+    audit(
+        conn,
+        "生成 Manager Review CSV",
+        user=user,
+        role=role,
+        release_id=release_id,
+        event="generate_manager_review",
+    )
+    return content
 
 
 def gerrit_push_plan(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
