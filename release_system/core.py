@@ -694,7 +694,7 @@ def get_release(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
 
 def list_releases(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     result = []
-    for row in conn.execute("SELECT * FROM releases ORDER BY created_at"):
+    for row in conn.execute("SELECT * FROM releases ORDER BY created_at, rowid"):
         rel = dict(row)
         rel["released_locked"] = bool(rel.get("released_locked"))
         rel["phase"] = current_phase(rel)
@@ -926,6 +926,31 @@ def create_release_from_previous(
     return release_id
 
 
+def _future_unlocked_release_ids(conn: sqlite3.Connection, release_id: str) -> list[str]:
+    releases = list_releases(conn)
+    start = next((idx for idx, release in enumerate(releases) if release["id"] == release_id), None)
+    if start is None:
+        raise KeyError(f"Unknown release: {release_id}")
+    return [release["id"] for release in releases[start:] if not release.get("released_locked")]
+
+
+def _initial_snapshot_for_future_release(snapshot: dict[str, Any]) -> dict[str, Any]:
+    future = json.loads(json.dumps(snapshot))
+    future.pop("app_meta", None)
+    future.pop("locked_in_release", None)
+    future.update(
+        {
+            "owner_confirmed": False,
+            "qa_status": "not_checked",
+            "qa_issue_note": "",
+            "missing_items": [],
+        }
+    )
+    for test_doc in future.get("test_docs", []):
+        test_doc["stale"] = True
+    return future
+
+
 def add_new_app_request(
     conn: sqlite3.Connection,
     release_id: str,
@@ -968,11 +993,18 @@ def add_new_app_request(
     save_app(conn, app)
     snapshot = base_snapshot(app)
     snapshot["release_decision"] = release_decision
-    save_snapshot(conn, release_id, app_id, snapshot)
+    synced_release_ids = []
+    for target_release_id in _future_unlocked_release_ids(conn, release_id):
+        target_release = get_release(conn, target_release_id)
+        if app_id in target_release["snapshots"]:
+            continue
+        target_snapshot = snapshot if target_release_id == release_id else _initial_snapshot_for_future_release(snapshot)
+        save_snapshot(conn, target_release_id, app_id, target_snapshot)
+        synced_release_ids.append(target_release_id)
     conn.commit()
     audit(
         conn,
-        f"新增 app：{official_name}，owner={owner}，初始决策={release_decision}",
+        f"新增 app：{official_name}，owner={owner}，初始决策={release_decision}，同步 release 数={len(synced_release_ids)}",
         user=owner,
         role="Owner",
         app_id=app_id,
