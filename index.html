@@ -175,6 +175,8 @@
     let pendingAppInfoAppId = "";
     let appInfoPickerHoldUntil = 0;
     let appDetailDirty = false;
+    let appDetailEditMode = false;
+    let appDetailEditAppId = "";
     let qaEditMode = true;
     let qaEditReleaseId = "";
     document.addEventListener("keydown", () => { lastUserInputAt = Date.now(); }, true);
@@ -222,11 +224,11 @@
       return api(path, { method: "POST", body: JSON.stringify(body) });
     }
 
-    async function loadState(releaseId = currentReleaseId()) {
+    async function loadState(releaseId = currentReleaseId(), options = {}) {
       const qs = releaseId ? "?release_id=" + encodeURIComponent(releaseId) : "";
       state = await api("/api/state" + qs);
       showLoggedIn(state.user);
-      render();
+      render(options);
     }
 
     function markUserEdit(event) {
@@ -244,6 +246,7 @@
     function recentlyTyping() {
       if (Date.now() < appInfoPickerHoldUntil) return true;
       if (pendingAppInfoFile && activeView() === "apps") return true;
+      if (appDetailEditMode && activeView() === "apps") return true;
       if (appDetailDirty && activeView() === "apps") return true;
       // Only block refresh if the user pressed a key in the last 3 seconds AND
       // an editable field is still focused (so we don't wipe in-progress text).
@@ -258,7 +261,7 @@
 
     function refreshIfIdle() {
       if (!canAutoRefresh()) return;
-      loadState().catch(err => console.warn("auto-refresh failed:", err.message));
+      loadState(currentReleaseId(), { preserveDetail: activeView() === "apps" && !!selectedApp }).catch(err => console.warn("auto-refresh failed:", err.message));
     }
 
     function startAutoRefresh() {
@@ -291,14 +294,14 @@
       return appSortName(a.app).localeCompare(appSortName(b.app), "zh-CN");
     }
 
-    function render() {
+    function render(options = {}) {
       renderRoleChrome();
       renderReleaseSelect();
       renderPhaseBanner();
       renderSummary();
       renderReleases();
       renderApps();
-      renderDetail();
+      if (!(options.preserveDetail && activeView() === "apps" && selectedApp)) renderDetail();
       renderQa();
       renderAdmin();
       if ($("preview")) $("preview").disabled = releaseLocked();
@@ -413,9 +416,14 @@
           <td>${todoPill(snap)}</td>
         </tr>`).join("") || `<tr><td colspan="7" class="muted">无数据</td></tr>`}</tbody>`;
       document.querySelectorAll("[data-app]").forEach(tr => tr.onclick = () => {
-        if (appDetailDirty && selectedApp && selectedApp !== tr.dataset.app && !confirm("当前 App 详情有未保存修改，切换 App 会丢失这些修改。确认切换？")) return;
-        if (selectedApp !== tr.dataset.app) appDetailDirty = false;
-        selectedApp = tr.dataset.app;
+        const nextApp = tr.dataset.app;
+        if ((appDetailDirty || appDetailEditMode) && selectedApp && selectedApp !== nextApp && !confirm("当前 App 详情有未保存修改或处于编辑状态，切换 App 会丢失这些修改。确认切换？")) return;
+        if (selectedApp !== nextApp) {
+          appDetailDirty = false;
+          appDetailEditMode = false;
+          appDetailEditAppId = "";
+        }
+        selectedApp = nextApp;
         render();
       });
     }
@@ -459,34 +467,45 @@
       const app = appById(selectedApp);
       const snap = app ? releaseSnap(app.id) : null;
       if (!app || !snap) { $("detailTitle").textContent = "App 详情"; $("detail").innerHTML = "<p class='muted'>请选择 app。</p>"; return; }
-      const writable = canEdit(app) && !releaseLocked() && beforeDocDeadline();
+      if (appDetailEditAppId !== app.id) {
+        appDetailEditMode = false;
+        appDetailEditAppId = app.id;
+        appDetailDirty = false;
+      }
+      const canEditDetail = canEdit(app) && !releaseLocked() && beforeDocDeadline();
+      const writable = canEditDetail && appDetailEditMode;
       const disabled = writable ? "" : "disabled";
       const rmMetaDisabled = isRM() && writable ? "" : "disabled";
       const ownerWritable = isOwner() && writable;
       const ownerOnlyDisabled = ownerWritable ? "" : "disabled";
-      const decisionDisabled = (!canEdit(app) || releaseLocked() || !beforeDocDeadline()) ? "disabled" : "";
+      const decisionDisabled = writable ? "" : "disabled";
       const allowedDecisions = beforeAppFreeze()
         ? releaseDecisionOptions
         : (snap.release_decision === "release" ? ["release", "cicd_only", "stopped"] : ["cicd_only", "stopped"]);
       const selectedInfoFile = pendingAppInfoAppId === app.id ? pendingAppInfoFile : null;
       const clearFileDisabled = selectedInfoFile && writable ? "" : "disabled";
       const actions = [
-        isRM() ? `<button class="primary" id="saveApp" ${disabled}>保存</button>` : "",
+        canEditDetail && !appDetailEditMode ? `<button class="primary" id="editApp">修改</button>` : "",
+        isRM() && appDetailEditMode ? `<button class="primary" id="saveApp" ${disabled}>保存</button>` : "",
         `<input id="appInfoFile" type="file" accept=".json" hidden ${disabled}>`,
-        `<button id="chooseAppInfo" ${disabled}>选择 app_info.json</button>`,
+        appDetailEditMode ? `<button id="chooseAppInfo" ${disabled}>选择 app_info.json</button>` : "",
         `<span id="appInfoFileName" class="small muted">${selectedInfoFile ? `已选择：${esc(selectedInfoFile.name)}` : "未选择文件"}</span>`,
-        `<button id="clearAppInfoFile" ${clearFileDisabled}>清除</button>`,
-        `<button id="uploadInfo" ${disabled}>上传 app_info</button>`,
-        `<button id="fetchInfo" ${disabled}>从 Gerrit 拉取 app_info</button>`
+        appDetailEditMode ? `<button id="clearAppInfoFile" ${clearFileDisabled}>清除</button>` : "",
+        appDetailEditMode ? `<button id="uploadInfo" ${disabled}>上传 app_info</button>` : "",
+        appDetailEditMode ? `<button id="fetchInfo" ${disabled}>从 Gerrit 拉取 app_info</button>` : ""
       ].filter(Boolean).join("");
       const diffActions = isOwner() ? `<button id="confirmDiffs" ${ownerOnlyDisabled}>确认全部 diff</button>` : "";
       const ownerTestActions = isOwner() ? `<button id="addOwnerTest" ${ownerOnlyDisabled}>新增 owner-added 测试项</button>` : "";
-      const ownerFooterActions = isOwner() ? `<div class="row" style="margin-top:16px"><button class="primary" id="saveDraft" ${ownerOnlyDisabled}>保存草稿</button><button class="good" id="confirmOwner" ${ownerOnlyDisabled} title="保存当前内容，并确认本 app 的 release 信息已补齐">保存并提交 Owner 确认</button></div>` : "";
+      const ownerFooterActions = isOwner() && canEditDetail
+        ? (appDetailEditMode
+          ? `<div class="row" style="margin-top:16px"><button class="primary" id="saveDraft" ${ownerOnlyDisabled}>保存草稿</button><button class="good" id="confirmOwner" ${ownerOnlyDisabled} title="保存当前内容，并确认本 app 的 release 信息已补齐">保存并提交 Owner 确认</button></div>`
+          : `<div class="row" style="margin-top:16px"><button class="primary" id="editAppBottom">修改</button></div>`)
+        : "";
       $("detailTitle").textContent = app.name;
       const phaseBanner = phaseBannerFor(snap);
       $("detail").innerHTML = `
         ${phaseBanner}
-        <div id="dirtyBanner" class="banner pill warnp" ${appDetailDirty ? "" : "hidden"}>有未保存修改，自动刷新已暂停。保存后会恢复自动刷新。</div>
+        <div id="dirtyBanner" class="banner pill warnp" ${appDetailDirty || appDetailEditMode ? "" : "hidden"}>${appDetailDirty ? "有未保存修改，自动刷新已暂停。保存后会恢复自动刷新。" : "当前处于编辑状态，自动刷新已暂停。"}</div>
         <div class="row">${actions}</div>
         <div class="form">
           <label>官方名称<input id="officialName" value="${esc(app.official_name)}" ${rmMetaDisabled}></label>
@@ -508,9 +527,9 @@
         <div class="table"><table>${renderDiffs(snap)}</table></div>
         ${diffActions}
         <h3>文档字段</h3>
-        ${docArea("intro","基本介绍",snap.doc.intro)}${docArea("image_usage","镜像使用方法",snap.doc.image_usage)}${docArea("binary_usage","二进制包使用方法",snap.doc.binary_usage)}${docArea("env_setup","环境搭建",snap.doc.env_setup)}${docArea("limitations","已知限制",snap.doc.limitations)}
+        ${docArea("intro","基本介绍",snap.doc.intro, disabled)}${docArea("image_usage","镜像使用方法",snap.doc.image_usage, disabled)}${docArea("binary_usage","二进制包使用方法",snap.doc.binary_usage, disabled)}${docArea("env_setup","环境搭建",snap.doc.env_setup, disabled)}${docArea("limitations","已知限制",snap.doc.limitations, disabled)}
         <h3>test_cmd 说明</h3>
-        <div id="testDocs">${renderTestDocs(snap)}</div>
+        <div id="testDocs">${renderTestDocs(snap, disabled)}</div>
         ${ownerTestActions}
         <h3>发布待办 / 门禁</h3><ul>${(snap.missing_items || []).map(b => `<li>${esc(b)}</li>`).join("") || "<li class='muted'>暂无</li>"}</ul>
         <h3>Change Log</h3>
@@ -533,7 +552,7 @@
       return "";
     }
 
-    function docArea(key, label, value) { return `<label>${label}<textarea data-doc="${key}">${esc(value || "")}</textarea></label>`; }
+    function docArea(key, label, value, disabled = "") { return `<label>${label}<textarea data-doc="${key}" ${disabled}>${esc(value || "")}</textarea></label>`; }
     function appInfoSource(snap) {
       const info = snap.app_info || {};
       if (!info.source_type) return "未提供";
@@ -542,14 +561,14 @@
       return `${info.source_type}: ${info.source || ""}`;
     }
     function renderDiffs(snap) { return table(["类型","字段","旧值","新值","确认"], (snap.app_info_diffs || []).map(d => [d.type, d.field, JSON.stringify(d.old_value), JSON.stringify(d.new_value), d.confirmed ? "已确认" : "未确认"])); }
-    function renderTestDocs(snap) {
+    function renderTestDocs(snap, disabled = "") {
       return (snap.test_docs || []).map(d => `<div class="panel" style="margin-bottom:10px"><h3>${esc(d.path)} ${d.owner_added ? "<span class='pill'>owner-added</span>" : ""} ${d.stale ? "<span class='pill warnp'>stale</span>" : ""}</h3><div class="body">
-        <label>命令<textarea data-test="${d.id}" data-field="command" ${d.owner_added ? "" : "disabled"}>${esc(d.command || "")}</textarea></label>
-        <label>测试数据集<textarea data-test="${d.id}" data-field="dataset">${esc(d.dataset || "")}</textarea></label>
-        <label>测试内容<textarea data-test="${d.id}" data-field="content">${esc(d.content || "")}</textarea></label>
-        <label>结果查看<textarea data-test="${d.id}" data-field="result_view">${esc(d.result_view || "")}</textarea></label>
-        <label>通过标准<textarea data-test="${d.id}" data-field="pass_criteria">${esc(d.pass_criteria || "")}</textarea></label>
-        <label><input type="checkbox" data-test="${d.id}" data-field="stale" ${d.stale ? "" : "checked"}> 测试说明已更新</label>
+        <label>命令<textarea data-test="${d.id}" data-field="command" ${d.owner_added && !disabled ? "" : "disabled"}>${esc(d.command || "")}</textarea></label>
+        <label>测试数据集<textarea data-test="${d.id}" data-field="dataset" ${disabled}>${esc(d.dataset || "")}</textarea></label>
+        <label>测试内容<textarea data-test="${d.id}" data-field="content" ${disabled}>${esc(d.content || "")}</textarea></label>
+        <label>结果查看<textarea data-test="${d.id}" data-field="result_view" ${disabled}>${esc(d.result_view || "")}</textarea></label>
+        <label>通过标准<textarea data-test="${d.id}" data-field="pass_criteria" ${disabled}>${esc(d.pass_criteria || "")}</textarea></label>
+        <label><input type="checkbox" data-test="${d.id}" data-field="stale" ${d.stale ? "" : "checked"} ${disabled}> 测试说明已更新</label>
       </div></div>`).join("") || "<p class='muted'>上传 app_info 后生成测试项。</p>";
     }
 
@@ -659,6 +678,14 @@
     }
 
     function bindDetail(app, snap) {
+      const enterEdit = () => {
+        appDetailEditMode = true;
+        appDetailEditAppId = app.id;
+        appDetailDirty = false;
+        renderDetail();
+      };
+      if ($("editApp")) $("editApp").onclick = enterEdit;
+      if ($("editAppBottom")) $("editAppBottom").onclick = enterEdit;
       if ($("saveApp")) $("saveApp").onclick = () => saveApp(app, false);
       if ($("saveDraft")) $("saveDraft").onclick = () => saveApp(app, false);
       if ($("confirmOwner")) $("confirmOwner").onclick = () => saveApp(app, true);
@@ -701,6 +728,7 @@
           pendingAppInfoFile = null;
           pendingAppInfoAppId = "";
           appDetailDirty = false;
+          appDetailEditMode = false;
           try {
             await loadState();
             alert(`app_info.json 上传成功：${file.name}`);
@@ -716,6 +744,7 @@
         try {
           const result = await post("/api/app-info/fetch", { release_id: currentReleaseId(), app_id: app.id });
           appDetailDirty = false;
+          appDetailEditMode = false;
           await loadState();
           alert(`Gerrit app_info.json 拉取成功。\n\ncommit: ${result.commit_id || "未知"}\nsource: ${result.source || ""}`);
         } catch (err) {
@@ -746,6 +775,7 @@
         snapshot: snapshotUpdate
       });
       appDetailDirty = false;
+      appDetailEditMode = false;
       await loadState();
       if (!confirmOwner) {
         alert(confirmDiffs ? "diff 确认已保存" : "保存成功");
