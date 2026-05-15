@@ -391,22 +391,52 @@
       if (currentUser().role === "Owner") rows = rows.filter(x => (x.app.owners || []).includes(currentUser().username));
       if (q) rows = rows.filter(x => [x.app.name, x.app.type, (x.app.owners || []).join(",")].join(" ").toLowerCase().includes(q));
       rows.sort(compareAppRows);
-      $("appTable").innerHTML = `<thead><tr><th>App</th><th>Owner</th><th>决策</th><th>QA</th><th>未确认Diff</th><th>待补</th></tr></thead><tbody>${rows.map(({app,snap}) => `
+      $("appTable").innerHTML = `<thead><tr><th>App</th><th>Owner</th><th>决策</th><th>Docs</th><th>QA</th><th>最终发布</th><th>待办/门禁</th></tr></thead><tbody>${rows.map(({app,snap}) => `
         <tr data-app="${esc(app.id)}" class="${selectedApp === app.id ? "selected" : ""}">
           <td><b>${esc(app.name)}</b><div class="small muted">${esc(app.type || app.category || "")}</div></td>
           <td>${esc((app.owners || []).join(","))}</td>
-          <td>${esc(releaseDecisionLabels[snap.release_decision] || snap.release_decision)}</td>
+          <td>${esc(snap.release_decision || "")}</td>
+          <td>${docsPill(snap)}</td>
           <td>${isReleaseSnap(snap) ? qaPill(snap.qa_status) : ""}</td>
-          <td>${(snap.app_info_diffs || []).filter(d => !d.confirmed).length}</td>
-          <td>${(snap.missing_items || []).length}</td>
-        </tr>`).join("") || `<tr><td colspan="6" class="muted">无数据</td></tr>`}</tbody>`;
+          <td>${finalPill(snap)}</td>
+          <td>${todoPill(snap)}</td>
+        </tr>`).join("") || `<tr><td colspan="7" class="muted">无数据</td></tr>`}</tbody>`;
       document.querySelectorAll("[data-app]").forEach(tr => tr.onclick = () => { selectedApp = tr.dataset.app; render(); });
     }
 
     function qaPill(status) {
       const s = status || "not_checked";
-      const cls = s === "qa_passed" ? "ok" : (s === "has_issues" ? "warnp" : (s === "cannot_release" ? "bad" : ""));
+      const cls = s === "qa_passed" ? "ok" : (s === "has_issues" ? "ok" : (s === "cannot_release" ? "bad" : ""));
       return `<span class="pill ${cls}">${esc(qaStatusLabels[s] || s)}</span>`;
+    }
+
+    function qaOk(snap) {
+      return ["qa_passed", "has_issues"].includes(snap?.qa_status || "");
+    }
+
+    function docsItems(snap) {
+      return (snap?.missing_items || []).filter(item => !String(item).startsWith("QA "));
+    }
+
+    function docsOk(snap) {
+      return isReleaseSnap(snap) && docsItems(snap).length === 0;
+    }
+
+    function docsPill(snap) {
+      if (!isReleaseSnap(snap)) return "";
+      const count = docsItems(snap).length;
+      return count ? `<span class="pill warnp">待补 ${count}</span>` : `<span class="pill ok">OK</span>`;
+    }
+
+    function finalPill(snap) {
+      if (!isReleaseSnap(snap)) return "";
+      if (docsOk(snap) && qaOk(snap)) return `<span class="pill ok">可发布</span>`;
+      return `<span class="pill warnp">未就绪</span>`;
+    }
+
+    function todoPill(snap) {
+      const count = (snap?.missing_items || []).length;
+      return count ? `<span class="pill warnp">${count}</span>` : `<span class="pill ok">0</span>`;
     }
 
     function renderDetail() {

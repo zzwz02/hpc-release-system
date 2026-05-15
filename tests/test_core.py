@@ -408,7 +408,7 @@ class CoreWorkflowTests(unittest.TestCase):
             core.update_snapshot(self.conn, release_id, app_id, lambda s: s.update({"version": "x"}))
 
     def test_final_lock_with_unfinished_apps_still_succeeds(self) -> None:
-        """Missing items don't block final lock; they only appear in missing_items."""
+        """Final lock can run; unfinished apps are excluded from final artifacts."""
         release_id, app_id = self.import_initial()
         # Don't fill anything, just lock
         artifacts = core.final_lock_release(self.conn, release_id, user="rm", role="RM")
@@ -438,6 +438,14 @@ class CoreWorkflowTests(unittest.TestCase):
         core.qa_set_status(self.conn, release_id, app_id, "cannot_release")
         artifacts = core.final_lock_release(self.conn, release_id)
         # cannot_release is excluded from final
+        self.assertNotIn("Amber", artifacts["release_note"])
+
+    def test_final_lock_excludes_when_docs_gate_items_remain(self) -> None:
+        release_id, app_id = self.import_initial()
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        core.update_snapshot(self.conn, release_id, app_id, lambda s: s.update({"owner_confirmed": True}))
+        core.qa_set_status(self.conn, release_id, app_id, "qa_passed")
+        artifacts = core.final_lock_release(self.conn, release_id)
         self.assertNotIn("Amber", artifacts["release_note"])
 
     def test_final_lock_has_issues_includes_app_and_appends_note(self) -> None:

@@ -1379,6 +1379,8 @@ def final_lock_release(conn: sqlite3.Connection, release_id: str, *, user: str =
     release = get_release(conn, release_id)
     if release.get("released_locked"):
         raise RuntimeError("Release 已最终锁定")
+    refresh_missing_items(conn, release_id)
+    release = get_release(conn, release_id)
     apps_by_id = {app["id"]: app for app in list_apps(conn)}
     for app_id, snapshot in release["snapshots"].items():
         if _qualifies_for_final(snapshot):
@@ -1444,9 +1446,15 @@ def _qualifies_for_final(snapshot: dict[str, Any]) -> bool:
         return False
     if not snapshot.get("owner_confirmed"):
         return False
+    if _docs_gate_items(snapshot):
+        return False
     if snapshot.get("qa_status") in {"qa_passed", "has_issues"}:
         return True
     return False
+
+
+def _docs_gate_items(snapshot: dict[str, Any]) -> list[str]:
+    return [item for item in snapshot.get("missing_items", []) if not str(item).startswith("QA ")]
 
 
 def rst_title(title: str, marker: str = "=") -> str:
