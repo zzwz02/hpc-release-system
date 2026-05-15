@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import io
 import mimetypes
@@ -22,7 +23,7 @@ ADMIN_PASSWORD_FILE = ROOT / "admin_password.local"
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "HPCReleaseSystem/0.1"
+    server_version = "HPCReleaseSystem/0.2"
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -34,6 +35,49 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/state":
                 self.current_user()
                 self.send_json(self.state_payload())
+                return
+            if parsed.path == "/api/app-audit":
+                self.current_user()
+                app_id = self.query().get("app_id", [""])[0]
+                if not app_id:
+                    raise ValueError("app_id is required")
+                conn = core.connect(DB_PATH)
+                self.send_json({"entries": core.app_audit_log(conn, app_id)})
+                return
+            if parsed.path == "/api/test-scope.csv":
+                self.require_rm()
+                release_id = self.query().get("release_id", [""])[0]
+                if not release_id:
+                    raise ValueError("release_id is required")
+                conn = core.connect(DB_PATH)
+                csv_text = core.export_test_scope_csv(conn, release_id)
+                release = core.get_release(conn, release_id)
+                filename = f"test_scope_{release['name']}.csv"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv; charset=utf-8-sig")
+                self.send_header("Content-Disposition", f"attachment; filename={filename}")
+                self.end_headers()
+                self.wfile.write("﻿".encode("utf-8") + csv_text.encode("utf-8"))
+                return
+            if parsed.path == "/api/qa-log/download":
+                self.current_user()
+                release_id = self.query().get("release_id", [""])[0]
+                if not release_id:
+                    raise ValueError("release_id is required")
+                conn = core.connect(DB_PATH)
+                meta = core.get_qa_log(conn, release_id)
+                if not meta:
+                    self.send_error(404, "no qa log")
+                    return
+                path = Path(meta["storage_path"])
+                if not path.exists():
+                    self.send_error(404, "qa log file missing")
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Disposition", f"attachment; filename={meta['filename']}")
+                self.end_headers()
+                self.wfile.write(path.read_bytes())
                 return
             if parsed.path.startswith("/api/artifacts/"):
                 self.require_rm()
@@ -90,58 +134,54 @@ class Handler(BaseHTTPRequestHandler):
                     alias_text=body.get("alias_text", ""),
                     release_name=body.get("release_name") or None,
                     maca_version=body.get("maca_version") or None,
-                    deadline=body.get("deadline", ""),
+                    app_freeze_deadline=body.get("app_freeze_deadline", ""),
+                    doc_deadline=body.get("doc_deadline", ""),
                 )
                 self.send_json({"release_id": release_id})
                 return
             if parsed.path == "/api/releases/create":
                 self.require_rm()
                 body = self.json_body()
-                release_id = core.create_release_from_previous(core.connect(DB_PATH), body["name"], maca_version=body.get("maca_version", ""), deadline=body.get("deadline", ""))
+                release_id = core.create_release_from_previous(
+                    core.connect(DB_PATH),
+                    body["name"],
+                    maca_version=body.get("maca_version", ""),
+                    app_freeze_deadline=body.get("app_freeze_deadline", ""),
+                    doc_deadline=body.get("doc_deadline", ""),
+                )
                 self.send_json({"release_id": release_id})
                 return
-            if parsed.path == "/api/releases/deadline":
+            if parsed.path == "/api/releases/deadlines":
                 self.require_rm()
                 body = self.json_body()
-                release = core.update_release_deadline(
+                release = core.update_release_deadlines(
                     core.connect(DB_PATH),
                     body["release_id"],
-                    body.get("deadline", ""),
+                    app_freeze_deadline=body.get("app_freeze_deadline"),
+                    doc_deadline=body.get("doc_deadline"),
                     user=self.user(),
                     role=self.role(),
                 )
-                self.send_json({"release": release})
+                self.send_json({"release": _serialize_release(release)})
                 return
-            if parsed.path == "/api/releases/admission":
+            if parsed.path == "/api/releases/final-lock":
                 self.require_rm()
                 body = self.json_body()
-                result = core.run_admission_check(core.connect(DB_PATH), body["release_id"])
-                self.send_json({"blockers": result})
-                return
-            if parsed.path == "/api/releases/open-qa":
-                self.require_rm()
-                body = self.json_body()
-                core.open_qa(core.connect(DB_PATH), body["release_id"])
-                self.send_json({"ok": True})
-                return
-            if parsed.path == "/api/releases/lock":
-                self.require_rm()
-                body = self.json_body()
-                artifacts = core.lock_release(core.connect(DB_PATH), body["release_id"])
+                artifacts = core.final_lock_release(core.connect(DB_PATH), body["release_id"], user=self.user(), role=self.role())
                 self.send_json({"artifacts": list(artifacts)})
                 return
-            if parsed.path == "/api/releases/unlock":
+            if parsed.path == "/api/releases/final-unlock":
                 self.require_rm()
                 body = self.json_body()
-                core.unlock_release(core.connect(DB_PATH), body["release_id"])
+                core.final_unlock_release(core.connect(DB_PATH), body["release_id"], user=self.user(), role=self.role())
                 self.send_json({"ok": True})
                 return
             if parsed.path == "/api/artifacts/generate":
                 self.require_rm()
                 body = self.json_body()
                 if body.get("final"):
-                    raise RuntimeError("Final artifacts can only be generated by release lock")
-                artifacts = core.generate_artifacts(core.connect(DB_PATH), body["release_id"], final=bool(body.get("final")))
+                    raise RuntimeError("Final artifacts 只能通过最终 lock 生成")
+                artifacts = core.generate_artifacts(core.connect(DB_PATH), body["release_id"], final=False)
                 self.send_json({"artifacts": list(artifacts)})
                 return
             if parsed.path == "/api/gerrit/plan":
@@ -180,10 +220,18 @@ class Handler(BaseHTTPRequestHandler):
                 app = core.get_app(conn, body["app_id"])
                 self.require_owner_or_rm(app)
                 release = core.get_release(conn, body["release_id"])
-                if release.get("state") == "release_locked":
-                    raise RuntimeError("Release is locked and immutable")
-                if release.get("state") == "qa_open":
-                    raise RuntimeError("QA is open; changes require change request workflow")
+                if release.get("released_locked"):
+                    raise RuntimeError("Release 已最终锁定")
+                if not core.is_before(release.get("doc_deadline", "")):
+                    raise RuntimeError("已过 doc deadline，不可修改")
+                snap_now = release["snapshots"].get(body["app_id"], {})
+                current_decision = snap_now.get("release_decision", "release")
+                new_decision = body.get("snapshot", {}).get("release_decision")
+                if new_decision is not None:
+                    new_decision = core.normalize_release_decision(new_decision)
+                    if new_decision != current_decision:
+                        if new_decision == "release" and not core.is_before(release.get("app_freeze_deadline", "")):
+                            raise RuntimeError("已过 app 冻结 deadline，不可再切换为 release")
                 if self.role() == "RM" and "app" in body:
                     app_update = body["app"]
                     for key in ["official_name", "type", "description", "git_url", "git_branch", "doc_target"]:
@@ -192,12 +240,24 @@ class Handler(BaseHTTPRequestHandler):
                     if "owners" in app_update:
                         app["owners"] = app_update["owners"]
                     core.save_app(conn, app)
+                    core.audit(conn, f"修改 app 元数据：{app['name']}", user=self.user(), role=self.role(), app_id=app["id"], event="update_app_meta")
+
                 def mutate(snapshot: dict) -> None:
                     snap_update = body.get("snapshot", {})
                     if "release_decision" in snap_update:
                         decision = core.normalize_release_decision(snap_update["release_decision"])
                         if decision not in core.RELEASE_DECISIONS:
                             raise ValueError(f"Invalid release_decision: {snap_update['release_decision']}")
+                        if decision != snapshot.get("release_decision"):
+                            core.audit(
+                                conn,
+                                f"修改 release 决策：{app['name']} {snapshot.get('release_decision')} -> {decision}",
+                                user=self.user(),
+                                role=self.role(),
+                                app_id=app["id"],
+                                release_id=body["release_id"],
+                                event="update_release_decision",
+                            )
                         snapshot["release_decision"] = decision
                     if "owner_confirmed" in snap_update:
                         if self.role() != "Owner":
@@ -219,17 +279,46 @@ class Handler(BaseHTTPRequestHandler):
                                 item.setdefault("id", core.new_id("testdoc"))
                                 item.setdefault("path", f"owner_added.{len(by_id) + 1}")
                                 snapshot.setdefault("test_docs", []).append(item)
+
                 updated = core.update_snapshot(conn, body["release_id"], body["app_id"], mutate)
-                core.refresh_snapshot_gate_status(core.get_app(conn, body["app_id"]), updated)
+                updated["missing_items"] = core.missing_items_for(core.get_app(conn, body["app_id"]), updated)
                 core.save_snapshot(conn, body["release_id"], body["app_id"], updated)
                 conn.commit()
-                self.send_json({"snapshot": updated, "blockers": updated.get("blockers", []), "qa_status": updated.get("qa_status")})
+                self.send_json({"snapshot": updated, "missing_items": updated.get("missing_items", []), "qa_status": updated.get("qa_status")})
                 return
-            if parsed.path == "/api/apps/qa-pass":
-                self.require_rm()
+            if parsed.path == "/api/qa/status":
+                if self.role() not in {"QA", "RM"}:
+                    raise PermissionError("只有 QA 或 RM 可标注 QA 状态")
                 body = self.json_body()
-                snapshot = core.mark_qa_passed(core.connect(DB_PATH), body["release_id"], body["app_id"])
+                snapshot = core.qa_set_status(
+                    core.connect(DB_PATH),
+                    body["release_id"],
+                    body["app_id"],
+                    body["status"],
+                    issue_note=body.get("issue_note", ""),
+                    user=self.user(),
+                    role=self.role(),
+                )
                 self.send_json({"snapshot": snapshot})
+                return
+            if parsed.path == "/api/qa/upload-log":
+                if self.role() not in {"QA", "RM"}:
+                    raise PermissionError("只有 QA 或 RM 可上传 QA log")
+                body = self.json_body()
+                content_b64 = body.get("content_base64", "")
+                if not content_b64:
+                    raise ValueError("content_base64 required")
+                content = base64.b64decode(content_b64)
+                meta = core.qa_upload_log(
+                    core.connect(DB_PATH),
+                    DB_PATH,
+                    body["release_id"],
+                    content,
+                    body.get("filename", "qa_log"),
+                    user=self.user(),
+                    role=self.role(),
+                )
+                self.send_json({"ok": True, **meta})
                 return
             if parsed.path == "/api/app-info":
                 body = self.json_body()
@@ -261,6 +350,7 @@ class Handler(BaseHTTPRequestHandler):
                     source=f"{app['git_url']} {app['git_branch']}:app_info.json",
                     source_type="gerrit_fetch",
                     commit_id=commit_id,
+                    uploaded_by=self.user(),
                 )
                 self.send_json({"snapshot": snapshot, "commit_id": commit_id, "source": snapshot.get("app_info", {}).get("source", "")})
                 return
@@ -285,15 +375,24 @@ class Handler(BaseHTTPRequestHandler):
         apps = core.list_apps(conn)
         if user["role"] == "Owner":
             apps = [app for app in apps if user["username"] in app.get("owners", [])]
-        payload = {"apps": apps, "releases": releases, "release": None, "artifacts": [], "user": user}
+        payload = {
+            "apps": apps,
+            "releases": [_serialize_release(r) for r in releases],
+            "release": None,
+            "artifacts": [],
+            "user": user,
+            "qa_log": None,
+            "server_now_beijing": core.beijing_now().strftime("%Y-%m-%d %H:%M"),
+        }
         if release_id:
-            core.refresh_release_status(conn, release_id)
+            core.refresh_missing_items(conn, release_id)
             release = core.get_release(conn, release_id)
             if user["role"] == "Owner":
                 visible = {app["id"] for app in apps}
                 release["snapshots"] = {app_id: snap for app_id, snap in release["snapshots"].items() if app_id in visible}
-            payload["release"] = release
+            payload["release"] = _serialize_release(release)
             payload["artifacts"] = [dict(row) for row in conn.execute("SELECT kind, name, final, generated_at FROM artifacts WHERE release_id = ?", (release_id,))]
+            payload["qa_log"] = core.get_qa_log(conn, release_id)
         return payload
 
     def send_json(self, payload: dict, status: int = 200, cookies: list[str] | None = None) -> None:
@@ -357,6 +456,13 @@ class Handler(BaseHTTPRequestHandler):
         if self.role() == "Owner" and self.user() in app.get("owners", []):
             return
         raise PermissionError("Owner permission required")
+
+
+def _serialize_release(release: dict) -> dict:
+    out = dict(release)
+    out["released_locked"] = bool(out.get("released_locked"))
+    out["phase"] = core.current_phase(out)
+    return out
 
 
 def read_admin_password_file() -> str:

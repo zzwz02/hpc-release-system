@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import re
@@ -13,8 +14,66 @@ from pathlib import Path
 from typing import Any, Callable
 
 
+BEIJING_TZ = dt.timezone(dt.timedelta(hours=8))
+
+
 def now() -> str:
     return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
+
+
+def beijing_now() -> dt.datetime:
+    """Current Beijing time as a naive datetime (no tzinfo)."""
+    return dt.datetime.now(BEIJING_TZ).replace(tzinfo=None, microsecond=0)
+
+
+def normalize_deadline(value: str | None) -> str:
+    """Normalize a deadline string to ``YYYY-MM-DD HH:MM`` (Beijing time).
+
+    Accepts ``''`` (returns ``''``), ``YYYY-MM-DD``, ``YYYY-MM-DDTHH:MM[:SS]``,
+    or ``YYYY-MM-DD HH:MM[:SS]``. Empty deadline means "no deadline set".
+    """
+    text = (value or "").strip()
+    if not text:
+        return ""
+    text = text.replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            parsed = dt.datetime.strptime(text, fmt)
+            if fmt == "%Y-%m-%d":
+                parsed = parsed.replace(hour=23, minute=59)
+            return parsed.strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+    raise ValueError(f"Invalid deadline: {value!r}; expected YYYY-MM-DD or YYYY-MM-DD HH:MM")
+
+
+def parse_deadline(value: str | None) -> dt.datetime | None:
+    if not value:
+        return None
+    return dt.datetime.strptime(normalize_deadline(value), "%Y-%m-%d %H:%M")
+
+
+def is_before(deadline: str | None, *, ref: dt.datetime | None = None) -> bool:
+    """True if the reference moment is strictly before the deadline.
+
+    Empty/None deadline means "no deadline set" → treated as infinite future,
+    so this returns True (i.e. the action is still allowed).
+    """
+    dl = parse_deadline(deadline)
+    if dl is None:
+        return True
+    return (ref or beijing_now()) < dl
+
+
+def current_phase(release: dict[str, Any]) -> str:
+    """Derive the lifecycle phase of a release from its deadlines and lock flag."""
+    if release.get("released_locked"):
+        return "released_locked"
+    if not is_before(release.get("doc_deadline", "")):
+        return "after_doc_deadline"
+    if not is_before(release.get("app_freeze_deadline", "")):
+        return "after_app_freeze"
+    return "before_app_freeze"
 
 
 def new_id(prefix: str) -> str:
@@ -71,19 +130,22 @@ def init_db(conn: sqlite3.Connection) -> None:
             doc_target TEXT NOT NULL DEFAULT 'manual',
             owners_json TEXT NOT NULL DEFAULT '[]',
             aliases_json TEXT NOT NULL DEFAULT '[]',
-            created_by TEXT NOT NULL DEFAULT 'import'
+            created_by TEXT NOT NULL DEFAULT 'import',
+            created_at TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS releases (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             maca_version TEXT NOT NULL DEFAULT '',
-            deadline TEXT NOT NULL DEFAULT '',
-            state TEXT NOT NULL DEFAULT 'owner_filling',
+            app_freeze_deadline TEXT NOT NULL DEFAULT '',
+            doc_deadline TEXT NOT NULL DEFAULT '',
+            released_locked INTEGER NOT NULL DEFAULT 0,
+            released_locked_at TEXT NOT NULL DEFAULT '',
+            released_locked_by TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             source TEXT NOT NULL,
-            cloned_from TEXT NOT NULL DEFAULT '',
-            locked_at TEXT NOT NULL DEFAULT ''
+            cloned_from TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS snapshots (
@@ -103,11 +165,22 @@ def init_db(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (release_id, kind)
         );
 
+        CREATE TABLE IF NOT EXISTS qa_logs (
+            release_id TEXT PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE,
+            filename TEXT NOT NULL,
+            storage_path TEXT NOT NULL,
+            uploaded_at TEXT NOT NULL,
+            uploaded_by TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS audit (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts TEXT NOT NULL,
             user TEXT NOT NULL,
             role TEXT NOT NULL,
+            app_id TEXT NOT NULL DEFAULT '',
+            release_id TEXT NOT NULL DEFAULT '',
+            event TEXT NOT NULL DEFAULT '',
             message TEXT NOT NULL
         );
 
@@ -143,10 +216,14 @@ def verify_password(password: str, encoded: str) -> bool:
 DEFAULT_USERS: tuple[tuple[str, str, str], ...] = (
     ("rm", "rm", "RM"),
     ("owner_test", "owner_test", "Owner"),
+    ("qa", "qa", "QA"),
 )
 
+ROLES = {"RM", "Owner", "QA", "Admin"}
 RELEASE_DECISIONS = {"release", "cicd_only", "stopped"}
+NON_RELEASE_DECISIONS = {"cicd_only", "stopped"}
 DOC_TARGETS = {"manual", "ai4sci"}
+QA_STATUSES = {"not_checked", "qa_passed", "has_issues", "cannot_release"}
 
 
 def normalize_release_decision(value: str | None) -> str:
@@ -186,6 +263,7 @@ def create_user(conn: sqlite3.Connection, username: str, password: str, role: st
 def clear_business_data(conn: sqlite3.Connection, *, user: str = "admin", role: str = "Admin") -> None:
     """Clear release data while preserving user accounts."""
     conn.execute("DELETE FROM artifacts")
+    conn.execute("DELETE FROM qa_logs")
     conn.execute("DELETE FROM snapshots")
     conn.execute("DELETE FROM releases")
     conn.execute("DELETE FROM apps")
@@ -221,12 +299,31 @@ def logout_session(conn: sqlite3.Connection, token: str | None) -> None:
         conn.commit()
 
 
-def audit(conn: sqlite3.Connection, message: str, user: str = "system", role: str = "system") -> None:
+def audit(
+    conn: sqlite3.Connection,
+    message: str,
+    *,
+    user: str = "system",
+    role: str = "system",
+    app_id: str = "",
+    release_id: str = "",
+    event: str = "",
+) -> None:
     conn.execute(
-        "INSERT INTO audit(ts, user, role, message) VALUES (?, ?, ?, ?)",
-        (now(), user, role, message),
+        "INSERT INTO audit(ts, user, role, app_id, release_id, event, message) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (now(), user, role, app_id, release_id, event, message),
     )
     conn.commit()
+
+
+def app_audit_log(conn: sqlite3.Connection, app_id: str) -> list[dict[str, Any]]:
+    return [
+        dict(row)
+        for row in conn.execute(
+            "SELECT ts, user, role, release_id, event, message FROM audit WHERE app_id = ? ORDER BY id DESC",
+            (app_id,),
+        )
+    ]
 
 
 def read_csv(path: str | Path) -> list[dict[str, str]]:
@@ -235,9 +332,7 @@ def read_csv(path: str | Path) -> list[dict[str, str]]:
 
 
 def parse_csv_text(text: str) -> list[dict[str, str]]:
-    import io
-
-    return [{k: (v or "").strip() for k, v in row.items()} for row in csv.DictReader(io.StringIO(text.lstrip("\ufeff")))]
+    return [{k: (v or "").strip() for k, v in row.items()} for row in csv.DictReader(io.StringIO(text.lstrip("﻿")))]
 
 
 def parse_alias_lines(raw: str = "") -> dict[str, str]:
@@ -278,13 +373,13 @@ def app_from_row(existing: dict[str, Any] | None, *, app_id: str, name: str) -> 
         "owners": [],
         "aliases": [],
         "created_by": "import",
+        "created_at": now(),
     }
     base["aliases"] = sorted(set(base.get("aliases", []) + [name]))
     return base
 
 
 def combined_release_row(rows: list[dict[str, str]]) -> dict[str, str]:
-    """Combine per-arch CSV rows for the same app/version/branch variant."""
     combined = dict(rows[0]) if rows else {}
     x86_chips: list[str] = []
     arm_chips: list[str] = []
@@ -334,8 +429,8 @@ def save_app(conn: sqlite3.Connection, app: dict[str, Any]) -> None:
     conn.execute(
         """
         INSERT INTO apps(id, name, official_name, category, type, description, git_url, git_branch,
-                         doc_target, owners_json, aliases_json, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         doc_target, owners_json, aliases_json, created_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           name=excluded.name,
           official_name=excluded.official_name,
@@ -362,6 +457,7 @@ def save_app(conn: sqlite3.Connection, app: dict[str, Any]) -> None:
             dumps_json(sorted(set(app.get("owners", [])))),
             dumps_json(sorted(set(app.get("aliases", [])))),
             app.get("created_by", "import"),
+            app.get("created_at") or now(),
         ),
     )
 
@@ -385,7 +481,7 @@ def locked_releases_for_app(conn: sqlite3.Connection, app_id: str) -> list[str]:
             SELECT releases.name
             FROM releases
             JOIN snapshots ON snapshots.release_id = releases.id
-            WHERE snapshots.app_id = ? AND releases.state = 'release_locked'
+            WHERE snapshots.app_id = ? AND releases.released_locked = 1
             ORDER BY releases.created_at
             """,
             (app_id,),
@@ -401,7 +497,7 @@ def delete_app(conn: sqlite3.Connection, app_id: str, *, user: str = "admin", ro
     conn.execute("DELETE FROM artifacts WHERE final = 0")
     conn.execute("DELETE FROM apps WHERE id = ?", (app_id,))
     conn.commit()
-    audit(conn, f"删除 app：{app['name']} ({app_id})", user=user, role=role)
+    audit(conn, f"删除 app：{app['name']} ({app_id})", user=user, role=role, app_id=app_id, event="delete_app")
     return app
 
 
@@ -411,11 +507,9 @@ def base_snapshot(app: dict[str, Any], release_row: dict[str, str] | None = None
     return {
         "app_id": app["id"],
         "release_decision": "release",
-        "lifecycle": "active",
         "qa_status": "not_checked",
+        "qa_issue_note": "",
         "owner_confirmed": False,
-        "rm_admitted": False,
-        "locked": False,
         "version": release_row.get("app_version") or owner_row.get("对应官方版本") or "",
         "x86_chips": release_row.get("maca_chip") or owner_row.get("X86支持芯片系列") or "",
         "arm_chips": owner_row.get("ARM支持芯片类型") or (release_row.get("maca_chip", "") if release_row.get("arch") == "arm" else ""),
@@ -437,70 +531,83 @@ def base_snapshot(app: dict[str, Any], release_row: dict[str, str] | None = None
         "app_info": None,
         "app_info_diffs": [],
         "test_docs": [],
-        "blockers": [],
-        "change_requests": [],
+        "missing_items": [],
     }
 
 
 def save_release(conn: sqlite3.Connection, release: dict[str, Any]) -> None:
     conn.execute(
         """
-        INSERT INTO releases(id, name, maca_version, deadline, state, created_at, source, cloned_from, locked_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO releases(id, name, maca_version, app_freeze_deadline, doc_deadline,
+                             released_locked, released_locked_at, released_locked_by,
+                             created_at, source, cloned_from)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           name=excluded.name,
           maca_version=excluded.maca_version,
-          deadline=excluded.deadline,
-          state=excluded.state,
+          app_freeze_deadline=excluded.app_freeze_deadline,
+          doc_deadline=excluded.doc_deadline,
+          released_locked=excluded.released_locked,
+          released_locked_at=excluded.released_locked_at,
+          released_locked_by=excluded.released_locked_by,
           created_at=excluded.created_at,
           source=excluded.source,
-          cloned_from=excluded.cloned_from,
-          locked_at=excluded.locked_at
+          cloned_from=excluded.cloned_from
         """,
         (
             release["id"],
             release["name"],
             release.get("maca_version", ""),
-            release.get("deadline", ""),
-            release.get("state", "owner_filling"),
+            normalize_deadline(release.get("app_freeze_deadline", "")),
+            normalize_deadline(release.get("doc_deadline", "")),
+            int(release.get("released_locked", 0)),
+            release.get("released_locked_at", ""),
+            release.get("released_locked_by", ""),
             release.get("created_at", now()),
             release.get("source", "manual"),
             release.get("cloned_from", ""),
-            release.get("locked_at", ""),
         ),
     )
 
 
-def update_release_deadline(
+def update_release_deadlines(
     conn: sqlite3.Connection,
     release_id: str,
-    deadline: str,
     *,
+    app_freeze_deadline: str | None = None,
+    doc_deadline: str | None = None,
     user: str = "system",
     role: str = "system",
 ) -> dict[str, Any]:
     release = get_release(conn, release_id)
-    if release.get("state") == "release_locked":
-        raise RuntimeError("Release is locked and immutable")
-    deadline = (deadline or "").strip()
-    if deadline and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", deadline):
-        raise ValueError("Deadline must be empty or YYYY-MM-DD")
-    conn.execute("UPDATE releases SET deadline = ? WHERE id = ?", (deadline, release_id))
+    if release.get("released_locked"):
+        raise RuntimeError("Release 已最终锁定，不可修改 deadline")
+    new_freeze = normalize_deadline(app_freeze_deadline) if app_freeze_deadline is not None else release.get("app_freeze_deadline", "")
+    new_doc = normalize_deadline(doc_deadline) if doc_deadline is not None else release.get("doc_deadline", "")
+    conn.execute(
+        "UPDATE releases SET app_freeze_deadline = ?, doc_deadline = ? WHERE id = ?",
+        (new_freeze, new_doc, release_id),
+    )
     conn.commit()
-    audit(conn, f"更新 release deadline：{release['name']} -> {deadline or '空'}", user=user, role=role)
+    audit(
+        conn,
+        f"更新 release deadline：{release['name']} app_freeze={new_freeze or '空'}, doc={new_doc or '空'}",
+        user=user,
+        role=role,
+        release_id=release_id,
+        event="update_deadlines",
+    )
     return get_release(conn, release_id)
 
 
 def release_is_locked(conn: sqlite3.Connection, release_id: str) -> bool:
-    row = conn.execute("SELECT state FROM releases WHERE id = ?", (release_id,)).fetchone()
-    return bool(row and row["state"] == "release_locked")
+    row = conn.execute("SELECT released_locked FROM releases WHERE id = ?", (release_id,)).fetchone()
+    return bool(row and row["released_locked"])
 
 
-def save_snapshot(conn: sqlite3.Connection, release_id: str, app_id: str, snapshot: dict[str, Any], *, allow_locked: bool = False) -> None:
-    if not allow_locked:
-        existing = conn.execute("SELECT data_json FROM snapshots WHERE release_id = ? AND app_id = ?", (release_id, app_id)).fetchone()
-        if release_is_locked(conn, release_id) or (existing and loads_json(existing["data_json"], {}).get("locked")):
-            raise RuntimeError("Release snapshot is locked and immutable")
+def save_snapshot(conn: sqlite3.Connection, release_id: str, app_id: str, snapshot: dict[str, Any]) -> None:
+    if release_is_locked(conn, release_id):
+        raise RuntimeError("Release 已最终锁定，所有快照不可修改")
     conn.execute(
         """
         INSERT INTO snapshots(release_id, app_id, data_json)
@@ -516,15 +623,23 @@ def get_release(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
     if not row:
         raise KeyError(f"Unknown release: {release_id}")
     release = dict(row)
+    release["released_locked"] = bool(release.get("released_locked"))
     release["snapshots"] = {
         snap["app_id"]: loads_json(snap["data_json"], {})
         for snap in conn.execute("SELECT app_id, data_json FROM snapshots WHERE release_id = ?", (release_id,))
     }
+    release["phase"] = current_phase(release)
     return release
 
 
 def list_releases(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    return [dict(row) for row in conn.execute("SELECT * FROM releases ORDER BY created_at")]
+    result = []
+    for row in conn.execute("SELECT * FROM releases ORDER BY created_at"):
+        rel = dict(row)
+        rel["released_locked"] = bool(rel.get("released_locked"))
+        rel["phase"] = current_phase(rel)
+        result.append(rel)
+    return result
 
 
 def previous_release(conn: sqlite3.Connection, release_id: str) -> dict[str, Any] | None:
@@ -536,14 +651,14 @@ def previous_release(conn: sqlite3.Connection, release_id: str) -> dict[str, Any
 
 
 def last_published_snapshot(conn: sqlite3.Connection, app_id: str, before_release_id: str) -> dict[str, Any] | None:
-    """Find the most recent locked snapshot for *app_id* from a release created before *before_release_id*."""
+    """Find the most recent locked snapshot for *app_id* before *before_release_id*."""
     releases = list_releases(conn)
     target_idx = next((i for i, r in enumerate(releases) if r["id"] == before_release_id), None)
     if target_idx is None:
         return None
     for i in range(target_idx - 1, -1, -1):
         r = releases[i]
-        if r.get("state") != "release_locked":
+        if not r.get("released_locked"):
             continue
         row = conn.execute(
             "SELECT data_json FROM snapshots WHERE release_id = ? AND app_id = ?",
@@ -551,7 +666,7 @@ def last_published_snapshot(conn: sqlite3.Connection, app_id: str, before_releas
         ).fetchone()
         if row:
             snap = loads_json(row["data_json"], {})
-            if snap.get("locked"):
+            if snap.get("locked_in_release"):
                 return snap
     return None
 
@@ -564,7 +679,8 @@ def import_initial(
     alias_text: str = "",
     release_name: str | None = None,
     maca_version: str | None = None,
-    deadline: str = "",
+    app_freeze_deadline: str = "",
+    doc_deadline: str = "",
 ) -> str:
     release_rows = read_csv(release_csv)
     owner_rows = read_csv(owner_csv)
@@ -575,7 +691,8 @@ def import_initial(
         alias_text=alias_text,
         release_name=release_name,
         maca_version=maca_version,
-        deadline=deadline,
+        app_freeze_deadline=app_freeze_deadline,
+        doc_deadline=doc_deadline,
     )
 
 
@@ -587,7 +704,8 @@ def import_initial_rows(
     alias_text: str = "",
     release_name: str | None = None,
     maca_version: str | None = None,
-    deadline: str = "",
+    app_freeze_deadline: str = "",
+    doc_deadline: str = "",
 ) -> str:
     aliases = parse_alias_lines(alias_text)
     apps: dict[str, dict[str, Any]] = {app["id"]: app for app in list_apps(conn)}
@@ -656,18 +774,28 @@ def import_initial_rows(
 
     for app in apps.values():
         save_app(conn, app)
+        audit(
+            conn,
+            f"导入 app：{app['name']}",
+            user="import",
+            role="system",
+            app_id=app["id"],
+            event="create_app",
+        )
 
     release_id = new_id("rel")
     first_release = {
         "id": release_id,
         "name": release_name or maca_version or release_rows[0].get("maca_version") or "initial-release",
         "maca_version": maca_version or release_rows[0].get("maca_version", ""),
-        "deadline": deadline,
-        "state": "owner_filling",
+        "app_freeze_deadline": app_freeze_deadline,
+        "doc_deadline": doc_deadline,
+        "released_locked": 0,
+        "released_locked_at": "",
+        "released_locked_by": "",
         "created_at": now(),
         "source": "initial_csv",
         "cloned_from": "",
-        "locked_at": "",
     }
     save_release(conn, first_release)
 
@@ -681,11 +809,23 @@ def import_initial_rows(
         save_snapshot(conn, release_id, app["id"], snapshot)
 
     conn.commit()
-    audit(conn, f"首次初始化导入完成：release rows={len(release_rows)}, owner rows={len(owner_rows)}")
+    audit(
+        conn,
+        f"首次初始化导入完成：release rows={len(release_rows)}, owner rows={len(owner_rows)}",
+        release_id=release_id,
+        event="import_initial",
+    )
     return release_id
 
 
-def create_release_from_previous(conn: sqlite3.Connection, name: str, *, maca_version: str = "", deadline: str = "") -> str:
+def create_release_from_previous(
+    conn: sqlite3.Connection,
+    name: str,
+    *,
+    maca_version: str = "",
+    app_freeze_deadline: str = "",
+    doc_deadline: str = "",
+) -> str:
     if not (name or "").strip():
         raise ValueError("新 Release 名称不能为空")
     releases = list_releases(conn)
@@ -695,24 +835,34 @@ def create_release_from_previous(conn: sqlite3.Connection, name: str, *, maca_ve
         "id": release_id,
         "name": name,
         "maca_version": maca_version,
-        "deadline": deadline,
-        "state": "owner_filling",
+        "app_freeze_deadline": app_freeze_deadline,
+        "doc_deadline": doc_deadline,
+        "released_locked": 0,
+        "released_locked_at": "",
+        "released_locked_by": "",
         "created_at": now(),
         "source": "cloned_from_previous" if previous else "empty",
         "cloned_from": previous["id"] if previous else "",
-        "locked_at": "",
     }
     save_release(conn, release)
     for app in list_apps(conn):
         old = previous["snapshots"].get(app["id"]) if previous else None
         snapshot = json.loads(json.dumps(old)) if old else base_snapshot(app)
         snapshot.pop("app_meta", None)
-        snapshot.update({"owner_confirmed": False, "rm_admitted": False, "qa_status": "not_checked", "locked": False, "blockers": [], "change_requests": []})
+        snapshot.pop("locked_in_release", None)
+        snapshot.update(
+            {
+                "owner_confirmed": False,
+                "qa_status": "not_checked",
+                "qa_issue_note": "",
+                "missing_items": [],
+            }
+        )
         for td in snapshot.get("test_docs", []):
             td["stale"] = True
         save_snapshot(conn, release_id, app["id"], snapshot)
     conn.commit()
-    audit(conn, f"创建 release {name}，沿用上一版本信息")
+    audit(conn, f"创建 release {name}，沿用上一版本信息", release_id=release_id, event="create_release")
     return release_id
 
 
@@ -727,7 +877,6 @@ def add_new_app_request(
     owner: str,
     doc_target: str = "manual",
 ) -> str:
-    """Create a new app from owner-provided fields plus submitter owner."""
     raw_decision = (release_decision or "").strip()
     if not official_name or not git_url or not git_branch or not raw_decision or not owner:
         raise ValueError("New app requires official_name, git_url, git_branch, release_decision, and submitter owner")
@@ -736,8 +885,10 @@ def add_new_app_request(
         raise ValueError(f"Invalid release_decision: {release_decision}")
     doc_target = normalize_doc_target(doc_target)
     release = get_release(conn, release_id)
-    if release.get("state") in {"qa_open", "release_locked"}:
-        raise RuntimeError("New apps cannot be added after QA starts")
+    if release.get("released_locked"):
+        raise RuntimeError("Release 已最终锁定，不可新增 app")
+    if release_decision == "release" and not is_before(release.get("app_freeze_deadline", "")):
+        raise RuntimeError("已过 app 冻结 deadline，不可再新增以 release 状态进入本期的 app")
     app_id = normalize_name(official_name)
     app = {
         "id": app_id,
@@ -752,14 +903,22 @@ def add_new_app_request(
         "owners": [owner],
         "aliases": [official_name],
         "created_by": owner,
+        "created_at": now(),
     }
     save_app(conn, app)
     snapshot = base_snapshot(app)
     snapshot["release_decision"] = release_decision
-    snapshot["change_requests"].append({"id": new_id("chg"), "type": "new_app", "status": "submitted", "created_at": now(), "owner": owner})
     save_snapshot(conn, release_id, app_id, snapshot)
     conn.commit()
-    audit(conn, f"新增 app 申请：{official_name}，owner={owner}")
+    audit(
+        conn,
+        f"新增 app：{official_name}，owner={owner}，初始决策={release_decision}",
+        user=owner,
+        role="Owner",
+        app_id=app_id,
+        release_id=release_id,
+        event="create_app",
+    )
     return app_id
 
 
@@ -881,7 +1040,6 @@ def diff_app_info(old: dict[str, Any] | None, new: dict[str, Any]) -> list[dict[
 def ensure_test_docs(snapshot: dict[str, Any], parsed: dict[str, Any], diffs: list[dict[str, Any]]) -> None:
     snapshot.setdefault("test_docs", [])
     docs_by_path = {doc["path"]: doc for doc in snapshot["test_docs"]}
-    changed_paths = {diff["field"] for diff in diffs if diff["type"].startswith("test_cmd")}
     current_paths = set()
     for test in parsed.get("tests", []):
         current_paths.add(test["path"])
@@ -913,45 +1071,23 @@ def ensure_test_docs(snapshot: dict[str, Any], parsed: dict[str, Any], diffs: li
             doc["obsolete"] = True
 
 
-def assert_unlocked(snapshot: dict[str, Any]) -> None:
-    if snapshot.get("locked"):
-        raise RuntimeError("Release snapshot is locked and immutable")
-
-
 def update_snapshot(
     conn: sqlite3.Connection,
     release_id: str,
     app_id: str,
     mutator: Callable[[dict[str, Any]], None],
     *,
-    allow_qa_change: bool = False,
+    skip_doc_deadline: bool = False,
 ) -> dict[str, Any]:
     release = get_release(conn, release_id)
-    if release.get("state") == "qa_open" and not allow_qa_change:
-        raise RuntimeError("QA is open; key field changes require RM-approved change request workflow")
+    if release.get("released_locked"):
+        raise RuntimeError("Release 已最终锁定，不可修改")
+    if not skip_doc_deadline and not is_before(release.get("doc_deadline", "")):
+        raise RuntimeError("已过 doc deadline，不可再修改文档/表单信息")
     snapshot = release["snapshots"][app_id]
-    assert_unlocked(snapshot)
     mutator(snapshot)
     save_snapshot(conn, release_id, app_id, snapshot)
     conn.commit()
-    return snapshot
-
-
-def mark_qa_passed(conn: sqlite3.Connection, release_id: str, app_id: str) -> dict[str, Any]:
-    release = get_release(conn, release_id)
-    if release.get("state") != "qa_open":
-        raise RuntimeError("QA pass can only be recorded while QA is open")
-    snapshot = release["snapshots"][app_id]
-    assert_unlocked(snapshot)
-    if snapshot.get("release_decision") != "release" or not snapshot.get("rm_admitted"):
-        raise RuntimeError("Only RM-admitted release apps can be marked QA passed")
-    blockers = blockers_for(get_app(conn, app_id), snapshot)
-    if blockers:
-        raise RuntimeError(f"Cannot mark QA passed; blockers remain: {blockers}")
-    snapshot["qa_status"] = "qa_passed"
-    save_snapshot(conn, release_id, app_id, snapshot)
-    conn.commit()
-    audit(conn, f"{app_id} QA passed")
     return snapshot
 
 
@@ -967,10 +1103,11 @@ def apply_app_info(
     uploaded_by: str = "",
 ) -> dict[str, Any]:
     release = get_release(conn, release_id)
-    if release.get("state") == "qa_open":
-        raise RuntimeError("QA is open; app_info changes require RM-approved reduction workflow")
+    if release.get("released_locked"):
+        raise RuntimeError("Release 已最终锁定，不可上传 app_info")
+    if not is_before(release.get("doc_deadline", "")):
+        raise RuntimeError("已过 doc deadline，不可再上传 app_info")
     snapshot = release["snapshots"][app_id]
-    assert_unlocked(snapshot)
     parsed = parse_app_info(raw)
     previous = previous_release(conn, release_id)
     old_parsed = None
@@ -995,31 +1132,43 @@ def apply_app_info(
     ensure_test_docs(snapshot, parsed, diffs)
     save_snapshot(conn, release_id, app_id, snapshot)
     conn.commit()
-    audit(conn, f"{app_id} 更新 app_info.json，差异 {len(diffs)} 项")
+    audit(
+        conn,
+        f"{app_id} 更新 app_info.json，差异 {len(diffs)} 项",
+        user=uploaded_by or "system",
+        role="Owner",
+        app_id=app_id,
+        release_id=release_id,
+        event="upload_app_info",
+    )
     return snapshot
 
 
-def blockers_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
+def missing_items_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
+    """Items missing for this app to be release-ready.
+
+    Returned as a "to-do" list to display to RM. Does NOT block any action.
+    """
     decision = normalize_release_decision(snapshot.get("release_decision"))
     if decision not in {"release", "cicd_only"}:
         return []
-    blockers: list[str] = []
+    missing: list[str] = []
     if not app.get("owners"):
-        blockers.append("缺少 owner")
+        missing.append("缺少 owner")
     if not app.get("git_url"):
-        blockers.append("缺少 Gerrit URL")
+        missing.append("缺少 Gerrit URL")
     if not app.get("git_branch"):
-        blockers.append("缺少 branch")
+        missing.append("缺少 branch")
     if not snapshot.get("app_info"):
-        blockers.append("缺少可追溯 AppInfoSnapshot")
+        missing.append("缺少可追溯 AppInfoSnapshot")
     if decision != "release":
-        return blockers
+        return missing
     if any(not diff.get("confirmed") for diff in snapshot.get("app_info_diffs", [])):
-        blockers.append("app_info 差异未确认")
+        missing.append("app_info 差异未确认")
     if not snapshot.get("version"):
-        blockers.append("缺少 对应官方版本")
+        missing.append("缺少 对应官方版本")
     if not snapshot.get("x86_chips"):
-        blockers.append("缺少 X86支持芯片系列")
+        missing.append("缺少 X86支持芯片系列")
     if normalize_doc_target(app.get("doc_target")) in DOC_TARGETS:
         doc = snapshot.get("doc", {})
         required = {
@@ -1030,105 +1179,180 @@ def blockers_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
         }
         for key, label in required.items():
             if not doc.get(key):
-                blockers.append(f"缺少{label}")
+                missing.append(f"缺少{label}")
     for doc in snapshot.get("test_docs", []):
         if doc.get("obsolete"):
             continue
         if doc.get("owner_added") and not doc.get("command"):
-            blockers.append(f"{doc['path']} 缺少 owner-added 测试命令")
+            missing.append(f"{doc['path']} 缺少 owner-added 测试命令")
         for key, label in {"dataset": "测试数据集", "content": "测试内容", "result_view": "结果查看方式", "pass_criteria": "通过标准"}.items():
             if not doc.get(key):
-                blockers.append(f"{doc['path']} 缺少{label}")
+                missing.append(f"{doc['path']} 缺少{label}")
         if doc.get("stale"):
-            blockers.append(f"{doc['path']} 测试说明 stale")
+            missing.append(f"{doc['path']} 测试说明 stale")
     if not snapshot.get("owner_confirmed"):
-        blockers.append("owner 未确认")
-    return blockers
+        missing.append("Owner 未确认 doc")
+    qa_status = snapshot.get("qa_status", "not_checked")
+    if qa_status == "not_checked":
+        missing.append("QA 未测试")
+    elif qa_status == "cannot_release":
+        missing.append("QA 标注为不可发布")
+    return missing
 
 
-def refresh_snapshot_gate_status(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
-    snapshot["release_decision"] = normalize_release_decision(snapshot.get("release_decision"))
-    snapshot.pop("cicd", None)
-    blockers = blockers_for(app, snapshot)
-    snapshot["blockers"] = blockers
-    if snapshot.get("release_decision") != "release":
-        snapshot["qa_status"] = "not_in_release"
-    elif blockers:
-        snapshot["qa_status"] = "blocked"
-    elif snapshot.get("rm_admitted") and snapshot.get("qa_status") in {"in_qa", "qa_passed", "passed"}:
-        snapshot["qa_status"] = snapshot.get("qa_status")
-    else:
-        snapshot["qa_status"] = "eligible"
-    return blockers
-
-
-def refresh_release_status(conn: sqlite3.Connection, release_id: str, *, persist: bool = True) -> dict[str, list[str]]:
+def refresh_missing_items(conn: sqlite3.Connection, release_id: str) -> dict[str, list[str]]:
+    """Recompute missing_items for every snapshot in the release; return map."""
     release = get_release(conn, release_id)
+    if release.get("released_locked"):
+        return {app_id: snap.get("missing_items", []) for app_id, snap in release["snapshots"].items()}
     apps = {app["id"]: app for app in list_apps(conn)}
     results: dict[str, list[str]] = {}
     for app_id, snapshot in release["snapshots"].items():
         app = apps.get(app_id)
         if not app:
             continue
-        blockers = refresh_snapshot_gate_status(app, snapshot)
-        results[app_id] = blockers
-        if persist and release.get("state") != "release_locked":
-            save_snapshot(conn, release_id, app_id, snapshot)
-    if persist and release.get("state") != "release_locked":
-        conn.commit()
-    return results
-
-
-def run_admission_check(conn: sqlite3.Connection, release_id: str) -> dict[str, list[str]]:
-    release = get_release(conn, release_id)
-    if release.get("state") == "release_locked":
-        raise RuntimeError("Release is locked and immutable")
-    results: dict[str, list[str]] = {}
-    for app in list_apps(conn):
-        snapshot = release["snapshots"].get(app["id"])
-        if not snapshot:
-            continue
-        blockers = refresh_snapshot_gate_status(app, snapshot)
-        save_snapshot(conn, release_id, app["id"], snapshot)
-        results[app["id"]] = blockers
-    conn.execute("UPDATE releases SET state = ? WHERE id = ?", ("qa_admission_check", release_id))
+        snapshot["release_decision"] = normalize_release_decision(snapshot.get("release_decision"))
+        snapshot.pop("cicd", None)
+        items = missing_items_for(app, snapshot)
+        snapshot["missing_items"] = items
+        results[app_id] = items
+        save_snapshot(conn, release_id, app_id, snapshot)
     conn.commit()
-    audit(conn, f"完成 QA 准入检查：{release['name']}")
     return results
 
 
-def admission_blockers(conn: sqlite3.Connection, release_id: str) -> dict[str, list[str]]:
+def qa_set_status(
+    conn: sqlite3.Connection,
+    release_id: str,
+    app_id: str,
+    status: str,
+    *,
+    issue_note: str = "",
+    user: str = "qa",
+    role: str = "QA",
+) -> dict[str, Any]:
+    if status not in QA_STATUSES:
+        raise ValueError(f"Invalid QA status: {status}")
     release = get_release(conn, release_id)
-    results: dict[str, list[str]] = {}
-    for app in list_apps(conn):
-        snapshot = release["snapshots"].get(app["id"])
-        if snapshot:
-            results[app["id"]] = blockers_for(app, snapshot)
-    return results
+    if release.get("released_locked"):
+        raise RuntimeError("Release 已最终锁定，不可修改 QA 状态")
+    snapshot = release["snapshots"].get(app_id)
+    if not snapshot:
+        raise KeyError(f"App {app_id} not in release")
+    if snapshot.get("release_decision") != "release":
+        raise RuntimeError("仅 release 决策的 app 可由 QA 标注状态")
+    if status == "has_issues" and not (issue_note or "").strip():
+        raise ValueError("标注「存在问题」时必须填写问题说明")
+    snapshot["qa_status"] = status
+    snapshot["qa_issue_note"] = (issue_note or "").strip() if status == "has_issues" else ""
+    save_snapshot(conn, release_id, app_id, snapshot)
+    conn.commit()
+    audit(
+        conn,
+        f"QA 标注 {app_id} 为 {status}" + (f"：{issue_note}" if issue_note else ""),
+        user=user,
+        role=role,
+        app_id=app_id,
+        release_id=release_id,
+        event="qa_set_status",
+    )
+    return snapshot
 
 
-def open_qa(conn: sqlite3.Connection, release_id: str) -> None:
+def qa_log_dir(db_path: str | Path) -> Path:
+    base = Path(db_path).resolve().parent / "qa_logs"
+    base.mkdir(exist_ok=True)
+    return base
+
+
+def qa_upload_log(
+    conn: sqlite3.Connection,
+    db_path: str | Path,
+    release_id: str,
+    content: bytes,
+    filename: str,
+    *,
+    user: str = "qa",
+    role: str = "QA",
+) -> dict[str, str]:
     release = get_release(conn, release_id)
-    if release.get("state") == "release_locked":
-        raise RuntimeError("Release is locked and immutable")
+    if release.get("released_locked"):
+        raise RuntimeError("Release 已最终锁定，不可上传 QA log")
+    if not filename:
+        raise ValueError("filename required")
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", filename) or "qa_log"
+    target_dir = qa_log_dir(db_path)
+    storage_path = target_dir / f"{release_id}__{safe_name}"
+    storage_path.write_bytes(content)
+    conn.execute(
+        """
+        INSERT INTO qa_logs(release_id, filename, storage_path, uploaded_at, uploaded_by)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(release_id) DO UPDATE SET
+          filename=excluded.filename,
+          storage_path=excluded.storage_path,
+          uploaded_at=excluded.uploaded_at,
+          uploaded_by=excluded.uploaded_by
+        """,
+        (release_id, safe_name, str(storage_path), now(), user),
+    )
+    conn.commit()
+    audit(
+        conn,
+        f"QA 上传 log：{safe_name}",
+        user=user,
+        role=role,
+        release_id=release_id,
+        event="qa_upload_log",
+    )
+    return {"filename": safe_name, "storage_path": str(storage_path), "uploaded_at": now(), "uploaded_by": user}
+
+
+def get_qa_log(conn: sqlite3.Connection, release_id: str) -> dict[str, str] | None:
+    row = conn.execute(
+        "SELECT release_id, filename, storage_path, uploaded_at, uploaded_by FROM qa_logs WHERE release_id = ?",
+        (release_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def export_test_scope_csv(conn: sqlite3.Connection, release_id: str) -> str:
+    """Return CSV text of release-decision=release apps in the release."""
+    release = get_release(conn, release_id)
+    apps = {app["id"]: app for app in list_apps(conn)}
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["app_name", "version", "gerrit_url", "branch", "owners"])
+    rows = []
     for app_id, snapshot in release["snapshots"].items():
-        if snapshot.get("qa_status") == "eligible":
-            snapshot["qa_status"] = "in_qa"
-            snapshot["rm_admitted"] = True
-            save_snapshot(conn, release_id, app_id, snapshot)
-    conn.execute("UPDATE releases SET state = ? WHERE id = ?", ("qa_open", release_id))
-    conn.commit()
-    audit(conn, f"打开 QA 周期：{release['name']}")
+        if snapshot.get("release_decision") != "release":
+            continue
+        app = apps.get(app_id)
+        if not app:
+            continue
+        rows.append(
+            (
+                app.get("name", ""),
+                snapshot.get("version", ""),
+                app.get("git_url", ""),
+                app.get("git_branch", ""),
+                ",".join(app.get("owners", [])),
+            )
+        )
+    rows.sort(key=lambda r: r[0].lower())
+    for row in rows:
+        writer.writerow(row)
+    return out.getvalue()
 
 
-def lock_release(conn: sqlite3.Connection, release_id: str) -> dict[str, str]:
+def final_lock_release(conn: sqlite3.Connection, release_id: str, *, user: str = "rm", role: str = "RM") -> dict[str, str]:
+    """Final lock: snapshot app_meta, freeze all writes, generate final artifacts."""
     release = get_release(conn, release_id)
-    if release.get("state") == "release_locked":
-        raise RuntimeError("Release is already locked")
+    if release.get("released_locked"):
+        raise RuntimeError("Release 已最终锁定")
     apps_by_id = {app["id"]: app for app in list_apps(conn)}
     for app_id, snapshot in release["snapshots"].items():
-        qa_passed = snapshot.get("qa_status") in {"qa_passed", "passed"}
-        if qa_passed:
+        if _qualifies_for_final(snapshot):
             app = apps_by_id.get(app_id)
             if app:
                 snapshot["app_meta"] = {
@@ -1143,28 +1367,57 @@ def lock_release(conn: sqlite3.Connection, release_id: str) -> dict[str, str]:
                     "doc_target": app["doc_target"],
                     "owners": app["owners"],
                 }
-            snapshot["locked"] = True
-        save_snapshot(conn, release_id, app_id, snapshot, allow_locked=True)
-    conn.execute("UPDATE releases SET state = ?, locked_at = ? WHERE id = ?", ("release_locked", now(), release_id))
+            snapshot["locked_in_release"] = True
+        save_snapshot_raw(conn, release_id, app_id, snapshot)
+    conn.execute(
+        "UPDATE releases SET released_locked = 1, released_locked_at = ?, released_locked_by = ? WHERE id = ?",
+        (now(), user, release_id),
+    )
     conn.commit()
     artifacts = generate_artifacts(conn, release_id, final=True, from_lock=True)
-    audit(conn, f"Release locked：{release['name']}")
+    audit(conn, f"Release 最终锁定：{release['name']}", user=user, role=role, release_id=release_id, event="final_lock")
     return artifacts
 
 
-def unlock_release(conn: sqlite3.Connection, release_id: str) -> None:
-    """Revert a locked release back to qa_open so RM can continue work."""
+def final_unlock_release(conn: sqlite3.Connection, release_id: str, *, user: str = "rm", role: str = "RM") -> None:
+    """Reverse a final lock: clear app_meta + locked flag, delete final artifacts."""
     release = get_release(conn, release_id)
-    if release.get("state") != "release_locked":
-        raise RuntimeError("Release is not locked")
+    if not release.get("released_locked"):
+        raise RuntimeError("Release 未锁定，无需解锁")
+    conn.execute(
+        "UPDATE releases SET released_locked = 0, released_locked_at = '', released_locked_by = '' WHERE id = ?",
+        (release_id,),
+    )
     for app_id, snapshot in release["snapshots"].items():
         snapshot.pop("app_meta", None)
-        snapshot["locked"] = False
-        save_snapshot(conn, release_id, app_id, snapshot, allow_locked=True)
+        snapshot.pop("locked_in_release", None)
+        save_snapshot_raw(conn, release_id, app_id, snapshot)
     conn.execute("DELETE FROM artifacts WHERE release_id = ? AND final = 1", (release_id,))
-    conn.execute("UPDATE releases SET state = ?, locked_at = '' WHERE id = ?", ("qa_open", release_id))
     conn.commit()
-    audit(conn, f"Release 解锁：{release['name']}")
+    audit(conn, f"Release 解锁：{release['name']}", user=user, role=role, release_id=release_id, event="final_unlock")
+
+
+def save_snapshot_raw(conn: sqlite3.Connection, release_id: str, app_id: str, snapshot: dict[str, Any]) -> None:
+    """Save snapshot WITHOUT lock checks; used by lock/unlock themselves."""
+    conn.execute(
+        """
+        INSERT INTO snapshots(release_id, app_id, data_json)
+        VALUES (?, ?, ?)
+        ON CONFLICT(release_id, app_id) DO UPDATE SET data_json=excluded.data_json
+        """,
+        (release_id, app_id, dumps_json(snapshot)),
+    )
+
+
+def _qualifies_for_final(snapshot: dict[str, Any]) -> bool:
+    """True if this snapshot should be included in the final release_note/manuals."""
+    if snapshot.get("release_decision") != "release":
+        return False
+    if not snapshot.get("owner_confirmed"):
+        return False
+    if snapshot.get("qa_status") in {"qa_passed", "has_issues"}:
+        return True
+    return False
 
 
 def rst_title(title: str, marker: str = "=") -> str:
@@ -1181,7 +1434,7 @@ def code_block(content: str) -> str:
 def release_rows(conn: sqlite3.Connection, release: dict[str, Any], *, final: bool = False) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     """Rows for the release note.
 
-    *final=True*: only QA-passed apps (used at lock time).
+    *final=True*: only release+doc-confirmed+QA-not-cannot_release apps.
     *final=False*: all release apps (preview).
     """
     apps = {app["id"]: app for app in list_apps(conn)}
@@ -1190,7 +1443,7 @@ def release_rows(conn: sqlite3.Connection, release: dict[str, Any], *, final: bo
         app = snapshot.get("app_meta") or apps.get(app_id)
         if not app or snapshot.get("release_decision") != "release":
             continue
-        if final and snapshot.get("qa_status") not in {"qa_passed", "passed"}:
+        if final and not _qualifies_for_final(snapshot):
             continue
         rows.append((app, snapshot))
     return sorted(rows, key=lambda item: item[0]["name"].lower())
@@ -1201,14 +1454,7 @@ def guide_rows(
     release: dict[str, Any],
     doc_target: str,
 ) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], list[tuple[dict[str, Any], dict[str, Any]]]]:
-    """Return ``(active_rows, stopped_rows)`` for a manual/ai4sci guide.
-
-    * New apps (never locked before): included only if QA passed this release.
-    * Previously published apps: always kept.  Use current snapshot if QA
-      passed, otherwise fall back to last locked release data.
-    * Stopped apps (release_decision == "stopped"): returned separately so
-      the renderer can place them at the end with a marker.
-    """
+    """Return ``(active_rows, stopped_rows)`` for a manual/ai4sci guide."""
     apps = {app["id"]: app for app in list_apps(conn)}
     active: list[tuple[dict[str, Any], dict[str, Any]]] = []
     stopped: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -1220,8 +1466,8 @@ def guide_rows(
         if normalize_doc_target(app.get("doc_target")) != doc_target:
             continue
 
-        qa_passed = snapshot.get("qa_status") in {"qa_passed", "passed"}
         decision = snapshot.get("release_decision", "release")
+        qualifies = _qualifies_for_final(snapshot)
 
         if decision == "stopped":
             prev = last_published_snapshot(conn, app_id, release["id"])
@@ -1235,12 +1481,12 @@ def guide_rows(
 
         prev = last_published_snapshot(conn, app_id, release["id"])
 
-        if qa_passed:
+        if qualifies:
             active.append((app, snapshot))
         elif prev:
             prev_app = prev.get("app_meta") or app
             active.append((prev_app, prev))
-        # else: new app that didn't pass QA — omit
+        # else: new app that didn't qualify — omit
 
     active.sort(key=lambda item: item[0]["name"].lower())
     stopped.sort(key=lambda item: item[0]["name"].lower())
@@ -1254,6 +1500,15 @@ def render_release_note(release: dict[str, Any], rows: list[tuple[dict[str, Any]
     for app, snapshot in rows:
         out += f"   * - {app['name']}\n     - {app.get('type') or app.get('category') or ''}\n     - {app.get('description') or ''}\n     - {snapshot.get('version') or ''}\n     - {snapshot.get('x86_chips') or ''}\n     - {snapshot.get('arm_chips') or ''}\n"
     return out
+
+
+def _merged_limitations(snapshot: dict[str, Any]) -> str:
+    """Merge owner-written limitations with QA's issue note if any."""
+    text = (snapshot.get("doc", {}) or {}).get("limitations", "") or ""
+    if snapshot.get("qa_status") == "has_issues" and snapshot.get("qa_issue_note"):
+        prefix = f"QA 备注：{snapshot['qa_issue_note']}"
+        text = f"{text}\n\n{prefix}".strip() if text else prefix
+    return text
 
 
 def _render_guide_entries(rows: list[tuple[dict[str, Any], dict[str, Any]]], *, stopped: bool = False) -> str:
@@ -1278,8 +1533,9 @@ def _render_guide_entries(rows: list[tuple[dict[str, Any], dict[str, Any]]], *, 
             out += f"  - 通过标准：{test_doc.get('pass_criteria', '')}\n\n"
             if test_doc.get("command"):
                 out += code_block(test_doc["command"])
-        if doc.get("limitations"):
-            out += f"**已知限制：**\n\n{doc['limitations']}\n\n"
+        limits = _merged_limitations(snapshot)
+        if limits:
+            out += f"**已知限制：**\n\n{limits}\n\n"
     return out
 
 
@@ -1298,14 +1554,13 @@ def render_guide(
 def generate_artifacts(conn: sqlite3.Connection, release_id: str, *, final: bool = False, from_lock: bool = False) -> dict[str, str]:
     release = get_release(conn, release_id)
     if final and not from_lock:
-        raise RuntimeError("Final artifacts can only be generated by release lock")
+        raise RuntimeError("Final artifacts 只能通过 final_lock_release 生成")
     if from_lock and not final:
         raise RuntimeError("Lock generation must create final artifacts")
-    if from_lock:
-        if release.get("state") != "release_locked":
-            raise RuntimeError("Final artifacts require a locked release")
-    if release.get("state") == "release_locked" and not from_lock:
-        raise RuntimeError("Release is locked; artifacts are immutable")
+    if from_lock and not release.get("released_locked"):
+        raise RuntimeError("Final artifacts require a locked release")
+    if release.get("released_locked") and not from_lock:
+        raise RuntimeError("Release 已最终锁定，artifacts 不可重新生成")
     if final:
         existing = conn.execute("SELECT 1 FROM artifacts WHERE release_id = ? AND final = 1 LIMIT 1", (release_id,)).fetchone()
         if existing:
@@ -1345,19 +1600,19 @@ def generate_artifacts(conn: sqlite3.Connection, release_id: str, *, final: bool
             (release_id, kind, names[kind], content, int(final), now()),
         )
     conn.commit()
-    audit(conn, "生成最终 artifacts" if final else "生成预览 artifacts")
+    audit(
+        conn,
+        "生成最终 artifacts" if final else "生成预览 artifacts",
+        release_id=release_id,
+        event="generate_artifacts",
+    )
     return artifacts
 
 
 def gerrit_push_plan(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
-    """Return Gerrit push readiness and commands.
-
-    Real push is intentionally gated by explicit configuration so the system
-    cannot silently claim docs were pushed without credentials/remotes.
-    """
     release = get_release(conn, release_id)
-    if release.get("state") != "release_locked":
-        raise RuntimeError("Gerrit push requires release_locked")
+    if not release.get("released_locked"):
+        raise RuntimeError("Gerrit push 要求 release 已最终锁定")
     docs_remote = os.environ.get("HPC_DOCS_GERRIT_REMOTE", "")
     data_remote = os.environ.get("HPC_RELEASE_DATA_GERRIT_REMOTE", "")
     if not docs_remote or not data_remote:

@@ -41,6 +41,7 @@
     .ok { color: #166534; background: #f0fdf4; border-color: #bbf7d0; }
     .bad { color: #991b1b; background: #fef2f2; border-color: #fecaca; }
     .warnp { color: #92400e; background: #fffbeb; border-color: #fde68a; }
+    .banner { padding: 10px 13px; border-radius: 8px; font-weight: 600; margin-bottom: 8px; }
     .log, .artifact { font-family: Consolas, monospace; white-space: pre-wrap; background: #0f172a; color: #dbeafe; border-radius: 6px; padding: 10px; min-height: 120px; }
     .artifact { width: 100%; min-height: 430px; background: white; color: #172033; }
     @media (max-width: 1100px) { .grid, .form { grid-template-columns: 1fr; } }
@@ -57,16 +58,19 @@
   </header>
   <main>
     <div class="tabs">
-      <button class="tab active" data-view="dashboard" data-roles="RM,Owner">总览</button>
+      <button class="tab active" data-view="dashboard" data-roles="RM,Owner,QA">总览</button>
       <button class="tab" data-view="init" data-roles="RM">初始化/周期</button>
       <button class="tab" data-view="apps" data-roles="RM,Owner">App 工作台</button>
+      <button class="tab" data-view="qa" data-roles="QA,RM">QA</button>
       <button class="tab" data-view="artifacts" data-roles="RM">RST</button>
       <button class="tab" data-view="admin" data-roles="Admin">管理</button>
     </div>
 
+    <div id="phaseBanner"></div>
+
     <section id="dashboard" class="view active">
       <div class="panel"><h2>总览</h2><div class="body" id="summary"></div></div>
-      <div class="panel" style="margin-top:14px"><h2>阻断项</h2><div class="body"><div class="table"><table id="blockers"></table></div></div></div>
+      <div class="panel" style="margin-top:14px"><h2>待补 / 待办（仅提示，不阻断发布）</h2><div class="body"><div class="table"><table id="blockers"></table></div></div></div>
     </section>
 
     <section id="init" class="view" data-roles="RM">
@@ -84,18 +88,26 @@
           <div class="form">
             <label>新 Release 名称 <input id="newReleaseName"></label>
             <label>MACA/HPC 版本 <input id="newMacaVersion"></label>
-            <label>Deadline <input id="newDeadline" type="date"></label>
-          </div>
-          <div class="row">
-            <label>当前 Release Deadline <input id="editDeadline" type="date"></label>
-            <button id="saveDeadline">保存 Deadline</button>
+            <label>App 冻结 deadline（北京时间） <input id="newAppFreeze" type="datetime-local"></label>
+            <label>Doc deadline（北京时间） <input id="newDocDeadline" type="datetime-local"></label>
           </div>
           <div class="row">
             <button class="primary" id="createRelease">从上版克隆新 Release</button>
-            <button class="good" id="admission">运行 QA 准入</button>
-            <button class="warn" id="openQa">打开 QA</button>
-            <button class="danger" id="lockRelease">Release Lock</button>
-            <button class="warn" id="unlockRelease">解锁 Release</button>
+          </div>
+          <p class="muted small">两个 deadline 决定权限：app 冻结前可任意新增/调整 release 决策；冻结后只能把决策切到 cicd_only/stopped；doc deadline 前可继续编辑表单/上传 app_info；doc deadline 后只能 QA 操作。</p>
+          <div class="form">
+            <label>当前 Release - App 冻结 deadline <input id="editAppFreeze" type="datetime-local"></label>
+            <label>当前 Release - Doc deadline <input id="editDocDeadline" type="datetime-local"></label>
+          </div>
+          <div class="row">
+            <button id="saveDeadlines">保存 Deadlines</button>
+            <button class="primary" id="exportCsv">导出测试范围 CSV</button>
+          </div>
+          <h3 style="margin-top:14px">最终发布锁（Manager merge 后执行）</h3>
+          <p class="muted small">Manager 在 Gerrit 上 merge 完报告后，由 RM 执行最终锁，所有信息从此冻结。</p>
+          <div class="row">
+            <button class="danger" id="finalLock">最终 Lock Release</button>
+            <button class="warn" id="finalUnlock">解锁 Release</button>
           </div>
           <div class="table"><table id="releaseTable"></table></div>
         </div></div>
@@ -110,6 +122,10 @@
         </div></div>
         <div class="panel"><h2 id="detailTitle">App 详情</h2><div class="body" id="detail"></div></div>
       </div>
+    </section>
+
+    <section id="qa" class="view" data-roles="QA,RM">
+      <div class="panel"><h2>QA 工作台</h2><div class="body" id="qaPanel"></div></div>
     </section>
 
     <section id="artifacts" class="view" data-roles="RM">
@@ -133,7 +149,7 @@
           <button class="danger" id="clearDb">备份并清空数据库</button>
         </div>
         <h3>删除单个 App</h3>
-        <p class="muted small">删除前会自动备份数据库；已进入 release_locked 的 app 不允许删除。</p>
+        <p class="muted small">删除前会自动备份数据库；已最终锁定的 release 中的 app 不允许删除。</p>
         <div class="table"><table id="adminAppTable"></table></div>
         <div class="log" id="adminLog"></div>
       </div></div>
@@ -141,7 +157,7 @@
   </main>
 
   <script>
-    let state = { apps: [], releases: [], release: null, artifacts: [] };
+    let state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, server_now_beijing: "" };
     let selectedApp = "";
     let autoRefreshTimer = null;
 
@@ -158,6 +174,19 @@
     const releaseDecisionOrder = { release: 0, cicd_only: 1, stopped: 2 };
     const docTargetLabels = { manual: "HPC", ai4sci: "AI4Sci" };
     const docTargetOptions = Object.keys(docTargetLabels);
+    const qaStatusLabels = {
+      not_checked: "未测试",
+      qa_passed: "通过",
+      has_issues: "存在问题",
+      cannot_release: "不可发布"
+    };
+    const qaStatusOptions = Object.keys(qaStatusLabels);
+    const phaseLabels = {
+      before_app_freeze: "App 冻结前：可任意新增/调整 release 决策、编辑文档",
+      after_app_freeze: "App 冻结后：仅可将 release 决策切到 cicd_only/stopped，文档仍可编辑",
+      after_doc_deadline: "Doc deadline 已过：文档/表单/app_info 已冻结，仅 QA 可继续操作",
+      released_locked: "Release 已最终锁定：所有写操作禁用"
+    };
 
     async function api(path, options = {}) {
       const res = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
@@ -190,7 +219,7 @@
     }
 
     function canAutoRefresh() {
-      return !!state.user && !document.hidden && !formFieldFocused() && ["dashboard", "apps", "admin"].includes(activeView());
+      return !!state.user && !document.hidden && !formFieldFocused() && ["dashboard", "apps", "qa", "admin"].includes(activeView());
     }
 
     function refreshIfIdle() {
@@ -208,8 +237,18 @@
     function currentUser() { return state.user || {}; }
     function isRM() { return currentUser().role === "RM"; }
     function isOwner() { return currentUser().role === "Owner"; }
+    function isQA() { return currentUser().role === "QA"; }
     function canEdit(app) { return currentUser().role === "RM" || (currentUser().role === "Owner" && (app.owners || []).includes(currentUser().username)); }
-    function pill(status) { const cls = status === "eligible" || status === "in_qa" ? "ok" : status === "blocked" ? "bad" : "warnp"; return `<span class="pill ${cls}">${esc(status || "not_checked")}</span>`; }
+    function releaseLocked() { return !!state.release?.released_locked; }
+    function phase() { return state.release?.phase || ""; }
+    function beforeAppFreeze() { return phase() === "before_app_freeze"; }
+    function beforeDocDeadline() { return phase() === "before_app_freeze" || phase() === "after_app_freeze"; }
+    function deadlineSummary(release) {
+      if (!release) return "";
+      const af = release.app_freeze_deadline || "(未设置)";
+      const dd = release.doc_deadline || "(未设置)";
+      return `App 冻结: ${af}　Doc deadline: ${dd}　当前北京时间: ${state.server_now_beijing || "?"}`;
+    }
     function appSortName(app) { return String(app.name || app.official_name || app.id || "").toLowerCase(); }
     function compareAppRows(a, b) {
       const decisionDiff = (releaseDecisionOrder[a.snap?.release_decision] ?? 99) - (releaseDecisionOrder[b.snap?.release_decision] ?? 99);
@@ -220,12 +259,14 @@
     function render() {
       renderRoleChrome();
       renderReleaseSelect();
+      renderPhaseBanner();
       renderSummary();
       renderReleases();
       renderApps();
       renderDetail();
+      renderQa();
       renderAdmin();
-      if ($("preview")) $("preview").disabled = state.release?.state === "release_locked";
+      if ($("preview")) $("preview").disabled = releaseLocked();
     }
 
     function renderRoleChrome() {
@@ -251,22 +292,56 @@
       if (cur) $("release").value = cur;
     }
 
+    function renderPhaseBanner() {
+      const banner = $("phaseBanner");
+      if (!banner || !state.release) { if (banner) banner.innerHTML = ""; return; }
+      const p = phase();
+      const cls = p === "released_locked" ? "bad" : (p === "after_doc_deadline" ? "warnp" : "ok");
+      const text = phaseLabels[p] || p;
+      banner.innerHTML = `<div class="banner pill ${cls}">${esc(text)}　|　${esc(deadlineSummary(state.release))}</div>`;
+    }
+
     function renderSummary() {
       const rows = state.apps.map(app => ({ app, snap: releaseSnap(app.id) })).filter(x => x.snap);
-      const blocked = rows.flatMap(x => (x.snap.blockers || []).map(b => [x.app.name, b, x.snap.qa_status]));
+      const missingItems = rows.flatMap(x => (x.snap.missing_items || []).map(b => [x.app.name, b, x.snap.qa_status]));
+      const qaSummary = {
+        not_checked: rows.filter(x => x.snap.release_decision === "release" && (x.snap.qa_status || "not_checked") === "not_checked").length,
+        qa_passed: rows.filter(x => x.snap.qa_status === "qa_passed").length,
+        has_issues: rows.filter(x => x.snap.qa_status === "has_issues").length,
+        cannot_release: rows.filter(x => x.snap.qa_status === "cannot_release").length,
+      };
       $("summary").innerHTML = `<div class="row">
         <span class="pill">Apps: ${rows.length}</span>
-        <span class="pill">Release: ${rows.filter(x => x.snap.release_decision === "release").length}</span>
-        <span class="pill bad">阻塞: ${blocked.length}</span>
-        <span class="pill ok">QA: ${rows.filter(x => ["eligible","in_qa"].includes(x.snap.qa_status)).length}</span>
+        <span class="pill">Release 决策为 release: ${rows.filter(x => x.snap.release_decision === "release").length}</span>
+        <span class="pill ok">QA 通过: ${qaSummary.qa_passed}</span>
+        <span class="pill warnp">存在问题: ${qaSummary.has_issues}</span>
+        <span class="pill bad">不可发布: ${qaSummary.cannot_release}</span>
+        <span class="pill">待 QA: ${qaSummary.not_checked}</span>
+        <span class="pill warnp">待补条目: ${missingItems.length}</span>
         <span class="pill">当前: ${esc(state.release?.name || "无")}</span>
       </div>`;
-      $("blockers").innerHTML = table(["App", "阻断项", "状态"], blocked);
+      $("blockers").innerHTML = table(["App", "待补条目", "QA"], missingItems);
     }
 
     function renderReleases() {
-      $("releaseTable").innerHTML = table(["Release", "状态", "来源", "Deadline"], state.releases.map(r => [r.name, r.state, r.source, r.deadline]));
-      if ($("editDeadline")) $("editDeadline").value = state.release?.deadline || "";
+      $("releaseTable").innerHTML = table(
+        ["Release", "阶段", "App 冻结", "Doc deadline", "Lock", "来源"],
+        state.releases.map(r => [
+          r.name,
+          phaseLabels[r.phase] ? r.phase : r.phase,
+          r.app_freeze_deadline || "-",
+          r.doc_deadline || "-",
+          r.released_locked ? `已锁 (${r.released_locked_at || ""})` : "未锁",
+          r.source,
+        ])
+      );
+      if ($("editAppFreeze")) $("editAppFreeze").value = toDatetimeLocal(state.release?.app_freeze_deadline);
+      if ($("editDocDeadline")) $("editDocDeadline").value = toDatetimeLocal(state.release?.doc_deadline);
+    }
+
+    function toDatetimeLocal(s) {
+      if (!s) return "";
+      return s.replace(" ", "T").substring(0, 16);
     }
 
     function renderAdmin() {
@@ -287,37 +362,46 @@
       if (currentUser().role === "Owner") rows = rows.filter(x => (x.app.owners || []).includes(currentUser().username));
       if (q) rows = rows.filter(x => [x.app.name, x.app.type, (x.app.owners || []).join(",")].join(" ").toLowerCase().includes(q));
       rows.sort(compareAppRows);
-      $("appTable").innerHTML = `<thead><tr><th>App</th><th>Owner</th><th>决策</th><th>QA</th><th>未确认Diff</th></tr></thead><tbody>${rows.map(({app,snap}) => `
+      $("appTable").innerHTML = `<thead><tr><th>App</th><th>Owner</th><th>决策</th><th>QA</th><th>未确认Diff</th><th>待补</th></tr></thead><tbody>${rows.map(({app,snap}) => `
         <tr data-app="${esc(app.id)}" class="${selectedApp === app.id ? "selected" : ""}">
           <td><b>${esc(app.name)}</b><div class="small muted">${esc(app.type || app.category || "")}</div></td>
           <td>${esc((app.owners || []).join(","))}</td>
           <td>${esc(releaseDecisionLabels[snap.release_decision] || snap.release_decision)}</td>
-          <td>${pill(snap.qa_status)}</td>
+          <td>${qaPill(snap.qa_status)}</td>
           <td>${(snap.app_info_diffs || []).filter(d => !d.confirmed).length}</td>
-        </tr>`).join("") || `<tr><td colspan="5" class="muted">无数据</td></tr>`}</tbody>`;
+          <td>${(snap.missing_items || []).length}</td>
+        </tr>`).join("") || `<tr><td colspan="6" class="muted">无数据</td></tr>`}</tbody>`;
       document.querySelectorAll("[data-app]").forEach(tr => tr.onclick = () => { selectedApp = tr.dataset.app; render(); });
+    }
+
+    function qaPill(status) {
+      const s = status || "not_checked";
+      const cls = s === "qa_passed" ? "ok" : (s === "has_issues" ? "warnp" : (s === "cannot_release" ? "bad" : ""));
+      return `<span class="pill ${cls}">${esc(qaStatusLabels[s] || s)}</span>`;
     }
 
     function renderDetail() {
       const app = appById(selectedApp);
       const snap = app ? releaseSnap(app.id) : null;
       if (!app || !snap) { $("detailTitle").textContent = "App 详情"; $("detail").innerHTML = "<p class='muted'>请选择 app。</p>"; return; }
-      const relLocked = state.release?.state === "release_locked";
-      const disabled = !canEdit(app) || snap.locked || relLocked ? "disabled" : "";
-      const ownerOnlyDisabled = !isOwner() || !canEdit(app) || snap.locked || relLocked ? "disabled" : "";
+      const writable = canEdit(app) && !releaseLocked() && beforeDocDeadline();
+      const disabled = writable ? "" : "disabled";
+      const ownerWritable = isOwner() && writable;
+      const ownerOnlyDisabled = ownerWritable ? "" : "disabled";
+      const decisionDisabled = (!canEdit(app) || releaseLocked() || (!beforeAppFreeze() && snap.release_decision === "release") || !beforeDocDeadline()) ? "disabled" : "";
+      const allowedDecisions = !beforeAppFreeze() && snap.release_decision !== "release" ? ["cicd_only", "stopped"] : releaseDecisionOptions;
       const actions = [
         `<button class="primary" id="saveApp" ${disabled}>保存</button>`,
-        isRM() && !relLocked ? `<button id="qaPass" class="good" title="QA 测试通过后由 RM 标记，作为 Release Lock 的必要条件">QA 通过</button>` : "",
         `<button id="uploadInfo" ${disabled}>上传 app_info</button><input id="appInfoFile" type="file" accept=".json" ${disabled}>`,
         `<button id="fetchInfo" ${disabled}>从 Gerrit 拉取 app_info</button>`
       ].filter(Boolean).join("");
       const diffActions = isOwner() ? `<button id="confirmDiffs" ${ownerOnlyDisabled}>确认全部 diff</button>` : "";
       const ownerTestActions = isOwner() ? `<button id="addOwnerTest" ${ownerOnlyDisabled}>新增 owner-added 测试项</button>` : "";
-      const confirmOwnerAction = isOwner() ? `<div class="row" style="margin-top:16px"><button class="good" id="confirmOwner" ${ownerOnlyDisabled} title="确认本 app 的 release 信息已补齐，可提交 RM 做 QA 准入">提交 Owner 确认</button></div>` : "";
+      const confirmOwnerAction = isOwner() ? `<div class="row" style="margin-top:16px"><button class="good" id="confirmOwner" ${ownerOnlyDisabled} title="确认本 app 的 release 信息已补齐">提交 Owner 确认</button></div>` : "";
       $("detailTitle").textContent = app.name;
-      const lockedBanner = relLocked ? `<div class="pill bad" style="display:block;padding:8px 12px;margin-bottom:8px;font-size:13px">Release 已锁定，无法上传 app_info、保存修改或提交 Owner 确认。如需继续编辑，请等待 Release Manager 创建下一个 Release。</div>` : "";
+      const phaseBanner = phaseBannerFor(snap);
       $("detail").innerHTML = `
-        ${lockedBanner}
+        ${phaseBanner}
         <div class="row">${actions}</div>
         <div class="form">
           <label>官方名称<input id="officialName" value="${esc(app.official_name)}"></label>
@@ -326,13 +410,14 @@
           <label>App类型<input id="type" value="${esc(app.type)}"></label>
           <label>Gerrit URL<input id="gitUrl" value="${esc(app.git_url)}"></label>
           <label>Branch<input id="gitBranch" value="${esc(app.git_branch)}"></label>
-          <label>Release决策<select id="decision">${releaseDecisionOptions.map(v => `<option value="${v}" ${snap.release_decision===v?"selected":""}>${esc(releaseDecisionLabels[v])}</option>`).join("")}</select></label>
+          <label>Release决策<select id="decision" ${decisionDisabled}>${allowedDecisions.map(v => `<option value="${v}" ${snap.release_decision===v?"selected":""}>${esc(releaseDecisionLabels[v])}</option>`).join("")}</select></label>
           <label>版本<input value="${esc(snap.version)}" disabled></label>
           <label>X86芯片<input value="${esc(snap.x86_chips)}" disabled></label>
           <label>ARM芯片<input value="${esc(snap.arm_chips)}" disabled></label>
         </div>
-        <p class="muted small">类型为 HPC 时生成到 HPC Manual；类型为 AI4Sci 时生成到 AI4Sci User Guide。release 会进入正式发布、文档生成和 QA；cicd_only 仅纳入 CICD 构建/测试管控；stopped 表示停止维护或停止发布。</p>
+        <p class="muted small">类型为 HPC 时生成到 HPC Manual；类型为 AI4Sci 时生成到 AI4Sci User Guide。release 进入正式发布、文档生成和 QA；cicd_only 仅纳入 CICD 构建/测试管控；stopped 表示停止维护或停止发布。</p>
         <p class="muted small">app_info 来源：${appInfoSource(snap)}</p>
+        ${snap.qa_status === "has_issues" && snap.qa_issue_note ? `<p class="pill warnp" style="display:block;padding:8px">QA 标注「存在问题」：${esc(snap.qa_issue_note)}（会附加到已知限制段）</p>` : ""}
         <label>描述<textarea id="description">${esc(app.description)}</textarea></label>
         <h3>app_info diff</h3>
         <div class="table"><table>${renderDiffs(snap)}</table></div>
@@ -342,9 +427,22 @@
         <h3>test_cmd 说明</h3>
         <div id="testDocs">${renderTestDocs(snap)}</div>
         ${ownerTestActions}
-        <h3>阻断项</h3><ul>${(snap.blockers || []).map(b => `<li>${esc(b)}</li>`).join("") || "<li class='muted'>暂无</li>"}</ul>
+        <h3>待补条目（不阻断发布）</h3><ul>${(snap.missing_items || []).map(b => `<li>${esc(b)}</li>`).join("") || "<li class='muted'>暂无</li>"}</ul>
         ${confirmOwnerAction}`;
       bindDetail(app, snap);
+    }
+
+    function phaseBannerFor(snap) {
+      if (releaseLocked()) {
+        return `<div class="banner pill bad">Release 已最终锁定，所有信息冻结。如需继续编辑，请等待 RM 解锁或创建下一个 Release。</div>`;
+      }
+      if (!beforeDocDeadline()) {
+        return `<div class="banner pill warnp">已过 Doc deadline：表单、文档和 app_info 已冻结，仅 QA 可继续标注状态。</div>`;
+      }
+      if (!beforeAppFreeze()) {
+        return `<div class="banner pill warnp">已过 App 冻结 deadline：本 release 不可再新增或重新切换为 release 决策；可将决策切到 cicd_only/stopped。</div>`;
+      }
+      return "";
     }
 
     function docArea(key, label, value) { return `<label>${label}<textarea data-doc="${key}">${esc(value || "")}</textarea></label>`; }
@@ -369,10 +467,67 @@
 
     function table(headers, rows) { return `<thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${headers.length}" class="muted">无数据</td></tr>`}</tbody>`; }
 
+    function renderQa() {
+      const panel = $("qaPanel");
+      if (!panel || (!isQA() && !isRM())) return;
+      if (!state.release) { panel.innerHTML = "<p class='muted'>请选择 release。</p>"; return; }
+      const writable = !releaseLocked();
+      const rows = state.apps
+        .map(app => ({ app, snap: releaseSnap(app.id) }))
+        .filter(x => x.snap && x.snap.release_decision === "release")
+        .sort((a, b) => appSortName(a.app).localeCompare(appSortName(b.app), "zh-CN"));
+      const logBlock = `
+        <div class="panel" style="margin-bottom:14px"><h3>QA log 文件（单个，覆盖式上传）</h3><div class="body">
+          ${state.qa_log ? `<div class="row"><span class="pill ok">已上传：${esc(state.qa_log.filename)}（${esc(state.qa_log.uploaded_at)} by ${esc(state.qa_log.uploaded_by)}）</span><a href="/api/qa-log/download?release_id=${encodeURIComponent(currentReleaseId())}" target="_blank"><button>下载当前 log</button></a></div>` : `<p class='muted'>本 release 暂无 QA log。</p>`}
+          <div class="row"><input id="qaLogFile" type="file" ${writable?"":"disabled"}><button class="primary" id="qaLogUpload" ${writable?"":"disabled"}>上传 log（覆盖）</button></div>
+        </div></div>`;
+      const rowsHtml = rows.map(({app, snap}) => {
+        const status = snap.qa_status || "not_checked";
+        const noteRequired = status === "has_issues" ? "" : "(可选)";
+        return `
+        <div class="panel" style="margin-bottom:10px"><h3>${esc(app.name)} <span class="small muted">${esc(snap.version || "")}</span></h3><div class="body">
+          <div class="row">
+            <label>QA 状态
+              <select data-qa-status="${esc(app.id)}" ${writable?"":"disabled"}>
+                ${qaStatusOptions.map(s => `<option value="${s}" ${status===s?"selected":""}>${esc(qaStatusLabels[s])}</option>`).join("")}
+              </select>
+            </label>
+            <button class="primary" data-qa-save="${esc(app.id)}" ${writable?"":"disabled"}>保存</button>
+          </div>
+          <label>问题说明 ${noteRequired}<textarea data-qa-note="${esc(app.id)}" ${writable?"":"disabled"} placeholder="标注「存在问题」时必填；保存后会附加到已知限制段">${esc(snap.qa_issue_note || "")}</textarea></label>
+          <p class="small muted">Gerrit: ${esc(app.git_url || "")} ${esc(app.git_branch || "")}　owners: ${esc((app.owners || []).join(","))}</p>
+        </div></div>`;
+      }).join("") || "<p class='muted'>本 release 暂无 release 决策为 release 的 app。</p>";
+      panel.innerHTML = logBlock + rowsHtml;
+      bindQa();
+    }
+
+    function bindQa() {
+      const upload = $("qaLogUpload");
+      if (upload) upload.onclick = async () => {
+        const file = $("qaLogFile").files[0];
+        if (!file) return alert("请选择 log 文件");
+        const b64 = btoa(String.fromCharCode(...new Uint8Array(await file.arrayBuffer())));
+        try {
+          await post("/api/qa/upload-log", { release_id: currentReleaseId(), filename: file.name, content_base64: b64 });
+          await loadState();
+          alert("QA log 上传成功");
+        } catch (e) { alert("上传失败：" + e.message); }
+      };
+      document.querySelectorAll("[data-qa-save]").forEach(btn => btn.onclick = async () => {
+        const appId = btn.dataset.qaSave;
+        const status = document.querySelector(`[data-qa-status="${appId}"]`).value;
+        const note = document.querySelector(`[data-qa-note="${appId}"]`).value;
+        try {
+          await post("/api/qa/status", { release_id: currentReleaseId(), app_id: appId, status, issue_note: note });
+          await loadState();
+        } catch (e) { alert("保存失败：" + e.message); }
+      });
+    }
+
     function bindDetail(app, snap) {
       if ($("saveApp")) $("saveApp").onclick = () => saveApp(app, false);
       if ($("confirmOwner")) $("confirmOwner").onclick = () => saveApp(app, true);
-      if ($("qaPass")) $("qaPass").onclick = async () => { await post("/api/apps/qa-pass", { release_id: currentReleaseId(), app_id: app.id }); await loadState(); };
       if ($("confirmDiffs")) $("confirmDiffs").onclick = async () => { await saveApp(app, false, true); };
       if ($("addOwnerTest")) $("addOwnerTest").onclick = async () => {
         snap.test_docs.push({ id: "new_" + Date.now(), path: "owner_added." + (snap.test_docs.length + 1), owner_added: true, command: "", dataset: "", content: "", result_view: "", pass_criteria: "" });
@@ -422,11 +577,11 @@
       }
       if (confirmOwner) {
         const updated = releaseSnap(app.id) || result.snapshot || {};
-        const blockers = updated.blockers || result.blockers || [];
-        if (blockers.length) {
-          alert(`Owner 确认已提交，但仍有 ${blockers.length} 个阻断项：\n\n- ${blockers.join("\n- ")}`);
+        const missing = updated.missing_items || result.missing_items || [];
+        if (missing.length) {
+          alert(`Owner 确认已提交，仍有 ${missing.length} 个待补条目：\n\n- ${missing.join("\n- ")}`);
         } else {
-          alert("Owner 确认已提交，当前无阻断项，可等待 RM 做 QA 准入。");
+          alert("Owner 确认已提交，当前无待补条目。");
         }
       }
     }
@@ -444,7 +599,7 @@
         document.querySelectorAll(".tab,.view").forEach(x => x.classList.remove("active"));
         b.classList.add("active");
         $(b.dataset.view).classList.add("active");
-        if (["dashboard", "apps"].includes(b.dataset.view)) loadState().catch(err => alert(err.message));
+        if (["dashboard", "apps", "qa"].includes(b.dataset.view)) loadState().catch(err => alert(err.message));
       });
       document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshIfIdle(); });
       window.addEventListener("focus", refreshIfIdle);
@@ -454,12 +609,38 @@
       $("release").onchange = () => loadState($("release").value);
       $("search").oninput = renderApps;
       $("importBtn").onclick = async () => { $("initLog").textContent = "导入中..."; const r = await post("/api/import-initial", { release_csv: await readFile("releaseCsv"), owner_csv: await readFile("ownerCsv"), alias_text: $("aliasText").value, release_name: $("initReleaseName").value }); $("initLog").textContent = "导入完成：" + r.release_id; await loadState(r.release_id); };
-      $("createRelease").onclick = async () => { if (!$("newReleaseName").value.trim()) return alert("请填写新 Release 名称"); const r = await post("/api/releases/create", { name: $("newReleaseName").value, maca_version: $("newMacaVersion").value, deadline: $("newDeadline").value }); await loadState(r.release_id); };
-      $("saveDeadline").onclick = async () => { await post("/api/releases/deadline", { release_id: currentReleaseId(), deadline: $("editDeadline").value }); await loadState(); alert("Deadline 已更新"); };
-      $("admission").onclick = async () => { try { await post("/api/releases/admission", { release_id: currentReleaseId() }); await loadState(); } catch (e) { alert("QA 准入失败：" + e.message); } };
-      $("openQa").onclick = async () => { try { await post("/api/releases/open-qa", { release_id: currentReleaseId() }); await loadState(); } catch (e) { alert("打开 QA 失败：" + e.message); } };
-      $("lockRelease").onclick = async () => { try { await post("/api/releases/lock", { release_id: currentReleaseId() }); await loadState(); } catch (e) { alert("Release Lock 失败：" + e.message); } };
-      $("unlockRelease").onclick = async () => { if (!confirm("确认要解锁当前 Release？解锁后可继续编辑，最终 artifacts 将被清除。")) return; try { await post("/api/releases/unlock", { release_id: currentReleaseId() }); await loadState(); } catch (e) { alert("解锁失败：" + e.message); } };
+      $("createRelease").onclick = async () => {
+        if (!$("newReleaseName").value.trim()) return alert("请填写新 Release 名称");
+        const r = await post("/api/releases/create", {
+          name: $("newReleaseName").value,
+          maca_version: $("newMacaVersion").value,
+          app_freeze_deadline: $("newAppFreeze").value || "",
+          doc_deadline: $("newDocDeadline").value || "",
+        });
+        await loadState(r.release_id);
+      };
+      $("saveDeadlines").onclick = async () => {
+        await post("/api/releases/deadlines", {
+          release_id: currentReleaseId(),
+          app_freeze_deadline: $("editAppFreeze").value || "",
+          doc_deadline: $("editDocDeadline").value || "",
+        });
+        await loadState();
+        alert("Deadlines 已更新");
+      };
+      $("exportCsv").onclick = () => {
+        window.open(`/api/test-scope.csv?release_id=${encodeURIComponent(currentReleaseId())}`, "_blank");
+      };
+      $("finalLock").onclick = async () => {
+        if (!confirm("确认最终锁定？锁定后所有信息冻结，仅可由 RM 解锁。")) return;
+        try { await post("/api/releases/final-lock", { release_id: currentReleaseId() }); await loadState(); alert("已最终锁定。"); }
+        catch (e) { alert("最终 Lock 失败：" + e.message); }
+      };
+      $("finalUnlock").onclick = async () => {
+        if (!confirm("确认要解锁？解锁后最终 artifacts 将被清除。")) return;
+        try { await post("/api/releases/final-unlock", { release_id: currentReleaseId() }); await loadState(); }
+        catch (e) { alert("解锁失败：" + e.message); }
+      };
       $("preview").onclick = async () => { try { await post("/api/artifacts/generate", { release_id: currentReleaseId(), final: false }); await loadState(); } catch (e) { alert("生成预览失败：" + e.message); } };
       document.querySelectorAll(".download").forEach(b => b.onclick = () => showArtifact(b.dataset.kind));
       $("clearDb").onclick = async () => {
@@ -500,7 +681,7 @@
     async function logout() {
       await post("/api/logout", {});
       if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
-      state = { apps: [], releases: [], release: null, artifacts: [], user: null };
+      state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, user: null, server_now_beijing: "" };
       selectedApp = "";
       $("release").innerHTML = "";
       showLoggedOut();
