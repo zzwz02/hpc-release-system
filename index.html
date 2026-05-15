@@ -19,6 +19,10 @@
     main { padding: 16px; display: grid; gap: 14px; }
     .tabs { display: flex; gap: 8px; flex-wrap: wrap; }
     .tab.active { border-color: #2563eb; color: #2563eb; }
+    .subtabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+    .subtab.active { border-color: #2563eb; color: #2563eb; }
+    .init-pane { display: none; }
+    .init-pane.active { display: block; }
     .view { display: none; }
     .view.active { display: block; }
     [hidden] { display: none !important; }
@@ -74,33 +78,28 @@
     </section>
 
     <section id="init" class="view" data-roles="RM">
-      <div class="grid">
-        <div class="panel"><h2>首次初始化</h2><div class="body">
-          <p class="muted small">CSV、alias mapping、app-owner 映射只需首次维护；后续 release 从上一版本克隆。</p>
-          <label>Release CSV <input id="releaseCsv" type="file" accept=".csv"></label>
-          <label>Owner CSV <input id="ownerCsv" type="file" accept=".csv"></label>
-          <label>Alias mapping <textarea id="aliasText" placeholder="aimodels=ai-models&#10;boltz=Boltz-2"></textarea></label>
-          <label>Release 名称 <input id="initReleaseName" placeholder="initial-release"></label>
-          <button class="primary" id="importBtn">导入初始化数据</button>
-          <div class="log" id="initLog"></div>
-        </div></div>
+      <div class="subtabs">
+        <button class="subtab active" data-init-pane="releaseCyclePane">新建发布周期</button>
+        <button class="subtab" data-init-pane="initialImportPane">首次初始化</button>
+      </div>
+      <div id="releaseCyclePane" class="init-pane active">
         <div class="panel"><h2>发布周期</h2><div class="body">
           <div class="form">
             <label>新 Release 名称 <input id="newReleaseName"></label>
-            <label>MACA/HPC 版本 <input id="newMacaVersion"></label>
-            <label>App 冻结 deadline（北京时间） <input id="newAppFreeze" type="datetime-local"></label>
-            <label>Doc deadline（北京时间） <input id="newDocDeadline" type="datetime-local"></label>
+            <label>App 冻结 deadline（北京时间） <input id="newAppFreeze" type="date"></label>
+            <label>Doc deadline（北京时间） <input id="newDocDeadline" type="date"></label>
           </div>
           <div class="row">
             <button class="primary" id="createRelease">从上版克隆新 Release</button>
           </div>
           <p class="muted small">两个 deadline 决定权限：app 冻结前可任意新增/调整 release 决策；冻结后只能把决策切到 cicd_only/stopped；doc deadline 前可继续编辑表单/上传 app_info；doc deadline 后只能 QA 操作。</p>
           <div class="form">
-            <label>当前 Release - App 冻结 deadline <input id="editAppFreeze" type="datetime-local"></label>
-            <label>当前 Release - Doc deadline <input id="editDocDeadline" type="datetime-local"></label>
+            <label>当前 Release 名称 <input id="editReleaseName"></label>
+            <label>当前 Release - App 冻结 deadline <input id="editAppFreeze" type="date"></label>
+            <label>当前 Release - Doc deadline <input id="editDocDeadline" type="date"></label>
           </div>
           <div class="row">
-            <button id="saveDeadlines">保存 Deadlines</button>
+            <button id="saveDeadlines">保存 Release 设置</button>
             <button class="primary" id="exportCsv">导出测试范围 CSV</button>
           </div>
           <h3 style="margin-top:14px">最终发布锁（Manager merge 后执行）</h3>
@@ -110,6 +109,17 @@
             <button class="warn" id="finalUnlock">解锁 Release</button>
           </div>
           <div class="table"><table id="releaseTable"></table></div>
+        </div></div>
+      </div>
+      <div id="initialImportPane" class="init-pane">
+        <div class="panel"><h2>首次初始化</h2><div class="body">
+          <p class="muted small">CSV、alias mapping、app-owner 映射只需首次维护；后续 release 从上一版本克隆。</p>
+          <label>Release CSV <input id="releaseCsv" type="file" accept=".csv"></label>
+          <label>Owner CSV <input id="ownerCsv" type="file" accept=".csv"></label>
+          <label>Alias mapping <textarea id="aliasText" placeholder="aimodels=ai-models&#10;boltz=Boltz-2"></textarea></label>
+          <label>Release 名称 <input id="initReleaseName" placeholder="initial-release"></label>
+          <button class="primary" id="importBtn">导入初始化数据</button>
+          <div class="log" id="initLog"></div>
         </div></div>
       </div>
     </section>
@@ -352,13 +362,13 @@
           r.source,
         ])
       );
-      if ($("editAppFreeze")) $("editAppFreeze").value = toDatetimeLocal(state.release?.app_freeze_deadline);
-      if ($("editDocDeadline")) $("editDocDeadline").value = toDatetimeLocal(state.release?.doc_deadline);
+      if ($("editReleaseName")) $("editReleaseName").value = state.release?.name || "";
+      if ($("editAppFreeze")) $("editAppFreeze").value = toDateValue(state.release?.app_freeze_deadline);
+      if ($("editDocDeadline")) $("editDocDeadline").value = toDateValue(state.release?.doc_deadline);
     }
 
-    function toDatetimeLocal(s) {
-      if (!s) return "";
-      return s.replace(" ", "T").substring(0, 16);
+    function toDateValue(s) {
+      return s ? String(s).substring(0, 10) : "";
     }
 
     function renderAdmin() {
@@ -536,13 +546,13 @@
                 ${qaStatusOptions.map(s => `<option value="${s}" ${status===s?"selected":""}>${esc(qaStatusLabels[s])}</option>`).join("")}
               </select>
             </label>
-            <button class="primary" data-qa-save="${esc(app.id)}" ${writable?"":"disabled"}>保存</button>
           </div>
           <label>问题说明 ${noteRequired}<textarea data-qa-note="${esc(app.id)}" ${writable?"":"disabled"} placeholder="标注「存在问题」时必填；保存后会附加到已知限制段">${esc(snap.qa_issue_note || "")}</textarea></label>
           <p class="small muted">Gerrit: ${esc(app.git_url || "")} ${esc(app.git_branch || "")}　owners: ${esc((app.owners || []).join(","))}</p>
         </div></div>`;
       }).join("") || "<p class='muted'>本 release 暂无 release 决策为 release 的 app。</p>";
-      panel.innerHTML = logBlock + rowsHtml;
+      const saveBlock = rows.length ? `<div class="row" style="margin-top:10px"><button class="primary" id="qaSaveAll" ${writable?"":"disabled"}>保存 QA 状态</button></div>` : "";
+      panel.innerHTML = logBlock + rowsHtml + saveBlock;
       bindQa();
     }
 
@@ -558,15 +568,27 @@
           alert("QA log 上传成功");
         } catch (e) { alert("上传失败：" + e.message); }
       };
-      document.querySelectorAll("[data-qa-save]").forEach(btn => btn.onclick = async () => {
-        const appId = btn.dataset.qaSave;
-        const status = document.querySelector(`[data-qa-status="${appId}"]`).value;
-        const note = document.querySelector(`[data-qa-note="${appId}"]`).value;
+      const saveAll = $("qaSaveAll");
+      if (saveAll) saveAll.onclick = async () => {
+        const items = [...document.querySelectorAll("[data-qa-status]")].map(el => {
+          const appId = el.dataset.qaStatus;
+          return {
+            appId,
+            status: el.value,
+            note: document.querySelector(`[data-qa-note="${appId}"]`)?.value || "",
+          };
+        }).filter(item => {
+          const snap = releaseSnap(item.appId) || {};
+          return (snap.qa_status || "not_checked") !== item.status || (snap.qa_issue_note || "") !== item.note;
+        });
         try {
-          await post("/api/qa/status", { release_id: currentReleaseId(), app_id: appId, status, issue_note: note });
+          for (const item of items) {
+            await post("/api/qa/status", { release_id: currentReleaseId(), app_id: item.appId, status: item.status, issue_note: item.note });
+          }
           await loadState();
+          alert("QA 状态已保存");
         } catch (e) { alert("保存失败：" + e.message); }
-      });
+      };
     }
 
     function bindDetail(app, snap) {
@@ -683,6 +705,11 @@
         $(b.dataset.view).classList.add("active");
         if (["dashboard", "apps", "qa"].includes(b.dataset.view)) loadState().catch(err => alert(err.message));
       });
+      document.querySelectorAll(".subtab").forEach(b => b.onclick = () => {
+        document.querySelectorAll(".subtab,.init-pane").forEach(x => x.classList.remove("active"));
+        b.classList.add("active");
+        $(b.dataset.initPane).classList.add("active");
+      });
       document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshIfIdle(); });
       window.addEventListener("focus", () => {
         if (Date.now() < appInfoPickerHoldUntil) appInfoPickerHoldUntil = Date.now() + 1500;
@@ -698,20 +725,22 @@
         if (!$("newReleaseName").value.trim()) return alert("请填写新 Release 名称");
         const r = await post("/api/releases/create", {
           name: $("newReleaseName").value,
-          maca_version: $("newMacaVersion").value,
           app_freeze_deadline: $("newAppFreeze").value || "",
           doc_deadline: $("newDocDeadline").value || "",
         });
         await loadState(r.release_id);
+        alert("新 Release 已创建");
       };
       $("saveDeadlines").onclick = async () => {
+        if (!$("editReleaseName").value.trim()) return alert("Release 名称不能为空");
         await post("/api/releases/deadlines", {
           release_id: currentReleaseId(),
+          name: $("editReleaseName").value,
           app_freeze_deadline: $("editAppFreeze").value || "",
           doc_deadline: $("editDocDeadline").value || "",
         });
         await loadState();
-        alert("Deadlines 已更新");
+        alert("Release 设置已更新");
       };
       $("exportCsv").onclick = () => {
         window.open(`/api/test-scope.csv?release_id=${encodeURIComponent(currentReleaseId())}`, "_blank");

@@ -594,6 +594,7 @@ def update_release_deadlines(
     conn: sqlite3.Connection,
     release_id: str,
     *,
+    name: str | None = None,
     app_freeze_deadline: str | None = None,
     doc_deadline: str | None = None,
     user: str = "system",
@@ -601,21 +602,24 @@ def update_release_deadlines(
 ) -> dict[str, Any]:
     release = get_release(conn, release_id)
     if release.get("released_locked"):
-        raise RuntimeError("Release 已最终锁定，不可修改 deadline")
+        raise RuntimeError("Release 已最终锁定，不可修改 release 设置")
+    new_name = (name or "").strip() if name is not None else release.get("name", "")
+    if not new_name:
+        raise ValueError("Release 名称不能为空")
     new_freeze = normalize_deadline(app_freeze_deadline) if app_freeze_deadline is not None else release.get("app_freeze_deadline", "")
     new_doc = normalize_deadline(doc_deadline) if doc_deadline is not None else release.get("doc_deadline", "")
     conn.execute(
-        "UPDATE releases SET app_freeze_deadline = ?, doc_deadline = ? WHERE id = ?",
-        (new_freeze, new_doc, release_id),
+        "UPDATE releases SET name = ?, app_freeze_deadline = ?, doc_deadline = ? WHERE id = ?",
+        (new_name, new_freeze, new_doc, release_id),
     )
     conn.commit()
     audit(
         conn,
-        f"更新 release deadline：{release['name']} app_freeze={new_freeze or '空'}, doc={new_doc or '空'}",
+        f"更新 release 设置：{release['name']} -> {new_name}，app_freeze={new_freeze or '空'}, doc={new_doc or '空'}",
         user=user,
         role=role,
         release_id=release_id,
-        event="update_deadlines",
+        event="update_release_settings",
     )
     return get_release(conn, release_id)
 

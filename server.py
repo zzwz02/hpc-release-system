@@ -177,6 +177,7 @@ class Handler(BaseHTTPRequestHandler):
                     release = core.update_release_deadlines(
                         self.conn(),
                         body["release_id"],
+                        name=body.get("name"),
                         app_freeze_deadline=body.get("app_freeze_deadline"),
                         doc_deadline=body.get("doc_deadline"),
                         user=self.user(),

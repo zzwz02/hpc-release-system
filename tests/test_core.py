@@ -207,6 +207,21 @@ class CoreWorkflowTests(unittest.TestCase):
             self.assertEqual(core.current_phase({"app_freeze_deadline": "2026-05-01 00:00", "doc_deadline": "2026-05-10 00:00", "released_locked": False}), "after_doc_deadline")
             self.assertEqual(core.current_phase({"app_freeze_deadline": "", "doc_deadline": "", "released_locked": True}), "released_locked")
 
+    def test_update_release_settings_renames_and_normalizes_date_deadlines(self) -> None:
+        release_id, _ = self.import_initial()
+        release = core.update_release_deadlines(
+            self.conn,
+            release_id,
+            name="3.8.0",
+            app_freeze_deadline="2026-06-01",
+            doc_deadline="2026-06-10",
+            user="rm",
+            role="RM",
+        )
+        self.assertEqual(release["name"], "3.8.0")
+        self.assertEqual(release["app_freeze_deadline"], "2026-06-01 23:59")
+        self.assertEqual(release["doc_deadline"], "2026-06-10 23:59")
+
     # --- import + initial schema ---
 
     def test_initial_import_creates_app_and_snapshot(self) -> None:
