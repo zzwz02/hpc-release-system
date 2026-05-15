@@ -418,8 +418,10 @@
       const rmMetaDisabled = isRM() && writable ? "" : "disabled";
       const ownerWritable = isOwner() && writable;
       const ownerOnlyDisabled = ownerWritable ? "" : "disabled";
-      const decisionDisabled = (!canEdit(app) || releaseLocked() || (!beforeAppFreeze() && snap.release_decision === "release") || !beforeDocDeadline()) ? "disabled" : "";
-      const allowedDecisions = !beforeAppFreeze() && snap.release_decision !== "release" ? ["cicd_only", "stopped"] : releaseDecisionOptions;
+      const decisionDisabled = (!canEdit(app) || releaseLocked() || !beforeDocDeadline()) ? "disabled" : "";
+      const allowedDecisions = beforeAppFreeze()
+        ? releaseDecisionOptions
+        : (snap.release_decision === "release" ? ["release", "cicd_only", "stopped"] : ["cicd_only", "stopped"]);
       const selectedInfoFile = pendingAppInfoAppId === app.id ? pendingAppInfoFile : null;
       const clearFileDisabled = selectedInfoFile && writable ? "" : "disabled";
       const actions = [
