@@ -161,6 +161,9 @@
     let selectedApp = "";
     let autoRefreshTimer = null;
     let lastUserInputAt = 0;
+    let pendingAppInfoFile = null;
+    let pendingAppInfoAppId = "";
+    let appInfoPickerHoldUntil = 0;
     document.addEventListener("keydown", () => { lastUserInputAt = Date.now(); }, true);
     document.addEventListener("input", () => { lastUserInputAt = Date.now(); }, true);
 
@@ -217,7 +220,8 @@
     }
 
     function recentlyTyping() {
-      if ([...document.querySelectorAll('input[type="file"]')].some(el => el.files && el.files.length)) return true;
+      if (Date.now() < appInfoPickerHoldUntil) return true;
+      if (pendingAppInfoFile && activeView() === "apps") return true;
       // Only block refresh if the user pressed a key in the last 3 seconds AND
       // an editable field is still focused (so we don't wipe in-progress text).
       if (Date.now() - lastUserInputAt > 3000) return false;
@@ -397,9 +401,15 @@
       const ownerOnlyDisabled = ownerWritable ? "" : "disabled";
       const decisionDisabled = (!canEdit(app) || releaseLocked() || (!beforeAppFreeze() && snap.release_decision === "release") || !beforeDocDeadline()) ? "disabled" : "";
       const allowedDecisions = !beforeAppFreeze() && snap.release_decision !== "release" ? ["cicd_only", "stopped"] : releaseDecisionOptions;
+      const selectedInfoFile = pendingAppInfoAppId === app.id ? pendingAppInfoFile : null;
+      const clearFileDisabled = selectedInfoFile && writable ? "" : "disabled";
       const actions = [
         `<button class="primary" id="saveApp" ${disabled}>保存</button>`,
-        `<input id="appInfoFile" type="file" accept=".json" ${disabled}><span id="appInfoFileName" class="small muted">未选择文件</span><button id="uploadInfo" ${disabled}>上传 app_info</button>`,
+        `<input id="appInfoFile" type="file" accept=".json" hidden ${disabled}>`,
+        `<button id="chooseAppInfo" ${disabled}>选择 app_info.json</button>`,
+        `<span id="appInfoFileName" class="small muted">${selectedInfoFile ? `已选择：${esc(selectedInfoFile.name)}` : "未选择文件"}</span>`,
+        `<button id="clearAppInfoFile" ${clearFileDisabled}>清除</button>`,
+        `<button id="uploadInfo" ${disabled}>上传 app_info</button>`,
         `<button id="fetchInfo" ${disabled}>从 Gerrit 拉取 app_info</button>`
       ].filter(Boolean).join("");
       const diffActions = isOwner() ? `<button id="confirmDiffs" ${ownerOnlyDisabled}>确认全部 diff</button>` : "";
@@ -556,18 +566,42 @@
       if ($("saveApp")) $("saveApp").onclick = () => saveApp(app, false);
       if ($("confirmOwner")) $("confirmOwner").onclick = () => saveApp(app, true);
       if ($("confirmDiffs")) $("confirmDiffs").onclick = async () => { await saveApp(app, false, true); };
+      if ($("chooseAppInfo")) $("chooseAppInfo").onclick = () => {
+        appInfoPickerHoldUntil = Date.now() + 120000;
+        const input = $("appInfoFile");
+        if (input) {
+          input.value = "";
+          input.click();
+        }
+      };
       if ($("appInfoFile")) $("appInfoFile").onchange = () => {
-        const file = $("appInfoFile").files[0];
-        if ($("appInfoFileName")) $("appInfoFileName").textContent = file ? `已选择：${file.name}` : "未选择文件";
+        appInfoPickerHoldUntil = 0;
+        const file = $("appInfoFile").files[0] || null;
+        if (file) {
+          pendingAppInfoFile = file;
+          pendingAppInfoAppId = app.id;
+        }
+        renderDetail();
+      };
+      if ($("clearAppInfoFile")) $("clearAppInfoFile").onclick = () => {
+        if (pendingAppInfoAppId === app.id) {
+          pendingAppInfoFile = null;
+          pendingAppInfoAppId = "";
+        }
+        if ($("appInfoFile")) $("appInfoFile").value = "";
+        renderDetail();
       };
       if ($("addOwnerTest")) $("addOwnerTest").onclick = async () => {
         snap.test_docs.push({ id: "new_" + Date.now(), path: "owner_added." + (snap.test_docs.length + 1), owner_added: true, command: "", dataset: "", content: "", result_view: "", pass_criteria: "" });
         renderDetail();
       };
       if ($("uploadInfo")) $("uploadInfo").onclick = async () => {
-        const file = $("appInfoFile").files[0]; if (!file) return alert("请选择 app_info.json");
+        const file = pendingAppInfoAppId === app.id ? pendingAppInfoFile : null;
+        if (!file) return alert("请选择 app_info.json");
         try {
           await post("/api/app-info", { release_id: currentReleaseId(), app_id: app.id, source: file.name, app_info: await file.text() });
+          pendingAppInfoFile = null;
+          pendingAppInfoAppId = "";
           try {
             await loadState();
             alert(`app_info.json 上传成功：${file.name}`);
@@ -642,7 +676,10 @@
         if (["dashboard", "apps", "qa"].includes(b.dataset.view)) loadState().catch(err => alert(err.message));
       });
       document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshIfIdle(); });
-      window.addEventListener("focus", refreshIfIdle);
+      window.addEventListener("focus", () => {
+        if (Date.now() < appInfoPickerHoldUntil) appInfoPickerHoldUntil = Date.now() + 1500;
+        refreshIfIdle();
+      });
       $("loginBtn").onclick = login;
       $("logoutBtn").onclick = logout;
       $("refresh").onclick = () => loadState();
