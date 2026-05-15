@@ -500,7 +500,7 @@
       const ownerTestActions = isOwner() ? `<button id="addOwnerTest" ${ownerOnlyDisabled}>新增 owner-added 测试项</button>` : "";
       const ownerFooterActions = isOwner() && canEditDetail
         ? (appDetailEditMode
-          ? `<div class="row" style="margin-top:16px"><button class="primary" id="saveDraft" ${ownerOnlyDisabled}>保存草稿</button><button class="good" id="confirmOwner" ${ownerOnlyDisabled} title="保存当前内容，并确认本 app 的 release 信息已补齐">保存并提交 Owner 确认</button></div>`
+          ? `<div class="row" style="margin-top:16px"><button class="good" id="confirmOwner" ${ownerOnlyDisabled} title="保存当前内容，并确认本 app 的 release 信息已补齐">保存并提交 Owner 确认</button></div>`
           : `<div class="row" style="margin-top:16px"><button class="primary" id="editAppBottom">修改</button></div>`)
         : "";
       $("detailTitle").textContent = app.name;
@@ -690,7 +690,6 @@
       if ($("editApp")) $("editApp").onclick = enterEdit;
       if ($("editAppBottom")) $("editAppBottom").onclick = enterEdit;
       if ($("saveApp")) $("saveApp").onclick = () => saveApp(app, false);
-      if ($("saveDraft")) $("saveDraft").onclick = () => saveApp(app, false);
       if ($("confirmOwner")) $("confirmOwner").onclick = () => saveApp(app, true);
       if ($("confirmDiffs")) $("confirmDiffs").onclick = async () => { await saveApp(app, false, true); };
       if ($("chooseAppInfo")) $("chooseAppInfo").onclick = () => {
