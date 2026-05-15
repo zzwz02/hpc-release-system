@@ -403,6 +403,7 @@
       if (!app || !snap) { $("detailTitle").textContent = "App 详情"; $("detail").innerHTML = "<p class='muted'>请选择 app。</p>"; return; }
       const writable = canEdit(app) && !releaseLocked() && beforeDocDeadline();
       const disabled = writable ? "" : "disabled";
+      const rmMetaDisabled = isRM() && writable ? "" : "disabled";
       const ownerWritable = isOwner() && writable;
       const ownerOnlyDisabled = ownerWritable ? "" : "disabled";
       const decisionDisabled = (!canEdit(app) || releaseLocked() || (!beforeAppFreeze() && snap.release_decision === "release") || !beforeDocDeadline()) ? "disabled" : "";
@@ -410,7 +411,7 @@
       const selectedInfoFile = pendingAppInfoAppId === app.id ? pendingAppInfoFile : null;
       const clearFileDisabled = selectedInfoFile && writable ? "" : "disabled";
       const actions = [
-        `<button class="primary" id="saveApp" ${disabled}>保存</button>`,
+        isRM() ? `<button class="primary" id="saveApp" ${disabled}>保存</button>` : "",
         `<input id="appInfoFile" type="file" accept=".json" hidden ${disabled}>`,
         `<button id="chooseAppInfo" ${disabled}>选择 app_info.json</button>`,
         `<span id="appInfoFileName" class="small muted">${selectedInfoFile ? `已选择：${esc(selectedInfoFile.name)}` : "未选择文件"}</span>`,
@@ -420,19 +421,19 @@
       ].filter(Boolean).join("");
       const diffActions = isOwner() ? `<button id="confirmDiffs" ${ownerOnlyDisabled}>确认全部 diff</button>` : "";
       const ownerTestActions = isOwner() ? `<button id="addOwnerTest" ${ownerOnlyDisabled}>新增 owner-added 测试项</button>` : "";
-      const confirmOwnerAction = isOwner() ? `<div class="row" style="margin-top:16px"><button class="good" id="confirmOwner" ${ownerOnlyDisabled} title="确认本 app 的 release 信息已补齐">提交 Owner 确认</button></div>` : "";
+      const ownerFooterActions = isOwner() ? `<div class="row" style="margin-top:16px"><button class="primary" id="saveDraft" ${ownerOnlyDisabled}>保存草稿</button><button class="good" id="confirmOwner" ${ownerOnlyDisabled} title="保存当前内容，并确认本 app 的 release 信息已补齐">保存并提交 Owner 确认</button></div>` : "";
       $("detailTitle").textContent = app.name;
       const phaseBanner = phaseBannerFor(snap);
       $("detail").innerHTML = `
         ${phaseBanner}
         <div class="row">${actions}</div>
         <div class="form">
-          <label>官方名称<input id="officialName" value="${esc(app.official_name)}"></label>
-          <label>Owner<input id="owners" value="${esc((app.owners || []).join(","))}" ${currentUser().role === "RM" ? "" : "disabled"}></label>
-          <label>类型<select id="docTarget">${docTargetOptions.map(v => `<option value="${v}" ${app.doc_target===v?"selected":""}>${esc(docTargetLabels[v])}</option>`).join("")}</select></label>
-          <label>App类型<input id="type" value="${esc(app.type)}"></label>
-          <label>Gerrit URL<input id="gitUrl" value="${esc(app.git_url)}"></label>
-          <label>Branch<input id="gitBranch" value="${esc(app.git_branch)}"></label>
+          <label>官方名称<input id="officialName" value="${esc(app.official_name)}" ${rmMetaDisabled}></label>
+          <label>Owner<input id="owners" value="${esc((app.owners || []).join(","))}" ${rmMetaDisabled}></label>
+          <label>类型<select id="docTarget" ${rmMetaDisabled}>${docTargetOptions.map(v => `<option value="${v}" ${app.doc_target===v?"selected":""}>${esc(docTargetLabels[v])}</option>`).join("")}</select></label>
+          <label>App类型<input id="type" value="${esc(app.type)}" ${rmMetaDisabled}></label>
+          <label>Gerrit URL<input id="gitUrl" value="${esc(app.git_url)}" ${rmMetaDisabled}></label>
+          <label>Branch<input id="gitBranch" value="${esc(app.git_branch)}" ${rmMetaDisabled}></label>
           <label>Release决策<select id="decision" ${decisionDisabled}>${allowedDecisions.map(v => `<option value="${v}" ${snap.release_decision===v?"selected":""}>${esc(releaseDecisionLabels[v])}</option>`).join("")}</select></label>
           <label>版本<input value="${esc(snap.version)}" disabled></label>
           <label>X86芯片<input value="${esc(snap.x86_chips)}" disabled></label>
@@ -441,7 +442,7 @@
         <p class="muted small">类型为 HPC 时生成到 HPC Manual；类型为 AI4Sci 时生成到 AI4Sci User Guide。release 进入正式发布、文档生成和 QA；cicd_only 仅纳入 CICD 构建/测试管控；stopped 表示停止维护或停止发布。</p>
         <p class="muted small">app_info 来源：${appInfoSource(snap)}</p>
         ${snap.qa_status === "has_issues" && snap.qa_issue_note ? `<p class="pill warnp" style="display:block;padding:8px">QA 标注「存在问题」：${esc(snap.qa_issue_note)}（会附加到已知限制段）</p>` : ""}
-        <label>描述<textarea id="description">${esc(app.description)}</textarea></label>
+        <label>描述<textarea id="description" ${rmMetaDisabled}>${esc(app.description)}</textarea></label>
         <h3>app_info diff</h3>
         <div class="table"><table>${renderDiffs(snap)}</table></div>
         ${diffActions}
@@ -453,7 +454,7 @@
         <h3>待补条目（不阻断发布）</h3><ul>${(snap.missing_items || []).map(b => `<li>${esc(b)}</li>`).join("") || "<li class='muted'>暂无</li>"}</ul>
         <h3>Change Log</h3>
         <div id="changeLog" class="table"><table>${table(["时间","操作人","角色","Release","事件","内容"], [])}</table></div>
-        ${confirmOwnerAction}`;
+        ${ownerFooterActions}`;
       bindDetail(app, snap);
       loadChangeLog(app.id);
     }
@@ -570,6 +571,7 @@
 
     function bindDetail(app, snap) {
       if ($("saveApp")) $("saveApp").onclick = () => saveApp(app, false);
+      if ($("saveDraft")) $("saveDraft").onclick = () => saveApp(app, false);
       if ($("confirmOwner")) $("confirmOwner").onclick = () => saveApp(app, true);
       if ($("confirmDiffs")) $("confirmDiffs").onclick = async () => { await saveApp(app, false, true); };
       if ($("chooseAppInfo")) $("chooseAppInfo").onclick = () => {
