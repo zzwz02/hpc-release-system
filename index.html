@@ -95,6 +95,7 @@
             <button class="good" id="admission">运行 QA 准入</button>
             <button class="warn" id="openQa">打开 QA</button>
             <button class="danger" id="lockRelease">Release Lock</button>
+            <button class="warn" id="unlockRelease">解锁 Release</button>
           </div>
           <div class="table"><table id="releaseTable"></table></div>
         </div></div>
@@ -224,6 +225,7 @@
       renderApps();
       renderDetail();
       renderAdmin();
+      if ($("preview")) $("preview").disabled = state.release?.state === "release_locked";
     }
 
     function renderRoleChrome() {
@@ -300,11 +302,12 @@
       const app = appById(selectedApp);
       const snap = app ? releaseSnap(app.id) : null;
       if (!app || !snap) { $("detailTitle").textContent = "App 详情"; $("detail").innerHTML = "<p class='muted'>请选择 app。</p>"; return; }
-      const disabled = !canEdit(app) || snap.locked ? "disabled" : "";
-      const ownerOnlyDisabled = !isOwner() || !canEdit(app) || snap.locked ? "disabled" : "";
+      const relLocked = state.release?.state === "release_locked";
+      const disabled = !canEdit(app) || snap.locked || relLocked ? "disabled" : "";
+      const ownerOnlyDisabled = !isOwner() || !canEdit(app) || snap.locked || relLocked ? "disabled" : "";
       const actions = [
         `<button class="primary" id="saveApp" ${disabled}>保存</button>`,
-        isRM() ? `<button id="qaPass" class="good" title="QA 测试通过后由 RM 标记，作为 Release Lock 的必要条件">QA 通过</button>` : "",
+        isRM() && !relLocked ? `<button id="qaPass" class="good" title="QA 测试通过后由 RM 标记，作为 Release Lock 的必要条件">QA 通过</button>` : "",
         `<button id="uploadInfo" ${disabled}>上传 app_info</button><input id="appInfoFile" type="file" accept=".json" ${disabled}>`,
         `<button id="fetchInfo" ${disabled}>从 Gerrit 拉取 app_info</button>`
       ].filter(Boolean).join("");
@@ -312,7 +315,9 @@
       const ownerTestActions = isOwner() ? `<button id="addOwnerTest" ${ownerOnlyDisabled}>新增 owner-added 测试项</button>` : "";
       const confirmOwnerAction = isOwner() ? `<div class="row" style="margin-top:16px"><button class="good" id="confirmOwner" ${ownerOnlyDisabled} title="确认本 app 的 release 信息已补齐，可提交 RM 做 QA 准入">提交 Owner 确认</button></div>` : "";
       $("detailTitle").textContent = app.name;
+      const lockedBanner = relLocked ? `<div class="pill bad" style="display:block;padding:8px 12px;margin-bottom:8px;font-size:13px">Release 已锁定，无法上传 app_info、保存修改或提交 Owner 确认。如需继续编辑，请等待 Release Manager 创建下一个 Release。</div>` : "";
       $("detail").innerHTML = `
+        ${lockedBanner}
         <div class="row">${actions}</div>
         <div class="form">
           <label>官方名称<input id="officialName" value="${esc(app.official_name)}"></label>
@@ -333,7 +338,7 @@
         <div class="table"><table>${renderDiffs(snap)}</table></div>
         ${diffActions}
         <h3>文档字段</h3>
-        ${docArea("intro","基本介绍",snap.doc.intro)}${docArea("image_usage","镜像使用方法",snap.doc.image_usage)}${docArea("binary_usage","二进制包使用方法",snap.doc.binary_usage)}${docArea("env_setup","环境搭建",snap.doc.env_setup)}${docArea("test_method","测试方法",snap.doc.test_method)}${docArea("test_result","测试结果查看",snap.doc.test_result)}${docArea("limitations","已知限制",snap.doc.limitations)}
+        ${docArea("intro","基本介绍",snap.doc.intro)}${docArea("image_usage","镜像使用方法",snap.doc.image_usage)}${docArea("binary_usage","二进制包使用方法",snap.doc.binary_usage)}${docArea("env_setup","环境搭建",snap.doc.env_setup)}${docArea("limitations","已知限制",snap.doc.limitations)}
         <h3>test_cmd 说明</h3>
         <div id="testDocs">${renderTestDocs(snap)}</div>
         ${ownerTestActions}
@@ -449,12 +454,13 @@
       $("release").onchange = () => loadState($("release").value);
       $("search").oninput = renderApps;
       $("importBtn").onclick = async () => { $("initLog").textContent = "导入中..."; const r = await post("/api/import-initial", { release_csv: await readFile("releaseCsv"), owner_csv: await readFile("ownerCsv"), alias_text: $("aliasText").value, release_name: $("initReleaseName").value }); $("initLog").textContent = "导入完成：" + r.release_id; await loadState(r.release_id); };
-      $("createRelease").onclick = async () => { const r = await post("/api/releases/create", { name: $("newReleaseName").value, maca_version: $("newMacaVersion").value, deadline: $("newDeadline").value }); await loadState(r.release_id); };
+      $("createRelease").onclick = async () => { if (!$("newReleaseName").value.trim()) return alert("请填写新 Release 名称"); const r = await post("/api/releases/create", { name: $("newReleaseName").value, maca_version: $("newMacaVersion").value, deadline: $("newDeadline").value }); await loadState(r.release_id); };
       $("saveDeadline").onclick = async () => { await post("/api/releases/deadline", { release_id: currentReleaseId(), deadline: $("editDeadline").value }); await loadState(); alert("Deadline 已更新"); };
-      $("admission").onclick = async () => { await post("/api/releases/admission", { release_id: currentReleaseId() }); await loadState(); };
-      $("openQa").onclick = async () => { await post("/api/releases/open-qa", { release_id: currentReleaseId() }); await loadState(); };
-      $("lockRelease").onclick = async () => { await post("/api/releases/lock", { release_id: currentReleaseId() }); await loadState(); };
-      $("preview").onclick = async () => { await post("/api/artifacts/generate", { release_id: currentReleaseId(), final: false }); await loadState(); };
+      $("admission").onclick = async () => { try { await post("/api/releases/admission", { release_id: currentReleaseId() }); await loadState(); } catch (e) { alert("QA 准入失败：" + e.message); } };
+      $("openQa").onclick = async () => { try { await post("/api/releases/open-qa", { release_id: currentReleaseId() }); await loadState(); } catch (e) { alert("打开 QA 失败：" + e.message); } };
+      $("lockRelease").onclick = async () => { try { await post("/api/releases/lock", { release_id: currentReleaseId() }); await loadState(); } catch (e) { alert("Release Lock 失败：" + e.message); } };
+      $("unlockRelease").onclick = async () => { if (!confirm("确认要解锁当前 Release？解锁后可继续编辑，最终 artifacts 将被清除。")) return; try { await post("/api/releases/unlock", { release_id: currentReleaseId() }); await loadState(); } catch (e) { alert("解锁失败：" + e.message); } };
+      $("preview").onclick = async () => { try { await post("/api/artifacts/generate", { release_id: currentReleaseId(), final: false }); await loadState(); } catch (e) { alert("生成预览失败：" + e.message); } };
       document.querySelectorAll(".download").forEach(b => b.onclick = () => showArtifact(b.dataset.kind));
       $("clearDb").onclick = async () => {
         if (!confirm("确认要备份并清空数据库？")) return;

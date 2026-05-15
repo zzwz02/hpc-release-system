@@ -130,6 +130,12 @@ class Handler(BaseHTTPRequestHandler):
                 artifacts = core.lock_release(core.connect(DB_PATH), body["release_id"])
                 self.send_json({"artifacts": list(artifacts)})
                 return
+            if parsed.path == "/api/releases/unlock":
+                self.require_rm()
+                body = self.json_body()
+                core.unlock_release(core.connect(DB_PATH), body["release_id"])
+                self.send_json({"ok": True})
+                return
             if parsed.path == "/api/artifacts/generate":
                 self.require_rm()
                 body = self.json_body()

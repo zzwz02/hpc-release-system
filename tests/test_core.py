@@ -72,13 +72,72 @@ APP_INFO_V2 = {
 APP_INFO_ARM = {
     "app_version": "1.0",
     "app_name": "amber",
-    "app_build": {},
+    "app_build": {
+        "ubuntu20.04_aarch64": {
+            "build_target": "release",
+            "arch": "aarch64",
+            "supported_chip": ["c500"],
+            "enabled": True,
+        }
+    },
     "app_test": {
         "arm_only": {
             "test_cmd": "run-arm-test",
             "supported_chip": {"c500": ["ubuntu20.04_aarch64"]},
             "enabled": True,
         }
+    },
+}
+
+APP_INFO_WEEKLY = {
+    "app_version": "22",
+    "app_name": "amber",
+    "app_build": {
+        "ubuntu20.04_amd64": {
+            "build_target": "release",
+            "arch": "amd64",
+            "supported_chip": ["c500"],
+            "enabled": True,
+        }
+    },
+    "app_test": {
+        "daily_test": {
+            "test_cmd": "bash daily.sh",
+            "supported_chip": {"c500": ["ubuntu20.04_amd64"]},
+            "enabled": True,
+            "test_period": "daily",
+        },
+        "weekly_test": {
+            "test_cmd": "bash weekly.sh",
+            "supported_chip": {"c500": ["ubuntu20.04_amd64"]},
+            "enabled": True,
+            "test_period": "weekly",
+        },
+    },
+}
+
+APP_INFO_DISABLED = {
+    "app_version": "22",
+    "app_name": "amber",
+    "app_build": {
+        "ubuntu20.04_amd64": {
+            "build_target": "release",
+            "arch": "amd64",
+            "supported_chip": ["c500", "x301"],
+            "enabled": True,
+        }
+    },
+    "app_test": {
+        "run_make_test": {
+            "test_cmd": "cd /root/amber22/test && bash test_amber.sh",
+            "supported_chip": {"c500": ["ubuntu20.04_amd64"], "x301": ["ubuntu20.04_amd64"]},
+            "enabled": True,
+        },
+        "disabled_test": {
+            "test_cmd": "cd /root/amber22/test && bash disabled.sh",
+            "supported_chip": {"n300": ["ubuntu20.04_amd64"]},
+            "enabled": False,
+        },
     },
 }
 
@@ -121,7 +180,7 @@ class CoreWorkflowTests(unittest.TestCase):
 
         snapshot = core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
         self.assertEqual(snapshot["version"], "22")
-        self.assertIn("c500", snapshot["x86_chips"])
+        self.assertIn("C500", snapshot["x86_chips"])
         self.assertEqual(len(snapshot["test_docs"]), 1)
 
         blockers = core.run_admission_check(self.conn, release_id)[app_id]
@@ -157,8 +216,6 @@ class CoreWorkflowTests(unittest.TestCase):
                     "image_usage": "docker run amber",
                     "binary_usage": "tar xf amber.tar.xz",
                     "env_setup": "export MACA_PATH=/opt/maca",
-                    "test_method": "运行 app_info 中所有 test_cmd",
-                    "test_result": "查看 /root/amber22/test/log",
                 }
             )
             for doc in snapshot["test_docs"]:
@@ -168,6 +225,7 @@ class CoreWorkflowTests(unittest.TestCase):
                         "content": "make test",
                         "result_view": "查看 test/log",
                         "pass_criteria": "exit code 0",
+                        "stale": False,
                     }
                 )
 
@@ -196,12 +254,10 @@ class CoreWorkflowTests(unittest.TestCase):
                     "image_usage": "docker run amber",
                     "binary_usage": "tar xf amber.tar.xz",
                     "env_setup": "export MACA_PATH=/opt/maca",
-                    "test_method": "run tests",
-                    "test_result": "check logs",
                 }
             )
             for doc in snapshot["test_docs"]:
-                doc.update({"dataset": "data", "content": "content", "result_view": "logs", "pass_criteria": "pass"})
+                doc.update({"dataset": "data", "content": "content", "result_view": "logs", "pass_criteria": "pass", "stale": False})
 
         core.update_snapshot(self.conn, release_id, app_id, make_ready)
         next_release = core.create_release_from_previous(self.conn, "next")
@@ -228,9 +284,9 @@ class CoreWorkflowTests(unittest.TestCase):
         core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
         def ready(snapshot: dict) -> None:
             snapshot["owner_confirmed"] = True
-            snapshot["doc"].update({"image_usage": "i", "binary_usage": "b", "env_setup": "e", "test_method": "t", "test_result": "r"})
+            snapshot["doc"].update({"image_usage": "i", "binary_usage": "b", "env_setup": "e"})
             for doc in snapshot["test_docs"]:
-                doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p"})
+                doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p", "stale": False})
         core.update_snapshot(self.conn, release_id, app_id, ready)
         core.run_admission_check(self.conn, release_id)
         core.open_qa(self.conn, release_id)
@@ -244,7 +300,7 @@ class CoreWorkflowTests(unittest.TestCase):
         app = core.get_app(self.conn, app_id)
         app["name"] = "Changed Amber"
         core.save_app(self.conn, app)
-        rows = core.release_rows(self.conn, core.get_release(self.conn, release_id), admitted_only=True)
+        rows = core.release_rows(self.conn, core.get_release(self.conn, release_id))
         self.assertEqual(rows[0][0]["name"], original_name)
         self.assertNotEqual(rows[0][0]["name"], "Changed Amber")
         next_release = core.create_release_from_previous(self.conn, "next")
@@ -258,30 +314,41 @@ class CoreWorkflowTests(unittest.TestCase):
         plan = core.gerrit_push_plan(self.conn, release_id)
         self.assertFalse(plan["ready"])
 
-    def test_lock_requires_qa_admission(self) -> None:
-        release_id, _ = self.import_initial()
-        with self.assertRaises(RuntimeError):
-            core.lock_release(self.conn, release_id)
+    def test_lock_allows_blocked_apps(self) -> None:
+        """Lock succeeds even when apps have unresolved blockers; blocked apps stay unlocked."""
+        release_id, app_id = self.import_initial()
+        # Don't do admission — app has blockers
+        core.run_admission_check(self.conn, release_id)
+        core.open_qa(self.conn, release_id)
+        artifacts = core.lock_release(self.conn, release_id)
+        release = core.get_release(self.conn, release_id)
+        self.assertEqual(release["state"], "release_locked")
+        snapshot = release["snapshots"][app_id]
+        self.assertFalse(snapshot.get("locked", False))
+        self.assertNotIn(app_id, [a["name"] for a, _ in core.release_rows(self.conn, release, final=True)])
 
-    def test_lock_requires_qa_passed_not_just_in_qa(self) -> None:
+    def test_lock_skips_in_qa_apps(self) -> None:
+        """Lock succeeds but in_qa (not passed) apps are not locked."""
         release_id, app_id = self.import_initial()
         core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
 
         def ready(snapshot: dict) -> None:
             snapshot["owner_confirmed"] = True
-            snapshot["doc"].update({"image_usage": "i", "binary_usage": "b", "env_setup": "e", "test_method": "t", "test_result": "r"})
+            snapshot["doc"].update({"image_usage": "i", "binary_usage": "b", "env_setup": "e"})
             for doc in snapshot["test_docs"]:
-                doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p"})
+                doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p", "stale": False})
 
         core.update_snapshot(self.conn, release_id, app_id, ready)
         core.run_admission_check(self.conn, release_id)
         core.open_qa(self.conn, release_id)
-        with self.assertRaises(RuntimeError):
-            core.lock_release(self.conn, release_id)
+        # Don't mark QA passed — app is still in_qa
+        artifacts = core.lock_release(self.conn, release_id)
         release = core.get_release(self.conn, release_id)
-        self.assertEqual(release["state"], "qa_open")
-        with self.assertRaises(RuntimeError):
-            core.update_snapshot(self.conn, release_id, app_id, lambda s: s.update({"version": "bad"}))
+        self.assertEqual(release["state"], "release_locked")
+        snapshot = release["snapshots"][app_id]
+        self.assertFalse(snapshot.get("locked", False))
+        # Release note should be empty (no QA-passed apps)
+        self.assertNotIn("Amber", artifacts["release_note"])
 
     def test_qa_open_blocks_direct_key_change(self) -> None:
         release_id, app_id = self.import_initial()
@@ -289,9 +356,9 @@ class CoreWorkflowTests(unittest.TestCase):
 
         def ready(snapshot: dict) -> None:
             snapshot["owner_confirmed"] = True
-            snapshot["doc"].update({"image_usage": "i", "binary_usage": "b", "env_setup": "e", "test_method": "t", "test_result": "r"})
+            snapshot["doc"].update({"image_usage": "i", "binary_usage": "b", "env_setup": "e"})
             for doc in snapshot["test_docs"]:
-                doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p"})
+                doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p", "stale": False})
 
         core.update_snapshot(self.conn, release_id, app_id, ready)
         core.run_admission_check(self.conn, release_id)
@@ -318,19 +385,48 @@ class CoreWorkflowTests(unittest.TestCase):
 
         def add_owner_test(snapshot: dict) -> None:
             snapshot["owner_confirmed"] = True
-            snapshot["doc"].update({"image_usage": "i", "binary_usage": "b", "env_setup": "e", "test_method": "t", "test_result": "r"})
+            snapshot["doc"].update({"image_usage": "i", "binary_usage": "b", "env_setup": "e"})
             for doc in snapshot["test_docs"]:
-                doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p"})
+                doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p", "stale": False})
             snapshot["test_docs"].append({"id": "owner", "path": "owner_added.1", "owner_added": True, "command": "", "dataset": "", "content": "", "result_view": "", "pass_criteria": ""})
 
         core.update_snapshot(self.conn, release_id, app_id, add_owner_test)
         blockers = core.run_admission_check(self.conn, release_id)[app_id]
         self.assertTrue(any("owner-added 测试命令" in item for item in blockers))
 
+    def test_disabled_tests_excluded_from_parse_and_chips(self) -> None:
+        parsed = core.parse_app_info(APP_INFO_DISABLED)
+        self.assertIn("C500", parsed["x86_chips"])
+        self.assertIn("X301", parsed["x86_chips"])
+        self.assertNotIn("N300", parsed["x86_chips"])
+        test_paths = [t["path"] for t in parsed["tests"]]
+        self.assertIn("run_make_test", test_paths)
+        self.assertNotIn("disabled_test", test_paths)
+
+    def test_disabled_tests_excluded_from_test_docs(self) -> None:
+        release_id, app_id = self.import_initial()
+        snapshot = core.apply_app_info(self.conn, release_id, app_id, APP_INFO_DISABLED, source="unit")
+        doc_paths = [d["path"] for d in snapshot["test_docs"]]
+        self.assertIn("run_make_test", doc_paths)
+        self.assertNotIn("disabled_test", doc_paths)
+
+    def test_weekly_tests_excluded_from_parse(self) -> None:
+        parsed = core.parse_app_info(APP_INFO_WEEKLY)
+        test_paths = [t["path"] for t in parsed["tests"]]
+        self.assertIn("daily_test", test_paths)
+        self.assertNotIn("weekly_test", test_paths)
+
+    def test_app_info_upload_updates_chips(self) -> None:
+        release_id, app_id = self.import_initial()
+        snap_before = core.get_release(self.conn, release_id)["snapshots"][app_id]
+        self.assertEqual(snap_before["x86_chips"], "c500,x301")
+        snapshot = core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V2, source="unit")
+        self.assertEqual(snapshot["x86_chips"], "C500,N300,X301")
+
     def test_arm_supported_chip_is_not_reported_as_x86(self) -> None:
         parsed = core.parse_app_info(APP_INFO_ARM)
-        self.assertIn("c500", parsed["arm_chips"])
-        self.assertNotIn("c500", parsed["x86_chips"])
+        self.assertIn("C500", parsed["arm_chips"])
+        self.assertNotIn("C500", parsed["x86_chips"])
 
     def test_app_info_source_metadata_and_arm_snapshot_update(self) -> None:
         release_id, app_id = self.import_initial()
@@ -343,8 +439,8 @@ class CoreWorkflowTests(unittest.TestCase):
             source_type="owner_upload",
             uploaded_by="owner_test",
         )
-        self.assertEqual(snapshot["arm_chips"], "c500")
-        self.assertEqual(snapshot["x86_chips"], "c500,x301")
+        self.assertEqual(snapshot["arm_chips"], "C500")
+        self.assertEqual(snapshot["x86_chips"], "")
         self.assertEqual(snapshot["app_info"]["source_type"], "owner_upload")
         self.assertEqual(snapshot["app_info"]["uploaded_by"], "owner_test")
 
@@ -420,9 +516,9 @@ class CoreWorkflowTests(unittest.TestCase):
 
         def ready(snapshot: dict) -> None:
             snapshot["owner_confirmed"] = True
-            snapshot["doc"].update({"image_usage": "i", "binary_usage": "b", "env_setup": "e", "test_method": "t", "test_result": "r"})
+            snapshot["doc"].update({"image_usage": "i", "binary_usage": "b", "env_setup": "e"})
             for doc in snapshot["test_docs"]:
-                doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p"})
+                doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p", "stale": False})
 
         core.update_snapshot(self.conn, release_id, app_id, ready)
         core.run_admission_check(self.conn, release_id)
@@ -502,6 +598,106 @@ class CoreWorkflowTests(unittest.TestCase):
             server.run_git = old
         self.assertEqual(commit_id, "abc123")
         self.assertEqual(json.loads(raw)["app_version"], "22")
+
+
+    def test_guide_rows_new_app_excluded_when_blocked(self) -> None:
+        """A brand-new app that is blocked should NOT appear in the guide."""
+        release_id, app_id = self.import_initial()
+        # App has no prior locked release — it's new.
+        # Don't do QA pass so it stays blocked.
+        release = core.get_release(self.conn, release_id)
+        active, stopped = core.guide_rows(self.conn, release, "manual")
+        self.assertEqual(active, [])
+        self.assertEqual(stopped, [])
+
+    def test_guide_rows_new_app_included_when_qa_passed(self) -> None:
+        """A new app with QA passed appears in the guide."""
+        release_id, app_id = self.import_initial()
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        def ready(snapshot: dict) -> None:
+            snapshot["owner_confirmed"] = True
+            snapshot["doc"].update({"image_usage": "i", "binary_usage": "b", "env_setup": "e"})
+            for doc in snapshot["test_docs"]:
+                doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p", "stale": False})
+        core.update_snapshot(self.conn, release_id, app_id, ready)
+        core.run_admission_check(self.conn, release_id)
+        core.open_qa(self.conn, release_id)
+        core.mark_qa_passed(self.conn, release_id, app_id)
+        release = core.get_release(self.conn, release_id)
+        active, stopped = core.guide_rows(self.conn, release, "manual")
+        self.assertEqual(len(active), 1)
+        self.assertEqual(active[0][0]["name"], "amber")
+
+    def test_guide_rows_previously_published_app_uses_last_locked_when_blocked(self) -> None:
+        """A previously locked app falls back to its last locked snapshot when blocked."""
+        release_id, app_id = self.import_initial()
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        def ready(snapshot: dict) -> None:
+            snapshot["owner_confirmed"] = True
+            snapshot["doc"].update({"image_usage": "i", "binary_usage": "b", "env_setup": "e"})
+            for doc in snapshot["test_docs"]:
+                doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p", "stale": False})
+        core.update_snapshot(self.conn, release_id, app_id, ready)
+        core.run_admission_check(self.conn, release_id)
+        core.open_qa(self.conn, release_id)
+        core.mark_qa_passed(self.conn, release_id, app_id)
+        core.lock_release(self.conn, release_id)
+        # Create next release — app is cloned but not QA'd
+        next_release = core.create_release_from_previous(self.conn, "next")
+        next_rel = core.get_release(self.conn, next_release)
+        active, stopped = core.guide_rows(self.conn, next_rel, "manual")
+        self.assertEqual(len(active), 1)
+        # Should use data from the locked first release
+        self.assertEqual(active[0][1].get("version"), "22")
+
+    def test_guide_rows_stopped_app_at_end(self) -> None:
+        """Stopped apps appear in stopped_rows with last-published data."""
+        release_id, app_id = self.import_initial()
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        def ready(snapshot: dict) -> None:
+            snapshot["owner_confirmed"] = True
+            snapshot["doc"].update({"image_usage": "i", "binary_usage": "b", "env_setup": "e"})
+            for doc in snapshot["test_docs"]:
+                doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p", "stale": False})
+        core.update_snapshot(self.conn, release_id, app_id, ready)
+        core.run_admission_check(self.conn, release_id)
+        core.open_qa(self.conn, release_id)
+        core.mark_qa_passed(self.conn, release_id, app_id)
+        core.lock_release(self.conn, release_id)
+        # Create next release, mark app as stopped
+        next_release = core.create_release_from_previous(self.conn, "next")
+        core.update_snapshot(self.conn, next_release, app_id, lambda s: s.update({"release_decision": "stopped"}))
+        next_rel = core.get_release(self.conn, next_release)
+        active, stopped = core.guide_rows(self.conn, next_rel, "manual")
+        self.assertEqual(active, [])
+        self.assertEqual(len(stopped), 1)
+        self.assertEqual(stopped[0][1].get("version"), "22")
+
+    def test_render_guide_stopped_section_marker(self) -> None:
+        """Stopped entries get (已停止支持) in their heading."""
+        app = {"name": "TestApp", "description": "desc", "doc_target": "manual"}
+        snapshot = {"version": "1.0", "doc": {}, "test_docs": []}
+        out = core.render_guide("Guide", [], stopped_rows=[(app, snapshot)])
+        self.assertIn("TestApp（已停止支持）", out)
+
+    def test_release_note_excludes_non_passed_apps_in_final(self) -> None:
+        """Final release note only includes QA-passed apps."""
+        release_id, app_id = self.import_initial()
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        def ready(snapshot: dict) -> None:
+            snapshot["owner_confirmed"] = True
+            snapshot["doc"].update({"image_usage": "i", "binary_usage": "b", "env_setup": "e"})
+            for doc in snapshot["test_docs"]:
+                doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p", "stale": False})
+        core.update_snapshot(self.conn, release_id, app_id, ready)
+        core.run_admission_check(self.conn, release_id)
+        core.open_qa(self.conn, release_id)
+        # Don't pass QA — app is in_qa but not passed
+        final_rows = core.release_rows(self.conn, core.get_release(self.conn, release_id), final=True)
+        self.assertEqual(final_rows, [])
+        # Preview still includes it
+        preview_rows = core.release_rows(self.conn, core.get_release(self.conn, release_id))
+        self.assertEqual(len(preview_rows), 1)
 
 
 if __name__ == "__main__":

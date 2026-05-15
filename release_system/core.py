@@ -535,6 +535,27 @@ def previous_release(conn: sqlite3.Connection, release_id: str) -> dict[str, Any
     return None
 
 
+def last_published_snapshot(conn: sqlite3.Connection, app_id: str, before_release_id: str) -> dict[str, Any] | None:
+    """Find the most recent locked snapshot for *app_id* from a release created before *before_release_id*."""
+    releases = list_releases(conn)
+    target_idx = next((i for i, r in enumerate(releases) if r["id"] == before_release_id), None)
+    if target_idx is None:
+        return None
+    for i in range(target_idx - 1, -1, -1):
+        r = releases[i]
+        if r.get("state") != "release_locked":
+            continue
+        row = conn.execute(
+            "SELECT data_json FROM snapshots WHERE release_id = ? AND app_id = ?",
+            (r["id"], app_id),
+        ).fetchone()
+        if row:
+            snap = loads_json(row["data_json"], {})
+            if snap.get("locked"):
+                return snap
+    return None
+
+
 def import_initial(
     conn: sqlite3.Connection,
     release_csv: str | Path,
@@ -665,6 +686,8 @@ def import_initial_rows(
 
 
 def create_release_from_previous(conn: sqlite3.Connection, name: str, *, maca_version: str = "", deadline: str = "") -> str:
+    if not (name or "").strip():
+        raise ValueError("新 Release 名称不能为空")
     releases = list_releases(conn)
     previous = get_release(conn, releases[-1]["id"]) if releases else None
     release_id = new_id("rel")
@@ -685,6 +708,8 @@ def create_release_from_previous(conn: sqlite3.Connection, name: str, *, maca_ve
         snapshot = json.loads(json.dumps(old)) if old else base_snapshot(app)
         snapshot.pop("app_meta", None)
         snapshot.update({"owner_confirmed": False, "rm_admitted": False, "qa_status": "not_checked", "locked": False, "blockers": [], "change_requests": []})
+        for td in snapshot.get("test_docs", []):
+            td["stale"] = True
         save_snapshot(conn, release_id, app["id"], snapshot)
     conn.commit()
     audit(conn, f"创建 release {name}，沿用上一版本信息")
@@ -765,28 +790,23 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
         enabled = cfg.get("enabled") is not False
         if enabled:
             target = arm_chips if re.search(r"arm|aarch64", arch, re.I) else x86_chips
-            target.update(str(chip) for chip in chips)
+            target.update(str(chip).upper() for chip in chips)
         build_targets.append({"path": env, "arch": arch, "chips": chips, "enabled": enabled, "build_target": cfg.get("build_target", "")})
 
     def visitor(node: dict[str, Any], path: list[str]) -> None:
         if "test_cmd" not in node:
             return
+        if node.get("enabled") is False:
+            return
+        if str(node.get("test_period", "")).strip().lower() == "weekly":
+            return
         supported = node.get("supported_chip") or {}
         if isinstance(supported, dict):
             chips = list(supported.keys())
             arch_list = sorted({str(v) for values in supported.values() for v in (values if isinstance(values, list) else [values])})
-            for chip, arch_values in supported.items():
-                values = arch_values if isinstance(arch_values, list) else [arch_values]
-                has_arm = any(re.search(r"arm|aarch64", str(arch), re.I) for arch in values)
-                has_x86 = any(re.search(r"x86|amd64", str(arch), re.I) for arch in values)
-                if has_arm:
-                    arm_chips.add(str(chip))
-                if has_x86 or not has_arm:
-                    x86_chips.add(str(chip))
         elif isinstance(supported, list):
             chips = [str(v) for v in supported]
             arch_list = []
-            x86_chips.update(chips)
         else:
             chips = []
             arch_list = []
@@ -880,15 +900,14 @@ def ensure_test_docs(snapshot: dict[str, Any], parsed: dict[str, Any], diffs: li
                     "pass_criteria": "",
                     "coverage": join_list(test.get("supported_chips", [])),
                     "owner_added": False,
-                    "stale": False,
+                    "stale": True,
                     "obsolete": False,
                 }
             )
         else:
             doc["command"] = test["command"]
             doc["obsolete"] = False
-            if test["path"] in changed_paths:
-                doc["stale"] = True
+            doc["stale"] = True
     for doc in snapshot["test_docs"]:
         if not doc.get("owner_added") and doc["path"] not in current_paths:
             doc["obsolete"] = True
@@ -971,8 +990,8 @@ def apply_app_info(
     }
     snapshot["app_info_diffs"] = diffs
     snapshot["version"] = parsed.get("app_version") or snapshot.get("version", "")
-    snapshot["x86_chips"] = join_list(parsed.get("x86_chips", [])) or snapshot.get("x86_chips", "")
-    snapshot["arm_chips"] = join_list(parsed.get("arm_chips", [])) or snapshot.get("arm_chips", "")
+    snapshot["x86_chips"] = join_list(parsed.get("x86_chips", []))
+    snapshot["arm_chips"] = join_list(parsed.get("arm_chips", []))
     ensure_test_docs(snapshot, parsed, diffs)
     save_snapshot(conn, release_id, app_id, snapshot)
     conn.commit()
@@ -1008,8 +1027,6 @@ def blockers_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
             "image_usage": "镜像使用方法",
             "binary_usage": "二进制包使用方法",
             "env_setup": "环境搭建",
-            "test_method": "测试方法",
-            "test_result": "测试结果查看",
         }
         for key, label in required.items():
             if not doc.get(key):
@@ -1108,47 +1125,46 @@ def lock_release(conn: sqlite3.Connection, release_id: str) -> dict[str, str]:
     release = get_release(conn, release_id)
     if release.get("state") == "release_locked":
         raise RuntimeError("Release is already locked")
-    blockers = admission_blockers(conn, release_id)
-    blocking = {app_id: items for app_id, items in blockers.items() if items and release["snapshots"][app_id].get("release_decision") == "release"}
-    if blocking:
-        raise RuntimeError(f"Cannot lock release; blockers remain: {blocking}")
-    not_admitted = [
-        app_id
-        for app_id, snapshot in release["snapshots"].items()
-        if snapshot.get("release_decision") == "release" and not snapshot.get("rm_admitted")
-    ]
-    if not_admitted:
-        raise RuntimeError(f"Cannot lock release; apps not admitted to QA: {not_admitted}")
-    not_passed = [
-        app_id
-        for app_id, snapshot in release["snapshots"].items()
-        if snapshot.get("release_decision") == "release" and snapshot.get("qa_status") not in {"qa_passed", "passed"}
-    ]
-    if not_passed:
-        raise RuntimeError(f"Cannot lock release; apps have not passed QA: {not_passed}")
     apps_by_id = {app["id"]: app for app in list_apps(conn)}
     for app_id, snapshot in release["snapshots"].items():
-        app = apps_by_id.get(app_id)
-        if app:
-            snapshot["app_meta"] = {
-                "id": app["id"],
-                "name": app["name"],
-                "official_name": app["official_name"],
-                "category": app["category"],
-                "type": app["type"],
-                "description": app["description"],
-                "git_url": app["git_url"],
-                "git_branch": app["git_branch"],
-                "doc_target": app["doc_target"],
-                "owners": app["owners"],
-            }
-        snapshot["locked"] = True
+        qa_passed = snapshot.get("qa_status") in {"qa_passed", "passed"}
+        if qa_passed:
+            app = apps_by_id.get(app_id)
+            if app:
+                snapshot["app_meta"] = {
+                    "id": app["id"],
+                    "name": app["name"],
+                    "official_name": app["official_name"],
+                    "category": app["category"],
+                    "type": app["type"],
+                    "description": app["description"],
+                    "git_url": app["git_url"],
+                    "git_branch": app["git_branch"],
+                    "doc_target": app["doc_target"],
+                    "owners": app["owners"],
+                }
+            snapshot["locked"] = True
         save_snapshot(conn, release_id, app_id, snapshot, allow_locked=True)
     conn.execute("UPDATE releases SET state = ?, locked_at = ? WHERE id = ?", ("release_locked", now(), release_id))
     conn.commit()
     artifacts = generate_artifacts(conn, release_id, final=True, from_lock=True)
     audit(conn, f"Release locked：{release['name']}")
     return artifacts
+
+
+def unlock_release(conn: sqlite3.Connection, release_id: str) -> None:
+    """Revert a locked release back to qa_open so RM can continue work."""
+    release = get_release(conn, release_id)
+    if release.get("state") != "release_locked":
+        raise RuntimeError("Release is not locked")
+    for app_id, snapshot in release["snapshots"].items():
+        snapshot.pop("app_meta", None)
+        snapshot["locked"] = False
+        save_snapshot(conn, release_id, app_id, snapshot, allow_locked=True)
+    conn.execute("DELETE FROM artifacts WHERE release_id = ? AND final = 1", (release_id,))
+    conn.execute("UPDATE releases SET state = ?, locked_at = '' WHERE id = ?", ("qa_open", release_id))
+    conn.commit()
+    audit(conn, f"Release 解锁：{release['name']}")
 
 
 def rst_title(title: str, marker: str = "=") -> str:
@@ -1162,19 +1178,73 @@ def code_block(content: str) -> str:
     return f".. code-block:: shell\n\n{body}\n\n"
 
 
-def release_rows(conn: sqlite3.Connection, release: dict[str, Any], *, admitted_only: bool = False) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+def release_rows(conn: sqlite3.Connection, release: dict[str, Any], *, final: bool = False) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Rows for the release note.
+
+    *final=True*: only QA-passed apps (used at lock time).
+    *final=False*: all release apps (preview).
+    """
     apps = {app["id"]: app for app in list_apps(conn)}
     rows = []
     for app_id, snapshot in release["snapshots"].items():
         app = snapshot.get("app_meta") or apps.get(app_id)
         if not app or snapshot.get("release_decision") != "release":
             continue
-        if admitted_only and not snapshot.get("rm_admitted"):
-            continue
-        if admitted_only and snapshot.get("qa_status") not in {"qa_passed", "passed"}:
+        if final and snapshot.get("qa_status") not in {"qa_passed", "passed"}:
             continue
         rows.append((app, snapshot))
     return sorted(rows, key=lambda item: item[0]["name"].lower())
+
+
+def guide_rows(
+    conn: sqlite3.Connection,
+    release: dict[str, Any],
+    doc_target: str,
+) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], list[tuple[dict[str, Any], dict[str, Any]]]]:
+    """Return ``(active_rows, stopped_rows)`` for a manual/ai4sci guide.
+
+    * New apps (never locked before): included only if QA passed this release.
+    * Previously published apps: always kept.  Use current snapshot if QA
+      passed, otherwise fall back to last locked release data.
+    * Stopped apps (release_decision == "stopped"): returned separately so
+      the renderer can place them at the end with a marker.
+    """
+    apps = {app["id"]: app for app in list_apps(conn)}
+    active: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    stopped: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+    for app_id, snapshot in release["snapshots"].items():
+        app = snapshot.get("app_meta") or apps.get(app_id)
+        if not app:
+            continue
+        if normalize_doc_target(app.get("doc_target")) != doc_target:
+            continue
+
+        qa_passed = snapshot.get("qa_status") in {"qa_passed", "passed"}
+        decision = snapshot.get("release_decision", "release")
+
+        if decision == "stopped":
+            prev = last_published_snapshot(conn, app_id, release["id"])
+            if prev:
+                prev_app = prev.get("app_meta") or app
+                stopped.append((prev_app, prev))
+            continue
+
+        if decision != "release":
+            continue
+
+        prev = last_published_snapshot(conn, app_id, release["id"])
+
+        if qa_passed:
+            active.append((app, snapshot))
+        elif prev:
+            prev_app = prev.get("app_meta") or app
+            active.append((prev_app, prev))
+        # else: new app that didn't pass QA — omit
+
+    active.sort(key=lambda item: item[0]["name"].lower())
+    stopped.sort(key=lambda item: item[0]["name"].lower())
+    return active, stopped
 
 
 def render_release_note(release: dict[str, Any], rows: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
@@ -1186,17 +1256,18 @@ def render_release_note(release: dict[str, Any], rows: list[tuple[dict[str, Any]
     return out
 
 
-def render_guide(title: str, rows: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
-    out = rst_title(title)
+def _render_guide_entries(rows: list[tuple[dict[str, Any], dict[str, Any]]], *, stopped: bool = False) -> str:
+    out = ""
     for app, snapshot in rows:
         doc = snapshot.get("doc", {})
-        out += rst_title(app["name"], "-")
+        heading = f"{app['name']}（已停止支持）" if stopped else app["name"]
+        out += rst_title(heading, "-")
         out += f"{doc.get('intro') or app.get('description') or ''}\n\n"
         out += f"版本：{snapshot.get('version') or ''}\n\n"
         out += "**镜像使用方法：**\n\n" + code_block(doc.get("image_usage", ""))
         out += "**二进制包使用方法：**\n\n" + code_block(doc.get("binary_usage", ""))
         out += "**环境搭建：**\n\n" + code_block(doc.get("env_setup", ""))
-        out += f"**测试方法：**\n\n{doc.get('test_method') or ''}\n\n"
+        out += "**测试方法：**\n\n"
         for test_doc in snapshot.get("test_docs", []):
             if test_doc.get("obsolete"):
                 continue
@@ -1207,9 +1278,20 @@ def render_guide(title: str, rows: list[tuple[dict[str, Any], dict[str, Any]]]) 
             out += f"  - 通过标准：{test_doc.get('pass_criteria', '')}\n\n"
             if test_doc.get("command"):
                 out += code_block(test_doc["command"])
-        out += f"**测试结果查看：**\n\n{doc.get('test_result') or ''}\n\n"
         if doc.get("limitations"):
             out += f"**已知限制：**\n\n{doc['limitations']}\n\n"
+    return out
+
+
+def render_guide(
+    title: str,
+    rows: list[tuple[dict[str, Any], dict[str, Any]]],
+    stopped_rows: list[tuple[dict[str, Any], dict[str, Any]]] | None = None,
+) -> str:
+    out = rst_title(title)
+    out += _render_guide_entries(rows)
+    if stopped_rows:
+        out += _render_guide_entries(stopped_rows, stopped=True)
     return out
 
 
@@ -1222,24 +1304,25 @@ def generate_artifacts(conn: sqlite3.Connection, release_id: str, *, final: bool
     if from_lock:
         if release.get("state") != "release_locked":
             raise RuntimeError("Final artifacts require a locked release")
-        unlocked = [
-            app_id
-            for app_id, snapshot in release["snapshots"].items()
-            if snapshot.get("release_decision") == "release" and not snapshot.get("locked")
-        ]
-        if unlocked:
-            raise RuntimeError(f"Final artifacts require locked snapshots: {unlocked}")
     if release.get("state") == "release_locked" and not from_lock:
         raise RuntimeError("Release is locked; artifacts are immutable")
     if final:
         existing = conn.execute("SELECT 1 FROM artifacts WHERE release_id = ? AND final = 1 LIMIT 1", (release_id,)).fetchone()
         if existing:
             raise RuntimeError("Final artifacts already exist and are immutable")
-    rows = release_rows(conn, release, admitted_only=final)
+    rows = release_rows(conn, release, final=final)
+    if final:
+        manual_active, manual_stopped = guide_rows(conn, release, "manual")
+        ai4sci_active, ai4sci_stopped = guide_rows(conn, release, "ai4sci")
+    else:
+        manual_active = [(a, s) for a, s in rows if normalize_doc_target(a.get("doc_target")) == "manual"]
+        manual_stopped = []
+        ai4sci_active = [(a, s) for a, s in rows if normalize_doc_target(a.get("doc_target")) == "ai4sci"]
+        ai4sci_stopped = []
     artifacts = {
         "release_note": render_release_note(release, rows),
-        "manual": render_guide("HPC Manual App 章节", [(a, s) for a, s in rows if normalize_doc_target(a.get("doc_target")) == "manual"]),
-        "ai4sci": render_guide("AI4Sci User Guide App 章节", [(a, s) for a, s in rows if normalize_doc_target(a.get("doc_target")) == "ai4sci"]),
+        "manual": render_guide("HPC Manual App 章节", manual_active, manual_stopped),
+        "ai4sci": render_guide("AI4Sci User Guide App 章节", ai4sci_active, ai4sci_stopped),
         "data": dumps_json({"release": release, "apps": list_apps(conn), "generated_at": now(), "final": final}),
     }
     names = {
