@@ -244,6 +244,7 @@
     }
 
     function releaseSnap(appId) { return state.release?.snapshots?.[appId] || null; }
+    function isReleaseSnap(snap) { return snap && snap.release_decision === "release"; }
     function appById(id) { return state.apps.find(a => a.id === id); }
     function currentUser() { return state.user || {}; }
     function isRM() { return currentUser().role === "RM"; }
@@ -314,16 +315,21 @@
 
     function renderSummary() {
       const rows = state.apps.map(app => ({ app, snap: releaseSnap(app.id) })).filter(x => x.snap);
-      const missingItems = rows.flatMap(x => (x.snap.missing_items || []).map(b => [x.app.name, b, x.snap.qa_status]));
+      const releaseRows = rows.filter(x => isReleaseSnap(x.snap));
+      const missingItems = rows.flatMap(x => (x.snap.missing_items || []).map(b => [
+        x.app.name,
+        b,
+        isReleaseSnap(x.snap) ? (qaStatusLabels[x.snap.qa_status || "not_checked"] || x.snap.qa_status || "") : ""
+      ]));
       const qaSummary = {
-        not_checked: rows.filter(x => x.snap.release_decision === "release" && (x.snap.qa_status || "not_checked") === "not_checked").length,
-        qa_passed: rows.filter(x => x.snap.qa_status === "qa_passed").length,
-        has_issues: rows.filter(x => x.snap.qa_status === "has_issues").length,
-        cannot_release: rows.filter(x => x.snap.qa_status === "cannot_release").length,
+        not_checked: releaseRows.filter(x => (x.snap.qa_status || "not_checked") === "not_checked").length,
+        qa_passed: releaseRows.filter(x => x.snap.qa_status === "qa_passed").length,
+        has_issues: releaseRows.filter(x => x.snap.qa_status === "has_issues").length,
+        cannot_release: releaseRows.filter(x => x.snap.qa_status === "cannot_release").length,
       };
       $("summary").innerHTML = `<div class="row">
         <span class="pill">Apps: ${rows.length}</span>
-        <span class="pill">Release 决策为 release: ${rows.filter(x => x.snap.release_decision === "release").length}</span>
+        <span class="pill">Release 决策为 release: ${releaseRows.length}</span>
         <span class="pill ok">QA 通过: ${qaSummary.qa_passed}</span>
         <span class="pill warnp">存在问题: ${qaSummary.has_issues}</span>
         <span class="pill bad">不可发布: ${qaSummary.cannot_release}</span>
@@ -378,7 +384,7 @@
           <td><b>${esc(app.name)}</b><div class="small muted">${esc(app.type || app.category || "")}</div></td>
           <td>${esc((app.owners || []).join(","))}</td>
           <td>${esc(releaseDecisionLabels[snap.release_decision] || snap.release_decision)}</td>
-          <td>${qaPill(snap.qa_status)}</td>
+          <td>${isReleaseSnap(snap) ? qaPill(snap.qa_status) : ""}</td>
           <td>${(snap.app_info_diffs || []).filter(d => !d.confirmed).length}</td>
           <td>${(snap.missing_items || []).length}</td>
         </tr>`).join("") || `<tr><td colspan="6" class="muted">无数据</td></tr>`}</tbody>`;
@@ -511,7 +517,7 @@
       const writable = !releaseLocked();
       const rows = state.apps
         .map(app => ({ app, snap: releaseSnap(app.id) }))
-        .filter(x => x.snap && x.snap.release_decision === "release")
+        .filter(x => isReleaseSnap(x.snap))
         .sort((a, b) => appSortName(a.app).localeCompare(appSortName(b.app), "zh-CN"));
       const logBlock = `
         <div class="panel" style="margin-bottom:14px"><h3>QA log 文件（单个，覆盖式上传）</h3><div class="body">
