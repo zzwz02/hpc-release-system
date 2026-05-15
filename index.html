@@ -160,6 +160,9 @@
     let state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, server_now_beijing: "" };
     let selectedApp = "";
     let autoRefreshTimer = null;
+    let lastUserInputAt = 0;
+    document.addEventListener("keydown", () => { lastUserInputAt = Date.now(); }, true);
+    document.addEventListener("input", () => { lastUserInputAt = Date.now(); }, true);
 
     const $ = id => document.getElementById(id);
     const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
@@ -213,23 +216,27 @@
       return document.querySelector(".tab.active")?.dataset.view || "";
     }
 
-    function formFieldFocused() {
+    function recentlyTyping() {
+      if ([...document.querySelectorAll('input[type="file"]')].some(el => el.files && el.files.length)) return true;
+      // Only block refresh if the user pressed a key in the last 3 seconds AND
+      // an editable field is still focused (so we don't wipe in-progress text).
+      if (Date.now() - lastUserInputAt > 3000) return false;
       const tag = document.activeElement?.tagName;
-      return ["INPUT", "TEXTAREA", "SELECT"].includes(tag);
+      return ["INPUT", "TEXTAREA"].includes(tag);
     }
 
     function canAutoRefresh() {
-      return !!state.user && !document.hidden && !formFieldFocused() && ["dashboard", "apps", "qa", "admin"].includes(activeView());
+      return !!state.user && !document.hidden && !recentlyTyping() && ["dashboard", "apps", "qa", "admin"].includes(activeView());
     }
 
     function refreshIfIdle() {
       if (!canAutoRefresh()) return;
-      loadState().catch(() => showLoggedOut());
+      loadState().catch(err => console.warn("auto-refresh failed:", err.message));
     }
 
     function startAutoRefresh() {
       if (autoRefreshTimer) return;
-      autoRefreshTimer = setInterval(refreshIfIdle, 15000);
+      autoRefreshTimer = setInterval(refreshIfIdle, 5000);
     }
 
     function releaseSnap(appId) { return state.release?.snapshots?.[appId] || null; }
@@ -392,7 +399,7 @@
       const allowedDecisions = !beforeAppFreeze() && snap.release_decision !== "release" ? ["cicd_only", "stopped"] : releaseDecisionOptions;
       const actions = [
         `<button class="primary" id="saveApp" ${disabled}>保存</button>`,
-        `<button id="uploadInfo" ${disabled}>上传 app_info</button><input id="appInfoFile" type="file" accept=".json" ${disabled}>`,
+        `<input id="appInfoFile" type="file" accept=".json" ${disabled}><span id="appInfoFileName" class="small muted">未选择文件</span><button id="uploadInfo" ${disabled}>上传 app_info</button>`,
         `<button id="fetchInfo" ${disabled}>从 Gerrit 拉取 app_info</button>`
       ].filter(Boolean).join("");
       const diffActions = isOwner() ? `<button id="confirmDiffs" ${ownerOnlyDisabled}>确认全部 diff</button>` : "";
@@ -428,8 +435,11 @@
         <div id="testDocs">${renderTestDocs(snap)}</div>
         ${ownerTestActions}
         <h3>待补条目（不阻断发布）</h3><ul>${(snap.missing_items || []).map(b => `<li>${esc(b)}</li>`).join("") || "<li class='muted'>暂无</li>"}</ul>
+        <h3>Change Log</h3>
+        <div id="changeLog" class="table"><table>${table(["时间","操作人","角色","Release","事件","内容"], [])}</table></div>
         ${confirmOwnerAction}`;
       bindDetail(app, snap);
+      loadChangeLog(app.id);
     }
 
     function phaseBannerFor(snap) {
@@ -463,6 +473,23 @@
         <label>通过标准<textarea data-test="${d.id}" data-field="pass_criteria">${esc(d.pass_criteria || "")}</textarea></label>
         <label><input type="checkbox" data-test="${d.id}" data-field="stale" ${d.stale ? "" : "checked"}> 测试说明已更新</label>
       </div></div>`).join("") || "<p class='muted'>上传 app_info 后生成测试项。</p>";
+    }
+
+    async function loadChangeLog(appId) {
+      try {
+        const data = await api(`/api/app-audit?app_id=${encodeURIComponent(appId)}`);
+        if (selectedApp !== appId || !$("changeLog")) return;
+        $("changeLog").innerHTML = `<table>${table(["时间","操作人","角色","Release","事件","内容"], (data.entries || []).map(e => [
+          e.ts || "",
+          e.user || "",
+          e.role || "",
+          e.release_id || "",
+          e.event || "",
+          e.message || ""
+        ]))}</table>`;
+      } catch (err) {
+        if ($("changeLog")) $("changeLog").innerHTML = `<p class="muted">Change log 加载失败：${esc(err.message)}</p>`;
+      }
     }
 
     function table(headers, rows) { return `<thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${headers.length}" class="muted">无数据</td></tr>`}</tbody>`; }
@@ -529,14 +556,27 @@
       if ($("saveApp")) $("saveApp").onclick = () => saveApp(app, false);
       if ($("confirmOwner")) $("confirmOwner").onclick = () => saveApp(app, true);
       if ($("confirmDiffs")) $("confirmDiffs").onclick = async () => { await saveApp(app, false, true); };
+      if ($("appInfoFile")) $("appInfoFile").onchange = () => {
+        const file = $("appInfoFile").files[0];
+        if ($("appInfoFileName")) $("appInfoFileName").textContent = file ? `已选择：${file.name}` : "未选择文件";
+      };
       if ($("addOwnerTest")) $("addOwnerTest").onclick = async () => {
         snap.test_docs.push({ id: "new_" + Date.now(), path: "owner_added." + (snap.test_docs.length + 1), owner_added: true, command: "", dataset: "", content: "", result_view: "", pass_criteria: "" });
         renderDetail();
       };
       if ($("uploadInfo")) $("uploadInfo").onclick = async () => {
         const file = $("appInfoFile").files[0]; if (!file) return alert("请选择 app_info.json");
-        await post("/api/app-info", { release_id: currentReleaseId(), app_id: app.id, source: file.name, app_info: await file.text() });
-        await loadState();
+        try {
+          await post("/api/app-info", { release_id: currentReleaseId(), app_id: app.id, source: file.name, app_info: await file.text() });
+          try {
+            await loadState();
+            alert(`app_info.json 上传成功：${file.name}`);
+          } catch (refreshErr) {
+            alert(`app_info.json 上传成功，但刷新页面状态失败：\n\n${refreshErr.message}`);
+          }
+        } catch (err) {
+          alert(`app_info.json 上传失败：\n\n${err.message}`);
+        }
       };
       if ($("fetchInfo")) $("fetchInfo").onclick = async () => {
         if (!confirm(`从 Gerrit 拉取 ${app.git_url} ${app.git_branch} 的 app_info.json？`)) return;

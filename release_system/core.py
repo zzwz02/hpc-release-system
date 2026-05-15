@@ -9,9 +9,14 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Callable
+
+
+_INIT_LOCK = threading.Lock()
+_INITIALIZED_DBS: set[str] = set()
 
 
 BEIJING_TZ = dt.timezone(dt.timedelta(hours=8))
@@ -108,11 +113,26 @@ def dumps_json(value: Any) -> str:
 
 
 def connect(path: str | Path = "release_system.db") -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=10.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    init_db(conn)
+    conn.execute("PRAGMA busy_timeout = 5000")
+    key = str(Path(path).resolve()) if not str(path).startswith(":") else str(path)
+    with _INIT_LOCK:
+        if key not in _INITIALIZED_DBS:
+            try:
+                conn.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.OperationalError:
+                pass  # in-memory dbs don't support WAL
+            init_db(conn)
+            _INITIALIZED_DBS.add(key)
     return conn
+
+
+def reset_init_state() -> None:
+    """Reset the initialized-db tracker; used by tests when cycling DBs."""
+    with _INIT_LOCK:
+        _INITIALIZED_DBS.clear()
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -1201,23 +1221,33 @@ def missing_items_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str
 
 
 def refresh_missing_items(conn: sqlite3.Connection, release_id: str) -> dict[str, list[str]]:
-    """Recompute missing_items for every snapshot in the release; return map."""
+    """Recompute missing_items for every snapshot in the release; return map.
+
+    Only writes back when the recomputed value (or normalized decision) differs
+    from what is stored, so /api/state polling doesn't thrash the DB.
+    """
     release = get_release(conn, release_id)
     if release.get("released_locked"):
         return {app_id: snap.get("missing_items", []) for app_id, snap in release["snapshots"].items()}
     apps = {app["id"]: app for app in list_apps(conn)}
     results: dict[str, list[str]] = {}
+    dirty = False
     for app_id, snapshot in release["snapshots"].items():
         app = apps.get(app_id)
         if not app:
             continue
+        before = dumps_json(snapshot)
         snapshot["release_decision"] = normalize_release_decision(snapshot.get("release_decision"))
         snapshot.pop("cicd", None)
         items = missing_items_for(app, snapshot)
         snapshot["missing_items"] = items
         results[app_id] = items
-        save_snapshot(conn, release_id, app_id, snapshot)
-    conn.commit()
+        after = dumps_json(snapshot)
+        if before != after:
+            save_snapshot(conn, release_id, app_id, snapshot)
+            dirty = True
+    if dirty:
+        conn.commit()
     return results
 
 
