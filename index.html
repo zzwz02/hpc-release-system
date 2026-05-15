@@ -74,7 +74,7 @@
 
     <section id="dashboard" class="view active">
       <div class="panel"><h2>总览</h2><div class="body" id="summary"></div></div>
-      <div class="panel" style="margin-top:14px"><h2>待补 / 待办（仅提示，不阻断发布）</h2><div class="body"><div class="table"><table id="blockers"></table></div></div></div>
+      <div class="panel" style="margin-top:14px"><h2>发布待办 / 门禁</h2><div class="body"><div class="table"><table id="blockers"></table></div></div></div>
     </section>
 
     <section id="init" class="view" data-roles="RM">
@@ -346,10 +346,10 @@
         <span class="pill warnp">存在问题: ${qaSummary.has_issues}</span>
         <span class="pill bad">不可发布: ${qaSummary.cannot_release}</span>
         <span class="pill">待 QA: ${qaSummary.not_checked}</span>
-        <span class="pill warnp">待补条目: ${missingItems.length}</span>
+        <span class="pill warnp">待办/门禁项: ${missingItems.length}</span>
         <span class="pill">当前: ${esc(state.release?.name || "无")}</span>
       </div>`;
-      $("blockers").innerHTML = table(["App", "待补条目", "QA"], missingItems);
+      $("blockers").innerHTML = table(["App", "待办/门禁项", "QA"], missingItems);
     }
 
     function renderReleases() {
@@ -465,7 +465,7 @@
         <h3>test_cmd 说明</h3>
         <div id="testDocs">${renderTestDocs(snap)}</div>
         ${ownerTestActions}
-        <h3>待补条目（不阻断发布）</h3><ul>${(snap.missing_items || []).map(b => `<li>${esc(b)}</li>`).join("") || "<li class='muted'>暂无</li>"}</ul>
+        <h3>发布待办 / 门禁</h3><ul>${(snap.missing_items || []).map(b => `<li>${esc(b)}</li>`).join("") || "<li class='muted'>暂无</li>"}</ul>
         <h3>Change Log</h3>
         <div id="changeLog" class="table"><table>${table(["时间","操作人","角色","Release","事件","内容"], [])}</table></div>
         ${ownerFooterActions}`;
@@ -703,9 +703,9 @@
         const updated = releaseSnap(app.id) || result.snapshot || {};
         const missing = updated.missing_items || result.missing_items || [];
         if (missing.length) {
-          alert(`Owner 确认已提交，仍有 ${missing.length} 个待补条目：\n\n- ${missing.join("\n- ")}`);
+          alert(`Owner 确认已提交，仍有 ${missing.length} 个待办/门禁项：\n\n- ${missing.join("\n- ")}`);
         } else {
-          alert("Owner 确认已提交，当前无待补条目。");
+          alert("Owner 确认已提交，当前无待办/门禁项。");
         }
       }
     }

@@ -1169,12 +1169,9 @@ def apply_app_info(
 
 
 def missing_items_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
-    """Items missing for this app to be release-ready.
-
-    Returned as a "to-do" list to display to RM. Does NOT block any action.
-    """
+    """Readiness and final-release gate items shown to RM/owners."""
     decision = normalize_release_decision(snapshot.get("release_decision"))
-    if decision not in {"release", "cicd_only"}:
+    if decision != "release":
         return []
     missing: list[str] = []
     if not app.get("owners"):
@@ -1185,8 +1182,6 @@ def missing_items_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str
         missing.append("缺少 branch")
     if not snapshot.get("app_info"):
         missing.append("缺少可追溯 AppInfoSnapshot")
-    if decision != "release":
-        return missing
     if any(not diff.get("confirmed") for diff in snapshot.get("app_info_diffs", [])):
         missing.append("app_info 差异未确认")
     if not snapshot.get("version"):

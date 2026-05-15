@@ -502,6 +502,13 @@ class CoreWorkflowTests(unittest.TestCase):
         self.assertTrue(any("Owner 未确认" in x for x in items))
         self.assertTrue(any("QA 未测试" in x for x in items))
 
+    def test_missing_items_empty_for_cicd_only(self) -> None:
+        release_id, app_id = self.import_initial()
+        core.update_snapshot(self.conn, release_id, app_id, lambda s: s.update({"release_decision": "cicd_only"}))
+        results = core.refresh_missing_items(self.conn, release_id)
+        self.assertEqual(results[app_id], [])
+        self.assertEqual(core.get_release(self.conn, release_id)["snapshots"][app_id]["missing_items"], [])
+
     def test_missing_items_clears_after_complete(self) -> None:
         release_id, app_id = self.import_initial()
         core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
