@@ -174,10 +174,12 @@
     let pendingAppInfoFile = null;
     let pendingAppInfoAppId = "";
     let appInfoPickerHoldUntil = 0;
+    let appDetailDirty = false;
     let qaEditMode = true;
     let qaEditReleaseId = "";
     document.addEventListener("keydown", () => { lastUserInputAt = Date.now(); }, true);
-    document.addEventListener("input", () => { lastUserInputAt = Date.now(); }, true);
+    document.addEventListener("input", markUserEdit, true);
+    document.addEventListener("change", markUserEdit, true);
 
     const $ = id => document.getElementById(id);
     const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
@@ -227,6 +229,14 @@
       render();
     }
 
+    function markUserEdit(event) {
+      lastUserInputAt = Date.now();
+      if (event.target?.closest?.("#detail") && event.target?.type !== "file") {
+        appDetailDirty = true;
+        if ($("dirtyBanner")) $("dirtyBanner").hidden = false;
+      }
+    }
+
     function activeView() {
       return document.querySelector(".tab.active")?.dataset.view || "";
     }
@@ -234,11 +244,12 @@
     function recentlyTyping() {
       if (Date.now() < appInfoPickerHoldUntil) return true;
       if (pendingAppInfoFile && activeView() === "apps") return true;
+      if (appDetailDirty && activeView() === "apps") return true;
       // Only block refresh if the user pressed a key in the last 3 seconds AND
       // an editable field is still focused (so we don't wipe in-progress text).
       if (Date.now() - lastUserInputAt > 3000) return false;
       const tag = document.activeElement?.tagName;
-      return ["INPUT", "TEXTAREA"].includes(tag);
+      return ["INPUT", "TEXTAREA", "SELECT"].includes(tag);
     }
 
     function canAutoRefresh() {
@@ -401,7 +412,12 @@
           <td>${finalPill(snap)}</td>
           <td>${todoPill(snap)}</td>
         </tr>`).join("") || `<tr><td colspan="7" class="muted">无数据</td></tr>`}</tbody>`;
-      document.querySelectorAll("[data-app]").forEach(tr => tr.onclick = () => { selectedApp = tr.dataset.app; render(); });
+      document.querySelectorAll("[data-app]").forEach(tr => tr.onclick = () => {
+        if (appDetailDirty && selectedApp && selectedApp !== tr.dataset.app && !confirm("当前 App 详情有未保存修改，切换 App 会丢失这些修改。确认切换？")) return;
+        if (selectedApp !== tr.dataset.app) appDetailDirty = false;
+        selectedApp = tr.dataset.app;
+        render();
+      });
     }
 
     function qaPill(status) {
@@ -470,6 +486,7 @@
       const phaseBanner = phaseBannerFor(snap);
       $("detail").innerHTML = `
         ${phaseBanner}
+        <div id="dirtyBanner" class="banner pill warnp" ${appDetailDirty ? "" : "hidden"}>有未保存修改，自动刷新已暂停。保存后会恢复自动刷新。</div>
         <div class="row">${actions}</div>
         <div class="form">
           <label>官方名称<input id="officialName" value="${esc(app.official_name)}" ${rmMetaDisabled}></label>
@@ -672,6 +689,7 @@
         renderDetail();
       };
       if ($("addOwnerTest")) $("addOwnerTest").onclick = async () => {
+        appDetailDirty = true;
         snap.test_docs.push({ id: "new_" + Date.now(), path: "owner_added." + (snap.test_docs.length + 1), owner_added: true, command: "", dataset: "", content: "", result_view: "", pass_criteria: "" });
         renderDetail();
       };
@@ -682,6 +700,7 @@
           await post("/api/app-info", { release_id: currentReleaseId(), app_id: app.id, source: file.name, app_info: await file.text() });
           pendingAppInfoFile = null;
           pendingAppInfoAppId = "";
+          appDetailDirty = false;
           try {
             await loadState();
             alert(`app_info.json 上传成功：${file.name}`);
@@ -696,6 +715,7 @@
         if (!confirm(`从 Gerrit 拉取 ${app.git_url} ${app.git_branch} 的 app_info.json？`)) return;
         try {
           const result = await post("/api/app-info/fetch", { release_id: currentReleaseId(), app_id: app.id });
+          appDetailDirty = false;
           await loadState();
           alert(`Gerrit app_info.json 拉取成功。\n\ncommit: ${result.commit_id || "未知"}\nsource: ${result.source || ""}`);
         } catch (err) {
@@ -725,6 +745,7 @@
         app: { official_name: $("officialName").value, type: $("type").value, description: $("description").value, git_url: $("gitUrl").value, git_branch: $("gitBranch").value, doc_target: $("docTarget").value, owners: $("owners").value.split(/[,，、;；/]+/).map(x => x.trim()).filter(Boolean) },
         snapshot: snapshotUpdate
       });
+      appDetailDirty = false;
       await loadState();
       if (!confirmOwner) {
         alert(confirmDiffs ? "diff 确认已保存" : "保存成功");
