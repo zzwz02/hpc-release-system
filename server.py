@@ -254,16 +254,24 @@ class Handler(BaseHTTPRequestHandler):
                         if new_decision != current_decision:
                             if new_decision == "release" and not core.is_before(release.get("app_freeze_deadline", "")):
                                 raise RuntimeError("已过 app 冻结 deadline，不可再切换为 release")
-                    if self.role() == "RM" and "app" in body:
+                    if "app" in body and self.role() in {"RM", "Owner"}:
                         app_update = body["app"]
+                        editable_keys = ["official_name", "type", "description", "git_url", "git_branch", "doc_target", "owners"] if self.role() == "RM" else ["type", "description"]
                         before_app_meta = {
                             key: app.get(key)
                             for key in ["official_name", "type", "description", "git_url", "git_branch", "doc_target", "owners"]
                         }
-                        for key in ["official_name", "type", "description", "git_url", "git_branch", "doc_target"]:
+                        for key in editable_keys:
                             if key in app_update:
-                                app[key] = core.normalize_doc_target(app_update[key]) if key == "doc_target" else app_update[key]
-                        if "owners" in app_update:
+                                if key == "doc_target":
+                                    app[key] = core.normalize_doc_target(app_update[key])
+                                elif key == "description":
+                                    app[key] = core.normalize_app_description(app_update[key])
+                                elif key == "type":
+                                    app[key] = (app_update[key] or "").strip()
+                                else:
+                                    app[key] = app_update[key]
+                        if self.role() == "RM" and "owners" in app_update:
                             app["owners"] = app_update["owners"]
                         after_app_meta = {
                             key: app.get(key)

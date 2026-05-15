@@ -477,6 +477,7 @@
       const writable = canEditDetail && appDetailEditMode;
       const disabled = writable ? "" : "disabled";
       const rmMetaDisabled = isRM() && writable ? "" : "disabled";
+      const appMetaDisabled = (isRM() || isOwner()) && writable ? "" : "disabled";
       const ownerWritable = isOwner() && writable;
       const ownerOnlyDisabled = ownerWritable ? "" : "disabled";
       const decisionDisabled = writable ? "" : "disabled";
@@ -512,7 +513,7 @@
           <label>官方名称<input id="officialName" value="${esc(app.official_name)}" ${rmMetaDisabled}></label>
           <label>Owner<input id="owners" value="${esc((app.owners || []).join(","))}" ${rmMetaDisabled}></label>
           <label>类型<select id="docTarget" ${rmMetaDisabled}>${docTargetOptions.map(v => `<option value="${v}" ${app.doc_target===v?"selected":""}>${esc(docTargetLabels[v])}</option>`).join("")}</select></label>
-          <label>App类型<input id="type" value="${esc(app.type)}" ${rmMetaDisabled}></label>
+          <label>App类型<input id="type" value="${esc(app.type)}" ${appMetaDisabled}></label>
           <label>Gerrit URL<input id="gitUrl" value="${esc(app.git_url)}" ${rmMetaDisabled}></label>
           <label>Branch<input id="gitBranch" value="${esc(app.git_branch)}" ${rmMetaDisabled}></label>
           <label>Release决策<select id="decision" ${decisionDisabled}>${allowedDecisions.map(v => `<option value="${v}" ${snap.release_decision===v?"selected":""}>${esc(releaseDecisionLabels[v])}</option>`).join("")}</select></label>
@@ -523,7 +524,7 @@
         <p class="muted small">类型为 HPC 时生成到 HPC Manual；类型为 AI4Sci 时生成到 AI4Sci User Guide。release 进入正式发布、文档生成和 QA；cicd_only 仅纳入 CICD 构建/测试管控；stopped 表示停止维护或停止发布。</p>
         <p class="muted small">app_info 来源：${appInfoSource(snap)}</p>
         ${snap.qa_status === "has_issues" && snap.qa_issue_note ? `<p class="pill warnp" style="display:block;padding:8px">QA 标注「存在问题」：${esc(snap.qa_issue_note)}（会附加到已知限制段）</p>` : ""}
-        <label>描述<textarea id="description" ${rmMetaDisabled}>${esc(app.description)}</textarea></label>
+        <label>描述（30字内）<textarea id="description" maxlength="30" ${appMetaDisabled}>${esc(app.description)}</textarea></label>
         <h3>app_info diff</h3>
         <div class="table"><table>${renderDiffs(snap)}</table></div>
         ${diffActions}
@@ -757,6 +758,11 @@
 
     async function saveApp(app, confirmOwner = false, confirmDiffs = false) {
       const snap = releaseSnap(app.id);
+      const description = $("description").value.trim();
+      if (description.length > 30) {
+        alert("描述不能超过30字");
+        return;
+      }
       const test_docs = [...document.querySelectorAll("[data-test][data-field]")].reduce((acc, el) => {
         const id = el.dataset.test; let item = acc.find(x => x.id === id); if (!item) acc.push(item = { id });
         if (id.startsWith("new_")) item.owner_added = true;
@@ -773,7 +779,7 @@
       const result = await post("/api/apps/update", {
         release_id: currentReleaseId(),
         app_id: app.id,
-        app: { official_name: $("officialName").value, type: $("type").value, description: $("description").value, git_url: $("gitUrl").value, git_branch: $("gitBranch").value, doc_target: $("docTarget").value, owners: $("owners").value.split(/[,，、;；/]+/).map(x => x.trim()).filter(Boolean) },
+        app: { official_name: $("officialName").value, type: $("type").value.trim(), description, git_url: $("gitUrl").value, git_branch: $("gitBranch").value, doc_target: $("docTarget").value, owners: $("owners").value.split(/[,，、;；/]+/).map(x => x.trim()).filter(Boolean) },
         snapshot: snapshotUpdate
       });
       appDetailDirty = false;

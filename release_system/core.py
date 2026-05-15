@@ -244,6 +244,7 @@ RELEASE_DECISIONS = {"release", "cicd_only", "stopped"}
 NON_RELEASE_DECISIONS = {"cicd_only", "stopped"}
 DOC_TARGETS = {"manual", "ai4sci"}
 QA_STATUSES = {"not_checked", "qa_passed", "has_issues", "cannot_release"}
+MAX_APP_DESCRIPTION_CHARS = 30
 
 
 def normalize_release_decision(value: str | None) -> str:
@@ -262,6 +263,13 @@ def normalize_doc_target(value: str | None) -> str:
         "AI4SCI": "ai4sci",
     }
     return aliases.get(target, "manual")
+
+
+def normalize_app_description(value: str | None) -> str:
+    description = (value or "").strip()
+    if len(description) > MAX_APP_DESCRIPTION_CHARS:
+        raise ValueError(f"描述不能超过{MAX_APP_DESCRIPTION_CHARS}字")
+    return description
 
 
 def ensure_default_user(conn: sqlite3.Connection) -> None:
@@ -1180,6 +1188,13 @@ def missing_items_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str
         missing.append("缺少 Gerrit URL")
     if not app.get("git_branch"):
         missing.append("缺少 branch")
+    if not (app.get("type") or "").strip():
+        missing.append("缺少 App类型")
+    description = (app.get("description") or "").strip()
+    if not description:
+        missing.append("缺少描述（30字内）")
+    elif len(description) > MAX_APP_DESCRIPTION_CHARS:
+        missing.append("描述超过30字")
     if not snapshot.get("app_info"):
         missing.append("缺少可追溯 AppInfoSnapshot")
     if any(not diff.get("confirmed") for diff in snapshot.get("app_info_diffs", [])):

@@ -510,6 +510,27 @@ class CoreWorkflowTests(unittest.TestCase):
         self.assertTrue(any("Owner 未确认" in x for x in items))
         self.assertTrue(any("QA 未测试" in x for x in items))
 
+    def test_missing_items_requires_app_type_and_short_description(self) -> None:
+        release_id, app_id = self.import_initial()
+        app = core.get_app(self.conn, app_id)
+        app["type"] = ""
+        app["description"] = ""
+        core.save_app(self.conn, app)
+        items = core.refresh_missing_items(self.conn, release_id)[app_id]
+        self.assertIn("缺少 App类型", items)
+        self.assertIn("缺少描述（30字内）", items)
+
+        app["type"] = "分子动力学"
+        app["description"] = "a" * 31
+        core.save_app(self.conn, app)
+        items = core.refresh_missing_items(self.conn, release_id)[app_id]
+        self.assertIn("描述超过30字", items)
+
+    def test_normalize_app_description_rejects_over_30_chars(self) -> None:
+        self.assertEqual(core.normalize_app_description("  简短描述  "), "简短描述")
+        with self.assertRaisesRegex(ValueError, "30"):
+            core.normalize_app_description("a" * 31)
+
     def test_missing_items_empty_for_cicd_only(self) -> None:
         release_id, app_id = self.import_initial()
         core.update_snapshot(self.conn, release_id, app_id, lambda s: s.update({"release_decision": "cicd_only"}))
