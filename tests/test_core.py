@@ -445,6 +445,24 @@ class CoreWorkflowTests(unittest.TestCase):
         self.assertFalse(snap_39["owner_confirmed"])
         self.assertEqual(snap_39["qa_status"], "not_checked")
 
+    def test_new_app_request_syncs_as_cicd_only_to_later_frozen_releases(self) -> None:
+        release_38, _ = self.import_initial(app_freeze_deadline="2026-06-01")
+        release_39 = core.create_release_from_previous(self.conn, "3.9.0", app_freeze_deadline="2026-01-01")
+        with mock.patch("release_system.core.beijing_now", return_value=dt.datetime(2026, 5, 15)):
+            app_id = core.add_new_app_request(
+                self.conn,
+                release_38,
+                official_name="g",
+                git_url="ssh://gerrit/g",
+                git_branch="main",
+                release_decision="release",
+                owner="owner_g",
+            )
+        snap_38 = core.get_release(self.conn, release_38)["snapshots"][app_id]
+        snap_39 = core.get_release(self.conn, release_39)["snapshots"][app_id]
+        self.assertEqual(snap_38["release_decision"], "release")
+        self.assertEqual(snap_39["release_decision"], "cicd_only")
+
     def test_new_app_request_does_not_modify_later_locked_releases(self) -> None:
         release_38, app_id = self.import_initial()
         core.apply_app_info(self.conn, release_38, app_id, APP_INFO_V1, source="unit")

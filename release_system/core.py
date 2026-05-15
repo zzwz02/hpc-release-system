@@ -934,7 +934,7 @@ def _future_unlocked_release_ids(conn: sqlite3.Connection, release_id: str) -> l
     return [release["id"] for release in releases[start:] if not release.get("released_locked")]
 
 
-def _initial_snapshot_for_future_release(snapshot: dict[str, Any]) -> dict[str, Any]:
+def _initial_snapshot_for_future_release(snapshot: dict[str, Any], target_release: dict[str, Any] | None = None) -> dict[str, Any]:
     future = json.loads(json.dumps(snapshot))
     future.pop("app_meta", None)
     future.pop("locked_in_release", None)
@@ -946,6 +946,12 @@ def _initial_snapshot_for_future_release(snapshot: dict[str, Any]) -> dict[str, 
             "missing_items": [],
         }
     )
+    if (
+        target_release
+        and future.get("release_decision") == "release"
+        and not is_before(target_release.get("app_freeze_deadline", ""))
+    ):
+        future["release_decision"] = "cicd_only"
     for test_doc in future.get("test_docs", []):
         test_doc["stale"] = True
     return future
@@ -998,7 +1004,7 @@ def add_new_app_request(
         target_release = get_release(conn, target_release_id)
         if app_id in target_release["snapshots"]:
             continue
-        target_snapshot = snapshot if target_release_id == release_id else _initial_snapshot_for_future_release(snapshot)
+        target_snapshot = snapshot if target_release_id == release_id else _initial_snapshot_for_future_release(snapshot, target_release)
         save_snapshot(conn, target_release_id, app_id, target_snapshot)
         synced_release_ids.append(target_release_id)
     conn.commit()
