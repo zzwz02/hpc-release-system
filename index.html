@@ -50,6 +50,11 @@
     .banner { padding: 10px 13px; border-radius: 8px; font-weight: 600; margin-bottom: 8px; }
     .log, .artifact { font-family: Consolas, monospace; white-space: pre-wrap; background: #0f172a; color: #dbeafe; border-radius: 6px; padding: 10px; min-height: 120px; }
     .artifact { width: 100%; min-height: 430px; background: white; color: #172033; }
+    dialog { border: 0; border-radius: 8px; padding: 0; width: min(680px, calc(100vw - 32px)); box-shadow: 0 18px 45px rgba(15,23,42,.24); }
+    dialog::backdrop { background: rgba(15,23,42,.42); }
+    .dialog-card { background: white; border: 1px solid #d8dde6; border-radius: 8px; overflow: hidden; }
+    .dialog-card h2 { margin: 0; padding: 12px 14px; border-bottom: 1px solid #d8dde6; background: #fbfcfe; font-size: 16px; }
+    .dialog-actions { justify-content: flex-end; }
     @media (max-width: 1100px) { .grid, .form { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -201,6 +206,26 @@
     </section>
   </main>
 
+  <dialog id="newAppDialog">
+    <div class="dialog-card">
+      <h2>新增 app</h2>
+      <div class="body">
+        <div class="form">
+          <label>官方 app/模型名称 <input id="newAppOfficialName" autocomplete="off"></label>
+          <label>Gerrit URL <input id="newAppGitUrl" autocomplete="off"></label>
+          <label>Branch <input id="newAppGitBranch" autocomplete="off"></label>
+          <label>类型 <select id="newAppDocTarget"></select></label>
+          <label>Release 决策 <select id="newAppReleaseDecision"></select></label>
+        </div>
+        <p id="newAppHint" class="muted small"></p>
+        <div class="row dialog-actions">
+          <button id="newAppCancel" type="button">取消</button>
+          <button id="newAppCreate" type="button" class="primary">创建</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
   <script>
     let state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, server_now_beijing: "" };
     let selectedApp = "";
@@ -317,6 +342,61 @@
     function phase() { return state.release?.phase || ""; }
     function beforeAppFreeze() { return phase() === "before_app_freeze"; }
     function beforeDocDeadline() { return phase() === "before_app_freeze" || phase() === "after_app_freeze"; }
+    function newAppDecisionOptions() { return beforeAppFreeze() ? releaseDecisionOptions : ["cicd_only", "stopped"]; }
+    function setSelectOptions(select, options, labels) {
+      if (!select) return;
+      select.innerHTML = options.map(value => `<option value="${esc(value)}">${esc(labels[value] || value)}</option>`).join("");
+    }
+    function renderNewAppControls() {
+      const button = $("newApp");
+      if (!button) return;
+      const locked = releaseLocked();
+      button.disabled = !state.release || locked;
+      button.title = !state.release
+        ? "请选择 release"
+        : (locked
+          ? "Release 已最终锁定，不可新增 app"
+          : (beforeAppFreeze() ? "新增 app" : "已过 App 冻结 deadline，只能新增 cicd_only/stopped"));
+    }
+    function openNewAppDialog() {
+      if (!state.release) return alert("请选择 release");
+      if (releaseLocked()) return alert("Release 已最终锁定，不可新增 app");
+      const dialog = $("newAppDialog");
+      if (!dialog) return;
+      $("newAppOfficialName").value = "";
+      $("newAppGitUrl").value = "";
+      $("newAppGitBranch").value = "";
+      setSelectOptions($("newAppDocTarget"), docTargetOptions, docTargetLabels);
+      setSelectOptions($("newAppReleaseDecision"), newAppDecisionOptions(), releaseDecisionLabels);
+      $("newAppHint").textContent = beforeAppFreeze()
+        ? "App 冻结前可以选择 release、cicd_only 或 stopped。"
+        : "已过 App 冻结 deadline，本 release 不允许以 release 状态新增 app。";
+      if (dialog.showModal) dialog.showModal();
+      else dialog.open = true;
+      $("newAppOfficialName").focus();
+    }
+    async function createNewAppFromDialog() {
+      if (!state.release) return alert("请选择 release");
+      const official_name = $("newAppOfficialName").value.trim();
+      const git_url = $("newAppGitUrl").value.trim();
+      const git_branch = $("newAppGitBranch").value.trim();
+      const doc_target = $("newAppDocTarget").value;
+      const release_decision = $("newAppReleaseDecision").value;
+      if (!official_name) return alert("请填写官方 app/模型名称");
+      if (!git_url) return alert("请填写 Gerrit URL");
+      if (!git_branch) return alert("请填写 Branch");
+      if (!docTargetOptions.includes(doc_target)) return alert("类型无效，未创建 app");
+      if (!newAppDecisionOptions().includes(release_decision)) return alert("Release 决策无效，未创建 app");
+      try {
+        const r = await post("/api/apps/new", { release_id: currentReleaseId(), official_name, git_url, git_branch, release_decision, doc_target });
+        $("newAppDialog").close();
+        selectedApp = r.app_id;
+        await loadState();
+        alert("新增 app 已创建");
+      } catch (e) {
+        alert("新增 app 失败：" + e.message);
+      }
+    }
     function deadlineSummary(release) {
       if (!release) return "";
       const af = release.app_freeze_deadline || "(未设置)";
@@ -341,6 +421,7 @@
       renderQa();
       renderAdmin();
       if ($("preview")) $("preview").disabled = releaseLocked();
+      renderNewAppControls();
     }
 
     function renderRoleChrome() {
@@ -924,16 +1005,9 @@
         $("adminLog").textContent = "已清空，备份文件：" + r.backup;
         await loadState();
       };
-      $("newApp").onclick = async () => {
-        const official_name = prompt("官方 app/模型名称"); if (!official_name) return;
-        const git_url = prompt("Gerrit URL"); if (!git_url) return;
-        const git_branch = prompt("Branch"); if (!git_branch) return;
-        const app_type = prompt("类型，必须填写 HPC 或 AI4Sci"); if (!["HPC", "AI4Sci"].includes(app_type)) return alert("类型无效，未创建 app");
-        const release_decision = prompt(`Release 决策，必须填写以下之一：\n${releaseDecisionOptions.map(v => "- " + releaseDecisionLabels[v]).join("\n")}`);
-        if (!releaseDecisionOptions.includes(release_decision)) return alert("Release 决策无效，未创建 app");
-        const r = await post("/api/apps/new", { release_id: currentReleaseId(), official_name, git_url, git_branch, release_decision, doc_target: app_type === "AI4Sci" ? "ai4sci" : "manual" });
-        selectedApp = r.app_id; await loadState();
-      };
+      $("newApp").onclick = openNewAppDialog;
+      $("newAppCancel").onclick = () => $("newAppDialog").close();
+      $("newAppCreate").onclick = createNewAppFromDialog;
     }
 
     async function deleteApp(appId) {
