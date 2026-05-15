@@ -62,6 +62,8 @@ password: 查看 admin_password.local，或启动前设置 HPC_ADMIN_PASSWORD
 
 ## 使用流程
 
+面向 app owner 和部门 manager 的简明流程说明见：[release_process_owner_manager.md](./release_process_owner_manager.md)。
+
 1. 登录后进入“初始化/周期”。
 2. 导入：
    - `C:\Users\zhawu\Downloads\hpc_release_report_20260511-695_0512.csv`
