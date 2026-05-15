@@ -177,7 +177,7 @@
     let appDetailDirty = false;
     let appDetailEditMode = false;
     let appDetailEditAppId = "";
-    let qaEditMode = true;
+    let qaEditMode = false;
     let qaEditReleaseId = "";
     document.addEventListener("keydown", () => { lastUserInputAt = Date.now(); }, true);
     document.addEventListener("input", markUserEdit, true);
@@ -248,6 +248,7 @@
       if (pendingAppInfoFile && activeView() === "apps") return true;
       if (appDetailEditMode && activeView() === "apps") return true;
       if (appDetailDirty && activeView() === "apps") return true;
+      if (qaEditMode && activeView() === "qa") return true;
       // Only block refresh if the user pressed a key in the last 3 seconds AND
       // an editable field is still focused (so we don't wipe in-progress text).
       if (Date.now() - lastUserInputAt > 3000) return false;
@@ -598,7 +599,7 @@
       const writable = !releaseLocked();
       if (qaEditReleaseId !== currentReleaseId()) {
         qaEditReleaseId = currentReleaseId();
-        qaEditMode = true;
+        qaEditMode = false;
       }
       if (!writable) qaEditMode = false;
       const qaFieldsWritable = writable && qaEditMode;
@@ -632,7 +633,8 @@
           ? `<button class="primary" id="qaSaveAll" ${writable?"":"disabled"}>保存 QA 状态</button>`
           : `<button class="primary" id="qaEdit" ${writable?"":"disabled"}>修改</button>`
       }</div>` : "";
-      panel.innerHTML = logBlock + rowsHtml + saveBlock;
+      const editBanner = qaEditMode ? `<div class="banner pill warnp">当前处于编辑状态，自动刷新已暂停。</div>` : "";
+      panel.innerHTML = logBlock + editBanner + rowsHtml + saveBlock;
       bindQa();
     }
 
