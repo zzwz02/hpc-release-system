@@ -463,10 +463,16 @@ class CoreWorkflowTests(unittest.TestCase):
         release_id, app_id = self.import_initial()
         core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
         release = core.get_release(self.conn, release_id)
-        # Preview includes the app (no QA needed)
-        self.assertEqual(len(core.release_rows(self.conn, release, final=False)), 1)
-        # Final excludes because no owner_confirmed + no QA pass
+        # Preview and final both exclude unfinished apps.
+        self.assertEqual(len(core.release_rows(self.conn, release, final=False)), 0)
         self.assertEqual(core.release_rows(self.conn, release, final=True), [])
+
+        core.update_snapshot(self.conn, release_id, app_id, _fill_ready)
+        core.qa_set_status(self.conn, release_id, app_id, "qa_passed")
+        core.refresh_missing_items(self.conn, release_id)
+        release = core.get_release(self.conn, release_id)
+        self.assertEqual(len(core.release_rows(self.conn, release, final=False)), 1)
+        self.assertEqual(len(core.release_rows(self.conn, release, final=True)), 1)
 
     def test_guide_rows_stopped_section(self) -> None:
         release_id, app_id = self.import_initial()
@@ -491,7 +497,11 @@ class CoreWorkflowTests(unittest.TestCase):
     def test_generate_artifacts_preview_ok_after_unlock(self) -> None:
         release_id, app_id = self.import_initial()
         core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
-        # Preview works on un-locked release
+        # Preview works on an unlocked release, but excludes unfinished apps.
+        artifacts = core.generate_artifacts(self.conn, release_id)
+        self.assertNotIn("Amber", artifacts["release_note"])
+        core.update_snapshot(self.conn, release_id, app_id, _fill_ready)
+        core.qa_set_status(self.conn, release_id, app_id, "qa_passed")
         artifacts = core.generate_artifacts(self.conn, release_id)
         self.assertIn("Amber", artifacts["release_note"])
         # Final artifacts cannot be generated directly

@@ -1486,8 +1486,8 @@ def code_block(content: str) -> str:
 def release_rows(conn: sqlite3.Connection, release: dict[str, Any], *, final: bool = False) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     """Rows for the release note.
 
-    *final=True*: only release+doc-confirmed+QA-not-cannot_release apps.
-    *final=False*: all release apps (preview).
+    Preview and final RST both include only apps that currently qualify for
+    release. Unfinished apps stay visible in missing_items, not generated RST.
     """
     apps = {app["id"]: app for app in list_apps(conn)}
     rows = []
@@ -1495,7 +1495,7 @@ def release_rows(conn: sqlite3.Connection, release: dict[str, Any], *, final: bo
         app = snapshot.get("app_meta") or apps.get(app_id)
         if not app or snapshot.get("release_decision") != "release":
             continue
-        if final and not _qualifies_for_final(snapshot):
+        if not _qualifies_for_final(snapshot):
             continue
         rows.append((app, snapshot))
     return sorted(rows, key=lambda item: item[0]["name"].lower())
@@ -1617,6 +1617,9 @@ def generate_artifacts(conn: sqlite3.Connection, release_id: str, *, final: bool
         existing = conn.execute("SELECT 1 FROM artifacts WHERE release_id = ? AND final = 1 LIMIT 1", (release_id,)).fetchone()
         if existing:
             raise RuntimeError("Final artifacts already exist and are immutable")
+    if not final:
+        refresh_missing_items(conn, release_id)
+        release = get_release(conn, release_id)
     rows = release_rows(conn, release, final=final)
     if final:
         manual_active, manual_stopped = guide_rows(conn, release, "manual")
