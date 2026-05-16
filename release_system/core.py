@@ -58,6 +58,22 @@ def parse_deadline(value: str | None) -> dt.datetime | None:
     return dt.datetime.strptime(normalize_deadline(value), "%Y-%m-%d %H:%M")
 
 
+def validate_deadline_order(app_freeze_deadline: str | None, doc_deadline: str | None) -> None:
+    """Reject deadlines where app freeze lands after the doc deadline.
+
+    Empty deadlines mean "not set" and are always accepted. current_phase
+    assumes app freeze precedes the doc deadline; a reversed pair produces
+    incoherent phases, so it is blocked at every entry point that sets them.
+    """
+    freeze = parse_deadline(app_freeze_deadline)
+    doc = parse_deadline(doc_deadline)
+    if freeze is not None and doc is not None and freeze > doc:
+        raise ValueError(
+            f"App 冻结 deadline（{normalize_deadline(app_freeze_deadline)}）"
+            f"不能晚于 Doc deadline（{normalize_deadline(doc_deadline)}）"
+        )
+
+
 def is_before(deadline: str | None, *, ref: dt.datetime | None = None) -> bool:
     """True if the reference moment is strictly before the deadline.
 
@@ -133,6 +149,24 @@ def reset_init_state() -> None:
     """Reset the initialized-db tracker; used by tests when cycling DBs."""
     with _INIT_LOCK:
         _INITIALIZED_DBS.clear()
+
+
+def backup_sqlite(src_path: str | Path, dest_path: str | Path) -> None:
+    """Write a consistent backup of the SQLite db at *src_path* to *dest_path*.
+
+    Uses the SQLite online-backup API rather than a file copy: in WAL mode a
+    plain file copy can miss committed transactions still in the -wal file and
+    skips the -wal/-shm sidecars, producing a silently stale backup.
+    """
+    source = sqlite3.connect(src_path)
+    try:
+        dest = sqlite3.connect(dest_path)
+        try:
+            source.backup(dest)
+        finally:
+            dest.close()
+    finally:
+        source.close()
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -550,7 +584,12 @@ def delete_app(conn: sqlite3.Connection, app_id: str, *, user: str = "admin", ro
     locked_releases = locked_releases_for_app(conn, app_id)
     if locked_releases:
         raise RuntimeError(f"App is used by locked releases and cannot be deleted: {', '.join(locked_releases)}")
-    conn.execute("DELETE FROM artifacts WHERE final = 0")
+    affected_releases = [
+        row["release_id"]
+        for row in conn.execute("SELECT release_id FROM snapshots WHERE app_id = ?", (app_id,))
+    ]
+    for affected in affected_releases:
+        conn.execute("DELETE FROM artifacts WHERE release_id = ? AND final = 0", (affected,))
     conn.execute("DELETE FROM apps WHERE id = ?", (app_id,))
     conn.commit()
     audit(conn, f"删除 app：{app['name']} ({app_id})", user=user, role=role, app_id=app_id, event="delete_app")
@@ -644,6 +683,7 @@ def update_release_deadlines(
         raise ValueError("Release 名称不能为空")
     new_freeze = normalize_deadline(app_freeze_deadline) if app_freeze_deadline is not None else release.get("app_freeze_deadline", "")
     new_doc = normalize_deadline(doc_deadline) if doc_deadline is not None else release.get("doc_deadline", "")
+    validate_deadline_order(new_freeze, new_doc)
     conn.execute(
         "UPDATE releases SET name = ?, app_freeze_deadline = ?, doc_deadline = ? WHERE id = ?",
         (new_name, new_freeze, new_doc, release_id),
@@ -767,6 +807,7 @@ def import_initial_rows(
     app_freeze_deadline: str = "",
     doc_deadline: str = "",
 ) -> str:
+    validate_deadline_order(app_freeze_deadline, doc_deadline)
     aliases = parse_alias_lines(alias_text)
     apps: dict[str, dict[str, Any]] = {app["id"]: app for app in list_apps(conn)}
     owner_by_base: dict[str, list[dict[str, str]]] = {}
@@ -888,6 +929,7 @@ def create_release_from_previous(
 ) -> str:
     if not (name or "").strip():
         raise ValueError("新 Release 名称不能为空")
+    validate_deadline_order(app_freeze_deadline, doc_deadline)
     releases = list_releases(conn)
     previous = get_release(conn, releases[-1]["id"]) if releases else None
     release_id = new_id("rel")
@@ -981,6 +1023,12 @@ def add_new_app_request(
     if release_decision == "release" and not is_before(release.get("app_freeze_deadline", "")):
         raise RuntimeError("已过 app 冻结 deadline，不可再新增以 release 状态进入本期的 app")
     app_id = normalize_name(official_name)
+    if not app_id:
+        raise ValueError(f"无法由名称生成有效的 app id：{official_name!r}")
+    if conn.execute("SELECT 1 FROM apps WHERE id = ?", (app_id,)).fetchone():
+        raise RuntimeError(
+            f"App 已存在（id={app_id}）：请换一个名称，或请现有 owner 把你加入该 app"
+        )
     app = {
         "id": app_id,
         "name": official_name,

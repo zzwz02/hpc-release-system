@@ -1,101 +1,174 @@
-# HPC App 发布信息协作系统 MVP
+# HPC App 发布信息协作系统
 
-这是一个无第三方 Python 依赖的本地 MVP。系统由 Python 标准库 HTTP 服务、SQLite 后端和浏览器 UI 组成；浏览器页面通过 `/api/*` 写入 SQLite，不再使用 `localStorage` 作为主数据源。
+一个零第三方依赖的 MVP，用一组时间节点协调 HPC App 的发布信息收集。
 
-## 当前能力
+## 目标
 
-- 本地账号/session 登录。默认 RM 账号：`rm` / `rm`；默认调试 Owner：`owner_test` / `owner_test`；默认 Admin 用户：`admin`，密码来自环境变量 `HPC_ADMIN_PASSWORD` 或本地忽略文件 `admin_password.local`。
-- RM 可见“初始化/周期”“RST”和全部 app；Owner 只可见“总览”和自己名下的“App 工作台”；Admin 只可见“管理”页。
-- Admin 可备份并清空数据库，也可备份后删除单个未锁定 app；清空会先复制当前 `release_system.db` 为 `release_system_admin_backup_*.sqlite`，再删除 app、release、snapshot、artifact 和审计数据，默认账号保留。
-- App 工作台默认只读；Owner 点击“修改”后可编辑文档字段、测试说明、`App类型` 和 `描述（30字内）`，底部只保留“保存并提交 Owner 确认”。
-- “提交 Owner 确认”由 app owner 点击，表示该 app 本轮 release 信息、app_info diff 和 test_cmd 说明已补齐。提交后会立即弹出剩余发布待办/门禁项。
-- QA 状态在“QA”页面维护，QA 或 RM 点击“修改”后可批量更新 `qa_passed`、`has_issues`、`cannot_release` 等状态；保存成功后页面回到只读。
-- RM 可在“初始化/周期”中直接修改当前 release 的 deadline，release lock 后不可再改。
-- 首次初始化导入 release CSV 和 owner CSV。
-- release CSV 中同名但版本/branch 不同的条目会作为独立 app variant 导入；同一版本/branch 的 x86 和 ARM 行会合并到同一个 snapshot。
-- 首次维护 alias mapping 和 app-owner 映射。
-- 后续 release 从上一版本克隆 app、owner、类型、文档字段、测试说明和 app-info 来源信息。
-- 新增 app 申请必须填写官方 app/模型名称、Gerrit URL、branch、类型和 release 决策；提交者自动成为初始 owner。
-- 上传新的 `app_info.json`，自动解析版本、X86/ARM 支持芯片、build/test target 和所有 `test_cmd`。
-- `app_info.json` 可由 owner 上传，也可从 app 的 Gerrit URL/branch 拉取；Gerrit 拉取会记录 branch commit id，上传会标注上传人和文件名。
-- 与上一版本 `app_info.json` 做 diff，并要求 owner 确认差异。
-- 为每个 `app_info.json` `test_cmd` 维护测试数据集、测试内容、结果查看方式和通过标准。
-- Owner 可新增 `app_info.json` 中没有的 owner-added 测试项，且同样必须补齐命令和测试说明。
-- 发布待办/门禁会标出未确认 diff、缺失 `AppInfoSnapshot`、缺失测试说明、缺失文档字段或 owner 未确认的 release app；这些项目会阻塞最终发布输出。
-- `App类型` 和 `描述（30字内）` 也是 release app 的发布待办/门禁项。
-- 类型只包含 `HPC` 和 `AI4Sci`：`HPC` 生成到 HPC Manual，`AI4Sci` 生成到 AI4Sci User Guide。
-- `cicd_only` 表示仅作为 CICD/infra 关注项，不进入 release/RST/QA；`stopped` 表示停止维护或停止发布。
-- release 决策不是 `release` 的 app 不显示 QA 未测试，也不出现在 QA 表单中。
-- Release lock 会冻结本 release 全部 snapshot；最终 RST 只包含可发布 app。可发布条件为：`release` 决策、Owner 已确认、文档门禁清空、QA 状态为 `qa_passed` 或 `has_issues`。
-- 预览 RST 可在 lock 前反复生成，且同样只包含当前可发布 app；未就绪 app 只保留在发布待办/门禁里。
-- 生成 release note、HPC Manual、AI4Sci User Guide RST 和 release-data JSON。
-- RST 页面新增 `Manager Review CSV` 子 tab，可选择输出字段并生成 `manager_review.csv`。该 CSV 包含当前 release 的所有 app，可输出版本号、owner、支持芯片类型、是否可发布、不可发布原因、已知限制等字段。
-- Artifact 生成和下载仅限 RM。
-- Gerrit 推送流程有配置化阻断：未设置 `HPC_DOCS_GERRIT_REMOTE` 和 `HPC_RELEASE_DATA_GERRIT_REMOTE` 时不会假装推送成功；设置后 `/api/gerrit/plan` 会给出推送计划。
+- 让 release note 和各类 manual 始终与实际发布内容一致。
+- 让 RM 与 infra 成员及时看到每个 app 的发布决策、文档、QA 状态变化。
+- 用 deadline 驱动流程，减少口头通知和人工催办。
 
-## 启动
+## 技术栈
 
-当前 shell 可能还没把 Python 加入 `PATH`。如果 `python --version` 仍指向 Microsoft Store 占位符，可使用完整路径：
+| 层 | 技术 |
+| --- | --- |
+| 后端 | Python 3.14 标准库（`http.server.ThreadingHTTPServer`），无第三方依赖 |
+| 数据库 | SQLite（WAL 模式） |
+| 前端 | 单文件原生 HTML/CSS/JS（`index.html`），5 秒轮询刷新 |
+| 认证 | PBKDF2-HMAC-SHA256 口令，会话 token 存 cookie |
+| 测试 | `unittest` + PowerShell 静态检查 |
 
-```powershell
-C:\Users\zhawu\AppData\Local\Programs\Python\Python314\python.exe server.py --host 127.0.0.1 --port 8765
+## 快速开始
+
+需要 Python 3.14+。
+
+```
+python3.14 server.py                          # 默认 127.0.0.1:8765
+python3.14 server.py --host 0.0.0.0 --port 9000
 ```
 
-打开：
+打开 `http://127.0.0.1:8765`。
 
-```text
-http://127.0.0.1:8765
+首次启动会创建 `admin` 账号，口令来源优先级：环境变量 `HPC_ADMIN_PASSWORD` > `admin_password.local` 文件 > 自动生成并写入 `admin_password.local`。
+
+默认账号（仅供开发，生产环境务必修改）：
+
+| 用户名 | 口令 | 角色 |
+| --- | --- | --- |
+| `rm` | `rm` | RM |
+| `owner_test` | `owner_test` | Owner |
+| `qa` | `qa` | QA |
+| `admin` | 见 `admin_password.local` | Admin |
+
+## 角色
+
+- **RM**：建/克隆 release、设置 deadline、导出测试范围 CSV、生成 RST 与 Manager Review CSV、最终锁定/解锁。
+- **Owner**：维护自己名下的 app —— 新增 app、填文档与测试说明、上传/拉取 `app_info.json`、提交 Owner 确认。
+- **QA**：对 `release` 决策的 app 标注 QA 状态、上传 QA log。
+- **Admin**：备份并清空数据库、删除单个 app。
+
+## 核心模型
+
+### 发布决策（三态）
+
+- `release`：参与 QA 和正式发布，进入 release note / HPC Manual / AI4Sci User Guide。
+- `cicd_only`：仅作 CICD/infra 跟踪，不进 QA，不生成文档。
+- `stopped`：本轮停止发布或停止维护。
+
+### 时间阶段
+
+每个 release 有两个北京时间 deadline，阶段由 deadline 和锁状态实时派生，不存状态字段：
+
+1. **before_app_freeze**：可任意新增 app、任意调整决策、编辑文档。
+2. **after_app_freeze**（过 app 冻结 deadline）：决策只能从 `release` 降级，不能再升回 `release`；不能再以 `release` 新增 app；文档仍可编辑。
+3. **after_doc_deadline**（过 doc deadline）：文档、表单、`app_info` 冻结，仅 QA 可继续操作。
+4. **released_locked**（最终锁定）：全部冻结，仅 RM 可解锁。
+
+### 可发布条件
+
+进入最终 release note / manual 的 app 必须满足：决策为 `release` + Owner 已确认 + 文档类待办为空 + QA 为 `qa_passed` 或 `has_issues`。`has_issues` 仍会发布，QA 写的问题会附加到「已知限制」。「待补/门禁」项仅作提示，不阻塞报告生成或最终锁定。
+
+### 最终锁定
+
+部门 manager review 报告并 merge 进 Gerrit 后，RM 执行 final lock：冻结 snapshot、写入 app 元数据快照、生成最终 RST 与 release-data JSON。可由 RM 解锁。
+
+## 工作流程概览
+
+1. RM 在「初始化/周期」首次导入 release CSV、owner CSV、alias mapping；后续 release 从上一版克隆。
+2. RM 设置当前 release 的名称与两个 deadline。
+3. Owner 在「App 工作台」确认 release 决策，补齐文档、`app_info.json`、test_cmd 说明，提交 Owner 确认。
+4. RM 导出测试范围 CSV 交给 QA。
+5. QA 在「QA」页上传 log，标注 `qa_passed` / `has_issues` / `cannot_release`。
+6. RM 生成预览 RST 和 Manager Review CSV，供部门 manager 审核。
+7. manager review/merge 后，RM 执行最终 Lock Release。
+
+面向 owner 和 manager 的简明流程见 [release_process_owner_manager.md](./release_process_owner_manager.md)，设计文档见 [release_system_plan.md](./release_system_plan.md)。
+
+## 目录结构
+
+```
+release-system/
+├── server.py                       # HTTP 服务与路由
+├── release_system/
+│   ├── __init__.py
+│   └── core.py                     # 业务逻辑、DB schema、工作流
+├── index.html                      # 单页前端
+├── tests/
+│   ├── test_core.py                # 单元测试
+│   └── static_checks.ps1           # 静态检查
+├── release_process_owner_manager.md
+├── release_system_plan.md          # 设计文档
+└── README.md
 ```
 
-登录：
+运行时还会生成 `release_system.db`（及 WAL 文件）、`qa_logs/`、`release_system_admin_backup_*.sqlite`、`admin_password.local`。
 
-```text
-username: rm
-password: rm
+## 主要 API
 
-username: owner_test
-password: owner_test
+- 认证：`POST /api/login`、`/api/logout`；`GET /api/me`
+- 状态：`GET /api/state`
+- Release：`POST /api/import-initial`、`/api/releases/create`、`/api/releases/deadlines`、`/api/releases/final-lock`、`/api/releases/final-unlock`
+- App：`POST /api/apps/new`、`/api/apps/update`、`/api/app-info`、`/api/app-info/fetch`
+- QA：`POST /api/qa/status`、`/api/qa/upload-log`；`GET /api/qa-log/download`
+- 产物：`POST /api/artifacts/generate`、`/api/artifacts/manager-review`、`/api/gerrit/plan`；`GET /api/artifacts/<kind>`、`/api/test-scope.csv`
+- 变更日志：`GET /api/app-audit`
+- 管理：`POST /api/admin/clear-db`、`/api/admin/apps/delete`
 
-username: admin
-password: 查看 admin_password.local，或启动前设置 HPC_ADMIN_PASSWORD
-```
-
-## 使用流程
-
-面向 app owner 和部门 manager 的简明流程说明见：[release_process_owner_manager.md](./release_process_owner_manager.md)。
-
-1. 登录后进入“初始化/周期”。
-2. 导入：
-   - `C:\Users\zhawu\Downloads\hpc_release_report_20260511-695_0512.csv`
-   - `C:\Users\zhawu\Downloads\hpc_owner_list.csv`
-3. 如需修正名称差异，在 alias mapping 文本框中输入每行一个映射，例如：
-
-   ```text
-   aimodels=ai-models
-   boltz=Boltz-2
-   vasp-openacc=VASP - OpenACC
-   ```
-
-4. 点击“导入初始化数据”。
-5. 在“App 工作台”选择 app，点击“修改”，上传或从 Gerrit 拉取对应 `app_info.json`，确认 diff，补齐 `App类型`、`描述（30字内）`、文档字段和测试说明。
-6. 滚动到页面底部，点击“保存并提交 Owner 确认”。如果仍有缺失项，系统会弹出具体待办/门禁。
-7. RM 在“初始化/周期”页面导出测试范围 CSV，交给 QA 获取测试范围。
-8. QA 在“QA”页面上传测试 log，点击“修改”后标注 `qa_passed`、`has_issues` 或 `cannot_release` 并保存。
-9. RM 在“RST”页面生成预览；预览只包含当前可发布 app。
-10. RM 在“RST -> Manager Review CSV”中选择字段并生成 `manager_review.csv`，供部门 manager review 全量 app 状态。
-11. Manager review/merge 后，RM 执行最终 Lock Release。lock 后所有 snapshot 和最终 artifacts 不可变。
+接口返回码：401 = 未登录，403 = 已登录但无权限，400/500 = 其他错误。
 
 ## 测试
 
-```powershell
-C:\Users\zhawu\AppData\Local\Programs\Python\Python314\python.exe -m unittest discover -s tests -p "test_*.py"
+```
+python3.14 -m unittest tests.test_core
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\static_checks.ps1
 ```
 
-## 限制
+当前 56 个单元测试 + 静态检查。
 
-- 本地账号/session 已实现，但仍是 MVP 级别，不是 LDAP/SSO。
-- Gerrit 拉取使用 `git archive --remote` 读取 app 仓库的 `app_info.json`；失败时会在页面提示，owner 也可以上传 JSON 兜底。
-- Gerrit 推送已有配置化阻断和推送计划骨架，尚未执行真实 Git push。
-- SMTP/站内通知未实现。
-- QA 期间关键字段变更审批仍是后续增强项；当前主要依赖 deadline、门禁项和最终 lock 控制修改窗口。
+## 已知问题与限制
+
+以下为已识别、尚未修复的问题，按影响排序：
+
+1. **过 doc deadline 后仍可新增 cicd_only/stopped app** —— 新增 app 的闸门只看 app 冻结 deadline，不看 doc deadline，与「doc deadline 后仅 QA 可操作」的规则不完全一致。
+2. **`/api/apps/update` 出错时可能半写入** —— app 元数据先于 snapshot 落库并提交，若随后的 snapshot 校验失败，会留下「元数据已改、snapshot 未改」的不一致。当前前端不会触发该路径。
+3. **文档类闸门用字符串前缀 `"QA "` 区分 QA 项** —— 若某个 `app_info` 的测试名恰好以 `QA ` 开头，其缺失项会被误排除出发布闸门。应改为结构化标记。
+4. **`app_info` 重传不会作废已有的 QA 结论** —— Owner 在 QA 通过后重传 `app_info`，`qa_status` 不重置；最终闸门仍能拦截，但 QA 本人收不到提醒。
+5. **`/api/app-audit` 无归属校验** —— 任何已登录用户可读取任意 app 的变更日志。
+6. **final lock 无阶段保护** —— RM 可对仍处于 before_app_freeze 的 release 直接最终锁定。
+7. **QA 批量保存非事务** —— 「保存 QA 状态」逐个 app 提交，中途失败会留下部分保存。
+8. **会话不过期** —— session token 创建后无 TTL，只有登出才失效。
+9. Gerrit 拉取依赖本地 `git archive --remote`；失败时页面提示，Owner 可上传 JSON 兜底。
+10. Gerrit 推送只输出推送计划骨架，未执行真实 git push。
+
+## 从 MVP 到完整产品的待完善项
+
+### 认证与安全
+- 用户管理界面（增删用户、改口令、改角色）；目前只有默认账号 + admin 引导，Admin 页只能清库/删 app。
+- 会话过期与续期；cookie 增加 `Secure` 标志；移除明文默认口令。
+- 修复 `/api/app-audit` 越权读取；引入更细的权限模型与 team 概念；接入 LDAP/SSO。
+
+### 部署与运维
+- 生产化部署：反向代理 + TLS、进程托管（systemd 等），替代 stdlib `http.server` 直接对外。
+- 结构化日志、健康检查端点、基础 metrics。
+- 备份恢复入口、定时备份、旧备份自动清理。
+
+### 通知（系统核心目标）
+- deadline 临近、release 决策变更、QA 标注「存在问题」/「不可发布」等，主动推送邮件 / IM，而不是靠用户轮询页面。
+
+### 集成
+- Gerrit 推送目前只输出命令计划（`gerrit_push_plan`），需实现真正自动推送 docs / release-data。
+- `app_info.json` 拉取依赖本地 `git` 命令与网络，需要凭据管理。
+
+### 数据与并发
+- SQLite 适合单实例小规模；多实例或高并发写需迁移到 PostgreSQL 等。
+- CSV 导入容错弱；`app_info.json` 缺乏严格 schema 校验。
+- 支持删除 / 归档 release（目前只能创建和克隆）。
+
+### 功能与体验
+- 全局审计 / 变更视图（目前只有按 app 的变更日志）。
+- doc 跨并行 release 的显式同步（目前仅建周期时一次性克隆）。
+- 前端无构建，单文件 + 5 秒轮询；产品级应考虑 SSE/WebSocket 推送和更细的局部更新。
+- 中英文案混杂，需统一。
+
+### 测试与质量
+- 增加 HTTP 层与前端集成测试、并发/锁竞争测试（目前只有 core 单元测试）。

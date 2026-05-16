@@ -759,6 +759,73 @@ class CoreWorkflowTests(unittest.TestCase):
         self.assertEqual(commit_id, "abc123")
         self.assertEqual(json.loads(raw)["app_version"], "22")
 
+    # --- bug-fix regressions ---
+
+    def test_add_new_app_request_rejects_duplicate_id(self) -> None:
+        release_id, _ = self.import_initial()
+        # "amber" already exists from import; a name normalizing to the same id is rejected.
+        with self.assertRaisesRegex(RuntimeError, "已存在"):
+            core.add_new_app_request(
+                self.conn,
+                release_id,
+                official_name="Amber",
+                git_url="ssh://x",
+                git_branch="main",
+                release_decision="release",
+                owner="someone",
+            )
+
+    def test_validate_deadline_order_rejects_reversed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "不能晚于"):
+            core.validate_deadline_order("2026-06-10", "2026-06-01")
+        # equal, or either side empty, is accepted
+        core.validate_deadline_order("2026-06-01", "2026-06-01")
+        core.validate_deadline_order("", "2026-06-01")
+        core.validate_deadline_order("2026-06-01", "")
+
+    def test_update_release_deadlines_rejects_reversed(self) -> None:
+        release_id, _ = self.import_initial()
+        with self.assertRaisesRegex(ValueError, "不能晚于"):
+            core.update_release_deadlines(
+                self.conn,
+                release_id,
+                app_freeze_deadline="2026-07-01",
+                doc_deadline="2026-06-01",
+            )
+
+    def test_delete_app_only_clears_artifacts_of_affected_releases(self) -> None:
+        release_a, _ = self.import_initial()
+        release_b = core.create_release_from_previous(self.conn, "B")
+        # OnlyInB is created in release_b and syncs forward only -- release_a never has it.
+        only_in_b = core.add_new_app_request(
+            self.conn,
+            release_b,
+            official_name="OnlyInB",
+            git_url="ssh://b",
+            git_branch="main",
+            release_decision="cicd_only",
+            owner="ob",
+        )
+        core.generate_artifacts(self.conn, release_a)
+        core.generate_artifacts(self.conn, release_b)
+        core.delete_app(self.conn, only_in_b)
+        count_a = self.conn.execute("SELECT COUNT(*) FROM artifacts WHERE release_id = ?", (release_a,)).fetchone()[0]
+        count_b = self.conn.execute("SELECT COUNT(*) FROM artifacts WHERE release_id = ?", (release_b,)).fetchone()[0]
+        self.assertGreater(count_a, 0)
+        self.assertEqual(count_b, 0)
+
+    def test_backup_sqlite_produces_readable_copy(self) -> None:
+        release_id, _ = self.import_initial()
+        backup_path = self.root / "backup.sqlite"
+        core.backup_sqlite(self.db_path, backup_path)
+        self.assertTrue(backup_path.exists())
+        copy = core.connect(backup_path)
+        try:
+            self.assertEqual(len(core.list_apps(copy)), 1)
+            self.assertIn(release_id, {r["id"] for r in core.list_releases(copy)})
+        finally:
+            copy.close()
+
 
 if __name__ == "__main__":
     unittest.main()

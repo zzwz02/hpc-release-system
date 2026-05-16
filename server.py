@@ -6,7 +6,6 @@ import io
 import mimetypes
 import os
 import secrets
-import shutil
 import subprocess
 import tarfile
 import time
@@ -20,6 +19,14 @@ from release_system import core
 ROOT = Path(__file__).resolve().parent
 DB_PATH = ROOT / "release_system.db"
 ADMIN_PASSWORD_FILE = ROOT / "admin_password.local"
+
+
+class AuthzError(Exception):
+    """Authenticated user lacks permission for an action -> HTTP 403.
+
+    Kept distinct from PermissionError ("not logged in" -> HTTP 401) so the
+    frontend only drops the session on genuine authentication loss.
+    """
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -111,6 +118,9 @@ class Handler(BaseHTTPRequestHandler):
                     return
             except PermissionError as exc:
                 self.send_json({"error": str(exc)}, status=401)
+                return
+            except AuthzError as exc:
+                self.send_json({"error": str(exc)}, status=403)
                 return
             except Exception as exc:
                 self.log_error("GET %s: %s", parsed.path, exc)
@@ -237,7 +247,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if parsed.path == "/api/apps/new":
                     if self.role() != "Owner":
-                        raise PermissionError("Only Owner can submit new app requests")
+                        raise AuthzError("Only Owner can submit new app requests")
                     body = self.json_body()
                     app_id = core.add_new_app_request(
                         self.conn(),
@@ -323,7 +333,7 @@ class Handler(BaseHTTPRequestHandler):
                             snapshot["release_decision"] = decision
                         if "owner_confirmed" in snap_update:
                             if self.role() != "Owner":
-                                raise PermissionError("Owner confirmation must be submitted by an Owner")
+                                raise AuthzError("Owner confirmation must be submitted by an Owner")
                             if snap_update["owner_confirmed"] and not snapshot.get("owner_confirmed"):
                                 core.audit(
                                     conn,
@@ -351,7 +361,7 @@ class Handler(BaseHTTPRequestHandler):
                             snapshot.setdefault("doc", {}).update(doc_update)
                         if "diff_confirm_all" in snap_update and snap_update["diff_confirm_all"]:
                             if self.role() != "Owner":
-                                raise PermissionError("app_info diff confirmation must be submitted by an Owner")
+                                raise AuthzError("app_info diff confirmation must be submitted by an Owner")
                             had_unconfirmed_diff = any(not diff.get("confirmed") for diff in snapshot.get("app_info_diffs", []))
                             for diff in snapshot.get("app_info_diffs", []):
                                 diff["confirmed"] = True
@@ -395,7 +405,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if parsed.path == "/api/qa/status":
                     if self.role() not in {"QA", "RM"}:
-                        raise PermissionError("只有 QA 或 RM 可标注 QA 状态")
+                        raise AuthzError("只有 QA 或 RM 可标注 QA 状态")
                     body = self.json_body()
                     snapshot = core.qa_set_status(
                         self.conn(),
@@ -410,7 +420,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if parsed.path == "/api/qa/upload-log":
                     if self.role() not in {"QA", "RM"}:
-                        raise PermissionError("只有 QA 或 RM 可上传 QA log")
+                        raise AuthzError("只有 QA 或 RM 可上传 QA log")
                     body = self.json_body()
                     content_b64 = body.get("content_base64", "")
                     if not content_b64:
@@ -463,6 +473,9 @@ class Handler(BaseHTTPRequestHandler):
                     return
             except PermissionError as exc:
                 self.send_json({"error": str(exc)}, status=401)
+                return
+            except AuthzError as exc:
+                self.send_json({"error": str(exc)}, status=403)
                 return
             except Exception as exc:
                 self.log_error("POST %s: %s", parsed.path, exc)
@@ -558,18 +571,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def require_rm(self) -> None:
         if self.role() != "RM":
-            raise PermissionError("RM role required")
+            raise AuthzError("RM role required")
 
     def require_admin(self) -> None:
         if self.role() != "Admin":
-            raise PermissionError("Admin role required")
+            raise AuthzError("Admin role required")
 
     def require_owner_or_rm(self, app: dict) -> None:
         if self.role() == "RM":
             return
         if self.role() == "Owner" and self.user() in app.get("owners", []):
             return
-        raise PermissionError("Owner permission required")
+        raise AuthzError("Owner permission required")
 
 
 def _serialize_release(release: dict) -> dict:
@@ -608,7 +621,7 @@ def backup_database() -> Path:
     stamp = time.strftime("%Y%m%d%H%M%S")
     backup = ROOT / f"release_system_admin_backup_{stamp}.sqlite"
     if DB_PATH.exists():
-        shutil.copy2(DB_PATH, backup)
+        core.backup_sqlite(DB_PATH, backup)
     return backup
 
 
