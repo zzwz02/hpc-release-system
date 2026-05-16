@@ -1,0 +1,4 @@
+# Normalize all text files to LF in the repository and in the working tree.
+# Pins the line-ending policy at the repo level so it no longer depends on
+# each machine's core.autocrlf, and stops the "LF will be replaced by CRLF" warning.
+* text=auto eol=lf
