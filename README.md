@@ -60,8 +60,8 @@ python3.14 server.py --host 0.0.0.0 --port 9000
 每个 release 有两个北京时间 deadline，阶段由 deadline 和锁状态实时派生，不存状态字段：
 
 1. **before_app_freeze**：可任意新增 app、任意调整决策、编辑文档。
-2. **after_app_freeze**（过 app 冻结 deadline）：决策只能从 `release` 降级，不能再升回 `release`；不能再以 `release` 新增 app；文档仍可编辑。
-3. **after_doc_deadline**（过 doc deadline）：文档、表单、`app_info` 冻结，仅 QA 可继续操作。
+2. **after_app_freeze**（过 app 冻结 deadline）：release 决策只能下调，不能再升回 `release`；新增 app 只能是 `cicd_only`/`stopped`；文档、表单、`app_info` 仍可编辑。
+3. **after_doc_deadline**（过 doc deadline）：文档、表单、`app_info` 冻结；但 release 决策仍可下调（`release`→`cicd_only`/`stopped`，不能升回 `release`），也仍可新增 `cicd_only`/`stopped` app；QA 可继续操作。
 4. **released_locked**（最终锁定）：全部冻结，仅 RM 可解锁。
 
 ### 可发布条件
@@ -129,16 +129,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\static_checks.ps1
 
 以下为已识别、尚未修复的问题，按影响排序：
 
-1. **过 doc deadline 后仍可新增 cicd_only/stopped app** —— 新增 app 的闸门只看 app 冻结 deadline，不看 doc deadline，与「doc deadline 后仅 QA 可操作」的规则不完全一致。
-2. **`/api/apps/update` 出错时可能半写入** —— app 元数据先于 snapshot 落库并提交，若随后的 snapshot 校验失败，会留下「元数据已改、snapshot 未改」的不一致。当前前端不会触发该路径。
-3. **文档类闸门用字符串前缀 `"QA "` 区分 QA 项** —— 若某个 `app_info` 的测试名恰好以 `QA ` 开头，其缺失项会被误排除出发布闸门。应改为结构化标记。
-4. **`app_info` 重传不会作废已有的 QA 结论** —— Owner 在 QA 通过后重传 `app_info`，`qa_status` 不重置；最终闸门仍能拦截，但 QA 本人收不到提醒。
-5. **`/api/app-audit` 无归属校验** —— 任何已登录用户可读取任意 app 的变更日志。
-6. **final lock 无阶段保护** —— RM 可对仍处于 before_app_freeze 的 release 直接最终锁定。
-7. **QA 批量保存非事务** —— 「保存 QA 状态」逐个 app 提交，中途失败会留下部分保存。
-8. **会话不过期** —— session token 创建后无 TTL，只有登出才失效。
-9. Gerrit 拉取依赖本地 `git archive --remote`；失败时页面提示，Owner 可上传 JSON 兜底。
-10. Gerrit 推送只输出推送计划骨架，未执行真实 git push。
+1. **`/api/apps/update` 出错时可能半写入** —— app 元数据先于 snapshot 落库并提交，若随后的 snapshot 校验失败，会留下「元数据已改、snapshot 未改」的不一致。当前前端不会触发该路径。
+2. **文档类闸门用字符串前缀 `"QA "` 区分 QA 项** —— 若某个 `app_info` 的测试名恰好以 `QA ` 开头，其缺失项会被误排除出发布闸门。应改为结构化标记。
+3. **`app_info` 重传不会作废已有的 QA 结论** —— Owner 在 QA 通过后重传 `app_info`，`qa_status` 不重置；最终闸门仍能拦截，但 QA 本人收不到提醒。
+4. **`/api/app-audit` 无归属校验** —— 任何已登录用户可读取任意 app 的变更日志。
+5. **final lock 无阶段保护** —— RM 可对仍处于 before_app_freeze 的 release 直接最终锁定。
+6. **QA 批量保存非事务** —— 「保存 QA 状态」逐个 app 提交，中途失败会留下部分保存。
+7. **会话不过期** —— session token 创建后无 TTL，只有登出才失效。
+8. Gerrit 拉取依赖本地 `git archive --remote`；失败时页面提示，Owner 可上传 JSON 兜底。
+9. Gerrit 推送只输出推送计划骨架，未执行真实 git push。
 
 ## 从 MVP 到完整产品的待完善项
 

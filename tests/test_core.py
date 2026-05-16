@@ -859,6 +859,40 @@ class CoreWorkflowTests(unittest.TestCase):
         finally:
             copy.close()
 
+    def test_update_snapshot_skip_doc_deadline_allows_decision_change(self) -> None:
+        release_id, app_id = self.import_initial(doc_deadline="2026-01-01")
+        with mock.patch("release_system.core.beijing_now", return_value=dt.datetime(2026, 5, 15)):
+            # default: every snapshot edit is blocked past the doc deadline
+            with self.assertRaisesRegex(RuntimeError, "doc deadline"):
+                core.update_snapshot(self.conn, release_id, app_id, lambda s: s.update({"release_decision": "cicd_only"}))
+            # skip_doc_deadline=True: a decision downgrade is still allowed
+            core.update_snapshot(
+                self.conn,
+                release_id,
+                app_id,
+                lambda s: s.update({"release_decision": "cicd_only"}),
+                skip_doc_deadline=True,
+            )
+        snap = core.get_release(self.conn, release_id)["snapshots"][app_id]
+        self.assertEqual(snap["release_decision"], "cicd_only")
+
+    def test_add_new_app_request_allows_cicd_only_after_doc_deadline(self) -> None:
+        release_id, _ = self.import_initial(doc_deadline="2026-01-01")
+        with mock.patch("release_system.core.beijing_now", return_value=dt.datetime(2026, 5, 15)):
+            app_id = core.add_new_app_request(
+                self.conn,
+                release_id,
+                official_name="LateCicd",
+                git_url="ssh://late-cicd",
+                git_branch="main",
+                release_decision="cicd_only",
+                owner="late",
+            )
+        self.assertEqual(
+            core.get_release(self.conn, release_id)["snapshots"][app_id]["release_decision"],
+            "cicd_only",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

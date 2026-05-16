@@ -269,8 +269,11 @@ class Handler(BaseHTTPRequestHandler):
                     release = core.get_release(conn, body["release_id"])
                     if release.get("released_locked"):
                         raise RuntimeError("Release 已最终锁定")
-                    if not core.is_before(release.get("doc_deadline", "")):
-                        raise RuntimeError("已过 doc deadline，不可修改")
+                    past_doc_deadline = not core.is_before(release.get("doc_deadline", ""))
+                    if past_doc_deadline:
+                        snap_update = body.get("snapshot", {})
+                        if "app" in body or any(key != "release_decision" for key in snap_update):
+                            raise RuntimeError("已过 doc deadline，只能下调 release 决策，不能再修改文档/表单/app_info")
                     snap_now = release["snapshots"].get(body["app_id"], {})
                     current_decision = snap_now.get("release_decision", "release")
                     new_decision = body.get("snapshot", {}).get("release_decision")
@@ -397,7 +400,7 @@ class Handler(BaseHTTPRequestHandler):
                                     event="update_test_docs",
                                 )
 
-                    updated = core.update_snapshot(conn, body["release_id"], body["app_id"], mutate)
+                    updated = core.update_snapshot(conn, body["release_id"], body["app_id"], mutate, skip_doc_deadline=past_doc_deadline)
                     updated["missing_items"] = core.missing_items_for(core.get_app(conn, body["app_id"]), updated)
                     core.save_snapshot(conn, body["release_id"], body["app_id"], updated)
                     conn.commit()

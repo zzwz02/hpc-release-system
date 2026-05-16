@@ -621,8 +621,18 @@
         : "";
       $("detailTitle").textContent = app.name;
       const phaseBanner = phaseBannerFor(snap);
+      const lateDecisionBlock = (!beforeDocDeadline() && !releaseLocked() && canEdit(app) && snap.release_decision === "release")
+        ? `<div class="panel" style="margin-bottom:12px"><h3>调整 release 决策</h3><div class="body">
+             <p class="muted small">Doc deadline 已过，文档已冻结；如本 app 本轮不应发布，仍可在此把决策移出 release。</p>
+             <div class="row">
+               <select id="lateDecision"><option value="cicd_only">${esc(releaseDecisionLabels.cicd_only)}</option><option value="stopped">${esc(releaseDecisionLabels.stopped)}</option></select>
+               <button class="warn" id="saveLateDecision">保存决策</button>
+             </div>
+           </div></div>`
+        : "";
       $("detail").innerHTML = `
         ${phaseBanner}
+        ${lateDecisionBlock}
         <div id="dirtyBanner" class="banner pill warnp" ${appDetailDirty || appDetailEditMode ? "" : "hidden"}>${appDetailDirty ? "有未保存修改，自动刷新已暂停。保存后会恢复自动刷新。" : "当前处于编辑状态，自动刷新已暂停。"}</div>
         <div class="row">${actions}</div>
         <div class="form">
@@ -867,6 +877,18 @@
           alert(`Gerrit app_info.json 拉取成功。\n\ncommit: ${result.commit_id || "未知"}\nsource: ${result.source || ""}`);
         } catch (err) {
           alert(`Gerrit app_info.json 拉取失败：\n\n${err.message}`);
+        }
+      };
+      if ($("saveLateDecision")) $("saveLateDecision").onclick = async () => {
+        const decision = $("lateDecision").value;
+        if (!confirm(`确认把「${app.name}」的 release 决策改为 ${decision}？Doc deadline 已过，这会把它移出本期发布。`)) return;
+        try {
+          await post("/api/apps/update", { release_id: currentReleaseId(), app_id: app.id, snapshot: { release_decision: decision } });
+          appDetailDirty = false;
+          await loadState();
+          alert("release 决策已更新");
+        } catch (e) {
+          alert("保存失败：" + e.message);
         }
       };
     }

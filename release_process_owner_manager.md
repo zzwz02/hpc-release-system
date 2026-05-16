@@ -47,7 +47,7 @@
 |---|---|---|---|
 | **App 冻结前** | 设置/调整 release 名称与 deadline；导出测试范围 CSV；生成预览 RST 与 Manager Review CSV。也可代任意 app 执行下方 Owner 的所有编辑操作 | 新增 app（`release`/`cicd_only`/`stopped` 任选）；编辑自己 app 的文档字段、App类型、描述、测试说明；上传或从 Gerrit 拉取 `app_info.json`；任意调整 release 决策；提交 Owner 确认 | 对 `release` 决策的 app 标注 QA 状态（`qa_passed`/`has_issues`/`cannot_release`）；上传 QA log |
 | **App 冻结后**（未过 Doc deadline） | 与上一阶段相同；但 release 决策只能从 `release` 降级，不能再设回 `release` | 与上一阶段相同；但新增 app 只能选 `cicd_only`/`stopped`；release 决策只能从 `release` 降级，不能再升回 `release` | 与上一阶段相同 |
-| **Doc deadline 后** | 不能再编辑文档/表单/`app_info`；可生成预览 RST、Manager Review CSV、导出测试范围 CSV；可执行 Final Lock。如需重新放开编辑，只能改 deadline | 文档、表单、`app_info`、release 决策全部冻结，只能查看 | 仍可标注 QA 状态、上传 QA log —— QA 是此阶段唯一在进行的工作 |
+| **Doc deadline 后** | 不能再编辑文档/表单/`app_info`；但仍可下调 release 决策、新增 `cicd_only`/`stopped` app；可生成预览 RST、Manager Review CSV、导出测试范围 CSV；可执行 Final Lock。如需重新放开文档编辑，只能改 deadline | 文档、表单、`app_info` 冻结；但仍可把 release 决策从 `release` 下调（移出本期发布），也仍可新增 `cicd_only`/`stopped` app | 仍可标注 QA 状态、上传 QA log |
 | **Final Lock 后** | 整个 release 冻结；如需修正可解锁 release | 只能查看 | 只能查看 |
 
 > 注：「编辑」指改文档字段、测试说明、上传 `app_info`、确认 diff、提交 Owner 确认等。所有阶段、任何角色都能登录查看当前 release 状态。
