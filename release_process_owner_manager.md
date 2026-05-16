@@ -37,9 +37,9 @@
 
 | Owner 操作 | App 冻结前 | App 冻结后 | Doc deadline 后 | Final Lock 后 |
 |---|---|---|---|---|
-| 新增 app | 可（release / cicd_only / stopped 任选） | 可（只能 cicd_only / stopped） | 可（只能 cicd_only / stopped） | 不可 |
-| 修改 release 决策 | 可（任意切换） | 可（只能下调，不能升回 release） | 可（只能下调，不能升回 release） | 不可 |
-| 编辑文档 / 表单 / app_info | 可 | 可 | 不可（已冻结） | 不可 |
+| 新增 app | ✅（release / cicd_only / stopped 任选） | ⚠️（只能 cicd_only / stopped） | ⚠️（只能 cicd_only / stopped） | 🚫 |
+| 修改 release 决策 | ✅（任意切换） | ⚠️（只能下调，不能升回 release） | ⚠️（只能下调，不能升回 release） | 🚫 |
+| 编辑文档 / 表单 / app_info | ✅ | ✅ | 🚫（已冻结） | 🚫 |
 
 「编辑文档 / 表单 / app_info」包括：上传或从 Gerrit 拉取 `app_info.json`、确认 app_info diff、填写文档字段与各 `test_cmd` 的测试说明、修改 `App类型` / `描述`、提交 Owner 确认。
 
