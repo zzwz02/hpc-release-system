@@ -171,3 +171,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\static_checks.ps1
 
 ### 测试与质量
 - 增加 HTTP 层与前端集成测试、并发/锁竞争测试（目前只有 core 单元测试）。
+
+## 体验改善建议（待评估）
+
+以下为已讨论、尚未实现的体验增强方向，记录备查。
+
+### Owner 用 Markdown 编写文档
+
+- Owner 填写 doc 字段时用 Markdown（多数人不熟 RST），界面提供实时预览。
+- snapshot 仍只存 Markdown 原文；仅在 RM 生成 artifacts 时把 Markdown 转成 RST（官方 HPC Manual / AI4Sci 文档工程必须用 RST，MyST 不可选）。预览直接渲染所存的 Markdown。
+- MD→RST 转换器有两条路，**转换必须是确定性的，不要用 AI**：
+  - A：调用 `pandoc`（标准、健壮，几乎不用写转换代码）；代价是每个部署环境都要安装 pandoc，且文档生成会硬依赖它。
+  - B：自写一个受限 Markdown 子集转换器（纯 stdlib、完全自包含）；代价是要维护、有边界情况。可行性不低 —— owner 字段都很短，且 MD 与 RST 在段落、加粗、列表上基本重合，真正要转的只有围栏代码块、标题、链接、行内代码。
+  - 决策点：部署环境能否保证装有 pandoc。
+
+### AI 辅助（需先决定是否引入外部 LLM API）
+
+引入 AI 等于接受一个外部 API 依赖 + 调用成本 + 输出不确定性。总原则：**AI 只产出「建议」，由人复核；不做最终判定，也不做硬性闸门。**
+
+- **QA log 拟稿**：QA 上传 log 后，AI 起草 `qa_issue_note`、建议 `qa_status`，QA 复核后确认。不让 AI 直接定 pass/fail —— 那是 QA 的问责性判断；log 中细节要命（「0 failed」可能是没跑、「5 failed」可能全是已知 flaky）。约束：log 需能按 app 切分；大 log 有 token 成本与上下文上限。
+- **doc 合理性提示**：在 RM 检查环节由 AI 提示 owner 所填文档是否像凑数，非阻塞、仅提示。注意 AI 只能判断「用没用心」，判断不了「对不对」—— 它是质量下限，不是正确性保证；正确性仍靠 RM review 和 QA 实测。
+- 补充：挡明显的垃圾输入（如把基本介绍填成「a」）**不需要 AI** —— 几条确定性规则即可（最小长度、不能全空白、不能单字符重复、要求若干个词），零依赖零成本，可独立先做。
