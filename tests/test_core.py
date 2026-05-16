@@ -761,19 +761,52 @@ class CoreWorkflowTests(unittest.TestCase):
 
     # --- bug-fix regressions ---
 
-    def test_add_new_app_request_rejects_duplicate_id(self) -> None:
+    def test_add_new_app_request_rejects_duplicate_git_location(self) -> None:
         release_id, _ = self.import_initial()
-        # "amber" already exists from import; a name normalizing to the same id is rejected.
-        with self.assertRaisesRegex(RuntimeError, "已存在"):
+        # imported "amber" lives at ssh://gerrit/PDE/HPC/hpc_amber + branch maca;
+        # a new app at the same url+branch is rejected regardless of its name.
+        with self.assertRaisesRegex(RuntimeError, "已登记"):
             core.add_new_app_request(
                 self.conn,
                 release_id,
-                official_name="Amber",
-                git_url="ssh://x",
-                git_branch="main",
+                official_name="Some Other Name",
+                git_url="ssh://gerrit/PDE/HPC/hpc_amber",
+                git_branch="maca",
                 release_decision="release",
                 owner="someone",
             )
+
+    def test_add_new_app_request_allows_same_name_different_branch(self) -> None:
+        release_id, _ = self.import_initial()
+        # same display name as imported "amber" but a different branch -> allowed,
+        # id is suffixed so the two apps coexist.
+        app_id = core.add_new_app_request(
+            self.conn,
+            release_id,
+            official_name="amber",
+            git_url="ssh://gerrit/PDE/HPC/hpc_amber",
+            git_branch="release-22",
+            release_decision="release",
+            owner="someone",
+        )
+        self.assertNotEqual(app_id, "amber")
+        created = core.get_app(self.conn, app_id)
+        self.assertEqual(created["name"], "amber")
+        self.assertEqual(created["git_branch"], "release-22")
+
+    def test_add_new_app_request_git_location_is_case_sensitive(self) -> None:
+        release_id, _ = self.import_initial()
+        # branch "MACA" differs only in case from imported "maca" -> not a duplicate.
+        app_id = core.add_new_app_request(
+            self.conn,
+            release_id,
+            official_name="AmberUpper",
+            git_url="ssh://gerrit/PDE/HPC/hpc_amber",
+            git_branch="MACA",
+            release_decision="release",
+            owner="someone",
+        )
+        self.assertTrue(app_id)
 
     def test_validate_deadline_order_rejects_reversed(self) -> None:
         with self.assertRaisesRegex(ValueError, "不能晚于"):

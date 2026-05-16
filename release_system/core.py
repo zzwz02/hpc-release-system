@@ -1011,6 +1011,8 @@ def add_new_app_request(
     doc_target: str = "manual",
 ) -> str:
     raw_decision = (release_decision or "").strip()
+    git_url = (git_url or "").strip()
+    git_branch = (git_branch or "").strip()
     if not official_name or not git_url or not git_branch or not raw_decision or not owner:
         raise ValueError("New app requires official_name, git_url, git_branch, release_decision, and submitter owner")
     release_decision = normalize_release_decision(raw_decision)
@@ -1022,13 +1024,20 @@ def add_new_app_request(
         raise RuntimeError("Release 已最终锁定，不可新增 app")
     if release_decision == "release" and not is_before(release.get("app_freeze_deadline", "")):
         raise RuntimeError("已过 app 冻结 deadline，不可再新增以 release 状态进入本期的 app")
-    app_id = normalize_name(official_name)
-    if not app_id:
-        raise ValueError(f"无法由名称生成有效的 app id：{official_name!r}")
-    if conn.execute("SELECT 1 FROM apps WHERE id = ?", (app_id,)).fetchone():
+    duplicate = conn.execute(
+        "SELECT id, name FROM apps WHERE git_url = ? AND git_branch = ?",
+        (git_url, git_branch),
+    ).fetchone()
+    if duplicate:
         raise RuntimeError(
-            f"App 已存在（id={app_id}）：请换一个名称，或请现有 owner 把你加入该 app"
+            f"该 Gerrit URL + branch 已登记为 app「{duplicate['name']}」(id={duplicate['id']})："
+            f"无需重复新增；如需让它参与本 release，请联系现有 owner 或 RM"
         )
+    base_id = normalize_name(official_name)
+    if not base_id:
+        raise ValueError(f"无法由名称生成有效的 app id：{official_name!r}")
+    used_ids = {row["id"] for row in conn.execute("SELECT id FROM apps")}
+    app_id = base_id if base_id not in used_ids else variant_app_id(base_id, "", git_branch, used_ids)
     app = {
         "id": app_id,
         "name": official_name,
