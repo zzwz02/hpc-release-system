@@ -132,7 +132,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\static_checks.ps1
 1. **`/api/apps/update` 出错时可能半写入** —— app 元数据先于 snapshot 落库并提交，若随后的 snapshot 校验失败，会留下「元数据已改、snapshot 未改」的不一致。当前前端不会触发该路径。
 2. **文档类闸门用字符串前缀 `"QA "` 区分 QA 项** —— 若某个 `app_info` 的测试名恰好以 `QA ` 开头，其缺失项会被误排除出发布闸门。应改为结构化标记。
 3. **`app_info` 重传不会作废已有的 QA 结论** —— Owner 在 QA 通过后重传 `app_info`，`qa_status` 不重置；最终闸门仍能拦截，但 QA 本人收不到提醒。
-   - *建议方案*：在 `apply_app_info` 中把新解析结果与 snapshot 里**当前**的 app_info 单独比对（不复用「与上一 release」的 diff 基线）；diff 非空即给 snapshot 打 `qa_stale` 标记，QA 页和最终闸门按「需复测」处理。这比用 commit id 判定更可靠 —— 全自动、上传/拉取都适用、内容未变不会误报（owner 上传路径本来也没有可靠的 commit id）。commit id 仍可作为「QA 测的是哪个构建」的可追溯信息保留，但不充当失效判定的触发器。
+   - *建议方案*：用 commit id 判定。`app_info` 同步时记录来源 commit id（Gerrit 拉取自动记录，owner 上传时由 owner 手填）；QA 标注状态时记录所测构建的 commit id。两者不一致即说明 app 代码已变动，给 snapshot 打 `qa_stale` 标记，QA 页和最终闸门按「需复测」处理。commit id 反映 app 仓库的实际代码状态，比对 `app_info.json` 内容更可靠 —— 代码改了但 `app_info.json` 没改时，内容 diff 会漏掉。owner 上传（Gerrit 拉取失败时的兜底路径）缺 commit id 时应保守提示，不默认 QA 仍有效。
 4. **`/api/app-audit` 无归属校验** —— 任何已登录用户可读取任意 app 的变更日志。
 5. **final lock 无阶段保护** —— RM 可对仍处于 before_app_freeze 的 release 直接最终锁定。
 6. **QA 批量保存非事务** —— 「保存 QA 状态」逐个 app 提交，中途失败会留下部分保存。
