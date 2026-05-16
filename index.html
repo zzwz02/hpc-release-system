@@ -787,22 +787,23 @@
         const items = [...document.querySelectorAll("[data-qa-status]")].map(el => {
           const appId = el.dataset.qaStatus;
           return {
-            appId,
+            app_id: appId,
             status: el.value,
-            note: document.querySelector(`[data-qa-note="${appId}"]`)?.value || "",
+            issue_note: document.querySelector(`[data-qa-note="${appId}"]`)?.value || "",
           };
         }).filter(item => {
-          const snap = releaseSnap(item.appId) || {};
-          return (snap.qa_status || "not_checked") !== item.status || (snap.qa_issue_note || "") !== item.note;
+          const snap = releaseSnap(item.app_id) || {};
+          return (snap.qa_status || "not_checked") !== item.status || (snap.qa_issue_note || "") !== item.issue_note;
         });
+        if (!items.length) { qaEditMode = false; renderQa(); return; }
         try {
-          for (const item of items) {
-            await post("/api/qa/status", { release_id: currentReleaseId(), app_id: item.appId, status: item.status, issue_note: item.note });
-          }
+          await post("/api/qa/status-batch", { release_id: currentReleaseId(), items });
           qaEditMode = false;
           await loadState();
           alert("QA 状态已保存");
-        } catch (e) { alert("保存失败：" + e.message); }
+        } catch (e) {
+          alert("保存失败，未保存任何改动，请修正后重试：\n\n" + e.message);
+        }
       };
     }
 

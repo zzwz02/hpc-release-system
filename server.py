@@ -406,20 +406,18 @@ class Handler(BaseHTTPRequestHandler):
                     conn.commit()
                     self.send_json({"snapshot": updated, "missing_items": updated.get("missing_items", []), "qa_status": updated.get("qa_status")})
                     return
-                if parsed.path == "/api/qa/status":
+                if parsed.path == "/api/qa/status-batch":
                     if self.role() not in {"QA", "RM"}:
                         raise AuthzError("只有 QA 或 RM 可标注 QA 状态")
                     body = self.json_body()
-                    snapshot = core.qa_set_status(
+                    updated = core.qa_set_status_batch(
                         self.conn(),
                         body["release_id"],
-                        body["app_id"],
-                        body["status"],
-                        issue_note=body.get("issue_note", ""),
+                        body.get("items") or [],
                         user=self.user(),
                         role=self.role(),
                     )
-                    self.send_json({"snapshot": snapshot})
+                    self.send_json({"ok": True, "updated": len(updated)})
                     return
                 if parsed.path == "/api/qa/upload-log":
                     if self.role() not in {"QA", "RM"}:

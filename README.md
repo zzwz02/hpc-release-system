@@ -135,10 +135,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\static_checks.ps1
    - *建议方案*：用 commit id 判定。`app_info` 同步时记录来源 commit id（Gerrit 拉取自动记录，owner 上传时由 owner 手填）；QA 标注状态时记录所测构建的 commit id。两者不一致即说明 app 代码已变动，给 snapshot 打 `qa_stale` 标记，QA 页和最终闸门按「需复测」处理。commit id 反映 app 仓库的实际代码状态，比对 `app_info.json` 内容更可靠 —— 代码改了但 `app_info.json` 没改时，内容 diff 会漏掉。owner 上传（Gerrit 拉取失败时的兜底路径）缺 commit id 时应保守提示，不默认 QA 仍有效。
 4. **`/api/app-audit` 无归属校验** —— 任何已登录用户可读取任意 app 的变更日志。
 5. **final lock 无阶段保护** —— RM 可对仍处于 before_app_freeze 的 release 直接最终锁定。
-6. **QA 批量保存非事务** —— 「保存 QA 状态」逐个 app 提交，中途失败会留下部分保存。
-7. **会话不过期** —— session token 创建后无 TTL，只有登出才失效。
-8. Gerrit 拉取依赖本地 `git archive --remote`；失败时页面提示，Owner 可上传 JSON 兜底。
-9. Gerrit 推送只输出推送计划骨架，未执行真实 git push。
+6. **会话不过期** —— session token 创建后无 TTL，只有登出才失效。
+7. Gerrit 拉取依赖本地 `git archive --remote`；失败时页面提示，Owner 可上传 JSON 兜底。
+8. Gerrit 推送只输出推送计划骨架，未执行真实 git push。
 
 ## 从 MVP 到完整产品的待完善项
 

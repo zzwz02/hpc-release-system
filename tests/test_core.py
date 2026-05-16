@@ -893,6 +893,56 @@ class CoreWorkflowTests(unittest.TestCase):
             "cicd_only",
         )
 
+    def test_qa_set_status_batch_applies_all(self) -> None:
+        release_id, app_id = self.import_initial()
+        other = core.add_new_app_request(
+            self.conn,
+            release_id,
+            official_name="Second",
+            git_url="ssh://second",
+            git_branch="main",
+            release_decision="release",
+            owner="o2",
+        )
+        core.qa_set_status_batch(
+            self.conn,
+            release_id,
+            [
+                {"app_id": app_id, "status": "qa_passed"},
+                {"app_id": other, "status": "has_issues", "issue_note": "flaky on c500"},
+            ],
+        )
+        snaps = core.get_release(self.conn, release_id)["snapshots"]
+        self.assertEqual(snaps[app_id]["qa_status"], "qa_passed")
+        self.assertEqual(snaps[other]["qa_status"], "has_issues")
+        self.assertEqual(snaps[other]["qa_issue_note"], "flaky on c500")
+
+    def test_qa_set_status_batch_is_atomic_on_failure(self) -> None:
+        release_id, app_id = self.import_initial()
+        other = core.add_new_app_request(
+            self.conn,
+            release_id,
+            official_name="Second",
+            git_url="ssh://second",
+            git_branch="main",
+            release_decision="release",
+            owner="o2",
+        )
+        # the second item is invalid (has_issues without a note) -> whole batch rejected
+        with self.assertRaisesRegex(ValueError, "问题说明"):
+            core.qa_set_status_batch(
+                self.conn,
+                release_id,
+                [
+                    {"app_id": app_id, "status": "qa_passed"},
+                    {"app_id": other, "status": "has_issues", "issue_note": ""},
+                ],
+            )
+        # the valid item must NOT have slipped through
+        snaps = core.get_release(self.conn, release_id)["snapshots"]
+        self.assertEqual(snaps[app_id]["qa_status"], "not_checked")
+        self.assertEqual(snaps[other]["qa_status"], "not_checked")
+
 
 if __name__ == "__main__":
     unittest.main()

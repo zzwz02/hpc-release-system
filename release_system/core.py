@@ -398,12 +398,14 @@ def audit(
     app_id: str = "",
     release_id: str = "",
     event: str = "",
+    commit: bool = True,
 ) -> None:
     conn.execute(
         "INSERT INTO audit(ts, user, role, app_id, release_id, event, message) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (now(), user, role, app_id, release_id, event, message),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def app_audit_log(conn: sqlite3.Connection, app_id: str) -> list[dict[str, Any]]:
@@ -1424,6 +1426,63 @@ def qa_set_status(
         event="qa_set_status",
     )
     return snapshot
+
+
+def qa_set_status_batch(
+    conn: sqlite3.Connection,
+    release_id: str,
+    items: list[dict[str, Any]],
+    *,
+    user: str = "qa",
+    role: str = "QA",
+) -> dict[str, dict[str, Any]]:
+    """Apply several QA-status updates atomically.
+
+    Every item is validated first; if any item is invalid the whole batch is
+    rejected and nothing is written. Only on full success is a single commit
+    issued, so a mid-batch failure can never leave a partial save.
+    """
+    release = get_release(conn, release_id)
+    if release.get("released_locked"):
+        raise RuntimeError("Release 已最终锁定，不可修改 QA 状态")
+    prepared: list[tuple[str, dict[str, Any], str, str]] = []
+    errors: list[str] = []
+    for item in items:
+        app_id = item.get("app_id", "")
+        status = item.get("status", "")
+        issue_note = (item.get("issue_note") or "").strip()
+        if status not in QA_STATUSES:
+            errors.append(f"{app_id}：无效的 QA 状态 {status!r}")
+            continue
+        snapshot = release["snapshots"].get(app_id)
+        if not snapshot:
+            errors.append(f"{app_id}：不在本 release 中")
+            continue
+        if snapshot.get("release_decision") != "release":
+            errors.append(f"{app_id}：仅 release 决策的 app 可标注 QA 状态")
+            continue
+        if status == "has_issues" and not issue_note:
+            errors.append(f"{app_id}：标注「存在问题」时必须填写问题说明")
+            continue
+        prepared.append((app_id, snapshot, status, issue_note))
+    if errors:
+        raise ValueError("；".join(errors))
+    for app_id, snapshot, status, issue_note in prepared:
+        snapshot["qa_status"] = status
+        snapshot["qa_issue_note"] = issue_note if status == "has_issues" else ""
+        save_snapshot(conn, release_id, app_id, snapshot)
+        audit(
+            conn,
+            f"QA 标注 {app_id} 为 {status}" + (f"：{issue_note}" if issue_note else ""),
+            user=user,
+            role=role,
+            app_id=app_id,
+            release_id=release_id,
+            event="qa_set_status",
+            commit=False,
+        )
+    conn.commit()
+    return {app_id: snapshot for app_id, snapshot, _, _ in prepared}
 
 
 def qa_log_dir(db_path: str | Path) -> Path:
