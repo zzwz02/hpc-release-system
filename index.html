@@ -1287,7 +1287,20 @@
       $("loginBtn").onclick = login;
       $("logoutBtn").onclick = logout;
       $("refresh").onclick = () => loadState();
-      $("release").onchange = () => loadState($("release").value);
+      $("release").onchange = () => {
+        const target = $("release").value;
+        if ((appDetailDirty || appDetailEditMode) && selectedApp &&
+            !confirm("当前 App 详情有未保存修改或处于编辑状态，切换 Release 会丢失这些修改。确认切换？")) {
+          $("release").value = state.release?.id || "";
+          return;
+        }
+        appDetailDirty = false;
+        appDetailEditMode = false;
+        appDetailEditAppId = "";
+        pendingAppInfoFile = null;
+        pendingAppInfoAppId = "";
+        loadState(target);
+      };
       $("search").oninput = renderApps;
       $("importBtn").onclick = async () => { $("initLog").textContent = "导入中..."; const r = await post("/api/import-initial", { release_csv: await readFile("releaseCsv"), owner_csv: await readFile("ownerCsv"), alias_text: $("aliasText").value, release_name: $("initReleaseName").value }); $("initLog").textContent = "导入完成：" + r.release_id; await loadState(r.release_id); };
       $("createRelease").onclick = async () => {
