@@ -917,6 +917,19 @@ class CoreWorkflowTests(unittest.TestCase):
         self.assertEqual(snaps[other]["qa_status"], "has_issues")
         self.assertEqual(snaps[other]["qa_issue_note"], "flaky on c500")
 
+    def test_official_url_round_trips_and_shows_in_guide(self) -> None:
+        release_id, app_id = self.import_initial()
+        app = core.get_app(self.conn, app_id)
+        app["official_url"] = "https://amber.example.org"
+        core.save_app(self.conn, app)
+        self.conn.commit()
+        self.assertEqual(core.get_app(self.conn, app_id)["official_url"], "https://amber.example.org")
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        core.update_snapshot(self.conn, release_id, app_id, _fill_ready)
+        core.qa_set_status(self.conn, release_id, app_id, "qa_passed")
+        artifacts = core.generate_artifacts(self.conn, release_id)
+        self.assertIn("https://amber.example.org", artifacts["manual"])
+
     def test_qa_set_status_batch_is_atomic_on_failure(self) -> None:
         release_id, app_id = self.import_initial()
         other = core.add_new_app_request(

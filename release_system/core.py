@@ -181,6 +181,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             description TEXT NOT NULL DEFAULT '',
             git_url TEXT NOT NULL DEFAULT '',
             git_branch TEXT NOT NULL DEFAULT '',
+            official_url TEXT NOT NULL DEFAULT '',
             doc_target TEXT NOT NULL DEFAULT 'manual',
             owners_json TEXT NOT NULL DEFAULT '[]',
             aliases_json TEXT NOT NULL DEFAULT '[]',
@@ -251,6 +252,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    if "official_url" not in {row["name"] for row in conn.execute("PRAGMA table_info(apps)")}:
+        conn.execute("ALTER TABLE apps ADD COLUMN official_url TEXT NOT NULL DEFAULT ''")
     conn.execute("UPDATE apps SET doc_target = 'manual' WHERE doc_target NOT IN ('manual', 'ai4sci')")
     ensure_default_user(conn)
     conn.commit()
@@ -461,6 +464,7 @@ def app_from_row(existing: dict[str, Any] | None, *, app_id: str, name: str) -> 
         "description": "",
         "git_url": "",
         "git_branch": "",
+        "official_url": "",
         "doc_target": "",
         "owners": [],
         "aliases": [],
@@ -521,8 +525,8 @@ def save_app(conn: sqlite3.Connection, app: dict[str, Any]) -> None:
     conn.execute(
         """
         INSERT INTO apps(id, name, official_name, category, type, description, git_url, git_branch,
-                         doc_target, owners_json, aliases_json, created_by, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         official_url, doc_target, owners_json, aliases_json, created_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           name=excluded.name,
           official_name=excluded.official_name,
@@ -531,6 +535,7 @@ def save_app(conn: sqlite3.Connection, app: dict[str, Any]) -> None:
           description=excluded.description,
           git_url=excluded.git_url,
           git_branch=excluded.git_branch,
+          official_url=excluded.official_url,
           doc_target=excluded.doc_target,
           owners_json=excluded.owners_json,
           aliases_json=excluded.aliases_json,
@@ -545,6 +550,7 @@ def save_app(conn: sqlite3.Connection, app: dict[str, Any]) -> None:
             app.get("description", ""),
             app.get("git_url", ""),
             app.get("git_branch", ""),
+            app.get("official_url", ""),
             normalize_doc_target(app.get("doc_target")),
             dumps_json(sorted(set(app.get("owners", [])))),
             dumps_json(sorted(set(app.get("aliases", [])))),
@@ -1049,6 +1055,7 @@ def add_new_app_request(
         "description": "",
         "git_url": git_url,
         "git_branch": git_branch,
+        "official_url": "",
         "doc_target": doc_target,
         "owners": [owner],
         "aliases": [official_name],
@@ -1592,6 +1599,7 @@ def final_lock_release(conn: sqlite3.Connection, release_id: str, *, user: str =
                     "description": app["description"],
                     "git_url": app["git_url"],
                     "git_branch": app["git_branch"],
+                    "official_url": app.get("official_url", ""),
                     "doc_target": app["doc_target"],
                     "owners": app["owners"],
                 }
@@ -1823,6 +1831,8 @@ def _render_guide_entries(rows: list[tuple[dict[str, Any], dict[str, Any]]], *, 
         out += rst_title(heading, "-")
         out += f"{doc.get('intro') or app.get('description') or ''}\n\n"
         out += f"版本：{snapshot.get('version') or ''}\n\n"
+        if app.get("official_url"):
+            out += f"官方网址：{app['official_url']}\n\n"
         out += "**镜像使用方法：**\n\n" + code_block(doc.get("image_usage", ""))
         out += "**二进制包使用方法：**\n\n" + code_block(doc.get("binary_usage", ""))
         out += "**环境搭建：**\n\n" + code_block(doc.get("env_setup", ""))

@@ -642,6 +642,7 @@
           <label>App类型<input id="type" value="${esc(app.type)}" ${appMetaDisabled}></label>
           <label>Gerrit URL<input id="gitUrl" value="${esc(app.git_url)}" ${rmMetaDisabled}></label>
           <label>Branch<input id="gitBranch" value="${esc(app.git_branch)}" ${rmMetaDisabled}></label>
+          <label>官方 URL<input id="officialUrl" value="${esc(app.official_url)}" ${appMetaDisabled}></label>
           <label>Release决策<select id="decision" ${decisionDisabled}>${allowedDecisions.map(v => `<option value="${v}" ${snap.release_decision===v?"selected":""}>${esc(releaseDecisionLabels[v])}</option>`).join("")}</select></label>
           <label>版本<input value="${esc(snap.version)}" disabled></label>
           <label>X86芯片<input value="${esc(snap.x86_chips)}" disabled></label>
@@ -917,7 +918,7 @@
       const result = await post("/api/apps/update", {
         release_id: currentReleaseId(),
         app_id: app.id,
-        app: { official_name: $("officialName").value, type: $("type").value.trim(), description, git_url: $("gitUrl").value, git_branch: $("gitBranch").value, doc_target: $("docTarget").value, owners: $("owners").value.split(/[,，、;；/]+/).map(x => x.trim()).filter(Boolean) },
+        app: { official_name: $("officialName").value, type: $("type").value.trim(), description, git_url: $("gitUrl").value, git_branch: $("gitBranch").value, official_url: $("officialUrl").value.trim(), doc_target: $("docTarget").value, owners: $("owners").value.split(/[,，、;；/]+/).map(x => x.trim()).filter(Boolean) },
         snapshot: snapshotUpdate
       });
       appDetailDirty = false;
@@ -961,6 +962,10 @@
         document.querySelectorAll("[data-artifact-pane],.artifact-pane").forEach(x => x.classList.remove("active"));
         b.classList.add("active");
         $(b.dataset.artifactPane).classList.add("active");
+      });
+      window.addEventListener("unhandledrejection", e => {
+        const msg = e.reason && e.reason.message ? e.reason.message : String(e.reason || "未知错误");
+        alert("操作失败：" + msg);
       });
       document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshIfIdle(); });
       window.addEventListener("focus", () => {

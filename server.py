@@ -284,10 +284,10 @@ class Handler(BaseHTTPRequestHandler):
                                 raise RuntimeError("已过 app 冻结 deadline，不可再切换为 release")
                     if "app" in body and self.role() in {"RM", "Owner"}:
                         app_update = body["app"]
-                        editable_keys = ["official_name", "type", "description", "git_url", "git_branch", "doc_target", "owners"] if self.role() == "RM" else ["type", "description"]
+                        editable_keys = ["official_name", "type", "description", "git_url", "git_branch", "official_url", "doc_target", "owners"] if self.role() == "RM" else ["type", "description", "official_url"]
                         before_app_meta = {
                             key: app.get(key)
-                            for key in ["official_name", "type", "description", "git_url", "git_branch", "doc_target", "owners"]
+                            for key in ["official_name", "type", "description", "git_url", "git_branch", "official_url", "doc_target", "owners"]
                         }
                         for key in editable_keys:
                             if key in app_update:
@@ -295,7 +295,7 @@ class Handler(BaseHTTPRequestHandler):
                                     app[key] = core.normalize_doc_target(app_update[key])
                                 elif key == "description":
                                     app[key] = core.normalize_app_description(app_update[key])
-                                elif key == "type":
+                                elif key in ("type", "official_url"):
                                     app[key] = (app_update[key] or "").strip()
                                 else:
                                     app[key] = app_update[key]
@@ -303,7 +303,7 @@ class Handler(BaseHTTPRequestHandler):
                             app["owners"] = app_update["owners"]
                         after_app_meta = {
                             key: app.get(key)
-                            for key in ["official_name", "type", "description", "git_url", "git_branch", "doc_target", "owners"]
+                            for key in ["official_name", "type", "description", "git_url", "git_branch", "official_url", "doc_target", "owners"]
                         }
                         if before_app_meta != after_app_meta:
                             core.save_app(conn, app)
