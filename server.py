@@ -64,7 +64,8 @@ class Handler(BaseHTTPRequestHandler):
                     app_id = self.query().get("app_id", [""])[0]
                     if not app_id:
                         raise ValueError("app_id is required")
-                    self.send_json({"entries": core.app_audit_log(self.conn(), app_id)})
+                    release_id = self.query().get("release_id", [""])[0]
+                    self.send_json({"entries": core.app_audit_log(self.conn(), app_id, release_id)})
                     return
                 if parsed.path == "/api/test-scope.csv":
                     self.require_rm()

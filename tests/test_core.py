@@ -1030,5 +1030,18 @@ class CoreWorkflowTests(unittest.TestCase):
         self.assertTrue(uploads[0]["detail"])
 
 
+    def test_app_audit_log_filters_by_release(self) -> None:
+        r1, app_id = self.import_initial()
+        r2 = core.create_release_from_previous(self.conn, "3.9.0")
+        core.qa_set_status(self.conn, r2, app_id, "qa_passed")
+        r1_events = {e["event"] for e in core.app_audit_log(self.conn, app_id, r1)}
+        r2_events = {e["event"] for e in core.app_audit_log(self.conn, app_id, r2)}
+        self.assertIn("create_app", r1_events)
+        self.assertNotIn("qa_set_status", r1_events)
+        self.assertIn("qa_set_status", r2_events)
+        self.assertNotIn("create_app", r2_events)
+        self.assertGreaterEqual(len(core.app_audit_log(self.conn, app_id)), len(r1_events) + len(r2_events))
+
+
 if __name__ == "__main__":
     unittest.main()

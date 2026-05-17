@@ -913,7 +913,7 @@
 
     async function loadChangeLog(appId) {
       try {
-        const data = await api(`/api/app-audit?app_id=${encodeURIComponent(appId)}`);
+        const data = await api(`/api/app-audit?app_id=${encodeURIComponent(appId)}&release_id=${encodeURIComponent(currentReleaseId())}`);
         if (selectedApp !== appId || !$("changeLog")) return;
         const entries = data.entries || [];
         const body = entries.map((e, i) => {
@@ -1098,7 +1098,7 @@
             </div>
           </details>
           <details class="section">
-            <summary><span class="chev">▶</span> 变更记录</summary>
+            <summary><span class="chev">▶</span> 变更记录（本 release）</summary>
             <div class="section-body"><div id="changeLog" class="table"><table>${table(["时间", "操作人", "角色", "Release", "事件", "内容"], [])}</table></div></div>
           </details>
         </div>

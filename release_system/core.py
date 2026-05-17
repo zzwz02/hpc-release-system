@@ -403,12 +403,15 @@ def audit(
         conn.commit()
 
 
-def app_audit_log(conn: sqlite3.Connection, app_id: str) -> list[dict[str, Any]]:
+def app_audit_log(conn: sqlite3.Connection, app_id: str, release_id: str = "") -> list[dict[str, Any]]:
+    """Audit entries for an app. If *release_id* is given, only that release's."""
+    cols = "SELECT ts, user, role, release_id, event, message, detail FROM audit WHERE app_id = ?"
+    if release_id:
+        rows = conn.execute(cols + " AND release_id = ? ORDER BY id DESC", (app_id, release_id))
+    else:
+        rows = conn.execute(cols + " ORDER BY id DESC", (app_id,))
     entries = []
-    for row in conn.execute(
-        "SELECT ts, user, role, release_id, event, message, detail FROM audit WHERE app_id = ? ORDER BY id DESC",
-        (app_id,),
-    ):
+    for row in rows:
         entry = dict(row)
         entry["detail"] = loads_json(entry.get("detail"), []) if entry.get("detail") else []
         entries.append(entry)
@@ -915,11 +918,12 @@ def import_initial_rows(
         snapshot["maca_version"] = (first.get("maca_version") or "").strip()
         built.append((app, snapshot))
 
+    release_id = new_id("rel")
     for app, _ in built:
         save_app(conn, app)
-        audit(conn, f"导入 app：{app['id']}", user="import", role="system", app_id=app["id"], event="create_app")
+        audit(conn, f"导入 app：{app['id']}", user="import", role="system",
+              app_id=app["id"], release_id=release_id, event="create_app")
 
-    release_id = new_id("rel")
     csv_maca = (rows[0].get("maca_version") or "").strip()
     save_release(conn, {
         "id": release_id,
