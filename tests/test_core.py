@@ -930,6 +930,33 @@ class CoreWorkflowTests(unittest.TestCase):
         artifacts = core.generate_artifacts(self.conn, release_id)
         self.assertIn("https://amber.example.org", artifacts["manual"])
 
+    def test_app_info_after_app_freeze_blocks_qa_scope_expansion(self) -> None:
+        release_id, app_id = self.import_initial(app_freeze_deadline="2026-06-01")
+        with mock.patch("release_system.core.beijing_now", return_value=dt.datetime(2026, 5, 1)):
+            core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        # APP_INFO_V2 adds chip n300 and test path "sanity" -> rejected after freeze
+        with mock.patch("release_system.core.beijing_now", return_value=dt.datetime(2026, 7, 1)):
+            with self.assertRaisesRegex(RuntimeError, "扩大 QA 范围"):
+                core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V2, source="unit")
+
+    def test_app_info_after_app_freeze_allows_command_only_change(self) -> None:
+        release_id, app_id = self.import_initial(app_freeze_deadline="2026-06-01")
+        with mock.patch("release_system.core.beijing_now", return_value=dt.datetime(2026, 5, 1)):
+            core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        # same chips, same test path -- only the test_cmd string changes
+        tweaked = json.loads(json.dumps(APP_INFO_V1))
+        tweaked["app_test"]["run_make_test"]["test_cmd"] = "cd /root/amber22/test && bash test_amber.sh --verbose"
+        with mock.patch("release_system.core.beijing_now", return_value=dt.datetime(2026, 7, 1)):
+            snap = core.apply_app_info(self.conn, release_id, app_id, tweaked, source="unit")
+        self.assertEqual(snap["x86_chips"], "C500,X301")
+
+    def test_app_info_first_upload_after_app_freeze_allowed(self) -> None:
+        release_id, app_id = self.import_initial(app_freeze_deadline="2026-06-01")
+        # no prior app_info -> no baseline -> first upload is allowed even after freeze
+        with mock.patch("release_system.core.beijing_now", return_value=dt.datetime(2026, 7, 1)):
+            snap = core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        self.assertEqual(snap["x86_chips"], "C500,X301")
+
     def test_qa_set_status_batch_is_atomic_on_failure(self) -> None:
         release_id, app_id = self.import_initial()
         other = core.add_new_app_request(

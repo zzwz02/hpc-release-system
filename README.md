@@ -60,7 +60,7 @@ python3.14 server.py --host 0.0.0.0 --port 9000
 每个 release 有两个北京时间 deadline，阶段由 deadline 和锁状态实时派生，不存状态字段：
 
 1. **before_app_freeze**：可任意新增 app、任意调整决策、编辑文档。
-2. **after_app_freeze**（过 app 冻结 deadline）：release 决策只能下调，不能再升回 `release`；新增 app 只能是 `cicd_only`/`stopped`；文档、表单、`app_info` 仍可编辑。
+2. **after_app_freeze**（过 app 冻结 deadline）：release 决策只能下调，不能再升回 `release`；新增 app 只能是 `cicd_only`/`stopped`；文档、表单仍可编辑；`app_info` 仍可重新上传/拉取，但不能新增芯片或测试 path（不扩大 QA 范围）。
 3. **after_doc_deadline**（过 doc deadline）：文档、表单、`app_info` 冻结；但 release 决策仍可下调（`release`→`cicd_only`/`stopped`，不能升回 `release`），也仍可新增 `cicd_only`/`stopped` app；QA 可继续操作。
 4. **released_locked**（最终锁定）：全部冻结，仅 RM 可解锁。
 

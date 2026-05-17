@@ -1255,6 +1255,22 @@ def update_snapshot(
     return snapshot
 
 
+def _qa_scope_additions(old_parsed: dict[str, Any], new_parsed: dict[str, Any]) -> list[str]:
+    """Describe QA-scope-expanding additions: new chips or new test paths."""
+    additions: list[str] = []
+    old_chips = set(old_parsed.get("x86_chips", [])) | set(old_parsed.get("arm_chips", []))
+    new_chips = set(new_parsed.get("x86_chips", [])) | set(new_parsed.get("arm_chips", []))
+    added_chips = sorted(new_chips - old_chips)
+    if added_chips:
+        additions.append("新增芯片 " + ", ".join(added_chips))
+    old_paths = {test.get("path") for test in old_parsed.get("tests", [])}
+    new_paths = {test.get("path") for test in new_parsed.get("tests", [])}
+    added_paths = sorted(path for path in new_paths - old_paths if path)
+    if added_paths:
+        additions.append("新增测试 " + ", ".join(added_paths))
+    return additions
+
+
 def apply_app_info(
     conn: sqlite3.Connection,
     release_id: str,
@@ -1273,6 +1289,16 @@ def apply_app_info(
         raise RuntimeError("已过 doc deadline，不可再上传 app_info")
     snapshot = release["snapshots"][app_id]
     parsed = parse_app_info(raw)
+    if snapshot.get("release_decision") == "release" and not is_before(release.get("app_freeze_deadline", "")):
+        current_parsed = (snapshot.get("app_info") or {}).get("parsed")
+        if current_parsed is not None:
+            additions = _qa_scope_additions(current_parsed, parsed)
+            if additions:
+                raise RuntimeError(
+                    "已过 app 冻结 deadline，新 app_info 会扩大 QA 范围（"
+                    + "；".join(additions)
+                    + "）。如确需新增，请联系 RM 调整 app 冻结 deadline。"
+                )
     previous = previous_release(conn, release_id)
     old_parsed = None
     if previous and app_id in previous["snapshots"]:
