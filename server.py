@@ -376,9 +376,10 @@ class Handler(BaseHTTPRequestHandler):
                     core.save_snapshot(conn, rid, aid, updated)
                     conn.commit()
                     response = {"snapshot": updated, "missing_items": updated.get("missing_items", []), "qa_status": updated.get("qa_status")}
-                    if body.get("propagate_forward"):
-                        delta = core.compute_propagation_delta(snap_now, updated)
-                        response["propagation"] = core.propagate_to_later_releases(conn, rid, aid, delta, user=actor, role=role)
+                    if body.get("sync_decision") and snap_now.get("release_decision") != updated.get("release_decision"):
+                        response["decision_sync"] = core.sync_decision_to_later_releases(
+                            conn, rid, aid, updated.get("release_decision"), user=actor, role=role
+                        )
                     self.send_json(response)
                     return
                 if parsed.path == "/api/qa/status-batch":

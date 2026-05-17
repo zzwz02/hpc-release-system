@@ -971,45 +971,37 @@ class CoreWorkflowTests(unittest.TestCase):
         self.assertEqual(snaps[other]["qa_status"], "not_checked")
 
 
-    # --- forward propagation ---
+    # --- decision sync to later releases ---
 
-    def test_propagate_copies_changes_to_later_release(self) -> None:
+    def test_sync_decision_copies_to_later_release(self) -> None:
         r38, app_id = self.import_initial()
         r39 = core.create_release_from_previous(self.conn, "3.9.0")
-        before = core.get_release(self.conn, r38)["snapshots"][app_id]
-        after = json.loads(json.dumps(before))
-        after["description"] = "新描述"
-        after["release_decision"] = "cicd_only"
-        delta = core.compute_propagation_delta(before, after)
-        result = core.propagate_to_later_releases(self.conn, r38, app_id, delta)
+        result = core.sync_decision_to_later_releases(self.conn, r38, app_id, "cicd_only")
         self.assertEqual(len(result["applied"]), 1)
         snap39 = core.get_release(self.conn, r39)["snapshots"][app_id]
-        self.assertEqual(snap39["description"], "新描述")
         self.assertEqual(snap39["release_decision"], "cicd_only")
 
-    def test_propagate_skips_content_past_doc_deadline_but_downgrades_decision(self) -> None:
+    def test_sync_decision_downgrade_applies_past_doc_deadline(self) -> None:
         r38, app_id = self.import_initial()
         r39 = core.create_release_from_previous(self.conn, "3.9.0", doc_deadline="2026-01-01")
-        before = core.get_release(self.conn, r38)["snapshots"][app_id]
-        after = json.loads(json.dumps(before))
-        after["description"] = "新描述"
-        after["release_decision"] = "stopped"
-        delta = core.compute_propagation_delta(before, after)
         with mock.patch("release_system.core.beijing_now", return_value=dt.datetime(2026, 5, 15)):
-            core.propagate_to_later_releases(self.conn, r38, app_id, delta)
+            core.sync_decision_to_later_releases(self.conn, r38, app_id, "stopped")
         snap39 = core.get_release(self.conn, r39)["snapshots"][app_id]
-        self.assertNotEqual(snap39["description"], "新描述")
         self.assertEqual(snap39["release_decision"], "stopped")
 
-    def test_propagate_skips_locked_release(self) -> None:
+    def test_sync_decision_skips_release_upgrade_past_app_freeze(self) -> None:
+        r38, app_id = self.import_initial()
+        core.create_release_from_previous(self.conn, "3.9.0", app_freeze_deadline="2026-01-01")
+        with mock.patch("release_system.core.beijing_now", return_value=dt.datetime(2026, 5, 15)):
+            result = core.sync_decision_to_later_releases(self.conn, r38, app_id, "release")
+        self.assertEqual(result["applied"], [])
+        self.assertEqual(len(result["skipped"]), 1)
+
+    def test_sync_decision_skips_locked_release(self) -> None:
         r38, app_id = self.import_initial()
         core.create_release_from_previous(self.conn, "3.9.0")
         core.final_lock_release(self.conn, core.list_releases(self.conn)[-1]["id"])
-        before = core.get_release(self.conn, r38)["snapshots"][app_id]
-        after = json.loads(json.dumps(before))
-        after["description"] = "新描述"
-        delta = core.compute_propagation_delta(before, after)
-        result = core.propagate_to_later_releases(self.conn, r38, app_id, delta)
+        result = core.sync_decision_to_later_releases(self.conn, r38, app_id, "stopped")
         self.assertEqual(result["applied"], [])
         self.assertEqual(len(result["skipped"]), 1)
 

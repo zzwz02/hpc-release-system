@@ -1230,91 +1230,27 @@ def update_snapshot(
     return snapshot
 
 
-_PROPAGATED_TEST_FIELDS = ("dataset", "content", "result_view", "pass_criteria", "stale")
-
-
-def compute_propagation_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
-    """Fields that changed between two snapshots, for forward propagation.
-
-    Covers release_decision, the per-release meta fields, doc fields, and
-    test-doc explanation fields. owner_confirmed / diff confirmation are NOT
-    included -- those are per-release acknowledgements.
-    """
-    delta: dict[str, Any] = {}
-    if before.get("release_decision") != after.get("release_decision"):
-        delta["release_decision"] = after.get("release_decision")
-    meta = {k: after.get(k) for k in SNAPSHOT_META_FIELDS if before.get(k) != after.get(k)}
-    if meta:
-        delta["meta"] = meta
-    before_doc = before.get("doc", {}) or {}
-    after_doc = after.get("doc", {}) or {}
-    doc = {k: after_doc.get(k) for k in set(before_doc) | set(after_doc) if before_doc.get(k) != after_doc.get(k)}
-    if doc:
-        delta["doc"] = doc
-    before_td = {d.get("path"): d for d in before.get("test_docs", [])}
-    changed: list[dict[str, Any]] = []
-    for d in after.get("test_docs", []):
-        old = before_td.get(d.get("path"))
-        if old is None or any(old.get(f) != d.get(f) for f in _PROPAGATED_TEST_FIELDS):
-            entry = {"path": d.get("path"), "owner_added": bool(d.get("owner_added"))}
-            for f in _PROPAGATED_TEST_FIELDS:
-                entry[f] = d.get(f)
-            if d.get("owner_added"):
-                entry["command"] = d.get("command", "")
-            changed.append(entry)
-    if changed:
-        delta["test_docs"] = changed
-    return delta
-
-
-def _apply_propagated_test_docs(snapshot: dict[str, Any], changed: list[dict[str, Any]]) -> None:
-    """Apply propagated test-doc changes by path; append owner-added new paths."""
-    by_path = {d.get("path"): d for d in snapshot.get("test_docs", [])}
-    for ch in changed:
-        target = by_path.get(ch.get("path"))
-        if target is not None:
-            for f in _PROPAGATED_TEST_FIELDS:
-                if f in ch:
-                    target[f] = ch[f]
-            if target.get("owner_added") and "command" in ch:
-                target["command"] = ch["command"]
-        elif ch.get("owner_added"):
-            snapshot.setdefault("test_docs", []).append({
-                "id": new_id("testdoc"),
-                "path": ch.get("path") or f"owner_added.{len(snapshot.get('test_docs', [])) + 1}",
-                "owner_added": True,
-                "command": ch.get("command", ""),
-                "dataset": ch.get("dataset", ""),
-                "content": ch.get("content", ""),
-                "result_view": ch.get("result_view", ""),
-                "pass_criteria": ch.get("pass_criteria", ""),
-                "stale": ch.get("stale", True),
-            })
-
-
-def propagate_to_later_releases(
+def sync_decision_to_later_releases(
     conn: sqlite3.Connection,
     from_release_id: str,
     app_id: str,
-    delta: dict[str, Any],
+    decision: str,
     *,
     user: str = "system",
     role: str = "system",
 ) -> dict[str, Any]:
-    """Apply *delta* to every later (by created_at) unlocked release.
+    """Copy a release_decision to every later (by created_at) release.
 
-    Content (meta/doc/test_docs) is skipped past a release's doc deadline; a
-    release_decision change is skipped only when it would raise a release back
-    to ``release`` past its app freeze. Locked releases are skipped entirely.
+    A locked release is skipped. ``release`` is skipped for any release past
+    its app freeze (cannot be raised back). A downgrade applies even past the
+    doc deadline, matching the late-decision rule.
     """
+    decision = normalize_release_decision(decision)
     result: dict[str, list] = {"applied": [], "skipped": []}
-    if not delta:
-        return result
     releases = list_releases(conn)
     idx = next((i for i, r in enumerate(releases) if r["id"] == from_release_id), None)
     if idx is None:
         return result
-    has_content = any(k in delta for k in ("meta", "doc", "test_docs"))
     for r in releases[idx + 1:]:
         rid = r["id"]
         if r.get("released_locked"):
@@ -1325,44 +1261,24 @@ def propagate_to_later_releases(
         if snapshot is None:
             result["skipped"].append({"release_id": rid, "release_name": r["name"], "reason": "本 release 无此 app"})
             continue
-        before_doc = is_before(release.get("doc_deadline", ""))
-        before_freeze = is_before(release.get("app_freeze_deadline", ""))
-        content_applied = False
-        if has_content and before_doc:
-            for key, value in delta.get("meta", {}).items():
-                snapshot[key] = value
-            if delta.get("doc"):
-                snapshot.setdefault("doc", {}).update(delta["doc"])
-            if delta.get("test_docs"):
-                _apply_propagated_test_docs(snapshot, delta["test_docs"])
-            content_applied = True
-        decision_outcome = None
-        if "release_decision" in delta:
-            new_decision = delta["release_decision"]
-            if new_decision == "release" and not before_freeze:
-                decision_outcome = {"applied": False, "value": new_decision, "reason": "已过 app freeze"}
-            else:
-                snapshot["release_decision"] = new_decision
-                decision_outcome = {"applied": True, "value": new_decision}
-        snapshot["missing_items"] = missing_items_for(get_app(conn, app_id), snapshot)
-        save_snapshot(conn, rid, app_id, snapshot)
-        result["applied"].append({
-            "release_id": rid,
-            "release_name": r["name"],
-            "content_applied": content_applied,
-            "content_blocked": has_content and not before_doc,
-            "decision": decision_outcome,
-        })
+        if decision == "release" and not is_before(release.get("app_freeze_deadline", "")):
+            result["skipped"].append({"release_id": rid, "release_name": r["name"], "reason": "已过 app freeze，无法升回 release"})
+            continue
+        if snapshot.get("release_decision") != decision:
+            snapshot["release_decision"] = decision
+            snapshot["missing_items"] = missing_items_for(get_app(conn, app_id), snapshot)
+            save_snapshot(conn, rid, app_id, snapshot)
+        result["applied"].append({"release_id": rid, "release_name": r["name"]})
     if result["applied"]:
         conn.commit()
         audit(
             conn,
-            f"同步改动到 {len(result['applied'])} 个后续 release",
+            f"同步 release 决策（{decision}）到 {len(result['applied'])} 个后续 release",
             user=user,
             role=role,
             app_id=app_id,
             release_id=from_release_id,
-            event="propagate_forward",
+            event="sync_decision",
         )
     return result
 

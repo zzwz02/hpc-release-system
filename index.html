@@ -452,15 +452,36 @@
     </div>
   </dialog>
 
-  <dialog id="propagateDialog">
+  <dialog id="copyFromDialog">
     <div class="dialog-card">
-      <h2>同步改动到后续 release</h2>
+      <h2>从其他版本复制信息</h2>
       <div class="dialog-body">
-        <p class="hint" id="propagateHint" style="margin-top:0"></p>
-        <div class="table" id="propagateTable"></div>
+        <label>来源版本<select id="copyFromRelease" class="select"></select></label>
+        <p class="hint">勾选要复制的信息，复制后会填入当前编辑表单，请确认无误再保存。仅会填入你有权编辑的字段。</p>
+        <div style="display:flex;flex-direction:column;gap:7px;margin-top:8px">
+          <label class="inline"><input type="checkbox" id="copyBasic" checked> 基本信息（官方名称 / App类型 / 官方URL / 描述 / 类型 / Owner）</label>
+          <label class="inline"><input type="checkbox" id="copyDocs" checked> 文档字段</label>
+          <label class="inline"><input type="checkbox" id="copyTests" checked> 测试说明（按测试 path 匹配）</label>
+          <label class="inline"><input type="checkbox" id="copyDecision"> release 决策</label>
+        </div>
         <div class="row dialog-actions">
-          <button id="propagateCancel" type="button" class="btn">取消</button>
-          <button id="propagateConfirm" type="button" class="btn primary">确认同步并保存</button>
+          <button id="copyFromCancel" type="button" class="btn">取消</button>
+          <button id="copyFromConfirm" type="button" class="btn primary">复制到表单</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="decisionSyncDialog">
+    <div class="dialog-card">
+      <h2>同步 release 决策到后续 release？</h2>
+      <div class="dialog-body">
+        <p class="hint" id="decisionSyncHint" style="margin-top:0"></p>
+        <div class="table" id="decisionSyncTable"></div>
+        <div class="row dialog-actions">
+          <button id="decisionSyncCancel" type="button" class="btn">取消</button>
+          <button id="decisionSyncNo" type="button" class="btn">不同步，仅本 release</button>
+          <button id="decisionSyncYes" type="button" class="btn primary">同步到后续 release</button>
         </div>
       </div>
     </div>
@@ -1014,10 +1035,8 @@
         : (releaseLocked() ? "Release 已锁定，只读"
           : (!beforeDocDeadline() ? "Doc deadline 已过，表单只读"
             : (canEditDetail ? "点击「修改」开始编辑" : "你没有此 app 的编辑权限")));
-      const curReleaseIdx = state.releases.findIndex(r => r.id === currentReleaseId());
-      const laterReleaseCount = curReleaseIdx >= 0 ? state.releases.length - 1 - curReleaseIdx : 0;
-      const propagateCheckbox = (appDetailEditMode && canEditDetail && laterReleaseCount > 0)
-        ? `<label class="inline" style="font-weight:600;color:var(--ink-2)" title="保存时把本次改动同步到创建时间更晚的 release"><input type="checkbox" id="propagateForward"> 同步改动到后续 release（${laterReleaseCount}）</label>`
+      const copyFromButton = (appDetailEditMode && canEditDetail && state.releases.length > 1)
+        ? `<div class="row" style="margin-bottom:12px"><button id="copyFromBtn" class="btn sm">⧉ 从其他版本复制信息</button><span class="small muted">把另一个 release 的信息填入本表单</span></div>`
         : "";
 
       host.innerHTML = `
@@ -1032,6 +1051,7 @@
           <div id="dirtyBanner" class="banner warnp" ${appDetailDirty || appDetailEditMode ? "" : "hidden"}>${appDetailDirty ? "有未保存修改，自动刷新已暂停。保存后会恢复。" : "当前处于编辑状态，自动刷新已暂停。"}</div>
           ${topInfo}
           ${qaIssueBanner}
+          ${copyFromButton}
           <details class="section" open>
             <summary><span class="chev">▶</span> 基本信息</summary>
             <div class="section-body">
@@ -1088,7 +1108,6 @@
         <div class="detail-foot">
           <span class="foot-note">${esc(footNote)}</span>
           <div class="spacer"></div>
-          ${propagateCheckbox}
           ${footActions}
         </div>`;
       bindDetail(app, snap);
@@ -1187,6 +1206,7 @@
       };
       if ($("editApp")) $("editApp").onclick = enterEdit;
       if ($("editAppBottom")) $("editAppBottom").onclick = enterEdit;
+      if ($("copyFromBtn")) $("copyFromBtn").onclick = () => openCopyFromDialog(app, snap);
       if ($("cancelEdit")) $("cancelEdit").onclick = () => {
         if (appDetailDirty && !confirm("放弃当前未保存的修改？")) return;
         appDetailEditMode = false;
@@ -1263,43 +1283,97 @@
       };
     }
 
-    function confirmPropagation(app, snapshotUpdate) {
+    function openCopyFromDialog(app, snap) {
+      const others = state.releases.filter(r => r.id !== currentReleaseId());
+      if (!others.length) return alert("没有其他版本可复制");
+      $("copyFromRelease").innerHTML = others.map(r => `<option value="${esc(r.id)}">${esc(r.name)}</option>`).join("");
+      $("copyBasic").checked = true;
+      $("copyDocs").checked = true;
+      $("copyTests").checked = true;
+      $("copyDecision").checked = false;
+      const dlg = $("copyFromDialog");
+      $("copyFromCancel").onclick = () => dlg.close();
+      $("copyFromConfirm").onclick = () => applyCopyFrom(app, snap, dlg);
+      if (dlg.showModal) dlg.showModal(); else dlg.open = true;
+    }
+
+    async function applyCopyFrom(app, snap, dlg) {
+      const sourceId = $("copyFromRelease").value;
+      const want = { basic: $("copyBasic").checked, docs: $("copyDocs").checked, tests: $("copyTests").checked, decision: $("copyDecision").checked };
+      if (!want.basic && !want.docs && !want.tests && !want.decision) return alert("请至少勾选一类信息");
+      let srcSnap;
+      try {
+        const data = await api("/api/state?release_id=" + encodeURIComponent(sourceId));
+        srcSnap = data.release && data.release.snapshots ? data.release.snapshots[app.id] : null;
+      } catch (e) { return alert("读取来源版本失败：" + e.message); }
+      if (!srcSnap) return alert("来源版本中没有此 app（或你无权访问）");
+      const setVal = (id, value) => { const el = $(id); if (el && !el.disabled) el.value = value; };
+      if (want.basic) {
+        setVal("officialName", srcSnap.official_name || "");
+        setVal("type", srcSnap.type || "");
+        setVal("officialUrl", srcSnap.official_url || "");
+        setVal("description", srcSnap.description || "");
+        setVal("owners", (srcSnap.owners || []).join(","));
+        const dt = $("docTarget");
+        if (dt && !dt.disabled && srcSnap.doc_target) dt.value = srcSnap.doc_target;
+      }
+      if (want.docs) {
+        document.querySelectorAll("[data-doc]").forEach(el => {
+          if (!el.disabled) el.value = (srcSnap.doc || {})[el.dataset.doc] || "";
+        });
+      }
+      if (want.tests) {
+        const srcByPath = {};
+        (srcSnap.test_docs || []).forEach(d => { srcByPath[d.path] = d; });
+        (snap.test_docs || []).forEach(d => {
+          const src = srcByPath[d.path];
+          if (!src) return;
+          ["dataset", "content", "result_view", "pass_criteria"].forEach(f => {
+            const el = document.querySelector(`[data-test="${d.id}"][data-field="${f}"]`);
+            if (el && !el.disabled) el.value = src[f] || "";
+          });
+          if (d.owner_added) {
+            const cmd = document.querySelector(`[data-test="${d.id}"][data-field="command"]`);
+            if (cmd && !cmd.disabled) cmd.value = src.command || "";
+          }
+        });
+      }
+      let decisionSkipped = false;
+      if (want.decision) {
+        const sel = $("decision");
+        if (sel && !sel.disabled && [...sel.options].some(o => o.value === srcSnap.release_decision)) {
+          sel.value = srcSnap.release_decision;
+        } else {
+          decisionSkipped = true;
+        }
+      }
+      appDetailDirty = true;
+      if ($("dirtyBanner")) $("dirtyBanner").hidden = false;
+      dlg.close();
+      const srcName = (state.releases.find(r => r.id === sourceId) || {}).name || sourceId;
+      alert(`已从「${srcName}」复制选中信息到表单${decisionSkipped ? "（release 决策在本 release 不可用，已跳过）" : ""}。请检查后保存。`);
+    }
+
+    function confirmDecisionSync(newDecision) {
       return new Promise(resolve => {
-        const snap = releaseSnap(app.id) || {};
         const idx = state.releases.findIndex(r => r.id === currentReleaseId());
         const later = idx >= 0 ? state.releases.slice(idx + 1) : [];
-        const newDecision = snapshotUpdate.release_decision;
-        const decisionChanged = newDecision !== snap.release_decision;
-        const metaChanged = ["official_name", "type", "official_url", "description", "doc_target"]
-            .some(k => (snapshotUpdate[k] || "") !== (snap[k] || ""))
-          || JSON.stringify([...(snapshotUpdate.owners || [])].sort()) !== JSON.stringify([...(snap.owners || [])].sort());
-        const docChanged = Object.entries(snapshotUpdate.doc || {}).some(([k, v]) => (v || "") !== ((snap.doc || {})[k] || ""));
-        const testChanged = (snapshotUpdate.test_docs || []).some(item => {
-          if (String(item.id).startsWith("new_")) return true;
-          const orig = (snap.test_docs || []).find(d => d.id === item.id);
-          if (!orig) return true;
-          return ["command", "dataset", "content", "result_view", "pass_criteria", "stale"].some(f => f in item && item[f] !== orig[f]);
-        });
-        const contentChanged = metaChanged || docChanged || testChanged;
-        if (!later.length || (!contentChanged && !decisionChanged)) { resolve(true); return; }
+        if (!later.length) { resolve(false); return; }
         const phaseLabel = { before_app_freeze: "App 冻结前", after_app_freeze: "App 冻结后", after_doc_deadline: "Doc deadline 后", released_locked: "已锁定" };
         const rows = later.map(r => {
-          if (r.released_locked) return [r.name, "已锁定", "跳过", "跳过"];
-          const beforeDoc = r.phase === "before_app_freeze" || r.phase === "after_app_freeze";
-          const beforeFreeze = r.phase === "before_app_freeze";
-          const contentCell = !contentChanged ? "—" : (beforeDoc ? "复制" : "不复制（已过 doc deadline）");
-          let decisionCell = "—";
-          if (decisionChanged) {
-            decisionCell = (newDecision === "release" && !beforeFreeze) ? "不变（已过 app freeze）" : `调整为 ${newDecision}`;
-          }
-          return [r.name, phaseLabel[r.phase] || r.phase, contentCell, decisionCell];
+          let outcome;
+          if (r.released_locked) outcome = "跳过（已锁定）";
+          else if (newDecision === "release" && r.phase !== "before_app_freeze") outcome = "不变（已过 app freeze）";
+          else outcome = `调整为 ${newDecision}`;
+          return [r.name, phaseLabel[r.phase] || r.phase, outcome];
         });
-        $("propagateHint").textContent = `本次改动将按下表同步到 ${later.length} 个后续 release（按创建时间）。仅本次实际改动的字段会被同步。`;
-        $("propagateTable").innerHTML = `<table>${table(["Release", "阶段", "基本信息/文档/测试说明", "release 决策"], rows)}</table>`;
-        const dlg = $("propagateDialog");
-        const done = ok => { $("propagateConfirm").onclick = null; $("propagateCancel").onclick = null; dlg.close(); resolve(ok); };
-        $("propagateConfirm").onclick = () => done(true);
-        $("propagateCancel").onclick = () => done(false);
+        $("decisionSyncHint").textContent = `你把 release 决策改为「${newDecision}」。是否把该决策同步到下列 ${later.length} 个后续 release？`;
+        $("decisionSyncTable").innerHTML = `<table>${table(["Release", "阶段", "release 决策"], rows)}</table>`;
+        const dlg = $("decisionSyncDialog");
+        const done = v => { $("decisionSyncYes").onclick = $("decisionSyncNo").onclick = $("decisionSyncCancel").onclick = null; dlg.close(); resolve(v); };
+        $("decisionSyncYes").onclick = () => done(true);
+        $("decisionSyncNo").onclick = () => done(false);
+        $("decisionSyncCancel").onclick = () => done(null);
         if (dlg.showModal) dlg.showModal(); else dlg.open = true;
       });
     }
@@ -1329,33 +1403,36 @@
       };
       if (confirmOwner) snapshotUpdate.owner_confirmed = true;
       if (confirmDiffs) snapshotUpdate.diff_confirm_all = true;
-      const propagate = !!($("propagateForward") && $("propagateForward").checked);
-      if (propagate && !(await confirmPropagation(app, snapshotUpdate))) return;
+      let syncDecision = false;
+      if (snapshotUpdate.release_decision !== (releaseSnap(app.id) || {}).release_decision) {
+        const choice = await confirmDecisionSync(snapshotUpdate.release_decision);
+        if (choice === null) return;
+        syncDecision = choice;
+      }
       const result = await post("/api/apps/update", {
         release_id: currentReleaseId(),
         app_id: app.id,
         app: { git_url: $("gitUrl").value, git_branch: $("gitBranch").value },
         snapshot: snapshotUpdate,
-        propagate_forward: propagate
+        sync_decision: syncDecision
       });
       appDetailDirty = false;
       appDetailEditMode = false;
       await loadState();
-      let propNote = "";
-      if (propagate && result.propagation) {
-        const ap = (result.propagation.applied || []).length;
-        const sk = (result.propagation.skipped || []).length;
-        if (ap) propNote = `\n\n已同步到 ${ap} 个后续 release` + (sk ? `，跳过 ${sk} 个` : "") + "。";
+      let syncNote = "";
+      if (syncDecision && result.decision_sync) {
+        const ap = (result.decision_sync.applied || []).length;
+        const sk = (result.decision_sync.skipped || []).length;
+        if (ap || sk) syncNote = `\n\nrelease 决策已同步到 ${ap} 个后续 release` + (sk ? `，跳过 ${sk} 个` : "") + "。";
       }
       if (!confirmOwner) {
-        alert((confirmDiffs ? "diff 确认已保存" : "保存成功") + propNote);
+        alert((confirmDiffs ? "diff 确认已保存" : "保存成功") + syncNote);
       } else {
         const updated = releaseSnap(app.id) || result.snapshot || {};
         const missing = updated.missing_items || result.missing_items || [];
         let msg = "Owner 确认已提交。";
         msg += missing.length ? `仍有 ${missing.length} 个待办/门禁项：\n\n- ${missing.join("\n- ")}` : "当前无待办/门禁项。";
-        if (propNote) msg += propNote + "后续 release 仍需各自 owner 确认。";
-        alert(msg);
+        alert(msg + syncNote);
       }
     }
 
