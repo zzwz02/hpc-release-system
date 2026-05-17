@@ -39,8 +39,8 @@
 |---|---|---|---|---|
 | 新增 app | ✅（release / cicd_only / stopped 任选） | ⚠️（只能 cicd_only / stopped） | ⚠️（只能 cicd_only / stopped） | 🚫 |
 | 修改 release 决策 | ✅（任意切换） | ⚠️（只能下调，不能升回 release） | ⚠️（只能下调，不能升回 release） | 🚫 |
-| 编辑文档 / 表单 | ✅ | ✅ | 🚫（已冻结） | 🚫 |
 | 上传 / 拉取 app_info | ✅ | ⚠️（不能新增芯片或测试 path，不扩大 QA 范围） | 🚫（已冻结） | 🚫 |
+| 编辑文档 / 表单 | ✅ | ✅ | 🚫（已冻结） | 🚫 |
 
 「编辑文档 / 表单」包括：填写文档字段与各 `test_cmd` 的测试说明、修改 `App类型` / `描述`、确认 app_info diff、提交 Owner 确认。app freeze 后 `app_info` 仍可重新上传 / 拉取，但芯片集与测试 path 集只能持平或减少。
 
