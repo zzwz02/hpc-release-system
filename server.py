@@ -286,6 +286,7 @@ class Handler(BaseHTTPRequestHandler):
                                 raise RuntimeError("已过 app 冻结 deadline，不可再切换为 release")
                     if "app" in body and role == "RM":
                         app_update = body["app"]
+                        repo_before = {"git_url": app.get("git_url", ""), "git_branch": app.get("git_branch", "")}
                         repo_changed = False
                         for key in ("git_url", "git_branch"):
                             if key in app_update and app.get(key) != app_update[key]:
@@ -294,9 +295,11 @@ class Handler(BaseHTTPRequestHandler):
                         if repo_changed:
                             core.save_app(conn, app)
                             core.audit(conn, "修改 Gerrit 信息", user=actor, role=role,
-                                       app_id=aid, release_id=rid, event="update_app_repo")
+                                       app_id=aid, release_id=rid, event="update_app_repo",
+                                       detail=core.field_diff(repo_before, app, {"git_url": "Gerrit URL", "git_branch": "Branch"}))
 
                     owner_meta = {"type", "official_url", "description"}
+                    doc_labels = {"intro": "基本介绍", "image_usage": "镜像使用方法", "binary_usage": "二进制包使用方法", "env_setup": "环境搭建", "limitations": "已知限制"}
 
                     def mutate(snapshot: dict) -> None:
                         name_for_msg = snapshot.get("official_name") or aid
@@ -306,7 +309,10 @@ class Handler(BaseHTTPRequestHandler):
                                 raise ValueError(f"Invalid release_decision: {snap_update['release_decision']}")
                             if decision != snapshot.get("release_decision"):
                                 core.audit(conn, f"修改 release 决策：{name_for_msg} {snapshot.get('release_decision')} -> {decision}",
-                                           user=actor, role=role, app_id=aid, release_id=rid, event="update_release_decision")
+                                           user=actor, role=role, app_id=aid, release_id=rid, event="update_release_decision",
+                                           detail=core.field_diff({"release_decision": snapshot.get("release_decision")},
+                                                                  {"release_decision": decision},
+                                                                  {"release_decision": "release 决策"}))
                             snapshot["release_decision"] = decision
                         meta_before: dict = {}
                         meta_after: dict = {}
@@ -338,26 +344,19 @@ class Handler(BaseHTTPRequestHandler):
                                 raise AuthzError("Owner confirmation must be submitted by an Owner")
                             if snap_update["owner_confirmed"] and not snapshot.get("owner_confirmed"):
                                 core.audit(conn, f"提交 Owner 确认：{name_for_msg}", user=actor, role=role,
-                                           app_id=aid, release_id=rid, event="owner_confirm")
+                                           app_id=aid, release_id=rid, event="owner_confirm",
+                                           detail=[{"field": "owner_confirmed", "label": "Owner 确认", "old": "未确认", "new": "已确认"}])
                             snapshot["owner_confirmed"] = snap_update["owner_confirmed"]
                         if "doc" in snap_update:
                             doc_update = snap_update["doc"]
                             current_doc = snapshot.get("doc", {})
-                            if any((current_doc.get(key) or "") != (value or "") for key, value in doc_update.items()):
+                            doc_changes = core.field_diff(current_doc, doc_update, {k: doc_labels.get(k, k) for k in doc_update})
+                            if doc_changes:
                                 core.audit(conn, f"修改文档字段：{name_for_msg}", user=actor, role=role,
-                                           app_id=aid, release_id=rid, event="update_doc_fields")
+                                           app_id=aid, release_id=rid, event="update_doc_fields", detail=doc_changes)
                             snapshot.setdefault("doc", {}).update(doc_update)
-                        if snap_update.get("diff_confirm_all"):
-                            if role != "Owner":
-                                raise AuthzError("app_info diff confirmation must be submitted by an Owner")
-                            had_unconfirmed_diff = any(not diff.get("confirmed") for diff in snapshot.get("app_info_diffs", []))
-                            for diff in snapshot.get("app_info_diffs", []):
-                                diff["confirmed"] = True
-                            if had_unconfirmed_diff:
-                                core.audit(conn, f"确认 app_info diff：{name_for_msg}", user=actor, role=role,
-                                           app_id=aid, release_id=rid, event="confirm_app_info_diff")
                         if "test_docs" in snap_update:
-                            before_test_docs = json.dumps(snapshot.get("test_docs", []), sort_keys=True, ensure_ascii=False)
+                            before_docs = [dict(d) for d in snapshot.get("test_docs", [])]
                             by_id = {doc["id"]: doc for doc in snapshot.get("test_docs", [])}
                             for item in snap_update["test_docs"]:
                                 if item.get("id") in by_id:
@@ -366,10 +365,10 @@ class Handler(BaseHTTPRequestHandler):
                                     item.setdefault("id", core.new_id("testdoc"))
                                     item.setdefault("path", f"owner_added.{len(by_id) + 1}")
                                     snapshot.setdefault("test_docs", []).append(item)
-                            after_test_docs = json.dumps(snapshot.get("test_docs", []), sort_keys=True, ensure_ascii=False)
-                            if before_test_docs != after_test_docs:
+                            td_changes = core.test_docs_diff(before_docs, snapshot.get("test_docs", []))
+                            if td_changes:
                                 core.audit(conn, f"修改测试说明：{name_for_msg}", user=actor, role=role,
-                                           app_id=aid, release_id=rid, event="update_test_docs")
+                                           app_id=aid, release_id=rid, event="update_test_docs", detail=td_changes)
 
                     updated = core.update_snapshot(conn, rid, aid, mutate, skip_doc_deadline=past_doc_deadline)
                     updated["missing_items"] = core.missing_items_for(core.get_app(conn, aid), updated)

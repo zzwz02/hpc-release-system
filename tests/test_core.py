@@ -1006,5 +1006,29 @@ class CoreWorkflowTests(unittest.TestCase):
         self.assertEqual(len(result["skipped"]), 1)
 
 
+    # --- audit detail ---
+
+    def test_test_docs_diff_reports_field_changes(self) -> None:
+        before = [{"id": "t1", "path": "scf", "dataset": "old", "content": "c"}]
+        after = [
+            {"id": "t1", "path": "scf", "dataset": "new", "content": "c"},
+            {"id": "t2", "path": "relax", "owner_added": True},
+        ]
+        changes = core.test_docs_diff(before, after)
+        labels = {c["label"] for c in changes}
+        self.assertIn("scf · 测试数据集", labels)
+        self.assertTrue(any("relax" in lbl and "新增" in lbl for lbl in labels))
+        ds = next(c for c in changes if c["label"] == "scf · 测试数据集")
+        self.assertEqual((ds["old"], ds["new"]), ("old", "new"))
+
+    def test_app_info_upload_audit_carries_diff_detail(self) -> None:
+        release_id, app_id = self.import_initial()
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="v1")
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V2, source="v2")
+        uploads = [e for e in core.app_audit_log(self.conn, app_id) if e["event"] == "upload_app_info"]
+        self.assertTrue(uploads)
+        self.assertTrue(uploads[0]["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -415,6 +415,17 @@ def app_audit_log(conn: sqlite3.Connection, app_id: str) -> list[dict[str, Any]]
     return entries
 
 
+def fmt_audit_value(v: Any) -> str:
+    """Render an audit old/new value as a display string."""
+    if v is None:
+        return ""
+    if isinstance(v, (list, tuple)):
+        return ", ".join(str(x) for x in v)
+    if isinstance(v, bool):
+        return "是" if v else "否"
+    return str(v)
+
+
 def field_diff(before: dict[str, Any], after: dict[str, Any], labels: dict[str, str]) -> list[dict[str, str]]:
     """Return [{field,label,old,new}] for keys in *labels* whose value changed."""
     changes: list[dict[str, str]] = []
@@ -423,12 +434,37 @@ def field_diff(before: dict[str, Any], after: dict[str, Any], labels: dict[str, 
         new = after.get(key)
         if old == new:
             continue
-        changes.append({
-            "field": key,
-            "label": label,
-            "old": ", ".join(old) if isinstance(old, list) else ("" if old is None else str(old)),
-            "new": ", ".join(new) if isinstance(new, list) else ("" if new is None else str(new)),
-        })
+        changes.append({"field": key, "label": label, "old": fmt_audit_value(old), "new": fmt_audit_value(new)})
+    return changes
+
+
+TEST_DOC_FIELD_LABELS = {
+    "command": "命令",
+    "dataset": "测试数据集",
+    "content": "测试内容",
+    "result_view": "结果查看",
+    "pass_criteria": "通过标准",
+}
+
+
+def test_docs_diff(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Return field-level [{field,label,old,new}] entries between two test-doc lists."""
+    by_id = {d.get("id"): d for d in before}
+    changes: list[dict[str, str]] = []
+    for doc in after:
+        path = doc.get("path") or doc.get("id") or "test"
+        old = by_id.get(doc.get("id"))
+        if old is None:
+            changes.append({"field": str(doc.get("id")), "label": f"{path}（新增测试项）", "old": "", "new": "已添加"})
+            continue
+        for key, label in TEST_DOC_FIELD_LABELS.items():
+            if (old.get(key) or "") != (doc.get(key) or ""):
+                changes.append({"field": f"{path}.{key}", "label": f"{path} · {label}",
+                                "old": fmt_audit_value(old.get(key)), "new": fmt_audit_value(doc.get(key))})
+        if bool(old.get("stale")) != bool(doc.get("stale")):
+            changes.append({"field": f"{path}.stale", "label": f"{path} · 测试说明状态",
+                            "old": "待更新" if old.get("stale") else "已更新",
+                            "new": "待更新" if doc.get("stale") else "已更新"})
     return changes
 
 
@@ -1350,6 +1386,18 @@ def apply_app_info(
     ensure_test_docs(snapshot, parsed, diffs)
     save_snapshot(conn, release_id, app_id, snapshot)
     conn.commit()
+    # build_targets / test_targets are coarse list-of-dict aggregates; the
+    # readable per-field diffs (version, chips, test_cmd*) cover the same ground.
+    detail = [
+        {
+            "field": d.get("field", ""),
+            "label": f"{d.get('type', '')}（{d.get('field', '')}）",
+            "old": fmt_audit_value(d.get("old_value")),
+            "new": fmt_audit_value(d.get("new_value")),
+        }
+        for d in diffs
+        if d.get("field") not in ("build_targets", "test_targets")
+    ]
     audit(
         conn,
         f"{app_id} 更新 app_info.json，差异 {len(diffs)} 项",
@@ -1358,6 +1406,7 @@ def apply_app_info(
         app_id=app_id,
         release_id=release_id,
         event="upload_app_info",
+        detail=detail,
     )
     return snapshot
 
@@ -1385,8 +1434,6 @@ def missing_items_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str
         missing.append("描述超过30字")
     if not snapshot.get("app_info"):
         missing.append("缺少可追溯 AppInfoSnapshot")
-    if any(not diff.get("confirmed") for diff in snapshot.get("app_info_diffs", [])):
-        missing.append("app_info 差异未确认")
     if not snapshot.get("version"):
         missing.append("缺少 对应官方版本")
     if not snapshot.get("x86_chips"):
@@ -1475,10 +1522,15 @@ def qa_set_status(
         raise RuntimeError("仅 release 决策的 app 可由 QA 标注状态")
     if status == "has_issues" and not (issue_note or "").strip():
         raise ValueError("标注「存在问题」时必须填写问题说明")
+    old_status = snapshot.get("qa_status", "not_checked")
+    old_note = snapshot.get("qa_issue_note", "")
     snapshot["qa_status"] = status
     snapshot["qa_issue_note"] = (issue_note or "").strip() if status == "has_issues" else ""
     save_snapshot(conn, release_id, app_id, snapshot)
     conn.commit()
+    detail = [{"field": "qa_status", "label": "QA 状态", "old": old_status, "new": status}]
+    if old_note or snapshot["qa_issue_note"]:
+        detail.append({"field": "qa_issue_note", "label": "问题说明", "old": old_note, "new": snapshot["qa_issue_note"]})
     audit(
         conn,
         f"QA 标注 {app_id} 为 {status}" + (f"：{issue_note}" if issue_note else ""),
@@ -1487,6 +1539,7 @@ def qa_set_status(
         app_id=app_id,
         release_id=release_id,
         event="qa_set_status",
+        detail=detail,
     )
     return snapshot
 
@@ -1527,13 +1580,16 @@ def qa_set_status_batch(
         if status == "has_issues" and not issue_note:
             errors.append(f"{app_id}：标注「存在问题」时必须填写问题说明")
             continue
-        prepared.append((app_id, snapshot, status, issue_note))
+        prepared.append((app_id, snapshot, status, issue_note, snapshot.get("qa_status", "not_checked"), snapshot.get("qa_issue_note", "")))
     if errors:
         raise ValueError("；".join(errors))
-    for app_id, snapshot, status, issue_note in prepared:
+    for app_id, snapshot, status, issue_note, old_status, old_note in prepared:
         snapshot["qa_status"] = status
         snapshot["qa_issue_note"] = issue_note if status == "has_issues" else ""
         save_snapshot(conn, release_id, app_id, snapshot)
+        detail = [{"field": "qa_status", "label": "QA 状态", "old": old_status, "new": status}]
+        if old_note or snapshot["qa_issue_note"]:
+            detail.append({"field": "qa_issue_note", "label": "问题说明", "old": old_note, "new": snapshot["qa_issue_note"]})
         audit(
             conn,
             f"QA 标注 {app_id} 为 {status}" + (f"：{issue_note}" if issue_note else ""),
@@ -1542,10 +1598,11 @@ def qa_set_status_batch(
             app_id=app_id,
             release_id=release_id,
             event="qa_set_status",
+            detail=detail,
             commit=False,
         )
     conn.commit()
-    return {app_id: snapshot for app_id, snapshot, _, _ in prepared}
+    return {app_id: snapshot for app_id, snapshot, *_ in prepared}
 
 
 def qa_log_dir(db_path: str | Path) -> Path:

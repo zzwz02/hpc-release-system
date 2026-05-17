@@ -844,8 +844,8 @@
     }
     function appInfoBadge(snap) {
       if (!snap.app_info || !snap.app_info.source_type) return `<span class="pill warnp">待上传</span>`;
-      const un = (snap.app_info_diffs || []).filter(d => !d.confirmed).length;
-      return un ? `<span class="pill warnp">待确认 ${un}</span>` : `<span class="pill ok">已确认</span>`;
+      const n = (snap.app_info_diffs || []).length;
+      return n ? `<span class="pill">${n} 项差异</span>` : `<span class="pill ok">已上传</span>`;
     }
     function docBadge(snap) {
       const doc = snap.doc || {};
@@ -864,7 +864,6 @@
       const hasInfo = !!(snap.app_info && snap.app_info.source_type);
       const checks = [
         hasInfo,
-        (snap.app_info_diffs || []).every(d => d.confirmed),
         !!(doc.intro || "").trim(),
         !!(doc.image_usage || "").trim(),
         !!(doc.binary_usage || "").trim(),
@@ -892,7 +891,7 @@
       return `${info.source_type}: ${info.source || ""}`;
     }
     function renderDiffs(snap) {
-      return table(["类型", "字段", "旧值", "新值", "确认"], (snap.app_info_diffs || []).map(d => [d.type, d.field, JSON.stringify(d.old_value), JSON.stringify(d.new_value), d.confirmed ? "已确认" : "未确认"]));
+      return table(["类型", "字段", "旧值", "新值"], (snap.app_info_diffs || []).map(d => [d.type, d.field, JSON.stringify(d.old_value), JSON.stringify(d.new_value)]));
     }
     function renderTestDocs(snap, disabled = "") {
       return (snap.test_docs || []).filter(d => !d.obsolete).map(d => `<div class="tcard">
@@ -1017,7 +1016,6 @@
           <button id="uploadInfo" class="btn sm" ${disabled}>上传 app_info</button>
           <button id="fetchInfo" class="btn sm" ${disabled}>从 Gerrit 拉取</button>
         </div>` : "";
-      const diffActions = isOwner() && appDetailEditMode ? `<div class="row" style="margin-top:10px"><button id="confirmDiffs" class="btn sm" ${ownerOnlyDisabled}>确认全部 diff</button></div>` : "";
       const ownerTestActions = isOwner() && appDetailEditMode ? `<div class="row" style="margin-top:10px"><button id="addOwnerTest" class="btn sm" ${ownerOnlyDisabled}>+ 新增 owner-added 测试项</button></div>` : "";
 
       let footActions = "";
@@ -1079,7 +1077,6 @@
               <input id="appInfoFile" type="file" accept=".json" hidden ${disabled}>
               ${appInfoActions}
               <div class="table"><table>${renderDiffs(snap)}</table></div>
-              ${diffActions}
             </div>
           </details>
           <details class="section" open>
@@ -1216,7 +1213,6 @@
       };
       if ($("saveApp")) $("saveApp").onclick = () => saveApp(app, false);
       if ($("confirmOwner")) $("confirmOwner").onclick = () => saveApp(app, true);
-      if ($("confirmDiffs")) $("confirmDiffs").onclick = async () => { await saveApp(app, false, true); };
       if ($("chooseAppInfo")) $("chooseAppInfo").onclick = () => {
         appInfoPickerHoldUntil = Date.now() + 120000;
         const input = $("appInfoFile");
@@ -1241,15 +1237,15 @@
       if ($("uploadInfo")) $("uploadInfo").onclick = async () => {
         const file = pendingAppInfoAppId === app.id ? pendingAppInfoFile : null;
         if (!file) return alert("请选择 app_info.json");
+        if (appDetailDirty && !confirm("上传 app_info 会用服务端最新内容刷新表单，未保存的表单修改会丢失。是否继续？")) return;
         try {
           await post("/api/app-info", { release_id: currentReleaseId(), app_id: app.id, source: file.name, app_info: await file.text() });
           pendingAppInfoFile = null;
           pendingAppInfoAppId = "";
           appDetailDirty = false;
-          appDetailEditMode = false;
           try {
             await loadState();
-            alert(`app_info.json 上传成功：${file.name}`);
+            alert(`app_info.json 上传成功：${file.name}\n\n已停留在编辑状态，可继续补充文档 / 测试说明。`);
           } catch (refreshErr) {
             alert(`app_info.json 上传成功，但刷新页面状态失败：\n\n${refreshErr.message}`);
           }
@@ -1259,12 +1255,12 @@
       };
       if ($("fetchInfo")) $("fetchInfo").onclick = async () => {
         if (!confirm(`从 Gerrit 拉取 ${app.git_url} ${app.git_branch} 的 app_info.json？`)) return;
+        if (appDetailDirty && !confirm("拉取 app_info 会用服务端最新内容刷新表单，未保存的表单修改会丢失。是否继续？")) return;
         try {
           const result = await post("/api/app-info/fetch", { release_id: currentReleaseId(), app_id: app.id });
           appDetailDirty = false;
-          appDetailEditMode = false;
           await loadState();
-          alert(`Gerrit app_info.json 拉取成功。\n\ncommit: ${result.commit_id || "未知"}\nsource: ${result.source || ""}`);
+          alert(`Gerrit app_info.json 拉取成功，已停留在编辑状态，可继续编辑。\n\ncommit: ${result.commit_id || "未知"}\nsource: ${result.source || ""}`);
         } catch (err) {
           alert(`Gerrit app_info.json 拉取失败：\n\n${err.message}`);
         }
@@ -1378,7 +1374,7 @@
       });
     }
 
-    async function saveApp(app, confirmOwner = false, confirmDiffs = false) {
+    async function saveApp(app, confirmOwner = false) {
       const description = $("description").value.trim();
       if (description.length > 30) {
         alert("描述不能超过30字");
@@ -1402,7 +1398,6 @@
         test_docs
       };
       if (confirmOwner) snapshotUpdate.owner_confirmed = true;
-      if (confirmDiffs) snapshotUpdate.diff_confirm_all = true;
       let syncDecision = false;
       if (snapshotUpdate.release_decision !== (releaseSnap(app.id) || {}).release_decision) {
         const choice = await confirmDecisionSync(snapshotUpdate.release_decision);
@@ -1426,7 +1421,7 @@
         if (ap || sk) syncNote = `\n\nrelease 决策已同步到 ${ap} 个后续 release` + (sk ? `，跳过 ${sk} 个` : "") + "。";
       }
       if (!confirmOwner) {
-        alert((confirmDiffs ? "diff 确认已保存" : "保存成功") + syncNote);
+        alert("保存成功" + syncNote);
       } else {
         const updated = releaseSnap(app.id) || result.snapshot || {};
         const missing = updated.missing_items || result.missing_items || [];
