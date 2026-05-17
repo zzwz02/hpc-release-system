@@ -162,9 +162,7 @@ class Handler(BaseHTTPRequestHandler):
                     body = self.json_body()
                     release_id = core.import_initial_rows(
                         self.conn(),
-                        core.parse_csv_text(body.get("release_csv", "")),
-                        core.parse_csv_text(body.get("owner_csv", "")),
-                        alias_text=body.get("alias_text", ""),
+                        core.parse_csv_text(body.get("csv", "")),
                         release_name=body.get("release_name") or None,
                         maca_version=body.get("maca_version") or None,
                         app_freeze_deadline=body.get("app_freeze_deadline", ""),
@@ -264,120 +262,100 @@ class Handler(BaseHTTPRequestHandler):
                 if parsed.path == "/api/apps/update":
                     body = self.json_body()
                     conn = self.conn()
-                    app = core.get_app(conn, body["app_id"])
-                    self.require_owner_or_rm(app)
-                    release = core.get_release(conn, body["release_id"])
+                    aid = body["app_id"]
+                    rid = body["release_id"]
+                    app = core.get_app(conn, aid)
+                    release = core.get_release(conn, rid)
                     if release.get("released_locked"):
                         raise RuntimeError("Release 已最终锁定")
+                    snap_now = release["snapshots"].get(aid, {})
+                    self.require_owner_or_rm(snap_now.get("owners"))
+                    role = self.role()
+                    actor = self.user()
+                    snap_update = body.get("snapshot", {})
                     past_doc_deadline = not core.is_before(release.get("doc_deadline", ""))
                     if past_doc_deadline:
-                        snap_update = body.get("snapshot", {})
                         if "app" in body or any(key != "release_decision" for key in snap_update):
                             raise RuntimeError("已过 doc deadline，只能下调 release 决策，不能再修改文档/表单/app_info")
-                    snap_now = release["snapshots"].get(body["app_id"], {})
                     current_decision = snap_now.get("release_decision", "release")
-                    new_decision = body.get("snapshot", {}).get("release_decision")
+                    new_decision = snap_update.get("release_decision")
                     if new_decision is not None:
                         new_decision = core.normalize_release_decision(new_decision)
                         if new_decision != current_decision:
                             if new_decision == "release" and not core.is_before(release.get("app_freeze_deadline", "")):
                                 raise RuntimeError("已过 app 冻结 deadline，不可再切换为 release")
-                    if "app" in body and self.role() in {"RM", "Owner"}:
+                    if "app" in body and role == "RM":
                         app_update = body["app"]
-                        editable_keys = ["official_name", "type", "description", "git_url", "git_branch", "official_url", "doc_target", "owners"] if self.role() == "RM" else ["type", "description", "official_url"]
-                        before_app_meta = {
-                            key: app.get(key)
-                            for key in ["official_name", "type", "description", "git_url", "git_branch", "official_url", "doc_target", "owners"]
-                        }
-                        for key in editable_keys:
-                            if key in app_update:
-                                if key == "doc_target":
-                                    app[key] = core.normalize_doc_target(app_update[key])
-                                elif key == "description":
-                                    app[key] = core.normalize_app_description(app_update[key])
-                                elif key in ("type", "official_url"):
-                                    app[key] = (app_update[key] or "").strip()
-                                else:
-                                    app[key] = app_update[key]
-                        if self.role() == "RM" and "owners" in app_update:
-                            app["owners"] = app_update["owners"]
-                        after_app_meta = {
-                            key: app.get(key)
-                            for key in ["official_name", "type", "description", "git_url", "git_branch", "official_url", "doc_target", "owners"]
-                        }
-                        if before_app_meta != after_app_meta:
+                        repo_changed = False
+                        for key in ("git_url", "git_branch"):
+                            if key in app_update and app.get(key) != app_update[key]:
+                                app[key] = app_update[key]
+                                repo_changed = True
+                        if repo_changed:
                             core.save_app(conn, app)
-                            core.audit(
-                                conn,
-                                f"修改 app 元数据：{app['name']}",
-                                user=self.user(),
-                                role=self.role(),
-                                app_id=app["id"],
-                                release_id=body["release_id"],
-                                event="update_app_meta",
-                            )
+                            core.audit(conn, "修改 Gerrit 信息", user=actor, role=role,
+                                       app_id=aid, release_id=rid, event="update_app_repo")
+
+                    owner_meta = {"type", "official_url", "description"}
 
                     def mutate(snapshot: dict) -> None:
-                        snap_update = body.get("snapshot", {})
+                        name_for_msg = snapshot.get("official_name") or aid
                         if "release_decision" in snap_update:
                             decision = core.normalize_release_decision(snap_update["release_decision"])
                             if decision not in core.RELEASE_DECISIONS:
                                 raise ValueError(f"Invalid release_decision: {snap_update['release_decision']}")
                             if decision != snapshot.get("release_decision"):
-                                core.audit(
-                                    conn,
-                                    f"修改 release 决策：{app['name']} {snapshot.get('release_decision')} -> {decision}",
-                                    user=self.user(),
-                                    role=self.role(),
-                                    app_id=app["id"],
-                                    release_id=body["release_id"],
-                                    event="update_release_decision",
-                                )
+                                core.audit(conn, f"修改 release 决策：{name_for_msg} {snapshot.get('release_decision')} -> {decision}",
+                                           user=actor, role=role, app_id=aid, release_id=rid, event="update_release_decision")
                             snapshot["release_decision"] = decision
+                        meta_before: dict = {}
+                        meta_after: dict = {}
+                        for key in core.SNAPSHOT_META_FIELDS:
+                            if key not in snap_update:
+                                continue
+                            value = snap_update[key]
+                            if key == "doc_target":
+                                value = core.normalize_doc_target(value)
+                            elif key == "description":
+                                value = core.normalize_app_description(value)
+                            elif key == "owners":
+                                value = sorted({str(o).strip() for o in (value or []) if str(o).strip()})
+                            else:
+                                value = (value or "").strip()
+                            if snapshot.get(key) == value:
+                                continue
+                            if key not in owner_meta and role != "RM":
+                                raise AuthzError(f"仅 RM 可修改{core.APP_META_LABELS.get(key, key)}")
+                            meta_before[key] = snapshot.get(key)
+                            meta_after[key] = value
+                            snapshot[key] = value
+                        if meta_after:
+                            core.audit(conn, f"修改 app 基本信息：{name_for_msg}", user=actor, role=role,
+                                       app_id=aid, release_id=rid, event="update_app_meta",
+                                       detail=core.field_diff(meta_before, meta_after, core.APP_META_LABELS))
                         if "owner_confirmed" in snap_update:
-                            if self.role() != "Owner":
+                            if role != "Owner":
                                 raise AuthzError("Owner confirmation must be submitted by an Owner")
                             if snap_update["owner_confirmed"] and not snapshot.get("owner_confirmed"):
-                                core.audit(
-                                    conn,
-                                    f"提交 Owner 确认：{app['name']}",
-                                    user=self.user(),
-                                    role=self.role(),
-                                    app_id=app["id"],
-                                    release_id=body["release_id"],
-                                    event="owner_confirm",
-                                )
+                                core.audit(conn, f"提交 Owner 确认：{name_for_msg}", user=actor, role=role,
+                                           app_id=aid, release_id=rid, event="owner_confirm")
                             snapshot["owner_confirmed"] = snap_update["owner_confirmed"]
                         if "doc" in snap_update:
                             doc_update = snap_update["doc"]
                             current_doc = snapshot.get("doc", {})
                             if any((current_doc.get(key) or "") != (value or "") for key, value in doc_update.items()):
-                                core.audit(
-                                    conn,
-                                    f"修改文档字段：{app['name']}",
-                                    user=self.user(),
-                                    role=self.role(),
-                                    app_id=app["id"],
-                                    release_id=body["release_id"],
-                                    event="update_doc_fields",
-                                )
+                                core.audit(conn, f"修改文档字段：{name_for_msg}", user=actor, role=role,
+                                           app_id=aid, release_id=rid, event="update_doc_fields")
                             snapshot.setdefault("doc", {}).update(doc_update)
-                        if "diff_confirm_all" in snap_update and snap_update["diff_confirm_all"]:
-                            if self.role() != "Owner":
+                        if snap_update.get("diff_confirm_all"):
+                            if role != "Owner":
                                 raise AuthzError("app_info diff confirmation must be submitted by an Owner")
                             had_unconfirmed_diff = any(not diff.get("confirmed") for diff in snapshot.get("app_info_diffs", []))
                             for diff in snapshot.get("app_info_diffs", []):
                                 diff["confirmed"] = True
                             if had_unconfirmed_diff:
-                                core.audit(
-                                    conn,
-                                    f"确认 app_info diff：{app['name']}",
-                                    user=self.user(),
-                                    role=self.role(),
-                                    app_id=app["id"],
-                                    release_id=body["release_id"],
-                                    event="confirm_app_info_diff",
-                                )
+                                core.audit(conn, f"确认 app_info diff：{name_for_msg}", user=actor, role=role,
+                                           app_id=aid, release_id=rid, event="confirm_app_info_diff")
                         if "test_docs" in snap_update:
                             before_test_docs = json.dumps(snapshot.get("test_docs", []), sort_keys=True, ensure_ascii=False)
                             by_id = {doc["id"]: doc for doc in snapshot.get("test_docs", [])}
@@ -390,19 +368,12 @@ class Handler(BaseHTTPRequestHandler):
                                     snapshot.setdefault("test_docs", []).append(item)
                             after_test_docs = json.dumps(snapshot.get("test_docs", []), sort_keys=True, ensure_ascii=False)
                             if before_test_docs != after_test_docs:
-                                core.audit(
-                                    conn,
-                                    f"修改测试说明：{app['name']}",
-                                    user=self.user(),
-                                    role=self.role(),
-                                    app_id=app["id"],
-                                    release_id=body["release_id"],
-                                    event="update_test_docs",
-                                )
+                                core.audit(conn, f"修改测试说明：{name_for_msg}", user=actor, role=role,
+                                           app_id=aid, release_id=rid, event="update_test_docs")
 
-                    updated = core.update_snapshot(conn, body["release_id"], body["app_id"], mutate, skip_doc_deadline=past_doc_deadline)
-                    updated["missing_items"] = core.missing_items_for(core.get_app(conn, body["app_id"]), updated)
-                    core.save_snapshot(conn, body["release_id"], body["app_id"], updated)
+                    updated = core.update_snapshot(conn, rid, aid, mutate, skip_doc_deadline=past_doc_deadline)
+                    updated["missing_items"] = core.missing_items_for(core.get_app(conn, aid), updated)
+                    core.save_snapshot(conn, rid, aid, updated)
                     conn.commit()
                     self.send_json({"snapshot": updated, "missing_items": updated.get("missing_items", []), "qa_status": updated.get("qa_status")})
                     return
@@ -441,8 +412,9 @@ class Handler(BaseHTTPRequestHandler):
                 if parsed.path == "/api/app-info":
                     body = self.json_body()
                     conn = self.conn()
-                    app = core.get_app(conn, body["app_id"])
-                    self.require_owner_or_rm(app)
+                    release = core.get_release(conn, body["release_id"])
+                    snap = release["snapshots"].get(body["app_id"], {})
+                    self.require_owner_or_rm(snap.get("owners"))
                     snapshot = core.apply_app_info(
                         conn,
                         body["release_id"],
@@ -458,7 +430,9 @@ class Handler(BaseHTTPRequestHandler):
                     body = self.json_body()
                     conn = self.conn()
                     app = core.get_app(conn, body["app_id"])
-                    self.require_owner_or_rm(app)
+                    release = core.get_release(conn, body["release_id"])
+                    snap = release["snapshots"].get(body["app_id"], {})
+                    self.require_owner_or_rm(snap.get("owners"))
                     raw, commit_id = fetch_app_info_from_gerrit(app["git_url"], app["git_branch"])
                     snapshot = core.apply_app_info(
                         conn,
@@ -500,8 +474,6 @@ class Handler(BaseHTTPRequestHandler):
         releases = core.list_releases(conn)
         release_id = self.query().get("release_id", [releases[-1]["id"] if releases else ""])[0]
         apps = core.list_apps(conn)
-        if user["role"] == "Owner":
-            apps = [app for app in apps if user["username"] in app.get("owners", [])]
         payload = {
             "apps": apps,
             "releases": [_serialize_release(r) for r in releases],
@@ -515,8 +487,11 @@ class Handler(BaseHTTPRequestHandler):
             core.refresh_missing_items(conn, release_id)
             release = core.get_release(conn, release_id)
             if user["role"] == "Owner":
-                visible = {app["id"] for app in apps}
-                release["snapshots"] = {app_id: snap for app_id, snap in release["snapshots"].items() if app_id in visible}
+                # owners are per-release: an Owner sees apps they own in THIS release
+                snapshots = release["snapshots"]
+                owned = {app_id for app_id, snap in snapshots.items() if user["username"] in (snap.get("owners") or [])}
+                release["snapshots"] = {app_id: snap for app_id, snap in snapshots.items() if app_id in owned}
+                payload["apps"] = [app for app in apps if app["id"] in owned]
             payload["release"] = _serialize_release(release)
             payload["artifacts"] = [dict(row) for row in conn.execute("SELECT kind, name, final, generated_at FROM artifacts WHERE release_id = ?", (release_id,))]
             payload["qa_log"] = core.get_qa_log(conn, release_id)
@@ -578,10 +553,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.role() != "Admin":
             raise AuthzError("Admin role required")
 
-    def require_owner_or_rm(self, app: dict) -> None:
+    def require_owner_or_rm(self, owners: list[str] | None) -> None:
         if self.role() == "RM":
             return
-        if self.role() == "Owner" and self.user() in app.get("owners", []):
+        if self.role() == "Owner" and self.user() in (owners or []):
             return
         raise AuthzError("Owner permission required")
 

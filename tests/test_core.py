@@ -17,12 +17,8 @@ import server
 from release_system import core
 
 
-RELEASE_CSV = """app_name,app_version,maca_chip,hpcc_chip,arch,maca_version,git_url,git_branch
-amber,22,"c500,x301",x201,x86,20260511-695,ssh://gerrit/PDE/HPC/hpc_amber,maca
-"""
-
-OWNER_CSV = """类别,id,名称,Owner,类型,描述,对应官方版本,X86支持芯片系列,ARM支持芯片类型,备注,开发者社区发布情况,开发者社区发布包支持python版本,开发者社区发布包支持的底层框架及版本,ARM / Kylin sanity,Ubuntu sanity / 兼容性sanity
-HPC APP,1,Amber,张三,分子动力学,Amber app,22,"c500,x301",,,,,,,
+INIT_CSV = """官方名称,类型,APP类型,Owner,app_version,maca_chip,hpcc_chip,arch,maca_version,git_url,git_branch
+Amber,HPC,分子动力学,张三,22,"c500,x301",x201,x86,20260511-695,ssh://gerrit/PDE/HPC/hpc_amber,maca
 """
 
 
@@ -144,21 +140,17 @@ APP_INFO_DISABLED = {
     },
 }
 
-DUP_RELEASE_CSV = """app_name,app_version,maca_chip,hpcc_chip,arch,maca_version,git_url,git_branch
-foo,1,c500,,x86,3.7.0,ssh://gerrit/foo,main
-foo,1,c600,,arm,3.7.0,ssh://gerrit/foo,main
-foo,2,n300,,x86,3.7.0,ssh://gerrit/foo,release-2
-"""
-
-DUP_OWNER_CSV = """类别,id,名称,Owner,类型,描述,对应官方版本,X86支持芯片系列,ARM支持芯片类型,备注,开发者社区发布情况,开发者社区发布包支持python版本,开发者社区发布包支持的底层框架及版本,ARM / Kylin sanity,Ubuntu sanity / 兼容性sanity
-HPC APP,1,foo,Alice,solver,Foo v1,1,,,,,,,
-HPC APP,2,foo,Bob,solver,Foo v2,2,,,,,,,
+DUP_CSV = """官方名称,类型,APP类型,Owner,app_version,maca_chip,hpcc_chip,arch,maca_version,git_url,git_branch
+foo,HPC,solver,Alice,1,c500,,x86,3.7.0,ssh://gerrit/foo,main
+foo,HPC,solver,Alice,1,c600,,arm,3.7.0,ssh://gerrit/foo,main
+foo,HPC,solver,Bob,2,n300,,x86,3.7.0,ssh://gerrit/foo,release-2
 """
 
 
 def _fill_ready(snapshot: dict) -> None:
     snapshot["owner_confirmed"] = True
-    snapshot["doc"].update({"image_usage": "i", "binary_usage": "b", "env_setup": "e"})
+    snapshot["description"] = "测试描述"
+    snapshot["doc"].update({"intro": "i", "image_usage": "i", "binary_usage": "b", "env_setup": "e"})
     for doc in snapshot["test_docs"]:
         doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p", "stale": False})
 
@@ -167,10 +159,8 @@ class CoreWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.release_csv = self.root / "release.csv"
-        self.owner_csv = self.root / "owner.csv"
-        self.release_csv.write_text(RELEASE_CSV, encoding="utf-8")
-        self.owner_csv.write_text(OWNER_CSV, encoding="utf-8")
+        self.init_csv = self.root / "init.csv"
+        self.init_csv.write_text(INIT_CSV, encoding="utf-8")
         self.db_path = self.root / "test.db"
         self.conn = core.connect(self.db_path)
 
@@ -179,9 +169,8 @@ class CoreWorkflowTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def import_initial(self, **kwargs) -> tuple[str, str]:
-        release_id = core.import_initial(self.conn, self.release_csv, self.owner_csv, alias_text="amber=Amber", **kwargs)
-        app_id = core.normalize_name("amber")
-        return release_id, app_id
+        release_id = core.import_initial(self.conn, self.init_csv, **kwargs)
+        return release_id, core.normalize_name("amber")
 
     # --- deadline parsing ---
 
@@ -230,11 +219,14 @@ class CoreWorkflowTests(unittest.TestCase):
         release_id, app_id = self.import_initial()
         apps = core.list_apps(self.conn)
         self.assertEqual(len(apps), 1)
-        self.assertEqual(apps[0]["owners"], ["张三"])
         release = core.get_release(self.conn, release_id)
         self.assertFalse(release["released_locked"])
         self.assertIn(app_id, release["snapshots"])
-        self.assertEqual(release["snapshots"][app_id]["qa_status"], "not_checked")
+        snap = release["snapshots"][app_id]
+        self.assertEqual(snap["qa_status"], "not_checked")
+        self.assertEqual(snap["owners"], ["张三"])
+        self.assertEqual(snap["official_name"], "Amber")
+        self.assertEqual(snap["doc_target"], "manual")
 
     def test_default_users_include_qa(self) -> None:
         self.assertIsNotNone(core.authenticate(self.conn, "qa", "qa"))
@@ -369,10 +361,10 @@ class CoreWorkflowTests(unittest.TestCase):
         )
         rows = list(csv.DictReader(io.StringIO(csv_text)))
         by_name = {row["App"]: row for row in rows}
-        self.assertEqual(set(by_name), {"amber", "OtherApp"})
-        self.assertEqual(by_name["amber"]["是否可发布"], "是")
-        self.assertEqual(by_name["amber"]["不可发布原因"], "")
-        self.assertIn("QA 备注：known regression", by_name["amber"]["已知限制"])
+        self.assertEqual(set(by_name), {"Amber 22", "OtherApp"})
+        self.assertEqual(by_name["Amber 22"]["是否可发布"], "是")
+        self.assertEqual(by_name["Amber 22"]["不可发布原因"], "")
+        self.assertIn("QA 备注：known regression", by_name["Amber 22"]["已知限制"])
         self.assertEqual(by_name["OtherApp"]["是否可发布"], "否")
         self.assertIn("cicd_only", by_name["OtherApp"]["不可发布原因"])
         artifact = self.conn.execute(
@@ -614,17 +606,12 @@ class CoreWorkflowTests(unittest.TestCase):
 
     def test_missing_items_requires_app_type_and_short_description(self) -> None:
         release_id, app_id = self.import_initial()
-        app = core.get_app(self.conn, app_id)
-        app["type"] = ""
-        app["description"] = ""
-        core.save_app(self.conn, app)
+        core.update_snapshot(self.conn, release_id, app_id, lambda s: s.update({"type": "", "description": ""}))
         items = core.refresh_missing_items(self.conn, release_id)[app_id]
         self.assertIn("缺少 App类型", items)
         self.assertIn("缺少描述（30字内）", items)
 
-        app["type"] = "分子动力学"
-        app["description"] = "a" * 31
-        core.save_app(self.conn, app)
+        core.update_snapshot(self.conn, release_id, app_id, lambda s: s.update({"type": "分子动力学", "description": "a" * 31}))
         items = core.refresh_missing_items(self.conn, release_id)[app_id]
         self.assertIn("描述超过30字", items)
 
@@ -684,10 +671,9 @@ class CoreWorkflowTests(unittest.TestCase):
     # --- variant import ---
 
     def test_initial_import_preserves_multi_version_variants(self) -> None:
-        release_id = core.import_initial_rows(
+        core.import_initial_rows(
             self.conn,
-            core.parse_csv_text(DUP_RELEASE_CSV),
-            core.parse_csv_text(DUP_OWNER_CSV),
+            core.parse_csv_text(DUP_CSV),
             release_name="variant-release",
         )
         apps = {app["id"]: app for app in core.list_apps(self.conn)}
@@ -791,8 +777,9 @@ class CoreWorkflowTests(unittest.TestCase):
         )
         self.assertNotEqual(app_id, "amber")
         created = core.get_app(self.conn, app_id)
-        self.assertEqual(created["name"], "amber")
         self.assertEqual(created["git_branch"], "release-22")
+        snap = core.get_release(self.conn, release_id)["snapshots"][app_id]
+        self.assertEqual(snap["official_name"], "amber")
 
     def test_add_new_app_request_git_location_is_case_sensitive(self) -> None:
         release_id, _ = self.import_initial()
@@ -919,11 +906,11 @@ class CoreWorkflowTests(unittest.TestCase):
 
     def test_official_url_round_trips_and_shows_in_guide(self) -> None:
         release_id, app_id = self.import_initial()
-        app = core.get_app(self.conn, app_id)
-        app["official_url"] = "https://amber.example.org"
-        core.save_app(self.conn, app)
-        self.conn.commit()
-        self.assertEqual(core.get_app(self.conn, app_id)["official_url"], "https://amber.example.org")
+        core.update_snapshot(self.conn, release_id, app_id, lambda s: s.update({"official_url": "https://amber.example.org"}))
+        self.assertEqual(
+            core.get_release(self.conn, release_id)["snapshots"][app_id]["official_url"],
+            "https://amber.example.org",
+        )
         core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
         core.update_snapshot(self.conn, release_id, app_id, _fill_ready)
         core.qa_set_status(self.conn, release_id, app_id, "qa_passed")

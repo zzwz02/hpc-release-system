@@ -174,16 +174,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS apps (
             id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            official_name TEXT NOT NULL,
-            category TEXT NOT NULL DEFAULT '',
-            type TEXT NOT NULL DEFAULT '',
-            description TEXT NOT NULL DEFAULT '',
             git_url TEXT NOT NULL DEFAULT '',
             git_branch TEXT NOT NULL DEFAULT '',
-            official_url TEXT NOT NULL DEFAULT '',
-            doc_target TEXT NOT NULL DEFAULT 'manual',
-            owners_json TEXT NOT NULL DEFAULT '[]',
             aliases_json TEXT NOT NULL DEFAULT '[]',
             created_by TEXT NOT NULL DEFAULT 'import',
             created_at TEXT NOT NULL DEFAULT ''
@@ -236,7 +228,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             app_id TEXT NOT NULL DEFAULT '',
             release_id TEXT NOT NULL DEFAULT '',
             event TEXT NOT NULL DEFAULT '',
-            message TEXT NOT NULL
+            message TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS users (
@@ -252,9 +245,6 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         """
     )
-    if "official_url" not in {row["name"] for row in conn.execute("PRAGMA table_info(apps)")}:
-        conn.execute("ALTER TABLE apps ADD COLUMN official_url TEXT NOT NULL DEFAULT ''")
-    conn.execute("UPDATE apps SET doc_target = 'manual' WHERE doc_target NOT IN ('manual', 'ai4sci')")
     ensure_default_user(conn)
     conn.commit()
 
@@ -401,24 +391,45 @@ def audit(
     app_id: str = "",
     release_id: str = "",
     event: str = "",
+    detail: Any = "",
     commit: bool = True,
 ) -> None:
+    detail_text = detail if isinstance(detail, str) else dumps_json(detail)
     conn.execute(
-        "INSERT INTO audit(ts, user, role, app_id, release_id, event, message) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (now(), user, role, app_id, release_id, event, message),
+        "INSERT INTO audit(ts, user, role, app_id, release_id, event, message, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (now(), user, role, app_id, release_id, event, message, detail_text),
     )
     if commit:
         conn.commit()
 
 
 def app_audit_log(conn: sqlite3.Connection, app_id: str) -> list[dict[str, Any]]:
-    return [
-        dict(row)
-        for row in conn.execute(
-            "SELECT ts, user, role, release_id, event, message FROM audit WHERE app_id = ? ORDER BY id DESC",
-            (app_id,),
-        )
-    ]
+    entries = []
+    for row in conn.execute(
+        "SELECT ts, user, role, release_id, event, message, detail FROM audit WHERE app_id = ? ORDER BY id DESC",
+        (app_id,),
+    ):
+        entry = dict(row)
+        entry["detail"] = loads_json(entry.get("detail"), []) if entry.get("detail") else []
+        entries.append(entry)
+    return entries
+
+
+def field_diff(before: dict[str, Any], after: dict[str, Any], labels: dict[str, str]) -> list[dict[str, str]]:
+    """Return [{field,label,old,new}] for keys in *labels* whose value changed."""
+    changes: list[dict[str, str]] = []
+    for key, label in labels.items():
+        old = before.get(key)
+        new = after.get(key)
+        if old == new:
+            continue
+        changes.append({
+            "field": key,
+            "label": label,
+            "old": ", ".join(old) if isinstance(old, list) else ("" if old is None else str(old)),
+            "new": ", ".join(new) if isinstance(new, list) else ("" if new is None else str(new)),
+        })
+    return changes
 
 
 def read_csv(path: str | Path) -> list[dict[str, str]]:
@@ -454,49 +465,48 @@ def canonical_id(name: str, aliases: dict[str, str] | None = None) -> str:
     return (aliases or {}).get(normalized, normalized)
 
 
-def app_from_row(existing: dict[str, Any] | None, *, app_id: str, name: str) -> dict[str, Any]:
-    base = existing or {
-        "id": app_id,
-        "name": name,
-        "official_name": name,
-        "category": "",
-        "type": "",
-        "description": "",
-        "git_url": "",
-        "git_branch": "",
-        "official_url": "",
-        "doc_target": "",
-        "owners": [],
-        "aliases": [],
-        "created_by": "import",
-        "created_at": now(),
+SNAPSHOT_META_FIELDS = ("official_name", "type", "official_url", "description", "doc_target", "owners")
+APP_META_LABELS = {
+    "official_name": "官方名称",
+    "type": "App类型",
+    "official_url": "官方 URL",
+    "description": "描述",
+    "doc_target": "文档类型",
+    "owners": "Owner",
+}
+
+
+def display_name(official_name: str | None, version: str | None = "") -> str:
+    """Human-facing app name: official name plus version when known."""
+    official = (official_name or "").strip()
+    ver = (version or "").strip()
+    return f"{official} {ver}".strip() if ver else official
+
+
+def app_view(app: dict[str, Any], snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    """Merge the global app row with per-release snapshot metadata.
+
+    official_name/type/official_url/description/doc_target/owners live on the
+    snapshot (per-release); id/git_url/git_branch are global app identity.
+    """
+    snapshot = snapshot or {}
+    view = {
+        "id": app.get("id", ""),
+        "git_url": app.get("git_url", ""),
+        "git_branch": app.get("git_branch", ""),
+        "aliases": app.get("aliases", []),
+        "created_by": app.get("created_by", ""),
+        "created_at": app.get("created_at", ""),
+        "official_name": snapshot.get("official_name", ""),
+        "type": snapshot.get("type", ""),
+        "official_url": snapshot.get("official_url", ""),
+        "description": snapshot.get("description", ""),
+        "doc_target": normalize_doc_target(snapshot.get("doc_target")),
+        "owners": list(snapshot.get("owners", []) or []),
+        "version": snapshot.get("version", ""),
     }
-    base["aliases"] = sorted(set(base.get("aliases", []) + [name]))
-    return base
-
-
-def combined_release_row(rows: list[dict[str, str]]) -> dict[str, str]:
-    combined = dict(rows[0]) if rows else {}
-    x86_chips: list[str] = []
-    arm_chips: list[str] = []
-    hpcc_chips: list[str] = []
-    archs: list[str] = []
-    for row in rows:
-        arch = (row.get("arch") or "").lower()
-        chips = split_list(row.get("maca_chip"))
-        if "arm" in arch or "aarch" in arch:
-            arm_chips.extend(chips)
-        else:
-            x86_chips.extend(chips)
-        hpcc_chips.extend(split_list(row.get("hpcc_chip")))
-        if row.get("arch"):
-            archs.append(row["arch"])
-    combined["_x86_chips"] = join_list(x86_chips)
-    combined["_arm_chips"] = join_list(arm_chips)
-    combined["maca_chip"] = combined["_x86_chips"] or combined.get("maca_chip", "")
-    combined["hpcc_chip"] = join_list(hpcc_chips) or combined.get("hpcc_chip", "")
-    combined["arch"] = join_list(archs) or combined.get("arch", "")
-    return combined
+    view["name"] = display_name(view["official_name"], view["version"])
+    return view
 
 
 def variant_app_id(base_id: str, version: str, branch: str, used_ids: set[str]) -> str:
@@ -515,44 +525,25 @@ def variant_app_id(base_id: str, version: str, branch: str, used_ids: set[str]) 
 
 def row_to_app(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
-    data["owners"] = loads_json(data.pop("owners_json"), [])
     data["aliases"] = loads_json(data.pop("aliases_json"), [])
-    data["doc_target"] = normalize_doc_target(data.get("doc_target"))
     return data
 
 
 def save_app(conn: sqlite3.Connection, app: dict[str, Any]) -> None:
     conn.execute(
         """
-        INSERT INTO apps(id, name, official_name, category, type, description, git_url, git_branch,
-                         official_url, doc_target, owners_json, aliases_json, created_by, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO apps(id, git_url, git_branch, aliases_json, created_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
-          name=excluded.name,
-          official_name=excluded.official_name,
-          category=excluded.category,
-          type=excluded.type,
-          description=excluded.description,
           git_url=excluded.git_url,
           git_branch=excluded.git_branch,
-          official_url=excluded.official_url,
-          doc_target=excluded.doc_target,
-          owners_json=excluded.owners_json,
           aliases_json=excluded.aliases_json,
           created_by=excluded.created_by
         """,
         (
             app["id"],
-            app["name"],
-            app.get("official_name") or app["name"],
-            app.get("category", ""),
-            app.get("type", ""),
-            app.get("description", ""),
             app.get("git_url", ""),
             app.get("git_branch", ""),
-            app.get("official_url", ""),
-            normalize_doc_target(app.get("doc_target")),
-            dumps_json(sorted(set(app.get("owners", [])))),
             dumps_json(sorted(set(app.get("aliases", [])))),
             app.get("created_by", "import"),
             app.get("created_at") or now(),
@@ -568,7 +559,7 @@ def get_app(conn: sqlite3.Connection, app_id: str) -> dict[str, Any]:
 
 
 def list_apps(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    return [row_to_app(row) for row in conn.execute("SELECT * FROM apps ORDER BY name")]
+    return [row_to_app(row) for row in conn.execute("SELECT * FROM apps ORDER BY id")]
 
 
 def locked_releases_for_app(conn: sqlite3.Connection, app_id: str) -> list[str]:
@@ -600,35 +591,43 @@ def delete_app(conn: sqlite3.Connection, app_id: str, *, user: str = "admin", ro
         conn.execute("DELETE FROM artifacts WHERE release_id = ? AND final = 0", (affected,))
     conn.execute("DELETE FROM apps WHERE id = ?", (app_id,))
     conn.commit()
-    audit(conn, f"删除 app：{app['name']} ({app_id})", user=user, role=role, app_id=app_id, event="delete_app")
+    audit(conn, f"删除 app：{app_id}", user=user, role=role, app_id=app_id, event="delete_app")
     return app
 
 
-def base_snapshot(app: dict[str, Any], release_row: dict[str, str] | None = None, owner_row: dict[str, str] | None = None) -> dict[str, Any]:
-    release_row = release_row or {}
-    owner_row = owner_row or {}
+def base_snapshot(
+    app_id: str,
+    *,
+    official_name: str = "",
+    app_type: str = "",
+    official_url: str = "",
+    description: str = "",
+    doc_target: str = "manual",
+    owners: list[str] | None = None,
+) -> dict[str, Any]:
     return {
-        "app_id": app["id"],
+        "app_id": app_id,
+        "official_name": official_name,
+        "type": app_type,
+        "official_url": official_url,
+        "description": description,
+        "doc_target": normalize_doc_target(doc_target),
+        "owners": sorted(set(owners or [])),
         "release_decision": "release",
         "qa_status": "not_checked",
         "qa_issue_note": "",
         "owner_confirmed": False,
-        "version": release_row.get("app_version") or owner_row.get("对应官方版本") or "",
-        "x86_chips": release_row.get("maca_chip") or owner_row.get("X86支持芯片系列") or "",
-        "arm_chips": owner_row.get("ARM支持芯片类型") or (release_row.get("maca_chip", "") if release_row.get("arch") == "arm" else ""),
-        "hpcc_chip": release_row.get("hpcc_chip") or "",
-        "arch": release_row.get("arch") or "",
-        "maca_version": release_row.get("maca_version") or "",
-        "community": owner_row.get("开发者社区发布情况") or "",
-        "python_version": owner_row.get("开发者社区发布包支持python版本") or "",
-        "framework_version": owner_row.get("开发者社区发布包支持的底层框架及版本") or "",
+        "version": "",
+        "x86_chips": "",
+        "arm_chips": "",
+        "hpcc_chip": "",
+        "arch": "",
+        "maca_version": "",
         "doc": {
-            "intro": owner_row.get("描述") or app.get("description", ""),
+            "intro": "",
             "image_usage": "",
             "binary_usage": "",
             "env_setup": "",
-            "test_method": "",
-            "test_result": "",
             "limitations": "",
         },
         "app_info": None,
@@ -781,22 +780,16 @@ def last_published_snapshot(conn: sqlite3.Connection, app_id: str, before_releas
 
 def import_initial(
     conn: sqlite3.Connection,
-    release_csv: str | Path,
-    owner_csv: str | Path,
+    csv_path: str | Path,
     *,
-    alias_text: str = "",
     release_name: str | None = None,
     maca_version: str | None = None,
     app_freeze_deadline: str = "",
     doc_deadline: str = "",
 ) -> str:
-    release_rows = read_csv(release_csv)
-    owner_rows = read_csv(owner_csv)
     return import_initial_rows(
         conn,
-        release_rows,
-        owner_rows,
-        alias_text=alias_text,
+        read_csv(csv_path),
         release_name=release_name,
         maca_version=maca_version,
         app_freeze_deadline=app_freeze_deadline,
@@ -806,97 +799,96 @@ def import_initial(
 
 def import_initial_rows(
     conn: sqlite3.Connection,
-    release_rows: list[dict[str, str]],
-    owner_rows: list[dict[str, str]],
+    rows: list[dict[str, str]],
     *,
-    alias_text: str = "",
     release_name: str | None = None,
     maca_version: str | None = None,
     app_freeze_deadline: str = "",
     doc_deadline: str = "",
 ) -> str:
+    """Import a single init CSV: one app per (git_url, git_branch) pair.
+
+    Columns: 官方名称, 类型, APP类型, Owner, app_version, maca_chip,
+    hpcc_chip, arch, maca_version, git_url, git_branch. Rows sharing a
+    (git_url, git_branch) pair form one app; differing-arch rows merge chips.
+    """
     validate_deadline_order(app_freeze_deadline, doc_deadline)
-    aliases = parse_alias_lines(alias_text)
-    apps: dict[str, dict[str, Any]] = {app["id"]: app for app in list_apps(conn)}
-    owner_by_base: dict[str, list[dict[str, str]]] = {}
-    owner_by_base_version: dict[tuple[str, str], list[dict[str, str]]] = {}
-    for row in owner_rows:
-        base_id = canonical_id(row.get("名称", ""), aliases)
-        owner_by_base.setdefault(base_id, []).append(row)
-        owner_by_base_version.setdefault((base_id, row.get("对应官方版本", "")), []).append(row)
+    if not rows:
+        raise ValueError("初始化 CSV 为空")
 
-    release_groups: dict[tuple[str, str, str], list[dict[str, str]]] = {}
-    for row in release_rows:
-        base_id = canonical_id(row.get("app_name", ""), aliases)
-        key = (base_id, row.get("app_version", ""), row.get("git_branch", ""))
-        release_groups.setdefault(key, []).append(row)
-    variants_by_base: dict[str, int] = {}
-    for base_id, _, _ in release_groups:
-        variants_by_base[base_id] = variants_by_base.get(base_id, 0) + 1
+    groups: dict[tuple[str, str], list[dict[str, str]]] = {}
+    order: list[tuple[str, str]] = []
+    for row in rows:
+        key = ((row.get("git_url") or "").strip(), (row.get("git_branch") or "").strip())
+        if not key[0] or not key[1]:
+            raise ValueError("初始化 CSV 每行都需要 git_url 和 git_branch")
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(row)
 
-    release_row_by_app: dict[str, dict[str, str]] = {}
-    owner_row_by_app: dict[str, dict[str, str]] = {}
-    release_base_ids: set[str] = set()
+    base_counts: dict[str, int] = {}
+    for key in order:
+        bid = normalize_name(groups[key][0].get("官方名称", "")) or "app"
+        base_counts[bid] = base_counts.get(bid, 0) + 1
+
     used_ids: set[str] = set()
-    for (base_id, version, branch), rows in release_groups.items():
-        release_base_ids.add(base_id)
-        app_id = base_id if variants_by_base[base_id] == 1 else variant_app_id(base_id, version, branch, used_ids)
+    built: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for key in order:
+        group = groups[key]
+        first = group[0]
+        official = (first.get("官方名称") or "").strip()
+        bid = normalize_name(official) or "app"
+        if base_counts[bid] > 1 or bid in used_ids:
+            app_id = variant_app_id(bid, first.get("app_version", ""), key[1], used_ids)
+        else:
+            app_id = bid
         used_ids.add(app_id)
-        rel_row = combined_release_row(rows)
-        selected_owner_rows = owner_by_base_version.get((base_id, version)) or owner_by_base.get(base_id, [])
-        owner_row = selected_owner_rows[0] if selected_owner_rows else {}
-        display_name = rows[0].get("app_name", "")
-        if variants_by_base[base_id] > 1:
-            display_name = f"{display_name} {version or branch}".strip()
-        app = app_from_row(apps.get(app_id), app_id=app_id, name=display_name)
-        app["official_name"] = rows[0].get("app_name", "") or app.get("official_name") or display_name
-        app["git_url"] = app.get("git_url") or rel_row.get("git_url", "")
-        app["git_branch"] = app.get("git_branch") or rel_row.get("git_branch", "")
-        if owner_row:
-            app["category"] = app.get("category") or owner_row.get("类别", "")
-            app["type"] = app.get("type") or owner_row.get("类型", "")
-            app["description"] = app.get("description") or owner_row.get("描述", "")
-            app["doc_target"] = app.get("doc_target") or infer_doc_target(owner_row.get("类别", ""), owner_row.get("类型", ""))
-        owners: list[str] = []
-        for selected in selected_owner_rows:
-            owners.extend(split_list(selected.get("Owner")))
-        app["owners"] = sorted(set(app.get("owners", []) + owners))
-        apps[app_id] = app
-        release_row_by_app[app_id] = rel_row
-        owner_row_by_app[app_id] = owner_row
 
-    for base_id, rows in owner_by_base.items():
-        if base_id in release_base_ids:
-            continue
-        owner_row = rows[0]
-        app = app_from_row(apps.get(base_id), app_id=base_id, name=owner_row.get("名称", ""))
-        app["category"] = app.get("category") or owner_row.get("类别", "")
-        app["type"] = app.get("type") or owner_row.get("类型", "")
-        app["description"] = app.get("description") or owner_row.get("描述", "")
-        app["doc_target"] = app.get("doc_target") or infer_doc_target(owner_row.get("类别", ""), owner_row.get("类型", ""))
+        x86: list[str] = []
+        arm: list[str] = []
+        hpcc: list[str] = []
         owners: list[str] = []
-        for selected in rows:
-            owners.extend(split_list(selected.get("Owner")))
-        app["owners"] = sorted(set(app.get("owners", []) + owners))
-        apps[base_id] = app
-        owner_row_by_app[base_id] = owner_row
+        for r in group:
+            arch = (r.get("arch") or "").lower()
+            chips = split_list(r.get("maca_chip"))
+            (arm if "arm" in arch or "aarch" in arch else x86).extend(chips)
+            hpcc.extend(split_list(r.get("hpcc_chip")))
+            owners.extend(split_list(r.get("Owner")))
 
-    for app in apps.values():
-        save_app(conn, app)
-        audit(
-            conn,
-            f"导入 app：{app['name']}",
-            user="import",
-            role="system",
-            app_id=app["id"],
-            event="create_app",
+        app = {
+            "id": app_id,
+            "git_url": key[0],
+            "git_branch": key[1],
+            "aliases": sorted({official} if official else set()),
+            "created_by": "import",
+            "created_at": now(),
+        }
+        snapshot = base_snapshot(
+            app_id,
+            official_name=official,
+            app_type=(first.get("APP类型") or "").strip(),
+            doc_target=normalize_doc_target(first.get("类型", "")),
+            owners=sorted(set(owners)),
         )
+        snapshot["version"] = (first.get("app_version") or "").strip()
+        snapshot["x86_chips"] = join_list(x86)
+        snapshot["arm_chips"] = join_list(arm)
+        snapshot["hpcc_chip"] = join_list(hpcc)
+        snapshot["arch"] = join_list((r.get("arch") or "") for r in group)
+        snapshot["maca_version"] = (first.get("maca_version") or "").strip()
+        built.append((app, snapshot))
+
+    for app, _ in built:
+        save_app(conn, app)
+        audit(conn, f"导入 app：{app['id']}", user="import", role="system", app_id=app["id"], event="create_app")
 
     release_id = new_id("rel")
-    first_release = {
+    csv_maca = (rows[0].get("maca_version") or "").strip()
+    save_release(conn, {
         "id": release_id,
-        "name": release_name or maca_version or release_rows[0].get("maca_version") or "initial-release",
-        "maca_version": maca_version or release_rows[0].get("maca_version", ""),
+        "name": release_name or maca_version or csv_maca or "initial-release",
+        "maca_version": maca_version or csv_maca,
         "app_freeze_deadline": app_freeze_deadline,
         "doc_deadline": doc_deadline,
         "released_locked": 0,
@@ -905,25 +897,11 @@ def import_initial_rows(
         "created_at": now(),
         "source": "initial_csv",
         "cloned_from": "",
-    }
-    save_release(conn, first_release)
-
-    for app in apps.values():
-        rel_row = release_row_by_app.get(app["id"], {})
-        snapshot = base_snapshot(app, rel_row, owner_row_by_app.get(app["id"], {}))
-        if rel_row.get("_x86_chips"):
-            snapshot["x86_chips"] = rel_row["_x86_chips"]
-        if rel_row.get("_arm_chips"):
-            snapshot["arm_chips"] = rel_row["_arm_chips"]
+    })
+    for app, snapshot in built:
         save_snapshot(conn, release_id, app["id"], snapshot)
-
     conn.commit()
-    audit(
-        conn,
-        f"首次初始化导入完成：release rows={len(release_rows)}, owner rows={len(owner_rows)}",
-        release_id=release_id,
-        event="import_initial",
-    )
+    audit(conn, f"首次初始化导入完成：{len(built)} 个 app", release_id=release_id, event="import_initial")
     return release_id
 
 
@@ -957,8 +935,9 @@ def create_release_from_previous(
     save_release(conn, release)
     for app in list_apps(conn):
         old = previous["snapshots"].get(app["id"]) if previous else None
-        snapshot = json.loads(json.dumps(old)) if old else base_snapshot(app)
-        snapshot.pop("app_meta", None)
+        if not old:
+            continue
+        snapshot = json.loads(json.dumps(old))
         snapshot.pop("locked_in_release", None)
         snapshot.update(
             {
@@ -986,7 +965,6 @@ def _future_unlocked_release_ids(conn: sqlite3.Connection, release_id: str) -> l
 
 def _initial_snapshot_for_future_release(snapshot: dict[str, Any], target_release: dict[str, Any] | None = None) -> dict[str, Any]:
     future = json.loads(json.dumps(snapshot))
-    future.pop("app_meta", None)
     future.pop("locked_in_release", None)
     future.update(
         {
@@ -1033,12 +1011,12 @@ def add_new_app_request(
     if release_decision == "release" and not is_before(release.get("app_freeze_deadline", "")):
         raise RuntimeError("已过 app 冻结 deadline，不可再新增以 release 状态进入本期的 app")
     duplicate = conn.execute(
-        "SELECT id, name FROM apps WHERE git_url = ? AND git_branch = ?",
+        "SELECT id FROM apps WHERE git_url = ? AND git_branch = ?",
         (git_url, git_branch),
     ).fetchone()
     if duplicate:
         raise RuntimeError(
-            f"该 Gerrit URL + branch 已登记为 app「{duplicate['name']}」(id={duplicate['id']})："
+            f"该 Gerrit URL + branch 已登记为 app（id={duplicate['id']}）："
             f"无需重复新增；如需让它参与本 release，请联系现有 owner 或 RM"
         )
     base_id = normalize_name(official_name)
@@ -1048,22 +1026,19 @@ def add_new_app_request(
     app_id = base_id if base_id not in used_ids else variant_app_id(base_id, "", git_branch, used_ids)
     app = {
         "id": app_id,
-        "name": official_name,
-        "official_name": official_name,
-        "category": "",
-        "type": "",
-        "description": "",
         "git_url": git_url,
         "git_branch": git_branch,
-        "official_url": "",
-        "doc_target": doc_target,
-        "owners": [owner],
         "aliases": [official_name],
         "created_by": owner,
         "created_at": now(),
     }
     save_app(conn, app)
-    snapshot = base_snapshot(app)
+    snapshot = base_snapshot(
+        app_id,
+        official_name=official_name,
+        doc_target=doc_target,
+        owners=[owner],
+    )
     snapshot["release_decision"] = release_decision
     synced_release_ids = []
     for target_release_id in _future_unlocked_release_ids(conn, release_id):
@@ -1340,15 +1315,17 @@ def missing_items_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str
     if decision != "release":
         return []
     missing: list[str] = []
-    if not app.get("owners"):
+    if not snapshot.get("owners"):
         missing.append("缺少 owner")
     if not app.get("git_url"):
         missing.append("缺少 Gerrit URL")
     if not app.get("git_branch"):
         missing.append("缺少 branch")
-    if not (app.get("type") or "").strip():
+    if not (snapshot.get("official_name") or "").strip():
+        missing.append("缺少官方名称")
+    if not (snapshot.get("type") or "").strip():
         missing.append("缺少 App类型")
-    description = (app.get("description") or "").strip()
+    description = (snapshot.get("description") or "").strip()
     if not description:
         missing.append("缺少描述（30字内）")
     elif len(description) > MAX_APP_DESCRIPTION_CHARS:
@@ -1361,7 +1338,7 @@ def missing_items_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str
         missing.append("缺少 对应官方版本")
     if not snapshot.get("x86_chips"):
         missing.append("缺少 X86支持芯片系列")
-    if normalize_doc_target(app.get("doc_target")) in DOC_TARGETS:
+    if normalize_doc_target(snapshot.get("doc_target")) in DOC_TARGETS:
         doc = snapshot.get("doc", {})
         required = {
             "intro": "基本介绍",
@@ -1589,13 +1566,14 @@ def export_test_scope_csv(conn: sqlite3.Connection, release_id: str) -> str:
         app = apps.get(app_id)
         if not app:
             continue
+        view = app_view(app, snapshot)
         rows.append(
             (
-                app.get("name", ""),
+                view["name"],
                 snapshot.get("version", ""),
-                app.get("git_url", ""),
-                app.get("git_branch", ""),
-                ",".join(app.get("owners", [])),
+                view["git_url"],
+                view["git_branch"],
+                ",".join(view["owners"]),
             )
         )
     rows.sort(key=lambda r: r[0].lower())
@@ -1605,30 +1583,18 @@ def export_test_scope_csv(conn: sqlite3.Connection, release_id: str) -> str:
 
 
 def final_lock_release(conn: sqlite3.Connection, release_id: str, *, user: str = "rm", role: str = "RM") -> dict[str, str]:
-    """Final lock: snapshot app_meta, freeze all writes, generate final artifacts."""
+    """Final lock: freeze all writes, generate final artifacts.
+
+    App metadata is already per-release in the snapshot, so the snapshot is
+    self-contained once locked -- no separate app_meta copy is needed.
+    """
     release = get_release(conn, release_id)
     if release.get("released_locked"):
         raise RuntimeError("Release 已最终锁定")
     refresh_missing_items(conn, release_id)
     release = get_release(conn, release_id)
-    apps_by_id = {app["id"]: app for app in list_apps(conn)}
     for app_id, snapshot in release["snapshots"].items():
         if _qualifies_for_final(snapshot):
-            app = apps_by_id.get(app_id)
-            if app:
-                snapshot["app_meta"] = {
-                    "id": app["id"],
-                    "name": app["name"],
-                    "official_name": app["official_name"],
-                    "category": app["category"],
-                    "type": app["type"],
-                    "description": app["description"],
-                    "git_url": app["git_url"],
-                    "git_branch": app["git_branch"],
-                    "official_url": app.get("official_url", ""),
-                    "doc_target": app["doc_target"],
-                    "owners": app["owners"],
-                }
             snapshot["locked_in_release"] = True
         save_snapshot_raw(conn, release_id, app_id, snapshot)
     conn.execute(
@@ -1642,7 +1608,7 @@ def final_lock_release(conn: sqlite3.Connection, release_id: str, *, user: str =
 
 
 def final_unlock_release(conn: sqlite3.Connection, release_id: str, *, user: str = "rm", role: str = "RM") -> None:
-    """Reverse a final lock: clear app_meta + locked flag, delete final artifacts."""
+    """Reverse a final lock: clear the locked flag, delete final artifacts."""
     release = get_release(conn, release_id)
     if not release.get("released_locked"):
         raise RuntimeError("Release 未锁定，无需解锁")
@@ -1708,12 +1674,12 @@ def release_rows(conn: sqlite3.Connection, release: dict[str, Any], *, final: bo
     apps = {app["id"]: app for app in list_apps(conn)}
     rows = []
     for app_id, snapshot in release["snapshots"].items():
-        app = snapshot.get("app_meta") or apps.get(app_id)
+        app = apps.get(app_id)
         if not app or snapshot.get("release_decision") != "release":
             continue
         if not _qualifies_for_final(snapshot):
             continue
-        rows.append((app, snapshot))
+        rows.append((app_view(app, snapshot), snapshot))
     return sorted(rows, key=lambda item: item[0]["name"].lower())
 
 
@@ -1728,10 +1694,10 @@ def guide_rows(
     stopped: list[tuple[dict[str, Any], dict[str, Any]]] = []
 
     for app_id, snapshot in release["snapshots"].items():
-        app = snapshot.get("app_meta") or apps.get(app_id)
+        app = apps.get(app_id)
         if not app:
             continue
-        if normalize_doc_target(app.get("doc_target")) != doc_target:
+        if normalize_doc_target(snapshot.get("doc_target")) != doc_target:
             continue
 
         decision = snapshot.get("release_decision", "release")
@@ -1740,8 +1706,7 @@ def guide_rows(
         if decision == "stopped":
             prev = last_published_snapshot(conn, app_id, release["id"])
             if prev:
-                prev_app = prev.get("app_meta") or app
-                stopped.append((prev_app, prev))
+                stopped.append((app_view(app, prev), prev))
             continue
 
         if decision != "release":
@@ -1750,10 +1715,9 @@ def guide_rows(
         prev = last_published_snapshot(conn, app_id, release["id"])
 
         if qualifies:
-            active.append((app, snapshot))
+            active.append((app_view(app, snapshot), snapshot))
         elif prev:
-            prev_app = prev.get("app_meta") or app
-            active.append((prev_app, prev))
+            active.append((app_view(app, prev), prev))
         # else: new app that didn't qualify — omit
 
     active.sort(key=lambda item: item[0]["name"].lower())
@@ -1766,7 +1730,7 @@ def render_release_note(release: dict[str, Any], rows: list[tuple[dict[str, Any]
     out += ".. list-table::\n   :header-rows: 1\n   :widths: 15 15 30 12 14 14\n\n"
     out += "   * - 名称\n     - 类型\n     - 描述\n     - 对应官方版本\n     - X86支持芯片系列\n     - ARM支持芯片类型\n"
     for app, snapshot in rows:
-        out += f"   * - {app['name']}\n     - {app.get('type') or app.get('category') or ''}\n     - {app.get('description') or ''}\n     - {snapshot.get('version') or ''}\n     - {snapshot.get('x86_chips') or ''}\n     - {snapshot.get('arm_chips') or ''}\n"
+        out += f"   * - {app['name']}\n     - {app.get('type') or ''}\n     - {app.get('description') or ''}\n     - {snapshot.get('version') or ''}\n     - {snapshot.get('x86_chips') or ''}\n     - {snapshot.get('arm_chips') or ''}\n"
     return out
 
 
@@ -1820,10 +1784,10 @@ def render_manager_review_csv(
     writer.writerow([field_labels[field] for field in selected])
     rows = []
     for app_id, snapshot in release["snapshots"].items():
-        app = snapshot.get("app_meta") or apps.get(app_id)
+        app = apps.get(app_id)
         if not app:
             continue
-        rows.append((app, snapshot))
+        rows.append((app_view(app, snapshot), snapshot))
     rows.sort(key=lambda item: item[0].get("name", "").lower())
     for app, snapshot in rows:
         values = {

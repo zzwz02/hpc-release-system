@@ -129,6 +129,13 @@
     background:#fafbfc;position:sticky;top:0;}
   tbody tr:last-child td{border-bottom:0;}
   tbody tr:hover{background:#fafbfc;}
+  .cl-clickable{cursor:pointer;}
+  .cl-clickable:hover{background:var(--accent-soft);}
+  .cl-toggle{color:var(--accent);font-weight:700;font-size:11px;white-space:nowrap;}
+  .cl-detail>td{background:#fafbfc;padding:0;}
+  .cl-detail-table{border:0;}
+  .cl-detail-table th{background:#f0f1f4;}
+  .cl-detail-table td,.cl-detail-table th{border-bottom:1px solid var(--border);}
   /* ---- app list ---- */
   .searchbox{position:relative;margin-bottom:9px;}
   .searchbox .input{padding-left:30px;}
@@ -322,12 +329,10 @@
         <div class="panel">
           <div class="panel-head"><h2>首次初始化</h2></div>
           <div class="panel-body">
-            <p class="hint" style="margin-top:0">CSV、alias mapping、app-owner 映射只需首次维护；后续 release 从上一版本克隆。</p>
+            <p class="hint" style="margin-top:0">导入一个 CSV 即可（列：官方名称, 类型, APP类型, Owner, app_version, maca_chip, hpcc_chip, arch, maca_version, git_url, git_branch）。同一 (git_url, git_branch) 视为同一个 app；后续 release 从上一版本克隆。</p>
             <div class="form" style="grid-template-columns:1fr 1fr;margin-top:12px">
-              <label>Release CSV<input id="releaseCsv" class="input" type="file" accept=".csv"></label>
-              <label>Owner CSV<input id="ownerCsv" class="input" type="file" accept=".csv"></label>
-              <label>Release 名称<input id="initReleaseName" class="input" placeholder="initial-release"></label>
-              <label>Alias mapping<textarea id="aliasText" placeholder="aimodels=ai-models&#10;boltz=Boltz-2"></textarea></label>
+              <label>初始化 CSV<input id="initCsv" class="input" type="file" accept=".csv"></label>
+              <label>Release 名称<input id="initReleaseName" class="input" placeholder="留空则用 maca_version"></label>
             </div>
             <div class="row" style="margin-top:13px">
               <button class="btn primary" id="importBtn">导入初始化数据</button>
@@ -560,7 +565,12 @@
     function isRM() { return currentUser().role === "RM"; }
     function isOwner() { return currentUser().role === "Owner"; }
     function isQA() { return currentUser().role === "QA"; }
-    function canEdit(app) { return currentUser().role === "RM" || (currentUser().role === "Owner" && (app.owners || []).includes(currentUser().username)); }
+    function canEdit(snap) { return currentUser().role === "RM" || (currentUser().role === "Owner" && (snap?.owners || []).includes(currentUser().username)); }
+    function displayName(snap) {
+      const official = (snap?.official_name || "").trim();
+      const ver = (snap?.version || "").trim();
+      return (ver ? `${official} ${ver}` : official).trim() || "(未命名 app)";
+    }
     function releaseLocked() { return !!state.release?.released_locked; }
     function phase() { return state.release?.phase || ""; }
     function beforeAppFreeze() { return phase() === "before_app_freeze"; }
@@ -626,11 +636,11 @@
       const dd = release.doc_deadline || "(未设置)";
       return `App 冻结 ${af}　Doc deadline ${dd}　北京时间 ${state.server_now_beijing || "?"}`;
     }
-    function appSortName(app) { return String(app.name || app.official_name || app.id || "").toLowerCase(); }
+    function appSortName(snap) { return displayName(snap).toLowerCase(); }
     function compareAppRows(a, b) {
       const decisionDiff = (releaseDecisionOrder[a.snap?.release_decision] ?? 99) - (releaseDecisionOrder[b.snap?.release_decision] ?? 99);
       if (decisionDiff) return decisionDiff;
-      return appSortName(a.app).localeCompare(appSortName(b.app), "zh-CN");
+      return appSortName(a.snap).localeCompare(appSortName(b.snap), "zh-CN");
     }
 
     function render(options = {}) {
@@ -682,7 +692,7 @@
       const rows = state.apps.map(app => ({ app, snap: releaseSnap(app.id) })).filter(x => x.snap);
       const releaseRows = rows.filter(x => isReleaseSnap(x.snap));
       const missingItems = rows.flatMap(x => (x.snap.missing_items || []).map(b => [
-        x.app.name,
+        displayName(x.snap),
         b,
         isReleaseSnap(x.snap) ? (qaStatusLabels[x.snap.qa_status || "not_checked"] || x.snap.qa_status || "") : ""
       ]));
@@ -725,13 +735,15 @@
 
     function renderAdmin() {
       if (!$("adminAppTable")) return;
-      $("adminAppTable").innerHTML = `<thead><tr><th>App</th><th>Owner</th><th>Gerrit</th><th>操作</th></tr></thead><tbody>${state.apps.map(app => `
+      $("adminAppTable").innerHTML = `<thead><tr><th>App</th><th>Owner</th><th>Gerrit</th><th>操作</th></tr></thead><tbody>${state.apps.map(app => {
+        const snap = releaseSnap(app.id) || {};
+        return `
         <tr>
-          <td><b>${esc(app.name)}</b><div class="small muted">${esc(app.id)}</div></td>
-          <td>${esc((app.owners || []).join(","))}</td>
+          <td><b>${esc(displayName(snap))}</b><div class="small muted">${esc(app.id)}</div></td>
+          <td>${esc((snap.owners || []).join(","))}</td>
           <td>${esc(app.git_url || "")}<div class="small muted">${esc(app.git_branch || "")}</div></td>
           <td><button class="btn danger sm" data-delete-app="${esc(app.id)}">删除</button></td>
-        </tr>`).join("") || `<tr><td colspan="4" class="muted">无数据</td></tr>`}</tbody>`;
+        </tr>`; }).join("") || `<tr><td colspan="4" class="muted">无数据</td></tr>`}</tbody>`;
       document.querySelectorAll("[data-delete-app]").forEach(btn => btn.onclick = () => deleteApp(btn.dataset.deleteApp));
     }
 
@@ -745,16 +757,15 @@
     function renderApps() {
       const q = $("search").value.toLowerCase().trim();
       let rows = state.apps.map(app => ({ app, snap: releaseSnap(app.id) })).filter(x => x.snap);
-      if (currentUser().role === "Owner") rows = rows.filter(x => (x.app.owners || []).includes(currentUser().username));
-      if (q) rows = rows.filter(x => [x.app.name, x.app.type, (x.app.owners || []).join(",")].join(" ").toLowerCase().includes(q));
+      if (q) rows = rows.filter(x => [displayName(x.snap), x.snap.type, (x.snap.owners || []).join(",")].join(" ").toLowerCase().includes(q));
       rows.sort(compareAppRows);
       if ($("appCount")) $("appCount").textContent = `共 ${rows.length} 个`;
       $("appTable").innerHTML = rows.map(({ app, snap }) => `
         <div class="app-row ${selectedApp === app.id ? "active" : ""}" data-app="${esc(app.id)}">
-          <div class="app-ico">${esc(initials(app.name))}</div>
+          <div class="app-ico">${esc(initials(displayName(snap)))}</div>
           <div class="app-meta">
-            <div class="name">${esc(app.name)}</div>
-            <div class="sub">${esc(app.type || app.category || "—")} · ${esc((app.owners || []).join(",") || "无 owner")}</div>
+            <div class="name">${esc(displayName(snap))}</div>
+            <div class="sub">${esc(snap.type || "—")} · ${esc((snap.owners || []).join(",") || "无 owner")}</div>
           </div>
           <div class="tail">
             ${decisionPill(snap.release_decision)}
@@ -870,9 +881,26 @@
       try {
         const data = await api(`/api/app-audit?app_id=${encodeURIComponent(appId)}`);
         if (selectedApp !== appId || !$("changeLog")) return;
-        $("changeLog").innerHTML = `<table>${table(["时间", "操作人", "角色", "Release", "事件", "内容"], (data.entries || []).map(e => [
-          e.ts || "", e.user || "", e.role || "", e.release_id || "", e.event || "", e.message || ""
-        ]))}</table>`;
+        const entries = data.entries || [];
+        const body = entries.map((e, i) => {
+          const detail = e.detail || [];
+          const has = detail.length > 0;
+          const main = `<tr class="cl-row ${has ? "cl-clickable" : ""}" ${has ? `data-cl="${i}"` : ""}>
+            <td>${esc(e.ts || "")}</td><td>${esc(e.user || "")}</td><td>${esc(e.role || "")}</td>
+            <td>${esc(e.message || "")}${has ? ` <span class="cl-toggle">▸ 详情</span>` : ""}</td></tr>`;
+          const detailRow = has
+            ? `<tr class="cl-detail" data-cl-detail="${i}" hidden><td colspan="4">
+                 <table class="cl-detail-table"><thead><tr><th>字段</th><th>原值</th><th>新值</th></tr></thead><tbody>${
+                   detail.map(d => `<tr><td>${esc(d.label || d.field || "")}</td><td>${esc(d.old || "(空)")}</td><td>${esc(d.new || "(空)")}</td></tr>`).join("")
+                 }</tbody></table></td></tr>`
+            : "";
+          return main + detailRow;
+        }).join("") || `<tr><td colspan="4" class="muted">无数据</td></tr>`;
+        $("changeLog").innerHTML = `<table><thead><tr><th>时间</th><th>操作人</th><th>角色</th><th>事件</th></tr></thead><tbody>${body}</tbody></table>`;
+        document.querySelectorAll("#changeLog [data-cl]").forEach(tr => tr.onclick = () => {
+          const row = document.querySelector(`#changeLog [data-cl-detail="${tr.dataset.cl}"]`);
+          if (row) row.hidden = !row.hidden;
+        });
       } catch (err) {
         if ($("changeLog")) $("changeLog").innerHTML = `<p class="muted">Change log 加载失败：${esc(err.message)}</p>`;
       }
@@ -892,7 +920,7 @@
         appDetailEditAppId = app.id;
         appDetailDirty = false;
       }
-      const canEditDetail = canEdit(app) && !releaseLocked() && beforeDocDeadline();
+      const canEditDetail = canEdit(snap) && !releaseLocked() && beforeDocDeadline();
       const writable = canEditDetail && appDetailEditMode;
       const disabled = writable ? "" : "disabled";
       const rmMetaDisabled = isRM() && writable ? "" : "disabled";
@@ -910,7 +938,7 @@
       const headPills = [
         decisionPill(snap.release_decision),
         snap.version ? `<span class="pill">版本 ${esc(snap.version)}</span>` : "",
-        `<span class="pill">${esc(docTargetLabels[app.doc_target] || app.doc_target || "")}</span>`,
+        `<span class="pill">${esc(docTargetLabels[snap.doc_target] || snap.doc_target || "")}</span>`,
         rel ? (docsItems(snap).length ? `<span class="pill warnp">待补 ${docsItems(snap).length} 项</span>` : `<span class="pill ok">信息齐全</span>`) : "",
         rel ? qaPill(snap.qa_status) : "",
       ].filter(Boolean).join("");
@@ -935,7 +963,7 @@
       }
 
       const phaseBanner = phaseBannerFor(snap);
-      const lateDecisionBlock = (!beforeDocDeadline() && !releaseLocked() && canEdit(app) && snap.release_decision === "release")
+      const lateDecisionBlock = (!beforeDocDeadline() && !releaseLocked() && canEdit(snap) && snap.release_decision === "release")
         ? `<div class="section"><div class="section-body" style="border-top:0">
              <p class="hint" style="margin-top:0">Doc deadline 已过，文档已冻结；如本 app 本轮不应发布，仍可在此把决策移出 release。</p>
              <div class="row" style="margin-top:10px">
@@ -962,9 +990,9 @@
         if (!appDetailEditMode) {
           footActions = `<button id="editApp" class="btn primary">✎ 修改</button>`;
         } else if (isRM()) {
-          footActions = `<button id="saveApp" class="btn primary" ${disabled}>保存</button>`;
+          footActions = `<button id="cancelEdit" class="btn">取消</button><button id="saveApp" class="btn primary" ${disabled}>保存</button>`;
         } else {
-          footActions = `<button id="confirmOwner" class="btn good" ${ownerOnlyDisabled} title="保存当前内容，并确认本 app 的发布信息已补齐">✓ 保存并提交 Owner 确认</button>`;
+          footActions = `<button id="cancelEdit" class="btn">取消</button><button id="confirmOwner" class="btn good" ${ownerOnlyDisabled} title="保存当前内容，并确认本 app 的发布信息已补齐">✓ 保存并提交 Owner 确认</button>`;
         }
       }
       const footNote = appDetailEditMode
@@ -975,8 +1003,8 @@
 
       host.innerHTML = `
         <div class="detail-head">
-          <div class="big">${esc(initials(app.name))}</div>
-          <div class="dh-main"><h2>${esc(app.name)}</h2><div class="row2">${headPills}</div></div>
+          <div class="big">${esc(initials(displayName(snap)))}</div>
+          <div class="dh-main"><h2>${esc(displayName(snap))}</h2><div class="row2">${headPills}</div></div>
           ${greet}
         </div>
         <div class="detail-body">
@@ -989,19 +1017,19 @@
             <summary><span class="chev">▶</span> 基本信息</summary>
             <div class="section-body">
               <div class="form">
-                <label>官方名称<input id="officialName" class="input" value="${esc(app.official_name)}" ${rmMetaDisabled}></label>
-                <label>Owner<input id="owners" class="input" value="${esc((app.owners || []).join(","))}" ${rmMetaDisabled}></label>
-                <label>类型<select id="docTarget" class="select" ${rmMetaDisabled}>${docTargetOptions.map(v => `<option value="${v}" ${app.doc_target === v ? "selected" : ""}>${esc(docTargetLabels[v])}</option>`).join("")}</select></label>
-                <label>App类型<input id="type" class="input" value="${esc(app.type)}" ${appMetaDisabled}></label>
+                <label>官方名称<input id="officialName" class="input" value="${esc(snap.official_name)}" ${rmMetaDisabled}></label>
+                <label>Owner<input id="owners" class="input" value="${esc((snap.owners || []).join(","))}" ${rmMetaDisabled}></label>
+                <label>类型<select id="docTarget" class="select" ${rmMetaDisabled}>${docTargetOptions.map(v => `<option value="${v}" ${snap.doc_target === v ? "selected" : ""}>${esc(docTargetLabels[v])}</option>`).join("")}</select></label>
+                <label>App类型<input id="type" class="input" value="${esc(snap.type)}" ${appMetaDisabled}></label>
                 <label>Gerrit URL<input id="gitUrl" class="input" value="${esc(app.git_url)}" ${rmMetaDisabled}></label>
                 <label>Branch<input id="gitBranch" class="input" value="${esc(app.git_branch)}" ${rmMetaDisabled}></label>
-                <label>官方 URL<input id="officialUrl" class="input" value="${esc(app.official_url)}" ${appMetaDisabled}></label>
+                <label>官方 URL<input id="officialUrl" class="input" value="${esc(snap.official_url)}" ${appMetaDisabled}></label>
                 <label>Release决策<select id="decision" class="select" ${decisionDisabled}>${allowedDecisions.map(v => `<option value="${v}" ${snap.release_decision === v ? "selected" : ""}>${esc(releaseDecisionLabels[v])}</option>`).join("")}</select></label>
                 <label>版本（来自 app_info）<input class="input" value="${esc(snap.version)}" disabled></label>
                 <label>X86芯片<input class="input" value="${esc(snap.x86_chips)}" disabled></label>
                 <label>ARM芯片<input class="input" value="${esc(snap.arm_chips)}" disabled></label>
               </div>
-              <label class="docfield">描述（30字内）<textarea id="description" maxlength="30" ${appMetaDisabled}>${esc(app.description)}</textarea></label>
+              <label class="docfield">描述（30字内）<textarea id="description" maxlength="30" ${appMetaDisabled}>${esc(snap.description)}</textarea></label>
               <p class="hint">类型为 HPC 时生成到 HPC Manual；AI4Sci 时生成到 AI4Sci User Guide。release 进入正式发布、文档生成与 QA；cicd_only 仅纳入 CICD 构建/测试管控；stopped 表示停止维护 / 停止发布。</p>
             </div>
           </details>
@@ -1058,7 +1086,7 @@
       const rows = state.apps
         .map(app => ({ app, snap: releaseSnap(app.id) }))
         .filter(x => isReleaseSnap(x.snap))
-        .sort((a, b) => appSortName(a.app).localeCompare(appSortName(b.app), "zh-CN"));
+        .sort((a, b) => appSortName(a.snap).localeCompare(appSortName(b.snap), "zh-CN"));
       const logBlock = `<div class="panel"><div class="panel-head"><h2>QA log 文件</h2><span class="count">单个 · 覆盖式上传</span></div><div class="panel-body">
           ${state.qa_log
             ? `<div class="row"><span class="pill ok">已上传：${esc(state.qa_log.filename)}</span><span class="muted small">${esc(state.qa_log.uploaded_at)} · ${esc(state.qa_log.uploaded_by)}</span><a href="/api/qa-log/download?release_id=${encodeURIComponent(currentReleaseId())}" target="_blank"><button class="btn ghost sm">下载</button></a></div>`
@@ -1070,8 +1098,8 @@
         const status = snap.qa_status || "not_checked";
         return `<div class="qa-card">
           <div class="qa-card-h">
-            <span class="app-ico">${esc(initials(app.name))}</span>
-            <div><div class="name">${esc(app.name)}</div><div class="sub">版本 ${esc(snap.version || "—")} · ${esc((app.owners || []).join(",") || "无 owner")}</div></div>
+            <span class="app-ico">${esc(initials(displayName(snap)))}</span>
+            <div><div class="name">${esc(displayName(snap))}</div><div class="sub">${esc((snap.owners || []).join(",") || "无 owner")}</div></div>
             <span class="qa-cur">${qaPill(status)}</span>
           </div>
           <div class="qa-card-b">
@@ -1139,6 +1167,13 @@
       };
       if ($("editApp")) $("editApp").onclick = enterEdit;
       if ($("editAppBottom")) $("editAppBottom").onclick = enterEdit;
+      if ($("cancelEdit")) $("cancelEdit").onclick = () => {
+        if (appDetailDirty && !confirm("放弃当前未保存的修改？")) return;
+        appDetailEditMode = false;
+        appDetailDirty = false;
+        if (pendingAppInfoAppId === app.id) { pendingAppInfoFile = null; pendingAppInfoAppId = ""; }
+        loadState(currentReleaseId(), { preserveDetail: false }).catch(() => renderDetail());
+      };
       if ($("saveApp")) $("saveApp").onclick = () => saveApp(app, false);
       if ($("confirmOwner")) $("confirmOwner").onclick = () => saveApp(app, true);
       if ($("confirmDiffs")) $("confirmDiffs").onclick = async () => { await saveApp(app, false, true); };
@@ -1196,7 +1231,7 @@
       };
       if ($("saveLateDecision")) $("saveLateDecision").onclick = async () => {
         const decision = $("lateDecision").value;
-        if (!confirm(`确认把「${app.name}」的 release 决策改为 ${decision}？Doc deadline 已过，这会把它移出本期发布。`)) return;
+        if (!confirm(`确认把「${displayName(snap)}」的 release 决策改为 ${decision}？Doc deadline 已过，这会把它移出本期发布。`)) return;
         try {
           await post("/api/apps/update", { release_id: currentReleaseId(), app_id: app.id, snapshot: { release_decision: decision } });
           appDetailDirty = false;
@@ -1222,6 +1257,12 @@
       }, []);
       const snapshotUpdate = {
         release_decision: $("decision").value,
+        official_name: $("officialName").value.trim(),
+        type: $("type").value.trim(),
+        official_url: $("officialUrl").value.trim(),
+        description,
+        doc_target: $("docTarget").value,
+        owners: $("owners").value.split(/[,，、;；/]+/).map(x => x.trim()).filter(Boolean),
         doc: Object.fromEntries([...document.querySelectorAll("[data-doc]")].map(el => [el.dataset.doc, el.value])),
         test_docs
       };
@@ -1230,7 +1271,7 @@
       const result = await post("/api/apps/update", {
         release_id: currentReleaseId(),
         app_id: app.id,
-        app: { official_name: $("officialName").value, type: $("type").value.trim(), description, git_url: $("gitUrl").value, git_branch: $("gitBranch").value, official_url: $("officialUrl").value.trim(), doc_target: $("docTarget").value, owners: $("owners").value.split(/[,，、;；/]+/).map(x => x.trim()).filter(Boolean) },
+        app: { git_url: $("gitUrl").value, git_branch: $("gitBranch").value },
         snapshot: snapshotUpdate
       });
       appDetailDirty = false;
@@ -1302,7 +1343,18 @@
         loadState(target);
       };
       $("search").oninput = renderApps;
-      $("importBtn").onclick = async () => { $("initLog").textContent = "导入中..."; const r = await post("/api/import-initial", { release_csv: await readFile("releaseCsv"), owner_csv: await readFile("ownerCsv"), alias_text: $("aliasText").value, release_name: $("initReleaseName").value }); $("initLog").textContent = "导入完成：" + r.release_id; await loadState(r.release_id); };
+      $("importBtn").onclick = async () => {
+        const csv = await readFile("initCsv");
+        if (!csv.trim()) return alert("请选择初始化 CSV 文件");
+        $("initLog").textContent = "导入中...";
+        try {
+          const r = await post("/api/import-initial", { csv, release_name: $("initReleaseName").value });
+          $("initLog").textContent = "导入完成：" + r.release_id;
+          await loadState(r.release_id);
+        } catch (e) {
+          $("initLog").textContent = "导入失败：" + e.message;
+        }
+      };
       $("createRelease").onclick = async () => {
         if (!$("newReleaseName").value.trim()) return alert("请填写新 Release 名称");
         const r = await post("/api/releases/create", {
@@ -1369,7 +1421,7 @@
       const confirmText = prompt(`删除 app 会先备份数据库，并删除所有未锁定 release 中的相关 snapshot。\n\n请输入 app_id 确认删除：${appId}`);
       if (confirmText !== appId) return;
       const r = await post("/api/admin/apps/delete", { app_id: appId, confirm: confirmText });
-      $("adminLog").textContent = `已删除 ${r.deleted.name}，备份文件：${r.backup}`;
+      $("adminLog").textContent = `已删除 ${r.deleted.id}，备份文件：${r.backup}`;
       if (selectedApp === appId) selectedApp = "";
       await loadState();
     }
