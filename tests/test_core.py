@@ -1043,5 +1043,24 @@ class CoreWorkflowTests(unittest.TestCase):
         self.assertGreaterEqual(len(core.app_audit_log(self.conn, app_id)), len(r1_events) + len(r2_events))
 
 
+    def test_clone_records_per_app_origin(self) -> None:
+        r1, app_id = self.import_initial()
+        r2 = core.create_release_from_previous(self.conn, "3.8.0")
+        r2_log = core.app_audit_log(self.conn, app_id, r2)
+        self.assertTrue(any(e["event"] == "clone_app" for e in r2_log))
+
+    def test_new_app_sync_records_origin_in_later_release(self) -> None:
+        r1, _ = self.import_initial()
+        r2 = core.create_release_from_previous(self.conn, "3.8.0")
+        app_id = core.add_new_app_request(
+            self.conn, r1, official_name="a", git_url="ssh://a", git_branch="main",
+            release_decision="release", owner="oa",
+        )
+        src_log = core.app_audit_log(self.conn, app_id, r1)
+        later_log = core.app_audit_log(self.conn, app_id, r2)
+        self.assertTrue(any(e["event"] == "create_app" for e in src_log))
+        self.assertTrue(any(e["event"] == "sync_app" for e in later_log))
+
+
 if __name__ == "__main__":
     unittest.main()

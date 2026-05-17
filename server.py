@@ -180,6 +180,8 @@ class Handler(BaseHTTPRequestHandler):
                         maca_version=body.get("maca_version", ""),
                         app_freeze_deadline=body.get("app_freeze_deadline", ""),
                         doc_deadline=body.get("doc_deadline", ""),
+                        user=self.user(),
+                        role=self.role(),
                     )
                     self.send_json({"release_id": release_id})
                     return

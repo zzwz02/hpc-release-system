@@ -952,6 +952,8 @@ def create_release_from_previous(
     maca_version: str = "",
     app_freeze_deadline: str = "",
     doc_deadline: str = "",
+    user: str = "system",
+    role: str = "system",
 ) -> str:
     if not (name or "").strip():
         raise ValueError("新 Release 名称不能为空")
@@ -973,6 +975,7 @@ def create_release_from_previous(
         "cloned_from": previous["id"] if previous else "",
     }
     save_release(conn, release)
+    previous_name = previous["name"] if previous else ""
     for app in list_apps(conn):
         old = previous["snapshots"].get(app["id"]) if previous else None
         if not old:
@@ -990,8 +993,19 @@ def create_release_from_previous(
         for td in snapshot.get("test_docs", []):
             td["stale"] = True
         save_snapshot(conn, release_id, app["id"], snapshot)
+        audit(
+            conn,
+            f"本 app 随 release 从「{previous_name}」克隆而来，已继承上一版的发布信息",
+            user=user,
+            role=role,
+            app_id=app["id"],
+            release_id=release_id,
+            event="clone_app",
+            commit=False,
+        )
     conn.commit()
-    audit(conn, f"创建 release {name}，沿用上一版本信息", release_id=release_id, event="create_release")
+    summary = f"创建 release「{name}」，从「{previous_name}」克隆" if previous else f"创建 release「{name}」"
+    audit(conn, summary, user=user, role=role, release_id=release_id, event="create_release")
     return release_id
 
 
@@ -1080,24 +1094,28 @@ def add_new_app_request(
         owners=[owner],
     )
     snapshot["release_decision"] = release_decision
-    synced_release_ids = []
+    source_name = release["name"]
     for target_release_id in _future_unlocked_release_ids(conn, release_id):
         target_release = get_release(conn, target_release_id)
         if app_id in target_release["snapshots"]:
             continue
-        target_snapshot = snapshot if target_release_id == release_id else _initial_snapshot_for_future_release(snapshot, target_release)
-        save_snapshot(conn, target_release_id, app_id, target_snapshot)
-        synced_release_ids.append(target_release_id)
+        if target_release_id == release_id:
+            save_snapshot(conn, target_release_id, app_id, snapshot)
+            audit(
+                conn,
+                f"新增 app：{official_name}（owner={owner}，初始决策={release_decision}）",
+                user=owner, role="Owner", app_id=app_id,
+                release_id=target_release_id, event="create_app", commit=False,
+            )
+        else:
+            save_snapshot(conn, target_release_id, app_id, _initial_snapshot_for_future_release(snapshot, target_release))
+            audit(
+                conn,
+                f"本 app 在「{source_name}」新增后，同步到本 release",
+                user=owner, role="Owner", app_id=app_id,
+                release_id=target_release_id, event="sync_app", commit=False,
+            )
     conn.commit()
-    audit(
-        conn,
-        f"新增 app：{official_name}，owner={owner}，初始决策={release_decision}，同步 release 数={len(synced_release_ids)}",
-        user=owner,
-        role="Owner",
-        app_id=app_id,
-        release_id=release_id,
-        event="create_app",
-    )
     return app_id
 
 
