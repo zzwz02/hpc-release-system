@@ -995,7 +995,7 @@
                 <label>App类型<input id="type" class="input" value="${esc(app.type)}" ${appMetaDisabled}></label>
                 <label>Gerrit URL<input id="gitUrl" class="input" value="${esc(app.git_url)}" ${rmMetaDisabled}></label>
                 <label>Branch<input id="gitBranch" class="input" value="${esc(app.git_branch)}" ${rmMetaDisabled}></label>
-                <label>官方 URL（进文档，可选）<input id="officialUrl" class="input" value="${esc(app.official_url)}" ${appMetaDisabled}></label>
+                <label>官方 URL<input id="officialUrl" class="input" value="${esc(app.official_url)}" ${appMetaDisabled}></label>
                 <label>Release决策<select id="decision" class="select" ${decisionDisabled}>${allowedDecisions.map(v => `<option value="${v}" ${snap.release_decision === v ? "selected" : ""}>${esc(releaseDecisionLabels[v])}</option>`).join("")}</select></label>
                 <label>版本（来自 app_info）<input class="input" value="${esc(snap.version)}" disabled></label>
                 <label>X86芯片<input class="input" value="${esc(snap.x86_chips)}" disabled></label>
