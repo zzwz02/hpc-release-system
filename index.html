@@ -1,226 +1,447 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>HPC App 发布信息协作系统</title>
-  <style>
-    * { box-sizing: border-box; }
-    body { margin: 0; background: #f6f7f9; color: #172033; font: 14px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
-    header { position: sticky; top: 0; z-index: 3; background: #1f2937; color: white; padding: 10px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-    header strong { font-size: 18px; margin-right: 8px; }
-    input, select, textarea, button { font: inherit; border-radius: 6px; border: 1px solid #cbd5e1; padding: 7px 8px; }
-    header input, header select { background: #111827; color: white; border-color: #4b5563; }
-    button { background: white; cursor: pointer; font-weight: 600; }
-    button.primary { background: #2563eb; color: white; border-color: #2563eb; }
-    button.good { background: #16803c; color: white; border-color: #16803c; }
-    button.warn { background: #fff7ed; color: #7c2d12; border-color: #fdba74; }
-    button.danger { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
-    main { padding: 16px; display: grid; gap: 14px; }
-    .tabs { display: flex; gap: 8px; flex-wrap: wrap; }
-    .tab.active { border-color: #2563eb; color: #2563eb; }
-    .subtabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-    .subtab.active { border-color: #2563eb; color: #2563eb; }
-    .init-pane, .artifact-pane { display: none; }
-    .init-pane.active, .artifact-pane.active { display: block; }
-    .view { display: none; }
-    .view.active { display: block; }
-    [hidden] { display: none !important; }
-    .grid { display: grid; grid-template-columns: 390px minmax(0, 1fr); gap: 14px; align-items: start; }
-    .panel { background: white; border: 1px solid #d8dde6; border-radius: 8px; box-shadow: 0 1px 2px rgba(18,24,40,.08); overflow: hidden; }
-    .panel h2, .panel h3 { margin: 0; padding: 11px 13px; border-bottom: 1px solid #d8dde6; background: #fbfcfe; font-size: 15px; }
-    .body { padding: 13px; display: grid; gap: 11px; }
-    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    .form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
-    label { display: grid; gap: 4px; font-weight: 600; color: #334155; }
-    label.check { display: flex; align-items: center; gap: 7px; }
-    label.check input { width: auto; }
-    textarea { width: 100%; min-height: 68px; resize: vertical; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 8px; border-bottom: 1px solid #d8dde6; text-align: left; vertical-align: top; }
-    th { background: #f8fafc; color: #475569; font-size: 12px; }
-    tr.selected { background: #eff6ff; }
-    .table { overflow: auto; max-height: 560px; border: 1px solid #d8dde6; border-radius: 8px; }
-    .muted { color: #607086; }
-    .small { font-size: 12px; }
-    .pill { display: inline-block; padding: 3px 7px; border-radius: 999px; font-size: 12px; background: #f8fafc; border: 1px solid #d8dde6; }
-    .ok { color: #166534; background: #f0fdf4; border-color: #bbf7d0; }
-    .bad { color: #991b1b; background: #fef2f2; border-color: #fecaca; }
-    .warnp { color: #92400e; background: #fffbeb; border-color: #fde68a; }
-    .banner { padding: 10px 13px; border-radius: 8px; font-weight: 600; margin-bottom: 8px; }
-    .log, .artifact { font-family: Consolas, monospace; white-space: pre-wrap; background: #0f172a; color: #dbeafe; border-radius: 6px; padding: 10px; min-height: 120px; }
-    .artifact { width: 100%; min-height: 430px; background: white; color: #172033; }
-    dialog { border: 0; border-radius: 8px; padding: 0; width: min(680px, calc(100vw - 32px)); box-shadow: 0 18px 45px rgba(15,23,42,.24); }
-    dialog::backdrop { background: rgba(15,23,42,.42); }
-    .dialog-card { background: white; border: 1px solid #d8dde6; border-radius: 8px; overflow: hidden; }
-    .dialog-card h2 { margin: 0; padding: 12px 14px; border-bottom: 1px solid #d8dde6; background: #fbfcfe; font-size: 16px; }
-    .dialog-actions { justify-content: flex-end; }
-    @media (max-width: 1100px) { .grid, .form { grid-template-columns: 1fr; } }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HPC App 发布信息协作系统</title>
+<style>
+  :root{
+    --bg:#eef0f4; --card:#fff; --border:#e4e7ec; --border-2:#d3d8e0;
+    --ink:#1b2333; --ink-2:#586172; --muted:#8b94a3;
+    --accent:#2563eb; --accent-2:#1d4ed8; --accent-soft:#eef3ff; --accent-bd:#c7d9ff;
+    --ok-fg:#15803d; --ok-bg:#ecfdf3; --ok-bd:#a6e9c2;
+    --warn-fg:#b45309; --warn-bg:#fff8ea; --warn-bd:#f4d57c;
+    --bad-fg:#b42318; --bad-bg:#fef3f2; --bad-bd:#f6c7c2;
+    --radius:12px; --shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.05);
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.55 "Segoe UI","Microsoft YaHei",system-ui,Arial,sans-serif;}
+  h1,h2,h3{margin:0;}
+  a{color:var(--accent);text-decoration:none;}
+  [hidden]{display:none !important;}
+  /* ---- top bar ---- */
+  .topbar{height:58px;background:var(--card);border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:14px;padding:0 22px;position:sticky;top:0;z-index:6;}
+  .brand{font-weight:800;font-size:16px;display:flex;align-items:center;gap:9px;}
+  .logo{width:30px;height:30px;border-radius:9px;color:#fff;font-weight:800;font-size:12px;
+    display:grid;place-items:center;background:linear-gradient(135deg,#2563eb,#5b3ee0);}
+  .spacer{flex:1;}
+  .loginbox,.sessionbox{display:flex;align-items:center;gap:8px;}
+  .ctl{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--ink-2);}
+  .input,.select,textarea{font:inherit;color:var(--ink);background:#fff;
+    border:1px solid var(--border-2);border-radius:8px;padding:7px 10px;}
+  .input:focus,.select:focus,textarea:focus,input:focus{outline:0;
+    border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);}
+  .iconbtn{width:34px;height:34px;border-radius:8px;border:1px solid var(--border-2);
+    background:#fff;cursor:pointer;font-size:15px;color:var(--ink-2);}
+  .iconbtn:hover{background:#f6f7f9;}
+  .userchip{display:flex;align-items:center;gap:8px;padding:4px 11px 4px 4px;
+    border:1px solid var(--border);border-radius:999px;background:#fafbfc;font-size:13px;font-weight:600;}
+  .avatar{width:26px;height:26px;border-radius:50%;background:#dbe6ff;color:#2851c4;
+    display:grid;place-items:center;font-weight:800;font-size:12px;}
+  /* ---- buttons ---- */
+  .btn{padding:8px 14px;border-radius:9px;border:1px solid var(--border-2);background:#fff;
+    font:inherit;font-weight:700;cursor:pointer;color:var(--ink);}
+  .btn:hover{background:#f6f7f9;}
+  .btn:disabled{opacity:.5;cursor:not-allowed;}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .btn.primary:hover:not(:disabled){background:var(--accent-2);}
+  .btn.good{background:var(--ok-fg);border-color:var(--ok-fg);color:#fff;}
+  .btn.good:hover:not(:disabled){filter:brightness(.94);}
+  .btn.warn{background:var(--warn-bg);border-color:var(--warn-bd);color:var(--warn-fg);}
+  .btn.danger{background:var(--bad-bg);border-color:var(--bad-bd);color:var(--bad-fg);}
+  .btn.ghost{background:none;}
+  .btn.sm{padding:5px 10px;font-size:12.5px;}
+  /* ---- tabs ---- */
+  .tabs{display:flex;gap:2px;padding:0 22px;background:var(--card);
+    border-bottom:1px solid var(--border);position:sticky;top:58px;z-index:5;}
+  .tab{padding:13px 16px;font:inherit;font-weight:700;font-size:13.5px;color:var(--ink-2);
+    cursor:pointer;border:0;border-bottom:2px solid transparent;background:none;}
+  .tab:hover{color:var(--ink);}
+  .tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+  /* ---- layout ---- */
+  .page{padding:18px 22px 60px;}
+  .view{display:none;}
+  .view.active{display:block;}
+  .workspace{display:grid;grid-template-columns:344px minmax(0,1fr);gap:18px;align-items:start;}
+  /* ---- phase banner ---- */
+  .phase{display:flex;align-items:center;gap:11px;padding:11px 15px;margin-bottom:16px;
+    border-radius:10px;font-weight:700;border:1px solid var(--ok-bd);
+    background:var(--ok-bg);color:var(--ok-fg);}
+  .phase.warnp{border-color:var(--warn-bd);background:var(--warn-bg);color:var(--warn-fg);}
+  .phase.bad{border-color:var(--bad-bd);background:var(--bad-bg);color:var(--bad-fg);}
+  .phase .dot{width:9px;height:9px;border-radius:50%;background:currentColor;flex:none;}
+  .phase .meta{margin-left:auto;font-weight:500;color:var(--ink-2);font-size:12.5px;}
+  /* ---- panel ---- */
+  .panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+    box-shadow:var(--shadow);overflow:hidden;}
+  .panel+.panel{margin-top:16px;}
+  .panel-head{padding:13px 16px;border-bottom:1px solid var(--border);background:#fafbfc;
+    display:flex;align-items:center;justify-content:space-between;gap:10px;}
+  .panel-head h2{font-size:14px;}
+  .panel-head h3{font-size:13px;}
+  .panel-body{padding:16px;}
+  .count{font-size:12px;color:var(--muted);font-weight:700;}
+  /* ---- subtabs ---- */
+  .subtabs{display:flex;gap:7px;margin-bottom:14px;flex-wrap:wrap;}
+  .subtab{padding:7px 13px;border-radius:8px;border:1px solid var(--border-2);background:#fff;
+    font:inherit;font-weight:700;font-size:13px;color:var(--ink-2);cursor:pointer;}
+  .subtab.active{color:var(--accent);background:var(--accent-soft);border-color:var(--accent-bd);}
+  .init-pane,.artifact-pane{display:none;}
+  .init-pane.active,.artifact-pane.active{display:block;}
+  /* ---- rows / forms ---- */
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+  .form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:13px;}
+  label{display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:700;color:var(--ink-2);}
+  label input,label select,label textarea,.input,.select{width:100%;}
+  label.check,label.inline{flex-direction:row;align-items:center;gap:8px;font-size:13px;color:var(--ink);}
+  label.check input,label.inline input{width:auto;}
+  textarea{min-height:64px;resize:vertical;line-height:1.5;}
+  input:disabled,select:disabled,textarea:disabled{background:#f3f4f6;color:#9aa1ac;cursor:not-allowed;}
+  .docfield{margin-top:12px;}
+  .docfield:first-child{margin-top:0;}
+  .hint{font-size:12px;color:var(--muted);margin:10px 0 0;line-height:1.6;}
+  .req{color:var(--bad-fg);font-weight:800;font-size:11px;}
+  /* ---- pills ---- */
+  .pill{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;
+    font-size:11.5px;font-weight:800;border:1px solid var(--border-2);background:#f5f6f8;color:var(--ink-2);
+    white-space:nowrap;}
+  .pill.ok{color:var(--ok-fg);background:var(--ok-bg);border-color:var(--ok-bd);}
+  .pill.bad{color:var(--bad-fg);background:var(--bad-bg);border-color:var(--bad-bd);}
+  .pill.warnp,.pill.warn{color:var(--warn-fg);background:var(--warn-bg);border-color:var(--warn-bd);}
+  .pill.accent{color:var(--accent-2);background:var(--accent-soft);border-color:var(--accent-bd);}
+  /* ---- stat cards ---- */
+  .stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;}
+  .stat{background:var(--card);border:1px solid var(--border);border-radius:11px;
+    box-shadow:var(--shadow);padding:14px 16px;}
+  .stat .num{font-size:26px;font-weight:800;line-height:1.1;}
+  .stat .lbl{font-size:12px;color:var(--muted);font-weight:700;margin-top:3px;}
+  .stat.ok .num{color:var(--ok-fg);}
+  .stat.warn .num{color:var(--warn-fg);}
+  .stat.bad .num{color:var(--bad-fg);}
+  .stat.accent .num{color:var(--accent);}
+  /* ---- tables ---- */
+  .table{overflow:auto;max-height:560px;border:1px solid var(--border);border-radius:10px;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th,td{padding:9px 11px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top;}
+  th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;
+    background:#fafbfc;position:sticky;top:0;}
+  tbody tr:last-child td{border-bottom:0;}
+  tbody tr:hover{background:#fafbfc;}
+  /* ---- app list ---- */
+  .searchbox{position:relative;margin-bottom:9px;}
+  .searchbox .input{padding-left:30px;}
+  .searchbox::before{content:"\1F50D";position:absolute;left:9px;top:8px;font-size:12px;opacity:.5;}
+  .applist{display:flex;flex-direction:column;gap:3px;}
+  .app-row{display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:10px;
+    cursor:pointer;border:1px solid transparent;}
+  .app-row:hover{background:#f6f7f9;}
+  .app-row.active{background:var(--accent-soft);border-color:var(--accent-bd);}
+  .app-ico{width:34px;height:34px;border-radius:9px;background:#eef1f6;color:#4b5566;
+    display:grid;place-items:center;font-weight:800;font-size:12px;flex:none;}
+  .app-row.active .app-ico{background:#dbe6ff;color:#2851c4;}
+  .app-meta{min-width:0;flex:1;}
+  .app-meta .name{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .app-meta .sub{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .app-row .tail{display:flex;flex-direction:column;align-items:flex-end;gap:4px;}
+  .pill-group{display:flex;gap:4px;}
+  /* ---- detail card ---- */
+  .detailcard{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+    box-shadow:var(--shadow);}
+  .detail-head{display:flex;align-items:flex-start;gap:14px;padding:16px 18px;
+    border-bottom:1px solid var(--border);}
+  .detail-head .big{width:46px;height:46px;border-radius:11px;background:#dbe6ff;color:#2851c4;
+    display:grid;place-items:center;font-weight:800;font-size:16px;flex:none;}
+  .detail-head h2{font-size:19px;}
+  .dh-main{min-width:0;flex:1;}
+  .row2{display:flex;gap:7px;margin-top:7px;flex-wrap:wrap;}
+  .greet{text-align:right;font-size:12.5px;color:var(--muted);font-weight:600;flex:none;}
+  .detail-body{padding:18px;}
+  .detail-foot{position:sticky;bottom:0;background:var(--card);border-top:1px solid var(--border);
+    padding:12px 18px;display:flex;align-items:center;gap:10px;border-radius:0 0 var(--radius) var(--radius);}
+  .foot-note{font-size:12px;color:var(--muted);}
+  .empty{padding:60px 24px;text-align:center;color:var(--muted);}
+  .empty .empty-ic{font-size:34px;opacity:.4;margin-bottom:8px;}
+  /* ---- banner ---- */
+  .banner{padding:10px 13px;border-radius:9px;font-weight:600;font-size:12.5px;
+    border:1px solid var(--border-2);background:#f6f7f9;color:var(--ink-2);margin-bottom:14px;}
+  .banner.ok{border-color:var(--ok-bd);background:var(--ok-bg);color:var(--ok-fg);}
+  .banner.warnp{border-color:var(--warn-bd);background:var(--warn-bg);color:var(--warn-fg);}
+  .banner.bad{border-color:var(--bad-bd);background:var(--bad-bg);color:var(--bad-fg);}
+  /* ---- checklist ---- */
+  .checklist{border:1px solid var(--warn-bd);background:var(--warn-bg);
+    border-radius:11px;padding:14px 16px;margin-bottom:18px;}
+  .checklist.done{border-color:var(--ok-bd);background:var(--ok-bg);}
+  .checklist-h{display:flex;align-items:baseline;justify-content:space-between;gap:10px;}
+  .checklist-h h3{font-size:14px;color:var(--warn-fg);}
+  .checklist.done .checklist-h h3{color:var(--ok-fg);}
+  .prog-label{font-size:12px;font-weight:700;color:var(--ink-2);white-space:nowrap;}
+  .bar{height:8px;border-radius:999px;background:rgba(0,0,0,.07);overflow:hidden;margin:9px 0;}
+  .bar>span{display:block;height:100%;border-radius:999px;
+    background:linear-gradient(90deg,#2563eb,#6d4be6);}
+  .checklist.done .bar>span{background:var(--ok-fg);}
+  .checklist-items{display:flex;flex-direction:column;}
+  .check-item{display:flex;align-items:center;gap:10px;padding:7px 0;}
+  .check-item+.check-item{border-top:1px dashed rgba(180,83,9,.25);}
+  .box{width:18px;height:18px;border-radius:6px;border:1.6px solid var(--warn-fg);flex:none;}
+  .ct{font-size:13px;color:var(--ink);}
+  .ck-note{margin:6px 0 0;font-size:12.5px;color:var(--ink-2);}
+  /* ---- sections ---- */
+  .section{border:1px solid var(--border);border-radius:11px;margin-bottom:13px;overflow:hidden;}
+  .section>summary{list-style:none;padding:13px 15px;cursor:pointer;display:flex;
+    align-items:center;gap:9px;font-weight:800;font-size:13.5px;background:#fafbfc;}
+  .section>summary::-webkit-details-marker{display:none;}
+  .section>summary .chev{transition:transform .15s;color:var(--muted);font-size:11px;}
+  .section[open]>summary .chev{transform:rotate(90deg);}
+  .section>summary .badge{margin-left:auto;}
+  .section-body{padding:16px 15px;border-top:1px solid var(--border);}
+  /* ---- diff / source ---- */
+  .src-line{font-size:12.5px;color:var(--ink-2);background:#f6f7f9;border:1px solid var(--border);
+    border-radius:8px;padding:8px 11px;margin-bottom:12px;}
+  .code{font-family:Consolas,"Courier New",monospace;font-size:12.5px;}
+  /* ---- test cards ---- */
+  .tcard{border:1px solid var(--border);border-radius:10px;margin-bottom:11px;overflow:hidden;}
+  .tcard-h{padding:10px 13px;border-bottom:1px solid var(--border);background:#fafbfc;
+    display:flex;align-items:center;gap:8px;font-weight:700;}
+  .tcard-b{padding:13px;display:grid;grid-template-columns:1fr 1fr;gap:11px;}
+  .tcard-b .full{grid-column:1 / -1;}
+  /* ---- qa ---- */
+  .qa-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(390px,1fr));gap:14px;
+    margin-top:14px;}
+  .qa-card{border:1px solid var(--border);border-radius:11px;box-shadow:var(--shadow);
+    background:var(--card);overflow:hidden;}
+  .qa-card-h{display:flex;align-items:center;gap:10px;padding:12px 14px;
+    border-bottom:1px solid var(--border);background:#fafbfc;}
+  .qa-card-h .name{font-weight:700;}
+  .qa-card-h .sub{font-size:12px;color:var(--muted);}
+  .qa-card-h .qa-cur{margin-left:auto;}
+  .qa-card-b{padding:13px 14px;display:flex;flex-direction:column;gap:10px;}
+  .qa-actions{margin-top:14px;display:flex;}
+  /* ---- log / artifact ---- */
+  .log{font-family:Consolas,monospace;font-size:12.5px;white-space:pre-wrap;background:#0f172a;
+    color:#dbeafe;border-radius:9px;padding:12px;min-height:90px;margin-top:12px;}
+  .artifact{width:100%;min-height:440px;font-family:Consolas,monospace;font-size:12.5px;
+    background:#fff;color:var(--ink);margin-top:14px;}
+  .muted{color:var(--muted);}
+  .small{font-size:12px;}
+  /* ---- dialog ---- */
+  dialog{border:0;border-radius:var(--radius);padding:0;width:min(620px,calc(100vw - 32px));
+    box-shadow:0 20px 50px rgba(15,23,42,.3);}
+  dialog::backdrop{background:rgba(15,23,42,.45);}
+  .dialog-card h2{padding:14px 16px;border-bottom:1px solid var(--border);background:#fafbfc;font-size:15px;}
+  .dialog-body{padding:16px;}
+  .dialog-actions{justify-content:flex-end;margin-top:14px;}
+  @media (max-width:1080px){.workspace,.form,.tcard-b,.qa-card-b{grid-template-columns:1fr;}}
+</style>
 </head>
 <body>
-  <header>
-    <strong>HPC App 发布信息协作系统</strong>
-    <span id="loginBox">用户 <input id="loginUser" value="rm"> 密码 <input id="loginPass" type="password" value="rm"> <button id="loginBtn">登录</button></span>
-    <span id="meBox" class="muted"></span>
-    <button id="logoutBtn" hidden>退出登录</button>
-    <span>Release</span><select id="release"></select>
-    <button id="refresh">刷新</button>
+  <header class="topbar">
+    <div class="brand"><span class="logo">HPC</span><span>发布信息协作系统</span></div>
+    <div class="spacer"></div>
+    <span id="loginBox" class="loginbox">
+      <input id="loginUser" class="input" value="rm" placeholder="用户名" style="width:120px">
+      <input id="loginPass" class="input" type="password" value="rm" placeholder="密码" style="width:120px">
+      <button id="loginBtn" class="btn primary">登录</button>
+    </span>
+    <span id="sessionBox" class="sessionbox" hidden>
+      <span class="ctl">Release <select id="release" class="select" style="min-width:170px"></select></span>
+      <button id="refresh" class="iconbtn" title="刷新">&#x21bb;</button>
+      <span class="userchip"><span class="avatar" id="meAvatar">·</span><span id="meBox">未登录</span></span>
+      <button id="logoutBtn" class="btn ghost sm">退出</button>
+    </span>
   </header>
-  <main>
-    <div class="tabs">
-      <button class="tab active" data-view="dashboard" data-roles="RM,Owner,QA">总览</button>
-      <button class="tab" data-view="init" data-roles="RM">初始化/周期</button>
-      <button class="tab" data-view="apps" data-roles="RM,Owner">App 工作台</button>
-      <button class="tab" data-view="qa" data-roles="QA,RM">QA</button>
-      <button class="tab" data-view="artifacts" data-roles="RM">RST</button>
-      <button class="tab" data-view="admin" data-roles="Admin">管理</button>
-    </div>
 
+  <nav class="tabs">
+    <button class="tab active" data-view="dashboard" data-roles="RM,Owner,QA">总览</button>
+    <button class="tab" data-view="init" data-roles="RM">周期管理</button>
+    <button class="tab" data-view="apps" data-roles="RM,Owner">App 工作台</button>
+    <button class="tab" data-view="qa" data-roles="QA,RM">QA</button>
+    <button class="tab" data-view="artifacts" data-roles="RM">RST 生成</button>
+    <button class="tab" data-view="admin" data-roles="Admin">系统管理</button>
+  </nav>
+
+  <main class="page">
     <div id="phaseBanner"></div>
 
     <section id="dashboard" class="view active">
-      <div class="panel"><h2>总览</h2><div class="body" id="summary"></div></div>
-      <div class="panel" style="margin-top:14px"><h2>发布待办 / 门禁</h2><div class="body"><div class="table"><table id="blockers"></table></div></div></div>
+      <div id="summary" class="stats"></div>
+      <div class="panel" style="margin-top:16px">
+        <div class="panel-head"><h2>发布待办 / 门禁</h2></div>
+        <div class="panel-body"><div class="table"><table id="blockers"></table></div></div>
+      </div>
     </section>
 
     <section id="init" class="view" data-roles="RM">
       <div class="subtabs">
-        <button class="subtab active" data-init-pane="releaseCyclePane">新建发布周期</button>
+        <button class="subtab active" data-init-pane="releaseCyclePane">发布周期</button>
         <button class="subtab" data-init-pane="initialImportPane">首次初始化</button>
       </div>
       <div id="releaseCyclePane" class="init-pane active">
-        <div class="panel"><h2>发布周期</h2><div class="body">
-          <div class="form">
-            <label>新 Release 名称 <input id="newReleaseName"></label>
-            <label>App 冻结 deadline（北京时间） <input id="newAppFreeze" type="date"></label>
-            <label>Doc deadline（北京时间） <input id="newDocDeadline" type="date"></label>
+        <div class="panel">
+          <div class="panel-head"><h2>新建发布周期</h2></div>
+          <div class="panel-body">
+            <div class="form">
+              <label>新 Release 名称<input id="newReleaseName" class="input"></label>
+              <label>App 冻结 deadline（北京时间）<input id="newAppFreeze" class="input" type="date"></label>
+              <label>Doc deadline（北京时间）<input id="newDocDeadline" class="input" type="date"></label>
+            </div>
+            <div class="row" style="margin-top:13px">
+              <button class="btn primary" id="createRelease">从上版克隆新 Release</button>
+            </div>
+            <p class="hint">两个 deadline 决定权限：app 冻结前可任意新增 / 调整 release 决策；冻结后只能把决策切到 cicd_only / stopped；doc deadline 前可继续编辑表单 / 上传 app_info；doc deadline 后只能 QA 操作。</p>
           </div>
-          <div class="row">
-            <button class="primary" id="createRelease">从上版克隆新 Release</button>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>当前 Release 设置</h2></div>
+          <div class="panel-body">
+            <div class="form">
+              <label>Release 名称<input id="editReleaseName" class="input"></label>
+              <label>App 冻结 deadline<input id="editAppFreeze" class="input" type="date"></label>
+              <label>Doc deadline<input id="editDocDeadline" class="input" type="date"></label>
+            </div>
+            <div class="row" style="margin-top:13px">
+              <button class="btn" id="saveDeadlines">保存 Release 设置</button>
+              <button class="btn primary" id="exportCsv">导出测试范围 CSV</button>
+            </div>
           </div>
-          <p class="muted small">两个 deadline 决定权限：app 冻结前可任意新增/调整 release 决策；冻结后只能把决策切到 cicd_only/stopped；doc deadline 前可继续编辑表单/上传 app_info；doc deadline 后只能 QA 操作。</p>
-          <div class="form">
-            <label>当前 Release 名称 <input id="editReleaseName"></label>
-            <label>当前 Release - App 冻结 deadline <input id="editAppFreeze" type="date"></label>
-            <label>当前 Release - Doc deadline <input id="editDocDeadline" type="date"></label>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>最终发布锁</h2></div>
+          <div class="panel-body">
+            <p class="hint" style="margin-top:0">Manager 在 Gerrit 上 merge 完报告后，由 RM 执行最终锁，所有信息从此冻结。</p>
+            <div class="row" style="margin-top:11px">
+              <button class="btn danger" id="finalLock">最终 Lock Release</button>
+              <button class="btn warn" id="finalUnlock">解锁 Release</button>
+            </div>
+            <div class="table" style="margin-top:14px"><table id="releaseTable"></table></div>
           </div>
-          <div class="row">
-            <button id="saveDeadlines">保存 Release 设置</button>
-            <button class="primary" id="exportCsv">导出测试范围 CSV</button>
-          </div>
-          <h3 style="margin-top:14px">最终发布锁（Manager merge 后执行）</h3>
-          <p class="muted small">Manager 在 Gerrit 上 merge 完报告后，由 RM 执行最终锁，所有信息从此冻结。</p>
-          <div class="row">
-            <button class="danger" id="finalLock">最终 Lock Release</button>
-            <button class="warn" id="finalUnlock">解锁 Release</button>
-          </div>
-          <div class="table"><table id="releaseTable"></table></div>
-        </div></div>
+        </div>
       </div>
       <div id="initialImportPane" class="init-pane">
-        <div class="panel"><h2>首次初始化</h2><div class="body">
-          <p class="muted small">CSV、alias mapping、app-owner 映射只需首次维护；后续 release 从上一版本克隆。</p>
-          <label>Release CSV <input id="releaseCsv" type="file" accept=".csv"></label>
-          <label>Owner CSV <input id="ownerCsv" type="file" accept=".csv"></label>
-          <label>Alias mapping <textarea id="aliasText" placeholder="aimodels=ai-models&#10;boltz=Boltz-2"></textarea></label>
-          <label>Release 名称 <input id="initReleaseName" placeholder="initial-release"></label>
-          <button class="primary" id="importBtn">导入初始化数据</button>
-          <div class="log" id="initLog"></div>
-        </div></div>
+        <div class="panel">
+          <div class="panel-head"><h2>首次初始化</h2></div>
+          <div class="panel-body">
+            <p class="hint" style="margin-top:0">CSV、alias mapping、app-owner 映射只需首次维护；后续 release 从上一版本克隆。</p>
+            <div class="form" style="grid-template-columns:1fr 1fr;margin-top:12px">
+              <label>Release CSV<input id="releaseCsv" class="input" type="file" accept=".csv"></label>
+              <label>Owner CSV<input id="ownerCsv" class="input" type="file" accept=".csv"></label>
+              <label>Release 名称<input id="initReleaseName" class="input" placeholder="initial-release"></label>
+              <label>Alias mapping<textarea id="aliasText" placeholder="aimodels=ai-models&#10;boltz=Boltz-2"></textarea></label>
+            </div>
+            <div class="row" style="margin-top:13px">
+              <button class="btn primary" id="importBtn">导入初始化数据</button>
+            </div>
+            <div class="log" id="initLog"></div>
+          </div>
+        </div>
       </div>
     </section>
 
-    <section id="apps" class="view">
-      <div class="grid">
-        <div class="panel"><h2>App 列表</h2><div class="body">
-          <div class="row"><input id="search" placeholder="搜索 app/owner/type" style="flex:1"><button id="newApp" data-roles="Owner">新增 app</button></div>
-          <div class="table"><table id="appTable"></table></div>
-        </div></div>
-        <div class="panel"><h2 id="detailTitle">App 详情</h2><div class="body" id="detail"></div></div>
+    <section id="apps" class="view" data-roles="RM,Owner">
+      <div class="workspace">
+        <div class="panel">
+          <div class="panel-head"><h2>App 列表</h2><span class="count" id="appCount"></span></div>
+          <div class="panel-body">
+            <div class="searchbox"><input id="search" class="input" placeholder="搜索 app / 类型 / owner"></div>
+            <button id="newApp" class="btn" data-roles="Owner" style="width:100%;margin-bottom:9px">+ 新增 app</button>
+            <div id="appTable" class="applist"></div>
+          </div>
+        </div>
+        <div class="detailcard"><div id="detail"></div></div>
       </div>
     </section>
 
     <section id="qa" class="view" data-roles="QA,RM">
-      <div class="panel"><h2>QA 工作台</h2><div class="body" id="qaPanel"></div></div>
+      <div id="qaPanel"></div>
     </section>
 
     <section id="artifacts" class="view" data-roles="RM">
-      <div class="panel"><h2>RST / release-data</h2><div class="body">
-        <div class="subtabs">
-          <button class="subtab active" data-artifact-pane="rstArtifactPane">RST 预览</button>
-          <button class="subtab" data-artifact-pane="managerReviewPane">Manager Review CSV</button>
-        </div>
-        <div id="rstArtifactPane" class="artifact-pane active">
-          <div class="row">
-            <button class="primary" id="preview">生成预览</button>
-            <button data-kind="release_note" class="download">查看 release note</button>
-            <button data-kind="manual" class="download">查看 HPC Manual</button>
-            <button data-kind="ai4sci" class="download">查看 AI4Sci</button>
-            <button data-kind="data" class="download">查看 release-data</button>
+      <div class="panel">
+        <div class="panel-head"><h2>RST / release-data</h2></div>
+        <div class="panel-body">
+          <div class="subtabs">
+            <button class="subtab active" data-artifact-pane="rstArtifactPane">RST 预览</button>
+            <button class="subtab" data-artifact-pane="managerReviewPane">Manager Review CSV</button>
           </div>
-        </div>
-        <div id="managerReviewPane" class="artifact-pane">
-          <p class="muted small">Manager Review CSV 包含当前 release 的所有 app。请选择需要输出的字段。</p>
-          <div class="form">
-            <label class="check"><input type="checkbox" data-manager-field="app_name" checked>App</label>
-            <label class="check"><input type="checkbox" data-manager-field="official_name">官方名称</label>
-            <label class="check"><input type="checkbox" data-manager-field="doc_target">文档类型</label>
-            <label class="check"><input type="checkbox" data-manager-field="app_type">App类型</label>
-            <label class="check"><input type="checkbox" data-manager-field="version" checked>版本号</label>
-            <label class="check"><input type="checkbox" data-manager-field="owners" checked>Owner</label>
-            <label class="check"><input type="checkbox" data-manager-field="chip_support" checked>支持芯片类型</label>
-            <label class="check"><input type="checkbox" data-manager-field="x86_chips">X86支持芯片</label>
-            <label class="check"><input type="checkbox" data-manager-field="arm_chips">ARM支持芯片</label>
-            <label class="check"><input type="checkbox" data-manager-field="release_decision">Release决策</label>
-            <label class="check"><input type="checkbox" data-manager-field="qa_status">QA状态</label>
-            <label class="check"><input type="checkbox" data-manager-field="owner_confirmed">Owner确认</label>
-            <label class="check"><input type="checkbox" data-manager-field="releasable" checked>是否可发布</label>
-            <label class="check"><input type="checkbox" data-manager-field="not_releasable_reason" checked>不可发布原因</label>
-            <label class="check"><input type="checkbox" data-manager-field="known_limitations" checked>已知限制</label>
-            <label class="check"><input type="checkbox" data-manager-field="gerrit_url">Gerrit URL</label>
-            <label class="check"><input type="checkbox" data-manager-field="git_branch">Branch</label>
+          <div id="rstArtifactPane" class="artifact-pane active">
+            <div class="row">
+              <button class="btn primary" id="preview">生成预览</button>
+              <button class="btn download" data-kind="release_note">查看 release note</button>
+              <button class="btn download" data-kind="manual">查看 HPC Manual</button>
+              <button class="btn download" data-kind="ai4sci">查看 AI4Sci</button>
+              <button class="btn download" data-kind="data">查看 release-data</button>
+            </div>
           </div>
-          <div class="row" style="margin-top:10px">
-            <button class="primary" id="generateManagerReview">生成 Manager Review CSV</button>
-            <button data-kind="manager_review" class="download">查看 Manager Review CSV</button>
-            <button id="downloadManagerReview">下载 manager_review.csv</button>
+          <div id="managerReviewPane" class="artifact-pane">
+            <p class="hint" style="margin-top:0">Manager Review CSV 包含当前 release 的所有 app。请选择需要输出的字段。</p>
+            <div class="form" style="grid-template-columns:repeat(4,1fr);margin-top:12px">
+              <label class="check"><input type="checkbox" data-manager-field="app_name" checked>App</label>
+              <label class="check"><input type="checkbox" data-manager-field="official_name">官方名称</label>
+              <label class="check"><input type="checkbox" data-manager-field="doc_target">文档类型</label>
+              <label class="check"><input type="checkbox" data-manager-field="app_type">App类型</label>
+              <label class="check"><input type="checkbox" data-manager-field="version" checked>版本号</label>
+              <label class="check"><input type="checkbox" data-manager-field="owners" checked>Owner</label>
+              <label class="check"><input type="checkbox" data-manager-field="chip_support" checked>支持芯片类型</label>
+              <label class="check"><input type="checkbox" data-manager-field="x86_chips">X86支持芯片</label>
+              <label class="check"><input type="checkbox" data-manager-field="arm_chips">ARM支持芯片</label>
+              <label class="check"><input type="checkbox" data-manager-field="release_decision">Release决策</label>
+              <label class="check"><input type="checkbox" data-manager-field="qa_status">QA状态</label>
+              <label class="check"><input type="checkbox" data-manager-field="owner_confirmed">Owner确认</label>
+              <label class="check"><input type="checkbox" data-manager-field="releasable" checked>是否可发布</label>
+              <label class="check"><input type="checkbox" data-manager-field="not_releasable_reason" checked>不可发布原因</label>
+              <label class="check"><input type="checkbox" data-manager-field="known_limitations" checked>已知限制</label>
+              <label class="check"><input type="checkbox" data-manager-field="gerrit_url">Gerrit URL</label>
+              <label class="check"><input type="checkbox" data-manager-field="git_branch">Branch</label>
+            </div>
+            <div class="row" style="margin-top:13px">
+              <button class="btn primary" id="generateManagerReview">生成 Manager Review CSV</button>
+              <button class="btn download" data-kind="manager_review">查看 Manager Review CSV</button>
+              <button class="btn" id="downloadManagerReview">下载 manager_review.csv</button>
+            </div>
           </div>
+          <textarea id="artifactText" class="artifact" readonly></textarea>
         </div>
-        <textarea id="artifactText" class="artifact" readonly></textarea>
-      </div></div>
+      </div>
     </section>
 
     <section id="admin" class="view" data-roles="Admin">
-      <div class="panel"><h2>系统管理</h2><div class="body">
-        <p class="muted small">清空数据库会先备份当前 SQLite 文件，然后删除 app、release、snapshot、artifact 和审计数据；默认账号会保留。</p>
-        <div class="row">
-          <input id="clearConfirm" placeholder="输入：CLEAR_DATABASE" style="min-width:220px">
-          <button class="danger" id="clearDb">备份并清空数据库</button>
+      <div class="panel">
+        <div class="panel-head"><h2>清空数据库</h2></div>
+        <div class="panel-body">
+          <p class="hint" style="margin-top:0">清空数据库会先备份当前 SQLite 文件，然后删除 app、release、snapshot、artifact 和审计数据；默认账号会保留。</p>
+          <div class="row" style="margin-top:11px">
+            <input id="clearConfirm" class="input" placeholder="输入：CLEAR_DATABASE" style="min-width:230px">
+            <button class="btn danger" id="clearDb">备份并清空数据库</button>
+          </div>
         </div>
-        <h3>删除单个 App</h3>
-        <p class="muted small">删除前会自动备份数据库；已最终锁定的 release 中的 app 不允许删除。</p>
-        <div class="table"><table id="adminAppTable"></table></div>
-        <div class="log" id="adminLog"></div>
-      </div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>删除单个 App</h2></div>
+        <div class="panel-body">
+          <p class="hint" style="margin-top:0">删除前会自动备份数据库；已最终锁定的 release 中的 app 不允许删除。</p>
+          <div class="table" style="margin-top:12px"><table id="adminAppTable"></table></div>
+          <div class="log" id="adminLog"></div>
+        </div>
+      </div>
     </section>
   </main>
 
   <dialog id="newAppDialog">
     <div class="dialog-card">
       <h2>新增 app</h2>
-      <div class="body">
-        <div class="form">
-          <label>官方 app/模型名称 <input id="newAppOfficialName" autocomplete="off"></label>
-          <label>Gerrit URL <input id="newAppGitUrl" autocomplete="off"></label>
-          <label>Branch <input id="newAppGitBranch" autocomplete="off"></label>
-          <label>类型 <select id="newAppDocTarget"></select></label>
-          <label>Release 决策 <select id="newAppReleaseDecision"></select></label>
+      <div class="dialog-body">
+        <div class="form" style="grid-template-columns:1fr 1fr">
+          <label>官方 app/模型名称<input id="newAppOfficialName" class="input" autocomplete="off"></label>
+          <label>Gerrit URL<input id="newAppGitUrl" class="input" autocomplete="off"></label>
+          <label>Branch<input id="newAppGitBranch" class="input" autocomplete="off"></label>
+          <label>类型<select id="newAppDocTarget" class="select"></select></label>
+          <label>Release 决策<select id="newAppReleaseDecision" class="select"></select></label>
         </div>
-        <p id="newAppHint" class="muted small"></p>
+        <p id="newAppHint" class="hint"></p>
         <div class="row dialog-actions">
-          <button id="newAppCancel" type="button">取消</button>
-          <button id="newAppCreate" type="button" class="primary">创建</button>
+          <button id="newAppCancel" type="button" class="btn">取消</button>
+          <button id="newAppCreate" type="button" class="btn primary">创建</button>
         </div>
       </div>
     </div>
@@ -247,6 +468,10 @@
     const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
     const headers = () => ({ "Content-Type": "application/json" });
     const currentReleaseId = () => $("release").value || state.release?.id || "";
+    const initials = name => {
+      const s = String(name || "").replace(/[^a-zA-Z0-9一-龥]/g, "");
+      return (s.slice(0, 2) || "··").toUpperCase();
+    };
     const releaseDecisionLabels = {
       release: "release：进入 release note/RST/QA",
       cicd_only: "cicd_only：仅纳入 CICD 构建/测试管控",
@@ -309,8 +534,6 @@
       if (appDetailEditMode && activeView() === "apps") return true;
       if (appDetailDirty && activeView() === "apps") return true;
       if (qaEditMode && activeView() === "qa") return true;
-      // Only block refresh if the user pressed a key in the last 3 seconds AND
-      // an editable field is still focused (so we don't wipe in-progress text).
       if (Date.now() - lastUserInputAt > 3000) return false;
       const tag = document.activeElement?.tagName;
       return ["INPUT", "TEXTAREA", "SELECT"].includes(tag);
@@ -401,7 +624,7 @@
       if (!release) return "";
       const af = release.app_freeze_deadline || "(未设置)";
       const dd = release.doc_deadline || "(未设置)";
-      return `App 冻结: ${af}　Doc deadline: ${dd}　当前北京时间: ${state.server_now_beijing || "?"}`;
+      return `App 冻结 ${af}　Doc deadline ${dd}　北京时间 ${state.server_now_beijing || "?"}`;
     }
     function appSortName(app) { return String(app.name || app.official_name || app.id || "").toLowerCase(); }
     function compareAppRows(a, b) {
@@ -423,7 +646,6 @@
       if ($("preview")) $("preview").disabled = releaseLocked();
       renderNewAppControls();
     }
-
     function renderRoleChrome() {
       const role = currentUser().role || "";
       document.querySelectorAll("[data-roles]").forEach(el => {
@@ -449,11 +671,11 @@
 
     function renderPhaseBanner() {
       const banner = $("phaseBanner");
-      if (!banner || !state.release) { if (banner) banner.innerHTML = ""; return; }
+      if (!banner) return;
+      if (!state.release) { banner.innerHTML = ""; return; }
       const p = phase();
-      const cls = p === "released_locked" ? "bad" : (p === "after_doc_deadline" ? "warnp" : "ok");
-      const text = phaseLabels[p] || p;
-      banner.innerHTML = `<div class="banner pill ${cls}">${esc(text)}　|　${esc(deadlineSummary(state.release))}</div>`;
+      const cls = p === "released_locked" ? "bad" : (p === "before_app_freeze" ? "ok" : "warnp");
+      banner.innerHTML = `<div class="phase ${cls}"><span class="dot"></span><span>${esc(phaseLabels[p] || p)}</span><span class="meta">${esc(deadlineSummary(state.release))}</span></div>`;
     }
 
     function renderSummary() {
@@ -464,22 +686,21 @@
         b,
         isReleaseSnap(x.snap) ? (qaStatusLabels[x.snap.qa_status || "not_checked"] || x.snap.qa_status || "") : ""
       ]));
-      const qaSummary = {
+      const qa = {
         not_checked: releaseRows.filter(x => (x.snap.qa_status || "not_checked") === "not_checked").length,
         qa_passed: releaseRows.filter(x => x.snap.qa_status === "qa_passed").length,
         has_issues: releaseRows.filter(x => x.snap.qa_status === "has_issues").length,
         cannot_release: releaseRows.filter(x => x.snap.qa_status === "cannot_release").length,
       };
-      $("summary").innerHTML = `<div class="row">
-        <span class="pill">Apps: ${rows.length}</span>
-        <span class="pill">Release 决策为 release: ${releaseRows.length}</span>
-        <span class="pill ok">QA 通过: ${qaSummary.qa_passed}</span>
-        <span class="pill warnp">存在问题: ${qaSummary.has_issues}</span>
-        <span class="pill bad">不可发布: ${qaSummary.cannot_release}</span>
-        <span class="pill">待 QA: ${qaSummary.not_checked}</span>
-        <span class="pill warnp">待办/门禁项: ${missingItems.length}</span>
-        <span class="pill">当前: ${esc(state.release?.name || "无")}</span>
-      </div>`;
+      const card = (num, lbl, cls = "") => `<div class="stat ${cls}"><div class="num">${num}</div><div class="lbl">${esc(lbl)}</div></div>`;
+      $("summary").innerHTML =
+        card(rows.length, "App 总数") +
+        card(releaseRows.length, "release 决策", "accent") +
+        card(qa.qa_passed, "QA 通过", "ok") +
+        card(qa.has_issues, "存在问题", "warn") +
+        card(qa.cannot_release, "不可发布", "bad") +
+        card(qa.not_checked, "待 QA") +
+        card(missingItems.length, "待办 / 门禁", missingItems.length ? "warn" : "ok");
       $("blockers").innerHTML = table(["App", "待办/门禁项", "QA"], missingItems);
     }
 
@@ -488,7 +709,7 @@
         ["Release", "阶段", "App 冻结", "Doc deadline", "Lock", "来源"],
         state.releases.map(r => [
           r.name,
-          phaseLabels[r.phase] ? r.phase : r.phase,
+          r.phase,
           r.app_freeze_deadline || "-",
           r.doc_deadline || "-",
           r.released_locked ? `已锁 (${r.released_locked_at || ""})` : "未锁",
@@ -500,9 +721,7 @@
       if ($("editDocDeadline")) $("editDocDeadline").value = toDateValue(state.release?.doc_deadline);
     }
 
-    function toDateValue(s) {
-      return s ? String(s).substring(0, 10) : "";
-    }
+    function toDateValue(s) { return s ? String(s).substring(0, 10) : ""; }
 
     function renderAdmin() {
       if (!$("adminAppTable")) return;
@@ -511,9 +730,16 @@
           <td><b>${esc(app.name)}</b><div class="small muted">${esc(app.id)}</div></td>
           <td>${esc((app.owners || []).join(","))}</td>
           <td>${esc(app.git_url || "")}<div class="small muted">${esc(app.git_branch || "")}</div></td>
-          <td><button class="danger" data-delete-app="${esc(app.id)}">删除</button></td>
+          <td><button class="btn danger sm" data-delete-app="${esc(app.id)}">删除</button></td>
         </tr>`).join("") || `<tr><td colspan="4" class="muted">无数据</td></tr>`}</tbody>`;
       document.querySelectorAll("[data-delete-app]").forEach(btn => btn.onclick = () => deleteApp(btn.dataset.deleteApp));
+    }
+
+    function decisionPill(d) {
+      if (d === "release") return `<span class="pill accent">release</span>`;
+      if (d === "cicd_only") return `<span class="pill">仅 CICD</span>`;
+      if (d === "stopped") return `<span class="pill bad">已停止</span>`;
+      return `<span class="pill">${esc(d || "")}</span>`;
     }
 
     function renderApps() {
@@ -522,16 +748,19 @@
       if (currentUser().role === "Owner") rows = rows.filter(x => (x.app.owners || []).includes(currentUser().username));
       if (q) rows = rows.filter(x => [x.app.name, x.app.type, (x.app.owners || []).join(",")].join(" ").toLowerCase().includes(q));
       rows.sort(compareAppRows);
-      $("appTable").innerHTML = `<thead><tr><th>App</th><th>Owner</th><th>决策</th><th>Docs</th><th>QA</th><th>最终发布</th><th>待办/门禁</th></tr></thead><tbody>${rows.map(({app,snap}) => `
-        <tr data-app="${esc(app.id)}" class="${selectedApp === app.id ? "selected" : ""}">
-          <td><b>${esc(app.name)}</b><div class="small muted">${esc(app.type || app.category || "")}</div></td>
-          <td>${esc((app.owners || []).join(","))}</td>
-          <td>${esc(snap.release_decision || "")}</td>
-          <td>${docsPill(snap)}</td>
-          <td>${isReleaseSnap(snap) ? qaPill(snap.qa_status) : ""}</td>
-          <td>${finalPill(snap)}</td>
-          <td>${todoPill(snap)}</td>
-        </tr>`).join("") || `<tr><td colspan="7" class="muted">无数据</td></tr>`}</tbody>`;
+      if ($("appCount")) $("appCount").textContent = `共 ${rows.length} 个`;
+      $("appTable").innerHTML = rows.map(({ app, snap }) => `
+        <div class="app-row ${selectedApp === app.id ? "active" : ""}" data-app="${esc(app.id)}">
+          <div class="app-ico">${esc(initials(app.name))}</div>
+          <div class="app-meta">
+            <div class="name">${esc(app.name)}</div>
+            <div class="sub">${esc(app.type || app.category || "—")} · ${esc((app.owners || []).join(",") || "无 owner")}</div>
+          </div>
+          <div class="tail">
+            ${decisionPill(snap.release_decision)}
+            ${isReleaseSnap(snap) ? `<span class="pill-group">${docsPill(snap)}${qaPill(snap.qa_status)}</span>` : ""}
+          </div>
+        </div>`).join("") || `<p class="muted small" style="padding:14px;text-align:center">无数据</p>`;
       document.querySelectorAll("[data-app]").forEach(tr => tr.onclick = () => {
         const nextApp = tr.dataset.app;
         if ((appDetailDirty || appDetailEditMode) && selectedApp && selectedApp !== nextApp && !confirm("当前 App 详情有未保存修改或处于编辑状态，切换 App 会丢失这些修改。确认切换？")) return;
@@ -547,43 +776,117 @@
 
     function qaPill(status) {
       const s = status || "not_checked";
-      const cls = s === "qa_passed" ? "ok" : (s === "has_issues" ? "ok" : (s === "cannot_release" ? "bad" : ""));
+      const cls = s === "qa_passed" ? "ok" : (s === "has_issues" ? "warnp" : (s === "cannot_release" ? "bad" : ""));
       return `<span class="pill ${cls}">${esc(qaStatusLabels[s] || s)}</span>`;
     }
-
-    function qaOk(snap) {
-      return ["qa_passed", "has_issues"].includes(snap?.qa_status || "");
-    }
-
-    function docsItems(snap) {
-      return (snap?.missing_items || []).filter(item => !String(item).startsWith("QA "));
-    }
-
-    function docsOk(snap) {
-      return isReleaseSnap(snap) && docsItems(snap).length === 0;
-    }
-
+    function qaOk(snap) { return ["qa_passed", "has_issues"].includes(snap?.qa_status || ""); }
+    function docsItems(snap) { return (snap?.missing_items || []).filter(item => !String(item).startsWith("QA ")); }
+    function docsOk(snap) { return isReleaseSnap(snap) && docsItems(snap).length === 0; }
     function docsPill(snap) {
       if (!isReleaseSnap(snap)) return "";
       const count = docsItems(snap).length;
-      return count ? `<span class="pill warnp">待补 ${count}</span>` : `<span class="pill ok">OK</span>`;
+      return count ? `<span class="pill warnp">待补 ${count}</span>` : `<span class="pill ok">文档齐全</span>`;
     }
-
     function finalPill(snap) {
       if (!isReleaseSnap(snap)) return "";
       if (docsOk(snap) && qaOk(snap)) return `<span class="pill ok">可发布</span>`;
       return `<span class="pill warnp">未就绪</span>`;
     }
-
     function todoPill(snap) {
       const count = (snap?.missing_items || []).length;
       return count ? `<span class="pill warnp">${count}</span>` : `<span class="pill ok">0</span>`;
+    }
+    function appInfoBadge(snap) {
+      if (!snap.app_info || !snap.app_info.source_type) return `<span class="pill warnp">待上传</span>`;
+      const un = (snap.app_info_diffs || []).filter(d => !d.confirmed).length;
+      return un ? `<span class="pill warnp">待确认 ${un}</span>` : `<span class="pill ok">已确认</span>`;
+    }
+    function docBadge(snap) {
+      const doc = snap.doc || {};
+      const empty = ["intro", "image_usage", "binary_usage", "env_setup", "limitations"].filter(k => !(doc[k] || "").trim()).length;
+      return empty ? `<span class="pill warnp">待补 ${empty}</span>` : `<span class="pill ok">已完成</span>`;
+    }
+    function testBadge(snap) {
+      const t = snap.test_docs || [];
+      if (!t.length) return `<span class="pill">无测试项</span>`;
+      const bad = t.filter(d => d.stale || !(d.dataset || "").trim() || !(d.content || "").trim() || !(d.pass_criteria || "").trim()).length;
+      return bad ? `<span class="pill warnp">待补 ${bad}</span>` : `<span class="pill ok">已完成</span>`;
+    }
+    function ownerProgress(snap) {
+      const doc = snap.doc || {};
+      const t = snap.test_docs || [];
+      const hasInfo = !!(snap.app_info && snap.app_info.source_type);
+      const checks = [
+        hasInfo,
+        (snap.app_info_diffs || []).every(d => d.confirmed),
+        !!(doc.intro || "").trim(),
+        !!(doc.image_usage || "").trim(),
+        !!(doc.binary_usage || "").trim(),
+        !!(doc.env_setup || "").trim(),
+        !!(doc.limitations || "").trim(),
+        hasInfo && t.length > 0 && t.every(d => !d.stale && (d.dataset || "").trim() && (d.content || "").trim() && (d.pass_criteria || "").trim()),
+      ];
+      const done = checks.filter(Boolean).length;
+      return { done, total: checks.length, pct: Math.round(done / checks.length * 100) };
+    }
+    function phaseBannerFor(snap) {
+      if (releaseLocked()) return `<div class="banner bad">🔒 Release 已最终锁定，所有信息冻结。如需继续编辑，请等待 RM 解锁或创建下一个 Release。</div>`;
+      if (!beforeDocDeadline()) return `<div class="banner warnp">⏰ 已过 Doc deadline：表单、文档和 app_info 已冻结，仅 QA 可继续标注状态。</div>`;
+      if (!beforeAppFreeze()) return `<div class="banner warnp">❄️ 已过 App 冻结 deadline：本 release 不可再新增或切换为 release 决策；可将决策切到 cicd_only/stopped。</div>`;
+      return "";
+    }
+    function docArea(key, label, value, disabled = "") {
+      return `<label class="docfield">${esc(label)}<textarea data-doc="${key}" ${disabled}>${esc(value || "")}</textarea></label>`;
+    }
+    function appInfoSource(snap) {
+      const info = snap.app_info || {};
+      if (!info.source_type) return "未提供";
+      if (info.source_type === "gerrit_fetch") return `Gerrit 拉取；commit=${info.commit_id || "未知"}；${info.source || ""}`;
+      if (info.source_type === "owner_upload") return `Owner 上传；上传人=${info.uploaded_by || "未知"}；文件=${info.source || ""}`;
+      return `${info.source_type}: ${info.source || ""}`;
+    }
+    function renderDiffs(snap) {
+      return table(["类型", "字段", "旧值", "新值", "确认"], (snap.app_info_diffs || []).map(d => [d.type, d.field, JSON.stringify(d.old_value), JSON.stringify(d.new_value), d.confirmed ? "已确认" : "未确认"]));
+    }
+    function renderTestDocs(snap, disabled = "") {
+      return (snap.test_docs || []).map(d => `<div class="tcard">
+        <div class="tcard-h"><span class="code">${esc(d.path)}</span>
+          ${d.owner_added ? `<span class="pill">owner-added</span>` : ""}
+          ${d.stale ? `<span class="pill warnp">待更新</span>` : `<span class="pill ok">说明已更新</span>`}</div>
+        <div class="tcard-b">
+          <label class="full">命令<textarea class="code" data-test="${d.id}" data-field="command" ${d.owner_added && !disabled ? "" : "disabled"}>${esc(d.command || "")}</textarea></label>
+          <label>测试数据集<textarea data-test="${d.id}" data-field="dataset" ${disabled}>${esc(d.dataset || "")}</textarea></label>
+          <label>测试内容<textarea data-test="${d.id}" data-field="content" ${disabled}>${esc(d.content || "")}</textarea></label>
+          <label>结果查看<textarea data-test="${d.id}" data-field="result_view" ${disabled}>${esc(d.result_view || "")}</textarea></label>
+          <label>通过标准<textarea data-test="${d.id}" data-field="pass_criteria" ${disabled}>${esc(d.pass_criteria || "")}</textarea></label>
+          <label class="check full"><input type="checkbox" data-test="${d.id}" data-field="stale" ${d.stale ? "" : "checked"} ${disabled}> 测试说明已更新</label>
+        </div></div>`).join("") || `<p class="muted small">上传 app_info 后会自动生成测试项。</p>`;
+    }
+    function table(headers, rows) {
+      return `<thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${headers.length}" class="muted">无数据</td></tr>`}</tbody>`;
+    }
+
+    async function loadChangeLog(appId) {
+      try {
+        const data = await api(`/api/app-audit?app_id=${encodeURIComponent(appId)}`);
+        if (selectedApp !== appId || !$("changeLog")) return;
+        $("changeLog").innerHTML = `<table>${table(["时间", "操作人", "角色", "Release", "事件", "内容"], (data.entries || []).map(e => [
+          e.ts || "", e.user || "", e.role || "", e.release_id || "", e.event || "", e.message || ""
+        ]))}</table>`;
+      } catch (err) {
+        if ($("changeLog")) $("changeLog").innerHTML = `<p class="muted">Change log 加载失败：${esc(err.message)}</p>`;
+      }
     }
 
     function renderDetail() {
       const app = appById(selectedApp);
       const snap = app ? releaseSnap(app.id) : null;
-      if (!app || !snap) { $("detailTitle").textContent = "App 详情"; $("detail").innerHTML = "<p class='muted'>请选择 app。</p>"; return; }
+      const host = $("detail");
+      if (!host) return;
+      if (!app || !snap) {
+        host.innerHTML = `<div class="empty"><div class="empty-ic">▤</div><p>从左侧选择一个 App，查看与编辑发布信息。</p></div>`;
+        return;
+      }
       if (appDetailEditAppId !== app.id) {
         appDetailEditMode = false;
         appDetailEditAppId = app.id;
@@ -602,167 +905,191 @@
         : (snap.release_decision === "release" ? ["release", "cicd_only", "stopped"] : ["cicd_only", "stopped"]);
       const selectedInfoFile = pendingAppInfoAppId === app.id ? pendingAppInfoFile : null;
       const clearFileDisabled = selectedInfoFile && writable ? "" : "disabled";
-      const actions = [
-        canEditDetail && !appDetailEditMode ? `<button class="primary" id="editApp">修改</button>` : "",
-        isRM() && appDetailEditMode ? `<button class="primary" id="saveApp" ${disabled}>保存</button>` : "",
-        `<input id="appInfoFile" type="file" accept=".json" hidden ${disabled}>`,
-        appDetailEditMode ? `<button id="chooseAppInfo" ${disabled}>选择 app_info.json</button>` : "",
-        `<span id="appInfoFileName" class="small muted">${selectedInfoFile ? `已选择：${esc(selectedInfoFile.name)}` : "未选择文件"}</span>`,
-        appDetailEditMode ? `<button id="clearAppInfoFile" ${clearFileDisabled}>清除</button>` : "",
-        appDetailEditMode ? `<button id="uploadInfo" ${disabled}>上传 app_info</button>` : "",
-        appDetailEditMode ? `<button id="fetchInfo" ${disabled}>从 Gerrit 拉取 app_info</button>` : ""
+      const rel = isReleaseSnap(snap);
+
+      const headPills = [
+        decisionPill(snap.release_decision),
+        snap.version ? `<span class="pill">版本 ${esc(snap.version)}</span>` : "",
+        `<span class="pill">${esc(docTargetLabels[app.doc_target] || app.doc_target || "")}</span>`,
+        rel ? (docsItems(snap).length ? `<span class="pill warnp">待补 ${docsItems(snap).length} 项</span>` : `<span class="pill ok">信息齐全</span>`) : "",
+        rel ? qaPill(snap.qa_status) : "",
       ].filter(Boolean).join("");
-      const diffActions = isOwner() ? `<button id="confirmDiffs" ${ownerOnlyDisabled}>确认全部 diff</button>` : "";
-      const ownerTestActions = isOwner() ? `<button id="addOwnerTest" ${ownerOnlyDisabled}>新增 owner-added 测试项</button>` : "";
-      const ownerFooterActions = isOwner() && canEditDetail
-        ? (appDetailEditMode
-          ? `<div class="row" style="margin-top:16px"><button class="good" id="confirmOwner" ${ownerOnlyDisabled} title="保存当前内容，并确认本 app 的 release 信息已补齐">保存并提交 Owner 确认</button></div>`
-          : `<div class="row" style="margin-top:16px"><button class="primary" id="editAppBottom">修改</button></div>`)
-        : "";
-      $("detailTitle").textContent = app.name;
+      const greet = isOwner() ? `<div class="greet">你好，${esc(currentUser().username)} 👋<br>完成清单后提交确认</div>` : "";
+
+      let topInfo = "";
+      if (rel) {
+        const todo = docsItems(snap);
+        const prog = ownerProgress(snap);
+        topInfo = `<div class="checklist ${todo.length ? "" : "done"}">
+          <div class="checklist-h">
+            <h3>${todo.length ? `⚠️ 还需完成 ${todo.length} 项` : `✅ 发布信息已齐全`}</h3>
+            <span class="prog-label">填写完成度 ${prog.pct}%</span>
+          </div>
+          <div class="bar"><span style="width:${prog.pct}%"></span></div>
+          ${todo.length
+            ? `<div class="checklist-items">${todo.map(it => `<div class="check-item"><span class="box"></span><span class="ct">${esc(it)}</span></div>`).join("")}</div>`
+            : `<p class="ck-note">所有发布必填项已补齐${isOwner() && !snap.owner_confirmed ? "，点击底部「保存并提交 Owner 确认」即可完成。" : "。"}</p>`}
+        </div>`;
+      } else {
+        topInfo = `<div class="banner">本 app 本轮决策为 <b>${esc(snap.release_decision)}</b>，不进入文档生成与 QA，无需补充文档 / 测试说明。</div>`;
+      }
+
       const phaseBanner = phaseBannerFor(snap);
       const lateDecisionBlock = (!beforeDocDeadline() && !releaseLocked() && canEdit(app) && snap.release_decision === "release")
-        ? `<div class="panel" style="margin-bottom:12px"><h3>调整 release 决策</h3><div class="body">
-             <p class="muted small">Doc deadline 已过，文档已冻结；如本 app 本轮不应发布，仍可在此把决策移出 release。</p>
-             <div class="row">
-               <select id="lateDecision"><option value="cicd_only">${esc(releaseDecisionLabels.cicd_only)}</option><option value="stopped">${esc(releaseDecisionLabels.stopped)}</option></select>
-               <button class="warn" id="saveLateDecision">保存决策</button>
-             </div>
-           </div></div>`
+        ? `<div class="section"><div class="section-body" style="border-top:0">
+             <p class="hint" style="margin-top:0">Doc deadline 已过，文档已冻结；如本 app 本轮不应发布，仍可在此把决策移出 release。</p>
+             <div class="row" style="margin-top:10px">
+               <select id="lateDecision" class="select" style="max-width:300px"><option value="cicd_only">${esc(releaseDecisionLabels.cicd_only)}</option><option value="stopped">${esc(releaseDecisionLabels.stopped)}</option></select>
+               <button class="btn warn" id="saveLateDecision">保存决策</button>
+             </div></div></div>`
         : "";
-      $("detail").innerHTML = `
-        ${phaseBanner}
-        ${lateDecisionBlock}
-        <div id="dirtyBanner" class="banner pill warnp" ${appDetailDirty || appDetailEditMode ? "" : "hidden"}>${appDetailDirty ? "有未保存修改，自动刷新已暂停。保存后会恢复自动刷新。" : "当前处于编辑状态，自动刷新已暂停。"}</div>
-        <div class="row">${actions}</div>
-        <div class="form">
-          <label>官方名称<input id="officialName" value="${esc(app.official_name)}" ${rmMetaDisabled}></label>
-          <label>Owner<input id="owners" value="${esc((app.owners || []).join(","))}" ${rmMetaDisabled}></label>
-          <label>类型<select id="docTarget" ${rmMetaDisabled}>${docTargetOptions.map(v => `<option value="${v}" ${app.doc_target===v?"selected":""}>${esc(docTargetLabels[v])}</option>`).join("")}</select></label>
-          <label>App类型<input id="type" value="${esc(app.type)}" ${appMetaDisabled}></label>
-          <label>Gerrit URL<input id="gitUrl" value="${esc(app.git_url)}" ${rmMetaDisabled}></label>
-          <label>Branch<input id="gitBranch" value="${esc(app.git_branch)}" ${rmMetaDisabled}></label>
-          <label>官方 URL<input id="officialUrl" value="${esc(app.official_url)}" ${appMetaDisabled}></label>
-          <label>Release决策<select id="decision" ${decisionDisabled}>${allowedDecisions.map(v => `<option value="${v}" ${snap.release_decision===v?"selected":""}>${esc(releaseDecisionLabels[v])}</option>`).join("")}</select></label>
-          <label>版本<input value="${esc(snap.version)}" disabled></label>
-          <label>X86芯片<input value="${esc(snap.x86_chips)}" disabled></label>
-          <label>ARM芯片<input value="${esc(snap.arm_chips)}" disabled></label>
+      const qaIssueBanner = (snap.qa_status === "has_issues" && snap.qa_issue_note)
+        ? `<div class="banner warnp">QA 标注「存在问题」：${esc(snap.qa_issue_note)}（会附加到已知限制段）</div>`
+        : "";
+
+      const appInfoActions = appDetailEditMode ? `<div class="row" style="margin-bottom:12px">
+          <button id="chooseAppInfo" class="btn ghost sm" ${disabled}>选择 app_info.json</button>
+          <span id="appInfoFileName" class="small muted">${selectedInfoFile ? `已选择：${esc(selectedInfoFile.name)}` : "未选择文件"}</span>
+          <button id="clearAppInfoFile" class="btn ghost sm" ${clearFileDisabled}>清除</button>
+          <button id="uploadInfo" class="btn sm" ${disabled}>上传 app_info</button>
+          <button id="fetchInfo" class="btn sm" ${disabled}>从 Gerrit 拉取</button>
+        </div>` : "";
+      const diffActions = isOwner() && appDetailEditMode ? `<div class="row" style="margin-top:10px"><button id="confirmDiffs" class="btn sm" ${ownerOnlyDisabled}>确认全部 diff</button></div>` : "";
+      const ownerTestActions = isOwner() && appDetailEditMode ? `<div class="row" style="margin-top:10px"><button id="addOwnerTest" class="btn sm" ${ownerOnlyDisabled}>+ 新增 owner-added 测试项</button></div>` : "";
+
+      let footActions = "";
+      if (canEditDetail) {
+        if (!appDetailEditMode) {
+          footActions = `<button id="editApp" class="btn primary">✎ 修改</button>`;
+        } else if (isRM()) {
+          footActions = `<button id="saveApp" class="btn primary" ${disabled}>保存</button>`;
+        } else {
+          footActions = `<button id="saveApp" class="btn" ${disabled}>仅保存</button>
+            <button id="confirmOwner" class="btn good" ${ownerOnlyDisabled} title="保存当前内容，并确认本 app 的发布信息已补齐">✓ 保存并提交 Owner 确认</button>`;
+        }
+      }
+      const footNote = appDetailEditMode
+        ? "编辑中 · 自动刷新已暂停"
+        : (releaseLocked() ? "Release 已锁定，只读"
+          : (!beforeDocDeadline() ? "Doc deadline 已过，表单只读"
+            : (canEditDetail ? "点击「修改」开始编辑" : "你没有此 app 的编辑权限")));
+
+      host.innerHTML = `
+        <div class="detail-head">
+          <div class="big">${esc(initials(app.name))}</div>
+          <div class="dh-main"><h2>${esc(app.name)}</h2><div class="row2">${headPills}</div></div>
+          ${greet}
         </div>
-        <p class="muted small">类型为 HPC 时生成到 HPC Manual；类型为 AI4Sci 时生成到 AI4Sci User Guide。release 进入正式发布、文档生成和 QA；cicd_only 仅纳入 CICD 构建/测试管控；stopped 表示停止维护或停止发布。</p>
-        <p class="muted small">app_info 来源：${appInfoSource(snap)}</p>
-        ${snap.qa_status === "has_issues" && snap.qa_issue_note ? `<p class="pill warnp" style="display:block;padding:8px">QA 标注「存在问题」：${esc(snap.qa_issue_note)}（会附加到已知限制段）</p>` : ""}
-        <label>描述（30字内）<textarea id="description" maxlength="30" ${appMetaDisabled}>${esc(app.description)}</textarea></label>
-        <h3>app_info diff</h3>
-        <div class="table"><table>${renderDiffs(snap)}</table></div>
-        ${diffActions}
-        <h3>文档字段</h3>
-        ${docArea("intro","基本介绍",snap.doc.intro, disabled)}${docArea("image_usage","镜像使用方法",snap.doc.image_usage, disabled)}${docArea("binary_usage","二进制包使用方法",snap.doc.binary_usage, disabled)}${docArea("env_setup","环境搭建",snap.doc.env_setup, disabled)}${docArea("limitations","已知限制",snap.doc.limitations, disabled)}
-        <h3>test_cmd 说明</h3>
-        <div id="testDocs">${renderTestDocs(snap, disabled)}</div>
-        ${ownerTestActions}
-        <h3>发布待办 / 门禁</h3><ul>${(snap.missing_items || []).map(b => `<li>${esc(b)}</li>`).join("") || "<li class='muted'>暂无</li>"}</ul>
-        <h3>Change Log</h3>
-        <div id="changeLog" class="table"><table>${table(["时间","操作人","角色","Release","事件","内容"], [])}</table></div>
-        ${ownerFooterActions}`;
+        <div class="detail-body">
+          ${phaseBanner}
+          ${lateDecisionBlock}
+          <div id="dirtyBanner" class="banner warnp" ${appDetailDirty || appDetailEditMode ? "" : "hidden"}>${appDetailDirty ? "有未保存修改，自动刷新已暂停。保存后会恢复。" : "当前处于编辑状态，自动刷新已暂停。"}</div>
+          ${topInfo}
+          ${qaIssueBanner}
+          <details class="section" open>
+            <summary><span class="chev">▶</span> 基本信息</summary>
+            <div class="section-body">
+              <div class="form">
+                <label>官方名称<input id="officialName" class="input" value="${esc(app.official_name)}" ${rmMetaDisabled}></label>
+                <label>Owner<input id="owners" class="input" value="${esc((app.owners || []).join(","))}" ${rmMetaDisabled}></label>
+                <label>类型<select id="docTarget" class="select" ${rmMetaDisabled}>${docTargetOptions.map(v => `<option value="${v}" ${app.doc_target === v ? "selected" : ""}>${esc(docTargetLabels[v])}</option>`).join("")}</select></label>
+                <label>App类型<input id="type" class="input" value="${esc(app.type)}" ${appMetaDisabled}></label>
+                <label>Gerrit URL<input id="gitUrl" class="input" value="${esc(app.git_url)}" ${rmMetaDisabled}></label>
+                <label>Branch<input id="gitBranch" class="input" value="${esc(app.git_branch)}" ${rmMetaDisabled}></label>
+                <label>官方 URL（进文档，可选）<input id="officialUrl" class="input" value="${esc(app.official_url)}" ${appMetaDisabled}></label>
+                <label>Release决策<select id="decision" class="select" ${decisionDisabled}>${allowedDecisions.map(v => `<option value="${v}" ${snap.release_decision === v ? "selected" : ""}>${esc(releaseDecisionLabels[v])}</option>`).join("")}</select></label>
+                <label>版本（来自 app_info）<input class="input" value="${esc(snap.version)}" disabled></label>
+                <label>X86芯片<input class="input" value="${esc(snap.x86_chips)}" disabled></label>
+                <label>ARM芯片<input class="input" value="${esc(snap.arm_chips)}" disabled></label>
+              </div>
+              <label class="docfield">描述（30字内）<textarea id="description" maxlength="30" ${appMetaDisabled}>${esc(app.description)}</textarea></label>
+              <p class="hint">类型为 HPC 时生成到 HPC Manual；AI4Sci 时生成到 AI4Sci User Guide。release 进入正式发布、文档生成与 QA；cicd_only 仅纳入 CICD 构建/测试管控；stopped 表示停止维护 / 停止发布。</p>
+            </div>
+          </details>
+          <details class="section" open>
+            <summary><span class="chev">▶</span> app_info 与 diff <span class="badge">${rel ? appInfoBadge(snap) : ""}</span></summary>
+            <div class="section-body">
+              <div class="src-line">app_info 来源：${esc(appInfoSource(snap))}</div>
+              <input id="appInfoFile" type="file" accept=".json" hidden ${disabled}>
+              ${appInfoActions}
+              <div class="table"><table>${renderDiffs(snap)}</table></div>
+              ${diffActions}
+            </div>
+          </details>
+          <details class="section" open>
+            <summary><span class="chev">▶</span> 文档字段 <span class="badge">${rel ? docBadge(snap) : ""}</span></summary>
+            <div class="section-body">
+              <p class="hint" style="margin-top:0">这些内容会进入文档。用日常语言写即可，RM 生成时会转成 RST。</p>
+              ${docArea("intro", "基本介绍", snap.doc.intro, disabled)}
+              ${docArea("image_usage", "镜像使用方法", snap.doc.image_usage, disabled)}
+              ${docArea("binary_usage", "二进制包使用方法", snap.doc.binary_usage, disabled)}
+              ${docArea("env_setup", "环境搭建", snap.doc.env_setup, disabled)}
+              ${docArea("limitations", "已知限制", snap.doc.limitations, disabled)}
+            </div>
+          </details>
+          <details class="section" open>
+            <summary><span class="chev">▶</span> 测试说明（各 test_cmd） <span class="badge">${rel ? testBadge(snap) : ""}</span></summary>
+            <div class="section-body">
+              <div id="testDocs">${renderTestDocs(snap, disabled)}</div>
+              ${ownerTestActions}
+            </div>
+          </details>
+          <details class="section">
+            <summary><span class="chev">▶</span> 变更记录</summary>
+            <div class="section-body"><div id="changeLog" class="table"><table>${table(["时间", "操作人", "角色", "Release", "事件", "内容"], [])}</table></div></div>
+          </details>
+        </div>
+        <div class="detail-foot">
+          <span class="foot-note">${esc(footNote)}</span>
+          <div class="spacer"></div>
+          ${footActions}
+        </div>`;
       bindDetail(app, snap);
       loadChangeLog(app.id);
     }
 
-    function phaseBannerFor(snap) {
-      if (releaseLocked()) {
-        return `<div class="banner pill bad">Release 已最终锁定，所有信息冻结。如需继续编辑，请等待 RM 解锁或创建下一个 Release。</div>`;
-      }
-      if (!beforeDocDeadline()) {
-        return `<div class="banner pill warnp">已过 Doc deadline：表单、文档和 app_info 已冻结，仅 QA 可继续标注状态。</div>`;
-      }
-      if (!beforeAppFreeze()) {
-        return `<div class="banner pill warnp">已过 App 冻结 deadline：本 release 不可再新增或重新切换为 release 决策；可将决策切到 cicd_only/stopped。</div>`;
-      }
-      return "";
-    }
-
-    function docArea(key, label, value, disabled = "") { return `<label>${label}<textarea data-doc="${key}" ${disabled}>${esc(value || "")}</textarea></label>`; }
-    function appInfoSource(snap) {
-      const info = snap.app_info || {};
-      if (!info.source_type) return "未提供";
-      if (info.source_type === "gerrit_fetch") return `Gerrit 拉取；commit=${info.commit_id || "未知"}；${info.source || ""}`;
-      if (info.source_type === "owner_upload") return `Owner 上传；上传人=${info.uploaded_by || "未知"}；文件=${info.source || ""}`;
-      return `${info.source_type}: ${info.source || ""}`;
-    }
-    function renderDiffs(snap) { return table(["类型","字段","旧值","新值","确认"], (snap.app_info_diffs || []).map(d => [d.type, d.field, JSON.stringify(d.old_value), JSON.stringify(d.new_value), d.confirmed ? "已确认" : "未确认"])); }
-    function renderTestDocs(snap, disabled = "") {
-      return (snap.test_docs || []).map(d => `<div class="panel" style="margin-bottom:10px"><h3>${esc(d.path)} ${d.owner_added ? "<span class='pill'>owner-added</span>" : ""} ${d.stale ? "<span class='pill warnp'>stale</span>" : ""}</h3><div class="body">
-        <label>命令<textarea data-test="${d.id}" data-field="command" ${d.owner_added && !disabled ? "" : "disabled"}>${esc(d.command || "")}</textarea></label>
-        <label>测试数据集<textarea data-test="${d.id}" data-field="dataset" ${disabled}>${esc(d.dataset || "")}</textarea></label>
-        <label>测试内容<textarea data-test="${d.id}" data-field="content" ${disabled}>${esc(d.content || "")}</textarea></label>
-        <label>结果查看<textarea data-test="${d.id}" data-field="result_view" ${disabled}>${esc(d.result_view || "")}</textarea></label>
-        <label>通过标准<textarea data-test="${d.id}" data-field="pass_criteria" ${disabled}>${esc(d.pass_criteria || "")}</textarea></label>
-        <label><input type="checkbox" data-test="${d.id}" data-field="stale" ${d.stale ? "" : "checked"} ${disabled}> 测试说明已更新</label>
-      </div></div>`).join("") || "<p class='muted'>上传 app_info 后生成测试项。</p>";
-    }
-
-    async function loadChangeLog(appId) {
-      try {
-        const data = await api(`/api/app-audit?app_id=${encodeURIComponent(appId)}`);
-        if (selectedApp !== appId || !$("changeLog")) return;
-        $("changeLog").innerHTML = `<table>${table(["时间","操作人","角色","Release","事件","内容"], (data.entries || []).map(e => [
-          e.ts || "",
-          e.user || "",
-          e.role || "",
-          e.release_id || "",
-          e.event || "",
-          e.message || ""
-        ]))}</table>`;
-      } catch (err) {
-        if ($("changeLog")) $("changeLog").innerHTML = `<p class="muted">Change log 加载失败：${esc(err.message)}</p>`;
-      }
-    }
-
-    function table(headers, rows) { return `<thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${headers.length}" class="muted">无数据</td></tr>`}</tbody>`; }
-
     function renderQa() {
       const panel = $("qaPanel");
       if (!panel || (!isQA() && !isRM())) return;
-      if (!state.release) { panel.innerHTML = "<p class='muted'>请选择 release。</p>"; return; }
+      if (!state.release) { panel.innerHTML = `<div class="panel"><div class="panel-body"><p class="muted">请选择 release。</p></div></div>`; return; }
       const writable = !releaseLocked();
-      if (qaEditReleaseId !== currentReleaseId()) {
-        qaEditReleaseId = currentReleaseId();
-        qaEditMode = false;
-      }
+      if (qaEditReleaseId !== currentReleaseId()) { qaEditReleaseId = currentReleaseId(); qaEditMode = false; }
       if (!writable) qaEditMode = false;
       const qaFieldsWritable = writable && qaEditMode;
       const rows = state.apps
         .map(app => ({ app, snap: releaseSnap(app.id) }))
         .filter(x => isReleaseSnap(x.snap))
         .sort((a, b) => appSortName(a.app).localeCompare(appSortName(b.app), "zh-CN"));
-      const logBlock = `
-        <div class="panel" style="margin-bottom:14px"><h3>QA log 文件（单个，覆盖式上传）</h3><div class="body">
-          ${state.qa_log ? `<div class="row"><span class="pill ok">已上传：${esc(state.qa_log.filename)}（${esc(state.qa_log.uploaded_at)} by ${esc(state.qa_log.uploaded_by)}）</span><a href="/api/qa-log/download?release_id=${encodeURIComponent(currentReleaseId())}" target="_blank"><button>下载当前 log</button></a></div>` : `<p class='muted'>本 release 暂无 QA log。</p>`}
-          <div class="row"><input id="qaLogFile" type="file" ${writable?"":"disabled"}><button class="primary" id="qaLogUpload" ${writable?"":"disabled"}>上传 log（覆盖）</button></div>
+      const logBlock = `<div class="panel"><div class="panel-head"><h2>QA log 文件</h2><span class="count">单个 · 覆盖式上传</span></div><div class="panel-body">
+          ${state.qa_log
+            ? `<div class="row"><span class="pill ok">已上传：${esc(state.qa_log.filename)}</span><span class="muted small">${esc(state.qa_log.uploaded_at)} · ${esc(state.qa_log.uploaded_by)}</span><a href="/api/qa-log/download?release_id=${encodeURIComponent(currentReleaseId())}" target="_blank"><button class="btn ghost sm">下载</button></a></div>`
+            : `<p class="muted small">本 release 暂无 QA log。</p>`}
+          <div class="row" style="margin-top:9px"><input id="qaLogFile" type="file" class="input" ${writable ? "" : "disabled"}><button class="btn primary" id="qaLogUpload" ${writable ? "" : "disabled"}>上传 log（覆盖）</button></div>
         </div></div>`;
-      const rowsHtml = rows.map(({app, snap}) => {
+      const editBanner = qaEditMode ? `<div class="banner warnp" style="margin-top:14px">编辑中 · 自动刷新已暂停。</div>` : "";
+      const cards = rows.map(({ app, snap }) => {
         const status = snap.qa_status || "not_checked";
-        const noteRequired = status === "has_issues" ? "" : "(可选)";
-        return `
-        <div class="panel" style="margin-bottom:10px"><h3>${esc(app.name)} <span class="small muted">${esc(snap.version || "")}</span></h3><div class="body">
-          <div class="row">
-            <label>QA 状态
-              <select data-qa-status="${esc(app.id)}" ${qaFieldsWritable?"":"disabled"}>
-                ${qaStatusOptions.map(s => `<option value="${s}" ${status===s?"selected":""}>${esc(qaStatusLabels[s])}</option>`).join("")}
-              </select>
-            </label>
+        return `<div class="qa-card">
+          <div class="qa-card-h">
+            <span class="app-ico">${esc(initials(app.name))}</span>
+            <div><div class="name">${esc(app.name)}</div><div class="sub">版本 ${esc(snap.version || "—")} · ${esc((app.owners || []).join(",") || "无 owner")}</div></div>
+            <span class="qa-cur">${qaPill(status)}</span>
           </div>
-          <label>问题说明 ${noteRequired}<textarea data-qa-note="${esc(app.id)}" ${qaFieldsWritable?"":"disabled"} placeholder="标注「存在问题」时必填；保存后会附加到已知限制段">${esc(snap.qa_issue_note || "")}</textarea></label>
-          <p class="small muted">Gerrit: ${esc(app.git_url || "")} ${esc(app.git_branch || "")}　owners: ${esc((app.owners || []).join(","))}</p>
-        </div></div>`;
-      }).join("") || "<p class='muted'>本 release 暂无 release 决策为 release 的 app。</p>";
-      const saveBlock = rows.length ? `<div class="row" style="margin-top:10px">${
+          <div class="qa-card-b">
+            <label>QA 状态<select data-qa-status="${esc(app.id)}" class="select" ${qaFieldsWritable ? "" : "disabled"}>
+              ${qaStatusOptions.map(s => `<option value="${s}" ${status === s ? "selected" : ""}>${esc(qaStatusLabels[s])}</option>`).join("")}
+            </select></label>
+            <label>问题说明 ${status === "has_issues" ? '<span class="req">必填</span>' : "(可选)"}<textarea data-qa-note="${esc(app.id)}" ${qaFieldsWritable ? "" : "disabled"} placeholder="标注「存在问题」时必填；保存后会附加到已知限制段">${esc(snap.qa_issue_note || "")}</textarea></label>
+            <p class="small muted">Gerrit: ${esc(app.git_url || "")} ${esc(app.git_branch || "")}</p>
+          </div></div>`;
+      }).join("");
+      const grid = rows.length ? `<div class="qa-grid">${cards}</div>` : `<div class="banner" style="margin-top:14px">本 release 暂无 release 决策为 release 的 app。</div>`;
+      const saveBlock = rows.length ? `<div class="qa-actions">${
         qaEditMode
-          ? `<button class="primary" id="qaSaveAll" ${writable?"":"disabled"}>保存 QA 状态</button>`
-          : `<button class="primary" id="qaEdit" ${writable?"":"disabled"}>修改</button>`
+          ? `<button class="btn primary" id="qaSaveAll" ${writable ? "" : "disabled"}>保存 QA 状态</button>`
+          : `<button class="btn primary" id="qaEdit" ${writable ? "" : "disabled"}>✎ 修改</button>`
       }</div>` : "";
-      const editBanner = qaEditMode ? `<div class="banner pill warnp">当前处于编辑状态，自动刷新已暂停。</div>` : "";
-      panel.innerHTML = logBlock + editBanner + rowsHtml + saveBlock;
+      panel.innerHTML = logBlock + editBanner + grid + saveBlock;
       bindQa();
     }
 
@@ -779,10 +1106,7 @@
         } catch (e) { alert("上传失败：" + e.message); }
       };
       const edit = $("qaEdit");
-      if (edit) edit.onclick = () => {
-        qaEditMode = true;
-        renderQa();
-      };
+      if (edit) edit.onclick = () => { qaEditMode = true; renderQa(); };
       const saveAll = $("qaSaveAll");
       if (saveAll) saveAll.onclick = async () => {
         const items = [...document.querySelectorAll("[data-qa-status]")].map(el => {
@@ -807,7 +1131,6 @@
         }
       };
     }
-
     function bindDetail(app, snap) {
       const enterEdit = () => {
         appDetailEditMode = true;
@@ -823,25 +1146,16 @@
       if ($("chooseAppInfo")) $("chooseAppInfo").onclick = () => {
         appInfoPickerHoldUntil = Date.now() + 120000;
         const input = $("appInfoFile");
-        if (input) {
-          input.value = "";
-          input.click();
-        }
+        if (input) { input.value = ""; input.click(); }
       };
       if ($("appInfoFile")) $("appInfoFile").onchange = () => {
         appInfoPickerHoldUntil = 0;
         const file = $("appInfoFile").files[0] || null;
-        if (file) {
-          pendingAppInfoFile = file;
-          pendingAppInfoAppId = app.id;
-        }
+        if (file) { pendingAppInfoFile = file; pendingAppInfoAppId = app.id; }
         renderDetail();
       };
       if ($("clearAppInfoFile")) $("clearAppInfoFile").onclick = () => {
-        if (pendingAppInfoAppId === app.id) {
-          pendingAppInfoFile = null;
-          pendingAppInfoAppId = "";
-        }
+        if (pendingAppInfoAppId === app.id) { pendingAppInfoFile = null; pendingAppInfoAppId = ""; }
         if ($("appInfoFile")) $("appInfoFile").value = "";
         renderDetail();
       };
@@ -896,7 +1210,6 @@
     }
 
     async function saveApp(app, confirmOwner = false, confirmDiffs = false) {
-      const snap = releaseSnap(app.id);
       const description = $("description").value.trim();
       if (description.length > 30) {
         alert("描述不能超过30字");
@@ -1069,15 +1382,16 @@
     }
 
     function showLoggedIn(user) {
-      $("loginBox").style.display = "none";
-      $("meBox").textContent = `${user.role} / ${user.username}`;
-      $("logoutBtn").hidden = false;
+      $("loginBox").hidden = true;
+      $("sessionBox").hidden = false;
+      $("meBox").textContent = `${user.role} · ${user.username}`;
+      $("meAvatar").textContent = (user.username || "·").slice(0, 1).toUpperCase();
     }
 
     function showLoggedOut() {
-      $("loginBox").style.display = "";
+      $("loginBox").hidden = false;
+      $("sessionBox").hidden = true;
       $("meBox").textContent = "未登录";
-      $("logoutBtn").hidden = true;
     }
 
     bind();
