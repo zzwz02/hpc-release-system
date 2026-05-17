@@ -375,7 +375,11 @@ class Handler(BaseHTTPRequestHandler):
                     updated["missing_items"] = core.missing_items_for(core.get_app(conn, aid), updated)
                     core.save_snapshot(conn, rid, aid, updated)
                     conn.commit()
-                    self.send_json({"snapshot": updated, "missing_items": updated.get("missing_items", []), "qa_status": updated.get("qa_status")})
+                    response = {"snapshot": updated, "missing_items": updated.get("missing_items", []), "qa_status": updated.get("qa_status")}
+                    if body.get("propagate_forward"):
+                        delta = core.compute_propagation_delta(snap_now, updated)
+                        response["propagation"] = core.propagate_to_later_releases(conn, rid, aid, delta, user=actor, role=role)
+                    self.send_json(response)
                     return
                 if parsed.path == "/api/qa/status-batch":
                     if self.role() not in {"QA", "RM"}:
