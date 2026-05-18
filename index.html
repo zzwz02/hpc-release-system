@@ -141,6 +141,9 @@
   .searchbox .input{padding-left:30px;}
   .searchbox::before{content:"\1F50D";position:absolute;left:9px;top:8px;font-size:12px;opacity:.5;}
   .applist{display:flex;flex-direction:column;gap:3px;}
+  .dot-legend{display:flex;flex-wrap:wrap;gap:4px 10px;margin-bottom:9px;
+    font-size:11px;color:var(--muted);}
+  .lg-item{display:flex;align-items:center;gap:4px;}
   .app-row{display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:10px;
     cursor:pointer;border:1px solid transparent;}
   .app-row:hover{background:#f6f7f9;}
@@ -148,6 +151,13 @@
   .app-ico{width:34px;height:34px;border-radius:9px;background:#eef1f6;color:#4b5566;
     display:grid;place-items:center;font-weight:800;font-size:12px;flex:none;}
   .app-row.active .app-ico{background:#dbe6ff;color:#2851c4;}
+  .app-dot{width:10px;height:10px;border-radius:50%;flex:none;background:#c2c8d2;}
+  .app-dot.ok{background:var(--ok-fg);}
+  .app-dot.warn{background:var(--warn-fg);}
+  .app-dot.bad{background:var(--bad-fg);}
+  .app-dot.todo{background:#c2c8d2;}
+  .app-dot.na{background:transparent;border:1.5px solid #c2c8d2;}
+  .app-dot.lg{width:13px;height:13px;}
   .app-meta{min-width:0;flex:1;}
   .app-meta .name{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .app-meta .sub{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -158,8 +168,7 @@
     box-shadow:var(--shadow);}
   .detail-head{display:flex;align-items:flex-start;gap:14px;padding:16px 18px;
     border-bottom:1px solid var(--border);}
-  .detail-head .big{width:46px;height:46px;border-radius:11px;background:#dbe6ff;color:#2851c4;
-    display:grid;place-items:center;font-weight:800;font-size:16px;flex:none;}
+  .detail-head .app-dot{margin-top:8px;}
   .detail-head h2{font-size:19px;}
   .dh-main{min-width:0;flex:1;}
   .row2{display:flex;gap:7px;margin-top:7px;flex-wrap:wrap;}
@@ -350,6 +359,13 @@
           <div class="panel-body">
             <div class="searchbox"><input id="search" class="input" placeholder="搜索 app / 类型 / owner"></div>
             <button id="newApp" class="btn" data-roles="Owner" style="width:100%;margin-bottom:9px">+ 新增 app</button>
+            <div class="dot-legend">
+              <span class="lg-item"><span class="app-dot ok"></span>通过</span>
+              <span class="lg-item"><span class="app-dot warn"></span>有问题</span>
+              <span class="lg-item"><span class="app-dot bad"></span>不可发布</span>
+              <span class="lg-item"><span class="app-dot todo"></span>未测</span>
+              <span class="lg-item"><span class="app-dot na"></span>非 release</span>
+            </div>
             <div id="appTable" class="applist"></div>
           </div>
         </div>
@@ -797,7 +813,7 @@
       if ($("appCount")) $("appCount").textContent = `共 ${rows.length} 个`;
       $("appTable").innerHTML = rows.map(({ app, snap }) => `
         <div class="app-row ${selectedApp === app.id ? "active" : ""}" data-app="${esc(app.id)}">
-          <div class="app-ico">${esc(initials(displayName(snap)))}</div>
+          ${qaDot(snap)}
           <div class="app-meta">
             <div class="name">${esc(displayName(snap))}</div>
             <div class="sub">${esc(snap.type || "—")} · ${esc((snap.owners || []).join(",") || "无 owner")}</div>
@@ -824,6 +840,18 @@
       const s = status || "not_checked";
       const cls = s === "qa_passed" ? "ok" : (s === "has_issues" ? "warnp" : (s === "cannot_release" ? "bad" : ""));
       return `<span class="pill ${cls}">${esc(qaStatusLabels[s] || s)}</span>`;
+    }
+    function qaDot(snap, extraClass = "") {
+      let cls = "todo", label;
+      if (!isReleaseSnap(snap)) {
+        cls = "na";
+        label = `${releaseDecisionLabels[snap?.release_decision]?.split("：")[0] || "非 release"}：不纳入 QA`;
+      } else {
+        const s = snap?.qa_status || "not_checked";
+        cls = s === "qa_passed" ? "ok" : (s === "has_issues" ? "warn" : (s === "cannot_release" ? "bad" : "todo"));
+        label = "QA：" + (qaStatusLabels[s] || s);
+      }
+      return `<span class="app-dot ${cls} ${extraClass}" title="${esc(label)}"></span>`;
     }
     function qaOk(snap) { return ["qa_passed", "has_issues"].includes(snap?.qa_status || ""); }
     function docsItems(snap) { return (snap?.missing_items || []).filter(item => !String(item).startsWith("QA ")); }
@@ -1039,7 +1067,7 @@
 
       host.innerHTML = `
         <div class="detail-head">
-          <div class="big">${esc(initials(displayName(snap)))}</div>
+          ${qaDot(snap, "lg")}
           <div class="dh-main"><h2>${esc(displayName(snap))}</h2><div class="row2">${headPills}</div></div>
           ${greet}
         </div>
