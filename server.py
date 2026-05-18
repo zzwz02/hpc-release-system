@@ -299,7 +299,8 @@ class Handler(BaseHTTPRequestHandler):
                             core.save_app(conn, app)
                             core.audit(conn, "修改 Gerrit 信息", user=actor, role=role,
                                        app_id=aid, release_id=rid, event="update_app_repo",
-                                       detail=core.field_diff(repo_before, app, {"git_url": "Gerrit URL", "git_branch": "Branch"}))
+                                       detail=core.field_diff(repo_before, app, {"git_url": "Gerrit URL", "git_branch": "Branch"}),
+                                       commit=False)
 
                     owner_meta = {"type", "official_url", "description"}
                     doc_labels = {"intro": "基本介绍", "image_usage": "镜像使用方法", "binary_usage": "二进制包使用方法", "env_setup": "环境搭建", "limitations": "已知限制"}
@@ -315,7 +316,8 @@ class Handler(BaseHTTPRequestHandler):
                                            user=actor, role=role, app_id=aid, release_id=rid, event="update_release_decision",
                                            detail=core.field_diff({"release_decision": snapshot.get("release_decision")},
                                                                   {"release_decision": decision},
-                                                                  {"release_decision": "release 决策"}))
+                                                                  {"release_decision": "release 决策"}),
+                                           commit=False)
                             snapshot["release_decision"] = decision
                         meta_before: dict = {}
                         meta_after: dict = {}
@@ -341,14 +343,16 @@ class Handler(BaseHTTPRequestHandler):
                         if meta_after:
                             core.audit(conn, f"修改 app 基本信息：{name_for_msg}", user=actor, role=role,
                                        app_id=aid, release_id=rid, event="update_app_meta",
-                                       detail=core.field_diff(meta_before, meta_after, core.APP_META_LABELS))
+                                       detail=core.field_diff(meta_before, meta_after, core.APP_META_LABELS),
+                                       commit=False)
                         if "owner_confirmed" in snap_update:
                             if role != "Owner":
                                 raise AuthzError("Owner confirmation must be submitted by an Owner")
                             if snap_update["owner_confirmed"] and not snapshot.get("owner_confirmed"):
                                 core.audit(conn, f"提交 Owner 确认：{name_for_msg}", user=actor, role=role,
                                            app_id=aid, release_id=rid, event="owner_confirm",
-                                           detail=[{"field": "owner_confirmed", "label": "Owner 确认", "old": "未确认", "new": "已确认"}])
+                                           detail=[{"field": "owner_confirmed", "label": "Owner 确认", "old": "未确认", "new": "已确认"}],
+                                           commit=False)
                             snapshot["owner_confirmed"] = snap_update["owner_confirmed"]
                         if "doc" in snap_update:
                             doc_update = snap_update["doc"]
@@ -356,7 +360,8 @@ class Handler(BaseHTTPRequestHandler):
                             doc_changes = core.field_diff(current_doc, doc_update, {k: doc_labels.get(k, k) for k in doc_update})
                             if doc_changes:
                                 core.audit(conn, f"修改文档字段：{name_for_msg}", user=actor, role=role,
-                                           app_id=aid, release_id=rid, event="update_doc_fields", detail=doc_changes)
+                                           app_id=aid, release_id=rid, event="update_doc_fields", detail=doc_changes,
+                                           commit=False)
                             snapshot.setdefault("doc", {}).update(doc_update)
                         if "test_docs" in snap_update:
                             before_docs = [dict(d) for d in snapshot.get("test_docs", [])]
@@ -371,8 +376,12 @@ class Handler(BaseHTTPRequestHandler):
                             td_changes = core.test_docs_diff(before_docs, snapshot.get("test_docs", []))
                             if td_changes:
                                 core.audit(conn, f"修改测试说明：{name_for_msg}", user=actor, role=role,
-                                           app_id=aid, release_id=rid, event="update_test_docs", detail=td_changes)
+                                           app_id=aid, release_id=rid, event="update_test_docs", detail=td_changes,
+                                           commit=False)
 
+                    # Every audit above runs commit=False: the repo change, the
+                    # field audits and the snapshot save all land in one
+                    # transaction here, so a mid-request failure leaves nothing.
                     updated = core.update_snapshot(conn, rid, aid, mutate, skip_doc_deadline=past_doc_deadline)
                     updated["missing_items"] = core.missing_items_for(core.get_app(conn, aid), updated)
                     core.save_snapshot(conn, rid, aid, updated)
@@ -488,7 +497,6 @@ class Handler(BaseHTTPRequestHandler):
             "artifacts": [],
             "user": user,
             "qa_log": None,
-            "server_now_beijing": core.beijing_now().strftime("%Y-%m-%d %H:%M"),
         }
         if release_id:
             core.refresh_missing_items(conn, release_id)

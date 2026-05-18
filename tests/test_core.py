@@ -631,11 +631,6 @@ class CoreWorkflowTests(unittest.TestCase):
         release_id, app_id = self.import_initial()
         core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
         core.update_snapshot(self.conn, release_id, app_id, _fill_ready)
-        # Confirm all diffs
-        def confirm_diffs(snap):
-            for d in snap.get("app_info_diffs", []):
-                d["confirmed"] = True
-        core.update_snapshot(self.conn, release_id, app_id, confirm_diffs)
         core.qa_set_status(self.conn, release_id, app_id, "qa_passed")
         items = core.refresh_missing_items(self.conn, release_id)[app_id]
         self.assertEqual(items, [])
@@ -679,6 +674,11 @@ class CoreWorkflowTests(unittest.TestCase):
         apps = {app["id"]: app for app in core.list_apps(self.conn)}
         self.assertIn("foo_1", apps)
         self.assertIn("foo_2", apps)
+
+    def test_initial_import_rejected_when_releases_exist(self) -> None:
+        self.import_initial()
+        with self.assertRaisesRegex(RuntimeError, "已存在 release"):
+            self.import_initial()
 
     # --- delete app ---
 

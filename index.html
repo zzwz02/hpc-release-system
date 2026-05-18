@@ -504,7 +504,7 @@
   </dialog>
 
   <script>
-    let state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, server_now_beijing: "" };
+    let state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null };
     let selectedApp = "";
     let autoRefreshTimer = null;
     let lastUserInputAt = 0;
@@ -1603,7 +1603,7 @@
     async function logout() {
       await post("/api/logout", {});
       if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
-      state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, user: null, server_now_beijing: "" };
+      state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, user: null };
       selectedApp = "";
       $("release").innerHTML = "";
       showLoggedOut();

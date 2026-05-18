@@ -854,6 +854,8 @@ def import_initial_rows(
     validate_deadline_order(app_freeze_deadline, doc_deadline)
     if not rows:
         raise ValueError("初始化 CSV 为空")
+    if conn.execute("SELECT 1 FROM releases LIMIT 1").fetchone():
+        raise RuntimeError("已存在 release，初始化导入只能在空库执行；如需开启新一轮，请使用「克隆 release」")
 
     groups: dict[tuple[str, str], list[dict[str, str]]] = {}
     order: list[tuple[str, str]] = []
@@ -1208,7 +1210,7 @@ def diff_app_info(old: dict[str, Any] | None, new: dict[str, Any]) -> list[dict[
 
     def add(diff_type: str, field: str, old_value: Any, new_value: Any, qa_impact: bool = True) -> None:
         if old_value != new_value:
-            diffs.append({"id": new_id("diff"), "type": diff_type, "field": field, "old_value": old_value, "new_value": new_value, "qa_impact": qa_impact, "confirmed": False})
+            diffs.append({"id": new_id("diff"), "type": diff_type, "field": field, "old_value": old_value, "new_value": new_value, "qa_impact": qa_impact})
 
     old = old or {}
     add("版本变化", "app_version", old.get("app_version", ""), new.get("app_version", ""))
@@ -1583,7 +1585,8 @@ def qa_set_status_batch(
     release = get_release(conn, release_id)
     if release.get("released_locked"):
         raise RuntimeError("Release 已最终锁定，不可修改 QA 状态")
-    prepared: list[tuple[str, dict[str, Any], str, str]] = []
+    # (app_id, snapshot, status, issue_note, old_status, old_note)
+    prepared: list[tuple[str, dict[str, Any], str, str, str, str]] = []
     errors: list[str] = []
     for item in items:
         app_id = item.get("app_id", "")
