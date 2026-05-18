@@ -72,7 +72,7 @@
   .phase.warnp{border-color:var(--warn-bd);background:var(--warn-bg);color:var(--warn-fg);}
   .phase.bad{border-color:var(--bad-bd);background:var(--bad-bg);color:var(--bad-fg);}
   .phase .dot{width:9px;height:9px;border-radius:50%;background:currentColor;flex:none;}
-  .phase .meta{margin-left:auto;font-weight:500;color:var(--ink-2);font-size:12.5px;}
+  .phase .meta{margin-left:auto;font-weight:600;color:var(--ink-2);font-size:15px;}
   /* ---- panel ---- */
   .panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
     box-shadow:var(--shadow);overflow:hidden;}
@@ -685,7 +685,7 @@
       if (!release) return "";
       const af = release.app_freeze_deadline || "(未设置)";
       const dd = release.doc_deadline || "(未设置)";
-      return `App 冻结 ${af}　Doc deadline ${dd}　北京时间 ${state.server_now_beijing || "?"}`;
+      return `App 冻结 ${af}　Doc deadline ${dd}`;
     }
     function appSortName(snap) { return displayName(snap).toLowerCase(); }
     function compareAppRows(a, b) {
