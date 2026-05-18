@@ -42,12 +42,18 @@ python3.14 server.py --host 0.0.0.0 --port 9000
 
 ## 角色
 
-- **RM**：建/克隆 release、设置 deadline、导出测试范围 CSV、生成 RST 与 Manager Review CSV、最终锁定/解锁。
-- **Owner**：维护自己名下的 app —— 新增 app、填文档与测试说明、上传/拉取 `app_info.json`、提交 Owner 确认。
+- **RM**：建/克隆 release、设置 deadline、改 Gerrit URL/branch、导出测试范围 CSV、生成 RST 与 Manager Review CSV、最终锁定/解锁。
+- **Owner**：维护自己名下的 app —— 新增 app、维护本 release 的基本信息与文档、填测试说明、上传/拉取 `app_info.json`、从其他 release 复制信息、提交 Owner 确认。
 - **QA**：对 `release` 决策的 app 标注 QA 状态、上传 QA log。
 - **Admin**：备份并清空数据库、删除单个 app。
 
 ## 核心模型
+
+### 信息粒度（per-release）
+
+`apps` 表只存全局身份：`id`、`git_url`、`git_branch`、别名。其余信息 —— 官方名称、App 类型、官方 URL、描述、文档目标（HPC/AI4Sci）、Owner、release 决策、文档字段、测试说明、`app_info`、QA 状态 —— 都按 release 存在该 release 的 snapshot 里。因此同一个 app 在不同 release 中的这些字段相互独立：改动一个 release 不会影响已冻结的另一个 release。显示名由「官方名称 + 版本号」实时拼出，不再有独立的 `app.name`。
+
+新建 release 从上一版克隆时，会整份继承上一版每个 app 的 snapshot。Owner/RM 也可在「App 工作台」用「从其他版本复制信息」按需把另一个 release 的基本信息 / 文档 / 测试说明 / release 决策填入当前表单；修改 release 决策时还会询问是否同步到后续 release。
 
 ### 发布决策（三态）
 
@@ -70,13 +76,13 @@ python3.14 server.py --host 0.0.0.0 --port 9000
 
 ### 最终锁定
 
-部门 manager review 报告并 merge 进 Gerrit 后，RM 执行 final lock：冻结 snapshot、写入 app 元数据快照、生成最终 RST 与 release-data JSON。可由 RM 解锁。
+部门 manager review 报告并 merge 进 Gerrit 后，RM 执行 final lock：冻结本 release 全部 snapshot、生成最终 RST 与 release-data JSON。可由 RM 解锁。
 
 ## 工作流程概览
 
-1. RM 在「初始化/周期」首次导入 release CSV、owner CSV、alias mapping；后续 release 从上一版克隆。
+1. RM 在「初始化/周期」首次导入一份初始化 CSV（列含 官方名称 / 类型 / APP类型 / Owner / app_version / 芯片 / git_url / git_branch 等，每个 (git_url, git_branch) 为一个 app）；后续 release 从上一版克隆。
 2. RM 设置当前 release 的名称与两个 deadline。
-3. Owner 在「App 工作台」确认 release 决策，补齐文档、`app_info.json`、test_cmd 说明，提交 Owner 确认。
+3. Owner 在「App 工作台」确认 release 决策，维护本 release 的基本信息、文档、`app_info.json`、test_cmd 说明（可「从其他版本复制信息」），提交 Owner 确认。
 4. RM 导出测试范围 CSV 交给 QA。
 5. QA 在「QA」页上传 log，标注 `qa_passed` / `has_issues` / `cannot_release`。
 6. RM 生成预览 RST 和 Manager Review CSV，供部门 manager 审核。
@@ -109,9 +115,9 @@ release-system/
 - 状态：`GET /api/state`
 - Release：`POST /api/import-initial`、`/api/releases/create`、`/api/releases/deadlines`、`/api/releases/final-lock`、`/api/releases/final-unlock`
 - App：`POST /api/apps/new`、`/api/apps/update`、`/api/app-info`、`/api/app-info/fetch`
-- QA：`POST /api/qa/status`、`/api/qa/upload-log`；`GET /api/qa-log/download`
+- QA：`POST /api/qa/status-batch`、`/api/qa/upload-log`；`GET /api/qa-log/download`
 - 产物：`POST /api/artifacts/generate`、`/api/artifacts/manager-review`、`/api/gerrit/plan`；`GET /api/artifacts/<kind>`、`/api/test-scope.csv`
-- 变更日志：`GET /api/app-audit`
+- 变更日志：`GET /api/app-audit`（按 app + release 过滤，含字段级 detail）
 - 管理：`POST /api/admin/clear-db`、`/api/admin/apps/delete`
 
 接口返回码：401 = 未登录，403 = 已登录但无权限，400/500 = 其他错误。
@@ -123,13 +129,13 @@ python3.14 -m unittest tests.test_core
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\static_checks.ps1
 ```
 
-当前 56 个单元测试 + 静态检查。
+当前 75 个单元测试 + 静态检查。
 
 ## 已知问题与限制
 
 以下为已识别、尚未修复的问题，按影响排序：
 
-1. **`/api/apps/update` 出错时可能半写入** —— app 元数据先于 snapshot 落库并提交，若随后的 snapshot 校验失败，会留下「元数据已改、snapshot 未改」的不一致。当前前端不会触发该路径。
+1. **`/api/apps/update` 的 audit 与 snapshot 不在同一事务** —— 每次 `audit()` 默认立即 `commit`（含 RM 改 Gerrit URL/branch 时的 `save_app`），而 snapshot 在全部变更处理完后才 `save_snapshot` 并提交；若中途抛错，会留下「audit / Gerrit 信息已改、snapshot 未改」的不一致。当前前端流程不易触发。
 2. **文档类闸门用字符串前缀 `"QA "` 区分 QA 项** —— 若某个 `app_info` 的测试名恰好以 `QA ` 开头，其缺失项会被误排除出发布闸门。应改为结构化标记。
 3. **`app_info` 重传不会作废已有的 QA 结论** —— Owner 在 QA 通过后重传 `app_info`，`qa_status` 不重置；最终闸门仍能拦截，但 QA 本人收不到提醒。
    - *建议方案*：用 commit id 判定。`app_info` 同步时记录来源 commit id（Gerrit 拉取自动记录，owner 上传时由 owner 手填）；QA 标注状态时记录所测构建的 commit id。两者不一致即说明 app 代码已变动，给 snapshot 打 `qa_stale` 标记，QA 页和最终闸门按「需复测」处理。commit id 反映 app 仓库的实际代码状态，比对 `app_info.json` 内容更可靠 —— 代码改了但 `app_info.json` 没改时，内容 diff 会漏掉。owner 上传（Gerrit 拉取失败时的兜底路径）缺 commit id 时应保守提示，不默认 QA 仍有效。
@@ -164,8 +170,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\static_checks.ps1
 - 支持删除 / 归档 release（目前只能创建和克隆）。
 
 ### 功能与体验
-- 全局审计 / 变更视图（目前只有按 app 的变更日志）。
-- doc 跨并行 release 的显式同步（目前仅建周期时一次性克隆）。
+- 全局审计 / 变更视图（目前只有按 app + release 的变更日志）。
+- 跨 release 同步目前是 Owner/RM 手动触发（克隆继承、「从其他版本复制信息」、决策变更时询问同步）；尚无自动的「上游改动提醒下游」。
 - 前端无构建，单文件 + 5 秒轮询；产品级应考虑 SSE/WebSocket 推送和更细的局部更新。
 - 中英文案混杂，需统一。
 
