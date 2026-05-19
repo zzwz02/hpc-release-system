@@ -513,8 +513,21 @@ def parse_alias_lines(raw: str = "") -> dict[str, str]:
 
 
 def infer_doc_target(category: str = "", app_type: str = "") -> str:
-    text = f"{category} {app_type}".lower()
-    if "ai" in text or "模型" in text or "框架" in text:
+    """Pick the documentation target. AI-for-Science apps document into the
+    AI4Sci guide; HPC apps and 工具 document into the HPC manual.
+
+    类别 (category) is the authoritative signal. app_type is only a fallback
+    for CSVs without a 类别 column — and an HPC app_type such as
+    'HPC框架/工具' must NOT be misread as AI4Sci just for containing '框架'.
+    """
+    cat = str(category or "").strip().lower()
+    typ = str(app_type or "").strip().lower()
+    if "ai for science" in cat or "ai4sci" in cat:
+        return "ai4sci"
+    if "hpc" in cat or "工具" in cat:
+        return "manual"
+    # category absent / unrecognized — fall back to app_type markers
+    if "ai" in typ or typ.endswith("模型"):
         return "ai4sci"
     return "manual"
 
@@ -525,6 +538,20 @@ def csv_value(row: dict[str, str], *names: str) -> str:
         if value:
             return value
     return ""
+
+
+def csv_checkmark(value: str | None) -> bool:
+    """Interpret a CSV sanity cell as a boolean pass mark.
+
+    '✔' / '√' etc. (and a few affirmative words) count as passed; empty
+    cells or descriptive notes like 'arm sanity' do not.
+    """
+    v = str(value or "").strip().lower()
+    if not v:
+        return False
+    if any(mark in v for mark in ("✔", "✓", "√", "✅")):
+        return True
+    return v in ("pass", "passed", "ok", "yes", "y", "true", "1", "通过", "已通过")
 
 
 def init_csv_official_name(row: dict[str, str]) -> str:
@@ -898,10 +925,11 @@ def import_initial_rows(
 ) -> str:
     """Import a single init CSV: one app per (git_url, git_branch) pair.
 
-    Supports the legacy release CSV columns plus the hpc_app.csv shape:
-    类别, id, 名称, Owner, 类型, 描述, git_url, git_branch.
-    Rows sharing a (git_url, git_branch) pair form one app; differing-arch
-    rows merge chips when those optional chip columns are present.
+    Supports the legacy release CSV columns plus the rich hpc_app.csv shape:
+    类别, id, 名称, Owner, 类型, 描述, git_url, git_branch, 对应官方版本,
+    X86支持芯片系列, ARM支持芯片类型, 开发者社区发布*, *sanity.
+    Rows sharing a (git_url, git_branch) pair form one app; rows without a
+    git repo (e.g. 停止发布 entries) are skipped rather than failing import.
     """
     validate_deadline_order(app_freeze_deadline, doc_deadline)
     if not rows:
@@ -914,11 +942,15 @@ def import_initial_rows(
     for row in rows:
         key = ((row.get("git_url") or "").strip(), (row.get("git_branch") or "").strip())
         if not key[0] or not key[1]:
-            raise ValueError("初始化 CSV 每行都需要 git_url 和 git_branch")
+            # no repo -> nothing buildable; skip instead of aborting import
+            continue
         if key not in groups:
             groups[key] = []
             order.append(key)
         groups[key].append(row)
+
+    if not order:
+        raise ValueError("初始化 CSV 没有可导入的行（每行需要 git_url 和 git_branch）")
 
     base_counts: dict[str, int] = {}
     for key in order:
@@ -943,6 +975,10 @@ def import_initial_rows(
         hpcc: list[str] = []
         owners: list[str] = []
         for r in group:
+            # new hpc_app.csv carries explicit X86 / ARM chip columns;
+            # the legacy release CSV splits maca_chip by the arch column.
+            x86.extend(split_list(csv_value(r, "X86支持芯片系列")))
+            arm.extend(split_list(csv_value(r, "ARM支持芯片类型")))
             arch = (r.get("arch") or "").lower()
             chips = split_list(r.get("maca_chip"))
             (arm if "arm" in arch or "aarch" in arch else x86).extend(chips)
@@ -965,12 +1001,21 @@ def import_initial_rows(
             doc_target=infer_doc_target(init_csv_doc_category(first), init_csv_app_type(first)),
             owners=sorted(set(owners)),
         )
-        snapshot["version"] = (first.get("app_version") or "").strip()
-        snapshot["x86_chips"] = join_list(x86)
-        snapshot["arm_chips"] = join_list(arm)
+        snapshot["version"] = csv_value(first, "对应官方版本", "app_version")
+        snapshot["x86_chips"] = ",".join(order_chips(x86))
+        snapshot["arm_chips"] = ",".join(order_chips(arm))
         snapshot["hpcc_chip"] = join_list(hpcc)
         snapshot["arch"] = join_list((r.get("arch") or "") for r in group)
         snapshot["maca_version"] = (first.get("maca_version") or "").strip()
+        snapshot["community"] = {
+            "release_status": csv_value(first, "开发者社区发布情况"),
+            "python_version": csv_value(first, "开发者社区发布包支持python版本"),
+            "framework_version": csv_value(first, "开发者社区发布包支持的底层框架及版本"),
+        }
+        snapshot["sanity"] = {
+            "arm_kylin": csv_checkmark(csv_value(first, "ARM / Kylin sanity")),
+            "ubuntu": csv_checkmark(csv_value(first, "Ubuntu sanity / 兼容性sanity", "Ubuntu / 兼容性 sanity")),
+        }
         built.append((app, snapshot))
 
     release_id = new_id("rel")

@@ -246,12 +246,32 @@ HPC APP,1,HPL,孙跃,HPC基准测试,求解随机稠密线性方程组,hpc_hpl,m
 
     def test_hpc_app_csv_ai_for_science_model_maps_to_ai4sci(self) -> None:
         rows = core.parse_csv_text("""类别,id,名称,Owner,类型,描述,git_url,git_branch
-HPC APP,1,ALIGNN,闫申申,AI for Science模型,材料科学模型,hpc_alignn,maca
+AI for Science模型,1,ALIGNN,闫申申,材料科学模型,材料科学图神经网络,hpc_alignn,maca
 """)
         release_id = core.import_initial_rows(self.conn, rows)
         snap = core.get_release(self.conn, release_id)["snapshots"]["alignn"]
-        self.assertEqual(snap["type"], "AI for Science模型")
+        self.assertEqual(snap["type"], "材料科学模型")
         self.assertEqual(snap["doc_target"], "ai4sci")
+
+    def test_hpc_app_csv_tool_and_framework_map_to_hpc(self) -> None:
+        # 工具 and an HPC app_type that merely contains '框架' both stay HPC.
+        rows = core.parse_csv_text("""类别,id,名称,Owner,类型,描述,git_url,git_branch
+工具,1,Slurm,姜海洋,工具,集群作业调度系统,hpc_slurm,maca
+HPC APP,2,AMReX,余多,HPC框架/工具,自适应网格框架,hpc_amrex,maca
+""")
+        release_id = core.import_initial_rows(self.conn, rows)
+        snaps = core.get_release(self.conn, release_id)["snapshots"]
+        self.assertEqual(snaps["slurm"]["doc_target"], "manual")
+        self.assertEqual(snaps["amrex"]["doc_target"], "manual")
+
+    def test_initial_import_skips_rows_without_repo(self) -> None:
+        rows = core.parse_csv_text("""类别,id,名称,Owner,类型,描述,git_url,git_branch
+HPC APP,1,HPL,孙跃,HPC基准测试,desc,hpc_hpl,maca
+HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
+""")
+        release_id = core.import_initial_rows(self.conn, rows)
+        self.assertEqual([a["id"] for a in core.list_apps(self.conn)], ["hpl"])
+        self.assertIn("hpl", core.get_release(self.conn, release_id)["snapshots"])
 
     def test_default_users_include_qa(self) -> None:
         self.assertIsNotNone(core.authenticate(self.conn, "qa", "qa"))
