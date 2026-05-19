@@ -118,6 +118,26 @@ def join_list(values: list[str] | set[str] | tuple[str, ...]) -> str:
     return ",".join(sorted({str(v).strip() for v in values if str(v).strip()}))
 
 
+def order_chips(values: str | list[str] | set[str] | tuple[str, ...] | None) -> list[str]:
+    """Order chip names alphabetically but always keep x201 last.
+
+    Accepts a comma-separated string or any iterable; dedupes and applies the
+    x201-last rule used in the app workbench and the QA release report.
+    """
+    if isinstance(values, str):
+        items: list[Any] = re.split(r"[,，、;；/]+", values)
+    else:
+        items = list(values or [])
+    seen: list[str] = []
+    for item in items:
+        text = str(item).strip()
+        if text and text not in seen:
+            seen.append(text)
+    rest = sorted((c for c in seen if c.lower() != "x201"), key=str.lower)
+    tail = [c for c in seen if c.lower() == "x201"]
+    return rest + tail
+
+
 def loads_json(value: str | None, default: Any) -> Any:
     if not value:
         return default
@@ -691,6 +711,15 @@ def base_snapshot(
             "env_setup": "",
             "limitations": "",
         },
+        "community": {
+            "release_status": "",
+            "python_version": "",
+            "framework_version": "",
+        },
+        "sanity": {
+            "arm_kylin": "",
+            "ubuntu": "",
+        },
         "app_info": None,
         "app_info_diffs": [],
         "test_docs": [],
@@ -1220,8 +1249,8 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
     return {
         "app_name": data.get("app_name", ""),
         "app_version": data.get("app_version", ""),
-        "x86_chips": sorted(x86_chips),
-        "arm_chips": sorted(arm_chips),
+        "x86_chips": order_chips(x86_chips),
+        "arm_chips": order_chips(arm_chips),
         "build_targets": build_targets,
         "test_targets": test_targets,
         "tests": tests,
@@ -1429,8 +1458,8 @@ def apply_app_info(
     }
     snapshot["app_info_diffs"] = diffs
     snapshot["version"] = parsed.get("app_version") or snapshot.get("version", "")
-    snapshot["x86_chips"] = join_list(parsed.get("x86_chips", []))
-    snapshot["arm_chips"] = join_list(parsed.get("arm_chips", []))
+    snapshot["x86_chips"] = ",".join(order_chips(parsed.get("x86_chips", [])))
+    snapshot["arm_chips"] = ",".join(order_chips(parsed.get("arm_chips", [])))
     ensure_test_docs(snapshot, parsed, diffs)
     save_snapshot(conn, release_id, app_id, snapshot)
     conn.commit()
@@ -1875,8 +1904,8 @@ def build_qa_reports(conn: sqlite3.Connection, release_id: str) -> dict[str, Any
     """Build the release report + test command tables for a release.
 
     release_report: one catalog-style row per app in the release (column
-    layout follows release_report.csv; fields the system does not track —
-    备注, 社区发布信息, sanity — are left blank).
+    layout follows release_report.csv; 类别/备注 are not tracked and stay
+    blank, the rest — incl. 社区发布信息 and sanity — comes from the snapshot).
     test_cmd: one row per (test, arch) drawn from each app's uploaded
     app_info, matching get_release_report_test_cmd.py's test command output.
     """
@@ -1894,6 +1923,8 @@ def build_qa_reports(conn: sqlite3.Connection, release_id: str) -> dict[str, Any
     release_rows: list[list[str]] = []
     test_rows: list[list[str]] = []
     for view, app, snapshot in items:
+        community = snapshot.get("community") or {}
+        sanity = snapshot.get("sanity") or {}
         release_rows.append([
             "",  # 类别 — not tracked per-app
             view["official_name"],
@@ -1903,9 +1934,14 @@ def build_qa_reports(conn: sqlite3.Connection, release_id: str) -> dict[str, Any
             app.get("git_url", ""),
             app.get("git_branch", ""),
             snapshot.get("version", ""),
-            snapshot.get("x86_chips", ""),
-            snapshot.get("arm_chips", ""),
-            "", "", "", "", "", "",  # 备注 / 社区发布 / sanity — not tracked
+            ",".join(order_chips(snapshot.get("x86_chips", ""))),
+            ",".join(order_chips(snapshot.get("arm_chips", ""))),
+            "",  # 备注 — not tracked per-app
+            community.get("release_status", ""),
+            community.get("python_version", ""),
+            community.get("framework_version", ""),
+            sanity.get("arm_kylin", ""),
+            sanity.get("ubuntu", ""),
         ])
         raw = (snapshot.get("app_info") or {}).get("raw")
         if isinstance(raw, dict):

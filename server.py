@@ -370,6 +370,28 @@ class Handler(BaseHTTPRequestHandler):
                                            app_id=aid, release_id=rid, event="update_doc_fields", detail=doc_changes,
                                            commit=False)
                             snapshot.setdefault("doc", {}).update(doc_update)
+                        if "community" in snap_update:
+                            comm_update = snap_update["community"]
+                            comm_labels = {"release_status": "社区发布情况", "python_version": "社区包 Python 版本", "framework_version": "社区包框架及版本"}
+                            comm_before = {k: (snapshot.get("community") or {}).get(k, "") for k in comm_labels}
+                            comm_changes = core.field_diff(comm_before, comm_update, comm_labels)
+                            if comm_changes:
+                                core.audit(conn, f"修改社区发布信息：{name_for_msg}", user=actor, role=role,
+                                           app_id=aid, release_id=rid, event="update_community", detail=comm_changes,
+                                           commit=False)
+                            snapshot.setdefault("community", {}).update(comm_update)
+                        if "sanity" in snap_update:
+                            sanity_update = snap_update["sanity"]
+                            sanity_labels = {"arm_kylin": "ARM / Kylin Sanity", "ubuntu": "Ubuntu / 兼容性 Sanity"}
+                            sanity_before = {k: (snapshot.get("sanity") or {}).get(k, "") for k in sanity_labels}
+                            sanity_changes = core.field_diff(sanity_before, sanity_update, sanity_labels)
+                            if sanity_changes:
+                                if role != "RM":
+                                    raise AuthzError("仅 RM 可修改 Sanity 信息")
+                                core.audit(conn, f"修改 Sanity 信息：{name_for_msg}", user=actor, role=role,
+                                           app_id=aid, release_id=rid, event="update_sanity", detail=sanity_changes,
+                                           commit=False)
+                                snapshot.setdefault("sanity", {}).update(sanity_update)
                         if "test_docs" in snap_update:
                             before_docs = [dict(d) for d in snapshot.get("test_docs", [])]
                             by_id = {doc["id"]: doc for doc in snapshot.get("test_docs", [])}

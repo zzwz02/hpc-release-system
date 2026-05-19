@@ -1011,6 +1011,14 @@
       }
     }
 
+    function orderChips(value) {
+      const items = String(value || "").split(/[,，、;；/]+/).map(s => s.trim()).filter(Boolean);
+      const seen = [];
+      items.forEach(c => { if (!seen.includes(c)) seen.push(c); });
+      const rest = seen.filter(c => c.toLowerCase() !== "x201").sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+      const tail = seen.filter(c => c.toLowerCase() === "x201");
+      return [...rest, ...tail].join(",");
+    }
     function renderDetail() {
       const app = appById(selectedApp);
       const snap = app ? releaseSnap(app.id) : null;
@@ -1039,6 +1047,8 @@
       const selectedInfoFile = pendingAppInfoAppId === app.id ? pendingAppInfoFile : null;
       const clearFileDisabled = selectedInfoFile && writable ? "" : "disabled";
       const rel = isReleaseSnap(snap);
+      const community = snap.community || {};
+      const sanity = snap.sanity || {};
 
       const headPills = [
         decisionPill(snap.release_decision),
@@ -1150,11 +1160,24 @@
                 <label>官方 URL<input id="officialUrl" class="input" value="${esc(snap.official_url)}" ${appMetaDisabled}></label>
                 <label>Release决策<select id="decision" class="select" ${decisionDisabled}>${allowedDecisions.map(v => `<option value="${v}" ${snap.release_decision === v ? "selected" : ""}>${esc(releaseDecisionLabels[v])}</option>`).join("")}</select></label>
                 <label>版本（来自 app_info）<input class="input" value="${esc(snap.version)}" disabled></label>
-                <label>X86芯片<input class="input" value="${esc(snap.x86_chips)}" disabled></label>
-                <label>ARM芯片<input class="input" value="${esc(snap.arm_chips)}" disabled></label>
+                <label>X86芯片<input class="input" value="${esc(orderChips(snap.x86_chips))}" disabled></label>
+                <label>ARM芯片<input class="input" value="${esc(orderChips(snap.arm_chips))}" disabled></label>
               </div>
               <label class="docfield">描述（30字内）<textarea id="description" maxlength="30" ${appMetaDisabled}>${esc(snap.description)}</textarea></label>
               <p class="hint">类型为 HPC 时生成到 HPC Manual；AI4Sci 时生成到 AI4Sci User Guide。release 进入正式发布、文档生成与 QA；cicd_only 仅纳入 CICD 构建/测试管控；stopped 表示停止维护 / 停止发布。</p>
+            </div>
+          </details>
+          <details class="section" open>
+            <summary><span class="chev">▶</span> 社区发布与 Sanity</summary>
+            <div class="section-body">
+              <p class="hint" style="margin-top:0">开发者社区发布信息 Owner / RM 均可填写；Sanity 结果仅 RM 可修改。这些字段会进入 QA 页的 Release Report。</p>
+              <div class="form">
+                <label>开发者社区发布情况<input id="communityRelease" class="input" value="${esc(community.release_status || "")}" ${appMetaDisabled}></label>
+                <label>社区包支持 Python 版本<input id="communityPython" class="input" value="${esc(community.python_version || "")}" ${appMetaDisabled}></label>
+                <label>社区包支持框架及版本<input id="communityFramework" class="input" value="${esc(community.framework_version || "")}" ${appMetaDisabled}></label>
+                <label>ARM / Kylin Sanity <span class="small muted">· 仅 RM</span><input id="sanityArmKylin" class="input" value="${esc(sanity.arm_kylin || "")}" ${rmMetaDisabled}></label>
+                <label>Ubuntu / 兼容性 Sanity <span class="small muted">· 仅 RM</span><input id="sanityUbuntu" class="input" value="${esc(sanity.ubuntu || "")}" ${rmMetaDisabled}></label>
+              </div>
             </div>
           </details>
           <details class="section" open>
@@ -1577,6 +1600,15 @@
         doc_target: $("docTarget").value,
         owners: $("owners").value.split(/[,，、;；/]+/).map(x => x.trim()).filter(Boolean),
         doc: Object.fromEntries([...document.querySelectorAll("[data-doc]")].map(el => [el.dataset.doc, el.value])),
+        community: {
+          release_status: $("communityRelease").value.trim(),
+          python_version: $("communityPython").value.trim(),
+          framework_version: $("communityFramework").value.trim(),
+        },
+        sanity: {
+          arm_kylin: $("sanityArmKylin").value.trim(),
+          ubuntu: $("sanityUbuntu").value.trim(),
+        },
         test_docs
       };
       if (confirmOwner) snapshotUpdate.owner_confirmed = true;
