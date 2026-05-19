@@ -153,6 +153,11 @@
      verbose 描述 cell can't blow up the whole row's height */
   .report-table td.clamp .clamp-box{max-width:260px;display:-webkit-box;
     -webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;}
+  /* release report: shrink the chip / git columns by capping their cell
+     width, and widen the 开发者社区 columns so their header wraps to 2 lines */
+  .report-table td.col-chip .cell-wrap{max-width:120px;}
+  .report-table td.col-git .cell-wrap{max-width:116px;word-break:break-all;}
+  .report-table th.col-comm .th-text{min-width:128px;max-width:150px;}
   /* ---- app list ---- */
   .searchbox{position:relative;margin-bottom:9px;}
   .searchbox .input{padding-left:30px;}
@@ -1335,18 +1340,24 @@
       URL.revokeObjectURL(url);
     }
     function reportTableHtml(columns, rows, kind) {
-      const cmdCol = kind === "test" ? 6 : -1;     // docker_cmd
-      const clampCol = kind === "release" ? 4 : -1; // 描述
+      const cmdCol = kind === "test" ? 6 : -1;       // docker_cmd
+      const clampCol = kind === "release" ? 4 : -1;  // 描述
+      const gitCols = kind === "release" ? [6, 7] : [];          // git_url / git_branch
+      const chipCols = kind === "release" ? [9, 10] : [];        // X86 / ARM 芯片
+      const commCols = kind === "release" ? [12, 13, 14] : [];   // 开发者社区三列
       const sort = qaReportSort[kind] || { col: -1, dir: 1 };
       const head = `<thead><tr>${columns.map((c, i) => {
         const ind = i === sort.col ? (sort.dir > 0 ? " ▲" : " ▼") : "";
-        return `<th class="sortable" data-qa-sort="${kind}:${i}"><span class="th-text">${esc(c)}${ind}</span></th>`;
+        const cls = "sortable" + (commCols.includes(i) ? " col-comm" : "");
+        return `<th class="${cls}" data-qa-sort="${kind}:${i}"><span class="th-text">${esc(c)}${ind}</span></th>`;
       }).join("")}</tr></thead>`;
       const body = rows.length
         ? rows.map(r => `<tr>${r.map((c, i) => {
             const v = esc(c);
             if (i === cmdCol) return `<td class="cmd">${v}</td>`;
             if (i === clampCol) return `<td class="clamp" title="${v}"><div class="clamp-box">${v}</div></td>`;
+            if (chipCols.includes(i)) return `<td class="col-chip"><div class="cell-wrap">${v.replace(/,/g, ",\u200b")}</div></td>`;
+            if (gitCols.includes(i)) return `<td class="col-git"><div class="cell-wrap">${v}</div></td>`;
             return `<td>${v}</td>`;
           }).join("")}</tr>`).join("")
         : `<tr><td colspan="${columns.length}" class="muted">无匹配数据</td></tr>`;
