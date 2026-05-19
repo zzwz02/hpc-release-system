@@ -1029,7 +1029,7 @@
         const todo = docsItems(snap);
         const prog = ownerProgress(snap);
         const todoItems = todo.map(it => `<div class="check-item"><span class="box"></span><span class="ct">${esc(it)}</span></div>`).join("");
-        if (todo.length && appDetailEditMode) {
+        if (todo.length) {
           const preview = todo.slice(0, 3).map(it => `<span class="todo-chip" title="${esc(it)}">${esc(it)}</span>`).join("");
           topInfo = `<details class="checklist compact">
             <summary>
