@@ -139,13 +139,17 @@
   /* ---- qa reports ---- */
   .qa-report-bar{display:flex;align-items:center;gap:9px;margin-bottom:11px;flex-wrap:wrap;}
   .qa-report-bar .count{margin-left:auto;}
-  .report-table table{font-size:12px;}
-  /* keep headers on one line so empty columns don't collapse to a sliver
-     and wrap their long label one character per row */
+  .qa-report-search{max-width:220px;padding:5px 9px;}
+  /* width:auto lets each column size to its content instead of being
+     squeezed; headers stay on one line so empty columns keep a sane width */
+  .report-table table{font-size:12px;width:auto;min-width:100%;}
   .report-table th{white-space:nowrap;}
-  .report-table td{min-width:54px;white-space:pre-wrap;word-break:break-word;}
   .report-table td.cmd{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-    word-break:break-all;min-width:340px;}
+    white-space:pre-wrap;word-break:break-all;min-width:340px;}
+  /* long descriptions are clamped to 3 lines (full text on hover) so a
+     verbose 描述 cell can't blow up the whole row's height */
+  .report-table td.clamp .clamp-box{max-width:260px;display:-webkit-box;
+    -webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;}
   /* ---- app list ---- */
   .searchbox{position:relative;margin-bottom:9px;}
   .searchbox .input{padding-left:30px;}
@@ -549,6 +553,7 @@
     let qaReportsLoading = false;
     let qaReportsVersion = 0;
     let qaReportsRenderSig = "";
+    let qaReportFilter = { release: "", test: "" };
     document.addEventListener("keydown", () => { lastUserInputAt = Date.now(); }, true);
     document.addEventListener("input", markUserEdit, true);
     document.addEventListener("change", markUserEdit, true);
@@ -1175,8 +1180,10 @@
                 <label>开发者社区发布情况<input id="communityRelease" class="input" value="${esc(community.release_status || "")}" ${appMetaDisabled}></label>
                 <label>社区包支持 Python 版本<input id="communityPython" class="input" value="${esc(community.python_version || "")}" ${appMetaDisabled}></label>
                 <label>社区包支持框架及版本<input id="communityFramework" class="input" value="${esc(community.framework_version || "")}" ${appMetaDisabled}></label>
-                <label>ARM / Kylin Sanity <span class="small muted">· 仅 RM</span><input id="sanityArmKylin" class="input" value="${esc(sanity.arm_kylin || "")}" ${rmMetaDisabled}></label>
-                <label>Ubuntu / 兼容性 Sanity <span class="small muted">· 仅 RM</span><input id="sanityUbuntu" class="input" value="${esc(sanity.ubuntu || "")}" ${rmMetaDisabled}></label>
+              </div>
+              <div class="row" style="margin-top:11px;gap:24px;flex-wrap:wrap">
+                <label class="check"><input type="checkbox" id="sanityArmKylin" ${rmMetaDisabled} ${sanity.arm_kylin ? "checked" : ""}>ARM / Kylin Sanity 通过 <span class="small muted">（仅 RM）</span></label>
+                <label class="check"><input type="checkbox" id="sanityUbuntu" ${rmMetaDisabled} ${sanity.ubuntu ? "checked" : ""}>Ubuntu / 兼容性 Sanity 通过 <span class="small muted">（仅 RM）</span></label>
               </div>
             </div>
           </details>
@@ -1319,13 +1326,36 @@
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(url);
     }
-    function reportTableHtml(columns, rows, cmdCols) {
-      const cmd = new Set(cmdCols || []);
+    function reportTableHtml(columns, rows, kind) {
+      const cmdCol = kind === "test" ? 6 : -1;     // docker_cmd
+      const clampCol = kind === "release" ? 4 : -1; // 描述
       const head = `<thead><tr>${columns.map(c => `<th>${esc(c)}</th>`).join("")}</tr></thead>`;
       const body = rows.length
-        ? rows.map(r => `<tr>${r.map((c, i) => `<td${cmd.has(i) ? ' class="cmd"' : ""}>${esc(c)}</td>`).join("")}</tr>`).join("")
-        : `<tr><td colspan="${columns.length}" class="muted">无数据</td></tr>`;
+        ? rows.map(r => `<tr>${r.map((c, i) => {
+            const v = esc(c);
+            if (i === cmdCol) return `<td class="cmd">${v}</td>`;
+            if (i === clampCol) return `<td class="clamp" title="${v}"><div class="clamp-box">${v}</div></td>`;
+            return `<td>${v}</td>`;
+          }).join("")}</tr>`).join("")
+        : `<tr><td colspan="${columns.length}" class="muted">无匹配数据</td></tr>`;
       return `<table>${head}<tbody>${body}</tbody></table>`;
+    }
+    function reportFilteredRows(kind) {
+      const data = kind === "release" ? qaReports.release_report : qaReports.test_cmd;
+      const q = (qaReportFilter[kind] || "").trim().toLowerCase();
+      if (!q) return data.rows;
+      return data.rows.filter(r => r.some(c => String(c ?? "").toLowerCase().includes(q)));
+    }
+    function renderReportTable(kind) {
+      if (!qaReports) return;
+      const data = kind === "release" ? qaReports.release_report : qaReports.test_cmd;
+      const rows = reportFilteredRows(kind);
+      const box = $(`qaReportTable_${kind}`);
+      if (box) box.innerHTML = reportTableHtml(data.columns, rows, kind);
+      const count = $(`qaReportCount_${kind}`);
+      if (count) count.textContent = rows.length === data.rows.length
+        ? `${data.rows.length} 行`
+        : `${rows.length} / ${data.rows.length} 行`;
     }
     function qaReportPaneHtml(kind, title, hint) {
       const data = qaReports ? (kind === "release" ? qaReports.release_report : qaReports.test_cmd) : null;
@@ -1336,13 +1366,13 @@
         body = `<p class="muted small">${esc(hint)}</p>
           <div class="row" style="margin-top:9px"><button class="btn primary" data-qa-report-load="1">加载报告</button></div>`;
       } else {
-        const rows = data.rows || [];
         body = `<div class="qa-report-bar">
             <button class="btn ghost sm" data-qa-report-refresh="1">↻ 刷新</button>
-            <button class="btn primary sm" data-qa-report-csv="${kind}" ${rows.length ? "" : "disabled"}>导出 CSV</button>
-            <span class="muted small count">${rows.length} 行</span>
+            <button class="btn primary sm" data-qa-report-csv="${kind}">导出 CSV</button>
+            <input class="input qa-report-search" data-qa-report-filter="${kind}" placeholder="筛选关键词…" value="${esc(qaReportFilter[kind] || "")}">
+            <span class="muted small count" id="qaReportCount_${kind}"></span>
           </div>
-          <div class="table report-table">${reportTableHtml(data.columns, rows, kind === "test" ? [6] : [])}</div>`;
+          <div class="table report-table" id="qaReportTable_${kind}"></div>`;
       }
       return `<div class="panel"><div class="panel-head"><h2>${esc(title)}</h2></div>
         <div class="panel-body">${body}</div></div>`;
@@ -1350,7 +1380,7 @@
     function renderQaReports() {
       if ((!isQA() && !isRM()) || !$("qaReleaseReport") || !$("qaTestCmd")) return;
       const rid = currentReleaseId();
-      if (qaReportsReleaseId !== rid) { qaReports = null; qaReportsReleaseId = rid; }
+      if (qaReportsReleaseId !== rid) { qaReports = null; qaReportsReleaseId = rid; qaReportFilter = { release: "", test: "" }; }
       const sig = `${rid}|${qaReports ? "data" : "none"}|${qaReportsLoading ? "load" : "idle"}|${qaReportsVersion}`;
       if (sig === qaReportsRenderSig) return;
       qaReportsRenderSig = sig;
@@ -1367,6 +1397,8 @@
         "test", "Test 命令",
         "由各 app 已上传的 app_info 生成的测试命令清单（输出对应 get_release_report_test_cmd.py）。"
       );
+      renderReportTable("release");
+      renderReportTable("test");
       bindQaReports();
     }
     function bindQaReports() {
@@ -1377,7 +1409,13 @@
         const kind = b.dataset.qaReportCsv;
         const data = kind === "release" ? qaReports.release_report : qaReports.test_cmd;
         const rel = qaReports.release_name || currentReleaseId();
-        reportDownloadCsv(`${kind === "release" ? "release_report" : "test_cmd"}_${rel}.csv`, data.columns, data.rows);
+        reportDownloadCsv(`${kind === "release" ? "release_report" : "test_cmd"}_${rel}.csv`, data.columns, reportFilteredRows(kind));
+      });
+      document.querySelectorAll("[data-qa-report-filter]").forEach(inp => {
+        inp.oninput = () => {
+          qaReportFilter[inp.dataset.qaReportFilter] = inp.value;
+          renderReportTable(inp.dataset.qaReportFilter);
+        };
       });
     }
     async function loadQaReports(force) {
@@ -1606,8 +1644,8 @@
           framework_version: $("communityFramework").value.trim(),
         },
         sanity: {
-          arm_kylin: $("sanityArmKylin").value.trim(),
-          ubuntu: $("sanityUbuntu").value.trim(),
+          arm_kylin: $("sanityArmKylin").checked,
+          ubuntu: $("sanityUbuntu").checked,
         },
         test_docs
       };

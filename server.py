@@ -383,7 +383,7 @@ class Handler(BaseHTTPRequestHandler):
                         if "sanity" in snap_update:
                             sanity_update = snap_update["sanity"]
                             sanity_labels = {"arm_kylin": "ARM / Kylin Sanity", "ubuntu": "Ubuntu / 兼容性 Sanity"}
-                            sanity_before = {k: (snapshot.get("sanity") or {}).get(k, "") for k in sanity_labels}
+                            sanity_before = {k: bool((snapshot.get("sanity") or {}).get(k)) for k in sanity_labels}
                             sanity_changes = core.field_diff(sanity_before, sanity_update, sanity_labels)
                             if sanity_changes:
                                 if role != "RM":

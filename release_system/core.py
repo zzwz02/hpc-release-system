@@ -717,8 +717,8 @@ def base_snapshot(
             "framework_version": "",
         },
         "sanity": {
-            "arm_kylin": "",
-            "ubuntu": "",
+            "arm_kylin": False,
+            "ubuntu": False,
         },
         "app_info": None,
         "app_info_diffs": [],
@@ -1780,7 +1780,7 @@ QA_RELEASE_REPORT_COLUMNS = [
     "对应官方版本", "X86支持芯片系列", "ARM支持芯片类型", "备注",
     "开发者社区发布情况", "开发者社区发布包支持python版本",
     "开发者社区发布包支持的底层框架及版本",
-    "ARM / Kylin sanity", "Ubuntu sanity / 兼容性sanity",
+    "ARM / Kylin sanity", "Ubuntu / 兼容性 sanity",
 ]
 
 QA_TEST_CMD_COLUMNS = [
@@ -1940,8 +1940,8 @@ def build_qa_reports(conn: sqlite3.Connection, release_id: str) -> dict[str, Any
             community.get("release_status", ""),
             community.get("python_version", ""),
             community.get("framework_version", ""),
-            sanity.get("arm_kylin", ""),
-            sanity.get("ubuntu", ""),
+            "✔" if sanity.get("arm_kylin") else "",
+            "✔" if sanity.get("ubuntu") else "",
         ])
         raw = (snapshot.get("app_info") or {}).get("raw")
         if isinstance(raw, dict):
