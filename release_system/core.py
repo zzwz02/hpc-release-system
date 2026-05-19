@@ -1776,7 +1776,7 @@ def export_test_scope_csv(conn: sqlite3.Connection, release_id: str) -> str:
 # app_info.json from Gerrit.
 
 QA_RELEASE_REPORT_COLUMNS = [
-    "类别", "名称", "Owner", "类型", "描述", "git_url", "git_branch",
+    "类别", "名称", "Owner", "类型", "描述", "官方URL", "git_url", "git_branch",
     "对应官方版本", "X86支持芯片系列", "ARM支持芯片类型", "备注",
     "开发者社区发布情况", "开发者社区发布包支持python版本",
     "开发者社区发布包支持的底层框架及版本",
@@ -1931,6 +1931,7 @@ def build_qa_reports(conn: sqlite3.Connection, release_id: str) -> dict[str, Any
             ",".join(view["owners"]),
             view["type"],
             view["description"],
+            view["official_url"],
             app.get("git_url", ""),
             app.get("git_branch", ""),
             snapshot.get("version", ""),

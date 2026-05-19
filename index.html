@@ -1322,6 +1322,10 @@
       };
       return [columns, ...rows].map(r => r.map(cell).join(",")).join("\r\n");
     }
+    function csvTimestamp() {
+      const d = new Date(), p = n => String(n).padStart(2, "0");
+      return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+    }
     function reportDownloadCsv(filename, columns, rows) {
       const blob = new Blob(["﻿" + reportToCsv(columns, rows)], { type: "text/csv;charset=utf-8" });
       const url = URL.createObjectURL(blob);
@@ -1436,7 +1440,7 @@
         const kind = b.dataset.qaReportCsv;
         const data = kind === "release" ? qaReports.release_report : qaReports.test_cmd;
         const rel = qaReports.release_name || currentReleaseId();
-        reportDownloadCsv(`${kind === "release" ? "release_report" : "test_cmd"}_${rel}.csv`, data.columns, reportRows(kind));
+        reportDownloadCsv(`${kind === "release" ? "release_report" : "test_cmd"}_${rel}_${csvTimestamp()}.csv`, data.columns, reportRows(kind));
       });
       document.querySelectorAll("[data-qa-report-filter]").forEach(inp => {
         inp.oninput = () => {
@@ -1739,7 +1743,7 @@
         document.querySelectorAll("[data-qa-pane],.qa-pane").forEach(x => x.classList.remove("active"));
         b.classList.add("active");
         $(b.dataset.qaPane).classList.add("active");
-        if (b.dataset.qaPane !== "qaMarkPane") loadQaReports();
+        if (b.dataset.qaPane !== "qaMarkPane") loadQaReports(true);
       });
       window.addEventListener("unhandledrejection", e => {
         const msg = e.reason && e.reason.message ? e.reason.message : String(e.reason || "未知错误");
