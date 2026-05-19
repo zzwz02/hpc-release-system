@@ -338,7 +338,7 @@
         <div class="panel">
           <div class="panel-head"><h2>首次初始化</h2></div>
           <div class="panel-body">
-            <p class="hint" style="margin-top:0">导入一个 CSV 即可（列：官方名称, 类型, APP类型, Owner, app_version, maca_chip, hpcc_chip, arch, maca_version, git_url, git_branch）。同一 (git_url, git_branch) 视为同一个 app；后续 release 从上一版本克隆。</p>
+            <p class="hint" style="margin-top:0">导入一个 CSV 即可（列：类别, id, 名称, Owner, 类型, 描述, git_url, git_branch）。同一 (git_url, git_branch) 视为同一个 app；后续 release 从上一版本克隆。</p>
             <div class="form" style="grid-template-columns:1fr 1fr;margin-top:12px">
               <label>初始化 CSV<input id="initCsv" class="input" type="file" accept=".csv"></label>
               <label>Release 名称<input id="initReleaseName" class="input" placeholder="留空则用 maca_version"></label>

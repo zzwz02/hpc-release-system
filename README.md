@@ -80,7 +80,7 @@ python3.14 server.py --host 0.0.0.0 --port 9000
 
 ## 工作流程概览
 
-1. RM 在「初始化/周期」首次导入一份初始化 CSV（列含 官方名称 / 类型 / APP类型 / Owner / app_version / 芯片 / git_url / git_branch 等，每个 (git_url, git_branch) 为一个 app）；后续 release 从上一版克隆。
+1. RM 在「初始化/周期」首次导入一份初始化 CSV（列含 类别 / id / 名称 / Owner / 类型 / 描述 / git_url / git_branch，每个 (git_url, git_branch) 为一个 app）；后续 release 从上一版克隆。
 2. RM 设置当前 release 的名称与两个 deadline。
 3. Owner 在「App 工作台」确认 release 决策，维护本 release 的基本信息、文档、`app_info.json`、test_cmd 说明（可「从其他版本复制信息」），提交 Owner 确认。
 4. RM 导出测试范围 CSV 交给 QA。

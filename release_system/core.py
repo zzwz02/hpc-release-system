@@ -499,6 +499,28 @@ def infer_doc_target(category: str = "", app_type: str = "") -> str:
     return "manual"
 
 
+def csv_value(row: dict[str, str], *names: str) -> str:
+    for name in names:
+        value = (row.get(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def init_csv_official_name(row: dict[str, str]) -> str:
+    return csv_value(row, "官方名称", "名称", "app_name")
+
+
+def init_csv_doc_category(row: dict[str, str]) -> str:
+    if "APP类型" in row:
+        return csv_value(row, "类型")
+    return csv_value(row, "类别", "类型")
+
+
+def init_csv_app_type(row: dict[str, str]) -> str:
+    return csv_value(row, "APP类型", "类型")
+
+
 def canonical_id(name: str, aliases: dict[str, str] | None = None) -> str:
     normalized = normalize_name(name)
     return (aliases or {}).get(normalized, normalized)
@@ -847,9 +869,10 @@ def import_initial_rows(
 ) -> str:
     """Import a single init CSV: one app per (git_url, git_branch) pair.
 
-    Columns: 官方名称, 类型, APP类型, Owner, app_version, maca_chip,
-    hpcc_chip, arch, maca_version, git_url, git_branch. Rows sharing a
-    (git_url, git_branch) pair form one app; differing-arch rows merge chips.
+    Supports the legacy release CSV columns plus the hpc_app.csv shape:
+    类别, id, 名称, Owner, 类型, 描述, git_url, git_branch.
+    Rows sharing a (git_url, git_branch) pair form one app; differing-arch
+    rows merge chips when those optional chip columns are present.
     """
     validate_deadline_order(app_freeze_deadline, doc_deadline)
     if not rows:
@@ -870,7 +893,7 @@ def import_initial_rows(
 
     base_counts: dict[str, int] = {}
     for key in order:
-        bid = normalize_name(groups[key][0].get("官方名称", "")) or "app"
+        bid = normalize_name(init_csv_official_name(groups[key][0])) or "app"
         base_counts[bid] = base_counts.get(bid, 0) + 1
 
     used_ids: set[str] = set()
@@ -878,7 +901,7 @@ def import_initial_rows(
     for key in order:
         group = groups[key]
         first = group[0]
-        official = (first.get("官方名称") or "").strip()
+        official = init_csv_official_name(first)
         bid = normalize_name(official) or "app"
         if base_counts[bid] > 1 or bid in used_ids:
             app_id = variant_app_id(bid, first.get("app_version", ""), key[1], used_ids)
@@ -908,8 +931,9 @@ def import_initial_rows(
         snapshot = base_snapshot(
             app_id,
             official_name=official,
-            app_type=(first.get("APP类型") or "").strip(),
-            doc_target=normalize_doc_target(first.get("类型", "")),
+            app_type=init_csv_app_type(first),
+            description=csv_value(first, "描述"),
+            doc_target=normalize_doc_target(init_csv_doc_category(first)),
             owners=sorted(set(owners)),
         )
         snapshot["version"] = (first.get("app_version") or "").strip()

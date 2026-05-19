@@ -228,6 +228,22 @@ class CoreWorkflowTests(unittest.TestCase):
         self.assertEqual(snap["official_name"], "Amber")
         self.assertEqual(snap["doc_target"], "manual")
 
+    def test_initial_import_accepts_hpc_app_csv_shape(self) -> None:
+        rows = core.parse_csv_text("""类别,id,名称,Owner,类型,描述,git_url,git_branch
+HPC APP,1,HPL,孙跃,HPC基准测试,求解随机稠密线性方程组,hpc_hpl,maca
+""")
+        release_id = core.import_initial_rows(self.conn, rows)
+        apps = core.list_apps(self.conn)
+        self.assertEqual(len(apps), 1)
+        self.assertEqual(apps[0]["id"], "hpl")
+        self.assertEqual(apps[0]["git_url"], "hpc_hpl")
+        snap = core.get_release(self.conn, release_id)["snapshots"]["hpl"]
+        self.assertEqual(snap["official_name"], "HPL")
+        self.assertEqual(snap["owners"], ["孙跃"])
+        self.assertEqual(snap["type"], "HPC基准测试")
+        self.assertEqual(snap["description"], "求解随机稠密线性方程组")
+        self.assertEqual(snap["doc_target"], "manual")
+
     def test_default_users_include_qa(self) -> None:
         self.assertIsNotNone(core.authenticate(self.conn, "qa", "qa"))
 
@@ -744,6 +760,34 @@ class CoreWorkflowTests(unittest.TestCase):
             server.run_git = old
         self.assertEqual(commit_id, "abc123")
         self.assertEqual(json.loads(raw)["app_version"], "22")
+
+    def test_fetch_app_info_from_gerrit_prefixes_hpc_project_url(self) -> None:
+        payload = json.dumps(APP_INFO_V1).encode("utf-8")
+        archive = BytesIO()
+        with tarfile.open(fileobj=archive, mode="w") as tar:
+            info = tarfile.TarInfo("app_info.json")
+            info.size = len(payload)
+            tar.addfile(info, BytesIO(payload))
+        calls = []
+
+        def fake_run_git(args, *, timeout=60):
+            calls.append(args)
+            if args[:2] == ["git", "ls-remote"]:
+                return subprocess.CompletedProcess(args, 0, stdout=b"abc123\trefs/heads/maca\n", stderr=b"")
+            if args[:2] == ["git", "archive"]:
+                return subprocess.CompletedProcess(args, 0, stdout=archive.getvalue(), stderr=b"")
+            raise AssertionError(args)
+
+        old = server.run_git
+        server.run_git = fake_run_git
+        try:
+            server.fetch_app_info_from_gerrit("hpc_hpl", "maca")
+        finally:
+            server.run_git = old
+
+        remote = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_hpl"
+        self.assertEqual(calls[0], ["git", "ls-remote", remote, "maca"])
+        self.assertEqual(calls[1][2], f"--remote={remote}")
 
     # --- bug-fix regressions ---
 
