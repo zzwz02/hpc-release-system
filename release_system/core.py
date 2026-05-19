@@ -1926,7 +1926,7 @@ def build_qa_reports(conn: sqlite3.Connection, release_id: str) -> dict[str, Any
         community = snapshot.get("community") or {}
         sanity = snapshot.get("sanity") or {}
         release_rows.append([
-            "",  # 类别 — not tracked per-app
+            view["type"],  # 类别 — same as the app's 类型
             view["official_name"],
             ",".join(view["owners"]),
             view["type"],

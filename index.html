@@ -140,10 +140,13 @@
   .qa-report-bar{display:flex;align-items:center;gap:9px;margin-bottom:11px;flex-wrap:wrap;}
   .qa-report-bar .count{margin-left:auto;}
   .qa-report-search{max-width:220px;padding:5px 9px;}
-  /* width:auto lets each column size to its content instead of being
-     squeezed; headers stay on one line so empty columns keep a sane width */
+  /* width:auto lets each column size to its content instead of being squeezed */
   .report-table table{font-size:12px;width:auto;min-width:100%;}
-  .report-table th{white-space:nowrap;}
+  .report-table th.sortable{cursor:pointer;user-select:none;}
+  .report-table th.sortable:hover{background:#f0f1f4;}
+  /* cap header text width so long labels (社区发布列) wrap to ~2 lines
+     and the column shrinks instead of being forced wide on one line */
+  .report-table th .th-text{display:inline-block;min-width:44px;max-width:128px;line-height:1.35;}
   .report-table td.cmd{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
     white-space:pre-wrap;word-break:break-all;min-width:340px;}
   /* long descriptions are clamped to 3 lines (full text on hover) so a
@@ -554,6 +557,7 @@
     let qaReportsVersion = 0;
     let qaReportsRenderSig = "";
     let qaReportFilter = { release: "", test: "" };
+    let qaReportSort = { release: { col: -1, dir: 1 }, test: { col: -1, dir: 1 } };
     document.addEventListener("keydown", () => { lastUserInputAt = Date.now(); }, true);
     document.addEventListener("input", markUserEdit, true);
     document.addEventListener("change", markUserEdit, true);
@@ -1329,7 +1333,11 @@
     function reportTableHtml(columns, rows, kind) {
       const cmdCol = kind === "test" ? 6 : -1;     // docker_cmd
       const clampCol = kind === "release" ? 4 : -1; // 描述
-      const head = `<thead><tr>${columns.map(c => `<th>${esc(c)}</th>`).join("")}</tr></thead>`;
+      const sort = qaReportSort[kind] || { col: -1, dir: 1 };
+      const head = `<thead><tr>${columns.map((c, i) => {
+        const ind = i === sort.col ? (sort.dir > 0 ? " ▲" : " ▼") : "";
+        return `<th class="sortable" data-qa-sort="${kind}:${i}"><span class="th-text">${esc(c)}${ind}</span></th>`;
+      }).join("")}</tr></thead>`;
       const body = rows.length
         ? rows.map(r => `<tr>${r.map((c, i) => {
             const v = esc(c);
@@ -1340,18 +1348,33 @@
         : `<tr><td colspan="${columns.length}" class="muted">无匹配数据</td></tr>`;
       return `<table>${head}<tbody>${body}</tbody></table>`;
     }
-    function reportFilteredRows(kind) {
+    function reportRows(kind) {
       const data = kind === "release" ? qaReports.release_report : qaReports.test_cmd;
       const q = (qaReportFilter[kind] || "").trim().toLowerCase();
-      if (!q) return data.rows;
-      return data.rows.filter(r => r.some(c => String(c ?? "").toLowerCase().includes(q)));
+      let rows = q
+        ? data.rows.filter(r => r.some(c => String(c ?? "").toLowerCase().includes(q)))
+        : data.rows.slice();
+      const sort = qaReportSort[kind];
+      if (sort && sort.col >= 0) {
+        const col = sort.col, dir = sort.dir;
+        rows.sort((a, b) => dir * String(a[col] ?? "").localeCompare(String(b[col] ?? ""), "zh-CN", { numeric: true }));
+      }
+      return rows;
     }
     function renderReportTable(kind) {
       if (!qaReports) return;
       const data = kind === "release" ? qaReports.release_report : qaReports.test_cmd;
-      const rows = reportFilteredRows(kind);
+      const rows = reportRows(kind);
       const box = $(`qaReportTable_${kind}`);
-      if (box) box.innerHTML = reportTableHtml(data.columns, rows, kind);
+      if (box) {
+        box.innerHTML = reportTableHtml(data.columns, rows, kind);
+        box.querySelectorAll("[data-qa-sort]").forEach(th => th.onclick = () => {
+          const [k, idx] = th.dataset.qaSort.split(":");
+          const s = qaReportSort[k], i = Number(idx);
+          if (s.col === i) s.dir = -s.dir; else { s.col = i; s.dir = 1; }
+          renderReportTable(k);
+        });
+      }
       const count = $(`qaReportCount_${kind}`);
       if (count) count.textContent = rows.length === data.rows.length
         ? `${data.rows.length} 行`
@@ -1380,7 +1403,11 @@
     function renderQaReports() {
       if ((!isQA() && !isRM()) || !$("qaReleaseReport") || !$("qaTestCmd")) return;
       const rid = currentReleaseId();
-      if (qaReportsReleaseId !== rid) { qaReports = null; qaReportsReleaseId = rid; qaReportFilter = { release: "", test: "" }; }
+      if (qaReportsReleaseId !== rid) {
+        qaReports = null; qaReportsReleaseId = rid;
+        qaReportFilter = { release: "", test: "" };
+        qaReportSort = { release: { col: -1, dir: 1 }, test: { col: -1, dir: 1 } };
+      }
       const sig = `${rid}|${qaReports ? "data" : "none"}|${qaReportsLoading ? "load" : "idle"}|${qaReportsVersion}`;
       if (sig === qaReportsRenderSig) return;
       qaReportsRenderSig = sig;
@@ -1409,7 +1436,7 @@
         const kind = b.dataset.qaReportCsv;
         const data = kind === "release" ? qaReports.release_report : qaReports.test_cmd;
         const rel = qaReports.release_name || currentReleaseId();
-        reportDownloadCsv(`${kind === "release" ? "release_report" : "test_cmd"}_${rel}.csv`, data.columns, reportFilteredRows(kind));
+        reportDownloadCsv(`${kind === "release" ? "release_report" : "test_cmd"}_${rel}.csv`, data.columns, reportRows(kind));
       });
       document.querySelectorAll("[data-qa-report-filter]").forEach(inp => {
         inp.oninput = () => {
