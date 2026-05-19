@@ -1641,16 +1641,27 @@
       const btn = $("fetchAllInfo");
       const log = $("fetchAllInfoLog");
       btn.disabled = true;
-      log.textContent = "批量拉取中，请稍候...";
+      const failures = [];
+      let succeeded = 0;
       try {
-        const result = await post("/api/app-info/fetch-all", { release_id: currentReleaseId() });
-        const failed = (result.results || []).filter(x => !x.ok);
+        for (let i = 0; i < releaseApps.length; i++) {
+          const app = releaseApps[i];
+          const snap = releaseSnap(app.id) || {};
+          const name = displayName(snap) || app.id;
+          log.textContent = `正在拉取 ${name}（${i + 1}/${releaseApps.length}）...`;
+          try {
+            await post("/api/app-info/fetch", { release_id: currentReleaseId(), app_id: app.id });
+            succeeded += 1;
+          } catch (err) {
+            failures.push({ app_id: app.id, name, error: err.message });
+          }
+        }
         appDetailDirty = false;
         await loadState(currentReleaseId(), { preserveDetail: true });
         const nextLog = $("fetchAllInfoLog");
-        if (nextLog) nextLog.textContent = `完成：成功 ${result.succeeded}/${result.total}，失败 ${result.failed}`;
-        const detail = failed.slice(0, 10).map(x => `- ${x.app_id}: ${x.error}`).join("\n");
-        alert(`批量拉取完成：成功 ${result.succeeded}/${result.total}，失败 ${result.failed}${detail ? `\n\n失败明细（前 10 条）：\n${detail}` : ""}`);
+        if (nextLog) nextLog.textContent = `完成：成功 ${succeeded}/${releaseApps.length}，失败 ${failures.length}`;
+        const detail = failures.slice(0, 10).map(x => `- ${x.name || x.app_id}: ${x.error}`).join("\n");
+        alert(`批量拉取完成：成功 ${succeeded}/${releaseApps.length}，失败 ${failures.length}${detail ? `\n\n失败明细（前 10 条）：\n${detail}` : ""}`);
       } catch (e) {
         log.textContent = "批量拉取失败：" + e.message;
         alert("批量拉取失败：\n\n" + e.message);
