@@ -138,7 +138,9 @@
   .cl-detail-table td,.cl-detail-table th{border-bottom:1px solid var(--border);}
   /* ---- qa reports ---- */
   .qa-report-bar{display:flex;align-items:center;gap:9px;margin-bottom:11px;flex-wrap:wrap;}
-  .qa-report-bar .count{margin-left:auto;}
+  .qa-report-bar .qa-report-time{margin-left:auto;}
+  .qa-chip-legend{font-size:12px;color:var(--muted);line-height:1.7;margin:0 0 11px;
+    background:#fafbfc;border:1px solid var(--border);border-radius:8px;padding:7px 11px;}
   .qa-report-search{max-width:220px;padding:5px 9px;}
   /* width:auto lets each column size to its content instead of being squeezed */
   .report-table table{font-size:12px;width:auto;min-width:100%;}
@@ -1327,8 +1329,14 @@
       };
       return [columns, ...rows].map(r => r.map(cell).join(",")).join("\r\n");
     }
-    function csvTimestamp() {
-      const d = new Date(), p = n => String(n).padStart(2, "0");
+    const CHIP_LEGEND = "x201系列芯片包括x201, x203 · x301系列芯片 · x302系列芯片 · C500系列芯片包括C500, C550 · C600系列芯片包括C600 · N300系列芯片包括N300";
+    function fmtDateTime(d) {
+      const p = n => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    }
+    function csvTimestamp(d) {
+      d = d || new Date();
+      const p = n => String(n).padStart(2, "0");
       return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
     }
     function reportDownloadCsv(filename, columns, rows) {
@@ -1394,6 +1402,8 @@
       if (count) count.textContent = rows.length === data.rows.length
         ? `${data.rows.length} 行`
         : `${rows.length} / ${data.rows.length} 行`;
+      const timeEl = $(`qaReportTime_${kind}`);
+      if (timeEl) timeEl.textContent = qaReports.loadedAt ? "刷新于 " + fmtDateTime(qaReports.loadedAt) : "";
     }
     function qaReportPaneHtml(kind, title, hint) {
       const data = qaReports ? (kind === "release" ? qaReports.release_report : qaReports.test_cmd) : null;
@@ -1404,12 +1414,17 @@
         body = `<p class="muted small">${esc(hint)}</p>
           <div class="row" style="margin-top:9px"><button class="btn primary" data-qa-report-load="1">加载报告</button></div>`;
       } else {
+        const legend = kind === "release"
+          ? `<p class="qa-chip-legend">芯片系列说明：${esc(CHIP_LEGEND)}</p>`
+          : "";
         body = `<div class="qa-report-bar">
             <button class="btn ghost sm" data-qa-report-refresh="1">↻ 刷新</button>
             <button class="btn primary sm" data-qa-report-csv="${kind}">导出 CSV</button>
             <input class="input qa-report-search" data-qa-report-filter="${kind}" placeholder="筛选关键词…" value="${esc(qaReportFilter[kind] || "")}">
+            <span class="muted small qa-report-time" id="qaReportTime_${kind}"></span>
             <span class="muted small count" id="qaReportCount_${kind}"></span>
           </div>
+          ${legend}
           <div class="table report-table" id="qaReportTable_${kind}"></div>`;
       }
       return `<div class="panel"><div class="panel-head"><h2>${esc(title)}</h2></div>
@@ -1451,7 +1466,7 @@
         const kind = b.dataset.qaReportCsv;
         const data = kind === "release" ? qaReports.release_report : qaReports.test_cmd;
         const rel = qaReports.release_name || currentReleaseId();
-        reportDownloadCsv(`${kind === "release" ? "release_report" : "test_cmd"}_${rel}_${csvTimestamp()}.csv`, data.columns, reportRows(kind));
+        reportDownloadCsv(`${kind === "release" ? "release_report" : "test_cmd"}_${rel}_${csvTimestamp(qaReports.loadedAt)}.csv`, data.columns, reportRows(kind));
       });
       document.querySelectorAll("[data-qa-report-filter]").forEach(inp => {
         inp.oninput = () => {
@@ -1471,6 +1486,7 @@
         const data = await api(`/api/qa-reports?release_id=${encodeURIComponent(rid)}`);
         if (currentReleaseId() !== rid) return;
         qaReports = data;
+        qaReports.loadedAt = new Date();
         qaReportsVersion++;
       } catch (e) {
         alert("加载报告失败：" + e.message);
