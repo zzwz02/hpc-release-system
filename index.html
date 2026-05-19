@@ -189,6 +189,9 @@
   .checklist{border:1px solid var(--warn-bd);background:var(--warn-bg);
     border-radius:11px;padding:14px 16px;margin-bottom:18px;}
   .checklist.done{border-color:var(--ok-bd);background:var(--ok-bg);}
+  details.checklist>summary{list-style:none;cursor:pointer;}
+  details.checklist>summary::-webkit-details-marker{display:none;}
+  .checklist.compact{padding:10px 12px;margin-bottom:12px;}
   .checklist-h{display:flex;align-items:baseline;justify-content:space-between;gap:10px;}
   .checklist-h h3{font-size:14px;color:var(--warn-fg);}
   .checklist.done .checklist-h h3{color:var(--ok-fg);}
@@ -202,6 +205,12 @@
   .check-item+.check-item{border-top:1px dashed rgba(180,83,9,.25);}
   .box{width:18px;height:18px;border-radius:6px;border:1.6px solid var(--warn-fg);flex:none;}
   .ct{font-size:13px;color:var(--ink);}
+  .todo-preview{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+  .todo-chip{font-size:12px;font-weight:700;color:var(--warn-fg);background:rgba(255,255,255,.66);
+    border:1px solid rgba(180,83,9,.22);border-radius:999px;padding:4px 8px;max-width:260px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .todo-more{font-size:12px;font-weight:800;color:var(--warn-fg);align-self:center;}
+  .checklist.compact .checklist-items{margin-top:8px;max-height:220px;overflow:auto;}
   .ck-note{margin:6px 0 0;font-size:12.5px;color:var(--ink-2);}
   /* ---- sections ---- */
   .section{border:1px solid var(--border);border-radius:11px;margin-bottom:13px;overflow:hidden;}
@@ -1019,16 +1028,32 @@
       if (rel) {
         const todo = docsItems(snap);
         const prog = ownerProgress(snap);
-        topInfo = `<div class="checklist ${todo.length ? "" : "done"}">
-          <div class="checklist-h">
-            <h3>${todo.length ? `⚠️ 还需完成 ${todo.length} 项` : `✅ 发布信息已齐全`}</h3>
-            <span class="prog-label">填写完成度 ${prog.pct}%</span>
-          </div>
-          <div class="bar"><span style="width:${prog.pct}%"></span></div>
-          ${todo.length
-            ? `<div class="checklist-items">${todo.map(it => `<div class="check-item"><span class="box"></span><span class="ct">${esc(it)}</span></div>`).join("")}</div>`
-            : `<p class="ck-note">所有发布必填项已补齐${isOwner() && !snap.owner_confirmed ? "，点击底部「保存并提交 Owner 确认」即可完成。" : "。"}</p>`}
-        </div>`;
+        const todoItems = todo.map(it => `<div class="check-item"><span class="box"></span><span class="ct">${esc(it)}</span></div>`).join("");
+        if (todo.length && appDetailEditMode) {
+          const preview = todo.slice(0, 3).map(it => `<span class="todo-chip" title="${esc(it)}">${esc(it)}</span>`).join("");
+          topInfo = `<details class="checklist compact">
+            <summary>
+              <div class="checklist-h">
+                <h3>⚠️ 还需完成 ${todo.length} 项</h3>
+                <span class="prog-label">填写完成度 ${prog.pct}% · 展开查看全部</span>
+              </div>
+              <div class="bar"><span style="width:${prog.pct}%"></span></div>
+              <div class="todo-preview">${preview}${todo.length > 3 ? `<span class="todo-more">+${todo.length - 3} 项</span>` : ""}</div>
+            </summary>
+            <div class="checklist-items">${todoItems}</div>
+          </details>`;
+        } else {
+          topInfo = `<div class="checklist ${todo.length ? "" : "done"}">
+            <div class="checklist-h">
+              <h3>${todo.length ? `⚠️ 还需完成 ${todo.length} 项` : `✅ 发布信息已齐全`}</h3>
+              <span class="prog-label">填写完成度 ${prog.pct}%</span>
+            </div>
+            <div class="bar"><span style="width:${prog.pct}%"></span></div>
+            ${todo.length
+              ? `<div class="checklist-items">${todoItems}</div>`
+              : `<p class="ck-note">所有发布必填项已补齐${isOwner() && !snap.owner_confirmed ? "，点击底部「保存并提交 Owner 确认」即可完成。" : "。"}</p>`}
+          </div>`;
+        }
       } else {
         topInfo = `<div class="banner">本 app 本轮决策为 <b>${esc(snap.release_decision)}</b>，不进入文档生成与 QA，无需补充文档 / 测试说明。</div>`;
       }
