@@ -140,8 +140,12 @@
   .qa-report-bar{display:flex;align-items:center;gap:9px;margin-bottom:11px;flex-wrap:wrap;}
   .qa-report-bar .count{margin-left:auto;}
   .report-table table{font-size:12px;}
+  /* keep headers on one line so empty columns don't collapse to a sliver
+     and wrap their long label one character per row */
+  .report-table th{white-space:nowrap;}
+  .report-table td{min-width:54px;white-space:pre-wrap;word-break:break-word;}
   .report-table td.cmd{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-    white-space:pre-wrap;word-break:break-all;min-width:340px;}
+    word-break:break-all;min-width:340px;}
   /* ---- app list ---- */
   .searchbox{position:relative;margin-bottom:9px;}
   .searchbox .input{padding-left:30px;}
