@@ -1741,6 +1741,189 @@ def export_test_scope_csv(conn: sqlite3.Connection, release_id: str) -> str:
     return out.getvalue()
 
 
+# --- QA reports: release report + test command ------------------------------
+# These mirror the offline get_release_report_test_cmd.py script, but draw on
+# the app_info already uploaded into each release snapshot instead of fetching
+# app_info.json from Gerrit.
+
+QA_RELEASE_REPORT_COLUMNS = [
+    "类别", "名称", "Owner", "类型", "描述", "git_url", "git_branch",
+    "对应官方版本", "X86支持芯片系列", "ARM支持芯片类型", "备注",
+    "开发者社区发布情况", "开发者社区发布包支持python版本",
+    "开发者社区发布包支持的底层框架及版本",
+    "ARM / Kylin sanity", "Ubuntu sanity / 兼容性sanity",
+]
+
+QA_TEST_CMD_COLUMNS = [
+    "app_name", "git_branch", "app_version", "arch",
+    "maca_version", "test_name", "docker_cmd",
+]
+
+
+def _report_normalize_arch(value: Any) -> str:
+    """Normalize arch aliases (arm/x86) to canonical arm64/amd64."""
+    a = str(value or "").strip().lower()
+    if a in ("arm", "arm64", "aarch64"):
+        return "arm64"
+    if a in ("x86", "x86_64", "amd64"):
+        return "amd64"
+    return a
+
+
+def _report_denormalize_arch(value: Any) -> str:
+    """Map canonical arm64/amd64 back to the short arm/x86 used in the CSV."""
+    n = _report_normalize_arch(value)
+    if n == "arm64":
+        return "arm"
+    if n == "amd64":
+        return "x86"
+    return n
+
+
+def _report_build_arches(app_info: dict[str, Any]) -> set[str]:
+    """Normalized arches declared in app_info.app_build.*.arch."""
+    arches: set[str] = set()
+    for cfg in (app_info.get("app_build") or {}).values():
+        if not isinstance(cfg, dict):
+            continue
+        a = _report_normalize_arch(cfg.get("arch"))
+        if a:
+            arches.add(a)
+    return arches
+
+
+def _report_test_arches(test_cfg: dict[str, Any]) -> set[str]:
+    """Arches a test supports, taken from the build_key suffix in
+    supported_chip: {chip: [build_key, ...]} (e.g. ubuntu20.04_amd64)."""
+    arches: set[str] = set()
+    sc = test_cfg.get("supported_chip")
+    if isinstance(sc, dict):
+        for build_keys in sc.values():
+            if not isinstance(build_keys, list):
+                continue
+            for key in build_keys:
+                a = _report_normalize_arch(str(key).rsplit("_", 1)[-1])
+                if a:
+                    arches.add(a)
+    return arches
+
+
+def _report_test_skip(test_cfg: dict[str, Any], arch: str) -> bool:
+    """True when supported_chip is a non-empty dict that excludes this arch
+    on every chip — the test explicitly does not support the arch."""
+    sc = test_cfg.get("supported_chip")
+    target = _report_normalize_arch(arch)
+    if not (isinstance(sc, dict) and sc) or not target:
+        return False
+    for build_keys in sc.values():
+        keys = build_keys if isinstance(build_keys, list) else []
+        if any(_report_normalize_arch(str(k).rsplit("_", 1)[-1]) == target for k in keys):
+            return False
+    return True
+
+
+def _report_docker_cmd(test_cfg: dict[str, Any]) -> str:
+    """Assemble the `docker run ...` command for one app_test entry."""
+    container_args = str(test_cfg.get("container_args") or "").strip()
+    test_cmd = str(test_cfg.get("test_cmd") or "").strip()
+    img_target = str(test_cfg.get("img_target") or "").strip().lower()
+    image = f"[docker_image_{img_target}]" if img_target else "[docker_image]"
+    parts = ["docker run --pull always --rm -e MACA_PERF_DIR=/tmp"]
+    if test_cfg.get("mount_dataset"):
+        parts.append("-v /pde_hpc/dataset:/hpc_dataset:ro")
+    if container_args:
+        parts.append(container_args)
+    parts.append(image)
+    parts.append(f"sh -c '{test_cmd}'")
+    return " ".join(parts)
+
+
+def _report_test_cmd_rows(
+    raw: dict[str, Any], app_name: str, git_branch: str, maca_version: str
+) -> list[list[str]]:
+    """Build test-command rows for one app from its raw app_info.json dict.
+
+    Only enabled, non-weekly tests are kept; each (test, arch) is one row.
+    """
+    version_value = raw.get("app_version")
+    app_version = str(version_value).strip() if version_value not in (None, "") else ""
+    app_arches = _report_build_arches(raw)
+
+    rows: list[list[str]] = []
+    for test_name, test_cfg in (raw.get("app_test") or {}).items():
+        if not isinstance(test_cfg, dict) or not test_cfg.get("enabled"):
+            continue
+        if str(test_cfg.get("test_period") or "").strip().lower() == "weekly":
+            continue
+        docker_cmd = _report_docker_cmd(test_cfg)
+        for n_arch in sorted(a for a in (_report_test_arches(test_cfg) or app_arches) if a):
+            if _report_test_skip(test_cfg, n_arch):
+                continue
+            rows.append([
+                app_name,
+                git_branch,
+                app_version,
+                _report_denormalize_arch(n_arch),
+                maca_version,
+                str(test_name),
+                docker_cmd,
+            ])
+    return rows
+
+
+def build_qa_reports(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
+    """Build the release report + test command tables for a release.
+
+    release_report: one catalog-style row per app in the release (column
+    layout follows release_report.csv; fields the system does not track —
+    备注, 社区发布信息, sanity — are left blank).
+    test_cmd: one row per (test, arch) drawn from each app's uploaded
+    app_info, matching get_release_report_test_cmd.py's test command output.
+    """
+    release = get_release(conn, release_id)
+    apps = {app["id"]: app for app in list_apps(conn)}
+    maca_version = release.get("maca_version", "")
+
+    items = []
+    for app_id, snapshot in release["snapshots"].items():
+        app = apps.get(app_id)
+        if app:
+            items.append((app_view(app, snapshot), app, snapshot))
+    items.sort(key=lambda t: (t[0]["name"] or "").lower())
+
+    release_rows: list[list[str]] = []
+    test_rows: list[list[str]] = []
+    for view, app, snapshot in items:
+        release_rows.append([
+            "",  # 类别 — not tracked per-app
+            view["official_name"],
+            ",".join(view["owners"]),
+            view["type"],
+            view["description"],
+            app.get("git_url", ""),
+            app.get("git_branch", ""),
+            snapshot.get("version", ""),
+            snapshot.get("x86_chips", ""),
+            snapshot.get("arm_chips", ""),
+            "", "", "", "", "", "",  # 备注 / 社区发布 / sanity — not tracked
+        ])
+        raw = (snapshot.get("app_info") or {}).get("raw")
+        if isinstance(raw, dict):
+            test_rows.extend(
+                _report_test_cmd_rows(
+                    raw, view["official_name"], app.get("git_branch", ""), maca_version
+                )
+            )
+    test_rows.sort(key=lambda r: (r[0].lower(), r[1].lower(), r[2].lower(), r[3].lower()))
+
+    return {
+        "release_name": release.get("name", ""),
+        "maca_version": maca_version,
+        "release_report": {"columns": QA_RELEASE_REPORT_COLUMNS, "rows": release_rows},
+        "test_cmd": {"columns": QA_TEST_CMD_COLUMNS, "rows": test_rows},
+    }
+
+
 def final_lock_release(conn: sqlite3.Connection, release_id: str, *, user: str = "rm", role: str = "RM") -> dict[str, str]:
     """Final lock: freeze all writes, generate final artifacts.
 

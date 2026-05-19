@@ -88,8 +88,8 @@
   .subtab{padding:7px 13px;border-radius:8px;border:1px solid var(--border-2);background:#fff;
     font:inherit;font-weight:700;font-size:13px;color:var(--ink-2);cursor:pointer;}
   .subtab.active{color:var(--accent);background:var(--accent-soft);border-color:var(--accent-bd);}
-  .init-pane,.artifact-pane{display:none;}
-  .init-pane.active,.artifact-pane.active{display:block;}
+  .init-pane,.artifact-pane,.qa-pane{display:none;}
+  .init-pane.active,.artifact-pane.active,.qa-pane.active{display:block;}
   /* ---- rows / forms ---- */
   .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
   .form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:13px;}
@@ -136,6 +136,12 @@
   .cl-detail-table{border:0;}
   .cl-detail-table th{background:#f0f1f4;}
   .cl-detail-table td,.cl-detail-table th{border-bottom:1px solid var(--border);}
+  /* ---- qa reports ---- */
+  .qa-report-bar{display:flex;align-items:center;gap:9px;margin-bottom:11px;flex-wrap:wrap;}
+  .qa-report-bar .count{margin-left:auto;}
+  .report-table table{font-size:12px;}
+  .report-table td.cmd{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    white-space:pre-wrap;word-break:break-all;min-width:340px;}
   /* ---- app list ---- */
   .searchbox{position:relative;margin-bottom:9px;}
   .searchbox .input{padding-left:30px;}
@@ -385,7 +391,14 @@
     </section>
 
     <section id="qa" class="view" data-roles="QA,RM">
-      <div id="qaPanel"></div>
+      <div class="subtabs">
+        <button class="subtab active" data-qa-pane="qaMarkPane">QA 标注</button>
+        <button class="subtab" data-qa-pane="qaReleaseReportPane">Release Report</button>
+        <button class="subtab" data-qa-pane="qaTestCmdPane">Test 命令</button>
+      </div>
+      <div id="qaMarkPane" class="qa-pane active"><div id="qaPanel"></div></div>
+      <div id="qaReleaseReportPane" class="qa-pane"><div id="qaReleaseReport"></div></div>
+      <div id="qaTestCmdPane" class="qa-pane"><div id="qaTestCmd"></div></div>
     </section>
 
     <section id="artifacts" class="view" data-roles="RM">
@@ -527,6 +540,11 @@
     let appDetailEditAppId = "";
     let qaEditMode = false;
     let qaEditReleaseId = "";
+    let qaReports = null;
+    let qaReportsReleaseId = "";
+    let qaReportsLoading = false;
+    let qaReportsVersion = 0;
+    let qaReportsRenderSig = "";
     document.addEventListener("keydown", () => { lastUserInputAt = Date.now(); }, true);
     document.addEventListener("input", markUserEdit, true);
     document.addEventListener("change", markUserEdit, true);
@@ -714,6 +732,7 @@
       renderApps();
       if (!(options.preserveDetail && activeView() === "apps" && selectedApp)) renderDetail();
       renderQa();
+      renderQaReports();
       renderAdmin();
       if ($("preview")) $("preview").disabled = releaseLocked();
       renderNewAppControls();
@@ -1258,6 +1277,101 @@
         }
       };
     }
+    function reportToCsv(columns, rows) {
+      const cell = v => {
+        const s = String(v ?? "");
+        return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      };
+      return [columns, ...rows].map(r => r.map(cell).join(",")).join("\r\n");
+    }
+    function reportDownloadCsv(filename, columns, rows) {
+      const blob = new Blob(["﻿" + reportToCsv(columns, rows)], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    }
+    function reportTableHtml(columns, rows, cmdCols) {
+      const cmd = new Set(cmdCols || []);
+      const head = `<thead><tr>${columns.map(c => `<th>${esc(c)}</th>`).join("")}</tr></thead>`;
+      const body = rows.length
+        ? rows.map(r => `<tr>${r.map((c, i) => `<td${cmd.has(i) ? ' class="cmd"' : ""}>${esc(c)}</td>`).join("")}</tr>`).join("")
+        : `<tr><td colspan="${columns.length}" class="muted">无数据</td></tr>`;
+      return `<table>${head}<tbody>${body}</tbody></table>`;
+    }
+    function qaReportPaneHtml(kind, title, hint) {
+      const data = qaReports ? (kind === "release" ? qaReports.release_report : qaReports.test_cmd) : null;
+      let body;
+      if (qaReportsLoading) {
+        body = `<p class="muted small">加载中…</p>`;
+      } else if (!data) {
+        body = `<p class="muted small">${esc(hint)}</p>
+          <div class="row" style="margin-top:9px"><button class="btn primary" data-qa-report-load="1">加载报告</button></div>`;
+      } else {
+        const rows = data.rows || [];
+        body = `<div class="qa-report-bar">
+            <button class="btn ghost sm" data-qa-report-refresh="1">↻ 刷新</button>
+            <button class="btn primary sm" data-qa-report-csv="${kind}" ${rows.length ? "" : "disabled"}>导出 CSV</button>
+            <span class="muted small count">${rows.length} 行</span>
+          </div>
+          <div class="table report-table">${reportTableHtml(data.columns, rows, kind === "test" ? [6] : [])}</div>`;
+      }
+      return `<div class="panel"><div class="panel-head"><h2>${esc(title)}</h2></div>
+        <div class="panel-body">${body}</div></div>`;
+    }
+    function renderQaReports() {
+      if ((!isQA() && !isRM()) || !$("qaReleaseReport") || !$("qaTestCmd")) return;
+      const rid = currentReleaseId();
+      if (qaReportsReleaseId !== rid) { qaReports = null; qaReportsReleaseId = rid; }
+      const sig = `${rid}|${qaReports ? "data" : "none"}|${qaReportsLoading ? "load" : "idle"}|${qaReportsVersion}`;
+      if (sig === qaReportsRenderSig) return;
+      qaReportsRenderSig = sig;
+      if (!rid) {
+        const empty = `<div class="panel"><div class="panel-body"><p class="muted">请选择 release。</p></div></div>`;
+        $("qaReleaseReport").innerHTML = $("qaTestCmd").innerHTML = empty;
+        return;
+      }
+      $("qaReleaseReport").innerHTML = qaReportPaneHtml(
+        "release", "Release Report",
+        "本 release 全部 app 的发布信息汇总（列结构参考 release_report.csv，系统未跟踪的列留空）。"
+      );
+      $("qaTestCmd").innerHTML = qaReportPaneHtml(
+        "test", "Test 命令",
+        "由各 app 已上传的 app_info 生成的测试命令清单（输出对应 get_release_report_test_cmd.py）。"
+      );
+      bindQaReports();
+    }
+    function bindQaReports() {
+      document.querySelectorAll("[data-qa-report-load],[data-qa-report-refresh]")
+        .forEach(b => b.onclick = () => loadQaReports(true));
+      document.querySelectorAll("[data-qa-report-csv]").forEach(b => b.onclick = () => {
+        if (!qaReports) return;
+        const kind = b.dataset.qaReportCsv;
+        const data = kind === "release" ? qaReports.release_report : qaReports.test_cmd;
+        const rel = qaReports.release_name || currentReleaseId();
+        reportDownloadCsv(`${kind === "release" ? "release_report" : "test_cmd"}_${rel}.csv`, data.columns, data.rows);
+      });
+    }
+    async function loadQaReports(force) {
+      const rid = currentReleaseId();
+      if (!rid) return;
+      if (!force && qaReports && qaReportsReleaseId === rid) return;
+      qaReportsLoading = true;
+      qaReportsReleaseId = rid;
+      renderQaReports();
+      try {
+        const data = await api(`/api/qa-reports?release_id=${encodeURIComponent(rid)}`);
+        if (currentReleaseId() !== rid) return;
+        qaReports = data;
+        qaReportsVersion++;
+      } catch (e) {
+        alert("加载报告失败：" + e.message);
+      } finally {
+        qaReportsLoading = false;
+        renderQaReports();
+      }
+    }
     function bindDetail(app, snap) {
       const enterEdit = () => {
         appDetailEditMode = true;
@@ -1519,6 +1633,12 @@
         document.querySelectorAll("[data-artifact-pane],.artifact-pane").forEach(x => x.classList.remove("active"));
         b.classList.add("active");
         $(b.dataset.artifactPane).classList.add("active");
+      });
+      document.querySelectorAll("[data-qa-pane]").forEach(b => b.onclick = () => {
+        document.querySelectorAll("[data-qa-pane],.qa-pane").forEach(x => x.classList.remove("active"));
+        b.classList.add("active");
+        $(b.dataset.qaPane).classList.add("active");
+        if (b.dataset.qaPane !== "qaMarkPane") loadQaReports();
       });
       window.addEventListener("unhandledrejection", e => {
         const msg = e.reason && e.reason.message ? e.reason.message : String(e.reason || "未知错误");
