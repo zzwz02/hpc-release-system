@@ -933,7 +933,7 @@ def import_initial_rows(
             official_name=official,
             app_type=init_csv_app_type(first),
             description=csv_value(first, "描述"),
-            doc_target=normalize_doc_target(init_csv_doc_category(first)),
+            doc_target=infer_doc_target(init_csv_doc_category(first), init_csv_app_type(first)),
             owners=sorted(set(owners)),
         )
         snapshot["version"] = (first.get("app_version") or "").strip()

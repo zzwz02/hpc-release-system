@@ -462,6 +462,12 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     self.send_json({"snapshot": snapshot, "commit_id": commit_id, "source": snapshot.get("app_info", {}).get("source", "")})
                     return
+                if parsed.path == "/api/app-info/fetch-all":
+                    self.require_rm()
+                    body = self.json_body()
+                    results = fetch_all_app_infos_from_gerrit(self.conn(), body["release_id"], uploaded_by=self.user())
+                    self.send_json(results)
+                    return
             except PermissionError as exc:
                 self.send_json({"error": str(exc)}, status=401)
                 return
@@ -654,6 +660,41 @@ def fetch_app_info_from_gerrit(git_url: str, branch: str) -> tuple[str, str]:
             return extracted.read().decode("utf-8"), commit_id
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, tarfile.TarError, KeyError, UnicodeDecodeError) as exc:
         raise RuntimeError(f"无法从 Gerrit 拉取 app_info.json: {exc}") from exc
+
+
+def fetch_all_app_infos_from_gerrit(conn, release_id: str, *, uploaded_by: str) -> dict:
+    release = core.get_release(conn, release_id)
+    results = []
+    for app_id in sorted(release.get("snapshots", {})):
+        try:
+            app = core.get_app(conn, app_id)
+            raw, commit_id = fetch_app_info_from_gerrit(app["git_url"], app["git_branch"])
+            snapshot = core.apply_app_info(
+                conn,
+                release_id,
+                app_id,
+                raw,
+                source=f"{app['git_url']} {app['git_branch']}:app_info.json",
+                source_type="gerrit_fetch",
+                commit_id=commit_id,
+                uploaded_by=uploaded_by,
+            )
+            results.append({
+                "app_id": app_id,
+                "ok": True,
+                "commit_id": commit_id,
+                "source": snapshot.get("app_info", {}).get("source", ""),
+            })
+        except Exception as exc:
+            results.append({"app_id": app_id, "ok": False, "error": str(exc)})
+    succeeded = sum(1 for item in results if item["ok"])
+    return {
+        "ok": True,
+        "total": len(results),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+        "results": results,
+    }
 
 
 def main() -> None:

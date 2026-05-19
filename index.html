@@ -368,6 +368,8 @@
           <div class="panel-body">
             <div class="searchbox"><input id="search" class="input" placeholder="搜索 app / 类型 / owner"></div>
             <button id="newApp" class="btn" data-roles="Owner" style="width:100%;margin-bottom:9px">+ 新增 app</button>
+            <button id="fetchAllInfo" class="btn" data-roles="RM" style="width:100%;margin-bottom:9px">从 Gerrit 批量拉取 app_info</button>
+            <div id="fetchAllInfoLog" class="small muted" data-roles="RM" style="margin:-2px 0 9px"></div>
             <div class="dot-legend">
               <span class="lg-item"><span class="app-dot ok"></span>通过</span>
               <span class="lg-item"><span class="app-dot warn"></span>有问题</span>
@@ -1545,6 +1547,7 @@
         loadState(target);
       };
       $("search").oninput = renderApps;
+      $("fetchAllInfo").onclick = fetchAllAppInfo;
       $("importBtn").onclick = async () => {
         const csv = await readFile("initCsv");
         if (!csv.trim()) return alert("请选择初始化 CSV 文件");
@@ -1626,6 +1629,34 @@
       $("adminLog").textContent = `已删除 ${r.deleted.id}，备份文件：${r.backup}`;
       if (selectedApp === appId) selectedApp = "";
       await loadState();
+    }
+
+    async function fetchAllAppInfo() {
+      if (!state.release) return alert("请选择 release");
+      if (releaseLocked()) return alert("Release 已最终锁定，不可拉取 app_info");
+      if (!beforeDocDeadline()) return alert("已过 Doc deadline，不可再拉取 app_info");
+      const releaseApps = state.apps.filter(app => releaseSnap(app.id));
+      if (!releaseApps.length) return alert("当前 release 没有 app");
+      if (!confirm(`将从 Gerrit 批量拉取当前 release 的 ${releaseApps.length} 个 app 的 app_info.json。\n\n单个 app 失败不会中断整批，确认继续？`)) return;
+      const btn = $("fetchAllInfo");
+      const log = $("fetchAllInfoLog");
+      btn.disabled = true;
+      log.textContent = "批量拉取中，请稍候...";
+      try {
+        const result = await post("/api/app-info/fetch-all", { release_id: currentReleaseId() });
+        const failed = (result.results || []).filter(x => !x.ok);
+        appDetailDirty = false;
+        await loadState(currentReleaseId(), { preserveDetail: true });
+        const nextLog = $("fetchAllInfoLog");
+        if (nextLog) nextLog.textContent = `完成：成功 ${result.succeeded}/${result.total}，失败 ${result.failed}`;
+        const detail = failed.slice(0, 10).map(x => `- ${x.app_id}: ${x.error}`).join("\n");
+        alert(`批量拉取完成：成功 ${result.succeeded}/${result.total}，失败 ${result.failed}${detail ? `\n\n失败明细（前 10 条）：\n${detail}` : ""}`);
+      } catch (e) {
+        log.textContent = "批量拉取失败：" + e.message;
+        alert("批量拉取失败：\n\n" + e.message);
+      } finally {
+        btn.disabled = false;
+      }
     }
 
     async function login() {

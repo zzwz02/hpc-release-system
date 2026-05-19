@@ -244,6 +244,15 @@ HPC APP,1,HPL,孙跃,HPC基准测试,求解随机稠密线性方程组,hpc_hpl,m
         self.assertEqual(snap["description"], "求解随机稠密线性方程组")
         self.assertEqual(snap["doc_target"], "manual")
 
+    def test_hpc_app_csv_ai_for_science_model_maps_to_ai4sci(self) -> None:
+        rows = core.parse_csv_text("""类别,id,名称,Owner,类型,描述,git_url,git_branch
+HPC APP,1,ALIGNN,闫申申,AI for Science模型,材料科学模型,hpc_alignn,maca
+""")
+        release_id = core.import_initial_rows(self.conn, rows)
+        snap = core.get_release(self.conn, release_id)["snapshots"]["alignn"]
+        self.assertEqual(snap["type"], "AI for Science模型")
+        self.assertEqual(snap["doc_target"], "ai4sci")
+
     def test_default_users_include_qa(self) -> None:
         self.assertIsNotNone(core.authenticate(self.conn, "qa", "qa"))
 
@@ -788,6 +797,36 @@ HPC APP,1,HPL,孙跃,HPC基准测试,求解随机稠密线性方程组,hpc_hpl,m
         remote = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_hpl"
         self.assertEqual(calls[0], ["git", "ls-remote", remote, "maca"])
         self.assertEqual(calls[1][2], f"--remote={remote}")
+
+    def test_fetch_all_app_infos_from_gerrit_updates_release_snapshots(self) -> None:
+        release_id, app_id = self.import_initial()
+        payload = json.dumps(APP_INFO_V1).encode("utf-8")
+        archive = BytesIO()
+        with tarfile.open(fileobj=archive, mode="w") as tar:
+            info = tarfile.TarInfo("app_info.json")
+            info.size = len(payload)
+            tar.addfile(info, BytesIO(payload))
+
+        def fake_run_git(args, *, timeout=60):
+            if args[:2] == ["git", "ls-remote"]:
+                return subprocess.CompletedProcess(args, 0, stdout=b"abc123\trefs/heads/maca\n", stderr=b"")
+            if args[:2] == ["git", "archive"]:
+                return subprocess.CompletedProcess(args, 0, stdout=archive.getvalue(), stderr=b"")
+            raise AssertionError(args)
+
+        old = server.run_git
+        server.run_git = fake_run_git
+        try:
+            result = server.fetch_all_app_infos_from_gerrit(self.conn, release_id, uploaded_by="rm")
+        finally:
+            server.run_git = old
+
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(result["failed"], 0)
+        snap = core.get_release(self.conn, release_id)["snapshots"][app_id]
+        self.assertEqual(snap["app_info"]["source_type"], "gerrit_fetch")
+        self.assertEqual(snap["app_info"]["commit_id"], "abc123")
 
     # --- bug-fix regressions ---
 
