@@ -2083,13 +2083,14 @@ def build_qa_reports(
             "✔" if sanity.get("arm_kylin") else "",
             "✔" if sanity.get("ubuntu") else "",
         ])
-        raw = (snapshot.get("app_info") or {}).get("raw")
-        if isinstance(raw, dict):
-            test_rows.extend(
-                _report_test_cmd_rows(
-                    raw, view["official_name"], app.get("git_branch", ""), maca_version
+        if decision == "release":
+            raw = (snapshot.get("app_info") or {}).get("raw")
+            if isinstance(raw, dict):
+                test_rows.extend(
+                    _report_test_cmd_rows(
+                        raw, view["official_name"], app.get("git_branch", ""), maca_version
+                    )
                 )
-            )
     test_rows.sort(key=lambda r: (r[0].lower(), r[1].lower(), r[2].lower(), r[3].lower()))
 
     return {

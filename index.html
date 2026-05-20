@@ -53,6 +53,7 @@
   .btn.danger{background:var(--bad-bg);border-color:var(--bad-bd);color:var(--bad-fg);}
   .btn.ghost{background:none;}
   .btn.sm{padding:5px 10px;font-size:12.5px;}
+  .input.sm,.select.sm{padding:4px 8px;font-size:12.5px;}
   /* ---- tabs ---- */
   .tabs{display:flex;gap:2px;padding:0 22px;background:var(--card);
     border-bottom:1px solid var(--border);position:sticky;top:58px;z-index:5;}
@@ -1525,15 +1526,14 @@
           ? `<p class="qa-chip-legend">芯片系列说明：${esc(CHIP_LEGEND)}</p>`
           : "";
         const compareControl = kind === "release"
-          ? `<label class="ctl" style="font-size:12px">对比版本
-              <select class="select" data-qa-report-compare="1" style="min-width:160px">
-                <option value="">— 不对比 —</option>
-                ${state.releases
-                  .filter(r => r.id !== currentReleaseId())
-                  .map(r => `<option value="${esc(r.id)}" ${qaReportCompareId === r.id ? "selected" : ""}>${esc(r.name)}</option>`)
-                  .join("")}
-              </select>
-            </label>`
+          ? `<span class="muted small" style="font-size:12px">对比版本</span>
+            <select class="select sm" data-qa-report-compare="1" style="min-width:160px">
+              <option value="">— 不对比 —</option>
+              ${state.releases
+                .filter(r => r.id !== currentReleaseId())
+                .map(r => `<option value="${esc(r.id)}" ${qaReportCompareId === r.id ? "selected" : ""}>${esc(r.name)}</option>`)
+                .join("")}
+            </select>`
           : "";
         body = `<div class="qa-report-bar">
             <button class="btn ghost sm" data-qa-report-refresh="1">↻ 刷新</button>
