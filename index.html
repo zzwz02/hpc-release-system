@@ -123,6 +123,8 @@
   .stat.bad .num{color:var(--bad-fg);}
   .stat.accent .num{color:var(--accent);}
   .stat .sub{font-size:11.5px;color:var(--ink-2);font-weight:700;margin-top:5px;line-height:1.4;}
+  .stat.qa-split{grid-column:span 2;}
+  .stat.qa-split .lbl{white-space:nowrap;}
   .stat.qa-split .num{font-size:22px;display:flex;gap:4px;align-items:baseline;flex-wrap:wrap;}
   .stat.qa-split .num .sep{color:var(--muted);opacity:.5;font-weight:600;font-size:18px;}
   .stat.qa-split .num .seg-todo{color:var(--ink-2);}
@@ -334,12 +336,8 @@
         <div class="panel-body"><img src="assets/MACA_SDK_release_plan.jpg" alt="MACA SDK 发布计划" style="max-width:30%;height:auto;display:block;border-radius:8px;border:1px solid var(--border)"></div>
       </div> -->
       <div id="dashboardOwnerPanel" class="panel" style="margin-top:16px" hidden>
-        <div class="panel-head"><h2 id="dashboardOwnerTitle">我的 App 状态概览</h2><span class="count" id="dashboardOwnerCount"></span></div>
+        <div class="panel-head"><h2 id="dashboardOwnerTitle">App 状态概览</h2><span class="count" id="dashboardOwnerCount"></span></div>
         <div class="panel-body"><div id="dashboardOwnerGrid"></div></div>
-      </div>
-      <div id="dashboardBlockersPanel" class="panel" style="margin-top:16px">
-        <div class="panel-head"><h2>发布待办 / 门禁</h2></div>
-        <div class="panel-body"><div class="table"><table id="blockers"></table></div></div>
       </div>
     </section>
 
@@ -825,11 +823,6 @@
       const allRows = state.apps.map(app => ({ app, snap: releaseSnap(app.id) })).filter(x => x.snap);
       const rows = isOwner() ? allRows.filter(x => isOwnApp(x.snap)) : allRows;
       const releaseRows = rows.filter(x => isReleaseSnap(x.snap));
-      const missingItems = rows.flatMap(x => (x.snap.missing_items || []).map(b => [
-        displayName(x.snap),
-        b,
-        isReleaseSnap(x.snap) ? (qaStatusLabels[x.snap.qa_status || "not_checked"] || x.snap.qa_status || "") : ""
-      ]));
       const byTarget = (list, t) => list.filter(x => x.snap.doc_target === t).length;
       const hpcAll = byTarget(rows, "manual");
       const aiAll = byTarget(rows, "ai4sci");
@@ -857,32 +850,24 @@
         <div class="lbl">QA 待测试 / 通过 / 存在问题 / 不可发布</div>
       </div>`;
       $("summary").innerHTML =
-        card(rows.length, "App 总数 (HPC/AI4S)", "", `HPC ${hpcAll} · AI4S ${aiAll}`) +
-        card(releaseRows.length, "release 决策 (HPC/AI4S)", "accent", `HPC ${hpcRel} · AI4S ${aiRel}`) +
+        card(rows.length, "App 总数", "", `HPC ${hpcAll} · AI4S ${aiAll}`) +
+        card(releaseRows.length, "release 决策", "accent", `HPC ${hpcRel} · AI4S ${aiRel}`) +
         card(docIncomplete, "Doc 未完成 App 数", docIncomplete ? "warn" : "ok") +
         qaCard;
-      $("blockers").innerHTML = table(["App", "待办/门禁项", "QA"], missingItems);
       renderDashboardOwner(allRows);
     }
 
     function renderDashboardOwner(allRows) {
       const ownerPanel = $("dashboardOwnerPanel");
-      const blockersPanel = $("dashboardBlockersPanel");
-      if (!ownerPanel || !blockersPanel) return;
-      if (!isOwner() && !isRM()) {
-        ownerPanel.hidden = true;
-        blockersPanel.hidden = false;
-        return;
-      }
+      if (!ownerPanel) return;
       ownerPanel.hidden = false;
-      blockersPanel.hidden = !isRM();
-      const rmView = isRM();
-      const gridRows = (rmView ? allRows.slice() : allRows.filter(x => isOwnApp(x.snap))).sort(compareAppRows);
-      $("dashboardOwnerTitle").textContent = rmView ? "App 状态概览" : "我的 App 状态概览";
+      const ownerView = isOwner();
+      const gridRows = (ownerView ? allRows.filter(x => isOwnApp(x.snap)) : allRows.slice()).sort(compareAppRows);
+      $("dashboardOwnerTitle").textContent = ownerView ? "我的 App 状态概览" : "App 状态概览";
       $("dashboardOwnerCount").textContent = `共 ${gridRows.length} 个`;
       const grid = $("dashboardOwnerGrid");
       if (!gridRows.length) {
-        grid.innerHTML = `<p class="muted small">${rmView ? "本 release 暂无 app。" : "本 release 没有归属于你的 app。"}</p>`;
+        grid.innerHTML = `<p class="muted small">${ownerView ? "本 release 没有归属于你的 app。" : "本 release 暂无 app。"}</p>`;
         return;
       }
       grid.innerHTML = `<div class="qa-grid">${gridRows.map(({ app, snap }) => {
@@ -899,9 +884,9 @@
             <div class="prog-label" style="display:flex;justify-content:space-between"><span>填写完成度</span><span>${prog.pct}%</span></div>
             <div class="bar"><span style="width:${prog.pct}%"></span></div>
           </div>` : "";
-        const subLine = rmView
-          ? `${esc(snap.type || "—")} · ${esc((snap.owners || []).join(",") || "无 owner")}`
-          : esc(snap.type || "—");
+        const subLine = ownerView
+          ? esc(snap.type || "—")
+          : `${esc(snap.type || "—")} · ${esc((snap.owners || []).join(",") || "无 owner")}`;
         return `<div class="qa-card">
           <div class="qa-card-h">
             <span class="app-ico">${esc(initials(displayName(snap)))}</span>
