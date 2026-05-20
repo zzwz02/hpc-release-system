@@ -1985,7 +1985,27 @@ def _compare_summary(
         return out
 
     if _test_cmd_set(snapshot) != _test_cmd_set(base_snapshot):
-        tags.append("测试命令改变")
+        tags.append("测试范围变更")
+
+    def _test_doc_map(snap: dict[str, Any]) -> dict[str, tuple[str, str, str, str, str]]:
+        out: dict[str, tuple[str, str, str, str, str]] = {}
+        for d in snap.get("test_docs") or []:
+            if not isinstance(d, dict) or d.get("obsolete"):
+                continue
+            path = str(d.get("path") or "")
+            if not path:
+                continue
+            out[path] = (
+                str(d.get("dataset") or ""),
+                str(d.get("content") or ""),
+                str(d.get("result_view") or ""),
+                str(d.get("pass_criteria") or ""),
+                str(d.get("command") or ""),
+            )
+        return out
+
+    if _test_doc_map(snapshot) != _test_doc_map(base_snapshot):
+        tags.append("测试说明变更")
 
     if (snapshot.get("version") or "") != (base_snapshot.get("version") or ""):
         tags.append("版本变更")
