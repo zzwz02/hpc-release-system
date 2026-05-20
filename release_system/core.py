@@ -1537,6 +1537,7 @@ def apply_app_info(
     if not is_before(release.get("doc_deadline", "")):
         raise RuntimeError("已过 doc deadline，不可再上传 app_info")
     snapshot = release["snapshots"][app_id]
+    was_confirmed = bool(snapshot.get("owner_confirmed"))
     parsed = parse_app_info(raw)
     if snapshot.get("release_decision") == "release" and not is_before(release.get("app_freeze_deadline", "")):
         current_parsed = (snapshot.get("app_info") or {}).get("parsed")
@@ -1569,6 +1570,8 @@ def apply_app_info(
     snapshot["x86_chips"] = ",".join(order_chips(parsed.get("x86_chips", [])))
     snapshot["arm_chips"] = ",".join(order_chips(parsed.get("arm_chips", [])))
     ensure_test_docs(snapshot, parsed, diffs)
+    if was_confirmed:
+        snapshot["owner_confirmed"] = False
     # build_targets / test_targets are coarse list-of-dict aggregates; the
     # readable per-field diffs (version, chips, test_cmd*) cover the same ground.
     detail = [
@@ -1593,6 +1596,18 @@ def apply_app_info(
             event="upload_app_info",
             detail=detail,
         )
+        if was_confirmed:
+            audit(
+                conn,
+                f"{app_id} Owner 确认因 app_info 更新自动失效",
+                user=uploaded_by or "system",
+                role=role,
+                app_id=app_id,
+                release_id=release_id,
+                event="owner_confirm_invalidated",
+                detail=[{"field": "owner_confirmed", "label": "Owner 确认",
+                         "old": "已确认", "new": "未确认（app_info 更新自动失效）"}],
+            )
     return snapshot
 
 
