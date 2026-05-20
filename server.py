@@ -470,6 +470,7 @@ class Handler(BaseHTTPRequestHandler):
                         source=body.get("source", "owner upload"),
                         source_type="owner_upload",
                         uploaded_by=self.user(),
+                        role=self.role(),
                     )
                     self.send_json({"snapshot": snapshot})
                     return
@@ -490,13 +491,14 @@ class Handler(BaseHTTPRequestHandler):
                         source_type="gerrit_fetch",
                         commit_id=commit_id,
                         uploaded_by=self.user(),
+                        role=self.role(),
                     )
                     self.send_json({"snapshot": snapshot, "commit_id": commit_id, "source": snapshot.get("app_info", {}).get("source", "")})
                     return
                 if parsed.path == "/api/app-info/fetch-all":
                     self.require_rm()
                     body = self.json_body()
-                    results = fetch_all_app_infos_from_gerrit(self.conn(), body["release_id"], uploaded_by=self.user())
+                    results = fetch_all_app_infos_from_gerrit(self.conn(), body["release_id"], uploaded_by=self.user(), role=self.role())
                     self.send_json(results)
                     return
             except PermissionError as exc:
@@ -687,7 +689,7 @@ def fetch_app_info_from_gerrit(git_url: str, branch: str) -> tuple[str, str]:
         raise RuntimeError(f"无法从 Gerrit 拉取 app_info.json: {exc}") from exc
 
 
-def fetch_all_app_infos_from_gerrit(conn, release_id: str, *, uploaded_by: str) -> dict:
+def fetch_all_app_infos_from_gerrit(conn, release_id: str, *, uploaded_by: str, role: str = "RM") -> dict:
     release = core.get_release(conn, release_id)
     results = []
     for app_id in sorted(release.get("snapshots", {})):
@@ -703,6 +705,7 @@ def fetch_all_app_infos_from_gerrit(conn, release_id: str, *, uploaded_by: str) 
                 source_type="gerrit_fetch",
                 commit_id=commit_id,
                 uploaded_by=uploaded_by,
+                role=role,
             )
             results.append({
                 "app_id": app_id,

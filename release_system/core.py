@@ -1467,6 +1467,7 @@ def apply_app_info(
     source_type: str = "owner_upload",
     commit_id: str = "",
     uploaded_by: str = "",
+    role: str = "Owner",
 ) -> dict[str, Any]:
     release = get_release(conn, release_id)
     if release.get("released_locked"):
@@ -1524,7 +1525,7 @@ def apply_app_info(
         conn,
         f"{app_id} 更新 app_info.json，差异 {len(diffs)} 项",
         user=uploaded_by or "system",
-        role="Owner",
+        role=role,
         app_id=app_id,
         release_id=release_id,
         event="upload_app_info",
