@@ -527,7 +527,10 @@ class Handler(BaseHTTPRequestHandler):
         conn = self.conn()
         user = self.current_user()
         releases = core.list_releases(conn)
-        release_id = self.query().get("release_id", [releases[-1]["id"] if releases else ""])[0]
+        release_ids = {r["id"] for r in releases}
+        latest = releases[-1]["id"] if releases else ""
+        requested = self.query().get("release_id", [latest])[0]
+        release_id = requested if requested in release_ids else latest
         apps = core.list_apps(conn)
         payload = {
             "apps": apps,
