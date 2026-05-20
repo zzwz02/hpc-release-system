@@ -2047,15 +2047,23 @@ def build_qa_reports(
         app = apps.get(app_id)
         if app:
             items.append((app_view(app, snapshot), app, snapshot, app_id))
-    items.sort(key=lambda t: (t[0]["name"] or "").lower())
+    # release apps first, then non-release (cicd_only / stopped) at the bottom;
+    # within each bucket, alphabetical by name.
+    items.sort(key=lambda t: (
+        0 if normalize_release_decision(t[2].get("release_decision")) == "release" else 1,
+        (t[0]["name"] or "").lower(),
+    ))
 
     release_rows: list[list[str]] = []
+    release_rows_meta: list[dict[str, Any]] = []
     test_rows: list[list[str]] = []
     compare_active = bool(compare_release_id) and compare_release_id != release_id
     for view, app, snapshot, app_id in items:
         community = snapshot.get("community") or {}
         sanity = snapshot.get("sanity") or {}
         compare_value = _compare_summary(snapshot, base_snapshots.get(app_id)) if compare_active else ""
+        decision = normalize_release_decision(snapshot.get("release_decision"))
+        release_rows_meta.append({"release_decision": decision, "is_release": decision == "release"})
         release_rows.append([
             "AI4Sci" if view["doc_target"] == "ai4sci" else "HPC",  # 类别
             view["official_name"],
@@ -2089,7 +2097,11 @@ def build_qa_reports(
         "maca_version": maca_version,
         "compare_release_id": compare_release_id or "",
         "compare_release_name": base_release_name,
-        "release_report": {"columns": QA_RELEASE_REPORT_COLUMNS, "rows": release_rows},
+        "release_report": {
+            "columns": QA_RELEASE_REPORT_COLUMNS,
+            "rows": release_rows,
+            "rows_meta": release_rows_meta,
+        },
         "test_cmd": {"columns": QA_TEST_CMD_COLUMNS, "rows": test_rows},
     }
 

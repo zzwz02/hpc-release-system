@@ -153,6 +153,8 @@
   .report-table tr.colfilter-row input{width:100%;font-size:11.5px;padding:3px 6px;border:1px solid var(--border-2);border-radius:5px;background:#fff;}
   .report-table tr.colfilter-row input::placeholder{color:#b6bcc7;}
   .report-table td.col-compare .cell-wrap{max-width:160px;white-space:normal;word-break:break-word;}
+  .report-table tr.row-not-release td{color:#9aa1ac;}
+  .report-table tr.row-not-release td.cmd{color:#9aa1ac;}
   .report-table td.cmd{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
     white-space:pre-wrap;word-break:break-all;min-width:340px;}
   /* long descriptions are clamped to 3 lines (full text on hover) so a
@@ -1432,7 +1434,11 @@
       }).join("")}</tr>
       <tr class="colfilter-row">${columns.map((c, i) => `<th><input data-qa-col-filter="${kind}:${i}" value="${esc(colFilters[i] || "")}" placeholder="筛选…" autocomplete="off"></th>`).join("")}</tr></thead>`;
       const body = rows.length
-        ? rows.map(r => `<tr>${r.map((c, i) => {
+        ? rows.map(entry => {
+            const r = entry.row || entry;
+            const meta = entry.meta || null;
+            const trCls = meta && meta.is_release === false ? "row-not-release" : "";
+            return `<tr class="${trCls}">${r.map((c, i) => {
             const v = esc(c);
             if (i === cmdCol) return `<td class="cmd">${v}</td>`;
             if (i === clampCol) return `<td class="clamp" title="${v}"><div class="clamp-box">${v}</div></td>`;
@@ -1440,7 +1446,8 @@
             if (gitCols.includes(i)) return `<td class="col-git"><div class="cell-wrap">${v}</div></td>`;
             if (i === compareCol) return `<td class="col-compare"><div class="cell-wrap">${v}</div></td>`;
             return `<td>${v}</td>`;
-          }).join("")}</tr>`).join("")
+          }).join("")}</tr>`;
+          }).join("")
         : `<tr><td colspan="${columns.length}" class="muted">无匹配数据</td></tr>`;
       return `<table>${head}<tbody>${body}</tbody></table>`;
     }
@@ -1451,15 +1458,16 @@
       const colEntries = Object.entries(colFilters)
         .map(([i, val]) => [Number(i), String(val || "").trim().toLowerCase()])
         .filter(([, v]) => v !== "");
-      let rows = data.rows.slice();
-      if (q) rows = rows.filter(r => r.some(c => String(c ?? "").toLowerCase().includes(q)));
+      const meta = data.rows_meta || [];
+      let rows = data.rows.map((row, idx) => ({ row, meta: meta[idx] || null }));
+      if (q) rows = rows.filter(x => x.row.some(c => String(c ?? "").toLowerCase().includes(q)));
       if (colEntries.length) {
-        rows = rows.filter(r => colEntries.every(([i, v]) => String(r[i] ?? "").toLowerCase().includes(v)));
+        rows = rows.filter(x => colEntries.every(([i, v]) => String(x.row[i] ?? "").toLowerCase().includes(v)));
       }
       const sort = qaReportSort[kind];
       if (sort && sort.col >= 0) {
         const col = sort.col, dir = sort.dir;
-        rows.sort((a, b) => dir * String(a[col] ?? "").localeCompare(String(b[col] ?? ""), "zh-CN", { numeric: true }));
+        rows.sort((a, b) => dir * String(a.row[col] ?? "").localeCompare(String(b.row[col] ?? ""), "zh-CN", { numeric: true }));
       }
       return rows;
     }
@@ -1579,7 +1587,7 @@
         const kind = b.dataset.qaReportCsv;
         const data = kind === "release" ? qaReports.release_report : qaReports.test_cmd;
         const rel = qaReports.release_name || currentReleaseId();
-        reportDownloadCsv(`${kind === "release" ? "release_report" : "test_cmd"}_${rel}_${csvTimestamp(qaReports.loadedAt)}.csv`, data.columns, reportRows(kind));
+        reportDownloadCsv(`${kind === "release" ? "release_report" : "test_cmd"}_${rel}_${csvTimestamp(qaReports.loadedAt)}.csv`, data.columns, reportRows(kind).map(x => x.row || x));
       });
       document.querySelectorAll("[data-qa-report-filter]").forEach(inp => {
         inp.oninput = () => {
