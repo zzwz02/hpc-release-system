@@ -2020,20 +2020,21 @@
         doc_target: $("docTarget").value,
         owners: $("owners").value.split(/[,，、;；/]+/).map(x => x.trim()).filter(Boolean),
         doc: Object.fromEntries([...document.querySelectorAll("[data-doc]")].map(el => [el.dataset.doc, el.value])),
-        community: {
-          release_status: $("communityRelease").value.trim(),
-          python_version: $("communityPython").value.trim(),
-          framework_version: $("communityFramework").value.trim(),
-        },
-        sanity: (() => {
-          const existing = (releaseSnap(app.id) || {}).sanity || {};
-          return {
-            arm_kylin: $("sanityArmKylin") ? $("sanityArmKylin").checked : !!existing.arm_kylin,
-            ubuntu: $("sanityUbuntu") ? $("sanityUbuntu").checked : !!existing.ubuntu,
-          };
-        })(),
         test_docs
       };
+      if ($("communityRelease") || $("communityPython") || $("communityFramework")) {
+        snapshotUpdate.community = {
+          release_status: $("communityRelease")?.value.trim() ?? "",
+          python_version: $("communityPython")?.value.trim() ?? "",
+          framework_version: $("communityFramework")?.value.trim() ?? "",
+        };
+      }
+      if ($("sanityArmKylin") || $("sanityUbuntu")) {
+        snapshotUpdate.sanity = {
+          arm_kylin: !!$("sanityArmKylin")?.checked,
+          ubuntu: !!$("sanityUbuntu")?.checked,
+        };
+      }
       if (confirmOwner) snapshotUpdate.owner_confirmed = true;
       let syncDecision = false;
       const currentDecision = (releaseSnap(app.id) || {}).release_decision;
