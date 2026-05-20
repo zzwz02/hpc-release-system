@@ -164,7 +164,7 @@
   .searchbox{position:relative;margin-bottom:9px;}
   .searchbox .input{padding-left:30px;}
   .searchbox::before{content:"\1F50D";position:absolute;left:9px;top:8px;font-size:12px;opacity:.5;}
-  .applist{display:flex;flex-direction:column;gap:3px;}
+  .applist{display:flex;flex-direction:column;gap:3px;max-height:calc(100vh - 360px);min-height:240px;overflow-y:auto;padding-right:4px;}
   .dot-legend{display:flex;flex-wrap:wrap;gap:4px 10px;margin-bottom:9px;
     font-size:11px;color:var(--muted);}
   .lg-item{display:flex;align-items:center;gap:4px;}
@@ -306,7 +306,7 @@
     <button class="tab" data-view="init" data-roles="RM">周期管理</button>
     <button class="tab" data-view="apps" data-roles="RM,Owner">App 工作台</button>
     <button class="tab" data-view="qa" data-roles="QA,RM">QA</button>
-    <button class="tab" data-view="artifacts" data-roles="RM">RST 生成</button>
+    <button class="tab" data-view="artifacts" data-roles="RM">Markdown 生成</button>
     <button class="tab" data-view="admin" data-roles="Admin">系统管理</button>
   </nav>
 
@@ -316,6 +316,14 @@
     <section id="dashboard" class="view active">
       <div id="summary" class="stats"></div>
       <div class="panel" style="margin-top:16px">
+        <div class="panel-head"><h2>MACA SDK 发布计划</h2></div>
+        <div class="panel-body"><img src="assets/MACA SDK发布计划.jpg" alt="MACA SDK 发布计划" style="max-width:100%;height:auto;display:block;border-radius:8px;border:1px solid var(--border)"></div>
+      </div>
+      <div id="dashboardOwnerPanel" class="panel" style="margin-top:16px" hidden>
+        <div class="panel-head"><h2>我的 App 状态概览</h2><span class="count" id="dashboardOwnerCount"></span></div>
+        <div class="panel-body"><div id="dashboardOwnerGrid"></div></div>
+      </div>
+      <div id="dashboardBlockersPanel" class="panel" style="margin-top:16px">
         <div class="panel-head"><h2>发布待办 / 门禁</h2></div>
         <div class="panel-body"><div class="table"><table id="blockers"></table></div></div>
       </div>
@@ -421,10 +429,10 @@
 
     <section id="artifacts" class="view" data-roles="RM">
       <div class="panel">
-        <div class="panel-head"><h2>RST / release-data</h2></div>
+        <div class="panel-head"><h2>Markdown / release-data</h2></div>
         <div class="panel-body">
           <div class="subtabs">
-            <button class="subtab active" data-artifact-pane="rstArtifactPane">RST 预览</button>
+            <button class="subtab active" data-artifact-pane="rstArtifactPane">Markdown 预览</button>
             <button class="subtab" data-artifact-pane="managerReviewPane">Manager Review CSV</button>
           </div>
           <div id="rstArtifactPane" class="artifact-pane active">
@@ -737,7 +745,15 @@
       return `App 冻结 ${af}　Doc deadline ${dd}`;
     }
     function appSortName(snap) { return displayName(snap).toLowerCase(); }
+    function isOwnApp(snap) {
+      const me = currentUser().username;
+      return !!me && (snap?.owners || []).includes(me);
+    }
     function compareAppRows(a, b) {
+      if (isOwner()) {
+        const ownDiff = (isOwnApp(a.snap) ? 0 : 1) - (isOwnApp(b.snap) ? 0 : 1);
+        if (ownDiff) return ownDiff;
+      }
       const decisionDiff = (releaseDecisionOrder[a.snap?.release_decision] ?? 99) - (releaseDecisionOrder[b.snap?.release_decision] ?? 99);
       if (decisionDiff) return decisionDiff;
       return appSortName(a.snap).localeCompare(appSortName(b.snap), "zh-CN");
@@ -790,7 +806,8 @@
     }
 
     function renderSummary() {
-      const rows = state.apps.map(app => ({ app, snap: releaseSnap(app.id) })).filter(x => x.snap);
+      const allRows = state.apps.map(app => ({ app, snap: releaseSnap(app.id) })).filter(x => x.snap);
+      const rows = isOwner() ? allRows.filter(x => isOwnApp(x.snap)) : allRows;
       const releaseRows = rows.filter(x => isReleaseSnap(x.snap));
       const missingItems = rows.flatMap(x => (x.snap.missing_items || []).map(b => [
         displayName(x.snap),
@@ -813,6 +830,52 @@
         card(qa.not_checked, "待 QA") +
         card(missingItems.length, "待办 / 门禁", missingItems.length ? "warn" : "ok");
       $("blockers").innerHTML = table(["App", "待办/门禁项", "QA"], missingItems);
+      renderDashboardOwner(allRows);
+    }
+
+    function renderDashboardOwner(allRows) {
+      const ownerPanel = $("dashboardOwnerPanel");
+      const blockersPanel = $("dashboardBlockersPanel");
+      if (!ownerPanel || !blockersPanel) return;
+      if (!isOwner()) {
+        ownerPanel.hidden = true;
+        blockersPanel.hidden = false;
+        return;
+      }
+      ownerPanel.hidden = false;
+      blockersPanel.hidden = true;
+      const ownRows = allRows.filter(x => isOwnApp(x.snap)).sort(compareAppRows);
+      $("dashboardOwnerCount").textContent = `共 ${ownRows.length} 个`;
+      const grid = $("dashboardOwnerGrid");
+      if (!ownRows.length) {
+        grid.innerHTML = `<p class="muted small">本 release 没有归属于你的 app。</p>`;
+        return;
+      }
+      grid.innerHTML = `<div class="qa-grid">${ownRows.map(({ app, snap }) => {
+        const rel = isReleaseSnap(snap);
+        const prog = ownerProgress(snap);
+        const todoCount = (snap.missing_items || []).length;
+        const statusPills = [
+          decisionPill(snap.release_decision),
+          rel ? qaPill(snap.qa_status) : "",
+          rel ? (todoCount ? `<span class="pill warnp">待办 ${todoCount}</span>` : `<span class="pill ok">信息齐全</span>`) : "",
+          rel && snap.owner_confirmed ? `<span class="pill ok">已确认</span>` : "",
+        ].filter(Boolean).join(" ");
+        const progBlock = rel ? `<div>
+            <div class="prog-label" style="display:flex;justify-content:space-between"><span>填写完成度</span><span>${prog.pct}%</span></div>
+            <div class="bar"><span style="width:${prog.pct}%"></span></div>
+          </div>` : "";
+        return `<div class="qa-card">
+          <div class="qa-card-h">
+            <span class="app-ico">${esc(initials(displayName(snap)))}</span>
+            <div><div class="name">${esc(displayName(snap))}</div><div class="sub">${esc(snap.type || "—")}</div></div>
+          </div>
+          <div class="qa-card-b">
+            <div class="row2">${statusPills}</div>
+            ${progBlock}
+          </div>
+        </div>`;
+      }).join("")}</div>`;
     }
 
     function renderReleases() {
@@ -1193,8 +1256,8 @@
                 <label>社区包支持框架及版本<input id="communityFramework" class="input" value="${esc(community.framework_version || "")}" ${appMetaDisabled}></label>
               </div>
               <div class="row" style="margin-top:11px;gap:24px;flex-wrap:wrap">
-                <label class="check"><input type="checkbox" id="sanityArmKylin" ${rmMetaDisabled} ${sanity.arm_kylin ? "checked" : ""}>ARM / Kylin Sanity 通过 <span class="small muted">（仅 RM）</span></label>
-                <label class="check"><input type="checkbox" id="sanityUbuntu" ${rmMetaDisabled} ${sanity.ubuntu ? "checked" : ""}>Ubuntu / 兼容性 Sanity 通过 <span class="small muted">（仅 RM）</span></label>
+                <label class="check"><input type="checkbox" id="sanityArmKylin" ${rmMetaDisabled} ${sanity.arm_kylin ? "checked" : ""}>ARM / Kylin Sanity 通过 <span class="small muted">（RM 填写）</span></label>
+                <label class="check"><input type="checkbox" id="sanityUbuntu" ${rmMetaDisabled} ${sanity.ubuntu ? "checked" : ""}>Ubuntu / 兼容性 Sanity 通过 <span class="small muted">（RM 填写）</span></label>
               </div>
             </div>
           </details>

@@ -536,12 +536,6 @@ class Handler(BaseHTTPRequestHandler):
         if release_id:
             core.refresh_missing_items(conn, release_id)
             release = core.get_release(conn, release_id)
-            if user["role"] == "Owner":
-                # owners are per-release: an Owner sees apps they own in THIS release
-                snapshots = release["snapshots"]
-                owned = {app_id for app_id, snap in snapshots.items() if user["username"] in (snap.get("owners") or [])}
-                release["snapshots"] = {app_id: snap for app_id, snap in snapshots.items() if app_id in owned}
-                payload["apps"] = [app for app in apps if app["id"] in owned]
             payload["release"] = _serialize_release(release)
             payload["artifacts"] = [dict(row) for row in conn.execute("SELECT kind, name, final, generated_at FROM artifacts WHERE release_id = ?", (release_id,))]
             payload["qa_log"] = core.get_qa_log(conn, release_id)
