@@ -611,6 +611,7 @@
     let appDetailEditAppId = "";
     let lateDecisionEditAppId = "";
     const detailSectionOpen = {};
+    let detailRenderSig = "";
     let qaEditMode = false;
     let qaEditReleaseId = "";
     let qaReports = null;
@@ -1273,7 +1274,10 @@
       const host = $("detail");
       if (!host) return;
       if (!app || !snap) {
-        host.innerHTML = `<div class="empty"><div class="empty-ic">▤</div><p>从左侧选择一个 App，查看与编辑发布信息。</p></div>`;
+        if (detailRenderSig !== "__empty__") {
+          host.innerHTML = `<div class="empty"><div class="empty-ic">▤</div><p>从左侧选择一个 App，查看与编辑发布信息。</p></div>`;
+          detailRenderSig = "__empty__";
+        }
         return;
       }
       if (appDetailEditAppId !== app.id) {
@@ -1390,6 +1394,14 @@
         ? `<div class="row" style="margin-bottom:12px"><button id="copyFromBtn" class="btn sm">⧉ 从其他版本复制信息</button><span class="small muted">把另一个 release 的信息填入本表单</span></div>`
         : "";
 
+      const sig = JSON.stringify([
+        app, snap, currentUser().username, currentUser().role,
+        appDetailEditMode, appDetailDirty, lateDecisionEditAppId,
+        pendingAppInfoAppId === app.id ? (pendingAppInfoFile?.name || "") : "",
+        releaseLocked(), phase(), currentReleaseId(),
+      ]);
+      if (sig === detailRenderSig) return;
+      detailRenderSig = sig;
       host.querySelectorAll("details[data-sec]").forEach(d => { detailSectionOpen[d.dataset.sec] = d.open; });
       host.innerHTML = `
         <div class="detail-head">
