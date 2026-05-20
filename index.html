@@ -610,6 +610,7 @@
     let appDetailEditMode = false;
     let appDetailEditAppId = "";
     let lateDecisionEditAppId = "";
+    const detailSectionOpen = {};
     let qaEditMode = false;
     let qaEditReleaseId = "";
     let qaReports = null;
@@ -1314,7 +1315,7 @@
         const todoItems = todo.map(it => `<div class="check-item"><span class="box"></span><span class="ct">${esc(it)}</span></div>`).join("");
         if (todo.length) {
           const preview = todo.slice(0, 3).map(it => `<span class="todo-chip" title="${esc(it)}">${esc(it)}</span>`).join("");
-          topInfo = `<details class="checklist compact">
+          topInfo = `<details class="checklist compact" data-sec="todo">
             <summary>
               <div class="checklist-h">
                 <h3>⚠️ 还需完成 ${todo.length} 项</h3>
@@ -1389,6 +1390,7 @@
         ? `<div class="row" style="margin-bottom:12px"><button id="copyFromBtn" class="btn sm">⧉ 从其他版本复制信息</button><span class="small muted">把另一个 release 的信息填入本表单</span></div>`
         : "";
 
+      host.querySelectorAll("details[data-sec]").forEach(d => { detailSectionOpen[d.dataset.sec] = d.open; });
       host.innerHTML = `
         <div class="detail-head">
           ${qaDot(snap, "lg")}
@@ -1402,7 +1404,7 @@
           ${topInfo}
           ${qaIssueBanner}
           ${copyFromButton}
-          <details class="section" open>
+          <details class="section" data-sec="basic" open>
             <summary><span class="chev">▶</span> 基本信息</summary>
             <div class="section-body">
               <div class="form">
@@ -1422,7 +1424,7 @@
               <p class="hint">类型为 HPC 时生成到 HPC Manual；AI4Sci 时生成到 AI4Sci User Guide。release 进入正式发布、文档生成与 QA；cicd_only 仅纳入 CICD 构建/测试管控；stopped 表示停止维护 / 停止发布。</p>
             </div>
           </details>
-          <details class="section" open>
+          <details class="section" data-sec="appinfo" open>
             <summary><span class="chev">▶</span> app_info 与 diff <span class="badge">${rel ? appInfoBadge(snap) : ""}</span></summary>
             <div class="section-body">
               <div class="src-line">app_info 来源：${esc(appInfoSource(snap))}</div>
@@ -1431,7 +1433,7 @@
               <div class="table"><table>${renderDiffs(snap)}</table></div>
             </div>
           </details>
-          <details class="section" open>
+          <details class="section" data-sec="community" open>
             <summary><span class="chev">▶</span> 社区发布与 Sanity</summary>
             <div class="section-body">
               <div class="form">
@@ -1445,7 +1447,7 @@
               </div>`}
             </div>
           </details>
-          <details class="section" open>
+          <details class="section" data-sec="doc" open>
             <summary><span class="chev">▶</span> 文档字段 <span class="badge">${rel ? docBadge(snap) : ""}</span></summary>
             <div class="section-body">
               <p class="hint" style="margin-top:0">这些内容会进入文档。用日常语言写即可，RM 生成时会转成 RST。</p>
@@ -1456,14 +1458,14 @@
               ${docArea("limitations", "已知限制", snap.doc.limitations, disabled, qaLimitationsNote(snap))}
             </div>
           </details>
-          <details class="section" open>
+          <details class="section" data-sec="tests" open>
             <summary><span class="chev">▶</span> 测试说明（各 test_cmd） <span class="badge">${rel ? testBadge(snap) : ""}</span></summary>
             <div class="section-body">
               <div id="testDocs">${renderTestDocs(snap, disabled)}</div>
               ${ownerTestActions}
             </div>
           </details>
-          <details class="section">
+          <details class="section" data-sec="changelog">
             <summary><span class="chev">▶</span> 变更记录（本 release）</summary>
             <div class="section-body"><div id="changeLog" class="table"><table>${table(["时间", "操作人", "角色", "Release", "事件", "内容"], [])}</table></div></div>
           </details>
@@ -1473,6 +1475,10 @@
           <div class="spacer"></div>
           ${footActions}
         </div>`;
+      host.querySelectorAll("details[data-sec]").forEach(d => {
+        const saved = detailSectionOpen[d.dataset.sec];
+        if (saved !== undefined) d.open = saved;
+      });
       bindDetail(app, snap);
       loadChangeLog(app.id);
     }
