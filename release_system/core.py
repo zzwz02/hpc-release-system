@@ -1822,7 +1822,7 @@ def export_test_scope_csv(conn: sqlite3.Connection, release_id: str) -> str:
 
 QA_RELEASE_REPORT_COLUMNS = [
     "类别", "名称", "Owner", "类型", "描述", "官方URL", "git_url", "git_branch",
-    "对应官方版本", "X86支持芯片系列", "ARM支持芯片类型", "备注",
+    "对应官方版本", "X86支持芯片系列", "ARM支持芯片类型", "对比",
     "开发者社区发布情况", "开发者社区发布包支持python版本",
     "开发者社区发布包支持的底层框架及版本",
     "ARM / Kylin sanity", "Ubuntu / 兼容性 sanity",
@@ -1945,12 +1945,65 @@ def _report_test_cmd_rows(
     return rows
 
 
-def build_qa_reports(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
+def _compare_summary(
+    snapshot: dict[str, Any], base_snapshot: dict[str, Any] | None
+) -> str:
+    """Summarize what changed for one app between two releases.
+
+    Output is a short, human-readable string like
+    '新增发布; 支持芯片修改; 测试命令改变' for the 对比 column.
+    """
+    cur_decision = normalize_release_decision(snapshot.get("release_decision"))
+    if base_snapshot is None:
+        return "新增发布" if cur_decision == "release" else ""
+
+    tags: list[str] = []
+    base_decision = normalize_release_decision(base_snapshot.get("release_decision"))
+    if cur_decision == "release" and base_decision != "release":
+        tags.append("新增发布")
+    elif cur_decision != "release" and base_decision == "release":
+        tags.append("停止发布")
+
+    def _chip_set(value: Any) -> tuple[str, ...]:
+        return tuple(order_chips(value or ""))
+
+    if (_chip_set(snapshot.get("x86_chips")) != _chip_set(base_snapshot.get("x86_chips"))
+            or _chip_set(snapshot.get("arm_chips")) != _chip_set(base_snapshot.get("arm_chips"))):
+        tags.append("支持芯片修改")
+
+    def _test_cmd_set(snap: dict[str, Any]) -> set[tuple[str, str]]:
+        raw = (snap.get("app_info") or {}).get("raw")
+        if not isinstance(raw, dict):
+            return set()
+        out: set[tuple[str, str]] = set()
+        for name, cfg in (raw.get("app_test") or {}).items():
+            if not isinstance(cfg, dict) or not cfg.get("enabled"):
+                continue
+            if str(cfg.get("test_period") or "").strip().lower() == "weekly":
+                continue
+            out.add((str(name), _report_docker_cmd(cfg)))
+        return out
+
+    if _test_cmd_set(snapshot) != _test_cmd_set(base_snapshot):
+        tags.append("测试命令改变")
+
+    if (snapshot.get("version") or "") != (base_snapshot.get("version") or ""):
+        tags.append("版本变更")
+
+    return "; ".join(tags)
+
+
+def build_qa_reports(
+    conn: sqlite3.Connection,
+    release_id: str,
+    compare_release_id: str | None = None,
+) -> dict[str, Any]:
     """Build the release report + test command tables for a release.
 
     release_report: one catalog-style row per app in the release (column
-    layout follows release_report.csv; 类别/备注 are not tracked and stay
-    blank, the rest — incl. 社区发布信息 and sanity — comes from the snapshot).
+    layout follows release_report.csv; 类别 is not tracked and stays
+    blank; 对比 is a short summary against compare_release_id when given,
+    the rest — incl. 社区发布信息 and sanity — comes from the snapshot).
     test_cmd: one row per (test, arch) drawn from each app's uploaded
     app_info, matching get_release_report_test_cmd.py's test command output.
     """
@@ -1958,18 +2011,31 @@ def build_qa_reports(conn: sqlite3.Connection, release_id: str) -> dict[str, Any
     apps = {app["id"]: app for app in list_apps(conn)}
     maca_version = release.get("maca_version", "")
 
+    base_snapshots: dict[str, dict[str, Any]] = {}
+    base_release_name = ""
+    if compare_release_id and compare_release_id != release_id:
+        try:
+            base_release = get_release(conn, compare_release_id)
+            base_snapshots = base_release.get("snapshots") or {}
+            base_release_name = base_release.get("name", "")
+        except Exception:
+            base_snapshots = {}
+            base_release_name = ""
+
     items = []
     for app_id, snapshot in release["snapshots"].items():
         app = apps.get(app_id)
         if app:
-            items.append((app_view(app, snapshot), app, snapshot))
+            items.append((app_view(app, snapshot), app, snapshot, app_id))
     items.sort(key=lambda t: (t[0]["name"] or "").lower())
 
     release_rows: list[list[str]] = []
     test_rows: list[list[str]] = []
-    for view, app, snapshot in items:
+    compare_active = bool(compare_release_id) and compare_release_id != release_id
+    for view, app, snapshot, app_id in items:
         community = snapshot.get("community") or {}
         sanity = snapshot.get("sanity") or {}
+        compare_value = _compare_summary(snapshot, base_snapshots.get(app_id)) if compare_active else ""
         release_rows.append([
             "AI4Sci" if view["doc_target"] == "ai4sci" else "HPC",  # 类别
             view["official_name"],
@@ -1982,7 +2048,7 @@ def build_qa_reports(conn: sqlite3.Connection, release_id: str) -> dict[str, Any
             snapshot.get("version", ""),
             ",".join(order_chips(snapshot.get("x86_chips", ""))),
             ",".join(order_chips(snapshot.get("arm_chips", ""))),
-            "",  # 备注 — not tracked per-app
+            compare_value,
             community.get("release_status", ""),
             community.get("python_version", ""),
             community.get("framework_version", ""),
@@ -2001,6 +2067,8 @@ def build_qa_reports(conn: sqlite3.Connection, release_id: str) -> dict[str, Any
     return {
         "release_name": release.get("name", ""),
         "maca_version": maca_version,
+        "compare_release_id": compare_release_id or "",
+        "compare_release_name": base_release_name,
         "release_report": {"columns": QA_RELEASE_REPORT_COLUMNS, "rows": release_rows},
         "test_cmd": {"columns": QA_TEST_CMD_COLUMNS, "rows": test_rows},
     }
@@ -2078,15 +2146,21 @@ def _docs_gate_items(snapshot: dict[str, Any]) -> list[str]:
     return [item for item in snapshot.get("missing_items", []) if not str(item).startswith("QA ")]
 
 
-def rst_title(title: str, marker: str = "=") -> str:
-    return f"{title}\n{marker * len(title)}\n\n"
+def md_title(title: str, level: int = 1) -> str:
+    hashes = "#" * max(1, min(6, level))
+    return f"{hashes} {title}\n\n"
 
 
-def code_block(content: str) -> str:
+def code_block(content: str, lang: str = "shell") -> str:
     if not content:
         return "\n"
-    body = "\n".join(f"   {line}" for line in content.splitlines())
-    return f".. code-block:: shell\n\n{body}\n\n"
+    return f"```{lang}\n{content}\n```\n\n"
+
+
+def _md_cell(value: Any) -> str:
+    s = "" if value is None else str(value)
+    s = s.replace("\\", "\\\\").replace("|", "\\|")
+    return s.replace("\r\n", " ").replace("\n", "<br>").replace("\r", " ")
 
 
 def release_rows(conn: sqlite3.Connection, release: dict[str, Any], *, final: bool = False) -> list[tuple[dict[str, Any], dict[str, Any]]]:
@@ -2150,11 +2224,21 @@ def guide_rows(
 
 
 def render_release_note(release: dict[str, Any], rows: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
-    out = rst_title(f"MACA HPC 发布列表 - {release['name']}")
-    out += ".. list-table::\n   :header-rows: 1\n   :widths: 15 15 30 12 14 14\n\n"
-    out += "   * - 名称\n     - 类型\n     - 描述\n     - 对应官方版本\n     - X86支持芯片系列\n     - ARM支持芯片类型\n"
+    out = md_title(f"MACA HPC 发布列表 - {release['name']}")
+    headers = ["名称", "类型", "描述", "对应官方版本", "X86支持芯片系列", "ARM支持芯片类型"]
+    out += "| " + " | ".join(headers) + " |\n"
+    out += "| " + " | ".join("---" for _ in headers) + " |\n"
     for app, snapshot in rows:
-        out += f"   * - {app['name']}\n     - {app.get('type') or ''}\n     - {app.get('description') or ''}\n     - {snapshot.get('version') or ''}\n     - {snapshot.get('x86_chips') or ''}\n     - {snapshot.get('arm_chips') or ''}\n"
+        cells = [
+            app["name"],
+            app.get("type") or "",
+            app.get("description") or "",
+            snapshot.get("version") or "",
+            snapshot.get("x86_chips") or "",
+            snapshot.get("arm_chips") or "",
+        ]
+        out += "| " + " | ".join(_md_cell(c) for c in cells) + " |\n"
+    out += "\n"
     return out
 
 
@@ -2242,7 +2326,7 @@ def _render_guide_entries(rows: list[tuple[dict[str, Any], dict[str, Any]]], *, 
     for app, snapshot in rows:
         doc = snapshot.get("doc", {})
         heading = f"{app['name']}（已停止支持）" if stopped else app["name"]
-        out += rst_title(heading, "-")
+        out += md_title(heading, 2)
         out += f"{doc.get('intro') or app.get('description') or ''}\n\n"
         out += f"版本：{snapshot.get('version') or ''}\n\n"
         if app.get("official_url"):
@@ -2254,7 +2338,7 @@ def _render_guide_entries(rows: list[tuple[dict[str, Any], dict[str, Any]]], *, 
         for test_doc in snapshot.get("test_docs", []):
             if test_doc.get("obsolete"):
                 continue
-            out += f"- {test_doc['path']}\n\n"
+            out += f"- {test_doc['path']}\n"
             out += f"  - 测试数据集：{test_doc.get('dataset', '')}\n"
             out += f"  - 测试内容：{test_doc.get('content', '')}\n"
             out += f"  - 结果查看：{test_doc.get('result_view', '')}\n"
@@ -2272,7 +2356,7 @@ def render_guide(
     rows: list[tuple[dict[str, Any], dict[str, Any]]],
     stopped_rows: list[tuple[dict[str, Any], dict[str, Any]]] | None = None,
 ) -> str:
-    out = rst_title(title)
+    out = md_title(title)
     out += _render_guide_entries(rows)
     if stopped_rows:
         out += _render_guide_entries(stopped_rows, stopped=True)
@@ -2312,9 +2396,9 @@ def generate_artifacts(conn: sqlite3.Connection, release_id: str, *, final: bool
         "data": dumps_json({"release": release, "apps": list_apps(conn), "generated_at": now(), "final": final}),
     }
     names = {
-        "release_note": "release_note.rst",
-        "manual": "hpc_manual_apps.rst",
-        "ai4sci": "ai4sci_user_guide_apps.rst",
+        "release_note": "release_note.md",
+        "manual": "hpc_manual_apps.md",
+        "ai4sci": "ai4sci_user_guide_apps.md",
         "data": "release_data.json",
     }
     for kind, content in artifacts.items():
@@ -2399,7 +2483,7 @@ def gerrit_push_plan(conn: sqlite3.Connection, release_id: str) -> dict[str, Any
         "commands": [
             f"git clone {docs_remote} docs-worktree",
             f"git -C docs-worktree checkout -b {branch}",
-            "copy generated RST artifacts into docs-worktree",
+            "copy generated Markdown artifacts into docs-worktree",
             f"git -C docs-worktree push origin HEAD:refs/for/{branch}",
             f"git clone {data_remote} release-data-worktree",
             f"git -C release-data-worktree checkout -b {branch}",

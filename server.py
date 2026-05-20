@@ -102,10 +102,12 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if parsed.path == "/api/qa-reports":
                     self.current_user()
-                    release_id = self.query().get("release_id", [""])[0]
+                    q = self.query()
+                    release_id = q.get("release_id", [""])[0]
+                    compare_id = q.get("compare_release_id", [""])[0]
                     if not release_id:
                         raise ValueError("release_id is required")
-                    self.send_json(core.build_qa_reports(self.conn(), release_id))
+                    self.send_json(core.build_qa_reports(self.conn(), release_id, compare_id or None))
                     return
                 if parsed.path.startswith("/api/artifacts/"):
                     self.require_rm()

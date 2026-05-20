@@ -149,6 +149,10 @@
   /* cap header text width so long labels (社区发布列) wrap to ~2 lines
      and the column shrinks instead of being forced wide on one line */
   .report-table th .th-text{display:inline-block;min-width:44px;max-width:128px;line-height:1.35;}
+  .report-table tr.colfilter-row th{padding:4px 6px;background:#f5f6f8;position:sticky;top:32px;}
+  .report-table tr.colfilter-row input{width:100%;font-size:11.5px;padding:3px 6px;border:1px solid var(--border-2);border-radius:5px;background:#fff;}
+  .report-table tr.colfilter-row input::placeholder{color:#b6bcc7;}
+  .report-table td.col-compare .cell-wrap{max-width:160px;white-space:normal;word-break:break-word;}
   .report-table td.cmd{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
     white-space:pre-wrap;word-break:break-all;min-width:340px;}
   /* long descriptions are clamped to 3 lines (full text on hover) so a
@@ -315,10 +319,10 @@
 
     <section id="dashboard" class="view active">
       <div id="summary" class="stats"></div>
-      <div class="panel" style="margin-top:16px">
+      <!-- <div class="panel" style="margin-top:16px">
         <div class="panel-head"><h2>MACA SDK 发布计划</h2></div>
-        <div class="panel-body"><img src="assets/MACA SDK发布计划.jpg" alt="MACA SDK 发布计划" style="max-width:100%;height:auto;display:block;border-radius:8px;border:1px solid var(--border)"></div>
-      </div>
+        <div class="panel-body"><img src="assets/MACA_SDK_release_plan.jpg" alt="MACA SDK 发布计划" style="max-width:30%;height:auto;display:block;border-radius:8px;border:1px solid var(--border)"></div>
+      </div> -->
       <div id="dashboardOwnerPanel" class="panel" style="margin-top:16px" hidden>
         <div class="panel-head"><h2>我的 App 状态概览</h2><span class="count" id="dashboardOwnerCount"></span></div>
         <div class="panel-body"><div id="dashboardOwnerGrid"></div></div>
@@ -572,7 +576,9 @@
     let qaReportsVersion = 0;
     let qaReportsRenderSig = "";
     let qaReportFilter = { release: "", test: "" };
+    let qaReportColFilters = { release: {}, test: {} };
     let qaReportSort = { release: { col: -1, dir: 1 }, test: { col: -1, dir: 1 } };
+    let qaReportCompareId = "";
     document.addEventListener("keydown", () => { lastUserInputAt = Date.now(); }, true);
     document.addEventListener("input", markUserEdit, true);
     document.addEventListener("change", markUserEdit, true);
@@ -1416,12 +1422,15 @@
       const gitCols = kind === "release" ? [6, 7] : [];          // git_url / git_branch
       const chipCols = kind === "release" ? [9, 10] : [];        // X86 / ARM 芯片
       const commCols = kind === "release" ? [12, 13, 14] : [];   // 开发者社区三列
+      const compareCol = kind === "release" ? 11 : -1;            // 对比
       const sort = qaReportSort[kind] || { col: -1, dir: 1 };
+      const colFilters = qaReportColFilters[kind] || {};
       const head = `<thead><tr>${columns.map((c, i) => {
         const ind = i === sort.col ? (sort.dir > 0 ? " ▲" : " ▼") : "";
         const cls = "sortable" + (commCols.includes(i) ? " col-comm" : "");
         return `<th class="${cls}" data-qa-sort="${kind}:${i}"><span class="th-text">${esc(c)}${ind}</span></th>`;
-      }).join("")}</tr></thead>`;
+      }).join("")}</tr>
+      <tr class="colfilter-row">${columns.map((c, i) => `<th><input data-qa-col-filter="${kind}:${i}" value="${esc(colFilters[i] || "")}" placeholder="筛选…" autocomplete="off"></th>`).join("")}</tr></thead>`;
       const body = rows.length
         ? rows.map(r => `<tr>${r.map((c, i) => {
             const v = esc(c);
@@ -1429,6 +1438,7 @@
             if (i === clampCol) return `<td class="clamp" title="${v}"><div class="clamp-box">${v}</div></td>`;
             if (chipCols.includes(i)) return `<td class="col-chip"><div class="cell-wrap">${v.replace(/,/g, ",\u200b")}</div></td>`;
             if (gitCols.includes(i)) return `<td class="col-git"><div class="cell-wrap">${v}</div></td>`;
+            if (i === compareCol) return `<td class="col-compare"><div class="cell-wrap">${v}</div></td>`;
             return `<td>${v}</td>`;
           }).join("")}</tr>`).join("")
         : `<tr><td colspan="${columns.length}" class="muted">无匹配数据</td></tr>`;
@@ -1437,9 +1447,15 @@
     function reportRows(kind) {
       const data = kind === "release" ? qaReports.release_report : qaReports.test_cmd;
       const q = (qaReportFilter[kind] || "").trim().toLowerCase();
-      let rows = q
-        ? data.rows.filter(r => r.some(c => String(c ?? "").toLowerCase().includes(q)))
-        : data.rows.slice();
+      const colFilters = qaReportColFilters[kind] || {};
+      const colEntries = Object.entries(colFilters)
+        .map(([i, val]) => [Number(i), String(val || "").trim().toLowerCase()])
+        .filter(([, v]) => v !== "");
+      let rows = data.rows.slice();
+      if (q) rows = rows.filter(r => r.some(c => String(c ?? "").toLowerCase().includes(q)));
+      if (colEntries.length) {
+        rows = rows.filter(r => colEntries.every(([i, v]) => String(r[i] ?? "").toLowerCase().includes(v)));
+      }
       const sort = qaReportSort[kind];
       if (sort && sort.col >= 0) {
         const col = sort.col, dir = sort.dir;
@@ -1453,6 +1469,9 @@
       const rows = reportRows(kind);
       const box = $(`qaReportTable_${kind}`);
       if (box) {
+        const active = document.activeElement;
+        const focusKey = active && active.dataset && active.dataset.qaColFilter ? active.dataset.qaColFilter : "";
+        const caret = focusKey ? [active.selectionStart, active.selectionEnd] : null;
         box.innerHTML = reportTableHtml(data.columns, rows, kind);
         box.querySelectorAll("[data-qa-sort]").forEach(th => th.onclick = () => {
           const [k, idx] = th.dataset.qaSort.split(":");
@@ -1460,6 +1479,23 @@
           if (s.col === i) s.dir = -s.dir; else { s.col = i; s.dir = 1; }
           renderReportTable(k);
         });
+        box.querySelectorAll("[data-qa-col-filter]").forEach(inp => {
+          inp.oninput = () => {
+            const [k, idx] = inp.dataset.qaColFilter.split(":");
+            const i = Number(idx);
+            const v = inp.value;
+            qaReportColFilters[k] = qaReportColFilters[k] || {};
+            if (v) qaReportColFilters[k][i] = v; else delete qaReportColFilters[k][i];
+            renderReportTable(k);
+          };
+        });
+        if (focusKey) {
+          const restored = box.querySelector(`[data-qa-col-filter="${focusKey}"]`);
+          if (restored) {
+            restored.focus();
+            try { restored.setSelectionRange(caret[0], caret[1]); } catch (e) {}
+          }
+        }
       }
       const count = $(`qaReportCount_${kind}`);
       if (count) count.textContent = rows.length === data.rows.length
@@ -1480,10 +1516,22 @@
         const legend = kind === "release"
           ? `<p class="qa-chip-legend">芯片系列说明：${esc(CHIP_LEGEND)}</p>`
           : "";
+        const compareControl = kind === "release"
+          ? `<label class="ctl" style="font-size:12px">对比版本
+              <select class="select" data-qa-report-compare="1" style="min-width:160px">
+                <option value="">— 不对比 —</option>
+                ${state.releases
+                  .filter(r => r.id !== currentReleaseId())
+                  .map(r => `<option value="${esc(r.id)}" ${qaReportCompareId === r.id ? "selected" : ""}>${esc(r.name)}</option>`)
+                  .join("")}
+              </select>
+            </label>`
+          : "";
         body = `<div class="qa-report-bar">
             <button class="btn ghost sm" data-qa-report-refresh="1">↻ 刷新</button>
             <button class="btn primary sm" data-qa-report-csv="${kind}">导出 CSV</button>
-            <input class="input qa-report-search" data-qa-report-filter="${kind}" placeholder="筛选关键词…" value="${esc(qaReportFilter[kind] || "")}">
+            <input class="input qa-report-search" data-qa-report-filter="${kind}" placeholder="全表关键词筛选…" value="${esc(qaReportFilter[kind] || "")}">
+            ${compareControl}
             <span class="muted small qa-report-time" id="qaReportTime_${kind}"></span>
             <span class="muted small count" id="qaReportCount_${kind}"></span>
           </div>
@@ -1499,9 +1547,11 @@
       if (qaReportsReleaseId !== rid) {
         qaReports = null; qaReportsReleaseId = rid;
         qaReportFilter = { release: "", test: "" };
+        qaReportColFilters = { release: {}, test: {} };
         qaReportSort = { release: { col: -1, dir: 1 }, test: { col: -1, dir: 1 } };
+        qaReportCompareId = "";
       }
-      const sig = `${rid}|${qaReports ? "data" : "none"}|${qaReportsLoading ? "load" : "idle"}|${qaReportsVersion}`;
+      const sig = `${rid}|${qaReports ? "data" : "none"}|${qaReportsLoading ? "load" : "idle"}|${qaReportsVersion}|${qaReportCompareId}`;
       if (sig === qaReportsRenderSig) return;
       qaReportsRenderSig = sig;
       if (!rid) {
@@ -1537,6 +1587,12 @@
           renderReportTable(inp.dataset.qaReportFilter);
         };
       });
+      document.querySelectorAll("[data-qa-report-compare]").forEach(sel => {
+        sel.onchange = () => {
+          qaReportCompareId = sel.value || "";
+          loadQaReports(true);
+        };
+      });
     }
     async function loadQaReports(force) {
       const rid = currentReleaseId();
@@ -1546,7 +1602,8 @@
       qaReportsReleaseId = rid;
       renderQaReports();
       try {
-        const data = await api(`/api/qa-reports?release_id=${encodeURIComponent(rid)}`);
+        const cmpParam = qaReportCompareId ? `&compare_release_id=${encodeURIComponent(qaReportCompareId)}` : "";
+        const data = await api(`/api/qa-reports?release_id=${encodeURIComponent(rid)}${cmpParam}`);
         if (currentReleaseId() !== rid) return;
         qaReports = data;
         qaReports.loadedAt = new Date();
