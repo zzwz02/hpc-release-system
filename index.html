@@ -290,6 +290,8 @@
     background:#fff;color:var(--ink);margin-top:14px;}
   .muted{color:var(--muted);}
   .small{font-size:12px;}
+  .qa-limit-note{margin-top:5px;padding:8px 10px;border:1px solid var(--warn-bd);
+    border-radius:8px;background:var(--warn-bg);color:var(--warn-fg);font-size:12px;line-height:1.5;}
   /* ---- dialog ---- */
   dialog{border:0;border-radius:var(--radius);padding:0;width:min(620px,calc(100vw - 32px));
     box-shadow:0 20px 50px rgba(15,23,42,.3);}
@@ -577,6 +579,7 @@
     let appDetailDirty = false;
     let appDetailEditMode = false;
     let appDetailEditAppId = "";
+    let lateDecisionEditAppId = "";
     let qaEditMode = false;
     let qaEditReleaseId = "";
     let qaReports = null;
@@ -646,6 +649,7 @@
 
     function markUserEdit(event) {
       lastUserInputAt = Date.now();
+      if (event.target?.closest?.("[data-no-dirty]")) return;
       if (event.target?.closest?.("#detail") && event.target?.type !== "file") {
         appDetailDirty = true;
         if ($("dirtyBanner")) $("dirtyBanner").hidden = false;
@@ -661,6 +665,7 @@
       if (pendingAppInfoFile && activeView() === "apps") return true;
       if (appDetailEditMode && activeView() === "apps") return true;
       if (appDetailDirty && activeView() === "apps") return true;
+      if (lateDecisionEditAppId && activeView() === "apps") return true;
       if (qaEditMode && activeView() === "qa") return true;
       if (Date.now() - lastUserInputAt > 3000) return false;
       const tag = document.activeElement?.tagName;
@@ -972,11 +977,12 @@
         </div>`).join("") || `<p class="muted small" style="padding:14px;text-align:center">无数据</p>`;
       document.querySelectorAll("[data-app]").forEach(tr => tr.onclick = () => {
         const nextApp = tr.dataset.app;
-        if ((appDetailDirty || appDetailEditMode) && selectedApp && selectedApp !== nextApp && !confirm("当前 App 详情有未保存修改或处于编辑状态，切换 App 会丢失这些修改。确认切换？")) return;
+        if ((appDetailDirty || appDetailEditMode || lateDecisionEditAppId) && selectedApp && selectedApp !== nextApp && !confirm("当前 App 详情有未保存修改或处于编辑状态，切换 App 会丢失这些修改。确认切换？")) return;
         if (selectedApp !== nextApp) {
           appDetailDirty = false;
           appDetailEditMode = false;
           appDetailEditAppId = "";
+          lateDecisionEditAppId = "";
         }
         selectedApp = nextApp;
         render();
@@ -1055,8 +1061,12 @@
       if (!beforeAppFreeze()) return `<div class="banner warnp">❄️ 已过 App 冻结 deadline：本 release 不可再新增或切换为 release 决策；可将决策切到 cicd_only/stopped。</div>`;
       return "";
     }
-    function docArea(key, label, value, disabled = "") {
-      return `<label class="docfield">${esc(label)}<textarea data-doc="${key}" ${disabled}>${esc(value || "")}</textarea></label>`;
+    function docArea(key, label, value, disabled = "", extra = "") {
+      return `<label class="docfield">${esc(label)}<textarea data-doc="${key}" ${disabled}>${esc(value || "")}</textarea>${extra}</label>`;
+    }
+    function qaLimitationsNote(snap) {
+      if (snap.qa_status !== "has_issues" || !snap.qa_issue_note) return "";
+      return `<div class="qa-limit-note"><b>QA 备注：</b>${esc(snap.qa_issue_note)}</div>`;
     }
     function appInfoSource(snap) {
       const info = snap.app_info || {};
@@ -1135,6 +1145,7 @@
       if (appDetailEditAppId !== app.id) {
         appDetailEditMode = false;
         appDetailEditAppId = app.id;
+        lateDecisionEditAppId = "";
         appDetailDirty = false;
       }
       const canEditDetail = canEdit(snap) && !releaseLocked() && beforeDocDeadline();
@@ -1198,13 +1209,20 @@
       }
 
       const phaseBanner = phaseBannerFor(snap);
+      const lateDecisionEditing = lateDecisionEditAppId === app.id;
       const lateDecisionBlock = (!beforeDocDeadline() && !releaseLocked() && canEdit(snap) && snap.release_decision === "release")
         ? `<div class="section"><div class="section-body" style="border-top:0">
-             <p class="hint" style="margin-top:0">Doc deadline 已过，文档已冻结；如本 app 本轮不应发布，仍可在此把决策移出 release。</p>
-             <div class="row" style="margin-top:10px">
-               <select id="lateDecision" class="select" style="max-width:300px"><option value="cicd_only">${esc(releaseDecisionLabels.cicd_only)}</option><option value="stopped">${esc(releaseDecisionLabels.stopped)}</option></select>
-               <button class="btn warn" id="saveLateDecision">保存决策</button>
-             </div></div></div>`
+             <div class="row" style="align-items:center;gap:10px">
+               <span class="small muted" style="font-weight:800">当前 Release 策略</span>
+               ${decisionPill(snap.release_decision)}
+               ${lateDecisionEditing ? "" : `<button class="btn warn" id="editLateDecision" data-no-dirty>修改</button>`}
+             </div>
+             <p class="hint" style="margin-top:10px;color:var(--warn-fg)">Doc deadline 已过，文档已冻结；如本 app 本轮不应发布，仍可把策略移出 release。保存为 cicd_only/stopped 后将无法再改回 release。</p>
+             ${lateDecisionEditing ? `<div class="row" style="margin-top:10px" data-no-dirty>
+               <select id="lateDecision" class="select" style="max-width:360px"><option value="cicd_only">${esc(releaseDecisionLabels.cicd_only)}</option><option value="stopped">${esc(releaseDecisionLabels.stopped)}</option></select>
+               <button class="btn" id="cancelLateDecision" data-no-dirty>取消</button>
+               <button class="btn warn" id="saveLateDecision" data-no-dirty>保存决策</button>
+             </div>` : ""}</div></div>`
         : "";
       const qaIssueBanner = (snap.qa_status === "has_issues" && snap.qa_issue_note)
         ? `<div class="banner warnp">QA 标注「存在问题」：${esc(snap.qa_issue_note)}（会附加到已知限制段）</div>`
@@ -1303,7 +1321,7 @@
               ${docArea("image_usage", "镜像使用方法", snap.doc.image_usage, disabled)}
               ${docArea("binary_usage", "二进制包使用方法", snap.doc.binary_usage, disabled)}
               ${docArea("env_setup", "环境搭建", snap.doc.env_setup, disabled)}
-              ${docArea("limitations", "已知限制", snap.doc.limitations, disabled)}
+              ${docArea("limitations", "已知限制", snap.doc.limitations, disabled, qaLimitationsNote(snap))}
             </div>
           </details>
           <details class="section" open>
@@ -1710,14 +1728,32 @@
           alert(`Gerrit app_info.json 拉取失败：\n\n${err.message}`);
         }
       };
+      if ($("editLateDecision")) $("editLateDecision").onclick = () => {
+        lateDecisionEditAppId = app.id;
+        appDetailDirty = false;
+        renderDetail();
+      };
+      if ($("cancelLateDecision")) $("cancelLateDecision").onclick = () => {
+        lateDecisionEditAppId = "";
+        appDetailDirty = false;
+        renderDetail();
+      };
       if ($("saveLateDecision")) $("saveLateDecision").onclick = async () => {
         const decision = $("lateDecision").value;
-        if (!confirm(`确认把「${displayName(snap)}」的 release 决策改为 ${decision}？Doc deadline 已过，这会把它移出本期发布。`)) return;
+        if (!confirm(`确认把「${displayName(snap)}」的 Release 策略从 release 改为 ${decision}？\n\n已过 App 冻结 / Doc deadline，保存后无法再改回 release。`)) return;
+        const choice = await confirmDecisionSync(decision);
+        if (choice === null) return;
         try {
-          await post("/api/apps/update", { release_id: currentReleaseId(), app_id: app.id, snapshot: { release_decision: decision } });
+          const result = await post("/api/apps/update", {
+            release_id: currentReleaseId(),
+            app_id: app.id,
+            snapshot: { release_decision: decision },
+            sync_decision: choice
+          });
           appDetailDirty = false;
+          lateDecisionEditAppId = "";
           await loadState();
-          alert("release 决策已更新");
+          alert("release 决策已更新" + decisionSyncNote(choice, result));
         } catch (e) {
           alert("保存失败：" + e.message);
         }
@@ -1819,7 +1855,20 @@
       });
     }
 
+    function decisionSyncNote(syncDecision, result) {
+      if (!syncDecision || !result?.decision_sync) return "";
+      const ap = (result.decision_sync.applied || []).length;
+      const sk = (result.decision_sync.skipped || []).length;
+      return (ap || sk)
+        ? `\n\nrelease 决策已同步到 ${ap} 个后续 release` + (sk ? `，跳过 ${sk} 个` : "") + "。"
+        : "";
+    }
+
     async function saveApp(app, confirmOwner = false) {
+      if (isOwner() && !confirmOwner) {
+        alert("Owner 修改必须通过「保存并提交 Owner 确认」提交。");
+        return;
+      }
       const description = $("description").value.trim();
       if (description.length > 30) {
         alert("描述不能超过30字");
@@ -1853,7 +1902,11 @@
       };
       if (confirmOwner) snapshotUpdate.owner_confirmed = true;
       let syncDecision = false;
-      if (snapshotUpdate.release_decision !== (releaseSnap(app.id) || {}).release_decision) {
+      const currentDecision = (releaseSnap(app.id) || {}).release_decision;
+      if (!beforeAppFreeze() && currentDecision === "release" && snapshotUpdate.release_decision !== "release") {
+        if (!confirm(`确认把「${displayName(releaseSnap(app.id) || {})}」的 Release 策略从 release 改为 ${snapshotUpdate.release_decision}？\n\n已过 App 冻结 deadline，保存后无法再改回 release。`)) return;
+      }
+      if (snapshotUpdate.release_decision !== currentDecision) {
         const choice = await confirmDecisionSync(snapshotUpdate.release_decision);
         if (choice === null) return;
         syncDecision = choice;
@@ -1868,12 +1921,7 @@
       appDetailDirty = false;
       appDetailEditMode = false;
       await loadState();
-      let syncNote = "";
-      if (syncDecision && result.decision_sync) {
-        const ap = (result.decision_sync.applied || []).length;
-        const sk = (result.decision_sync.skipped || []).length;
-        if (ap || sk) syncNote = `\n\nrelease 决策已同步到 ${ap} 个后续 release` + (sk ? `，跳过 ${sk} 个` : "") + "。";
-      }
+      const syncNote = decisionSyncNote(syncDecision, result);
       if (!confirmOwner) {
         alert("保存成功" + syncNote);
       } else {
@@ -1930,7 +1978,7 @@
       $("refresh").onclick = () => loadState();
       $("release").onchange = () => {
         const target = $("release").value;
-        if ((appDetailDirty || appDetailEditMode) && selectedApp &&
+        if ((appDetailDirty || appDetailEditMode || lateDecisionEditAppId) && selectedApp &&
             !confirm("当前 App 详情有未保存修改或处于编辑状态，切换 Release 会丢失这些修改。确认切换？")) {
           $("release").value = state.release?.id || "";
           return;
@@ -1938,6 +1986,7 @@
         appDetailDirty = false;
         appDetailEditMode = false;
         appDetailEditAppId = "";
+        lateDecisionEditAppId = "";
         pendingAppInfoFile = null;
         pendingAppInfoAppId = "";
         loadState(target);

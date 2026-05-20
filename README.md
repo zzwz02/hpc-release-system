@@ -18,6 +18,8 @@
 | 认证 | PBKDF2-HMAC-SHA256 口令，会话 token 存 cookie |
 | 测试 | `unittest` + PowerShell 静态检查 |
 
+写接口和写 helper 应使用 `core.transaction(conn)` 包住完整业务操作；成功时只提交一次，失败时统一 rollback，避免 audit 与 snapshot 等相关写入出现半状态。
+
 ## 快速开始
 
 需要 Python 3.14+。
@@ -129,28 +131,26 @@ python3.14 -m unittest tests.test_core
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\static_checks.ps1
 ```
 
-当前 75 个单元测试 + 静态检查。
+当前 86 个单元测试 + 静态检查。
 
 ## 已知问题与限制
 
 以下为已识别、尚未修复的问题，按影响排序：
 
-1. **`/api/apps/update` 的 audit 与 snapshot 不在同一事务** —— 每次 `audit()` 默认立即 `commit`（含 RM 改 Gerrit URL/branch 时的 `save_app`），而 snapshot 在全部变更处理完后才 `save_snapshot` 并提交；若中途抛错，会留下「audit / Gerrit 信息已改、snapshot 未改」的不一致。当前前端流程不易触发。
-2. **文档类闸门用字符串前缀 `"QA "` 区分 QA 项** —— 若某个 `app_info` 的测试名恰好以 `QA ` 开头，其缺失项会被误排除出发布闸门。应改为结构化标记。
-3. **`app_info` 重传不会作废已有的 QA 结论** —— Owner 在 QA 通过后重传 `app_info`，`qa_status` 不重置；最终闸门仍能拦截，但 QA 本人收不到提醒。
+1. **文档类闸门用字符串前缀 `"QA "` 区分 QA 项** —— 若某个 `app_info` 的测试名恰好以 `QA ` 开头，其缺失项会被误排除出发布闸门。应改为结构化标记。
+2. **`app_info` 重传不会作废已有的 QA 结论** —— Owner 在 QA 通过后重传 `app_info`，`qa_status` 不重置；最终闸门仍能拦截，但 QA 本人收不到提醒。
    - *建议方案*：用 commit id 判定。`app_info` 同步时记录来源 commit id（Gerrit 拉取自动记录，owner 上传时由 owner 手填）；QA 标注状态时记录所测构建的 commit id。两者不一致即说明 app 代码已变动，给 snapshot 打 `qa_stale` 标记，QA 页和最终闸门按「需复测」处理。commit id 反映 app 仓库的实际代码状态，比对 `app_info.json` 内容更可靠 —— 代码改了但 `app_info.json` 没改时，内容 diff 会漏掉。owner 上传（Gerrit 拉取失败时的兜底路径）缺 commit id 时应保守提示，不默认 QA 仍有效。
-4. **`/api/app-audit` 无归属校验** —— 任何已登录用户可读取任意 app 的变更日志。
-5. **final lock 无阶段保护** —— RM 可对仍处于 before_app_freeze 的 release 直接最终锁定。
-6. **会话不过期** —— session token 创建后无 TTL，只有登出才失效。
-7. Gerrit 拉取依赖本地 `git archive --remote`；失败时页面提示，Owner 可上传 JSON 兜底。
-8. Gerrit 推送只输出推送计划骨架，未执行真实 git push。
+3. **final lock 无阶段保护** —— RM 可对仍处于 before_app_freeze 的 release 直接最终锁定。
+4. **会话不过期** —— session token 创建后无 TTL，只有登出才失效。
+5. Gerrit 拉取依赖本地 `git archive --remote`；失败时页面提示，Owner 可上传 JSON 兜底。
+6. Gerrit 推送只输出推送计划骨架，未执行真实 git push。
 
 ## 从 MVP 到完整产品的待完善项
 
 ### 认证与安全
 - 用户管理界面（增删用户、改口令、改角色）；目前只有默认账号 + admin 引导，Admin 页只能清库/删 app。
 - 会话过期与续期；cookie 增加 `Secure` 标志；移除明文默认口令。
-- 修复 `/api/app-audit` 越权读取；引入更细的权限模型与 team 概念；接入 LDAP/SSO。
+- 引入更细的权限模型与 team 概念；接入 LDAP/SSO。
 
 ### 部署与运维
 - 生产化部署：反向代理 + TLS、进程托管（systemd 等），替代 stdlib `http.server` 直接对外。

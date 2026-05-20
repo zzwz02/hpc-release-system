@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import csv
 import datetime as dt
@@ -11,12 +11,77 @@ import secrets
 import sqlite3
 import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 
 _INIT_LOCK = threading.Lock()
 _INITIALIZED_DBS: set[str] = set()
+
+
+class ManagedConnection(sqlite3.Connection):
+    """SQLite connection that can defer helper-level commits in core.transaction."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._transaction_depth = 0
+
+    def commit(self) -> None:
+        if self._transaction_depth:
+            return
+        super().commit()
+
+    def commit_now(self) -> None:
+        super().commit()
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection) -> Iterator[None]:
+    """Commit once on success and rollback all pending writes on failure.
+
+    Connections returned by core.connect suppress nested helper commit() calls
+    inside this context, so legacy helpers that still call commit() cannot split
+    the transaction.
+    """
+    if not isinstance(conn, ManagedConnection):
+        try:
+            yield
+        except Exception:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
+        return
+
+    if conn._transaction_depth:
+        savepoint = f"core_tx_{conn._transaction_depth}_{uuid.uuid4().hex}"
+        conn.execute(f"SAVEPOINT {savepoint}")
+        conn._transaction_depth += 1
+        try:
+            yield
+        except Exception:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
+        else:
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        finally:
+            conn._transaction_depth -= 1
+        return
+
+    conn._transaction_depth = 1
+    try:
+        if not conn.in_transaction:
+            conn.execute("BEGIN")
+        yield
+    except Exception:
+        conn.rollback()
+        raise
+    else:
+        conn.commit_now()
+    finally:
+        conn._transaction_depth = 0
 
 
 BEIJING_TZ = dt.timezone(dt.timedelta(hours=8))
@@ -149,7 +214,7 @@ def dumps_json(value: Any) -> str:
 
 
 def connect(path: str | Path = "release_system.db") -> sqlite3.Connection:
-    conn = sqlite3.connect(path, timeout=10.0)
+    conn = sqlite3.connect(path, timeout=10.0, factory=ManagedConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 5000")
@@ -356,24 +421,24 @@ def ensure_default_user(conn: sqlite3.Connection) -> None:
 
 
 def create_user(conn: sqlite3.Connection, username: str, password: str, role: str = "Owner") -> None:
-    conn.execute(
-        "INSERT INTO users(username, password_hash, role) VALUES (?, ?, ?) ON CONFLICT(username) DO UPDATE SET password_hash=excluded.password_hash, role=excluded.role",
-        (username, hash_password(password), role),
-    )
-    conn.commit()
+    with transaction(conn):
+        conn.execute(
+            "INSERT INTO users(username, password_hash, role) VALUES (?, ?, ?) ON CONFLICT(username) DO UPDATE SET password_hash=excluded.password_hash, role=excluded.role",
+            (username, hash_password(password), role),
+        )
 
 
 def clear_business_data(conn: sqlite3.Connection, *, user: str = "admin", role: str = "Admin") -> None:
     """Clear release data while preserving user accounts."""
-    conn.execute("DELETE FROM artifacts")
-    conn.execute("DELETE FROM qa_logs")
-    conn.execute("DELETE FROM snapshots")
-    conn.execute("DELETE FROM releases")
-    conn.execute("DELETE FROM apps")
-    conn.execute("DELETE FROM audit")
-    ensure_default_user(conn)
-    conn.commit()
-    audit(conn, "数据库已清空，默认账号已保留", user=user, role=role)
+    with transaction(conn):
+        conn.execute("DELETE FROM artifacts")
+        conn.execute("DELETE FROM qa_logs")
+        conn.execute("DELETE FROM snapshots")
+        conn.execute("DELETE FROM releases")
+        conn.execute("DELETE FROM apps")
+        conn.execute("DELETE FROM audit")
+        ensure_default_user(conn)
+        audit(conn, "数据库已清空，默认账号已保留", user=user, role=role)
 
 
 def authenticate(conn: sqlite3.Connection, username: str, password: str) -> str | None:
@@ -381,8 +446,8 @@ def authenticate(conn: sqlite3.Connection, username: str, password: str) -> str 
     if not row or not verify_password(password, row["password_hash"]):
         return None
     token = secrets.token_urlsafe(32)
-    conn.execute("INSERT INTO sessions(token, username, created_at) VALUES (?, ?, ?)", (token, username, now()))
-    conn.commit()
+    with transaction(conn):
+        conn.execute("INSERT INTO sessions(token, username, created_at) VALUES (?, ?, ?)", (token, username, now()))
     return token
 
 
@@ -398,8 +463,8 @@ def session_user(conn: sqlite3.Connection, token: str | None) -> dict[str, str] 
 
 def logout_session(conn: sqlite3.Connection, token: str | None) -> None:
     if token:
-        conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
-        conn.commit()
+        with transaction(conn):
+            conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
 
 
 def audit(
@@ -412,15 +477,13 @@ def audit(
     release_id: str = "",
     event: str = "",
     detail: Any = "",
-    commit: bool = True,
 ) -> None:
     detail_text = detail if isinstance(detail, str) else dumps_json(detail)
-    conn.execute(
-        "INSERT INTO audit(ts, user, role, app_id, release_id, event, message, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (now(), user, role, app_id, release_id, event, message, detail_text),
-    )
-    if commit:
-        conn.commit()
+    with transaction(conn):
+        conn.execute(
+            "INSERT INTO audit(ts, user, role, app_id, release_id, event, message, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (now(), user, role, app_id, release_id, event, message, detail_text),
+        )
 
 
 def app_audit_log(conn: sqlite3.Connection, app_id: str, release_id: str = "") -> list[dict[str, Any]]:
@@ -691,15 +754,15 @@ def delete_app(conn: sqlite3.Connection, app_id: str, *, user: str = "admin", ro
     locked_releases = locked_releases_for_app(conn, app_id)
     if locked_releases:
         raise RuntimeError(f"App is used by locked releases and cannot be deleted: {', '.join(locked_releases)}")
-    affected_releases = [
-        row["release_id"]
-        for row in conn.execute("SELECT release_id FROM snapshots WHERE app_id = ?", (app_id,))
-    ]
-    for affected in affected_releases:
-        conn.execute("DELETE FROM artifacts WHERE release_id = ? AND final = 0", (affected,))
-    conn.execute("DELETE FROM apps WHERE id = ?", (app_id,))
-    conn.commit()
-    audit(conn, f"删除 app：{app_id}", user=user, role=role, app_id=app_id, event="delete_app")
+    with transaction(conn):
+        affected_releases = [
+            row["release_id"]
+            for row in conn.execute("SELECT release_id FROM snapshots WHERE app_id = ?", (app_id,))
+        ]
+        for affected in affected_releases:
+            conn.execute("DELETE FROM artifacts WHERE release_id = ? AND final = 0", (affected,))
+        conn.execute("DELETE FROM apps WHERE id = ?", (app_id,))
+        audit(conn, f"删除 app：{app_id}", user=user, role=role, app_id=app_id, event="delete_app")
     return app
 
 
@@ -808,19 +871,19 @@ def update_release_deadlines(
     new_freeze = normalize_deadline(app_freeze_deadline) if app_freeze_deadline is not None else release.get("app_freeze_deadline", "")
     new_doc = normalize_deadline(doc_deadline) if doc_deadline is not None else release.get("doc_deadline", "")
     validate_deadline_order(new_freeze, new_doc)
-    conn.execute(
-        "UPDATE releases SET name = ?, app_freeze_deadline = ?, doc_deadline = ? WHERE id = ?",
-        (new_name, new_freeze, new_doc, release_id),
-    )
-    conn.commit()
-    audit(
-        conn,
-        f"更新 release 设置：{release['name']} -> {new_name}，app_freeze={new_freeze or '空'}, doc={new_doc or '空'}",
-        user=user,
-        role=role,
-        release_id=release_id,
-        event="update_release_settings",
-    )
+    with transaction(conn):
+        conn.execute(
+            "UPDATE releases SET name = ?, app_freeze_deadline = ?, doc_deadline = ? WHERE id = ?",
+            (new_name, new_freeze, new_doc, release_id),
+        )
+        audit(
+            conn,
+            f"更新 release 设置：{release['name']} -> {new_name}，app_freeze={new_freeze or '空'}, doc={new_doc or '空'}",
+            user=user,
+            role=role,
+            release_id=release_id,
+            event="update_release_settings",
+        )
     return get_release(conn, release_id)
 
 
@@ -1019,29 +1082,29 @@ def import_initial_rows(
         built.append((app, snapshot))
 
     release_id = new_id("rel")
-    for app, _ in built:
-        save_app(conn, app)
-        audit(conn, f"导入 app：{app['id']}", user="import", role="system",
-              app_id=app["id"], release_id=release_id, event="create_app")
-
     csv_maca = (rows[0].get("maca_version") or "").strip()
-    save_release(conn, {
-        "id": release_id,
-        "name": release_name or maca_version or csv_maca or "initial-release",
-        "maca_version": maca_version or csv_maca,
-        "app_freeze_deadline": app_freeze_deadline,
-        "doc_deadline": doc_deadline,
-        "released_locked": 0,
-        "released_locked_at": "",
-        "released_locked_by": "",
-        "created_at": now(),
-        "source": "initial_csv",
-        "cloned_from": "",
-    })
-    for app, snapshot in built:
-        save_snapshot(conn, release_id, app["id"], snapshot)
-    conn.commit()
-    audit(conn, f"首次初始化导入完成：{len(built)} 个 app", release_id=release_id, event="import_initial")
+    with transaction(conn):
+        for app, _ in built:
+            save_app(conn, app)
+            audit(conn, f"导入 app：{app['id']}", user="import", role="system",
+                  app_id=app["id"], release_id=release_id, event="create_app")
+
+        save_release(conn, {
+            "id": release_id,
+            "name": release_name or maca_version or csv_maca or "initial-release",
+            "maca_version": maca_version or csv_maca,
+            "app_freeze_deadline": app_freeze_deadline,
+            "doc_deadline": doc_deadline,
+            "released_locked": 0,
+            "released_locked_at": "",
+            "released_locked_by": "",
+            "created_at": now(),
+            "source": "initial_csv",
+            "cloned_from": "",
+        })
+        for app, snapshot in built:
+            save_snapshot(conn, release_id, app["id"], snapshot)
+        audit(conn, f"首次初始化导入完成：{len(built)} 个 app", release_id=release_id, event="import_initial")
     return release_id
 
 
@@ -1074,38 +1137,37 @@ def create_release_from_previous(
         "source": "cloned_from_previous" if previous else "empty",
         "cloned_from": previous["id"] if previous else "",
     }
-    save_release(conn, release)
     previous_name = previous["name"] if previous else ""
-    for app in list_apps(conn):
-        old = previous["snapshots"].get(app["id"]) if previous else None
-        if not old:
-            continue
-        snapshot = json.loads(json.dumps(old))
-        snapshot.pop("locked_in_release", None)
-        snapshot.update(
-            {
-                "owner_confirmed": False,
-                "qa_status": "not_checked",
-                "qa_issue_note": "",
-                "missing_items": [],
-            }
-        )
-        for td in snapshot.get("test_docs", []):
-            td["stale"] = True
-        save_snapshot(conn, release_id, app["id"], snapshot)
-        audit(
-            conn,
-            f"本 app 随 release 从「{previous_name}」克隆而来，已继承上一版的发布信息",
-            user=user,
-            role=role,
-            app_id=app["id"],
-            release_id=release_id,
-            event="clone_app",
-            commit=False,
-        )
-    conn.commit()
     summary = f"创建 release「{name}」，从「{previous_name}」克隆" if previous else f"创建 release「{name}」"
-    audit(conn, summary, user=user, role=role, release_id=release_id, event="create_release")
+    with transaction(conn):
+        save_release(conn, release)
+        for app in list_apps(conn):
+            old = previous["snapshots"].get(app["id"]) if previous else None
+            if not old:
+                continue
+            snapshot = json.loads(json.dumps(old))
+            snapshot.pop("locked_in_release", None)
+            snapshot.update(
+                {
+                    "owner_confirmed": False,
+                    "qa_status": "not_checked",
+                    "qa_issue_note": "",
+                    "missing_items": [],
+                }
+            )
+            for td in snapshot.get("test_docs", []):
+                td["stale"] = True
+            save_snapshot(conn, release_id, app["id"], snapshot)
+            audit(
+                conn,
+                f"本 app 随 release 从「{previous_name}」克隆而来，已继承上一版的发布信息",
+                user=user,
+                role=role,
+                app_id=app["id"],
+                release_id=release_id,
+                event="clone_app",
+            )
+        audit(conn, summary, user=user, role=role, release_id=release_id, event="create_release")
     return release_id
 
 
@@ -1186,7 +1248,6 @@ def add_new_app_request(
         "created_by": owner,
         "created_at": now(),
     }
-    save_app(conn, app)
     snapshot = base_snapshot(
         app_id,
         official_name=official_name,
@@ -1195,27 +1256,28 @@ def add_new_app_request(
     )
     snapshot["release_decision"] = release_decision
     source_name = release["name"]
-    for target_release_id in _future_unlocked_release_ids(conn, release_id):
-        target_release = get_release(conn, target_release_id)
-        if app_id in target_release["snapshots"]:
-            continue
-        if target_release_id == release_id:
-            save_snapshot(conn, target_release_id, app_id, snapshot)
-            audit(
-                conn,
-                f"新增 app：{official_name}（owner={owner}，初始决策={release_decision}）",
-                user=owner, role="Owner", app_id=app_id,
-                release_id=target_release_id, event="create_app", commit=False,
-            )
-        else:
-            save_snapshot(conn, target_release_id, app_id, _initial_snapshot_for_future_release(snapshot, target_release))
-            audit(
-                conn,
-                f"本 app 在「{source_name}」新增后，同步到本 release",
-                user=owner, role="Owner", app_id=app_id,
-                release_id=target_release_id, event="sync_app", commit=False,
-            )
-    conn.commit()
+    with transaction(conn):
+        save_app(conn, app)
+        for target_release_id in _future_unlocked_release_ids(conn, release_id):
+            target_release = get_release(conn, target_release_id)
+            if app_id in target_release["snapshots"]:
+                continue
+            if target_release_id == release_id:
+                save_snapshot(conn, target_release_id, app_id, snapshot)
+                audit(
+                    conn,
+                    f"新增 app：{official_name}（owner={owner}，初始决策={release_decision}）",
+                    user=owner, role="Owner", app_id=app_id,
+                    release_id=target_release_id, event="create_app",
+                )
+            else:
+                save_snapshot(conn, target_release_id, app_id, _initial_snapshot_for_future_release(snapshot, target_release))
+                audit(
+                    conn,
+                    f"本 app 在「{source_name}」新增后，同步到本 release",
+                    user=owner, role="Owner", app_id=app_id,
+                    release_id=target_release_id, event="sync_app",
+                )
     return app_id
 
 
@@ -1376,16 +1438,16 @@ def update_snapshot(
     *,
     skip_doc_deadline: bool = False,
 ) -> dict[str, Any]:
-    release = get_release(conn, release_id)
-    if release.get("released_locked"):
-        raise RuntimeError("Release 已最终锁定，不可修改")
-    if not skip_doc_deadline and not is_before(release.get("doc_deadline", "")):
-        raise RuntimeError("已过 doc deadline，不可再修改文档/表单信息")
-    snapshot = release["snapshots"][app_id]
-    mutator(snapshot)
-    save_snapshot(conn, release_id, app_id, snapshot)
-    conn.commit()
-    return snapshot
+    with transaction(conn):
+        release = get_release(conn, release_id)
+        if release.get("released_locked"):
+            raise RuntimeError("Release 已最终锁定，不可修改")
+        if not skip_doc_deadline and not is_before(release.get("doc_deadline", "")):
+            raise RuntimeError("已过 doc deadline，不可再修改文档/表单信息")
+        snapshot = release["snapshots"][app_id]
+        mutator(snapshot)
+        save_snapshot(conn, release_id, app_id, snapshot)
+        return snapshot
 
 
 def sync_decision_to_later_releases(
@@ -1409,35 +1471,35 @@ def sync_decision_to_later_releases(
     idx = next((i for i, r in enumerate(releases) if r["id"] == from_release_id), None)
     if idx is None:
         return result
-    for r in releases[idx + 1:]:
-        rid = r["id"]
-        if r.get("released_locked"):
-            result["skipped"].append({"release_id": rid, "release_name": r["name"], "reason": "已最终锁定"})
-            continue
-        release = get_release(conn, rid)
-        snapshot = release["snapshots"].get(app_id)
-        if snapshot is None:
-            result["skipped"].append({"release_id": rid, "release_name": r["name"], "reason": "本 release 无此 app"})
-            continue
-        if decision == "release" and not is_before(release.get("app_freeze_deadline", "")):
-            result["skipped"].append({"release_id": rid, "release_name": r["name"], "reason": "已过 app freeze，无法升回 release"})
-            continue
-        if snapshot.get("release_decision") != decision:
-            snapshot["release_decision"] = decision
-            snapshot["missing_items"] = missing_items_for(get_app(conn, app_id), snapshot)
-            save_snapshot(conn, rid, app_id, snapshot)
-        result["applied"].append({"release_id": rid, "release_name": r["name"]})
-    if result["applied"]:
-        conn.commit()
-        audit(
-            conn,
-            f"同步 release 决策（{decision}）到 {len(result['applied'])} 个后续 release",
-            user=user,
-            role=role,
-            app_id=app_id,
-            release_id=from_release_id,
-            event="sync_decision",
-        )
+    with transaction(conn):
+        for r in releases[idx + 1:]:
+            rid = r["id"]
+            if r.get("released_locked"):
+                result["skipped"].append({"release_id": rid, "release_name": r["name"], "reason": "已最终锁定"})
+                continue
+            release = get_release(conn, rid)
+            snapshot = release["snapshots"].get(app_id)
+            if snapshot is None:
+                result["skipped"].append({"release_id": rid, "release_name": r["name"], "reason": "本 release 无此 app"})
+                continue
+            if decision == "release" and not is_before(release.get("app_freeze_deadline", "")):
+                result["skipped"].append({"release_id": rid, "release_name": r["name"], "reason": "已过 app freeze，无法升回 release"})
+                continue
+            if snapshot.get("release_decision") != decision:
+                snapshot["release_decision"] = decision
+                snapshot["missing_items"] = missing_items_for(get_app(conn, app_id), snapshot)
+                save_snapshot(conn, rid, app_id, snapshot)
+            result["applied"].append({"release_id": rid, "release_name": r["name"]})
+        if result["applied"]:
+            audit(
+                conn,
+                f"同步 release 决策（{decision}）到 {len(result['applied'])} 个后续 release",
+                user=user,
+                role=role,
+                app_id=app_id,
+                release_id=from_release_id,
+                event="sync_decision",
+            )
     return result
 
 
@@ -1507,8 +1569,6 @@ def apply_app_info(
     snapshot["x86_chips"] = ",".join(order_chips(parsed.get("x86_chips", [])))
     snapshot["arm_chips"] = ",".join(order_chips(parsed.get("arm_chips", [])))
     ensure_test_docs(snapshot, parsed, diffs)
-    save_snapshot(conn, release_id, app_id, snapshot)
-    conn.commit()
     # build_targets / test_targets are coarse list-of-dict aggregates; the
     # readable per-field diffs (version, chips, test_cmd*) cover the same ground.
     detail = [
@@ -1521,16 +1581,18 @@ def apply_app_info(
         for d in diffs
         if d.get("field") not in ("build_targets", "test_targets")
     ]
-    audit(
-        conn,
-        f"{app_id} 更新 app_info.json，差异 {len(diffs)} 项",
-        user=uploaded_by or "system",
-        role=role,
-        app_id=app_id,
-        release_id=release_id,
-        event="upload_app_info",
-        detail=detail,
-    )
+    with transaction(conn):
+        save_snapshot(conn, release_id, app_id, snapshot)
+        audit(
+            conn,
+            f"{app_id} 更新 app_info.json，差异 {len(diffs)} 项",
+            user=uploaded_by or "system",
+            role=role,
+            app_id=app_id,
+            release_id=release_id,
+            event="upload_app_info",
+            detail=detail,
+        )
     return snapshot
 
 
@@ -1603,23 +1665,20 @@ def refresh_missing_items(conn: sqlite3.Connection, release_id: str) -> dict[str
         return {app_id: snap.get("missing_items", []) for app_id, snap in release["snapshots"].items()}
     apps = {app["id"]: app for app in list_apps(conn)}
     results: dict[str, list[str]] = {}
-    dirty = False
-    for app_id, snapshot in release["snapshots"].items():
-        app = apps.get(app_id)
-        if not app:
-            continue
-        before = dumps_json(snapshot)
-        snapshot["release_decision"] = normalize_release_decision(snapshot.get("release_decision"))
-        snapshot.pop("cicd", None)
-        items = missing_items_for(app, snapshot)
-        snapshot["missing_items"] = items
-        results[app_id] = items
-        after = dumps_json(snapshot)
-        if before != after:
-            save_snapshot(conn, release_id, app_id, snapshot)
-            dirty = True
-    if dirty:
-        conn.commit()
+    with transaction(conn):
+        for app_id, snapshot in release["snapshots"].items():
+            app = apps.get(app_id)
+            if not app:
+                continue
+            before = dumps_json(snapshot)
+            snapshot["release_decision"] = normalize_release_decision(snapshot.get("release_decision"))
+            snapshot.pop("cicd", None)
+            items = missing_items_for(app, snapshot)
+            snapshot["missing_items"] = items
+            results[app_id] = items
+            after = dumps_json(snapshot)
+            if before != after:
+                save_snapshot(conn, release_id, app_id, snapshot)
     return results
 
 
@@ -1649,21 +1708,21 @@ def qa_set_status(
     old_note = snapshot.get("qa_issue_note", "")
     snapshot["qa_status"] = status
     snapshot["qa_issue_note"] = (issue_note or "").strip() if status == "has_issues" else ""
-    save_snapshot(conn, release_id, app_id, snapshot)
-    conn.commit()
     detail = [{"field": "qa_status", "label": "QA 状态", "old": old_status, "new": status}]
     if old_note or snapshot["qa_issue_note"]:
         detail.append({"field": "qa_issue_note", "label": "问题说明", "old": old_note, "new": snapshot["qa_issue_note"]})
-    audit(
-        conn,
-        f"QA 标注 {app_id} 为 {status}" + (f"：{issue_note}" if issue_note else ""),
-        user=user,
-        role=role,
-        app_id=app_id,
-        release_id=release_id,
-        event="qa_set_status",
-        detail=detail,
-    )
+    with transaction(conn):
+        save_snapshot(conn, release_id, app_id, snapshot)
+        audit(
+            conn,
+            f"QA 标注 {app_id} 为 {status}" + (f"：{issue_note}" if issue_note else ""),
+            user=user,
+            role=role,
+            app_id=app_id,
+            release_id=release_id,
+            event="qa_set_status",
+            detail=detail,
+        )
     return snapshot
 
 
@@ -1707,25 +1766,24 @@ def qa_set_status_batch(
         prepared.append((app_id, snapshot, status, issue_note, snapshot.get("qa_status", "not_checked"), snapshot.get("qa_issue_note", "")))
     if errors:
         raise ValueError("；".join(errors))
-    for app_id, snapshot, status, issue_note, old_status, old_note in prepared:
-        snapshot["qa_status"] = status
-        snapshot["qa_issue_note"] = issue_note if status == "has_issues" else ""
-        save_snapshot(conn, release_id, app_id, snapshot)
-        detail = [{"field": "qa_status", "label": "QA 状态", "old": old_status, "new": status}]
-        if old_note or snapshot["qa_issue_note"]:
-            detail.append({"field": "qa_issue_note", "label": "问题说明", "old": old_note, "new": snapshot["qa_issue_note"]})
-        audit(
-            conn,
-            f"QA 标注 {app_id} 为 {status}" + (f"：{issue_note}" if issue_note else ""),
-            user=user,
-            role=role,
-            app_id=app_id,
-            release_id=release_id,
-            event="qa_set_status",
-            detail=detail,
-            commit=False,
-        )
-    conn.commit()
+    with transaction(conn):
+        for app_id, snapshot, status, issue_note, old_status, old_note in prepared:
+            snapshot["qa_status"] = status
+            snapshot["qa_issue_note"] = issue_note if status == "has_issues" else ""
+            save_snapshot(conn, release_id, app_id, snapshot)
+            detail = [{"field": "qa_status", "label": "QA 状态", "old": old_status, "new": status}]
+            if old_note or snapshot["qa_issue_note"]:
+                detail.append({"field": "qa_issue_note", "label": "问题说明", "old": old_note, "new": snapshot["qa_issue_note"]})
+            audit(
+                conn,
+                f"QA 标注 {app_id} 为 {status}" + (f"：{issue_note}" if issue_note else ""),
+                user=user,
+                role=role,
+                app_id=app_id,
+                release_id=release_id,
+                event="qa_set_status",
+                detail=detail,
+            )
     return {app_id: snapshot for app_id, snapshot, *_ in prepared}
 
 
@@ -1754,27 +1812,27 @@ def qa_upload_log(
     target_dir = qa_log_dir(db_path)
     storage_path = target_dir / f"{release_id}__{safe_name}"
     storage_path.write_bytes(content)
-    conn.execute(
-        """
-        INSERT INTO qa_logs(release_id, filename, storage_path, uploaded_at, uploaded_by)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(release_id) DO UPDATE SET
-          filename=excluded.filename,
-          storage_path=excluded.storage_path,
-          uploaded_at=excluded.uploaded_at,
-          uploaded_by=excluded.uploaded_by
-        """,
-        (release_id, safe_name, str(storage_path), now(), user),
-    )
-    conn.commit()
-    audit(
-        conn,
-        f"QA 上传 log：{safe_name}",
-        user=user,
-        role=role,
-        release_id=release_id,
-        event="qa_upload_log",
-    )
+    with transaction(conn):
+        conn.execute(
+            """
+            INSERT INTO qa_logs(release_id, filename, storage_path, uploaded_at, uploaded_by)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(release_id) DO UPDATE SET
+              filename=excluded.filename,
+              storage_path=excluded.storage_path,
+              uploaded_at=excluded.uploaded_at,
+              uploaded_by=excluded.uploaded_by
+            """,
+            (release_id, safe_name, str(storage_path), now(), user),
+        )
+        audit(
+            conn,
+            f"QA 上传 log：{safe_name}",
+            user=user,
+            role=role,
+            release_id=release_id,
+            event="qa_upload_log",
+        )
     return {"filename": safe_name, "storage_path": str(storage_path), "uploaded_at": now(), "uploaded_by": user}
 
 
@@ -2117,19 +2175,19 @@ def final_lock_release(conn: sqlite3.Connection, release_id: str, *, user: str =
     release = get_release(conn, release_id)
     if release.get("released_locked"):
         raise RuntimeError("Release 已最终锁定")
-    refresh_missing_items(conn, release_id)
-    release = get_release(conn, release_id)
-    for app_id, snapshot in release["snapshots"].items():
-        if _qualifies_for_final(snapshot):
-            snapshot["locked_in_release"] = True
-        save_snapshot_raw(conn, release_id, app_id, snapshot)
-    conn.execute(
-        "UPDATE releases SET released_locked = 1, released_locked_at = ?, released_locked_by = ? WHERE id = ?",
-        (now(), user, release_id),
-    )
-    conn.commit()
-    artifacts = generate_artifacts(conn, release_id, final=True, from_lock=True)
-    audit(conn, f"Release 最终锁定：{release['name']}", user=user, role=role, release_id=release_id, event="final_lock")
+    with transaction(conn):
+        refresh_missing_items(conn, release_id)
+        release = get_release(conn, release_id)
+        for app_id, snapshot in release["snapshots"].items():
+            if _qualifies_for_final(snapshot):
+                snapshot["locked_in_release"] = True
+            save_snapshot_raw(conn, release_id, app_id, snapshot)
+        conn.execute(
+            "UPDATE releases SET released_locked = 1, released_locked_at = ?, released_locked_by = ? WHERE id = ?",
+            (now(), user, release_id),
+        )
+        artifacts = generate_artifacts(conn, release_id, final=True, from_lock=True)
+        audit(conn, f"Release 最终锁定：{release['name']}", user=user, role=role, release_id=release_id, event="final_lock")
     return artifacts
 
 
@@ -2138,17 +2196,17 @@ def final_unlock_release(conn: sqlite3.Connection, release_id: str, *, user: str
     release = get_release(conn, release_id)
     if not release.get("released_locked"):
         raise RuntimeError("Release 未锁定，无需解锁")
-    conn.execute(
-        "UPDATE releases SET released_locked = 0, released_locked_at = '', released_locked_by = '' WHERE id = ?",
-        (release_id,),
-    )
-    for app_id, snapshot in release["snapshots"].items():
-        snapshot.pop("app_meta", None)
-        snapshot.pop("locked_in_release", None)
-        save_snapshot_raw(conn, release_id, app_id, snapshot)
-    conn.execute("DELETE FROM artifacts WHERE release_id = ? AND final = 1", (release_id,))
-    conn.commit()
-    audit(conn, f"Release 解锁：{release['name']}", user=user, role=role, release_id=release_id, event="final_unlock")
+    with transaction(conn):
+        conn.execute(
+            "UPDATE releases SET released_locked = 0, released_locked_at = '', released_locked_by = '' WHERE id = ?",
+            (release_id,),
+        )
+        for app_id, snapshot in release["snapshots"].items():
+            snapshot.pop("app_meta", None)
+            snapshot.pop("locked_in_release", None)
+            save_snapshot_raw(conn, release_id, app_id, snapshot)
+        conn.execute("DELETE FROM artifacts WHERE release_id = ? AND final = 1", (release_id,))
+        audit(conn, f"Release 解锁：{release['name']}", user=user, role=role, release_id=release_id, event="final_unlock")
 
 
 def save_snapshot_raw(conn: sqlite3.Connection, release_id: str, app_id: str, snapshot: dict[str, Any]) -> None:
@@ -2411,50 +2469,50 @@ def generate_artifacts(conn: sqlite3.Connection, release_id: str, *, final: bool
         existing = conn.execute("SELECT 1 FROM artifacts WHERE release_id = ? AND final = 1 LIMIT 1", (release_id,)).fetchone()
         if existing:
             raise RuntimeError("Final artifacts already exist and are immutable")
-    if not final:
-        refresh_missing_items(conn, release_id)
-        release = get_release(conn, release_id)
-    rows = release_rows(conn, release, final=final)
-    if final:
-        manual_active, manual_stopped = guide_rows(conn, release, "manual")
-        ai4sci_active, ai4sci_stopped = guide_rows(conn, release, "ai4sci")
-    else:
-        manual_active = [(a, s) for a, s in rows if normalize_doc_target(a.get("doc_target")) == "manual"]
-        manual_stopped = []
-        ai4sci_active = [(a, s) for a, s in rows if normalize_doc_target(a.get("doc_target")) == "ai4sci"]
-        ai4sci_stopped = []
-    artifacts = {
-        "release_note": render_release_note(release, rows),
-        "manual": render_guide("HPC Manual App 章节", manual_active, manual_stopped),
-        "ai4sci": render_guide("AI4Sci User Guide App 章节", ai4sci_active, ai4sci_stopped),
-        "data": dumps_json({"release": release, "apps": list_apps(conn), "generated_at": now(), "final": final}),
-    }
-    names = {
-        "release_note": "release_note.md",
-        "manual": "hpc_manual_apps.md",
-        "ai4sci": "ai4sci_user_guide_apps.md",
-        "data": "release_data.json",
-    }
-    for kind, content in artifacts.items():
-        conn.execute(
-            """
-            INSERT INTO artifacts(release_id, kind, name, content, final, generated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(release_id, kind) DO UPDATE SET
-              name=excluded.name,
-              content=excluded.content,
-              final=excluded.final,
-              generated_at=excluded.generated_at
-            """,
-            (release_id, kind, names[kind], content, int(final), now()),
+    with transaction(conn):
+        if not final:
+            refresh_missing_items(conn, release_id)
+            release = get_release(conn, release_id)
+        rows = release_rows(conn, release, final=final)
+        if final:
+            manual_active, manual_stopped = guide_rows(conn, release, "manual")
+            ai4sci_active, ai4sci_stopped = guide_rows(conn, release, "ai4sci")
+        else:
+            manual_active = [(a, s) for a, s in rows if normalize_doc_target(a.get("doc_target")) == "manual"]
+            manual_stopped = []
+            ai4sci_active = [(a, s) for a, s in rows if normalize_doc_target(a.get("doc_target")) == "ai4sci"]
+            ai4sci_stopped = []
+        artifacts = {
+            "release_note": render_release_note(release, rows),
+            "manual": render_guide("HPC Manual App 章节", manual_active, manual_stopped),
+            "ai4sci": render_guide("AI4Sci User Guide App 章节", ai4sci_active, ai4sci_stopped),
+            "data": dumps_json({"release": release, "apps": list_apps(conn), "generated_at": now(), "final": final}),
+        }
+        names = {
+            "release_note": "release_note.md",
+            "manual": "hpc_manual_apps.md",
+            "ai4sci": "ai4sci_user_guide_apps.md",
+            "data": "release_data.json",
+        }
+        for kind, content in artifacts.items():
+            conn.execute(
+                """
+                INSERT INTO artifacts(release_id, kind, name, content, final, generated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(release_id, kind) DO UPDATE SET
+                  name=excluded.name,
+                  content=excluded.content,
+                  final=excluded.final,
+                  generated_at=excluded.generated_at
+                """,
+                (release_id, kind, names[kind], content, int(final), now()),
+            )
+        audit(
+            conn,
+            "生成最终 artifacts" if final else "生成预览 artifacts",
+            release_id=release_id,
+            event="generate_artifacts",
         )
-    conn.commit()
-    audit(
-        conn,
-        "生成最终 artifacts" if final else "生成预览 artifacts",
-        release_id=release_id,
-        event="generate_artifacts",
-    )
     return artifacts
 
 
@@ -2469,30 +2527,30 @@ def generate_manager_review_csv(
     release = get_release(conn, release_id)
     if release.get("released_locked"):
         raise RuntimeError("Release 已最终锁定，Manager Review CSV 不可重新生成")
-    refresh_missing_items(conn, release_id)
-    release = get_release(conn, release_id)
-    content = render_manager_review_csv(conn, release, fields)
-    conn.execute(
-        """
-        INSERT INTO artifacts(release_id, kind, name, content, final, generated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(release_id, kind) DO UPDATE SET
-          name=excluded.name,
-          content=excluded.content,
-          final=excluded.final,
-          generated_at=excluded.generated_at
-        """,
-        (release_id, "manager_review", "manager_review.csv", content, 0, now()),
-    )
-    conn.commit()
-    audit(
-        conn,
-        "生成 Manager Review CSV",
-        user=user,
-        role=role,
-        release_id=release_id,
-        event="generate_manager_review",
-    )
+    with transaction(conn):
+        refresh_missing_items(conn, release_id)
+        release = get_release(conn, release_id)
+        content = render_manager_review_csv(conn, release, fields)
+        conn.execute(
+            """
+            INSERT INTO artifacts(release_id, kind, name, content, final, generated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(release_id, kind) DO UPDATE SET
+              name=excluded.name,
+              content=excluded.content,
+              final=excluded.final,
+              generated_at=excluded.generated_at
+            """,
+            (release_id, "manager_review", "manager_review.csv", content, 0, now()),
+        )
+        audit(
+            conn,
+            "生成 Manager Review CSV",
+            user=user,
+            role=role,
+            release_id=release_id,
+            event="generate_manager_review",
+        )
     return content
 
 

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import base64
 import json
@@ -65,6 +65,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not app_id:
                         raise ValueError("app_id is required")
                     release_id = self.query().get("release_id", [""])[0]
+                    self.require_app_audit_access(app_id, release_id)
                     self.send_json({"entries": core.app_audit_log(self.conn(), app_id, release_id)})
                     return
                 if parsed.path == "/api/test-scope.csv":
@@ -285,6 +286,12 @@ class Handler(BaseHTTPRequestHandler):
                     role = self.role()
                     actor = self.user()
                     snap_update = body.get("snapshot", {})
+                    if role == "Owner":
+                        owner_content_keys = set(snap_update) - {"release_decision", "owner_confirmed"}
+                        if ("app" in body or owner_content_keys) and snap_update.get("owner_confirmed") is not True:
+                            raise AuthzError("Owner edits must be saved with Owner confirmation")
+                        if "owner_confirmed" in snap_update and snap_update["owner_confirmed"] is not True:
+                            raise AuthzError("Owner confirmation can only be submitted, not cleared")
                     past_doc_deadline = not core.is_before(release.get("doc_deadline", ""))
                     if past_doc_deadline:
                         if "app" in body or any(key != "release_decision" for key in snap_update):
@@ -296,7 +303,12 @@ class Handler(BaseHTTPRequestHandler):
                         if new_decision != current_decision:
                             if new_decision == "release" and not core.is_before(release.get("app_freeze_deadline", "")):
                                 raise RuntimeError("已过 app 冻结 deadline，不可再切换为 release")
-                    if "app" in body and role == "RM":
+                    owner_meta = {"type", "official_url", "description"}
+                    doc_labels = {"intro": "基本介绍", "image_usage": "镜像使用方法", "binary_usage": "二进制包使用方法", "env_setup": "环境搭建", "limitations": "已知限制"}
+
+                    def update_repo_if_needed() -> None:
+                        if "app" not in body or role != "RM":
+                            return
                         app_update = body["app"]
                         repo_before = {"git_url": app.get("git_url", ""), "git_branch": app.get("git_branch", "")}
                         repo_changed = False
@@ -308,11 +320,7 @@ class Handler(BaseHTTPRequestHandler):
                             core.save_app(conn, app)
                             core.audit(conn, "修改 Gerrit 信息", user=actor, role=role,
                                        app_id=aid, release_id=rid, event="update_app_repo",
-                                       detail=core.field_diff(repo_before, app, {"git_url": "Gerrit URL", "git_branch": "Branch"}),
-                                       commit=False)
-
-                    owner_meta = {"type", "official_url", "description"}
-                    doc_labels = {"intro": "基本介绍", "image_usage": "镜像使用方法", "binary_usage": "二进制包使用方法", "env_setup": "环境搭建", "limitations": "已知限制"}
+                                       detail=core.field_diff(repo_before, app, {"git_url": "Gerrit URL", "git_branch": "Branch"}))
 
                     def mutate(snapshot: dict) -> None:
                         name_for_msg = snapshot.get("official_name") or aid
@@ -325,8 +333,7 @@ class Handler(BaseHTTPRequestHandler):
                                            user=actor, role=role, app_id=aid, release_id=rid, event="update_release_decision",
                                            detail=core.field_diff({"release_decision": snapshot.get("release_decision")},
                                                                   {"release_decision": decision},
-                                                                  {"release_decision": "release 决策"}),
-                                           commit=False)
+                                                                  {"release_decision": "release 决策"}))
                             snapshot["release_decision"] = decision
                         meta_before: dict = {}
                         meta_after: dict = {}
@@ -352,16 +359,14 @@ class Handler(BaseHTTPRequestHandler):
                         if meta_after:
                             core.audit(conn, f"修改 app 基本信息：{name_for_msg}", user=actor, role=role,
                                        app_id=aid, release_id=rid, event="update_app_meta",
-                                       detail=core.field_diff(meta_before, meta_after, core.APP_META_LABELS),
-                                       commit=False)
+                                       detail=core.field_diff(meta_before, meta_after, core.APP_META_LABELS))
                         if "owner_confirmed" in snap_update:
                             if role != "Owner":
                                 raise AuthzError("Owner confirmation must be submitted by an Owner")
                             if snap_update["owner_confirmed"] and not snapshot.get("owner_confirmed"):
                                 core.audit(conn, f"提交 Owner 确认：{name_for_msg}", user=actor, role=role,
                                            app_id=aid, release_id=rid, event="owner_confirm",
-                                           detail=[{"field": "owner_confirmed", "label": "Owner 确认", "old": "未确认", "new": "已确认"}],
-                                           commit=False)
+                                           detail=[{"field": "owner_confirmed", "label": "Owner 确认", "old": "未确认", "new": "已确认"}])
                             snapshot["owner_confirmed"] = snap_update["owner_confirmed"]
                         if "doc" in snap_update:
                             doc_update = snap_update["doc"]
@@ -369,8 +374,7 @@ class Handler(BaseHTTPRequestHandler):
                             doc_changes = core.field_diff(current_doc, doc_update, {k: doc_labels.get(k, k) for k in doc_update})
                             if doc_changes:
                                 core.audit(conn, f"修改文档字段：{name_for_msg}", user=actor, role=role,
-                                           app_id=aid, release_id=rid, event="update_doc_fields", detail=doc_changes,
-                                           commit=False)
+                                           app_id=aid, release_id=rid, event="update_doc_fields", detail=doc_changes)
                             snapshot.setdefault("doc", {}).update(doc_update)
                         if "community" in snap_update:
                             comm_update = snap_update["community"]
@@ -379,8 +383,7 @@ class Handler(BaseHTTPRequestHandler):
                             comm_changes = core.field_diff(comm_before, comm_update, comm_labels)
                             if comm_changes:
                                 core.audit(conn, f"修改社区发布信息：{name_for_msg}", user=actor, role=role,
-                                           app_id=aid, release_id=rid, event="update_community", detail=comm_changes,
-                                           commit=False)
+                                           app_id=aid, release_id=rid, event="update_community", detail=comm_changes)
                             snapshot.setdefault("community", {}).update(comm_update)
                         if "sanity" in snap_update:
                             sanity_update = snap_update["sanity"]
@@ -391,8 +394,7 @@ class Handler(BaseHTTPRequestHandler):
                                 if role != "RM":
                                     raise AuthzError("仅 RM 可修改 Sanity 信息")
                                 core.audit(conn, f"修改 Sanity 信息：{name_for_msg}", user=actor, role=role,
-                                           app_id=aid, release_id=rid, event="update_sanity", detail=sanity_changes,
-                                           commit=False)
+                                           app_id=aid, release_id=rid, event="update_sanity", detail=sanity_changes)
                                 snapshot.setdefault("sanity", {}).update(sanity_update)
                         if "test_docs" in snap_update:
                             before_docs = [dict(d) for d in snapshot.get("test_docs", [])]
@@ -407,21 +409,19 @@ class Handler(BaseHTTPRequestHandler):
                             td_changes = core.test_docs_diff(before_docs, snapshot.get("test_docs", []))
                             if td_changes:
                                 core.audit(conn, f"修改测试说明：{name_for_msg}", user=actor, role=role,
-                                           app_id=aid, release_id=rid, event="update_test_docs", detail=td_changes,
-                                           commit=False)
-
-                    # Every audit above runs commit=False: the repo change, the
-                    # field audits and the snapshot save all land in one
-                    # transaction here, so a mid-request failure leaves nothing.
-                    updated = core.update_snapshot(conn, rid, aid, mutate, skip_doc_deadline=past_doc_deadline)
-                    updated["missing_items"] = core.missing_items_for(core.get_app(conn, aid), updated)
-                    core.save_snapshot(conn, rid, aid, updated)
-                    conn.commit()
-                    response = {"snapshot": updated, "missing_items": updated.get("missing_items", []), "qa_status": updated.get("qa_status")}
-                    if body.get("sync_decision") and snap_now.get("release_decision") != updated.get("release_decision"):
-                        response["decision_sync"] = core.sync_decision_to_later_releases(
-                            conn, rid, aid, updated.get("release_decision"), user=actor, role=role
-                        )
+                                           app_id=aid, release_id=rid, event="update_test_docs", detail=td_changes)
+                    # The transaction context suppresses helper-level commits,
+                    # including legacy helpers added later in this path.
+                    with core.transaction(conn):
+                        update_repo_if_needed()
+                        updated = core.update_snapshot(conn, rid, aid, mutate, skip_doc_deadline=past_doc_deadline)
+                        updated["missing_items"] = core.missing_items_for(core.get_app(conn, aid), updated)
+                        core.save_snapshot(conn, rid, aid, updated)
+                        response = {"snapshot": updated, "missing_items": updated.get("missing_items", []), "qa_status": updated.get("qa_status")}
+                        if body.get("sync_decision") and snap_now.get("release_decision") != updated.get("release_decision"):
+                            response["decision_sync"] = core.sync_decision_to_later_releases(
+                                conn, rid, aid, updated.get("release_decision"), user=actor, role=role
+                            )
                     self.send_json(response)
                     return
                 if parsed.path == "/api/qa/status-batch":
@@ -610,6 +610,26 @@ class Handler(BaseHTTPRequestHandler):
         if self.role() == "Owner" and self.user() in (owners or []):
             return
         raise AuthzError("Owner permission required")
+
+    def require_app_audit_access(self, app_id: str, release_id: str = "") -> None:
+        role = self.role()
+        if role in {"RM", "Admin"}:
+            return
+        if role != "Owner":
+            raise AuthzError("App audit access denied")
+
+        username = self.user()
+        if release_id:
+            snapshot = core.get_release(self.conn(), release_id)["snapshots"].get(app_id)
+            if snapshot and username in (snapshot.get("owners") or []):
+                return
+            raise AuthzError("App audit access denied")
+
+        for release in core.list_releases(self.conn()):
+            snapshot = core.get_release(self.conn(), release["id"])["snapshots"].get(app_id)
+            if snapshot and username in (snapshot.get("owners") or []):
+                return
+        raise AuthzError("App audit access denied")
 
 
 def _serialize_release(release: dict) -> dict:

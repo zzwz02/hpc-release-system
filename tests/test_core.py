@@ -708,6 +708,36 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         self.assertIn("upload_app_info", events)
         self.assertIn("create_app", events)
 
+    def test_transaction_rolls_back_helper_commits(self) -> None:
+        release_id, app_id = self.import_initial()
+
+        with self.assertRaisesRegex(RuntimeError, "boom"):
+            with core.transaction(self.conn):
+                core.audit(self.conn, "rollback probe", app_id=app_id, release_id=release_id, event="rollback_probe")
+                core.update_snapshot(
+                    self.conn,
+                    release_id,
+                    app_id,
+                    lambda s: s.update({"description": "should rollback"}),
+                )
+                raise RuntimeError("boom")
+
+        snap = core.get_release(self.conn, release_id)["snapshots"][app_id]
+        events = [e["event"] for e in core.app_audit_log(self.conn, app_id, release_id)]
+        self.assertNotEqual(snap.get("description"), "should rollback")
+        self.assertNotIn("rollback_probe", events)
+
+    def test_core_commit_calls_are_limited_to_transaction_boundaries(self) -> None:
+        allowed = {"transaction", "init_db"}
+        current = ""
+        offenders = []
+        for lineno, line in enumerate((Path("release_system") / "core.py").read_text(encoding="utf-8").splitlines(), start=1):
+            if line.startswith("def "):
+                current = line.split("def ", 1)[1].split("(", 1)[0]
+            if "conn.commit()" in line and current not in allowed:
+                offenders.append(f"{lineno}:{current}:{line.strip()}")
+        self.assertEqual(offenders, [])
+
     # --- variant import ---
 
     def test_initial_import_preserves_multi_version_variants(self) -> None:
@@ -1144,6 +1174,28 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         self.assertIn("qa_set_status", r2_events)
         self.assertNotIn("create_app", r2_events)
         self.assertGreaterEqual(len(core.app_audit_log(self.conn, app_id)), len(r1_events) + len(r2_events))
+
+    def test_app_audit_access_allows_rm_admin_and_current_owner(self) -> None:
+        release_id, app_id = self.import_initial()
+
+        for username, role in [("rm", "RM"), ("admin", "Admin"), ("张三", "Owner")]:
+            handler = object.__new__(server.Handler)
+            handler._conn = self.conn
+            handler.conn = lambda: self.conn
+            handler.user = lambda username=username: username
+            handler.role = lambda role=role: role
+            handler.require_app_audit_access(app_id, release_id)
+
+    def test_app_audit_access_rejects_other_users(self) -> None:
+        release_id, app_id = self.import_initial()
+        handler = object.__new__(server.Handler)
+        handler._conn = self.conn
+        handler.conn = lambda: self.conn
+        handler.user = lambda: "other_owner"
+        handler.role = lambda: "Owner"
+
+        with self.assertRaises(server.AuthzError):
+            handler.require_app_audit_access(app_id, release_id)
 
 
     def test_clone_records_per_app_origin(self) -> None:
