@@ -1440,8 +1440,8 @@
                 <label>社区包支持框架及版本<input id="communityFramework" class="input" value="${esc(community.framework_version || "")}" ${appMetaDisabled}></label>
               </div>
               ${isOwner() ? "" : `<div class="row" style="margin-top:11px;gap:24px;flex-wrap:wrap">
-                <label class="check"><input type="checkbox" id="sanityArmKylin" ${rmMetaDisabled} ${sanity.arm_kylin ? "checked" : ""}>ARM / Kylin Sanity 通过 <span class="small muted">（RM 填写）</span></label>
-                <label class="check"><input type="checkbox" id="sanityUbuntu" ${rmMetaDisabled} ${sanity.ubuntu ? "checked" : ""}>Ubuntu / 兼容性 Sanity 通过 <span class="small muted">（RM 填写）</span></label>
+                <label class="check"><input type="checkbox" id="sanityArmKylin" ${rmMetaDisabled} ${sanity.arm_kylin ? "checked" : ""}>ARM / Kylin Sanity <span class="small muted">（RM 填写）</span></label>
+                <label class="check"><input type="checkbox" id="sanityUbuntu" ${rmMetaDisabled} ${sanity.ubuntu ? "checked" : ""}>Ubuntu / 兼容性 Sanity <span class="small muted">（RM 填写）</span></label>
               </div>`}
             </div>
           </details>
