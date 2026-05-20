@@ -1422,27 +1422,26 @@
             </div>
           </details>
           <details class="section" open>
-            <summary><span class="chev">▶</span> 社区发布与 Sanity</summary>
-            <div class="section-body">
-              <p class="hint" style="margin-top:0">开发者社区发布信息 Owner / RM 均可填写；Sanity 结果仅 RM 可修改。这些字段会进入 QA 页的 Release Report。</p>
-              <div class="form">
-                <label>开发者社区发布情况<input id="communityRelease" class="input" value="${esc(community.release_status || "")}" ${appMetaDisabled}></label>
-                <label>社区包支持 Python 版本<input id="communityPython" class="input" value="${esc(community.python_version || "")}" ${appMetaDisabled}></label>
-                <label>社区包支持框架及版本<input id="communityFramework" class="input" value="${esc(community.framework_version || "")}" ${appMetaDisabled}></label>
-              </div>
-              <div class="row" style="margin-top:11px;gap:24px;flex-wrap:wrap">
-                <label class="check"><input type="checkbox" id="sanityArmKylin" ${rmMetaDisabled} ${sanity.arm_kylin ? "checked" : ""}>ARM / Kylin Sanity 通过 <span class="small muted">（RM 填写）</span></label>
-                <label class="check"><input type="checkbox" id="sanityUbuntu" ${rmMetaDisabled} ${sanity.ubuntu ? "checked" : ""}>Ubuntu / 兼容性 Sanity 通过 <span class="small muted">（RM 填写）</span></label>
-              </div>
-            </div>
-          </details>
-          <details class="section" open>
             <summary><span class="chev">▶</span> app_info 与 diff <span class="badge">${rel ? appInfoBadge(snap) : ""}</span></summary>
             <div class="section-body">
               <div class="src-line">app_info 来源：${esc(appInfoSource(snap))}</div>
               <input id="appInfoFile" type="file" accept=".json" hidden ${disabled}>
               ${appInfoActions}
               <div class="table"><table>${renderDiffs(snap)}</table></div>
+            </div>
+          </details>
+          <details class="section" open>
+            <summary><span class="chev">▶</span> 社区发布与 Sanity</summary>
+            <div class="section-body">
+              <div class="form">
+                <label>开发者社区发布情况<input id="communityRelease" class="input" value="${esc(community.release_status || "")}" ${appMetaDisabled}></label>
+                <label>社区包支持 Python 版本<input id="communityPython" class="input" value="${esc(community.python_version || "")}" ${appMetaDisabled}></label>
+                <label>社区包支持框架及版本<input id="communityFramework" class="input" value="${esc(community.framework_version || "")}" ${appMetaDisabled}></label>
+              </div>
+              ${isOwner() ? "" : `<div class="row" style="margin-top:11px;gap:24px;flex-wrap:wrap">
+                <label class="check"><input type="checkbox" id="sanityArmKylin" ${rmMetaDisabled} ${sanity.arm_kylin ? "checked" : ""}>ARM / Kylin Sanity 通过 <span class="small muted">（RM 填写）</span></label>
+                <label class="check"><input type="checkbox" id="sanityUbuntu" ${rmMetaDisabled} ${sanity.ubuntu ? "checked" : ""}>Ubuntu / 兼容性 Sanity 通过 <span class="small muted">（RM 填写）</span></label>
+              </div>`}
             </div>
           </details>
           <details class="section" open>
@@ -2026,10 +2025,13 @@
           python_version: $("communityPython").value.trim(),
           framework_version: $("communityFramework").value.trim(),
         },
-        sanity: {
-          arm_kylin: $("sanityArmKylin").checked,
-          ubuntu: $("sanityUbuntu").checked,
-        },
+        sanity: (() => {
+          const existing = (releaseSnap(app.id) || {}).sanity || {};
+          return {
+            arm_kylin: $("sanityArmKylin") ? $("sanityArmKylin").checked : !!existing.arm_kylin,
+            ubuntu: $("sanityUbuntu") ? $("sanityUbuntu").checked : !!existing.ubuntu,
+          };
+        })(),
         test_docs
       };
       if (confirmOwner) snapshotUpdate.owner_confirmed = true;
