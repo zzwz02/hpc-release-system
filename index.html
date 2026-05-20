@@ -299,6 +299,18 @@
   .dialog-card h2{padding:14px 16px;border-bottom:1px solid var(--border);background:#fafbfc;font-size:15px;}
   .dialog-body{padding:16px;}
   .dialog-actions{justify-content:flex-end;margin-top:14px;}
+  /* ---- release schedule ---- */
+  .schedule-box{max-height:260px;overflow:auto;}
+  .schedule-box table{font-size:13px;width:100%;}
+  .schedule-box th{padding:8px 12px;background:#fafbfc;position:sticky;top:0;z-index:1;}
+  .schedule-box td{padding:7px 12px;}
+  .schedule-box td.actions{white-space:nowrap;text-align:right;}
+  .schedule-box .input.sm{width:100%;}
+  .schedule-box .ver{font-weight:700;}
+  .schedule-box .empty-row td{color:var(--muted);text-align:center;padding:18px 12px;}
+  .schedule-box .past{color:var(--muted);}
+  .schedule-box .past .ver{color:var(--ink-2);}
+  .schedule-box .soon{color:var(--warn-fg);font-weight:700;}
   @media (max-width:1080px){.workspace,.form,.tcard-b,.qa-card-b{grid-template-columns:1fr;}}
 </style>
 </head>
@@ -337,6 +349,17 @@
         <div class="panel-head"><h2>MACA SDK 发布计划</h2></div>
         <div class="panel-body"><img src="assets/MACA_SDK_release_plan.jpg" alt="MACA SDK 发布计划" style="max-width:30%;height:auto;display:block;border-radius:8px;border:1px solid var(--border)"></div>
       </div> -->
+      <div id="scheduleePanel" class="panel" style="margin-top:16px">
+        <div class="panel-head">
+          <h2>发布时间线</h2>
+          <span class="count" id="scheduleCount"></span>
+          <span style="flex:1"></span>
+          <button id="scheduleAddBtn" class="btn sm primary" data-roles="RM">+ 新增</button>
+        </div>
+        <div class="panel-body" style="padding:0">
+          <div id="scheduleBox" class="schedule-box"></div>
+        </div>
+      </div>
       <div id="dashboardOwnerPanel" class="panel" style="margin-top:16px" hidden>
         <div class="panel-head"><h2 id="dashboardOwnerTitle">App 状态概览</h2><span class="count" id="dashboardOwnerCount"></span></div>
         <div class="panel-body"><div id="dashboardOwnerGrid"></div></div>
@@ -569,7 +592,7 @@
   </dialog>
 
   <script>
-    let state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null };
+    let state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, release_schedule: [] };
     let selectedApp = "";
     let autoRefreshTimer = null;
     let lastUserInputAt = 0;
@@ -667,6 +690,7 @@
       if (appDetailDirty && activeView() === "apps") return true;
       if (lateDecisionEditAppId && activeView() === "apps") return true;
       if (qaEditMode && activeView() === "qa") return true;
+      if (scheduleEditId && activeView() === "dashboard") return true;
       if (Date.now() - lastUserInputAt > 3000) return false;
       const tag = document.activeElement?.tagName;
       return ["INPUT", "TEXTAREA", "SELECT"].includes(tag);
@@ -784,6 +808,7 @@
       renderReleaseSelect();
       renderPhaseBanner();
       renderSummary();
+      renderSchedule();
       renderReleases();
       renderApps();
       if (!(options.preserveDetail && activeView() === "apps" && selectedApp)) renderDetail();
@@ -861,6 +886,106 @@
         card(docIncomplete, "Doc 未完成 App 数", docIncomplete ? "warn" : "ok") +
         qaCard;
       renderDashboardOwner(allRows);
+    }
+
+    let scheduleEditId = null; // entry id being edited, or "__new__" for the add row
+
+    function renderSchedule() {
+      const box = $("scheduleBox");
+      if (!box) return;
+      const isRM = currentUser().role === "RM";
+      const entries = state.release_schedule || [];
+      $("scheduleCount").textContent = entries.length ? `共 ${entries.length} 个版本` : "";
+      const cols = isRM ? 5 : 4;
+      const head = `<thead><tr>
+          <th style="width:25%">版本号</th>
+          <th style="width:25%">拉 branch 时间</th>
+          <th style="width:25%">Release 发布时间</th>
+          <th>备注</th>
+          ${isRM ? '<th style="width:120px;text-align:right">操作</th>' : ""}
+        </tr></thead>`;
+      const rows = [];
+      const today = new Date().toISOString().slice(0, 10);
+      for (const entry of entries) {
+        if (scheduleEditId === entry.id) {
+          rows.push(scheduleEditRow(entry, isRM));
+        } else {
+          rows.push(scheduleReadRow(entry, isRM, today));
+        }
+      }
+      if (isRM && scheduleEditId === "__new__") rows.push(scheduleEditRow(null, isRM));
+      if (!rows.length) rows.push(`<tr class="empty-row"><td colspan="${cols}">尚未维护发布时间线${isRM ? "，点击右上角“+ 新增”填入版本号、拉 branch 时间、发布时间。" : "。"}</td></tr>`);
+      box.innerHTML = `<table>${head}<tbody>${rows.join("")}</tbody></table>`;
+    }
+
+    function scheduleReadRow(entry, isRM, today) {
+      const rel = entry.release_at || "";
+      const cls = rel && rel < today ? "past" : "";
+      const soon = rel && rel >= today && daysUntil(rel) <= 14 ? "soon" : "";
+      const actions = isRM ? `<td class="actions">
+        <button class="btn sm" data-schedule-edit="${esc(entry.id)}">编辑</button>
+        <button class="btn sm danger" data-schedule-delete="${esc(entry.id)}">删除</button>
+      </td>` : "";
+      return `<tr class="${cls}">
+        <td class="ver">${esc(entry.version)}</td>
+        <td>${esc(entry.branch_cut_at || "—")}</td>
+        <td class="${soon}">${esc(rel || "—")}</td>
+        <td>${esc(entry.note || "")}</td>
+        ${actions}
+      </tr>`;
+    }
+
+    function scheduleEditRow(entry, isRM) {
+      const id = entry?.id || "";
+      return `<tr data-schedule-edit-row="${esc(id || "__new__")}">
+        <td><input class="input sm" data-schedule-field="version" value="${esc(entry?.version || "")}" placeholder="例：3.0.0"></td>
+        <td><input class="input sm" type="date" data-schedule-field="branch_cut_at" value="${esc(entry?.branch_cut_at || "")}"></td>
+        <td><input class="input sm" type="date" data-schedule-field="release_at" value="${esc(entry?.release_at || "")}"></td>
+        <td><input class="input sm" data-schedule-field="note" value="${esc(entry?.note || "")}" placeholder="选填"></td>
+        <td class="actions">
+          <button class="btn sm primary" data-schedule-save="${esc(id || "__new__")}">保存</button>
+          <button class="btn sm" data-schedule-cancel="1">取消</button>
+        </td>
+      </tr>`;
+    }
+
+    function daysUntil(dateStr) {
+      const target = new Date(dateStr + "T00:00:00");
+      const now = new Date();
+      now.setHours(0, 0, 0, 0);
+      return Math.round((target - now) / 86400000);
+    }
+
+    async function saveScheduleEntry(id) {
+      const row = document.querySelector(`tr[data-schedule-edit-row="${CSS.escape(id)}"]`);
+      if (!row) return;
+      const get = field => row.querySelector(`[data-schedule-field="${field}"]`)?.value || "";
+      const body = {
+        id: id === "__new__" ? "" : id,
+        version: get("version").trim(),
+        branch_cut_at: get("branch_cut_at"),
+        release_at: get("release_at"),
+        note: get("note").trim(),
+      };
+      if (!body.version) return alert("请填写版本号");
+      try {
+        await post("/api/release-schedule/upsert", body);
+        scheduleEditId = null;
+        await loadState();
+      } catch (e) {
+        alert("保存失败：" + e.message);
+      }
+    }
+
+    async function deleteScheduleEntry(id) {
+      const entry = (state.release_schedule || []).find(x => x.id === id);
+      if (!confirm(`确定删除发布时间线“${entry?.version || id}”？`)) return;
+      try {
+        await post("/api/release-schedule/delete", { id });
+        await loadState();
+      } catch (e) {
+        alert("删除失败：" + e.message);
+      }
     }
 
     function renderDashboardOwner(allRows) {
@@ -1976,6 +2101,16 @@
       $("loginBtn").onclick = login;
       $("logoutBtn").onclick = logout;
       $("refresh").onclick = () => loadState();
+      $("scheduleAddBtn").onclick = () => { scheduleEditId = "__new__"; renderSchedule(); };
+      $("scheduleBox").addEventListener("click", ev => {
+        const editId = ev.target.closest("[data-schedule-edit]")?.dataset.scheduleEdit;
+        if (editId) { scheduleEditId = editId; renderSchedule(); return; }
+        const delId = ev.target.closest("[data-schedule-delete]")?.dataset.scheduleDelete;
+        if (delId) { deleteScheduleEntry(delId); return; }
+        const saveId = ev.target.closest("[data-schedule-save]")?.dataset.scheduleSave;
+        if (saveId) { saveScheduleEntry(saveId); return; }
+        if (ev.target.closest("[data-schedule-cancel]")) { scheduleEditId = null; renderSchedule(); }
+      });
       $("release").onchange = () => {
         const target = $("release").value;
         if ((appDetailDirty || appDetailEditMode || lateDecisionEditAppId) && selectedApp &&
@@ -2125,7 +2260,7 @@
     async function logout() {
       await post("/api/logout", {});
       if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
-      state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, user: null };
+      state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, release_schedule: [], user: null };
       selectedApp = "";
       $("release").innerHTML = "";
       showLoggedOut();

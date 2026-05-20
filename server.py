@@ -456,6 +456,31 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     self.send_json({"ok": True, **meta})
                     return
+                if parsed.path == "/api/release-schedule/upsert":
+                    self.require_rm()
+                    body = self.json_body()
+                    entry = core.upsert_release_schedule(
+                        self.conn(),
+                        entry_id=body.get("id") or None,
+                        version=body.get("version", ""),
+                        branch_cut_at=body.get("branch_cut_at", ""),
+                        release_at=body.get("release_at", ""),
+                        note=body.get("note", ""),
+                        user=self.user(),
+                        role=self.role(),
+                    )
+                    self.send_json({"entry": entry})
+                    return
+                if parsed.path == "/api/release-schedule/delete":
+                    self.require_rm()
+                    body = self.json_body()
+                    if not body.get("id"):
+                        raise ValueError("id is required")
+                    ok = core.delete_release_schedule(self.conn(), body["id"], user=self.user(), role=self.role())
+                    if not ok:
+                        raise RuntimeError("entry not found")
+                    self.send_json({"ok": True})
+                    return
                 if parsed.path == "/api/app-info":
                     body = self.json_body()
                     conn = self.conn()
@@ -539,6 +564,7 @@ class Handler(BaseHTTPRequestHandler):
             "artifacts": [],
             "user": user,
             "qa_log": None,
+            "release_schedule": core.list_release_schedule(conn),
         }
         if release_id:
             core.refresh_missing_items(conn, release_id)

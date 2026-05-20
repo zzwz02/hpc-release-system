@@ -328,6 +328,18 @@ def init_db(conn: sqlite3.Connection) -> None:
             username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
             created_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS release_schedule (
+            id TEXT PRIMARY KEY,
+            version TEXT NOT NULL,
+            branch_cut_at TEXT NOT NULL DEFAULT '',
+            release_at TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            updated_by TEXT NOT NULL DEFAULT ''
+        );
         """
     )
     ensure_default_user(conn)
@@ -436,6 +448,7 @@ def clear_business_data(conn: sqlite3.Connection, *, user: str = "admin", role: 
         conn.execute("DELETE FROM snapshots")
         conn.execute("DELETE FROM releases")
         conn.execute("DELETE FROM apps")
+        conn.execute("DELETE FROM release_schedule")
         conn.execute("DELETE FROM audit")
         ensure_default_user(conn)
         audit(conn, "数据库已清空，默认账号已保留", user=user, role=role)
@@ -885,6 +898,116 @@ def update_release_deadlines(
             event="update_release_settings",
         )
     return get_release(conn, release_id)
+
+
+def normalize_schedule_date(value: str | None) -> str:
+    """Normalize a schedule date string to ``YYYY-MM-DD``.
+
+    Schedule entries store calendar dates only (no time-of-day); strip any
+    trailing time component so the table renders cleanly.
+    """
+    text = (value or "").strip()
+    if not text:
+        return ""
+    text = text.replace("T", " ").split(" ")[0]
+    try:
+        return dt.datetime.strptime(text, "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError(f"Invalid date: {value!r}; expected YYYY-MM-DD") from exc
+
+
+def list_release_schedule(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT * FROM release_schedule "
+        "ORDER BY CASE WHEN branch_cut_at = '' THEN 1 ELSE 0 END, branch_cut_at, "
+        "         CASE WHEN release_at = '' THEN 1 ELSE 0 END, release_at, created_at"
+    )
+    return [dict(row) for row in rows]
+
+
+def upsert_release_schedule(
+    conn: sqlite3.Connection,
+    *,
+    entry_id: str | None,
+    version: str,
+    branch_cut_at: str,
+    release_at: str,
+    note: str = "",
+    user: str = "system",
+    role: str = "system",
+) -> dict[str, Any]:
+    version = (version or "").strip()
+    if not version:
+        raise ValueError("版本号不能为空")
+    branch_cut = normalize_schedule_date(branch_cut_at)
+    release_date = normalize_schedule_date(release_at)
+    if branch_cut and release_date and branch_cut > release_date:
+        raise ValueError("拉 branch 时间不能晚于发布时间")
+    note = (note or "").strip()
+    with transaction(conn):
+        existing = None
+        if entry_id:
+            row = conn.execute("SELECT * FROM release_schedule WHERE id = ?", (entry_id,)).fetchone()
+            existing = dict(row) if row else None
+        if existing:
+            conn.execute(
+                "UPDATE release_schedule SET version = ?, branch_cut_at = ?, release_at = ?, note = ?, "
+                "updated_at = ?, updated_by = ? WHERE id = ?",
+                (version, branch_cut, release_date, note, now(), user, entry_id),
+            )
+            audit(
+                conn,
+                f"更新发布时间线：{version}",
+                user=user,
+                role=role,
+                event="update_release_schedule",
+                detail=field_diff(
+                    existing,
+                    {"version": version, "branch_cut_at": branch_cut, "release_at": release_date, "note": note},
+                    {"version": "版本号", "branch_cut_at": "拉 branch 时间", "release_at": "发布时间", "note": "备注"},
+                ),
+            )
+            final_id = entry_id
+        else:
+            final_id = entry_id or new_id("sched")
+            conn.execute(
+                "INSERT INTO release_schedule(id, version, branch_cut_at, release_at, note, "
+                "created_at, created_by, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, '', '')",
+                (final_id, version, branch_cut, release_date, note, now(), user),
+            )
+            audit(
+                conn,
+                f"新增发布时间线：{version}",
+                user=user,
+                role=role,
+                event="create_release_schedule",
+                detail={"version": version, "branch_cut_at": branch_cut, "release_at": release_date, "note": note},
+            )
+        row = conn.execute("SELECT * FROM release_schedule WHERE id = ?", (final_id,)).fetchone()
+        return dict(row)
+
+
+def delete_release_schedule(
+    conn: sqlite3.Connection,
+    entry_id: str,
+    *,
+    user: str = "system",
+    role: str = "system",
+) -> bool:
+    with transaction(conn):
+        row = conn.execute("SELECT version FROM release_schedule WHERE id = ?", (entry_id,)).fetchone()
+        if not row:
+            return False
+        conn.execute("DELETE FROM release_schedule WHERE id = ?", (entry_id,))
+        audit(
+            conn,
+            f"删除发布时间线：{row['version']}",
+            user=user,
+            role=role,
+            event="delete_release_schedule",
+            detail={"id": entry_id, "version": row["version"]},
+        )
+        return True
 
 
 def release_is_locked(conn: sqlite3.Connection, release_id: str) -> bool:
