@@ -818,7 +818,8 @@
       renderSchedule();
       renderReleases();
       renderApps();
-      if (!(options.preserveDetail && activeView() === "apps" && selectedApp)) renderDetail();
+      const editingDetail = appDetailEditMode || appDetailDirty || !!lateDecisionEditAppId;
+      if (!(options.preserveDetail && activeView() === "apps" && selectedApp && editingDetail)) renderDetail();
       renderQa();
       renderQaReports();
       renderAdmin();
