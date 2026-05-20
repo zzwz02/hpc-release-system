@@ -198,6 +198,33 @@ class CoreWorkflowTests(unittest.TestCase):
             self.assertEqual(core.current_phase({"app_freeze_deadline": "2026-05-01 00:00", "doc_deadline": "2026-05-10 00:00", "released_locked": False}), "after_doc_deadline")
             self.assertEqual(core.current_phase({"app_freeze_deadline": "", "doc_deadline": "", "released_locked": True}), "released_locked")
 
+    def test_can_policy_matches_phase_action_table(self) -> None:
+        # Locked: nothing is allowed.
+        for action in ("new_app_release", "edit_app_info", "lower_decision", "qa_set_status"):
+            self.assertFalse(core.can("released_locked", action))
+        # before_app_freeze: every action allowed (no late-phase restriction).
+        for action in ("new_app_release", "new_app_non_release",
+                       "raise_to_release", "lower_decision",
+                       "edit_app_info", "expand_qa_scope",
+                       "edit_snapshot", "qa_set_status", "qa_upload_log"):
+            self.assertTrue(core.can("before_app_freeze", action), action)
+        # after_app_freeze: no new release-decision apps; no raise-to-release;
+        # no QA-scope expansion; doc edits still open.
+        self.assertFalse(core.can("after_app_freeze", "new_app_release"))
+        self.assertFalse(core.can("after_app_freeze", "raise_to_release"))
+        self.assertFalse(core.can("after_app_freeze", "expand_qa_scope"))
+        self.assertTrue(core.can("after_app_freeze", "edit_snapshot"))
+        self.assertTrue(core.can("after_app_freeze", "edit_app_info"))
+        self.assertTrue(core.can("after_app_freeze", "lower_decision"))
+        # after_doc_deadline: docs frozen; only QA + non-release additions + downgrade.
+        self.assertFalse(core.can("after_doc_deadline", "edit_snapshot"))
+        self.assertFalse(core.can("after_doc_deadline", "edit_app_info"))
+        self.assertTrue(core.can("after_doc_deadline", "qa_set_status"))
+        self.assertTrue(core.can("after_doc_deadline", "lower_decision"))
+        self.assertTrue(core.can("after_doc_deadline", "new_app_non_release"))
+        # Unknown actions fail closed.
+        self.assertFalse(core.can("before_app_freeze", "nope_not_an_action"))
+
     def test_update_release_settings_renames_and_normalizes_date_deadlines(self) -> None:
         release_id, _ = self.import_initial()
         release = core.update_release_deadlines(
@@ -646,19 +673,26 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
         results = core.refresh_missing_items(self.conn, release_id)
         items = results[app_id]
-        self.assertTrue(any("Owner 未确认" in x for x in items))
-        self.assertTrue(any("QA 未测试" in x for x in items))
+        texts = [core.missing_item_text(it) for it in items]
+        self.assertTrue(any("Owner 未确认" in t for t in texts))
+        self.assertTrue(any("QA 未测试" in t for t in texts))
+        # QA-kind entries must be tagged so _docs_gate_items can skip them
+        # without relying on text prefixes.
+        qa_kinds = [core.missing_item_kind(it) for it in items if "QA 未测试" in core.missing_item_text(it)]
+        self.assertEqual(qa_kinds, ["qa"])
 
     def test_missing_items_requires_app_type_and_short_description(self) -> None:
         release_id, app_id = self.import_initial()
         core.update_snapshot(self.conn, release_id, app_id, lambda s: s.update({"type": "", "description": ""}))
         items = core.refresh_missing_items(self.conn, release_id)[app_id]
-        self.assertIn("缺少 App类型", items)
-        self.assertIn("缺少描述（30字内）", items)
+        texts = [core.missing_item_text(it) for it in items]
+        self.assertIn("缺少 App类型", texts)
+        self.assertIn("缺少描述（30字内）", texts)
 
         core.update_snapshot(self.conn, release_id, app_id, lambda s: s.update({"type": "分子动力学", "description": "a" * 31}))
         items = core.refresh_missing_items(self.conn, release_id)[app_id]
-        self.assertIn("描述超过30字", items)
+        texts = [core.missing_item_text(it) for it in items]
+        self.assertIn("描述超过30字", texts)
 
     def test_normalize_app_description_rejects_over_30_chars(self) -> None:
         self.assertEqual(core.normalize_app_description("  简短描述  "), "简短描述")
@@ -679,6 +713,42 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         core.qa_set_status(self.conn, release_id, app_id, "qa_passed")
         items = core.refresh_missing_items(self.conn, release_id)[app_id]
         self.assertEqual(items, [])
+
+    def test_docs_gate_does_not_bypass_owner_added_path_starting_with_qa(self) -> None:
+        # Regression: _docs_gate_items used to filter by the "QA " text prefix,
+        # so an owner-added test path called "QA sanity" would have its
+        # gate-blocking entries silently dropped and the app would qualify for
+        # final release with empty test fields.
+        release_id, app_id = self.import_initial()
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        core.update_snapshot(self.conn, release_id, app_id, _fill_ready)
+
+        def add_qa_named_doc(snap: dict) -> None:
+            snap.setdefault("test_docs", []).append({
+                "id": "td_qa_sanity",
+                "path": "QA sanity",
+                "name": "QA sanity",
+                "command": "echo run",
+                "dataset": "",
+                "content": "",
+                "preconditions": "",
+                "result_view": "",
+                "pass_criteria": "",
+                "coverage": "",
+                "owner_added": True,
+                "stale": False,
+                "obsolete": False,
+            })
+        core.update_snapshot(self.conn, release_id, app_id, add_qa_named_doc)
+        core.qa_set_status(self.conn, release_id, app_id, "qa_passed")
+        snapshot = core.refresh_missing_items(self.conn, release_id)
+        items = snapshot[app_id]
+        doc_blockers = core._docs_gate_items(core.get_release(self.conn, release_id)["snapshots"][app_id])
+        # Both the 4 missing test-doc fields land in items, and each carries
+        # the "QA sanity" path; all of them must keep blocking the doc gate.
+        self.assertTrue(any("QA sanity 缺少" in core.missing_item_text(it) for it in items))
+        self.assertTrue(all(core.missing_item_kind(it) == "doc" for it in doc_blockers))
+        self.assertTrue(any("QA sanity 缺少" in core.missing_item_text(it) for it in doc_blockers))
 
     # --- create_release_from_previous ---
 

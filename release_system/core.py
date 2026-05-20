@@ -162,6 +162,54 @@ def current_phase(release: dict[str, Any]) -> str:
     return "before_app_freeze"
 
 
+PHASES = ("before_app_freeze", "after_app_freeze", "after_doc_deadline", "released_locked")
+
+# Single source of truth for "what is allowed in each release phase". Entry
+# points (core helpers + server handlers) consult this table instead of
+# re-deriving rules from is_before(...) checks; that way every action's phase
+# gating stays consistent and changes only need to land here.
+_PHASE_POLICY: dict[str, set[str]] = {
+    "before_app_freeze": {
+        "new_app_release", "new_app_non_release",
+        "raise_to_release", "lower_decision",
+        "edit_app_info", "expand_qa_scope",
+        "edit_snapshot", "qa_set_status", "qa_upload_log",
+    },
+    "after_app_freeze": {
+        "new_app_non_release",
+        "lower_decision",
+        "edit_app_info",
+        "edit_snapshot", "qa_set_status", "qa_upload_log",
+    },
+    "after_doc_deadline": {
+        "new_app_non_release",
+        "lower_decision",
+        "qa_set_status", "qa_upload_log",
+    },
+    "released_locked": set(),
+}
+
+
+def can(release_or_phase: dict[str, Any] | str, action: str) -> bool:
+    """True if *action* is allowed in the given release's current phase.
+
+    Accepts either a release dict (phase is derived) or a phase string. Unknown
+    actions return False so a typo at a call site fails closed rather than
+    silently allowing the write.
+    """
+    if isinstance(release_or_phase, dict):
+        phase = current_phase(release_or_phase)
+    else:
+        phase = str(release_or_phase)
+    return action in _PHASE_POLICY.get(phase, set())
+
+
+def require_can(release: dict[str, Any], action: str, message: str) -> None:
+    """Raise RuntimeError with *message* if the release's phase forbids *action*."""
+    if not can(release, action):
+        raise RuntimeError(message)
+
+
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
@@ -1316,7 +1364,7 @@ def _initial_snapshot_for_future_release(snapshot: dict[str, Any], target_releas
     if (
         target_release
         and future.get("release_decision") == "release"
-        and not is_before(target_release.get("app_freeze_deadline", ""))
+        and not can(target_release, "new_app_release")
     ):
         future["release_decision"] = "cicd_only"
     for test_doc in future.get("test_docs", []):
@@ -1347,8 +1395,11 @@ def add_new_app_request(
     release = get_release(conn, release_id)
     if release.get("released_locked"):
         raise RuntimeError("Release 已最终锁定，不可新增 app")
-    if release_decision == "release" and not is_before(release.get("app_freeze_deadline", "")):
-        raise RuntimeError("已过 app 冻结 deadline，不可再新增以 release 状态进入本期的 app")
+    intended_action = "new_app_release" if release_decision == "release" else "new_app_non_release"
+    if not can(release, intended_action):
+        if release_decision == "release":
+            raise RuntimeError("已过 app 冻结 deadline，不可再新增以 release 状态进入本期的 app")
+        raise RuntimeError("当前阶段不允许新增 app")
     duplicate = conn.execute(
         "SELECT id FROM apps WHERE git_url = ? AND git_branch = ?",
         (git_url, git_branch),
@@ -1565,8 +1616,8 @@ def update_snapshot(
         release = get_release(conn, release_id)
         if release.get("released_locked"):
             raise RuntimeError("Release 已最终锁定，不可修改")
-        if not skip_doc_deadline and not is_before(release.get("doc_deadline", "")):
-            raise RuntimeError("已过 doc deadline，不可再修改文档/表单信息")
+        if not skip_doc_deadline:
+            require_can(release, "edit_snapshot", "已过 doc deadline，不可再修改文档/表单信息")
         snapshot = release["snapshots"][app_id]
         mutator(snapshot)
         save_snapshot(conn, release_id, app_id, snapshot)
@@ -1605,7 +1656,7 @@ def sync_decision_to_later_releases(
             if snapshot is None:
                 result["skipped"].append({"release_id": rid, "release_name": r["name"], "reason": "本 release 无此 app"})
                 continue
-            if decision == "release" and not is_before(release.get("app_freeze_deadline", "")):
+            if decision == "release" and not can(release, "raise_to_release"):
                 result["skipped"].append({"release_id": rid, "release_name": r["name"], "reason": "已过 app freeze，无法升回 release"})
                 continue
             if snapshot.get("release_decision") != decision:
@@ -1657,12 +1708,11 @@ def apply_app_info(
     release = get_release(conn, release_id)
     if release.get("released_locked"):
         raise RuntimeError("Release 已最终锁定，不可上传 app_info")
-    if not is_before(release.get("doc_deadline", "")):
-        raise RuntimeError("已过 doc deadline，不可再上传 app_info")
+    require_can(release, "edit_app_info", "已过 doc deadline，不可再上传 app_info")
     snapshot = release["snapshots"][app_id]
     was_confirmed = bool(snapshot.get("owner_confirmed"))
     parsed = parse_app_info(raw)
-    if snapshot.get("release_decision") == "release" and not is_before(release.get("app_freeze_deadline", "")):
+    if snapshot.get("release_decision") == "release" and not can(release, "expand_qa_scope"):
         current_parsed = (snapshot.get("app_info") or {}).get("parsed")
         if current_parsed is not None:
             additions = _qa_scope_additions(current_parsed, parsed)
@@ -1734,33 +1784,71 @@ def apply_app_info(
     return snapshot
 
 
-def missing_items_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
-    """Readiness and final-release gate items shown to RM/owners."""
+def missing_item_text(item: Any) -> str:
+    """Display text for a missing_items entry.
+
+    Items are stored as ``{"kind": "doc"|"qa", "text": str}``. Older snapshots
+    or legacy callers may still pass bare strings; both are handled here so
+    downstream display / equality checks keep working through any rolling
+    migration.
+    """
+    if isinstance(item, dict):
+        return str(item.get("text", ""))
+    return str(item)
+
+
+def missing_item_kind(item: Any) -> str:
+    """Return the kind of a missing_items entry (``"doc"`` or ``"qa"``).
+
+    Falls back to inspecting the text prefix when given a legacy string item,
+    so an old snapshot that wasn't refreshed yet still gates correctly.
+    """
+    if isinstance(item, dict):
+        return str(item.get("kind", "doc"))
+    return "qa" if str(item).startswith("QA ") else "doc"
+
+
+def missing_items_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[dict[str, str]]:
+    """Readiness and final-release gate items shown to RM/owners.
+
+    Each entry is ``{"kind": "doc"|"qa", "text": str}``. ``doc`` entries
+    block ``_qualifies_for_final``; ``qa`` entries are informational and do
+    not (QA status itself is the gate). Splitting by kind avoids the
+    string-prefix coupling that broke when an owner named a test doc
+    starting with "QA ".
+    """
     decision = normalize_release_decision(snapshot.get("release_decision"))
     if decision != "release":
         return []
-    missing: list[str] = []
+    missing: list[dict[str, str]] = []
+
+    def add_doc(text: str) -> None:
+        missing.append({"kind": "doc", "text": text})
+
+    def add_qa(text: str) -> None:
+        missing.append({"kind": "qa", "text": text})
+
     if not snapshot.get("owners"):
-        missing.append("缺少 owner")
+        add_doc("缺少 owner")
     if not app.get("git_url"):
-        missing.append("缺少 Gerrit URL")
+        add_doc("缺少 Gerrit URL")
     if not app.get("git_branch"):
-        missing.append("缺少 branch")
+        add_doc("缺少 branch")
     if not (snapshot.get("official_name") or "").strip():
-        missing.append("缺少官方名称")
+        add_doc("缺少官方名称")
     if not (snapshot.get("type") or "").strip():
-        missing.append("缺少 App类型")
+        add_doc("缺少 App类型")
     description = (snapshot.get("description") or "").strip()
     if not description:
-        missing.append("缺少描述（30字内）")
+        add_doc("缺少描述（30字内）")
     elif len(description) > MAX_APP_DESCRIPTION_CHARS:
-        missing.append("描述超过30字")
+        add_doc("描述超过30字")
     if not snapshot.get("app_info"):
-        missing.append("缺少可追溯 AppInfoSnapshot")
+        add_doc("缺少可追溯 AppInfoSnapshot")
     if not snapshot.get("version"):
-        missing.append("缺少 对应官方版本")
+        add_doc("缺少 对应官方版本")
     if not snapshot.get("x86_chips"):
-        missing.append("缺少 X86支持芯片系列")
+        add_doc("缺少 X86支持芯片系列")
     if normalize_doc_target(snapshot.get("doc_target")) in DOC_TARGETS:
         doc = snapshot.get("doc", {})
         required = {
@@ -1771,24 +1859,24 @@ def missing_items_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[str
         }
         for key, label in required.items():
             if not doc.get(key):
-                missing.append(f"缺少{label}")
+                add_doc(f"缺少{label}")
     for doc in snapshot.get("test_docs", []):
         if doc.get("obsolete"):
             continue
         if doc.get("owner_added") and not doc.get("command"):
-            missing.append(f"{doc['path']} 缺少 owner-added 测试命令")
+            add_doc(f"{doc['path']} 缺少 owner-added 测试命令")
         for key, label in {"dataset": "测试数据集", "content": "测试内容", "result_view": "结果查看方式", "pass_criteria": "通过标准"}.items():
             if not doc.get(key):
-                missing.append(f"{doc['path']} 缺少{label}")
+                add_doc(f"{doc['path']} 缺少{label}")
         if doc.get("stale"):
-            missing.append(f"{doc['path']} 测试说明 stale")
+            add_doc(f"{doc['path']} 测试说明 stale")
     if not snapshot.get("owner_confirmed"):
-        missing.append("Owner 未确认 doc")
+        add_doc("Owner 未确认 doc")
     qa_status = snapshot.get("qa_status", "not_checked")
     if qa_status == "not_checked":
-        missing.append("QA 未测试")
+        add_qa("QA 未测试")
     elif qa_status == "cannot_release":
-        missing.append("QA 标注为不可发布")
+        add_qa("QA 标注为不可发布")
     return missing
 
 
@@ -2372,8 +2460,13 @@ def _qualifies_for_final(snapshot: dict[str, Any]) -> bool:
     return False
 
 
-def _docs_gate_items(snapshot: dict[str, Any]) -> list[str]:
-    return [item for item in snapshot.get("missing_items", []) if not str(item).startswith("QA ")]
+def _docs_gate_items(snapshot: dict[str, Any]) -> list[dict[str, str]]:
+    """Doc-gate-blocking items from missing_items: everything except QA kind.
+
+    Filters by ``kind`` for structured entries; falls back to the legacy
+    "QA " text-prefix rule for any string entries still in stale snapshots.
+    """
+    return [item for item in snapshot.get("missing_items", []) if missing_item_kind(item) != "qa"]
 
 
 def md_title(title: str, level: int = 1) -> str:
@@ -2499,7 +2592,7 @@ def _not_releasable_reason(snapshot: dict[str, Any]) -> str:
     if decision != "release":
         return f"Release决策为 {decision}"
     missing = snapshot.get("missing_items", [])
-    return "；".join(missing) if missing else "未满足发布条件"
+    return "；".join(missing_item_text(m) for m in missing) if missing else "未满足发布条件"
 
 
 def render_manager_review_csv(

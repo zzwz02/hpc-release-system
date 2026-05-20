@@ -525,9 +525,10 @@
       <div class="panel">
         <div class="panel-head"><h2>清空数据库</h2></div>
         <div class="panel-body">
-          <p class="hint" style="margin-top:0">清空数据库会先备份当前 SQLite 文件，然后删除 app、release、snapshot、artifact 和审计数据；默认账号会保留。</p>
+          <p class="hint" style="margin-top:0">清空数据库会先备份当前 SQLite 文件，然后删除 app、release、snapshot、artifact 和审计数据；默认账号会保留。需重新输入 admin 密码确认。</p>
           <div class="row" style="margin-top:11px">
             <input id="clearConfirm" class="input" placeholder="输入：CLEAR_DATABASE" style="min-width:230px">
+            <input id="clearPassword" class="input" type="password" placeholder="再次输入 admin 密码" style="min-width:230px" autocomplete="current-password">
             <button class="btn danger" id="clearDb">备份并清空数据库</button>
           </div>
         </div>
@@ -1142,7 +1143,15 @@
       return `<span class="app-dot ${cls} ${extraClass}" title="${esc(label)}"></span>`;
     }
     function qaOk(snap) { return ["qa_passed", "has_issues"].includes(snap?.qa_status || ""); }
-    function docsItems(snap) { return (snap?.missing_items || []).filter(item => !String(item).startsWith("QA ")); }
+    function missingItemKind(item) {
+      if (item && typeof item === "object") return item.kind || "doc";
+      return String(item || "").startsWith("QA ") ? "qa" : "doc";
+    }
+    function missingItemText(item) {
+      if (item && typeof item === "object") return item.text || "";
+      return String(item || "");
+    }
+    function docsItems(snap) { return (snap?.missing_items || []).filter(item => missingItemKind(item) !== "qa"); }
     function docsOk(snap) { return isReleaseSnap(snap) && docsItems(snap).length === 0; }
     function docsPill(snap) {
       if (!isReleaseSnap(snap)) return "";
@@ -1316,9 +1325,9 @@
       if (rel) {
         const todo = docsItems(snap);
         const prog = ownerProgress(snap);
-        const todoItems = todo.map(it => `<div class="check-item"><span class="box"></span><span class="ct">${esc(it)}</span></div>`).join("");
+        const todoItems = todo.map(it => `<div class="check-item"><span class="box"></span><span class="ct">${esc(missingItemText(it))}</span></div>`).join("");
         if (todo.length) {
-          const preview = todo.slice(0, 3).map(it => `<span class="todo-chip" title="${esc(it)}">${esc(it)}</span>`).join("");
+          const preview = todo.slice(0, 3).map(it => `<span class="todo-chip" title="${esc(missingItemText(it))}">${esc(missingItemText(it))}</span>`).join("");
           topInfo = `<details class="checklist compact" data-sec="todo">
             <summary>
               <div class="checklist-h">
@@ -2082,7 +2091,7 @@
         const updated = releaseSnap(app.id) || result.snapshot || {};
         const missing = updated.missing_items || result.missing_items || [];
         let msg = "Owner 确认已提交。";
-        msg += missing.length ? `仍有 ${missing.length} 个待办/门禁项：\n\n- ${missing.join("\n- ")}` : "当前无待办/门禁项。";
+        msg += missing.length ? `仍有 ${missing.length} 个待办/门禁项：\n\n- ${missing.map(missingItemText).join("\n- ")}` : "当前无待办/门禁项。";
         alert(msg + syncNote);
       }
     }
@@ -2220,10 +2229,17 @@
       };
       document.querySelectorAll(".download").forEach(b => b.onclick = () => showArtifact(b.dataset.kind));
       $("clearDb").onclick = async () => {
+        const password = $("clearPassword").value;
+        if (!password) { alert("请重新输入 admin 密码以确认"); return; }
         if (!confirm("确认要备份并清空数据库？")) return;
-        const r = await post("/api/admin/clear-db", { confirm: $("clearConfirm").value });
-        $("adminLog").textContent = "已清空，备份文件：" + r.backup;
-        await loadState();
+        try {
+          const r = await post("/api/admin/clear-db", { confirm: $("clearConfirm").value, password });
+          $("adminLog").textContent = "已清空，备份文件：" + r.backup;
+          $("clearPassword").value = "";
+          await loadState();
+        } catch (e) {
+          alert("清空失败：" + e.message);
+        }
       };
       $("newApp").onclick = openNewAppDialog;
       $("newAppCancel").onclick = () => $("newAppDialog").close();

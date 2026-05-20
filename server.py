@@ -163,6 +163,19 @@ class Handler(BaseHTTPRequestHandler):
                         raise RuntimeError("确认文本必须是：清空数据库 或 CLEAR_DATABASE")
                     username = self.user()
                     role = self.role()
+                    # Defence-in-depth: a session cookie alone is not enough to
+                    # wipe the business data — require the admin to re-enter
+                    # their password in the confirmation form. Blocks a hijacked
+                    # tab / forgotten session from triggering an irreversible
+                    # action with one click.
+                    password = str(body.get("password") or "")
+                    if not password:
+                        raise AuthzError("清空数据库需要重新输入 admin 密码")
+                    row = self.conn().execute(
+                        "SELECT password_hash FROM users WHERE username = ?", (username,)
+                    ).fetchone()
+                    if not row or not core.verify_password(password, row["password_hash"]):
+                        raise AuthzError("admin 密码不正确")
                     self._close_conn()  # release before backup copy
                     backup = backup_database()
                     core.clear_business_data(self.conn(), user=username, role=role)
@@ -316,11 +329,25 @@ class Handler(BaseHTTPRequestHandler):
                             if key in app_update and app.get(key) != app_update[key]:
                                 app[key] = app_update[key]
                                 repo_changed = True
-                        if repo_changed:
-                            core.save_app(conn, app)
-                            core.audit(conn, "修改 Gerrit 信息", user=actor, role=role,
-                                       app_id=aid, release_id=rid, event="update_app_repo",
-                                       detail=core.field_diff(repo_before, app, {"git_url": "Gerrit URL", "git_branch": "Branch"}))
+                        if not repo_changed:
+                            return
+                        # Reject collisions with another app's (git_url, git_branch).
+                        # Without this, RM could rename app A's repo info onto app B's
+                        # and break the invariant add_new_app_request relies on for
+                        # duplicate detection — leaving two apps that look identical
+                        # to every Gerrit-fetch and CSV-export code path.
+                        collision = conn.execute(
+                            "SELECT id FROM apps WHERE git_url = ? AND git_branch = ? AND id != ?",
+                            (app.get("git_url", ""), app.get("git_branch", ""), aid),
+                        ).fetchone()
+                        if collision:
+                            raise RuntimeError(
+                                f"该 Gerrit URL + branch 已被 app {collision['id']} 占用，不能改成相同值"
+                            )
+                        core.save_app(conn, app)
+                        core.audit(conn, "修改 Gerrit 信息", user=actor, role=role,
+                                   app_id=aid, release_id=rid, event="update_app_repo",
+                                   detail=core.field_diff(repo_before, app, {"git_url": "Gerrit URL", "git_branch": "Branch"}))
 
                     def mutate(snapshot: dict) -> None:
                         name_for_msg = snapshot.get("official_name") or aid

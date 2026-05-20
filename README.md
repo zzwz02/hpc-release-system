@@ -148,37 +148,36 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\static_checks.ps1
 
 ### 数据正确性
 
-4. **文档类闸门用字符串前缀 `"QA "` 区分 QA 项** —— `_docs_gate_items` 依赖 `missing_items` 文案是否以 "QA " 开头。如果 owner 自己加的 test_doc path 叫 `QA sanity`，它的 missing 文案会被误判成 QA 项绕过 doc gate。  
-   - 建议：把 `missing_items` 改成结构化 `[{kind: "doc" | "qa", text}]`，前后端按 kind 过滤。
+4. **多个写入路径"读-改-写"不在同一事务里（TOCTOU 覆盖）** —— `apply_app_info`、`qa_set_status`、`/api/apps/update` 的 mutate 路径都是先 `get_release(...)` 读快照（事务外），在内存里 mutate，最后才 `with transaction: save_snapshot(...)`。两个用户并发上传 / 改状态时，后写的会基于过期快照覆盖先写的，并发越多丢得越多。`refresh_missing_items` 在 GET 路径上跑（见上面第 1 条）会进一步放大这个窗口 —— 任何 5s 轮询的并发 GET 都可能把 Owner 正在写的字段刷回旧值。  
+   - 建议：把读 + 校验 + 写包进同一个 `transaction(conn)`，必要时用 SELECT 加版本号字段实现乐观锁。
 5. **`app_info` 重传不主动通知 QA** —— Owner 重传 / Gerrit 拉取后会自动失效 `owner_confirmed`（见 `apply_app_info`），但 `qa_status` 不会变；QA 不会被告知"app 代码已变动，需复测"。  
    - 建议：用 commit id 判定。Gerrit 拉取自动记录 commit_id；QA 标注状态时记录所测构建的 commit_id。两者不一致即给 snapshot 打 `qa_stale` 标记，QA 页 + 最终闸门按"需复测"处理。owner 上传缺 commit_id 时应保守提示。
 6. **final lock 无阶段保护** —— RM 可对仍处于 `before_app_freeze` 的 release 直接最终锁定，把没冻结范围、Owner 没确认、QA 没跑的 snapshot 当成正式产物写出。  
    - 建议：要求至少 `after_doc_deadline`，或所有 `release` 决策的 app 都已 `owner_confirmed` + `qa_status≠not_checked`。
 7. **`update_release_deadlines` 允许把 deadline 改成过去** —— RM 把 doc deadline 改成昨天，整 release 立即进入 `after_doc_deadline`，所有 Owner / RM 的写权限突然冻结，没有任何前置警告。  
    - 建议：UI 保存 deadline 前对比当前 phase 给出弹窗；或后端在 audit 写明 phase 变化。
-8. **新增 app 时只按精确 `(git_url, git_branch)` 查重** —— `ssh://gerrit/foo` 与 `ssh://gerrit/foo/`、大小写、是否带 `.git` 后缀都会被当成不同的 app。  
+8. **新增 app 时只按精确 `(git_url, git_branch)` 查重；RM 改 git 信息时完全不查重** —— `ssh://gerrit/foo` 与 `ssh://gerrit/foo/`、大小写、是否带 `.git` 后缀都会被当成不同的 app；`/api/apps/update` 的 `update_repo_if_needed` 没有任何 collision check（已修：现在会拒绝改成已存在的 `(git_url, git_branch)`）。  
    - 建议：SELECT 前归一化（小写、去尾斜杠、去 `.git`）。
 9. **`delete_app` 只阻拦"已锁 release 中的 app"** —— 在 `after_doc_deadline`、QA 正在跑的 release 中删 app，snapshot 直接消失，预览 artifact 还在。建议在非空非 stopped 状态下拒绝删除或要求 RM 二次确认。
-10. **`sync_decision_to_later_releases` 与主更新非原子** —— `/api/apps/update` 的本地 snapshot commit 与 sync 不在同一事务；sync 中途失败时本地已生效，后续 release 部分同步部分没同步。
 
 ### 安全
 
-11. **`/api/state` 把全部 app + 全部 snapshot 返给所有登录角色** —— QA 也能看到全部 Owner 草稿、Gerrit URL、QA issue note。对多团队场景是数据泄露面。  
+10. **`/api/state` 把全部 app + 全部 snapshot 返给所有登录角色** —— QA 也能看到全部 Owner 草稿、Gerrit URL、QA issue note。对多团队场景是数据泄露面。  
     - 建议：按角色裁剪 payload（QA 只看 release-decision=release + 必要字段）。
-12. **会话不过期** —— session token 创建后无 TTL，只有登出才失效；cookie 没设 `Secure`；登录无频率限制；默认账号明文口令。生产部署前必须修。
-13. **未设置 CSP / X-Frame-Options / X-Content-Type-Options** —— 静态资源 + JSON 响应都没加。
+11. **会话不过期** —— session token 创建后无 TTL，只有登出才失效；cookie 没设 `Secure`；登录无频率限制；默认账号明文口令。生产部署前必须修。
+12. **未设置 CSP / X-Frame-Options / X-Content-Type-Options** —— 静态资源 + JSON 响应都没加。
 
 ### 集成 / 运维
 
-14. **Gerrit 拉取依赖本地 `git archive --remote` + SSH 凭据**；失败时 `subprocess` stderr 摘要未带出到前端，只能看到笼统的 `CalledProcessError`。
-15. **Gerrit 推送只输出推送计划骨架**，未执行真实 `git push`。
-16. **审计 log 与 backup 文件不清理** —— `audit` 表无 retention；`release_system_admin_backup_*.sqlite` 每次 admin 操作都写一份，永不清理。
+13. **Gerrit 拉取依赖本地 `git archive --remote` + SSH 凭据**；失败时 `subprocess` stderr 摘要未带出到前端，只能看到笼统的 `CalledProcessError`。
+14. **Gerrit 推送只输出推送计划骨架**，未执行真实 `git push`。
+15. **审计 log 与 backup 文件不清理** —— `audit` 表无 retention；`release_system_admin_backup_*.sqlite` 每次 admin 操作都写一份，永不清理。
 
 ### 体验 / 维护
 
-17. **`order_chips`（x201 排最后）逻辑在前后端各写一份** —— `core.py:order_chips` 与 `index.html:orderChips`，任何一边改了另一边没改就会前后端不一致。
-18. **新增 app 时只能指定一个 owner** —— 多人维护的 app 要后续在 Owner 列里手动加。
-19. **HTTP 层无集成测试** —— 当前测试都直接调 `core.*`，权限分支、过 deadline 阻断、事务回滚都没在 HTTP 路径下覆盖。
+16. **`order_chips`（x201 排最后）逻辑在前后端各写一份** —— `core.py:order_chips` 与 `index.html:orderChips`，任何一边改了另一边没改就会前后端不一致。
+17. **新增 app 时只能指定一个 owner** —— 多人维护的 app 要后续在 Owner 列里手动加。
+18. **HTTP 层无集成测试** —— 当前测试都直接调 `core.*`，权限分支、过 deadline 阻断、事务回滚都没在 HTTP 路径下覆盖。
 
 ## 从 MVP 到完整产品的待完善项
 
