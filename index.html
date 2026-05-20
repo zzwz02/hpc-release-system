@@ -122,6 +122,13 @@
   .stat.warn .num{color:var(--warn-fg);}
   .stat.bad .num{color:var(--bad-fg);}
   .stat.accent .num{color:var(--accent);}
+  .stat .sub{font-size:11.5px;color:var(--ink-2);font-weight:700;margin-top:5px;line-height:1.4;}
+  .stat.qa-split .num{font-size:22px;display:flex;gap:4px;align-items:baseline;flex-wrap:wrap;}
+  .stat.qa-split .num .sep{color:var(--muted);opacity:.5;font-weight:600;font-size:18px;}
+  .stat.qa-split .num .seg-todo{color:var(--ink-2);}
+  .stat.qa-split .num .seg-ok{color:var(--ok-fg);}
+  .stat.qa-split .num .seg-warn{color:var(--warn-fg);}
+  .stat.qa-split .num .seg-bad{color:var(--bad-fg);}
   /* ---- tables ---- */
   .table{overflow:auto;max-height:560px;border:1px solid var(--border);border-radius:10px;}
   table{width:100%;border-collapse:collapse;font-size:13px;}
@@ -823,21 +830,37 @@
         b,
         isReleaseSnap(x.snap) ? (qaStatusLabels[x.snap.qa_status || "not_checked"] || x.snap.qa_status || "") : ""
       ]));
+      const byTarget = (list, t) => list.filter(x => x.snap.doc_target === t).length;
+      const hpcAll = byTarget(rows, "manual");
+      const aiAll = byTarget(rows, "ai4sci");
+      const hpcRel = byTarget(releaseRows, "manual");
+      const aiRel = byTarget(releaseRows, "ai4sci");
+      const docIncomplete = releaseRows.filter(x => docsItems(x.snap).length > 0).length;
       const qa = {
         not_checked: releaseRows.filter(x => (x.snap.qa_status || "not_checked") === "not_checked").length,
         qa_passed: releaseRows.filter(x => x.snap.qa_status === "qa_passed").length,
         has_issues: releaseRows.filter(x => x.snap.qa_status === "has_issues").length,
         cannot_release: releaseRows.filter(x => x.snap.qa_status === "cannot_release").length,
       };
-      const card = (num, lbl, cls = "") => `<div class="stat ${cls}"><div class="num">${num}</div><div class="lbl">${esc(lbl)}</div></div>`;
+      const card = (num, lbl, cls = "", sub = "") => `<div class="stat ${cls}">
+        <div class="num">${num}</div>
+        <div class="lbl">${esc(lbl)}</div>
+        ${sub ? `<div class="sub">${sub}</div>` : ""}
+      </div>`;
+      const qaCard = `<div class="stat qa-split">
+        <div class="num">
+          <span class="seg-todo">${qa.not_checked}</span><span class="sep">/</span>
+          <span class="seg-ok">${qa.qa_passed}</span><span class="sep">/</span>
+          <span class="seg-warn">${qa.has_issues}</span><span class="sep">/</span>
+          <span class="seg-bad">${qa.cannot_release}</span>
+        </div>
+        <div class="lbl">QA 待测试 / 通过 / 存在问题 / 不可发布</div>
+      </div>`;
       $("summary").innerHTML =
-        card(rows.length, "App 总数") +
-        card(releaseRows.length, "release 决策", "accent") +
-        card(qa.qa_passed, "QA 通过", "ok") +
-        card(qa.has_issues, "存在问题", "warn") +
-        card(qa.cannot_release, "不可发布", "bad") +
-        card(qa.not_checked, "待 QA") +
-        card(missingItems.length, "待办 / 门禁", missingItems.length ? "warn" : "ok");
+        card(rows.length, "App 总数 (HPC/AI4S)", "", `HPC ${hpcAll} · AI4S ${aiAll}`) +
+        card(releaseRows.length, "release 决策 (HPC/AI4S)", "accent", `HPC ${hpcRel} · AI4S ${aiRel}`) +
+        card(docIncomplete, "Doc 未完成 App 数", docIncomplete ? "warn" : "ok") +
+        qaCard;
       $("blockers").innerHTML = table(["App", "待办/门禁项", "QA"], missingItems);
       renderDashboardOwner(allRows);
     }
