@@ -411,6 +411,7 @@
           <div class="panel-head"><h2>App 列表</h2><span class="count" id="appCount"></span></div>
           <div class="panel-body">
             <div class="searchbox"><input id="search" class="input" placeholder="搜索 app / 类型 / owner"></div>
+            <label class="check" data-roles="Owner" style="margin-bottom:9px"><input type="checkbox" id="ownOnly">仅看自己</label>
             <button id="newApp" class="btn" data-roles="Owner" style="width:100%;margin-bottom:9px">+ 新增 app</button>
             <button id="fetchAllInfo" class="btn" data-roles="RM" style="width:100%;margin-bottom:9px">从 Gerrit 批量拉取 app_info</button>
             <div id="fetchAllInfoLog" class="small muted" data-roles="RM" style="margin:-2px 0 9px"></div>
@@ -951,7 +952,9 @@
 
     function renderApps() {
       const q = $("search").value.toLowerCase().trim();
+      const ownOnly = isOwner() && $("ownOnly")?.checked;
       let rows = state.apps.map(app => ({ app, snap: releaseSnap(app.id) })).filter(x => x.snap);
+      if (ownOnly) rows = rows.filter(x => isOwnApp(x.snap));
       if (q) rows = rows.filter(x => [displayName(x.snap), x.snap.type, (x.snap.owners || []).join(",")].join(" ").toLowerCase().includes(q));
       rows.sort(compareAppRows);
       if ($("appCount")) $("appCount").textContent = `共 ${rows.length} 个`;
@@ -1940,6 +1943,7 @@
         loadState(target);
       };
       $("search").oninput = renderApps;
+      if ($("ownOnly")) $("ownOnly").onchange = renderApps;
       $("fetchAllInfo").onclick = fetchAllAppInfo;
       $("importBtn").onclick = async () => {
         const csv = await readFile("initCsv");
