@@ -112,8 +112,13 @@
   .pill.bad{color:var(--bad-fg);background:var(--bad-bg);border-color:var(--bad-bd);}
   .pill.warnp,.pill.warn{color:var(--warn-fg);background:var(--warn-bg);border-color:var(--warn-bd);}
   .pill.accent{color:var(--accent-2);background:var(--accent-soft);border-color:var(--accent-bd);}
+  /* ---- dashboard top layout ---- */
+  .dashboard-top{display:flex;gap:16px;align-items:stretch;flex-wrap:wrap;}
+  .dashboard-top > #summary{flex:1 1 520px;min-width:0;}
+  .dashboard-top > #scheduleePanel{flex:1 1 520px;min-width:0;margin:0;display:flex;flex-direction:column;}
+  .dashboard-top > #scheduleePanel .panel-body{flex:1;min-height:0;}
   /* ---- stat cards ---- */
-  .stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;}
+  .stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;align-content:start;}
   .stat{background:var(--card);border:1px solid var(--border);border-radius:11px;
     box-shadow:var(--shadow);padding:14px 16px;}
   .stat .num{font-size:26px;font-weight:800;line-height:1.1;}
@@ -344,20 +349,22 @@
     <div id="phaseBanner"></div>
 
     <section id="dashboard" class="view active">
-      <div id="summary" class="stats"></div>
-      <!-- <div class="panel" style="margin-top:16px">
-        <div class="panel-head"><h2>MACA SDK 发布计划</h2></div>
-        <div class="panel-body"><img src="assets/MACA_SDK_release_plan.jpg" alt="MACA SDK 发布计划" style="max-width:30%;height:auto;display:block;border-radius:8px;border:1px solid var(--border)"></div>
-      </div> -->
-      <div id="scheduleePanel" class="panel" style="margin-top:16px">
-        <div class="panel-head">
-          <h2>发布时间线</h2>
-          <span class="count" id="scheduleCount"></span>
-          <span style="flex:1"></span>
-          <button id="scheduleAddBtn" class="btn sm primary" data-roles="RM">+ 新增</button>
-        </div>
-        <div class="panel-body" style="padding:0">
-          <div id="scheduleBox" class="schedule-box"></div>
+      <div class="dashboard-top">
+        <div id="summary" class="stats"></div>
+        <!-- <div class="panel">
+          <div class="panel-head"><h2>MACA SDK 发布计划</h2></div>
+          <div class="panel-body"><img src="assets/MACA_SDK_release_plan.jpg" alt="MACA SDK 发布计划" style="max-width:30%;height:auto;display:block;border-radius:8px;border:1px solid var(--border)"></div>
+        </div> -->
+        <div id="scheduleePanel" class="panel">
+          <div class="panel-head">
+            <h2>发布时间线</h2>
+            <span class="count" id="scheduleCount"></span>
+            <span style="flex:1"></span>
+            <button id="scheduleAddBtn" class="btn sm primary" data-roles="RM">+ 新增</button>
+          </div>
+          <div class="panel-body" style="padding:0">
+            <div id="scheduleBox" class="schedule-box"></div>
+          </div>
         </div>
       </div>
       <div id="dashboardOwnerPanel" class="panel" style="margin-top:16px" hidden>
