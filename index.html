@@ -1554,7 +1554,13 @@
       if (upload) upload.onclick = async () => {
         const file = $("qaLogFile").files[0];
         if (!file) return alert("请选择 log 文件");
-        const b64 = btoa(String.fromCharCode(...new Uint8Array(await file.arrayBuffer())));
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let bin = "";
+        const CHUNK = 0x8000;
+        for (let i = 0; i < bytes.length; i += CHUNK) {
+          bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+        }
+        const b64 = btoa(bin);
         try {
           await post("/api/qa/upload-log", { release_id: currentReleaseId(), filename: file.name, content_base64: b64 });
           await loadState();
