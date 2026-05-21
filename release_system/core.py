@@ -1492,6 +1492,8 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
             return
         if str(node.get("test_period", "")).strip().lower() == "weekly":
             return
+        if node.get("ignore_release"):
+            return
         supported = node.get("supported_chip") or {}
         if isinstance(supported, dict):
             chips = list(supported.keys())
@@ -2214,6 +2216,8 @@ def _report_test_cmd_rows(
             continue
         if str(test_cfg.get("test_period") or "").strip().lower() == "weekly":
             continue
+        if test_cfg.get("ignore_release"):
+            continue
         docker_cmd = _report_docker_cmd(test_cfg)
         for n_arch in sorted(a for a in (_report_test_arches(test_cfg) or app_arches) if a):
             if _report_test_skip(test_cfg, n_arch):
@@ -2265,6 +2269,8 @@ def _compare_summary(
             if not isinstance(cfg, dict) or not cfg.get("enabled"):
                 continue
             if str(cfg.get("test_period") or "").strip().lower() == "weekly":
+                continue
+            if cfg.get("ignore_release"):
                 continue
             out.add((str(name), _report_docker_cmd(cfg)))
         return out
