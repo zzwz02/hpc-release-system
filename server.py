@@ -483,6 +483,17 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     self.send_json({"ok": True, **meta})
                     return
+                if parsed.path == "/api/qa/analyze-log":
+                    if self.role() not in {"QA", "RM"}:
+                        raise AuthzError("只有 QA 或 RM 可使用 AI 分析 log")
+                    body = self.json_body()
+                    result = core.qa_analyze_log(
+                        self.conn(),
+                        DB_PATH,
+                        body["release_id"],
+                    )
+                    self.send_json(result)
+                    return
                 if parsed.path == "/api/release-schedule/upsert":
                     self.require_rm()
                     body = self.json_body()

@@ -615,6 +615,9 @@
     let detailRenderSig = "";
     let qaEditMode = false;
     let qaEditReleaseId = "";
+    // Pending AI suggestions keyed by app_id. Populated by /api/qa/analyze-log,
+    // cleared on save / cancel. Holds {qa_status, qa_issue_note, test_results}.
+    let qaAiSuggestions = {};
     let qaReports = null;
     let qaReportsReleaseId = "";
     let qaReportsLoading = false;
@@ -1130,6 +1133,12 @@
       const cls = s === "qa_passed" ? "ok" : (s === "has_issues" ? "warnp" : (s === "cannot_release" ? "bad" : ""));
       return `<span class="pill ${cls}">${esc(qaStatusLabels[s] || s)}</span>`;
     }
+    function qaTestResultPill(status) {
+      const s = (status || "unknown").toLowerCase();
+      const cls = s === "pass" ? "ok" : (s === "fail" ? "bad" : (s === "skip" ? "warnp" : ""));
+      const label = { pass: "PASS", fail: "FAIL", skip: "SKIP", unknown: "?" }[s] || s;
+      return `<span class="pill ${cls}">${esc(label)}</span>`;
+    }
     function qaDot(snap, extraClass = "") {
       let cls = "todo", label;
       if (!isReleaseSnap(snap)) {
@@ -1509,47 +1518,99 @@
       if (!panel || (!isQA() && !isRM())) return;
       if (!state.release) { panel.innerHTML = `<div class="panel"><div class="panel-body"><p class="muted">请选择 release。</p></div></div>`; return; }
       const writable = !releaseLocked();
-      if (qaEditReleaseId !== currentReleaseId()) { qaEditReleaseId = currentReleaseId(); qaEditMode = false; }
-      if (!writable) qaEditMode = false;
+      if (qaEditReleaseId !== currentReleaseId()) { qaEditReleaseId = currentReleaseId(); qaEditMode = false; qaAiSuggestions = {}; }
+      if (!writable) { qaEditMode = false; qaAiSuggestions = {}; }
       const qaFieldsWritable = writable && qaEditMode;
       const rows = state.apps
         .map(app => ({ app, snap: releaseSnap(app.id) }))
         .filter(x => isReleaseSnap(x.snap))
         .sort((a, b) => appSortName(a.snap).localeCompare(appSortName(b.snap), "zh-CN"));
-      const logBlock = `<div class="panel"><div class="panel-head"><h2>QA log 文件</h2><span class="count">单个 · 覆盖式上传</span></div><div class="panel-body">
-          ${state.qa_log
-            ? `<div class="row"><span class="pill ok">已上传：${esc(state.qa_log.filename)}</span><span class="muted small">${esc(state.qa_log.uploaded_at)} · ${esc(state.qa_log.uploaded_by)}</span><a href="/api/qa-log/download?release_id=${encodeURIComponent(currentReleaseId())}" target="_blank"><button class="btn ghost sm">下载</button></a></div>`
-            : `<p class="muted small">本 release 暂无 QA log。</p>`}
-          <div class="row" style="margin-top:9px"><input id="qaLogFile" type="file" class="input" ${writable ? "" : "disabled"}><button class="btn primary" id="qaLogUpload" ${writable ? "" : "disabled"}>上传 log（覆盖）</button></div>
+      const canAnalyze = writable && !!state.qa_log;
+      const logStatusRow = state.qa_log
+        ? `<div class="row"><span class="pill ok">已上传：${esc(state.qa_log.filename)}</span><span class="muted small">${esc(state.qa_log.uploaded_at)} · ${esc(state.qa_log.uploaded_by)}</span><a href="/api/qa-log/download?release_id=${encodeURIComponent(currentReleaseId())}" target="_blank"><button class="btn ghost sm">下载</button></a></div>`
+        : `<p class="muted small">本 release 暂无 QA log。</p>`;
+      const logEditRow = qaEditMode
+        ? `<div class="row" style="margin-top:9px"><input id="qaLogFile" type="file" class="input"><button class="btn primary" id="qaLogUpload">上传 log（覆盖）</button><button class="btn" id="qaLogAnalyze" ${canAnalyze ? "" : "disabled"} title="${canAnalyze ? "调用 LLM 分析已上传的 log，自动填写各 app 的 QA 状态" : "需先上传 log"}">🤖 AI 分析 log</button></div>`
+        : "";
+      const logBlock = `<div class="panel"><div class="panel-head"><h2>QA log 文件</h2><span class="count">${qaEditMode ? "编辑中 · 单个 · 覆盖式上传" : "查看模式"}</span></div><div class="panel-body">
+          ${logStatusRow}
+          ${logEditRow}
         </div></div>`;
-      const editBanner = qaEditMode ? `<div class="banner warnp" style="margin-top:14px">编辑中 · 自动刷新已暂停。</div>` : "";
+      const actionBar = `<div class="qa-actions" data-qa-actions>${
+        qaEditMode
+          ? `<button class="btn primary qaSaveAll" ${writable ? "" : "disabled"}>保存 QA 状态</button><button class="btn ghost qaCancel">取消编辑</button>`
+          : `<button class="btn primary qaEdit" ${writable ? "" : "disabled"}>✎ 修改（上传 log / 填写 QA 状态）</button>`
+      }</div>`;
+      const editBanner = qaEditMode ? `<div class="banner warnp" style="margin-top:14px">编辑中 · 自动刷新已暂停。上传 log、AI 分析、改 QA 状态都在保存后才会生效。</div>` : "";
       const cards = rows.map(({ app, snap }) => {
-        const status = snap.qa_status || "not_checked";
-        return `<div class="qa-card">
+        const suggestion = qaAiSuggestions[app.id];
+        const useSuggestion = qaEditMode && suggestion;
+        const status = useSuggestion ? suggestion.qa_status : (snap.qa_status || "not_checked");
+        const note = useSuggestion ? (suggestion.qa_issue_note || "") : (snap.qa_issue_note || "");
+        const testResults = useSuggestion ? suggestion.test_results : [];
+        const aiTag = useSuggestion ? `<span class="pill" style="background:#eef;border:1px solid #99c;color:#225">AI 建议</span>` : "";
+        const resultsBlock = (testResults && testResults.length)
+          ? `<details class="qa-test-results" style="margin-top:6px"><summary class="small muted">测试结果（${testResults.length}）${useSuggestion ? " · 来自 AI 分析" : ""}</summary>
+              <table class="qa-test-results-tbl" style="width:100%;border-collapse:collapse;margin-top:4px;font-size:12px">
+                <thead><tr><th style="text-align:left">测试</th><th>arch</th><th>状态</th><th>性能</th><th style="text-align:left">说明</th></tr></thead>
+                <tbody>${testResults.map(r => `<tr>
+                  <td>${esc(r.test || "")}</td>
+                  <td style="text-align:center">${esc(r.arch || "")}</td>
+                  <td style="text-align:center">${qaTestResultPill(r.status)}</td>
+                  <td style="text-align:center">${esc(r.perf || "")}</td>
+                  <td>${esc(r.note || "")}</td>
+                </tr>`).join("")}</tbody>
+              </table></details>`
+          : "";
+        return `<div class="qa-card" data-qa-app="${esc(app.id)}">
           <div class="qa-card-h">
             <span class="app-ico">${esc(initials(displayName(snap)))}</span>
-            <div><div class="name">${esc(displayName(snap))}</div><div class="sub">${esc((snap.owners || []).join(",") || "无 owner")}</div></div>
+            <div><div class="name">${esc(displayName(snap))} ${aiTag}</div><div class="sub">${esc((snap.owners || []).join(",") || "无 owner")}</div></div>
             <span class="qa-cur">${qaPill(status)}</span>
           </div>
           <div class="qa-card-b">
             <label>QA 状态<select data-qa-status="${esc(app.id)}" class="select" ${qaFieldsWritable ? "" : "disabled"}>
               ${qaStatusOptions.map(s => `<option value="${s}" ${status === s ? "selected" : ""}>${esc(qaStatusLabels[s])}</option>`).join("")}
             </select></label>
-            <label>问题说明 ${status === "has_issues" ? '<span class="req">必填</span>' : "(可选)"}<textarea data-qa-note="${esc(app.id)}" ${qaFieldsWritable ? "" : "disabled"} placeholder="标注「存在问题」时必填；保存后会附加到已知限制段">${esc(snap.qa_issue_note || "")}</textarea></label>
+            <label>问题说明 ${status === "has_issues" ? '<span class="req">必填</span>' : "(可选)"}<textarea data-qa-note="${esc(app.id)}" ${qaFieldsWritable ? "" : "disabled"} placeholder="标注「存在问题」时必填；保存后会附加到已知限制段">${esc(note)}</textarea></label>
             <p class="small muted">Gerrit: ${esc(app.git_url || "")} ${esc(app.git_branch || "")}</p>
+            ${resultsBlock}
           </div></div>`;
       }).join("");
       const grid = rows.length ? `<div class="qa-grid">${cards}</div>` : `<div class="banner" style="margin-top:14px">本 release 暂无 release 决策为 release 的 app。</div>`;
-      const saveBlock = rows.length ? `<div class="qa-actions">${
-        qaEditMode
-          ? `<button class="btn primary" id="qaSaveAll" ${writable ? "" : "disabled"}>保存 QA 状态</button>`
-          : `<button class="btn primary" id="qaEdit" ${writable ? "" : "disabled"}>✎ 修改</button>`
-      }</div>` : "";
-      panel.innerHTML = logBlock + editBanner + grid + saveBlock;
+      panel.innerHTML = actionBar + logBlock + editBanner + grid + actionBar;
       bindQa();
     }
 
     function bindQa() {
+      const analyze = $("qaLogAnalyze");
+      if (analyze) analyze.onclick = async () => {
+        if (!state.qa_log) return alert("请先上传 QA log");
+        const orig = analyze.textContent;
+        analyze.disabled = true;
+        analyze.textContent = "AI 分析中…";
+        try {
+          const res = await post("/api/qa/analyze-log", { release_id: currentReleaseId() });
+          qaAiSuggestions = {};
+          for (const item of (res.apps || [])) {
+            qaAiSuggestions[item.app_id] = {
+              qa_status: item.qa_status || "not_checked",
+              qa_issue_note: item.qa_issue_note || "",
+              test_results: item.test_results || [],
+            };
+          }
+          qaEditMode = true;
+          renderQa();
+          const n = Object.keys(qaAiSuggestions).length;
+          alert(`AI 分析完成：已为 ${n} 个 app 预填 QA 状态，请核对后点「保存 QA 状态」`
+            + (res.log_truncated ? "\n注意：log 过长已截断中段送给 LLM。" : ""));
+        } catch (e) {
+          alert("AI 分析失败：" + e.message);
+        } finally {
+          analyze.disabled = false;
+          analyze.textContent = orig;
+        }
+      };
       const upload = $("qaLogUpload");
       if (upload) upload.onclick = async () => {
         const file = $("qaLogFile").files[0];
@@ -1567,10 +1628,13 @@
           alert("QA log 上传成功");
         } catch (e) { alert("上传失败：" + e.message); }
       };
-      const edit = $("qaEdit");
-      if (edit) edit.onclick = () => { qaEditMode = true; renderQa(); };
-      const saveAll = $("qaSaveAll");
-      if (saveAll) saveAll.onclick = async () => {
+      document.querySelectorAll(".qaEdit").forEach(btn => {
+        btn.onclick = () => { qaEditMode = true; renderQa(); };
+      });
+      document.querySelectorAll(".qaCancel").forEach(btn => {
+        btn.onclick = () => { qaEditMode = false; qaAiSuggestions = {}; renderQa(); };
+      });
+      const saveHandler = async () => {
         const items = [...document.querySelectorAll("[data-qa-status]")].map(el => {
           const appId = el.dataset.qaStatus;
           return {
@@ -1582,16 +1646,18 @@
           const snap = releaseSnap(item.app_id) || {};
           return (snap.qa_status || "not_checked") !== item.status || (snap.qa_issue_note || "") !== item.issue_note;
         });
-        if (!items.length) { qaEditMode = false; renderQa(); return; }
+        if (!items.length) { qaEditMode = false; qaAiSuggestions = {}; renderQa(); return; }
         try {
           await post("/api/qa/status-batch", { release_id: currentReleaseId(), items });
           qaEditMode = false;
+          qaAiSuggestions = {};
           await loadState();
           alert("QA 状态已保存");
         } catch (e) {
           alert("保存失败，未保存任何改动，请修正后重试：\n\n" + e.message);
         }
       };
+      document.querySelectorAll(".qaSaveAll").forEach(btn => { btn.onclick = saveHandler; });
     }
     function reportToCsv(columns, rows) {
       const cell = v => {

@@ -1954,6 +1954,34 @@ def qa_set_status(
     return snapshot
 
 
+QA_TEST_RESULT_STATUSES = {"pass", "fail", "skip", "unknown"}
+
+
+def _normalize_test_results(raw: Any) -> list[dict[str, Any]]:
+    """Coerce a batch item's test_results into a clean list-of-dicts shape.
+
+    Unknown fields are dropped so the LLM cannot smuggle arbitrary keys into
+    the snapshot; status is clamped to QA_TEST_RESULT_STATUSES.
+    """
+    if not isinstance(raw, list):
+        return []
+    cleaned: list[dict[str, Any]] = []
+    for row in raw:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "unknown").lower()
+        if status not in QA_TEST_RESULT_STATUSES:
+            status = "unknown"
+        cleaned.append({
+            "test": str(row.get("test") or "").strip(),
+            "arch": str(row.get("arch") or "").strip(),
+            "status": status,
+            "perf": str(row.get("perf") or "").strip(),
+            "note": str(row.get("note") or "").strip(),
+        })
+    return cleaned
+
+
 def qa_set_status_batch(
     conn: sqlite3.Connection,
     release_id: str,
@@ -2070,6 +2098,183 @@ def get_qa_log(conn: sqlite3.Connection, release_id: str) -> dict[str, str] | No
         (release_id,),
     ).fetchone()
     return dict(row) if row else None
+
+
+def _qa_analysis_inventory(release: dict[str, Any], apps: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build the per-app test inventory the LLM uses as its target schema.
+
+    Only release-decision=release apps are included; each app lists its
+    enabled, non-weekly tests with the test_cmd string so the model can match
+    log lines back to a specific (app, test, arch).
+    """
+    inventory: list[dict[str, Any]] = []
+    for app_id, snapshot in release["snapshots"].items():
+        if snapshot.get("release_decision") != "release":
+            continue
+        app = apps.get(app_id) or {}
+        tests = []
+        for test in snapshot.get("tests") or []:
+            if not test.get("enabled", True):
+                continue
+            tests.append({
+                "name": test.get("name") or test.get("path") or "",
+                "path": test.get("path") or "",
+                "command": test.get("command") or "",
+                "supported_chips": test.get("supported_chips") or [],
+                "arches": test.get("arch_list") or [],
+            })
+        inventory.append({
+            "app_id": app_id,
+            "app_name": snapshot.get("app_name") or app.get("name") or app_id,
+            "version": snapshot.get("version") or snapshot.get("app_version") or "",
+            "tests": tests,
+        })
+    return inventory
+
+
+_QA_ANALYSIS_SYSTEM = (
+    "You analyze QA test logs/summary tables for an HPC release. Match the "
+    "log content to the provided per-app test inventory and report results.\n"
+    "Return STRICT JSON of the form: "
+    "{\"apps\": [{\"app_id\": str, "
+    "\"qa_status\": \"qa_passed\"|\"has_issues\"|\"cannot_release\"|\"not_checked\", "
+    "\"qa_issue_note\": str, \"tests\": [{\"test\": str, \"arch\": str, "
+    "\"status\": \"pass\"|\"fail\"|\"skip\"|\"unknown\", \"perf\": str, \"note\": str}]}]}.\n"
+    "Rules:\n"
+    "- Include EVERY app_id from the inventory. If the log has no data for an app, set its tests to status=unknown and qa_status=not_checked.\n"
+    "- qa_status=qa_passed only when every listed test for that app shows a clear pass in the log.\n"
+    "- qa_status=has_issues when any test fails or shows clear regression; qa_issue_note must concisely list which tests/arches failed and why (in Chinese).\n"
+    "- qa_status=cannot_release only when the log explicitly says release is blocked.\n"
+    "- Match app/test names case-insensitively and tolerate small spelling variants. The log may be plain text OR a multi-sheet spreadsheet rendered as TSV (each sheet preceded by `### Sheet: <name> ###`).\n"
+    "- perf: short numeric/throughput summary if the log contains one, else empty.\n"
+    "- note: at most one short Chinese sentence per test (cause of fail, perf delta, or empty).\n"
+    "- Do NOT invent tests not in the inventory. Output JSON only, no prose, no code fences."
+)
+
+
+def _xlsx_to_text(raw: bytes, *, max_rows_per_sheet: int = 2000) -> str:
+    """Render an xlsx workbook as TSV-ish plain text the LLM can read.
+
+    Each sheet is preceded by `### Sheet: <name> ###`; rows are tab-joined and
+    trailing empty cells are stripped so the prompt stays compact. Fails fast
+    with a clear message if the file isn't a valid xlsx.
+    """
+    import io as _io
+    from openpyxl import load_workbook
+
+    wb = load_workbook(_io.BytesIO(raw), data_only=True, read_only=True)
+    chunks: list[str] = []
+    for name in wb.sheetnames:
+        ws = wb[name]
+        chunks.append(f"### Sheet: {name} ###")
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if i >= max_rows_per_sheet:
+                chunks.append(f"...[truncated after {max_rows_per_sheet} rows]...")
+                break
+            cells: list[str] = []
+            for v in row:
+                if v is None:
+                    cells.append("")
+                else:
+                    # Cells legitimately contain tabs/newlines (multi-line perf
+                    # notes etc.), so neutralize them to keep the TSV unambiguous.
+                    cells.append(str(v).replace("\t", " ").replace("\r", " ").replace("\n", " "))
+            while cells and cells[-1] == "":
+                cells.pop()
+            if cells:
+                chunks.append("\t".join(cells))
+        chunks.append("")
+    wb.close()
+    return "\n".join(chunks)
+
+
+def _qa_log_to_text(path: Path, raw: bytes) -> str:
+    """Decode a QA-log file for the LLM. xlsx → TSV; everything else → utf-8."""
+    if path.suffix.lower() == ".xlsx":
+        try:
+            return _xlsx_to_text(raw)
+        except Exception as exc:
+            raise RuntimeError(f"无法解析 xlsx：{exc}") from exc
+    return raw.decode("utf-8", errors="replace")
+
+
+def qa_analyze_log(
+    conn: sqlite3.Connection,
+    db_path: str | Path,
+    release_id: str,
+    *,
+    llm_call: Callable[[str, str], str] | None = None,
+    max_log_chars: int = 200_000,
+) -> dict[str, Any]:
+    """Ask the LLM to summarize the uploaded QA log against the test inventory.
+
+    Pure read: no DB writes, no snapshot mutation. The caller (server handler)
+    returns the result to the UI which prefills the QA edit form, and only the
+    QA-confirmed values are later persisted via qa_set_status_batch.
+    """
+    meta = get_qa_log(conn, release_id)
+    if not meta:
+        raise RuntimeError("本 release 还未上传 QA log")
+    log_path = Path(meta["storage_path"])
+    if not log_path.exists():
+        raise RuntimeError("QA log 文件丢失")
+    raw = log_path.read_bytes()
+    text = _qa_log_to_text(log_path, raw)
+    truncated = False
+    if len(text) > max_log_chars:
+        head = text[: max_log_chars // 2]
+        tail = text[-max_log_chars // 2 :]
+        text = head + "\n\n...[log truncated]...\n\n" + tail
+        truncated = True
+
+    release = get_release(conn, release_id)
+    apps = {app["id"]: app for app in list_apps(conn)}
+    inventory = _qa_analysis_inventory(release, apps)
+    if not inventory:
+        raise RuntimeError("本 release 没有 release 决策为 release 的 app，无法分析")
+
+    user_payload = json.dumps({"inventory": inventory, "log": text}, ensure_ascii=False)
+
+    if llm_call is None:
+        from release_system.llm import chat_json
+        llm_call = chat_json
+
+    raw_reply = llm_call(_QA_ANALYSIS_SYSTEM, user_payload)
+    try:
+        parsed = json.loads(raw_reply)
+    except json.JSONDecodeError:
+        # Some local models wrap JSON in ```json fences — strip them and retry.
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_reply.strip(), flags=re.MULTILINE)
+        parsed = json.loads(cleaned)
+
+    valid_ids = {entry["app_id"] for entry in inventory}
+    apps_out: list[dict[str, Any]] = []
+    for row in parsed.get("apps") or []:
+        if not isinstance(row, dict):
+            continue
+        app_id = row.get("app_id")
+        if app_id not in valid_ids:
+            continue
+        status = row.get("qa_status") or "not_checked"
+        if status not in QA_STATUSES:
+            status = "not_checked"
+        apps_out.append({
+            "app_id": app_id,
+            "qa_status": status,
+            "qa_issue_note": str(row.get("qa_issue_note") or "").strip(),
+            "test_results": _normalize_test_results(row.get("tests")),
+        })
+
+    with transaction(conn):
+        audit(
+            conn,
+            f"QA AI 分析 log：{meta.get('filename', '')}",
+            user="qa-ai",
+            role="QA",
+            release_id=release_id,
+            event="qa_analyze_log",
+        )
+    return {"apps": apps_out, "log_truncated": truncated, "log_chars": len(raw)}
 
 
 def export_test_scope_csv(conn: sqlite3.Connection, release_id: str) -> str:
