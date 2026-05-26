@@ -854,6 +854,10 @@ def base_snapshot(
         "arm_chips": "",
         "hpcc_chip": "",
         "arch": "",
+        "python_labels": "",
+        "pytorch_labels": "",
+        "build_os": "",
+        "build_arches": "",
         "maca_version": "",
         "doc": {
             "intro": "",
@@ -1470,9 +1474,18 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
     data = json.loads(raw) if isinstance(raw, str) else raw
     x86_chips: set[str] = set()
     arm_chips: set[str] = set()
+    python_labels: list[str] = []
+    pytorch_labels: list[str] = []
+    build_os_list: list[str] = []
+    build_arch_list: list[str] = []
     build_targets: list[dict[str, Any]] = []
     test_targets: list[dict[str, Any]] = []
     tests: list[dict[str, Any]] = []
+
+    def _add_unique(target: list[str], value: Any) -> None:
+        v = str(value or "").strip()
+        if v and v not in target:
+            target.append(v)
 
     for env, cfg in (data.get("app_build") or {}).items():
         if not isinstance(cfg, dict):
@@ -1483,7 +1496,20 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
         if enabled:
             target = arm_chips if re.search(r"arm|aarch64", arch, re.I) else x86_chips
             target.update(str(chip).upper() for chip in chips)
-        build_targets.append({"path": env, "arch": arch, "chips": chips, "enabled": enabled, "build_target": cfg.get("build_target", "")})
+            _add_unique(python_labels, cfg.get("python_label"))
+            _add_unique(pytorch_labels, cfg.get("pytorch_label"))
+            _add_unique(build_os_list, cfg.get("os"))
+            _add_unique(build_arch_list, cfg.get("arch"))
+        build_targets.append({
+            "path": env,
+            "arch": arch,
+            "chips": chips,
+            "enabled": enabled,
+            "build_target": cfg.get("build_target", ""),
+            "python_label": str(cfg.get("python_label") or "").strip(),
+            "pytorch_label": str(cfg.get("pytorch_label") or "").strip(),
+            "os": str(cfg.get("os") or "").strip(),
+        })
 
     def visitor(node: dict[str, Any], path: list[str]) -> None:
         if "test_cmd" not in node:
@@ -1534,6 +1560,10 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
         "app_version": data.get("app_version", ""),
         "x86_chips": order_chips(x86_chips),
         "arm_chips": order_chips(arm_chips),
+        "python_labels": python_labels,
+        "pytorch_labels": pytorch_labels,
+        "build_os": build_os_list,
+        "build_arches": build_arch_list,
         "build_targets": build_targets,
         "test_targets": test_targets,
         "tests": tests,
@@ -1552,6 +1582,10 @@ def diff_app_info(old: dict[str, Any] | None, new: dict[str, Any]) -> list[dict[
     add("版本变化", "app_version", old.get("app_version", ""), new.get("app_version", ""))
     add("X86芯片变化", "x86_chips", old.get("x86_chips", []), new.get("x86_chips", []))
     add("ARM芯片变化", "arm_chips", old.get("arm_chips", []), new.get("arm_chips", []))
+    add("Python label 变化", "python_labels", old.get("python_labels", []), new.get("python_labels", []))
+    add("PyTorch label 变化", "pytorch_labels", old.get("pytorch_labels", []), new.get("pytorch_labels", []))
+    add("OS 变化", "build_os", old.get("build_os", []), new.get("build_os", []))
+    add("Arch 变化", "build_arches", old.get("build_arches", []), new.get("build_arches", []))
     add(
         "Build target变化",
         "build_targets",
@@ -1744,6 +1778,10 @@ def apply_app_info(
     snapshot["version"] = parsed.get("app_version") or snapshot.get("version", "")
     snapshot["x86_chips"] = ",".join(order_chips(parsed.get("x86_chips", [])))
     snapshot["arm_chips"] = ",".join(order_chips(parsed.get("arm_chips", [])))
+    snapshot["python_labels"] = ",".join(parsed.get("python_labels", []))
+    snapshot["pytorch_labels"] = ",".join(parsed.get("pytorch_labels", []))
+    snapshot["build_os"] = ",".join(parsed.get("build_os", []))
+    snapshot["build_arches"] = ",".join(parsed.get("build_arches", []))
     ensure_test_docs(snapshot, parsed, diffs)
     if was_confirmed:
         snapshot["owner_confirmed"] = False
