@@ -1189,7 +1189,7 @@
     function testBadge(snap) {
       const t = (snap.test_docs || []).filter(d => !d.obsolete);
       if (!t.length) return `<span class="pill">无测试项</span>`;
-      const bad = t.filter(d => d.stale || !(d.dataset || "").trim() || !(d.content || "").trim() || !(d.pass_criteria || "").trim()).length;
+      const bad = t.filter(d => !(d.dataset || "").trim() || !(d.content || "").trim() || !(d.pass_criteria || "").trim()).length;
       return bad ? `<span class="pill warnp">待补 ${bad}</span>` : `<span class="pill ok">已完成</span>`;
     }
     function ownerProgress(snap) {
@@ -1203,7 +1203,7 @@
         !!(doc.binary_usage || "").trim(),
         !!(doc.env_setup || "").trim(),
         !!(doc.limitations || "").trim(),
-        hasInfo && t.length > 0 && t.every(d => !d.stale && (d.dataset || "").trim() && (d.content || "").trim() && (d.pass_criteria || "").trim()),
+        hasInfo && t.length > 0 && t.every(d => (d.dataset || "").trim() && (d.content || "").trim() && (d.pass_criteria || "").trim()),
       ];
       const done = checks.filter(Boolean).length;
       return { done, total: checks.length, pct: Math.round(done / checks.length * 100) };
@@ -1234,15 +1234,13 @@
     function renderTestDocs(snap, disabled = "") {
       return (snap.test_docs || []).filter(d => !d.obsolete).map(d => `<div class="tcard">
         <div class="tcard-h"><span class="code">${esc(d.path)}</span>
-          ${d.owner_added ? `<span class="pill">owner-added</span>` : ""}
-          ${d.stale ? `<span class="pill warnp">待更新</span>` : `<span class="pill ok">说明已更新</span>`}</div>
+          ${d.owner_added ? `<span class="pill">owner-added</span>` : ""}</div>
         <div class="tcard-b">
           <label class="full">命令<textarea class="code" data-test="${d.id}" data-field="command" ${d.owner_added && !disabled ? "" : "disabled"}>${esc(d.command || "")}</textarea></label>
           <label>测试数据集<textarea data-test="${d.id}" data-field="dataset" ${disabled}>${esc(d.dataset || "")}</textarea></label>
           <label>测试内容<textarea data-test="${d.id}" data-field="content" ${disabled}>${esc(d.content || "")}</textarea></label>
           <label>结果查看<textarea data-test="${d.id}" data-field="result_view" ${disabled}>${esc(d.result_view || "")}</textarea></label>
           <label>通过标准<textarea data-test="${d.id}" data-field="pass_criteria" ${disabled}>${esc(d.pass_criteria || "")}</textarea></label>
-          <label class="check full"><input type="checkbox" data-test="${d.id}" data-field="stale" ${d.stale ? "" : "checked"} ${disabled}> 测试说明已更新</label>
         </div></div>`).join("") || `<p class="muted small">上传 app_info 后会自动生成测试项。</p>`;
     }
     function table(headers, rows) {
@@ -2112,7 +2110,7 @@
       const test_docs = [...document.querySelectorAll("[data-test][data-field]")].reduce((acc, el) => {
         const id = el.dataset.test; let item = acc.find(x => x.id === id); if (!item) acc.push(item = { id });
         if (id.startsWith("new_")) item.owner_added = true;
-        if (el.dataset.field === "stale") item.stale = !el.checked; else item[el.dataset.field] = el.value;
+        item[el.dataset.field] = el.value;
         return acc;
       }, []);
       const snapshotUpdate = {

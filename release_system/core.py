@@ -608,10 +608,6 @@ def test_docs_diff(before: list[dict[str, Any]], after: list[dict[str, Any]]) ->
             if (old.get(key) or "") != (doc.get(key) or ""):
                 changes.append({"field": f"{path}.{key}", "label": f"{path} · {label}",
                                 "old": fmt_audit_value(old.get(key)), "new": fmt_audit_value(doc.get(key))})
-        if bool(old.get("stale")) != bool(doc.get("stale")):
-            changes.append({"field": f"{path}.stale", "label": f"{path} · 测试说明状态",
-                            "old": "待更新" if old.get("stale") else "已更新",
-                            "new": "待更新" if doc.get("stale") else "已更新"})
     return changes
 
 
@@ -1324,14 +1320,11 @@ def create_release_from_previous(
             snapshot.pop("locked_in_release", None)
             snapshot.update(
                 {
-                    "owner_confirmed": False,
                     "qa_status": "not_checked",
                     "qa_issue_note": "",
                     "missing_items": [],
                 }
             )
-            for td in snapshot.get("test_docs", []):
-                td["stale"] = True
             save_snapshot(conn, release_id, app["id"], snapshot)
             audit(
                 conn,
@@ -1359,7 +1352,6 @@ def _initial_snapshot_for_future_release(snapshot: dict[str, Any], target_releas
     future.pop("locked_in_release", None)
     future.update(
         {
-            "owner_confirmed": False,
             "qa_status": "not_checked",
             "qa_issue_note": "",
             "missing_items": [],
@@ -1371,8 +1363,6 @@ def _initial_snapshot_for_future_release(snapshot: dict[str, Any], target_releas
         and not can(target_release, "new_app_release")
     ):
         future["release_decision"] = "cicd_only"
-    for test_doc in future.get("test_docs", []):
-        test_doc["stale"] = True
     return future
 
 
@@ -1627,14 +1617,12 @@ def ensure_test_docs(snapshot: dict[str, Any], parsed: dict[str, Any], diffs: li
                     "pass_criteria": "",
                     "coverage": join_list(test.get("supported_chips", [])),
                     "owner_added": False,
-                    "stale": True,
                     "obsolete": False,
                 }
             )
         else:
             doc["command"] = test["command"]
             doc["obsolete"] = False
-            doc["stale"] = True
     for doc in snapshot["test_docs"]:
         if not doc.get("owner_added") and doc["path"] not in current_paths:
             doc["obsolete"] = True
@@ -1747,7 +1735,13 @@ def apply_app_info(
     require_can(release, "edit_app_info", "已过 doc deadline，不可再上传 app_info")
     snapshot = release["snapshots"][app_id]
     was_confirmed = bool(snapshot.get("owner_confirmed"))
+    snapshot_parsed = (snapshot.get("app_info") or {}).get("parsed")
     parsed = parse_app_info(raw)
+    # Owner confirmation should only become invalid when the snapshot's own
+    # app_info content actually changes — a re-upload of the same file, a
+    # clone from a previous release, or a fetch that returns identical
+    # content must not silently force the owner to re-confirm.
+    content_modified = snapshot_parsed is not None and bool(diff_app_info(snapshot_parsed, parsed))
     if snapshot.get("release_decision") == "release" and not can(release, "expand_qa_scope"):
         current_parsed = (snapshot.get("app_info") or {}).get("parsed")
         if current_parsed is not None:
@@ -1783,7 +1777,7 @@ def apply_app_info(
     snapshot["build_os"] = ",".join(parsed.get("build_os", []))
     snapshot["build_arches"] = ",".join(parsed.get("build_arches", []))
     ensure_test_docs(snapshot, parsed, diffs)
-    if was_confirmed:
+    if was_confirmed and content_modified:
         snapshot["owner_confirmed"] = False
     # build_targets / test_targets are coarse list-of-dict aggregates; the
     # readable per-field diffs (version, chips, test_cmd*) cover the same ground.
@@ -1809,7 +1803,7 @@ def apply_app_info(
             event="upload_app_info",
             detail=detail,
         )
-        if was_confirmed:
+        if was_confirmed and content_modified:
             audit(
                 conn,
                 f"{app_id} Owner 确认因 app_info 更新自动失效",
@@ -1908,8 +1902,6 @@ def missing_items_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[dic
         for key, label in {"dataset": "测试数据集", "content": "测试内容", "result_view": "结果查看方式", "pass_criteria": "通过标准"}.items():
             if not doc.get(key):
                 add_doc(f"{doc['path']} 缺少{label}")
-        if doc.get("stale"):
-            add_doc(f"{doc['path']} 测试说明 stale")
     if not snapshot.get("owner_confirmed"):
         add_doc("Owner 未确认 doc")
     qa_status = snapshot.get("qa_status", "not_checked")

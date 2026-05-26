@@ -152,7 +152,7 @@ def _fill_ready(snapshot: dict) -> None:
     snapshot["description"] = "测试描述"
     snapshot["doc"].update({"intro": "i", "image_usage": "i", "binary_usage": "b", "env_setup": "e"})
     for doc in snapshot["test_docs"]:
-        doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p", "stale": False})
+        doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p"})
 
 
 class CoreWorkflowTests(unittest.TestCase):
@@ -310,6 +310,32 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         snapshot = core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
         self.assertEqual(snapshot["x86_chips"], "C500,X301")
         self.assertEqual(len(snapshot["test_docs"]), 1)
+
+    def test_app_info_reupload_same_content_preserves_owner_confirm(self) -> None:
+        # Re-uploading identical app_info (e.g. an idempotent Gerrit re-fetch)
+        # must not silently wipe out an Owner's prior confirmation — that
+        # would force unnecessary re-confirmation churn.
+        release_id, app_id = self.import_initial()
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        core.update_snapshot(self.conn, release_id, app_id, _fill_ready)
+        self.assertTrue(core.get_release(self.conn, release_id)["snapshots"][app_id]["owner_confirmed"])
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit-2")
+        snap = core.get_release(self.conn, release_id)["snapshots"][app_id]
+        self.assertTrue(snap["owner_confirmed"])
+        events = [r["event"] for r in core.app_audit_log(self.conn, app_id, release_id)]
+        self.assertNotIn("owner_confirm_invalidated", events)
+
+    def test_app_info_reupload_different_content_clears_owner_confirm(self) -> None:
+        # When the app_info content actually changes the Owner *should* be
+        # forced to re-review and re-confirm.
+        release_id, app_id = self.import_initial()
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        core.update_snapshot(self.conn, release_id, app_id, _fill_ready)
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V2, source="unit-2")
+        snap = core.get_release(self.conn, release_id)["snapshots"][app_id]
+        self.assertFalse(snap["owner_confirmed"])
+        events = [r["event"] for r in core.app_audit_log(self.conn, app_id, release_id)]
+        self.assertIn("owner_confirm_invalidated", events)
 
     def test_app_info_upload_blocked_after_doc_deadline(self) -> None:
         release_id, app_id = self.import_initial(doc_deadline="2026-01-01")
@@ -736,7 +762,6 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
                 "pass_criteria": "",
                 "coverage": "",
                 "owner_added": True,
-                "stale": False,
                 "obsolete": False,
             })
         core.update_snapshot(self.conn, release_id, app_id, add_qa_named_doc)
@@ -763,10 +788,13 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         core.qa_set_status(self.conn, release_id, app_id, "qa_passed")
         next_id = core.create_release_from_previous(self.conn, "next")
         snap = core.get_release(self.conn, next_id)["snapshots"][app_id]
+        # QA state is per-release and must reset on clone.
         self.assertEqual(snap["qa_status"], "not_checked")
-        self.assertFalse(snap["owner_confirmed"])
-        # test_docs reset to stale
-        self.assertTrue(all(d["stale"] for d in snap["test_docs"]))
+        # Owner confirmation and test-doc content carry over — re-uploading the
+        # same app_info or cloning a release must not silently force owners to
+        # redo work they already finished in the previous release.
+        self.assertTrue(snap["owner_confirmed"])
+        self.assertTrue(all(d.get("dataset") for d in snap["test_docs"]))
 
     # --- audit ---
 
