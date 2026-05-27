@@ -1,0 +1,49 @@
+# HPC App 发布信息协作系统 — LDAP 认证配置
+#
+# 本文件用于 HPC 发布系统的域账号（AD）登录。
+# 修改后需重启服务（server.py）才能生效，因为配置在启动时读取一次。
+#
+# ┌──────────────┬──────────────────────────────────────────────────────────┐
+# │ 字段         │ 说明                                                     │
+# ├──────────────┼──────────────────────────────────────────────────────────┤
+# │ enabled      │ true / false  — 是否启用域账号登录功能                   │
+# │ uri          │ LDAP 服务器地址，支持 ldap:// 与 ldaps://                │
+# │ base         │ 搜索基础 DN                                              │
+# │ binddn       │ 服务账号 DN（只读权限，用于搜索用户 DN）                 │
+# │ bindpw       │ 服务账号密码（明文存储，建议权限 600）                   │
+# │ user_filter  │ 用户搜索过滤器，{uid} 会被替换为用户输入的用户名         │
+# │ uid_attr     │ 用户名属性，AD 通常为 sAMAccountName                     │
+# │ name_attr    │ 显示名称属性，AD 通常为 displayName                      │
+# │ timeout      │ LDAP 连接与操作超时（秒），默认 10                       │
+# └──────────────┴──────────────────────────────────────────────────────────┘
+#
+# 注意：
+#   - 首次通过域账号登录的用户会在本系统自动创建，默认角色为 Owner。
+#   - 如需调整角色，请以 Admin 身份进入「系统管理 → 成员管理」操作。
+#   - 域账号用户不存储本地密码，每次登录都实时验证 LDAP 凭据。
+#   - 若 LDAP 服务不可用，域账号用户将无法登录（内建账号不受影响）。
+
+enabled = true
+
+# LDAP 服务器地址（来自 nslcd_demo.conf）
+uri = ldap://ad-ldap.metax-tech.com
+
+# 搜索基础 DN
+base = DC=metax-tech,DC=com
+
+# 服务账号（只读，用于搜索用户 DN）
+binddn = CN=sa_swlab-devps_bind,OU=CorpQAccount,DC=metax-tech,DC=com
+bindpw = 密码
+
+# 用户搜索过滤器；{uid} 替换为用户输入的用户名
+# 与 nslcd_demo.conf 的 filter passwd 保持一致：排除计算机账号
+user_filter = (&(objectClass=user)(!(objectClass=computer))(sAMAccountName={uid}))
+
+# AD 中用户名对应的属性（来自 nslcd_demo.conf: map passwd uid sAMAccountName）
+uid_attr = sAMAccountName
+
+# 显示名称属性（来自 nslcd_demo.conf: map passwd gecos displayName）
+name_attr = displayName
+
+# 连接超时秒数
+timeout = 10

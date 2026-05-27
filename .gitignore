@@ -8,3 +8,6 @@ admin_password.local
 venv/
 dist/
 build/
+ldap.conf
+hpc_app.csv
+.vscode

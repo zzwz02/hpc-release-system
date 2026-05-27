@@ -367,8 +367,10 @@ def init_db(conn: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
-            password_hash TEXT NOT NULL,
-            role TEXT NOT NULL
+            password_hash TEXT NOT NULL DEFAULT '',
+            role TEXT NOT NULL,
+            auth_source TEXT NOT NULL DEFAULT 'local',
+            display_name TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS sessions (
@@ -391,6 +393,15 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
     ensure_default_user(conn)
+    # --- online migration: add columns introduced after initial deployment ---
+    for _col, _col_def in [
+        ("auth_source", "TEXT NOT NULL DEFAULT 'local'"),
+        ("display_name", "TEXT NOT NULL DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {_col} {_col_def}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.commit()
 
 
@@ -526,6 +537,79 @@ def logout_session(conn: sqlite3.Connection, token: str | None) -> None:
     if token:
         with transaction(conn):
             conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+
+
+def ldap_login_or_create(conn: sqlite3.Connection, username: str, display_name: str = "") -> str:
+    """Ensure an LDAP-authenticated user exists in the local users table, then return a session token.
+
+    First-time LDAP logins are auto-provisioned with role='Owner'.  Subsequent logins
+    update display_name if it changed; the stored role is always preserved.
+    """
+    with transaction(conn):
+        row = conn.execute(
+            "SELECT username, role, display_name FROM users WHERE username = ?", (username,)
+        ).fetchone()
+        if not row:
+            conn.execute(
+                "INSERT INTO users(username, password_hash, role, auth_source, display_name) "
+                "VALUES (?, '', 'Owner', 'ldap', ?)",
+                (username, display_name),
+            )
+            audit(
+                conn,
+                f"域账号首次登录，自动创建 Owner 用户：{username}",
+                user=username,
+                role="Owner",
+                event="ldap_first_login",
+            )
+        elif display_name and dict(row).get("display_name", "") != display_name:
+            conn.execute(
+                "UPDATE users SET display_name = ? WHERE username = ?", (display_name, username)
+            )
+    token = secrets.token_urlsafe(32)
+    with transaction(conn):
+        conn.execute(
+            "INSERT INTO sessions(token, username, created_at) VALUES (?, ?, ?)",
+            (token, username, now()),
+        )
+    return token
+
+
+def list_users(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return all users ordered by auth_source then username."""
+    return [
+        dict(row)
+        for row in conn.execute(
+            "SELECT username, role, auth_source, display_name FROM users ORDER BY auth_source, role, username"
+        )
+    ]
+
+
+def set_user_role(
+    conn: sqlite3.Connection,
+    username: str,
+    new_role: str,
+    *,
+    actor: str,
+    actor_role: str,
+) -> None:
+    """Update a user's role; actor must be Admin."""
+    if new_role not in ROLES:
+        raise ValueError(f"无效角色：{new_role}，合法值为 {sorted(ROLES)}")
+    row = conn.execute("SELECT role FROM users WHERE username = ?", (username,)).fetchone()
+    if not row:
+        raise KeyError(f"用户不存在：{username}")
+    old_role = dict(row)["role"]
+    with transaction(conn):
+        conn.execute("UPDATE users SET role = ? WHERE username = ?", (new_role, username))
+        audit(
+            conn,
+            f"修改用户角色：{username}  {old_role} → {new_role}",
+            user=actor,
+            role=actor_role,
+            event="set_user_role",
+            detail=[{"field": "role", "label": "角色", "old": old_role, "new": new_role}],
+        )
 
 
 def audit(

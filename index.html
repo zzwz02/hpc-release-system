@@ -89,8 +89,8 @@
   .subtab{padding:7px 13px;border-radius:8px;border:1px solid var(--border-2);background:#fff;
     font:inherit;font-weight:700;font-size:13px;color:var(--ink-2);cursor:pointer;}
   .subtab.active{color:var(--accent);background:var(--accent-soft);border-color:var(--accent-bd);}
-  .init-pane,.artifact-pane,.qa-pane{display:none;}
-  .init-pane.active,.artifact-pane.active,.qa-pane.active{display:block;}
+  .init-pane,.artifact-pane,.qa-pane,.admin-pane{display:none;}
+  .init-pane.active,.artifact-pane.active,.qa-pane.active,.admin-pane.active{display:block;}
   /* ---- rows / forms ---- */
   .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
   .form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:13px;}
@@ -324,6 +324,10 @@
     <div class="brand"><span class="logo">HPC</span><span>发布信息协作系统</span></div>
     <div class="spacer"></div>
     <span id="loginBox" class="loginbox">
+      <select id="loginType" class="select sm" style="width:90px" hidden title="选择登录方式">
+        <option value="local">内建账号</option>
+        <option value="ldap">域账号</option>
+      </select>
       <input id="loginUser" class="input" value="rm" placeholder="用户名" style="width:120px">
       <input id="loginPass" class="input" type="password" value="rm" placeholder="密码" style="width:120px">
       <button id="loginBtn" class="btn primary">登录</button>
@@ -522,23 +526,49 @@
     </section>
 
     <section id="admin" class="view" data-roles="Admin">
-      <div class="panel">
-        <div class="panel-head"><h2>清空数据库</h2></div>
-        <div class="panel-body">
-          <p class="hint" style="margin-top:0">清空数据库会先备份当前 SQLite 文件，然后删除 app、release、snapshot、artifact 和审计数据；默认账号会保留。需重新输入 admin 密码确认。</p>
-          <div class="row" style="margin-top:11px">
-            <input id="clearConfirm" class="input" placeholder="输入：CLEAR_DATABASE" style="min-width:230px">
-            <input id="clearPassword" class="input" type="password" placeholder="再次输入 admin 密码" style="min-width:230px" autocomplete="current-password">
-            <button class="btn danger" id="clearDb">备份并清空数据库</button>
+      <div class="subtabs">
+        <button class="subtab active" data-admin-pane="adminDbPane">数据库管理</button>
+        <button class="subtab" data-admin-pane="adminMemberPane">成员管理</button>
+      </div>
+
+      <div id="adminDbPane" class="admin-pane active">
+        <div class="panel">
+          <div class="panel-head"><h2>清空数据库</h2></div>
+          <div class="panel-body">
+            <p class="hint" style="margin-top:0">清空数据库会先备份当前 SQLite 文件，然后删除 app、release、snapshot、artifact 和审计数据；默认账号会保留。需重新输入 admin 密码确认。</p>
+            <div class="row" style="margin-top:11px">
+              <input id="clearConfirm" class="input" placeholder="输入：CLEAR_DATABASE" style="min-width:230px">
+              <input id="clearPassword" class="input" type="password" placeholder="再次输入 admin 密码" style="min-width:230px" autocomplete="current-password">
+              <button class="btn danger" id="clearDb">备份并清空数据库</button>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>删除单个 App</h2></div>
+          <div class="panel-body">
+            <p class="hint" style="margin-top:0">删除前会自动备份数据库；已最终锁定的 release 中的 app 不允许删除。</p>
+            <div class="table" style="margin-top:12px"><table id="adminAppTable"></table></div>
+            <div class="log" id="adminLog"></div>
           </div>
         </div>
       </div>
-      <div class="panel">
-        <div class="panel-head"><h2>删除单个 App</h2></div>
-        <div class="panel-body">
-          <p class="hint" style="margin-top:0">删除前会自动备份数据库；已最终锁定的 release 中的 app 不允许删除。</p>
-          <div class="table" style="margin-top:12px"><table id="adminAppTable"></table></div>
-          <div class="log" id="adminLog"></div>
+
+      <div id="adminMemberPane" class="admin-pane">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>成员管理</h2>
+            <button class="btn sm" id="refreshMembers">&#x21bb; 刷新</button>
+          </div>
+          <div class="panel-body">
+            <p class="hint" style="margin-top:0">
+              列出所有内建账号与已通过域账号登录过的用户，可在此调整角色。
+              角色说明：<b>RM</b> — 发布管理；<b>Owner</b> — App 负责人；<b>QA</b> — 质量测试；<b>Admin</b> — 系统管理。
+            </p>
+            <div class="table" style="margin-top:12px">
+              <table id="membersTable"></table>
+            </div>
+            <div class="log" id="membersLog"></div>
+          </div>
         </div>
       </div>
     </section>
@@ -624,6 +654,8 @@
     let qaReportColFilters = { release: {}, test: {} };
     let qaReportSort = { release: { col: -1, dir: 1 }, test: { col: -1, dir: 1 } };
     let qaReportCompareId = "";
+    let ldapStatus = { enabled: false, uri: "" };
+    let memberList = [];
     document.addEventListener("keydown", () => { lastUserInputAt = Date.now(); }, true);
     document.addEventListener("input", markUserEdit, true);
     document.addEventListener("change", markUserEdit, true);
@@ -2127,6 +2159,12 @@
         $(b.dataset.qaPane).classList.add("active");
         if (b.dataset.qaPane !== "qaMarkPane") loadQaReports(true);
       });
+      document.querySelectorAll("[data-admin-pane]").forEach(b => b.onclick = () => {
+        document.querySelectorAll("[data-admin-pane],.admin-pane").forEach(x => x.classList.remove("active"));
+        b.classList.add("active");
+        $(b.dataset.adminPane).classList.add("active");
+        if (b.dataset.adminPane === "adminMemberPane") loadMembers();
+      });
       window.addEventListener("unhandledrejection", e => {
         const msg = e.reason && e.reason.message ? e.reason.message : String(e.reason || "未知错误");
         alert("操作失败：" + msg);
@@ -2228,6 +2266,7 @@
         window.open(`/api/artifacts/manager_review?release_id=${encodeURIComponent(currentReleaseId())}`, "_blank");
       };
       document.querySelectorAll(".download").forEach(b => b.onclick = () => showArtifact(b.dataset.kind));
+      if ($("refreshMembers")) $("refreshMembers").onclick = loadMembers;
       $("clearDb").onclick = async () => {
         const password = $("clearPassword").value;
         if (!password) { alert("请重新输入 admin 密码以确认"); return; }
@@ -2297,9 +2336,64 @@
     }
 
     async function login() {
-      await post("/api/login", { username: $("loginUser").value, password: $("loginPass").value });
+      const sel = $("loginType");
+      const loginType = (sel && !sel.hidden) ? (sel.value || "local") : "local";
+      const endpoint = loginType === "ldap" ? "/api/login/ldap" : "/api/login";
+      await post(endpoint, { username: $("loginUser").value, password: $("loginPass").value });
       await loadState();
       startAutoRefresh();
+    }
+
+    async function loadMembers() {
+      const log = $("membersLog");
+      if (log) log.textContent = "加载中\u2026";
+      try {
+        const data = await api("/api/admin/users");
+        memberList = data.users || [];
+        renderMembers();
+        if (log) log.textContent = "";
+      } catch (e) {
+        if (log) log.textContent = "加载失败：" + e.message;
+      }
+    }
+
+    function renderMembers() {
+      const table = $("membersTable");
+      if (!table) return;
+      const sourceLabel = { local: "内建账号", ldap: "域账号" };
+      const rolePill = r => {
+        const cls = r === "RM" ? "accent" : r === "Admin" ? "bad" : r === "QA" ? "warn" : "";
+        return `<span class="pill ${cls}">${esc(r)}</span>`;
+      };
+      const rows = memberList.map(u => `
+        <tr>
+          <td><b>${esc(u.username)}</b>${u.display_name ? `<div class="small muted">${esc(u.display_name)}</div>` : ""}</td>
+          <td><span class="pill ${u.auth_source === "ldap" ? "accent" : ""}">${esc(sourceLabel[u.auth_source] || u.auth_source)}</span></td>
+          <td>${rolePill(u.role)}</td>
+          <td>
+            <select class="select sm" data-member-role="${esc(u.username)}" style="width:88px">
+              ${["RM","Owner","QA","Admin"].map(r => `<option value="${r}"${u.role===r?" selected":""}>${r}</option>`).join("")}
+            </select>
+          </td>
+          <td><button class="btn sm primary" data-save-role="${esc(u.username)}">保存</button></td>
+        </tr>`).join("");
+      table.innerHTML = `<thead><tr><th>用户名</th><th>登录方式</th><th>当前角色</th><th>修改为</th><th>操作</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="muted">无数据</td></tr>'}</tbody>`;
+      table.querySelectorAll("[data-save-role]").forEach(btn => {
+        btn.onclick = async () => {
+          const uname = btn.dataset.saveRole;
+          const sel2 = table.querySelector(`[data-member-role="${uname}"]`);
+          if (!sel2) return;
+          const newRole = sel2.value;
+          try {
+            await post("/api/admin/users/set-role", { username: uname, role: newRole });
+            await loadMembers();
+            const log = $("membersLog");
+            if (log) log.textContent = `已将 ${uname} 的角色设为 ${newRole}`;
+          } catch (e) {
+            alert("保存失败：" + e.message);
+          }
+        };
+      });
     }
 
     async function logout() {
@@ -2329,7 +2423,20 @@
     }
 
     bind();
-    loadState().then(startAutoRefresh).catch(() => showLoggedOut());
+    (async function initPage() {
+      try {
+        const status = await fetch("/api/ldap/status").then(r => r.json()).catch(() => ({ enabled: false }));
+        ldapStatus = status || { enabled: false };
+        const sel = $("loginType");
+        if (sel) sel.hidden = !ldapStatus.enabled;
+      } catch (_) { /* LDAP status failure must not block login */ }
+      try {
+        await loadState();
+        startAutoRefresh();
+      } catch (_) {
+        showLoggedOut();
+      }
+    })();
   </script>
 </body>
 </html>

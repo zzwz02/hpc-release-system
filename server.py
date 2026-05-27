@@ -13,12 +13,140 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+try:
+    import ldap3
+    from ldap3 import Server as LdapServer, Connection as LdapConn, ALL as LDAP_ALL, SIMPLE as LDAP_SIMPLE, SUBTREE as LDAP_SUBTREE
+    from ldap3.core.exceptions import LDAPException
+    _LDAP3_AVAILABLE = True
+except ImportError:
+    _LDAP3_AVAILABLE = False
+
 from release_system import core
 
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = ROOT / "release_system.db"
 ADMIN_PASSWORD_FILE = ROOT / "admin_password.local"
+LDAP_CONF_PATH = ROOT / "ldap.conf"
+
+# Populated at startup by main(); read-only after that (no lock needed).
+_LDAP_CONFIG: dict = {"enabled": False}
+
+
+def _load_ldap_config() -> dict:
+    """Parse ldap.conf into a plain dict.
+
+    Handles multi-word values (e.g. passwords with '=') by splitting only on
+    the first '=' per line.  Returns a safe default (disabled) if the file is
+    missing or unreadable.
+    """
+    defaults: dict = {
+        "enabled": False,
+        "uri": "",
+        "base": "",
+        "binddn": "",
+        "bindpw": "",
+        "user_filter": "(&(objectClass=user)(sAMAccountName={uid}))",
+        "uid_attr": "sAMAccountName",
+        "name_attr": "displayName",
+        "timeout": 10,
+    }
+    if not LDAP_CONF_PATH.exists():
+        return defaults
+    cfg = dict(defaults)
+    for line in LDAP_CONF_PATH.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        key = key.strip().lower()
+        value = value.strip()
+        if key == "enabled":
+            cfg["enabled"] = value.lower() in ("true", "1", "yes")
+        elif key in cfg:
+            cfg[key] = value
+    try:
+        cfg["timeout"] = int(cfg["timeout"])
+    except (ValueError, TypeError):
+        cfg["timeout"] = 10
+    return cfg
+
+
+def ldap_authenticate(username: str, password: str) -> tuple[str, str]:
+    """Verify *username*/*password* against LDAP.  Returns (username, display_name).
+
+    Raises PermissionError for wrong credentials, RuntimeError for config /
+    connectivity problems.  The two-step flow:
+      1. Bind with the service account to locate the user's full DN.
+      2. Bind as that DN with the supplied password to verify.
+    """
+    cfg = _LDAP_CONFIG
+    if not cfg.get("enabled"):
+        raise RuntimeError("LDAP 登录未启用")
+    if not _LDAP3_AVAILABLE:
+        raise RuntimeError("服务器未安装 ldap3 依赖（pip install ldap3）")
+    if not username or not password:
+        raise PermissionError("用户名和密码不能为空")
+
+    # Escape LDAP special chars in username to prevent filter injection
+    safe_uid = (
+        username
+        .replace("\\", "\\5c")
+        .replace("(",  "\\28")
+        .replace(")",  "\\29")
+        .replace("*",  "\\2a")
+    )
+    search_filter = cfg["user_filter"].replace("{uid}", safe_uid)
+
+    server = LdapServer(cfg["uri"], get_info=LDAP_ALL, connect_timeout=cfg["timeout"])
+
+    # Step 1: service-account bind to find user DN
+    try:
+        svc = LdapConn(
+            server,
+            user=cfg["binddn"],
+            password=cfg["bindpw"],
+            authentication=LDAP_SIMPLE,
+            auto_bind=True,
+            receive_timeout=cfg["timeout"],
+        )
+    except LDAPException as exc:
+        raise RuntimeError(f"LDAP 服务账号连接失败：{exc}") from exc
+
+    svc.search(
+        cfg["base"],
+        search_filter,
+        search_scope=LDAP_SUBTREE,
+        attributes=[cfg["uid_attr"], cfg["name_attr"]],
+    )
+    entries = svc.entries
+    svc.unbind()
+
+    if not entries:
+        raise PermissionError(f"域账号不存在：{username}")
+
+    entry = entries[0]
+    user_dn = entry.entry_dn
+    try:
+        display_name = str(entry[cfg["name_attr"]].value or username)
+    except Exception:
+        display_name = username
+
+    # Step 2: user-password bind to verify credentials
+    try:
+        uconn = LdapConn(
+            server,
+            user=user_dn,
+            password=password,
+            authentication=LDAP_SIMPLE,
+            auto_bind=True,
+            receive_timeout=cfg["timeout"],
+        )
+        uconn.unbind()
+    except LDAPException:
+        raise PermissionError("域账号密码不正确")
+
+    return username, display_name
 
 
 class AuthzError(Exception):
@@ -54,6 +182,15 @@ class Handler(BaseHTTPRequestHandler):
                 if parsed.path == "/api/me":
                     user = self.current_user(required=False)
                     self.send_json({"user": user})
+                    return
+                if parsed.path == "/api/ldap/status":
+                    # Public endpoint — no auth required (front-end reads this before login)
+                    cfg = _LDAP_CONFIG
+                    self.send_json({"enabled": bool(cfg.get("enabled")), "uri": cfg.get("uri", "")})
+                    return
+                if parsed.path == "/api/admin/users":
+                    self.require_admin()
+                    self.send_json({"users": core.list_users(self.conn())})
                     return
                 if parsed.path == "/api/state":
                     self.current_user()
@@ -152,6 +289,12 @@ class Handler(BaseHTTPRequestHandler):
                         raise PermissionError("Invalid username or password")
                     self.send_json({"ok": True}, cookies=[f"hpc_session={token}; HttpOnly; SameSite=Strict; Path=/"])
                     return
+                if parsed.path == "/api/login/ldap":
+                    body = self.json_body()
+                    uname, display = ldap_authenticate(body.get("username", ""), body.get("password", ""))
+                    token = core.ldap_login_or_create(self.conn(), uname, display)
+                    self.send_json({"ok": True}, cookies=[f"hpc_session={token}; HttpOnly; SameSite=Strict; Path=/"])
+                    return
                 if parsed.path == "/api/logout":
                     core.logout_session(self.conn(), self.session_token())
                     self.send_json({"ok": True}, cookies=["hpc_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"])
@@ -180,6 +323,20 @@ class Handler(BaseHTTPRequestHandler):
                     backup = backup_database()
                     core.clear_business_data(self.conn(), user=username, role=role)
                     self.send_json({"ok": True, "backup": backup.name})
+                    return
+                if parsed.path == "/api/admin/users/set-role":
+                    self.require_admin()
+                    body = self.json_body()
+                    if not body.get("username") or not body.get("role"):
+                        raise ValueError("username 和 role 均为必填")
+                    core.set_user_role(
+                        self.conn(),
+                        body["username"],
+                        body["role"],
+                        actor=self.user(),
+                        actor_role=self.role(),
+                    )
+                    self.send_json({"ok": True})
                     return
                 if parsed.path == "/api/import-initial":
                     self.require_rm()
@@ -805,14 +962,20 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8033)
     args = parser.parse_args()
     conn = core.connect(DB_PATH)
     admin_source = ensure_admin_user(conn)
     conn.close()
     if admin_source:
         print(f"Admin user created. Password source: {admin_source}")
+    global _LDAP_CONFIG
+    _LDAP_CONFIG = _load_ldap_config()
+    if _LDAP_CONFIG.get("enabled"):
+        print(f"LDAP authentication enabled: {_LDAP_CONFIG['uri']}")
+    else:
+        print("LDAP authentication disabled (set 'enabled = true' in ldap.conf to enable)")
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Serving http://{args.host}:{args.port}")
     server.serve_forever()
