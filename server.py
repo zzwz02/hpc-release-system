@@ -247,6 +247,45 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("release_id is required")
                     self.send_json(core.build_qa_reports(self.conn(), release_id, compare_id or None))
                     return
+                # --- CICD workbench ---
+                if parsed.path == "/api/cicd/tasks":
+                    self.current_user()
+                    status_filter = self.query().get("status", [None])[0]
+                    tasks = core.list_cicd_tasks(self.conn(), status_filter=status_filter)
+                    self.send_json({"tasks": tasks})
+                    return
+                if parsed.path.startswith("/api/cicd/tasks/") and parsed.path.endswith("/history"):
+                    self.current_user()
+                    task_id = parsed.path[len("/api/cicd/tasks/"):-len("/history")]
+                    history = core.get_cicd_task_history(self.conn(), task_id)
+                    self.send_json({"history": history})
+                    return
+                if parsed.path == "/api/cicd/requests":
+                    user = self.current_user()
+                    q = self.query()
+                    role = user["role"]
+                    username = user["username"]
+                    only_mine = q.get("only_mine", [""])[0] == "1"
+                    task_id = q.get("task_id", [None])[0]
+                    status_filter = q.get("status", [None])[0]
+                    since_days_str = q.get("since_days", [None])[0]
+                    since_days = int(since_days_str) if since_days_str else None
+                    requests = core.list_cicd_requests(
+                        self.conn(),
+                        username=username if only_mine else None,
+                        role=role,
+                        task_id=task_id,
+                        status_filter=status_filter,
+                        since_days=since_days,
+                        exclude_cancelled=True,
+                    )
+                    self.send_json({"requests": requests})
+                    return
+                if parsed.path == "/api/cicd/notifications":
+                    user = self.current_user()
+                    counts = core.get_cicd_notifications(self.conn(), user["username"], user["role"])
+                    self.send_json(counts)
+                    return
                 if parsed.path.startswith("/api/artifacts/"):
                     self.require_rm()
                     kind = parsed.path.rsplit("/", 1)[-1]
@@ -663,6 +702,95 @@ class Handler(BaseHTTPRequestHandler):
                     ok = core.delete_release_schedule(self.conn(), body["id"], user=self.user(), role=self.role())
                     if not ok:
                         raise RuntimeError("entry not found")
+                    self.send_json({"ok": True})
+                    return
+                # --- CICD workbench ---
+                if parsed.path == "/api/cicd/requests/submit":
+                    user = self.current_user()
+                    role = user["role"]
+                    if role not in core.CICD_CREATE_ROLES:
+                        raise AuthzError("只有 Owner、RM、Admin 可以提交 CICD 任务申请")
+                    body = self.json_body()
+                    req = core.submit_cicd_request(
+                        self.conn(),
+                        task_id=body.get("task_id") or None,
+                        request_type=body.get("request_type", "create"),
+                        payload=body.get("payload", {}),
+                        submitter=user["username"],
+                        submitter_role=role,
+                        submitter_display=user.get("display_name", ""),
+                    )
+                    self.send_json({"ok": True, "request": req})
+                    return
+                if parsed.path == "/api/cicd/requests/approve":
+                    user = self.current_user()
+                    if user["role"] not in core.CICD_APPROVER_ROLES:
+                        raise AuthzError("只有 RM/Admin 可以审批")
+                    body = self.json_body()
+                    req = core.approve_cicd_request(
+                        self.conn(),
+                        int(body["request_id"]),
+                        reviewer=user["username"],
+                        reviewer_role=user["role"],
+                        review_note=body.get("review_note", ""),
+                    )
+                    self.send_json({"ok": True, "request": req})
+                    return
+                if parsed.path == "/api/cicd/requests/reject":
+                    user = self.current_user()
+                    if user["role"] not in core.CICD_APPROVER_ROLES:
+                        raise AuthzError("只有 RM/Admin 可以拒绝")
+                    body = self.json_body()
+                    req = core.reject_cicd_request(
+                        self.conn(),
+                        int(body["request_id"]),
+                        reviewer=user["username"],
+                        reviewer_role=user["role"],
+                        review_note=body.get("review_note", ""),
+                    )
+                    self.send_json({"ok": True, "request": req})
+                    return
+                if parsed.path == "/api/cicd/requests/cancel":
+                    user = self.current_user()
+                    body = self.json_body()
+                    req = core.cancel_cicd_request(
+                        self.conn(),
+                        int(body["request_id"]),
+                        username=user["username"],
+                        role=user["role"],
+                    )
+                    self.send_json({"ok": True, "request": req})
+                    return
+                if parsed.path == "/api/cicd/tasks/transfer-owner":
+                    user = self.current_user()
+                    if user["role"] not in core.CICD_APPROVER_ROLES:
+                        raise AuthzError("只有 RM/Admin 可以直接修改负责人")
+                    body = self.json_body()
+                    task = core.transfer_cicd_owner(
+                        self.conn(),
+                        body["task_id"],
+                        body["new_owner"],
+                        actor=user["username"],
+                        actor_role=user["role"],
+                    )
+                    self.send_json({"ok": True, "task": task})
+                    return
+                if parsed.path == "/api/cicd/tasks/delete":
+                    user = self.current_user()
+                    if user["role"] not in core.CICD_APPROVER_ROLES:
+                        raise AuthzError("只有 RM/Admin 可以删除 CICD 任务")
+                    body = self.json_body()
+                    core.delete_cicd_task(
+                        self.conn(),
+                        body["task_id"],
+                        actor=user["username"],
+                        actor_role=user["role"],
+                    )
+                    self.send_json({"ok": True})
+                    return
+                if parsed.path == "/api/cicd/notifications/mark-visited":
+                    user = self.current_user()
+                    core.mark_cicd_visited(self.conn(), user["username"])
                     self.send_json({"ok": True})
                     return
                 if parsed.path == "/api/app-info":

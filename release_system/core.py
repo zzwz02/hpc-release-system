@@ -390,6 +390,45 @@ def init_db(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL DEFAULT '',
             updated_by TEXT NOT NULL DEFAULT ''
         );
+
+        CREATE TABLE IF NOT EXISTS cicd_tasks (
+            id TEXT PRIMARY KEY,
+            app_name TEXT NOT NULL,
+            app_version TEXT NOT NULL DEFAULT '',
+            repo_type TEXT NOT NULL DEFAULT 'git',
+            repo_name TEXT NOT NULL DEFAULT '',
+            branch TEXT NOT NULL DEFAULT '',
+            build_product TEXT NOT NULL DEFAULT '[]',
+            build_image TEXT NOT NULL DEFAULT '',
+            test_timeout INTEGER NOT NULL DEFAULT 40,
+            supports_maca_hpcc TEXT NOT NULL DEFAULT 'No',
+            owner_username TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'Running',
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS cicd_task_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT,
+            request_type TEXT NOT NULL DEFAULT 'create',
+            payload TEXT NOT NULL DEFAULT '{}',
+            submitter TEXT NOT NULL,
+            submitter_display TEXT NOT NULL DEFAULT '',
+            submitted_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reviewer TEXT NOT NULL DEFAULT '',
+            reviewed_at TEXT NOT NULL DEFAULT '',
+            review_note TEXT NOT NULL DEFAULT '',
+            is_self_approved INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS cicd_notifications (
+            username TEXT NOT NULL,
+            last_visited_at TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (username)
+        );
         """
     )
     ensure_default_user(conn)
@@ -2904,3 +2943,467 @@ def gerrit_push_plan(conn: sqlite3.Connection, release_id: str) -> dict[str, Any
             f"git -C release-data-worktree push origin HEAD:refs/for/{branch}",
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# CICD workbench
+# ---------------------------------------------------------------------------
+
+CICD_BUILD_PRODUCTS = ["maca", "hpcc", "pkg"]
+CICD_STATUSES = {"Running", "Stopped", "Abandoned"}
+CICD_APPROVER_ROLES = {"RM", "Admin"}
+CICD_CREATE_ROLES = {"Owner", "RM", "Admin"}
+
+
+def _next_cicd_id(conn: sqlite3.Connection) -> str:
+    row = conn.execute("SELECT id FROM cicd_tasks ORDER BY id DESC LIMIT 1").fetchone()
+    if not row:
+        return "CICD-0001"
+    last = row["id"]  # e.g. CICD-0042
+    try:
+        num = int(last.split("-", 1)[1]) + 1
+    except (IndexError, ValueError):
+        num = 1
+    return f"CICD-{num:04d}"
+
+
+def _cicd_task_row(row) -> dict:
+    d = dict(row)
+    try:
+        d["build_product"] = json.loads(d.get("build_product") or "[]")
+    except Exception:
+        d["build_product"] = []
+    return d
+
+
+def list_cicd_tasks(
+    conn: sqlite3.Connection,
+    *,
+    status_filter: str | None = None,   # "Running" | "Stopped" | "Abandoned" | None=all
+) -> list[dict]:
+    if status_filter and status_filter in CICD_STATUSES:
+        rows = conn.execute(
+            "SELECT * FROM cicd_tasks WHERE status = ? ORDER BY id",
+            (status_filter,),
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM cicd_tasks ORDER BY id").fetchall()
+    tasks = [_cicd_task_row(r) for r in rows]
+    # attach pending-request flag for each task
+    pending_task_ids = {
+        r["task_id"]
+        for r in conn.execute(
+            "SELECT DISTINCT task_id FROM cicd_task_requests WHERE status = 'pending' AND task_id IS NOT NULL"
+        ).fetchall()
+    }
+    for t in tasks:
+        t["has_pending"] = t["id"] in pending_task_ids
+    # attach owner display_name
+    _attach_owner_display(conn, tasks)
+    return tasks
+
+
+def _attach_owner_display(conn: sqlite3.Connection, tasks: list[dict]) -> None:
+    if not tasks:
+        return
+    usernames = list({t["owner_username"] for t in tasks})
+    rows = conn.execute(
+        "SELECT username, display_name FROM users WHERE username IN ({})".format(
+            ",".join("?" * len(usernames))
+        ),
+        usernames,
+    ).fetchall()
+    display_map = {r["username"]: r["display_name"] for r in rows}
+    for t in tasks:
+        u = t["owner_username"]
+        dn = display_map.get(u, "")
+        t["owner_display"] = f"{dn}({u})" if dn else u
+
+
+def get_cicd_task(conn: sqlite3.Connection, task_id: str) -> dict | None:
+    row = conn.execute("SELECT * FROM cicd_tasks WHERE id = ?", (task_id,)).fetchone()
+    if not row:
+        return None
+    task = _cicd_task_row(row)
+    _attach_owner_display(conn, [task])
+    return task
+
+
+def submit_cicd_request(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str | None,
+    request_type: str,           # "create" | "modify"
+    payload: dict,               # {field: {old, new}} for modify; full fields for create
+    submitter: str,
+    submitter_role: str,
+    submitter_display: str = "",
+) -> dict:
+    """Submit a CICD task create/modify request.
+
+    For RM/Admin submitters: auto-approves immediately and applies the change.
+    For Owner submitters: enters the pending queue.
+    Returns the created request as a dict.
+    """
+    if submitter_role not in CICD_CREATE_ROLES:
+        raise PermissionError("只有 Owner、RM、Admin 可以提交 CICD 任务申请")
+    is_auto = submitter_role in CICD_APPROVER_ROLES
+    ts = now()
+    with transaction(conn):
+        conn.execute(
+            """
+            INSERT INTO cicd_task_requests
+              (task_id, request_type, payload, submitter, submitter_display,
+               submitted_at, status, reviewer, reviewed_at, review_note, is_self_approved)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                task_id,
+                request_type,
+                json.dumps(payload, ensure_ascii=False),
+                submitter,
+                submitter_display,
+                ts,
+                "approved" if is_auto else "pending",
+                submitter if is_auto else "",
+                ts if is_auto else "",
+                "",
+                1 if is_auto else 0,
+            ),
+        )
+        req_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        if is_auto:
+            _apply_cicd_request(conn, req_id, payload, task_id, request_type, ts)
+        row = conn.execute("SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)).fetchone()
+    return dict(row)
+
+
+def _apply_cicd_request(
+    conn: sqlite3.Connection,
+    req_id: int,
+    payload: dict,
+    task_id: str | None,
+    request_type: str,
+    ts: str,
+) -> str:
+    """Actually create or update cicd_tasks after approval. Returns the task_id."""
+    if request_type == "create":
+        new_id = _next_cicd_id(conn)
+        build_product = payload.get("build_product", [])
+        conn.execute(
+            """
+            INSERT INTO cicd_tasks
+              (id, app_name, app_version, repo_type, repo_name, branch,
+               build_product, build_image, test_timeout, supports_maca_hpcc,
+               owner_username, status, notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                new_id,
+                payload.get("app_name", ""),
+                payload.get("app_version", ""),
+                payload.get("repo_type", "git"),
+                payload.get("repo_name", ""),
+                payload.get("branch", ""),
+                json.dumps(build_product, ensure_ascii=False),
+                payload.get("build_image", ""),
+                int(payload.get("test_timeout", 40)),
+                payload.get("supports_maca_hpcc", "No"),
+                payload.get("owner_username", ""),
+                payload.get("status", "Running"),
+                payload.get("notes", ""),
+                ts,
+                ts,
+            ),
+        )
+        # back-fill task_id on the request row
+        conn.execute(
+            "UPDATE cicd_task_requests SET task_id = ? WHERE id = ?",
+            (new_id, req_id),
+        )
+        return new_id
+    else:
+        # modify: apply diff
+        if not task_id:
+            raise RuntimeError("修改请求缺少 task_id")
+        for field, change in payload.items():
+            new_val = change.get("new")
+            if field == "build_product":
+                new_val = json.dumps(new_val or [], ensure_ascii=False)
+            elif field == "test_timeout":
+                new_val = int(new_val or 40)
+            conn.execute(
+                f"UPDATE cicd_tasks SET {field} = ?, updated_at = ? WHERE id = ?",
+                (new_val, ts, task_id),
+            )
+        return task_id
+
+
+def approve_cicd_request(
+    conn: sqlite3.Connection,
+    req_id: int,
+    *,
+    reviewer: str,
+    reviewer_role: str,
+    review_note: str = "",
+) -> dict:
+    if reviewer_role not in CICD_APPROVER_ROLES:
+        raise PermissionError("只有 RM/Admin 可以审批 CICD 任务申请")
+    row = conn.execute("SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)).fetchone()
+    if not row:
+        raise RuntimeError("申请不存在")
+    req = dict(row)
+    if req["status"] != "pending":
+        raise RuntimeError(f"申请状态为 {req['status']}，无法审批")
+    ts = now()
+    payload = json.loads(req["payload"] or "{}")
+    with transaction(conn):
+        conn.execute(
+            "UPDATE cicd_task_requests SET status='approved', reviewer=?, reviewed_at=?, review_note=? WHERE id=?",
+            (reviewer, ts, review_note, req_id),
+        )
+        _apply_cicd_request(conn, req_id, payload, req["task_id"], req["request_type"], ts)
+        row = conn.execute("SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)).fetchone()
+    return dict(row)
+
+
+def reject_cicd_request(
+    conn: sqlite3.Connection,
+    req_id: int,
+    *,
+    reviewer: str,
+    reviewer_role: str,
+    review_note: str,
+) -> dict:
+    if reviewer_role not in CICD_APPROVER_ROLES:
+        raise PermissionError("只有 RM/Admin 可以拒绝 CICD 任务申请")
+    if not review_note or not review_note.strip():
+        raise ValueError("拒绝必须填写理由")
+    row = conn.execute("SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)).fetchone()
+    if not row:
+        raise RuntimeError("申请不存在")
+    if dict(row)["status"] != "pending":
+        raise RuntimeError(f"申请状态为 {dict(row)['status']}，无法拒绝")
+    ts = now()
+    with transaction(conn):
+        conn.execute(
+            "UPDATE cicd_task_requests SET status='rejected', reviewer=?, reviewed_at=?, review_note=? WHERE id=?",
+            (reviewer, ts, review_note.strip(), req_id),
+        )
+        row = conn.execute("SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)).fetchone()
+    return dict(row)
+
+
+def cancel_cicd_request(
+    conn: sqlite3.Connection,
+    req_id: int,
+    *,
+    username: str,
+    role: str,
+) -> dict:
+    row = conn.execute("SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)).fetchone()
+    if not row:
+        raise RuntimeError("申请不存在")
+    req = dict(row)
+    if req["status"] != "pending":
+        raise RuntimeError(f"申请状态为 {req['status']}，只有 pending 状态可以取消")
+    # Only submitter or RM/Admin can cancel
+    if req["submitter"] != username and role not in CICD_APPROVER_ROLES:
+        raise PermissionError("只有提交人或 RM/Admin 可以取消申请")
+    with transaction(conn):
+        conn.execute(
+            "UPDATE cicd_task_requests SET status='cancelled', reviewed_at=? WHERE id=?",
+            (now(), req_id),
+        )
+        row = conn.execute("SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)).fetchone()
+    return dict(row)
+
+
+def transfer_cicd_owner(
+    conn: sqlite3.Connection,
+    task_id: str,
+    new_owner: str,
+    *,
+    actor: str,
+    actor_role: str,
+) -> dict:
+    """RM/Admin can transfer task ownership directly without approval flow."""
+    if actor_role not in CICD_APPROVER_ROLES:
+        raise PermissionError("只有 RM/Admin 可以直接修改负责人")
+    task = get_cicd_task(conn, task_id)
+    if not task:
+        raise RuntimeError(f"CICD 任务 {task_id} 不存在")
+    old_owner = task["owner_username"]
+    ts = now()
+    with transaction(conn):
+        conn.execute(
+            "UPDATE cicd_tasks SET owner_username=?, updated_at=? WHERE id=?",
+            (new_owner, ts, task_id),
+        )
+        # Record in request history as a special "owner_transfer" entry
+        payload = json.dumps(
+            {"owner_username": {"old": old_owner, "new": new_owner}},
+            ensure_ascii=False,
+        )
+        conn.execute(
+            """
+            INSERT INTO cicd_task_requests
+              (task_id, request_type, payload, submitter, submitter_display,
+               submitted_at, status, reviewer, reviewed_at, review_note, is_self_approved)
+            VALUES (?, 'owner_transfer', ?, ?, ?, ?, 'approved', ?, ?, '负责人直接变更', 1)
+            """,
+            (task_id, payload, actor, actor, ts, actor, ts),
+        )
+    return get_cicd_task(conn, task_id)
+
+
+def delete_cicd_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: str,
+    actor_role: str,
+) -> None:
+    if actor_role not in CICD_APPROVER_ROLES:
+        raise PermissionError("只有 RM/Admin 可以删除 CICD 任务")
+    task = get_cicd_task(conn, task_id)
+    if not task:
+        raise RuntimeError(f"CICD 任务 {task_id} 不存在")
+    if task["status"] != "Abandoned":
+        raise RuntimeError("只有 Abandoned 状态的任务可以删除")
+    with transaction(conn):
+        conn.execute("DELETE FROM cicd_task_requests WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM cicd_tasks WHERE id = ?", (task_id,))
+
+
+def list_cicd_requests(
+    conn: sqlite3.Connection,
+    *,
+    username: str | None = None,   # filter by submitter (None = all)
+    role: str = "Owner",
+    task_id: str | None = None,
+    status_filter: str | None = None,   # pending/approved/rejected/cancelled/None=all
+    since_days: int | None = None,       # filter by time window
+    exclude_cancelled: bool = False,
+) -> list[dict]:
+    """Return cicd_task_requests with flexible filters.
+
+    Visibility rules:
+    - RM/Admin: can see all records (except if username filter applied)
+    - Owner: can only see their own submissions; cancelled records hidden from
+      non-RM/Admin when exclude_cancelled=True
+    """
+    clauses: list[str] = []
+    params: list = []
+
+    if task_id:
+        clauses.append("task_id = ?")
+        params.append(task_id)
+
+    if status_filter:
+        clauses.append("status = ?")
+        params.append(status_filter)
+
+    if exclude_cancelled and role not in CICD_APPROVER_ROLES:
+        clauses.append("(status != 'cancelled' OR submitter = ?)")
+        params.append(username or "")
+
+    if username and role not in CICD_APPROVER_ROLES:
+        # Non-RM/Admin can only see their own
+        clauses.append("submitter = ?")
+        params.append(username)
+    elif username:
+        # RM/Admin with explicit username filter (e.g. "only mine" toggle)
+        clauses.append("submitter = ?")
+        params.append(username)
+
+    if since_days:
+        cutoff = conn.execute(
+            "SELECT datetime('now', ?)", (f"-{since_days} days",)
+        ).fetchone()[0]
+        clauses.append("submitted_at >= ?")
+        params.append(cutoff)
+
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    rows = conn.execute(
+        f"SELECT * FROM cicd_task_requests {where} ORDER BY submitted_at DESC",
+        params,
+    ).fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["payload"] = json.loads(d.get("payload") or "{}")
+        except Exception:
+            d["payload"] = {}
+        result.append(d)
+    return result
+
+
+def get_cicd_task_history(conn: sqlite3.Connection, task_id: str) -> list[dict]:
+    """Return all approved/auto-approved requests for a specific task (chronological)."""
+    rows = conn.execute(
+        """
+        SELECT * FROM cicd_task_requests
+        WHERE task_id = ? AND status = 'approved'
+        ORDER BY reviewed_at ASC
+        """,
+        (task_id,),
+    ).fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["payload"] = json.loads(d.get("payload") or "{}")
+        except Exception:
+            d["payload"] = {}
+        result.append(d)
+    return result
+
+
+def get_cicd_notifications(
+    conn: sqlite3.Connection,
+    username: str,
+    role: str,
+) -> dict:
+    """Return notification counts for the nav badge."""
+    row = conn.execute(
+        "SELECT last_visited_at FROM cicd_notifications WHERE username = ?",
+        (username,),
+    ).fetchone()
+    last_visited = row["last_visited_at"] if row else ""
+
+    if role in CICD_APPROVER_ROLES:
+        # Count pending requests for RM/Admin
+        count = conn.execute(
+            "SELECT COUNT(*) FROM cicd_task_requests WHERE status = 'pending'",
+        ).fetchone()[0]
+    else:
+        # Count new reviewed results (approved/rejected) since last visit
+        if last_visited:
+            count = conn.execute(
+                """
+                SELECT COUNT(*) FROM cicd_task_requests
+                WHERE submitter = ? AND status IN ('approved', 'rejected')
+                AND reviewed_at > ?
+                """,
+                (username, last_visited),
+            ).fetchone()[0]
+        else:
+            count = 0
+
+    return {"count": count, "last_visited_at": last_visited}
+
+
+def mark_cicd_visited(conn: sqlite3.Connection, username: str) -> None:
+    """Update the last_visited timestamp for notification badge."""
+    ts = now()
+    with transaction(conn):
+        conn.execute(
+            """
+            INSERT INTO cicd_notifications(username, last_visited_at)
+            VALUES (?, ?)
+            ON CONFLICT(username) DO UPDATE SET last_visited_at=excluded.last_visited_at
+            """,
+            (username, ts),
+        )

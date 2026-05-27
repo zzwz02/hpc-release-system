@@ -345,6 +345,55 @@
   .lspinner{width:38px;height:38px;border:3px solid rgba(255,255,255,.25);
     border-top-color:#fff;border-radius:50%;animation:lspin .7s linear infinite;}
   @keyframes lspin{to{transform:rotate(360deg);}}
+  /* ---- CICD workbench ---- */
+  .cicd-badge{display:inline-flex;align-items:center;justify-content:center;
+    min-width:18px;height:18px;border-radius:999px;background:#ef4444;color:#fff;
+    font-size:11px;font-weight:800;padding:0 4px;margin-left:5px;vertical-align:middle;line-height:1;}
+  .cicd-subtabs{display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:18px;background:var(--card);padding:0 4px;}
+  .cicd-subtab{padding:11px 15px;font:inherit;font-weight:700;font-size:13px;color:var(--ink-2);
+    cursor:pointer;border:0;border-bottom:2px solid transparent;background:none;}
+  .cicd-subtab:hover{color:var(--ink);}
+  .cicd-subtab.active{color:var(--accent);border-bottom-color:var(--accent);}
+  .cicd-pane{display:none;}
+  .cicd-pane.active{display:block;}
+  .cicd-toolbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;}
+  .cicd-filters{display:flex;gap:7px;flex-wrap:wrap;align-items:center;}
+  .cicd-filter-btn{padding:6px 13px;border-radius:8px;border:1px solid var(--border-2);background:#fff;
+    font:inherit;font-weight:700;font-size:13px;color:var(--ink-2);cursor:pointer;}
+  .cicd-filter-btn.active{color:var(--accent);background:var(--accent-soft);border-color:var(--accent-bd);}
+  .cicd-search{min-width:200px;max-width:280px;}
+  .cicd-table-wrap{overflow:auto;border:1px solid var(--border);border-radius:10px;}
+  .cicd-table{width:100%;border-collapse:collapse;font-size:13px;}
+  .cicd-table th{padding:9px 11px;text-align:left;background:#fafbfc;font-size:11px;
+    color:var(--muted);text-transform:uppercase;letter-spacing:.04em;
+    border-bottom:1px solid var(--border);position:sticky;top:0;white-space:nowrap;}
+  .cicd-table td{padding:9px 11px;border-bottom:1px solid var(--border);vertical-align:middle;}
+  .cicd-table tbody tr:last-child td{border-bottom:0;}
+  .cicd-table tbody tr:hover{background:#fafbfc;}
+  .cicd-id{font-family:Consolas,monospace;font-size:12px;color:var(--ink-2);font-weight:700;}
+  .cicd-status-Running{color:var(--ok-fg);}
+  .cicd-status-Stopped{color:var(--warn-fg);}
+  .cicd-status-Abandoned{color:var(--muted);}
+  .cicd-pending-icon{font-size:12px;color:var(--accent);margin-left:5px;cursor:default;
+    display:inline;vertical-align:middle;}
+  .cicd-req-status-pending{color:var(--accent-2);font-weight:700;}
+  .cicd-req-status-approved{color:var(--ok-fg);font-weight:700;}
+  .cicd-req-status-rejected{color:var(--bad-fg);font-weight:700;}
+  .cicd-req-status-cancelled{color:var(--muted);font-weight:700;}
+  /* CICD form dialog */
+  .cicd-form{display:grid;grid-template-columns:1fr 1fr;gap:13px;}
+  .cicd-form .full{grid-column:1/-1;}
+  .cicd-product-group{display:flex;gap:14px;flex-wrap:wrap;margin-top:4px;}
+  .cicd-diff-table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px;}
+  .cicd-diff-table th{background:#fafbfc;padding:6px 10px;border:1px solid var(--border);font-size:11px;color:var(--muted);text-transform:uppercase;}
+  .cicd-diff-table td{padding:6px 10px;border:1px solid var(--border);vertical-align:top;}
+  .cicd-diff-old{color:var(--bad-fg);background:var(--bad-bg);}
+  .cicd-diff-new{color:var(--ok-fg);background:var(--ok-bg);}
+  .cicd-history-entry{border:1px solid var(--border);border-radius:9px;padding:11px 14px;margin-bottom:9px;}
+  .cicd-history-entry:last-child{margin-bottom:0;}
+  .cicd-history-meta{font-size:12px;color:var(--muted);margin-bottom:7px;}
+  dialog.cicd-dialog{width:min(800px,calc(100vw - 32px));}
+  dialog.cicd-dialog-sm{width:min(480px,calc(100vw - 32px));}
 </style>
 </head>
 <body>
@@ -388,6 +437,7 @@
     <button class="tab" data-view="apps" data-roles="RM,Owner">App 工作台</button>
     <button class="tab" data-view="qa" data-roles="QA,RM">QA</button>
     <button class="tab" data-view="artifacts" data-roles="RM">Markdown 生成</button>
+    <button class="tab" data-view="cicd" data-roles="RM,Owner,QA,Admin" id="cicdTab">CICD 工作台<span id="cicdBadge" class="cicd-badge" hidden></span></button>
     <button class="tab" data-view="admin" data-roles="Admin">系统管理</button>
   </nav>
 
@@ -614,9 +664,182 @@
         </div>
       </div>
     </section>
+
+    <section id="cicd" class="view" data-roles="RM,Owner,QA,Admin">
+      <div class="cicd-subtabs">
+        <button class="cicd-subtab active" data-cicd-pane="cicdOverviewPane">任务总览</button>
+        <button class="cicd-subtab" data-cicd-pane="cicdMyPane">我的 CICD 任务</button>
+        <button class="cicd-subtab" data-cicd-pane="cicdPendingPane" id="cicdPendingSubtab">待审批</button>
+        <button class="cicd-subtab" data-cicd-pane="cicdRecentPane">最近申请</button>
+      </div>
+
+      <!-- 任务总览 -->
+      <div id="cicdOverviewPane" class="cicd-pane active">
+        <div class="cicd-toolbar">
+          <div class="cicd-filters" id="cicdStatusFilters">
+            <button class="cicd-filter-btn active" data-status="Running">Running</button>
+            <button class="cicd-filter-btn" data-status="">全部</button>
+            <button class="cicd-filter-btn" data-status="Abandoned">Abandoned</button>
+          </div>
+          <input class="input sm cicd-search" id="cicdOverviewSearch" placeholder="搜索 app / 负责人">
+          <span style="flex:1"></span>
+          <button class="btn sm primary" id="cicdNewTaskBtn" data-roles="Owner,RM,Admin">+ 新建 CICD 任务</button>
+        </div>
+        <div class="cicd-table-wrap">
+          <table class="cicd-table">
+            <thead><tr>
+              <th>ID</th><th>项目名称</th><th>版本</th><th>仓库类型</th><th>仓库名</th><th>分支</th>
+              <th>构建产物</th><th>构建依赖镜像</th><th>超时(min)</th><th>maca/hpcc互转</th>
+              <th>负责人</th><th>状态</th><th>备注</th><th>操作</th>
+            </tr></thead>
+            <tbody id="cicdOverviewBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 我的CICD任务 -->
+      <div id="cicdMyPane" class="cicd-pane">
+        <div class="cicd-toolbar">
+          <input class="input sm cicd-search" id="cicdMySearch" placeholder="搜索 app">
+          <span style="flex:1"></span>
+          <button class="btn sm primary" id="cicdMyNewBtn" data-roles="Owner,RM,Admin">+ 新建 CICD 任务</button>
+        </div>
+        <div class="cicd-table-wrap">
+          <table class="cicd-table">
+            <thead><tr>
+              <th>ID</th><th>项目名称</th><th>版本</th><th>仓库类型</th><th>仓库名</th><th>分支</th>
+              <th>构建产物</th><th>状态</th><th>备注</th><th>操作</th>
+            </tr></thead>
+            <tbody id="cicdMyBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 待审批 -->
+      <div id="cicdPendingPane" class="cicd-pane">
+        <div class="cicd-toolbar">
+          <input class="input sm cicd-search" id="cicdPendingSearch" placeholder="搜索 app / 提交人">
+        </div>
+        <div class="cicd-table-wrap">
+          <table class="cicd-table">
+            <thead><tr>
+              <th>申请ID</th><th>类型</th><th>任务ID</th><th>提交人</th><th>提交时间</th><th>变更内容</th><th>操作</th>
+            </tr></thead>
+            <tbody id="cicdPendingBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 最近申请 -->
+      <div id="cicdRecentPane" class="cicd-pane">
+        <div class="cicd-toolbar">
+          <div class="cicd-filters" id="cicdRecentTimeFilters">
+            <button class="cicd-filter-btn active" data-days="30">近1个月</button>
+            <button class="cicd-filter-btn" data-days="60">近2个月</button>
+            <button class="cicd-filter-btn" data-days="90">近3个月</button>
+            <button class="cicd-filter-btn" data-days="180">近半年</button>
+            <button class="cicd-filter-btn" data-days="365">近1年</button>
+          </div>
+          <label class="check" style="margin-left:10px"><input type="checkbox" id="cicdRecentOnlyMine"> 只看我的</label>
+          <input class="input sm cicd-search" id="cicdRecentSearch" placeholder="搜索 app / 提交人">
+        </div>
+        <div class="cicd-table-wrap">
+          <table class="cicd-table">
+            <thead><tr>
+              <th>申请ID</th><th>类型</th><th>任务ID</th><th>提交人</th><th>提交时间</th><th>状态</th><th>审批人</th><th>审批备注</th><th>操作</th>
+            </tr></thead>
+            <tbody id="cicdRecentBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
   </main>
 
-  <dialog id="newAppDialog">
+  <!-- CICD 任务表单对话框 -->
+  <dialog id="cicdTaskDialog" class="cicd-dialog">
+    <div class="dialog-card">
+      <h2 id="cicdTaskDialogTitle">新建 CICD 任务</h2>
+      <div class="dialog-body">
+        <div class="banner warnp" id="cicdPendingWarning" hidden>
+          该任务已有待审批的修改申请，提交新申请将<b>取消</b>原有 pending 申请。
+        </div>
+        <div class="cicd-form">
+          <label class="full">项目名称 (app_name)<input id="cf_app_name" class="input" autocomplete="off" required></label>
+          <label>项目版本 (app_version)<input id="cf_app_version" class="input" autocomplete="off"></label>
+          <label>负责人 (domain_id)<input id="cf_owner_username" class="input" autocomplete="off" placeholder="留空则为当前用户"></label>
+          <label>仓库类型
+            <select id="cf_repo_type" class="select">
+              <option value="git">git</option>
+              <option value="repo">repo</option>
+            </select>
+          </label>
+          <label>仓库名<input id="cf_repo_name" class="input" autocomplete="off"></label>
+          <label>分支<input id="cf_branch" class="input" autocomplete="off"></label>
+          <label class="full">构建产物（可多选）
+            <div class="cicd-product-group" id="cf_build_product_group">
+              <label class="inline"><input type="checkbox" value="maca"> maca</label>
+              <label class="inline"><input type="checkbox" value="hpcc"> hpcc</label>
+              <label class="inline"><input type="checkbox" value="pkg"> pkg</label>
+            </div>
+          </label>
+          <label>构建依赖镜像<input id="cf_build_image" class="input" autocomplete="off"></label>
+          <label>测试超时时间 (min)<input id="cf_test_timeout" class="input" type="number" min="1" value="40"></label>
+          <label>支持maca/hpcc互转
+            <select id="cf_supports_maca_hpcc" class="select">
+              <option value="No">No</option>
+              <option value="Yes">Yes</option>
+            </select>
+          </label>
+          <label>状态
+            <select id="cf_status" class="select">
+              <option value="Running">Running</option>
+              <option value="Stopped">Stopped</option>
+              <option value="Abandoned">Abandoned</option>
+            </select>
+          </label>
+          <label class="full">备注<textarea id="cf_notes" class="input" rows="2"></textarea></label>
+        </div>
+        <div class="row dialog-actions">
+          <button id="cicdTaskDialogCancel" type="button" class="btn">取消</button>
+          <button id="cicdTaskDialogSubmit" type="button" class="btn primary">提交申请</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- CICD 审批对话框 -->
+  <dialog id="cicdApproveDialog" class="cicd-dialog-sm">
+    <div class="dialog-card">
+      <h2 id="cicdApproveTitle">审批 CICD 申请</h2>
+      <div class="dialog-body">
+        <div id="cicdApproveDiff"></div>
+        <label style="margin-top:12px;display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:700;color:var(--ink-2)">
+          <span id="cicdApproveNoteLabel">审批备注（通过时可填 Jira ID，拒绝时必填原因）</span>
+          <textarea id="cicdApproveNote" class="input" rows="2" placeholder="Jira ID 或拒绝理由..."></textarea>
+        </label>
+        <div class="row dialog-actions">
+          <button id="cicdApproveCancel" type="button" class="btn">关闭</button>
+          <button id="cicdApproveReject" type="button" class="btn danger">拒绝</button>
+          <button id="cicdApproveOk" type="button" class="btn primary">通过</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- CICD 历史记录对话框 -->
+  <dialog id="cicdHistoryDialog" class="cicd-dialog">
+    <div class="dialog-card">
+      <h2 id="cicdHistoryTitle">任务历史</h2>
+      <div class="dialog-body">
+        <div id="cicdHistoryBody" style="max-height:480px;overflow:auto;"></div>
+        <div class="row dialog-actions">
+          <button id="cicdHistoryClose" type="button" class="btn">关闭</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- CICD 拒绝后重新编辑对话框复用 cicdTaskDialog -->
     <div class="dialog-card">
       <h2>新增 app</h2>
       <div class="dialog-body">
@@ -781,7 +1004,7 @@
     }
 
     function canAutoRefresh() {
-      return !!state.user && !document.hidden && !recentlyTyping() && ["dashboard", "apps", "qa", "admin"].includes(activeView());
+      return !!state.user && !document.hidden && !recentlyTyping() && ["dashboard", "apps", "qa", "admin", "cicd"].includes(activeView());
     }
 
     function refreshIfIdle() {
@@ -902,6 +1125,7 @@
       renderAdmin();
       if ($("preview")) $("preview").disabled = releaseLocked();
       renderNewAppControls();
+      updateCicdBadge();
     }
     function renderRoleChrome() {
       const role = currentUser().role || "";
@@ -2177,6 +2401,647 @@
       $("artifactText").value = res.ok ? await res.text() : "未生成 artifact";
     }
 
+    // ===========================================================
+    // CICD workbench
+    // ===========================================================
+    let cicdTasks = [];
+    let cicdOverviewFilter = "Running";
+    let cicdRecentDays = 30;
+    let cicdApproveReqId = null;
+    let cicdEditTaskId = null;     // null = new task; taskId = editing existing
+    let cicdEditFromReqId = null;  // if editing after rejection
+
+    const cicdStatusLabel = { Running: "Running", Stopped: "Stopped", Abandoned: "Abandoned" };
+    const cicdReqTypeLabel = { create: "新建", modify: "修改", owner_transfer: "负责人变更" };
+    const cicdReqStatusLabel = { pending: "待审批", approved: "已通过", rejected: "已拒绝", cancelled: "已取消" };
+    const cicdFieldLabel = {
+      app_name: "项目名称", app_version: "项目版本", repo_type: "仓库类型",
+      repo_name: "仓库名", branch: "分支", build_product: "构建产物",
+      build_image: "构建依赖镜像", test_timeout: "超时(min)", supports_maca_hpcc: "maca/hpcc互转",
+      owner_username: "负责人", status: "状态", notes: "备注",
+    };
+
+    function canSubmitCicd() {
+      const r = currentUser().role;
+      return r === "Owner" || r === "RM" || r === "Admin";
+    }
+    function canApproveCicd() {
+      const r = currentUser().role;
+      return r === "RM" || r === "Admin";
+    }
+
+    async function loadCicdAndRender() {
+      try {
+        const data = await api("/api/cicd/tasks");
+        cicdTasks = data.tasks || [];
+        renderCicdOverview();
+        renderCicdMy();
+        renderCicdPending();
+        await updateCicdBadge();
+      } catch (e) {
+        console.error("cicd load failed:", e.message);
+      }
+    }
+
+    async function updateCicdBadge() {
+      try {
+        const data = await api("/api/cicd/notifications");
+        const badge = $("cicdBadge");
+        if (!badge) return;
+        if (data.count > 0) {
+          badge.textContent = data.count > 99 ? "99+" : String(data.count);
+          badge.hidden = false;
+        } else {
+          badge.hidden = true;
+        }
+      } catch (_) {}
+    }
+
+    async function markCicdVisited() {
+      try { await post("/api/cicd/notifications/mark-visited", {}); } catch (_) {}
+      const badge = $("cicdBadge");
+      if (badge) badge.hidden = true;
+    }
+
+    function cicdBuildProductStr(arr) {
+      return (Array.isArray(arr) ? arr : []).join(", ") || "—";
+    }
+
+    function cicdStatusPill(status) {
+      const cls = status === "Running" ? "ok" : status === "Stopped" ? "warnp" : "";
+      return `<span class="pill ${cls}">${esc(status)}</span>`;
+    }
+
+    function cicdReqStatusEl(status) {
+      return `<span class="cicd-req-status-${status}">${esc(cicdReqStatusLabel[status] || status)}</span>`;
+    }
+
+    function renderCicdOverview() {
+      const body = $("cicdOverviewBody");
+      if (!body) return;
+      const q = ($("cicdOverviewSearch")?.value || "").toLowerCase();
+      let tasks = cicdTasks;
+      if (cicdOverviewFilter) tasks = tasks.filter(t => t.status === cicdOverviewFilter);
+      if (q) tasks = tasks.filter(t =>
+        t.app_name.toLowerCase().includes(q) ||
+        t.owner_display.toLowerCase().includes(q) ||
+        t.owner_username.toLowerCase().includes(q)
+      );
+      if (!tasks.length) {
+        body.innerHTML = `<tr><td colspan="14" class="empty" style="text-align:center;color:var(--muted);padding:30px">暂无任务</td></tr>`;
+        return;
+      }
+      const canEdit = canSubmitCicd();
+      const canDel = canApproveCicd();
+      body.innerHTML = tasks.map(t => {
+        const pending = t.has_pending
+          ? `<span class="cicd-pending-icon" title="有待审批的修改申请">✏️</span>` : "";
+        const actions = [];
+        if (canEdit && t.status !== "Abandoned") {
+          actions.push(`<button class="btn sm" data-cicd-edit="${esc(t.id)}">修改</button>`);
+        }
+        actions.push(`<button class="btn sm" data-cicd-history="${esc(t.id)}">历史</button>`);
+        if (canDel && t.status === "Abandoned") {
+          actions.push(`<button class="btn sm danger" data-cicd-delete="${esc(t.id)}">删除</button>`);
+        }
+        return `<tr>
+          <td class="cicd-id">${esc(t.id)}</td>
+          <td><b>${esc(t.app_name)}</b></td>
+          <td>${esc(t.app_version)}</td>
+          <td>${esc(t.repo_type)}</td>
+          <td style="max-width:160px;word-break:break-all">${esc(t.repo_name)}</td>
+          <td>${esc(t.branch)}</td>
+          <td>${esc(cicdBuildProductStr(t.build_product))}</td>
+          <td style="max-width:160px;word-break:break-all">${esc(t.build_image)}</td>
+          <td style="text-align:center">${esc(String(t.test_timeout))}</td>
+          <td style="text-align:center">${esc(t.supports_maca_hpcc)}</td>
+          <td>${esc(t.owner_display)}</td>
+          <td>${cicdStatusPill(t.status)}${pending}</td>
+          <td style="max-width:160px">${esc(t.notes)}</td>
+          <td style="white-space:nowrap">${actions.join(" ")}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    function renderCicdMy() {
+      const body = $("cicdMyBody");
+      if (!body) return;
+      const me = currentUser().username;
+      const q = ($("cicdMySearch")?.value || "").toLowerCase();
+      let tasks = cicdTasks.filter(t => t.owner_username === me);
+      if (q) tasks = tasks.filter(t => t.app_name.toLowerCase().includes(q));
+
+      // Also check if there's any pending "create" request for me
+      // This is loaded separately when cicdPendingPane is shown; for now show note
+      if (!tasks.length) {
+        body.innerHTML = `<tr><td colspan="10" class="empty" style="text-align:center;color:var(--muted);padding:30px">暂无我负责的 CICD 任务</td></tr>`;
+        return;
+      }
+      body.innerHTML = tasks.map(t => {
+        const pending = t.has_pending
+          ? `<span class="pill accent" style="font-size:11px;margin-left:4px">待审批</span>` : "";
+        const canEdit = canSubmitCicd() && t.status !== "Abandoned";
+        return `<tr>
+          <td class="cicd-id">${esc(t.id)}</td>
+          <td><b>${esc(t.app_name)}</b>${pending}</td>
+          <td>${esc(t.app_version)}</td>
+          <td>${esc(t.repo_type)}</td>
+          <td style="max-width:140px;word-break:break-all">${esc(t.repo_name)}</td>
+          <td>${esc(t.branch)}</td>
+          <td>${esc(cicdBuildProductStr(t.build_product))}</td>
+          <td>${cicdStatusPill(t.status)}</td>
+          <td style="max-width:120px">${esc(t.notes)}</td>
+          <td style="white-space:nowrap">
+            ${canEdit ? `<button class="btn sm" data-cicd-edit="${esc(t.id)}">修改</button>` : ""}
+            <button class="btn sm" data-cicd-history="${esc(t.id)}">历史</button>
+          </td>
+        </tr>`;
+      }).join("");
+    }
+
+    async function renderCicdPending() {
+      const body = $("cicdPendingBody");
+      if (!body) return;
+      try {
+        const data = await api("/api/cicd/requests?status=pending");
+        const reqs = data.requests || [];
+        const q = ($("cicdPendingSearch")?.value || "").toLowerCase();
+        const filtered = reqs.filter(r =>
+          !q ||
+          (r.payload?.app_name || "").toLowerCase().includes(q) ||
+          r.submitter.toLowerCase().includes(q) ||
+          (r.task_id || "").toLowerCase().includes(q)
+        );
+        // Update subtab badge
+        const subtab = $("cicdPendingSubtab");
+        if (subtab) {
+          const own = canApproveCicd() ? reqs.length : reqs.filter(r => r.submitter === currentUser().username).length;
+          subtab.textContent = own > 0 ? `待审批 (${own})` : "待审批";
+        }
+        if (!filtered.length) {
+          body.innerHTML = `<tr><td colspan="7" class="empty" style="text-align:center;color:var(--muted);padding:30px">暂无待审批申请</td></tr>`;
+          return;
+        }
+        const me = currentUser().username;
+        body.innerHTML = filtered.map(r => {
+          const isMyReq = r.submitter === me;
+          const actions = [];
+          if (canApproveCicd()) {
+            actions.push(`<button class="btn sm primary" data-cicd-approve="${r.id}">审批</button>`);
+          }
+          if (isMyReq || canApproveCicd()) {
+            actions.push(`<button class="btn sm warn" data-cicd-cancel="${r.id}">取消</button>`);
+          }
+          // After rejection, allow re-edit: shown in recent pane
+          const diffSummary = cicdDiffSummary(r.payload, r.request_type);
+          return `<tr>
+            <td class="cicd-id">#${r.id}</td>
+            <td>${esc(cicdReqTypeLabel[r.request_type] || r.request_type)}</td>
+            <td class="cicd-id">${esc(r.task_id || "(新建)")}</td>
+            <td>${esc(r.submitter_display || r.submitter)}</td>
+            <td class="small muted">${esc((r.submitted_at || "").slice(0, 16))}</td>
+            <td style="max-width:220px;font-size:12px">${diffSummary}</td>
+            <td style="white-space:nowrap">${actions.join(" ")}</td>
+          </tr>`;
+        }).join("");
+      } catch (e) {
+        body.innerHTML = `<tr><td colspan="7" style="color:var(--bad-fg);padding:14px">加载失败：${esc(e.message)}</td></tr>`;
+      }
+    }
+
+    async function renderCicdRecent() {
+      const body = $("cicdRecentBody");
+      if (!body) return;
+      try {
+        const onlyMine = $("cicdRecentOnlyMine")?.checked ? "1" : "0";
+        const q = ($("cicdRecentSearch")?.value || "").toLowerCase();
+        const data = await api(`/api/cicd/requests?since_days=${cicdRecentDays}&only_mine=${onlyMine}`);
+        let reqs = data.requests || [];
+        if (q) reqs = reqs.filter(r =>
+          (r.payload?.app_name || "").toLowerCase().includes(q) ||
+          r.submitter.toLowerCase().includes(q) ||
+          (r.task_id || "").toLowerCase().includes(q)
+        );
+        if (!reqs.length) {
+          body.innerHTML = `<tr><td colspan="9" class="empty" style="text-align:center;color:var(--muted);padding:30px">暂无申请记录</td></tr>`;
+          return;
+        }
+        const me = currentUser().username;
+        body.innerHTML = reqs.map(r => {
+          const canReEdit = r.status === "rejected" && r.submitter === me;
+          const actions = [];
+          if (canReEdit) {
+            actions.push(`<button class="btn sm" data-cicd-reedit="${r.id}">重新编辑</button>`);
+          }
+          return `<tr>
+            <td class="cicd-id">#${r.id}</td>
+            <td>${esc(cicdReqTypeLabel[r.request_type] || r.request_type)}</td>
+            <td class="cicd-id">${esc(r.task_id || "(新建)")}</td>
+            <td>${esc(r.submitter_display || r.submitter)}</td>
+            <td class="small muted">${esc((r.submitted_at || "").slice(0, 16))}</td>
+            <td>${cicdReqStatusEl(r.status)}</td>
+            <td class="small muted">${esc(r.reviewer || "—")}</td>
+            <td style="max-width:160px;font-size:12px">${esc(r.review_note || "—")}</td>
+            <td style="white-space:nowrap">${actions.join(" ")}</td>
+          </tr>`;
+        }).join("");
+      } catch (e) {
+        body.innerHTML = `<tr><td colspan="9" style="color:var(--bad-fg);padding:14px">加载失败：${esc(e.message)}</td></tr>`;
+      }
+    }
+
+    function cicdDiffSummary(payload, reqType) {
+      if (reqType === "create") {
+        const name = payload?.app_name || "";
+        return `新建任务：<b>${esc(name)}</b>`;
+      }
+      if (reqType === "owner_transfer") {
+        const ch = payload?.owner_username || {};
+        return `负责人：${esc(String(ch.old||""))} → ${esc(String(ch.new||""))}`;
+      }
+      if (!payload || !Object.keys(payload).length) return "—";
+      return Object.entries(payload).map(([field, ch]) => {
+        const label = cicdFieldLabel[field] || field;
+        const oldV = Array.isArray(ch.old) ? ch.old.join(",") : String(ch.old ?? "");
+        const newV = Array.isArray(ch.new) ? ch.new.join(",") : String(ch.new ?? "");
+        return `<span title="${esc(label)}: ${esc(oldV)} → ${esc(newV)}">${esc(label)}</span>`;
+      }).join(", ");
+    }
+
+    function cicdDiffTable(payload, reqType) {
+      if (reqType === "create") {
+        const rows = Object.entries(payload || {}).filter(([k]) => cicdFieldLabel[k]).map(([k, v]) => {
+          const val = Array.isArray(v) ? v.join(", ") : String(v ?? "");
+          return `<tr><td>${esc(cicdFieldLabel[k] || k)}</td><td colspan="2" class="cicd-diff-new">${esc(val)}</td></tr>`;
+        }).join("");
+        return `<table class="cicd-diff-table"><thead><tr><th>字段</th><th colspan="2">值</th></tr></thead><tbody>${rows}</tbody></table>`;
+      }
+      const rows = Object.entries(payload || {}).map(([field, ch]) => {
+        const label = cicdFieldLabel[field] || field;
+        const oldV = Array.isArray(ch.old) ? ch.old.join(", ") : String(ch.old ?? "");
+        const newV = Array.isArray(ch.new) ? ch.new.join(", ") : String(ch.new ?? "");
+        return `<tr>
+          <td>${esc(label)}</td>
+          <td class="cicd-diff-old">${esc(oldV) || "<em>(空)</em>"}</td>
+          <td class="cicd-diff-new">${esc(newV) || "<em>(空)</em>"}</td>
+        </tr>`;
+      }).join("");
+      return `<table class="cicd-diff-table"><thead><tr><th>字段</th><th>原值</th><th>新值</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    // --- Task form dialog ---
+    function openCicdTaskDialog(taskId = null, prefillReqId = null) {
+      cicdEditTaskId = taskId;
+      cicdEditFromReqId = prefillReqId;
+      const dlg = $("cicdTaskDialog");
+      const title = $("cicdTaskDialogTitle");
+      title.textContent = taskId ? `修改 CICD 任务 ${taskId}` : "新建 CICD 任务";
+
+      // Check pending warning
+      const task = taskId ? cicdTasks.find(t => t.id === taskId) : null;
+      const warn = $("cicdPendingWarning");
+      if (warn) warn.hidden = !(task && task.has_pending);
+
+      // Fill form
+      const me = currentUser();
+      $("cf_app_name").value = task?.app_name || "";
+      $("cf_app_version").value = task?.app_version || "";
+      $("cf_owner_username").value = task?.owner_username || me.username || "";
+      $("cf_repo_type").value = task?.repo_type || "git";
+      $("cf_repo_name").value = task?.repo_name || "";
+      $("cf_branch").value = task?.branch || "";
+      $("cf_build_image").value = task?.build_image || "";
+      $("cf_test_timeout").value = task?.test_timeout ?? 40;
+      $("cf_supports_maca_hpcc").value = task?.supports_maca_hpcc || "No";
+      $("cf_status").value = task?.status || "Running";
+      $("cf_notes").value = task?.notes || "";
+
+      // Build product checkboxes
+      const selected = Array.isArray(task?.build_product) ? task.build_product : [];
+      $("cf_build_product_group").querySelectorAll("input[type=checkbox]").forEach(cb => {
+        cb.checked = selected.includes(cb.value);
+      });
+
+      // Lock branch if repo type is repo
+      cicdUpdateBranchLock();
+
+      if (dlg.showModal) dlg.showModal(); else dlg.open = true;
+      $("cf_app_name").focus();
+    }
+
+    function cicdUpdateBranchLock() {
+      const isRepo = $("cf_repo_type")?.value === "repo";
+      const branchInput = $("cf_branch");
+      if (!branchInput) return;
+      if (isRepo) {
+        branchInput.value = "master";
+        branchInput.disabled = true;
+      } else {
+        branchInput.disabled = false;
+      }
+    }
+
+    function cicdGetFormValues() {
+      const buildProduct = [];
+      $("cf_build_product_group").querySelectorAll("input[type=checkbox]:checked").forEach(cb => {
+        buildProduct.push(cb.value);
+      });
+      return {
+        app_name: $("cf_app_name").value.trim(),
+        app_version: $("cf_app_version").value.trim(),
+        owner_username: $("cf_owner_username").value.trim() || currentUser().username,
+        repo_type: $("cf_repo_type").value,
+        repo_name: $("cf_repo_name").value.trim(),
+        branch: $("cf_branch").value.trim(),
+        build_product: buildProduct,
+        build_image: $("cf_build_image").value.trim(),
+        test_timeout: parseInt($("cf_test_timeout").value) || 40,
+        supports_maca_hpcc: $("cf_supports_maca_hpcc").value,
+        status: $("cf_status").value,
+        notes: $("cf_notes").value.trim(),
+      };
+    }
+
+    async function submitCicdTaskForm() {
+      const values = cicdGetFormValues();
+      if (!values.app_name) return alert("请填写项目名称");
+      const btn = $("cicdTaskDialogSubmit");
+      btn.disabled = true;
+      btn.textContent = "提交中...";
+      try {
+        let payload;
+        let request_type;
+        let task_id = cicdEditTaskId;
+
+        if (!task_id) {
+          // New task: payload is full values
+          request_type = "create";
+          payload = { ...values };
+        } else {
+          // Modify: build diff payload
+          const task = cicdTasks.find(t => t.id === task_id);
+          if (!task) throw new Error("任务不存在");
+          request_type = "modify";
+          payload = {};
+          for (const [key, newVal] of Object.entries(values)) {
+            const oldVal = task[key];
+            const oldStr = Array.isArray(oldVal) ? oldVal.join(",") : String(oldVal ?? "");
+            const newStr = Array.isArray(newVal) ? newVal.join(",") : String(newVal ?? "");
+            if (oldStr !== newStr) {
+              payload[key] = { old: oldVal, new: newVal };
+            }
+          }
+          if (!Object.keys(payload).length) {
+            alert("没有任何字段发生变化");
+            return;
+          }
+          // Cancel existing pending if any
+          if (task.has_pending) {
+            const pend = await api(`/api/cicd/requests?task_id=${task_id}&status=pending`);
+            for (const r of (pend.requests || [])) {
+              try { await post("/api/cicd/requests/cancel", { request_id: r.id }); } catch (_) {}
+            }
+          }
+        }
+
+        await post("/api/cicd/requests/submit", { task_id, request_type, payload });
+        $("cicdTaskDialog").close();
+        await loadCicdAndRender();
+        alert("申请已提交");
+      } catch (e) {
+        alert("提交失败：" + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "提交申请";
+      }
+    }
+
+    // --- Approve dialog ---
+    async function openCicdApproveDialog(reqId) {
+      cicdApproveReqId = reqId;
+      try {
+        const data = await api(`/api/cicd/requests?status=pending`);
+        const req = (data.requests || []).find(r => r.id == reqId);
+        if (!req) { alert("申请不存在或已被处理"); return; }
+        const dlg = $("cicdApproveDialog");
+        $("cicdApproveTitle").textContent = `审批申请 #${reqId}`;
+        $("cicdApproveNote").value = "";
+        $("cicdApproveDiff").innerHTML = `
+          <div class="small muted" style="margin-bottom:8px">
+            提交人：${esc(req.submitter_display || req.submitter)} &nbsp;|&nbsp;
+            类型：${esc(cicdReqTypeLabel[req.request_type] || req.request_type)} &nbsp;|&nbsp;
+            ${req.task_id ? "任务：" + esc(req.task_id) : "新建任务"}
+          </div>
+          ${cicdDiffTable(req.payload, req.request_type)}
+        `;
+        if (dlg.showModal) dlg.showModal(); else dlg.open = true;
+      } catch (e) {
+        alert("加载失败：" + e.message);
+      }
+    }
+
+    async function submitCicdApproval(action) {
+      const note = $("cicdApproveNote").value.trim();
+      if (action === "reject" && !note) return alert("拒绝必须填写理由");
+      const btn = action === "reject" ? $("cicdApproveReject") : $("cicdApproveOk");
+      btn.disabled = true;
+      try {
+        const endpoint = action === "reject" ? "/api/cicd/requests/reject" : "/api/cicd/requests/approve";
+        await post(endpoint, { request_id: cicdApproveReqId, review_note: note });
+        $("cicdApproveDialog").close();
+        await loadCicdAndRender();
+        await renderCicdPending();
+        alert(action === "reject" ? "已拒绝" : "已通过");
+      } catch (e) {
+        alert("操作失败：" + e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // --- History dialog ---
+    async function openCicdHistoryDialog(taskId) {
+      const task = cicdTasks.find(t => t.id === taskId);
+      $("cicdHistoryTitle").textContent = `历史记录：${taskId}${task ? " · " + task.app_name : ""}`;
+      $("cicdHistoryBody").innerHTML = "<div class='muted' style='padding:14px'>加载中...</div>";
+      const dlg = $("cicdHistoryDialog");
+      if (dlg.showModal) dlg.showModal(); else dlg.open = true;
+      try {
+        const data = await api(`/api/cicd/tasks/${encodeURIComponent(taskId)}/history`);
+        const history = data.history || [];
+        if (!history.length) {
+          $("cicdHistoryBody").innerHTML = "<div class='muted empty'>暂无历史记录</div>";
+          return;
+        }
+        $("cicdHistoryBody").innerHTML = history.slice().reverse().map(h => {
+          const isSelf = h.is_self_approved;
+          const reviewerInfo = isSelf
+            ? `<span class="pill accent" style="font-size:11px">RM/Admin 自动过审</span>`
+            : (h.reviewer ? `审批人：${esc(h.reviewer)}` : "");
+          return `
+            <div class="cicd-history-entry">
+              <div class="cicd-history-meta">
+                <b>${esc(cicdReqTypeLabel[h.request_type] || h.request_type)}</b>
+                &nbsp;·&nbsp; 提交人：${esc(h.submitter_display || h.submitter)}
+                &nbsp;·&nbsp; ${esc((h.reviewed_at || h.submitted_at || "").slice(0, 16))}
+                ${reviewerInfo ? " &nbsp;·&nbsp; " + reviewerInfo : ""}
+                ${h.review_note ? ` &nbsp;·&nbsp; 备注：<b>${esc(h.review_note)}</b>` : ""}
+              </div>
+              ${cicdDiffTable(h.payload, h.request_type)}
+            </div>`;
+        }).join("");
+      } catch (e) {
+        $("cicdHistoryBody").innerHTML = `<div style="color:var(--bad-fg)">加载失败：${esc(e.message)}</div>`;
+      }
+    }
+
+    // --- Delete task ---
+    async function deleteCicdTask(taskId) {
+      if (!confirm(`确认删除 Abandoned 任务 ${taskId}？此操作不可恢复。`)) return;
+      try {
+        await post("/api/cicd/tasks/delete", { task_id: taskId });
+        await loadCicdAndRender();
+        alert("已删除");
+      } catch (e) {
+        alert("删除失败：" + e.message);
+      }
+    }
+
+    // --- Re-edit after rejection ---
+    async function openCicdReEdit(reqId) {
+      try {
+        const data = await api(`/api/cicd/requests?since_days=365`);
+        const req = (data.requests || []).find(r => r.id == reqId);
+        if (!req) return alert("申请不存在");
+        openCicdTaskDialog(req.task_id || null, reqId);
+        // Pre-fill from rejected payload
+        const p = req.payload || {};
+        if (req.request_type === "create") {
+          for (const [k, v] of Object.entries(p)) {
+            const el = $(`cf_${k}`);
+            if (el) el.value = Array.isArray(v) ? v.join(", ") : (v ?? "");
+            if (k === "build_product") {
+              $("cf_build_product_group").querySelectorAll("input[type=checkbox]").forEach(cb => {
+                cb.checked = Array.isArray(v) ? v.includes(cb.value) : false;
+              });
+            }
+          }
+        }
+      } catch (e) {
+        alert("加载失败：" + e.message);
+      }
+    }
+
+    function bindCicd() {
+      // Tab switch → load CICD data and mark visited
+      document.querySelectorAll(".tab").forEach(b => {
+        if (b.dataset.view === "cicd") {
+          const orig = b.onclick;
+          b.onclick = async () => {
+            if (b.hidden) return;
+            document.querySelectorAll(".tab,.view").forEach(x => x.classList.remove("active"));
+            b.classList.add("active");
+            $("cicd").classList.add("active");
+            await loadCicdAndRender();
+            await markCicdVisited();
+          };
+        }
+      });
+
+      // CICD sub-tabs
+      document.querySelectorAll(".cicd-subtab").forEach(b => b.onclick = async () => {
+        document.querySelectorAll(".cicd-subtab,.cicd-pane").forEach(x => x.classList.remove("active"));
+        b.classList.add("active");
+        $(b.dataset.cicdPane).classList.add("active");
+        if (b.dataset.cicdPane === "cicdPendingPane") await renderCicdPending();
+        if (b.dataset.cicdPane === "cicdRecentPane") await renderCicdRecent();
+      });
+
+      // Status filter buttons (overview)
+      $("cicdStatusFilters").addEventListener("click", async ev => {
+        const btn = ev.target.closest(".cicd-filter-btn");
+        if (!btn) return;
+        $("cicdStatusFilters").querySelectorAll(".cicd-filter-btn").forEach(x => x.classList.remove("active"));
+        btn.classList.add("active");
+        cicdOverviewFilter = btn.dataset.status;
+        renderCicdOverview();
+      });
+
+      // Time filter (recent)
+      $("cicdRecentTimeFilters").addEventListener("click", async ev => {
+        const btn = ev.target.closest(".cicd-filter-btn");
+        if (!btn) return;
+        $("cicdRecentTimeFilters").querySelectorAll(".cicd-filter-btn").forEach(x => x.classList.remove("active"));
+        btn.classList.add("active");
+        cicdRecentDays = parseInt(btn.dataset.days) || 30;
+        await renderCicdRecent();
+      });
+
+      // Search inputs
+      $("cicdOverviewSearch").oninput = renderCicdOverview;
+      $("cicdMySearch").oninput = renderCicdMy;
+      $("cicdPendingSearch").oninput = renderCicdPending;
+      $("cicdRecentSearch").oninput = renderCicdRecent;
+      $("cicdRecentOnlyMine").onchange = renderCicdRecent;
+
+      // New task buttons
+      $("cicdNewTaskBtn").onclick = () => openCicdTaskDialog(null);
+      $("cicdMyNewBtn").onclick = () => openCicdTaskDialog(null);
+
+      // Overview table delegate
+      $("cicdOverviewBody").addEventListener("click", async ev => {
+        const editId = ev.target.closest("[data-cicd-edit]")?.dataset.cicdEdit;
+        if (editId) { openCicdTaskDialog(editId); return; }
+        const histId = ev.target.closest("[data-cicd-history]")?.dataset.cicdHistory;
+        if (histId) { openCicdHistoryDialog(histId); return; }
+        const delId = ev.target.closest("[data-cicd-delete]")?.dataset.cicdDelete;
+        if (delId) { deleteCicdTask(delId); return; }
+      });
+
+      // My tasks table delegate
+      $("cicdMyBody").addEventListener("click", async ev => {
+        const editId = ev.target.closest("[data-cicd-edit]")?.dataset.cicdEdit;
+        if (editId) { openCicdTaskDialog(editId); return; }
+        const histId = ev.target.closest("[data-cicd-history]")?.dataset.cicdHistory;
+        if (histId) { openCicdHistoryDialog(histId); return; }
+      });
+
+      // Pending table delegate
+      $("cicdPendingBody").addEventListener("click", async ev => {
+        const appId = ev.target.closest("[data-cicd-approve]")?.dataset.cicdApprove;
+        if (appId) { openCicdApproveDialog(appId); return; }
+        const cancelId = ev.target.closest("[data-cicd-cancel]")?.dataset.cicdCancel;
+        if (cancelId) {
+          if (!confirm("确认取消该申请？")) return;
+          try {
+            await post("/api/cicd/requests/cancel", { request_id: parseInt(cancelId) });
+            await loadCicdAndRender();
+            await renderCicdPending();
+          } catch (e) { alert("取消失败：" + e.message); }
+          return;
+        }
+      });
+
+      // Recent table delegate
+      $("cicdRecentBody").addEventListener("click", async ev => {
+        const reeditId = ev.target.closest("[data-cicd-reedit]")?.dataset.cicdReedit;
+        if (reeditId) { openCicdReEdit(reeditId); return; }
+      });
+
+      // Task form dialog
+      $("cf_repo_type").onchange = cicdUpdateBranchLock;
+      $("cicdTaskDialogCancel").onclick = () => $("cicdTaskDialog").close();
+      $("cicdTaskDialogSubmit").onclick = submitCicdTaskForm;
+
+      // Approve dialog
+      $("cicdApproveCancel").onclick = () => $("cicdApproveDialog").close();
+      $("cicdApproveOk").onclick = () => submitCicdApproval("approve");
+      $("cicdApproveReject").onclick = () => submitCicdApproval("reject");
+
+      // History dialog
+      $("cicdHistoryClose").onclick = () => $("cicdHistoryDialog").close();
+    }
+
     function bind() {
       document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
         if (b.hidden) return;
@@ -2185,6 +3050,7 @@
         $(b.dataset.view).classList.add("active");
         if (["dashboard", "apps", "qa"].includes(b.dataset.view)) loadState().catch(err => alert(err.message));
       });
+      bindCicd();
       document.querySelectorAll("[data-init-pane]").forEach(b => b.onclick = () => {
         document.querySelectorAll("[data-init-pane],.init-pane").forEach(x => x.classList.remove("active"));
         b.classList.add("active");
