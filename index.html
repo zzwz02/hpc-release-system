@@ -317,21 +317,63 @@
   .schedule-box .past .ver{color:var(--ink-2);}
   .schedule-box .soon{color:var(--warn-fg);font-weight:700;}
   @media (max-width:1080px){.workspace,.form,.tcard-b,.qa-card-b{grid-template-columns:1fr;}}
+  /* ---- login page ---- */
+  #loginPage{position:fixed;inset:0;z-index:100;
+    background:linear-gradient(150deg,#1e2d5a 0%,#2563eb 55%,#4f35c2 100%);
+    display:flex;align-items:center;justify-content:center;}
+  .lcard{background:#fff;border-radius:20px;padding:44px 40px 36px;width:360px;
+    box-shadow:0 24px 64px rgba(0,0,0,.32);}
+  .lcard-logo{width:60px;height:60px;border-radius:18px;margin:0 auto 16px;
+    background:linear-gradient(135deg,#2563eb,#5b3ee0);display:grid;place-items:center;
+    font-weight:900;font-size:22px;color:#fff;letter-spacing:-1px;}
+  .lcard-title{text-align:center;font-size:18px;font-weight:800;color:var(--ink);margin-bottom:4px;}
+  .lcard-sub{text-align:center;font-size:12px;color:var(--muted);margin-bottom:28px;}
+  .ltype-bar{display:flex;border:1px solid var(--border-2);border-radius:9px;
+    overflow:hidden;margin-bottom:22px;}
+  .ltype-bar button{flex:1;padding:8px;border:0;background:#fff;font:inherit;
+    font-weight:700;font-size:13px;color:var(--ink-2);cursor:pointer;}
+  .ltype-bar button.active{background:var(--accent);color:#fff;}
+  .lfield{display:flex;flex-direction:column;gap:5px;margin-bottom:14px;}
+  .lfield-lbl{font-size:12px;font-weight:700;color:var(--ink-2);}
+  .lfield .input{width:100%;padding:10px 12px;font-size:14px;}
+  #lpBtn{width:100%;padding:11px;font-size:15px;font-weight:800;border-radius:10px;margin-top:6px;}
+  .lerr{margin-top:10px;font-size:13px;color:var(--bad-fg);text-align:center;min-height:18px;}
+  /* ---- loading overlay ---- */
+  #loadingPage{position:fixed;inset:0;z-index:200;
+    background:linear-gradient(150deg,#1e2d5a 0%,#2563eb 55%,#4f35c2 100%);
+    display:flex;align-items:center;justify-content:center;}
+  .lspinner{width:38px;height:38px;border:3px solid rgba(255,255,255,.25);
+    border-top-color:#fff;border-radius:50%;animation:lspin .7s linear infinite;}
+  @keyframes lspin{to{transform:rotate(360deg);}}
 </style>
 </head>
 <body>
+  <div id="loadingPage"><div class="lspinner"></div></div>
+  <div id="loginPage">
+    <div class="lcard">
+      <div class="lcard-logo">HPC</div>
+      <div class="lcard-title">HPC 发布信息协作系统</div>
+      <div class="lcard-sub">MetaX Technology &middot; GPU 软件发布平台</div>
+      <div id="loginTypeBar" class="ltype-bar" hidden>
+        <button class="active" data-ltype="ldap">域账号</button>
+        <button data-ltype="local">内建账号</button>
+      </div>
+      <div class="lfield">
+        <div class="lfield-lbl">用户名</div>
+        <input id="lpUser" class="input" placeholder="请输入用户名" autocomplete="username">
+      </div>
+      <div class="lfield">
+        <div class="lfield-lbl">密码</div>
+        <input id="lpPass" class="input" type="password" placeholder="请输入密码" autocomplete="current-password">
+      </div>
+      <button id="lpBtn" class="btn primary">登 录</button>
+      <div id="lpError" class="lerr"></div>
+    </div>
+  </div>
+
   <header class="topbar">
     <div class="brand"><span class="logo">HPC</span><span>发布信息协作系统</span></div>
     <div class="spacer"></div>
-    <span id="loginBox" class="loginbox">
-      <select id="loginType" class="select sm" style="width:90px" hidden title="选择登录方式">
-        <option value="local">内建账号</option>
-        <option value="ldap">域账号</option>
-      </select>
-      <input id="loginUser" class="input" value="rm" placeholder="用户名" style="width:120px">
-      <input id="loginPass" class="input" type="password" value="rm" placeholder="密码" style="width:120px">
-      <button id="loginBtn" class="btn primary">登录</button>
-    </span>
     <span id="sessionBox" class="sessionbox" hidden>
       <span class="ctl">Release <select id="release" class="select" style="min-width:170px"></select></span>
       <button id="refresh" class="iconbtn" title="刷新">&#x21bb;</button>
@@ -2174,7 +2216,13 @@
         if (Date.now() < appInfoPickerHoldUntil) appInfoPickerHoldUntil = Date.now() + 1500;
         refreshIfIdle();
       });
-      $("loginBtn").onclick = login;
+      $("lpBtn").onclick = login;
+      $("lpUser").addEventListener("keydown", e => { if (e.key === "Enter") $("lpPass").focus(); });
+      $("lpPass").addEventListener("keydown", e => { if (e.key === "Enter") login(); });
+      document.querySelectorAll(".ltype-bar button").forEach(b => b.onclick = () => {
+        document.querySelectorAll(".ltype-bar button").forEach(x => x.classList.remove("active"));
+        b.classList.add("active");
+      });
       $("logoutBtn").onclick = logout;
       $("refresh").onclick = () => loadState();
       $("scheduleAddBtn").onclick = () => { scheduleEditId = "__new__"; renderSchedule(); };
@@ -2336,12 +2384,24 @@
     }
 
     async function login() {
-      const sel = $("loginType");
-      const loginType = (sel && !sel.hidden) ? (sel.value || "local") : "local";
+      const activeType = document.querySelector(".ltype-bar button.active");
+      const loginType = (activeType && ldapStatus.enabled) ? (activeType.dataset.ltype || "local") : "local";
       const endpoint = loginType === "ldap" ? "/api/login/ldap" : "/api/login";
-      await post(endpoint, { username: $("loginUser").value, password: $("loginPass").value });
-      await loadState();
-      startAutoRefresh();
+      const username = $("lpUser").value.trim();
+      const password = $("lpPass").value;
+      $("lpError").textContent = "";
+      $("lpBtn").disabled = true;
+      try {
+        await post(endpoint, { username, password });
+        await loadState();
+        startAutoRefresh();
+      } catch (e) {
+        $("lpError").textContent = e.message || "用户名或密码不正确";
+        $("lpPass").value = "";
+        $("lpPass").focus();
+      } finally {
+        $("lpBtn").disabled = false;
+      }
     }
 
     async function loadMembers() {
@@ -2410,16 +2470,24 @@
     }
 
     function showLoggedIn(user) {
-      $("loginBox").hidden = true;
+      $("loadingPage").hidden = true;
+      $("loginPage").hidden = true;
       $("sessionBox").hidden = false;
       $("meBox").textContent = `${user.role} · ${user.username}`;
       $("meAvatar").textContent = (user.username || "·").slice(0, 1).toUpperCase();
     }
 
     function showLoggedOut() {
-      $("loginBox").hidden = false;
+      $("loadingPage").hidden = true;
       $("sessionBox").hidden = true;
       $("meBox").textContent = "未登录";
+      const lp = $("loginPage");
+      if (lp) {
+        lp.hidden = false;
+        $("lpError").textContent = "";
+        $("lpPass").value = "";
+        requestAnimationFrame(() => $("lpUser").focus());
+      }
     }
 
     bind();
@@ -2427,8 +2495,8 @@
       try {
         const status = await fetch("/api/ldap/status").then(r => r.json()).catch(() => ({ enabled: false }));
         ldapStatus = status || { enabled: false };
-        const sel = $("loginType");
-        if (sel) sel.hidden = !ldapStatus.enabled;
+        const typeBar = $("loginTypeBar");
+        if (typeBar) typeBar.hidden = !ldapStatus.enabled;
       } catch (_) { /* LDAP status failure must not block login */ }
       try {
         await loadState();
