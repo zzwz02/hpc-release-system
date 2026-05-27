@@ -427,8 +427,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"ok": True, "deleted": deleted, "backup": backup.name})
                     return
                 if parsed.path == "/api/apps/new":
-                    if self.role() != "Owner":
-                        raise AuthzError("Only Owner can submit new app requests")
+                    if self.role() not in {"Owner", "RM"}:
+                        raise AuthzError("Only Owner or RM can submit new app requests")
                     body = self.json_body()
                     app_id = core.add_new_app_request(
                         self.conn(),
