@@ -6,15 +6,17 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tarfile
 import tempfile
+import types
 import unittest
 from io import BytesIO
 from pathlib import Path
 from unittest import mock
 
 import server
-from release_system import core
+from release_system import core, llm
 
 
 INIT_CSV = """官方名称,类型,APP类型,Owner,app_version,maca_chip,hpcc_chip,arch,maca_version,git_url,git_branch
@@ -152,7 +154,7 @@ def _fill_ready(snapshot: dict) -> None:
     snapshot["description"] = "测试描述"
     snapshot["doc"].update({"intro": "i", "image_usage": "i", "binary_usage": "b", "env_setup": "e"})
     for doc in snapshot["test_docs"]:
-        doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p", "stale": False})
+        doc.update({"dataset": "d", "content": "c", "result_view": "r", "pass_criteria": "p"})
 
 
 class CoreWorkflowTests(unittest.TestCase):
@@ -311,6 +313,32 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         self.assertEqual(snapshot["x86_chips"], "C500,X301")
         self.assertEqual(len(snapshot["test_docs"]), 1)
 
+    def test_app_info_reupload_same_content_preserves_owner_confirm(self) -> None:
+        # Re-uploading identical app_info (e.g. an idempotent Gerrit re-fetch)
+        # must not silently wipe out an Owner's prior confirmation — that
+        # would force unnecessary re-confirmation churn.
+        release_id, app_id = self.import_initial()
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        core.update_snapshot(self.conn, release_id, app_id, _fill_ready)
+        self.assertTrue(core.get_release(self.conn, release_id)["snapshots"][app_id]["owner_confirmed"])
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit-2")
+        snap = core.get_release(self.conn, release_id)["snapshots"][app_id]
+        self.assertTrue(snap["owner_confirmed"])
+        events = [r["event"] for r in core.app_audit_log(self.conn, app_id, release_id)]
+        self.assertNotIn("owner_confirm_invalidated", events)
+
+    def test_app_info_reupload_different_content_clears_owner_confirm(self) -> None:
+        # When the app_info content actually changes the Owner *should* be
+        # forced to re-review and re-confirm.
+        release_id, app_id = self.import_initial()
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        core.update_snapshot(self.conn, release_id, app_id, _fill_ready)
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V2, source="unit-2")
+        snap = core.get_release(self.conn, release_id)["snapshots"][app_id]
+        self.assertFalse(snap["owner_confirmed"])
+        events = [r["event"] for r in core.app_audit_log(self.conn, app_id, release_id)]
+        self.assertIn("owner_confirm_invalidated", events)
+
     def test_app_info_upload_blocked_after_doc_deadline(self) -> None:
         release_id, app_id = self.import_initial(doc_deadline="2026-01-01")
         fake_now = dt.datetime(2026, 5, 15)
@@ -392,6 +420,44 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         meta = core.get_qa_log(self.conn, release_id)
         self.assertEqual(meta["filename"], "b.log")
         self.assertEqual(Path(meta["storage_path"]).read_bytes(), b"second")
+
+    def test_qa_analyze_log_reports_progress_and_retries_llm(self) -> None:
+        release_id, app_id = self.import_initial()
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        core.qa_upload_log(self.conn, self.db_path, release_id, b"amber run_make_test PASS", "qa.log", user="qa", role="QA")
+        events: list[tuple[str, str]] = []
+        calls = {"n": 0}
+
+        def fake_llm(system: str, user: str) -> str:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("temporary outage")
+            return json.dumps({
+                "apps": [{
+                    "app_id": app_id,
+                    "qa_status": "qa_passed",
+                    "qa_issue_note": "",
+                    "tests": [{"test": "run_make_test", "arch": "amd64", "status": "pass", "perf": "", "note": ""}],
+                }]
+            })
+
+        with mock.patch("release_system.core.time.sleep", return_value=None):
+            result = core.qa_analyze_log(
+                self.conn,
+                self.db_path,
+                release_id,
+                llm_call=fake_llm,
+                progress=lambda stage, message: events.append((stage, message)),
+                max_llm_attempts=2,
+            )
+
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(result["apps"][0]["qa_status"], "qa_passed")
+        stages = [stage for stage, _ in events]
+        self.assertIn("parsing_text", stages)
+        self.assertIn("waiting_llm", stages)
+        self.assertIn("retrying_llm", stages)
+        self.assertEqual(stages[-1], "completed")
 
     # --- export CSV ---
 
@@ -689,15 +755,109 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         self.assertIn("缺少 App类型", texts)
         self.assertIn("缺少描述（30字内）", texts)
 
-        core.update_snapshot(self.conn, release_id, app_id, lambda s: s.update({"type": "分子动力学", "description": "a" * 31}))
+        core.update_snapshot(self.conn, release_id, app_id, lambda s: s.update({"type": "分子动力学", "description": " ".join(f"word{i}" for i in range(31))}))
         items = core.refresh_missing_items(self.conn, release_id)[app_id]
         texts = [core.missing_item_text(it) for it in items]
         self.assertIn("描述超过30字", texts)
 
-    def test_normalize_app_description_rejects_over_30_chars(self) -> None:
+    def test_normalize_app_description_counts_words_cjk_and_punctuation(self) -> None:
         self.assertEqual(core.normalize_app_description("  简短描述  "), "简短描述")
+        self.assertEqual(core.app_description_count("hello world，中国!"), 6)
+        self.assertEqual(core.normalize_app_description(" ".join(f"word{i}" for i in range(30))), " ".join(f"word{i}" for i in range(30)))
         with self.assertRaisesRegex(ValueError, "30"):
-            core.normalize_app_description("a" * 31)
+            core.normalize_app_description(" ".join(f"word{i}" for i in range(31)))
+
+    def test_qa_llm_env_file_parser_supports_windows_and_linux_lines(self) -> None:
+        path = self.root / "qa_llm.env"
+        path.write_text(
+            "\ufeff# comment\r\n"
+            "QA_LLM_BASE_URL=http://host/v1\r\n"
+            "export QA_LLM_MODEL=\"qwen-test\"\r\n"
+            "QA_LLM_API_KEY='secret'\r\n"
+            "IGNORED=value\r\n",
+            encoding="utf-8",
+        )
+
+        parsed = llm.read_env_file(path)
+
+        self.assertEqual(parsed["QA_LLM_BASE_URL"], "http://host/v1")
+        self.assertEqual(parsed["QA_LLM_MODEL"], "qwen-test")
+        self.assertEqual(parsed["QA_LLM_API_KEY"], "secret")
+        self.assertNotIn("IGNORED", parsed)
+
+    def test_qa_llm_settings_reads_file_with_env_override(self) -> None:
+        path = self.root / "qa_llm.env"
+        path.write_text(
+            "QA_LLM_BASE_URL=http://file/v1\n"
+            "QA_LLM_MODEL=file-model\n"
+            "QA_LLM_API_KEY=file-key\n",
+            encoding="utf-8",
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "QA_LLM_ENV_FILE": str(path),
+                "QA_LLM_BASE_URL": "",
+                "QA_LLM_MODEL": "env-model",
+                "QA_LLM_API_KEY": "",
+            },
+            clear=False,
+        ):
+            settings = llm.llm_settings()
+
+        self.assertEqual(settings["QA_LLM_BASE_URL"], "http://file/v1")
+        self.assertEqual(settings["QA_LLM_MODEL"], "env-model")
+        self.assertEqual(settings["QA_LLM_API_KEY"], "file-key")
+
+    def test_qa_llm_chat_json_uses_openai_sdk(self) -> None:
+        path = self.root / "qa_llm.env"
+        path.write_text(
+            "QA_LLM_BASE_URL=http://local-llm/v1\n"
+            "QA_LLM_MODEL=qwen-test\n"
+            "QA_LLM_API_KEY=secret\n",
+            encoding="utf-8",
+        )
+        calls: dict[str, object] = {}
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                calls["create"] = kwargs
+                return iter([
+                    types.SimpleNamespace(choices=[types.SimpleNamespace(delta=types.SimpleNamespace(content='{"ok"'))]),
+                    types.SimpleNamespace(choices=[types.SimpleNamespace(delta=types.SimpleNamespace(content=': true}'))]),
+                    types.SimpleNamespace(choices=[types.SimpleNamespace(delta=types.SimpleNamespace(content=None))]),
+                ])
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                calls["client"] = kwargs
+                self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+        fake_openai = types.SimpleNamespace(OpenAI=FakeOpenAI)
+        with mock.patch.dict(sys.modules, {"openai": fake_openai}), mock.patch.dict(
+            os.environ,
+            {
+                "QA_LLM_ENV_FILE": str(path),
+                "QA_LLM_BASE_URL": "",
+                "QA_LLM_MODEL": "",
+                "QA_LLM_API_KEY": "",
+            },
+            clear=False,
+        ):
+            token_counts: list[int] = []
+            result = llm.chat_json("system prompt", "user prompt", timeout=12, progress=token_counts.append)
+
+        self.assertEqual(result, '{"ok": true}')
+        self.assertEqual(token_counts, [1, 2])
+        self.assertEqual(calls["client"], {"base_url": "http://local-llm/v1", "api_key": "secret", "timeout": 12})
+        create = calls["create"]
+        self.assertEqual(create["model"], "qwen-test")
+        self.assertEqual(create["temperature"], 0)
+        self.assertEqual(create["stream"], True)
+        self.assertEqual(create["response_format"], {"type": "json_object"})
+        self.assertEqual(create["messages"][0], {"role": "system", "content": "system prompt"})
+        self.assertEqual(create["messages"][1], {"role": "user", "content": "user prompt"})
 
     def test_missing_items_empty_for_cicd_only(self) -> None:
         release_id, app_id = self.import_initial()
@@ -736,7 +896,6 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
                 "pass_criteria": "",
                 "coverage": "",
                 "owner_added": True,
-                "stale": False,
                 "obsolete": False,
             })
         core.update_snapshot(self.conn, release_id, app_id, add_qa_named_doc)
@@ -763,10 +922,13 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         core.qa_set_status(self.conn, release_id, app_id, "qa_passed")
         next_id = core.create_release_from_previous(self.conn, "next")
         snap = core.get_release(self.conn, next_id)["snapshots"][app_id]
+        # QA state is per-release and must reset on clone.
         self.assertEqual(snap["qa_status"], "not_checked")
-        self.assertFalse(snap["owner_confirmed"])
-        # test_docs reset to stale
-        self.assertTrue(all(d["stale"] for d in snap["test_docs"]))
+        # Owner confirmation and test-doc content carry over — re-uploading the
+        # same app_info or cloning a release must not silently force owners to
+        # redo work they already finished in the previous release.
+        self.assertTrue(snap["owner_confirmed"])
+        self.assertTrue(all(d.get("dataset") for d in snap["test_docs"]))
 
     # --- audit ---
 
@@ -1245,10 +1407,10 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         self.assertNotIn("create_app", r2_events)
         self.assertGreaterEqual(len(core.app_audit_log(self.conn, app_id)), len(r1_events) + len(r2_events))
 
-    def test_app_audit_access_allows_rm_admin_and_current_owner(self) -> None:
+    def test_app_audit_access_allows_rm_admin_qa_and_current_owner(self) -> None:
         release_id, app_id = self.import_initial()
 
-        for username, role in [("rm", "RM"), ("admin", "Admin"), ("张三", "Owner")]:
+        for username, role in [("rm", "RM"), ("admin", "Admin"), ("qa", "QA"), ("张三", "Owner")]:
             handler = object.__new__(server.Handler)
             handler._conn = self.conn
             handler.conn = lambda: self.conn

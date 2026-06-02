@@ -10,6 +10,7 @@ import re
 import secrets
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -530,9 +531,28 @@ def normalize_doc_target(value: str | None) -> str:
     return aliases.get(target, "manual")
 
 
+def app_description_count(value: str | None) -> int:
+    text = (value or "").strip()
+    count = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch.isspace():
+            i += 1
+            continue
+        if ch.isascii() and ch.isalnum():
+            while i < len(text) and text[i].isascii() and text[i].isalnum():
+                i += 1
+            count += 1
+            continue
+        count += 1
+        i += 1
+    return count
+
+
 def normalize_app_description(value: str | None) -> str:
     description = (value or "").strip()
-    if len(description) > MAX_APP_DESCRIPTION_CHARS:
+    if app_description_count(description) > MAX_APP_DESCRIPTION_CHARS:
         raise ValueError(f"描述不能超过{MAX_APP_DESCRIPTION_CHARS}字")
     return description
 
@@ -746,10 +766,6 @@ def test_docs_diff(before: list[dict[str, Any]], after: list[dict[str, Any]]) ->
             if (old.get(key) or "") != (doc.get(key) or ""):
                 changes.append({"field": f"{path}.{key}", "label": f"{path} · {label}",
                                 "old": fmt_audit_value(old.get(key)), "new": fmt_audit_value(doc.get(key))})
-        if bool(old.get("stale")) != bool(doc.get("stale")):
-            changes.append({"field": f"{path}.stale", "label": f"{path} · 测试说明状态",
-                            "old": "待更新" if old.get("stale") else "已更新",
-                            "new": "待更新" if doc.get("stale") else "已更新"})
     return changes
 
 
@@ -992,6 +1008,10 @@ def base_snapshot(
         "arm_chips": "",
         "hpcc_chip": "",
         "arch": "",
+        "python_labels": "",
+        "pytorch_labels": "",
+        "build_os": "",
+        "build_arches": "",
         "maca_version": "",
         "doc": {
             "intro": "",
@@ -1458,14 +1478,11 @@ def create_release_from_previous(
             snapshot.pop("locked_in_release", None)
             snapshot.update(
                 {
-                    "owner_confirmed": False,
                     "qa_status": "not_checked",
                     "qa_issue_note": "",
                     "missing_items": [],
                 }
             )
-            for td in snapshot.get("test_docs", []):
-                td["stale"] = True
             save_snapshot(conn, release_id, app["id"], snapshot)
             audit(
                 conn,
@@ -1493,7 +1510,6 @@ def _initial_snapshot_for_future_release(snapshot: dict[str, Any], target_releas
     future.pop("locked_in_release", None)
     future.update(
         {
-            "owner_confirmed": False,
             "qa_status": "not_checked",
             "qa_issue_note": "",
             "missing_items": [],
@@ -1505,8 +1521,6 @@ def _initial_snapshot_for_future_release(snapshot: dict[str, Any], target_releas
         and not can(target_release, "new_app_release")
     ):
         future["release_decision"] = "cicd_only"
-    for test_doc in future.get("test_docs", []):
-        test_doc["stale"] = True
     return future
 
 
@@ -1608,9 +1622,18 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
     data = json.loads(raw) if isinstance(raw, str) else raw
     x86_chips: set[str] = set()
     arm_chips: set[str] = set()
+    python_labels: list[str] = []
+    pytorch_labels: list[str] = []
+    build_os_list: list[str] = []
+    build_arch_list: list[str] = []
     build_targets: list[dict[str, Any]] = []
     test_targets: list[dict[str, Any]] = []
     tests: list[dict[str, Any]] = []
+
+    def _add_unique(target: list[str], value: Any) -> None:
+        v = str(value or "").strip()
+        if v and v not in target:
+            target.append(v)
 
     for env, cfg in (data.get("app_build") or {}).items():
         if not isinstance(cfg, dict):
@@ -1621,7 +1644,20 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
         if enabled:
             target = arm_chips if re.search(r"arm|aarch64", arch, re.I) else x86_chips
             target.update(str(chip).upper() for chip in chips)
-        build_targets.append({"path": env, "arch": arch, "chips": chips, "enabled": enabled, "build_target": cfg.get("build_target", "")})
+            _add_unique(python_labels, cfg.get("python_label"))
+            _add_unique(pytorch_labels, cfg.get("pytorch_label"))
+            _add_unique(build_os_list, cfg.get("os"))
+            _add_unique(build_arch_list, cfg.get("arch"))
+        build_targets.append({
+            "path": env,
+            "arch": arch,
+            "chips": chips,
+            "enabled": enabled,
+            "build_target": cfg.get("build_target", ""),
+            "python_label": str(cfg.get("python_label") or "").strip(),
+            "pytorch_label": str(cfg.get("pytorch_label") or "").strip(),
+            "os": str(cfg.get("os") or "").strip(),
+        })
 
     def visitor(node: dict[str, Any], path: list[str]) -> None:
         if "test_cmd" not in node:
@@ -1672,6 +1708,10 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
         "app_version": data.get("app_version", ""),
         "x86_chips": order_chips(x86_chips),
         "arm_chips": order_chips(arm_chips),
+        "python_labels": python_labels,
+        "pytorch_labels": pytorch_labels,
+        "build_os": build_os_list,
+        "build_arches": build_arch_list,
         "build_targets": build_targets,
         "test_targets": test_targets,
         "tests": tests,
@@ -1690,6 +1730,10 @@ def diff_app_info(old: dict[str, Any] | None, new: dict[str, Any]) -> list[dict[
     add("版本变化", "app_version", old.get("app_version", ""), new.get("app_version", ""))
     add("X86芯片变化", "x86_chips", old.get("x86_chips", []), new.get("x86_chips", []))
     add("ARM芯片变化", "arm_chips", old.get("arm_chips", []), new.get("arm_chips", []))
+    add("Python label 变化", "python_labels", old.get("python_labels", []), new.get("python_labels", []))
+    add("PyTorch label 变化", "pytorch_labels", old.get("pytorch_labels", []), new.get("pytorch_labels", []))
+    add("OS 变化", "build_os", old.get("build_os", []), new.get("build_os", []))
+    add("Arch 变化", "build_arches", old.get("build_arches", []), new.get("build_arches", []))
     add(
         "Build target变化",
         "build_targets",
@@ -1731,14 +1775,12 @@ def ensure_test_docs(snapshot: dict[str, Any], parsed: dict[str, Any], diffs: li
                     "pass_criteria": "",
                     "coverage": join_list(test.get("supported_chips", [])),
                     "owner_added": False,
-                    "stale": True,
                     "obsolete": False,
                 }
             )
         else:
             doc["command"] = test["command"]
             doc["obsolete"] = False
-            doc["stale"] = True
     for doc in snapshot["test_docs"]:
         if not doc.get("owner_added") and doc["path"] not in current_paths:
             doc["obsolete"] = True
@@ -1851,7 +1893,13 @@ def apply_app_info(
     require_can(release, "edit_app_info", "已过 doc deadline，不可再上传 app_info")
     snapshot = release["snapshots"][app_id]
     was_confirmed = bool(snapshot.get("owner_confirmed"))
+    snapshot_parsed = (snapshot.get("app_info") or {}).get("parsed")
     parsed = parse_app_info(raw)
+    # Owner confirmation should only become invalid when the snapshot's own
+    # app_info content actually changes — a re-upload of the same file, a
+    # clone from a previous release, or a fetch that returns identical
+    # content must not silently force the owner to re-confirm.
+    content_modified = snapshot_parsed is not None and bool(diff_app_info(snapshot_parsed, parsed))
     if snapshot.get("release_decision") == "release" and not can(release, "expand_qa_scope"):
         current_parsed = (snapshot.get("app_info") or {}).get("parsed")
         if current_parsed is not None:
@@ -1882,8 +1930,12 @@ def apply_app_info(
     snapshot["version"] = parsed.get("app_version") or snapshot.get("version", "")
     snapshot["x86_chips"] = ",".join(order_chips(parsed.get("x86_chips", [])))
     snapshot["arm_chips"] = ",".join(order_chips(parsed.get("arm_chips", [])))
+    snapshot["python_labels"] = ",".join(parsed.get("python_labels", []))
+    snapshot["pytorch_labels"] = ",".join(parsed.get("pytorch_labels", []))
+    snapshot["build_os"] = ",".join(parsed.get("build_os", []))
+    snapshot["build_arches"] = ",".join(parsed.get("build_arches", []))
     ensure_test_docs(snapshot, parsed, diffs)
-    if was_confirmed:
+    if was_confirmed and content_modified:
         snapshot["owner_confirmed"] = False
     # build_targets / test_targets are coarse list-of-dict aggregates; the
     # readable per-field diffs (version, chips, test_cmd*) cover the same ground.
@@ -1909,7 +1961,7 @@ def apply_app_info(
             event="upload_app_info",
             detail=detail,
         )
-        if was_confirmed:
+        if was_confirmed and content_modified:
             audit(
                 conn,
                 f"{app_id} Owner 确认因 app_info 更新自动失效",
@@ -1981,7 +2033,7 @@ def missing_items_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[dic
     description = (snapshot.get("description") or "").strip()
     if not description:
         add_doc("缺少描述（30字内）")
-    elif len(description) > MAX_APP_DESCRIPTION_CHARS:
+    elif app_description_count(description) > MAX_APP_DESCRIPTION_CHARS:
         add_doc("描述超过30字")
     if not snapshot.get("app_info"):
         add_doc("缺少可追溯 AppInfoSnapshot")
@@ -2008,8 +2060,6 @@ def missing_items_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[dic
         for key, label in {"dataset": "测试数据集", "content": "测试内容", "result_view": "结果查看方式", "pass_criteria": "通过标准"}.items():
             if not doc.get(key):
                 add_doc(f"{doc['path']} 缺少{label}")
-        if doc.get("stale"):
-            add_doc(f"{doc['path']} 测试说明 stale")
     if not snapshot.get("owner_confirmed"):
         add_doc("Owner 未确认 doc")
     qa_status = snapshot.get("qa_status", "not_checked")
@@ -2090,6 +2140,34 @@ def qa_set_status(
             detail=detail,
         )
     return snapshot
+
+
+QA_TEST_RESULT_STATUSES = {"pass", "fail", "skip", "unknown"}
+
+
+def _normalize_test_results(raw: Any) -> list[dict[str, Any]]:
+    """Coerce a batch item's test_results into a clean list-of-dicts shape.
+
+    Unknown fields are dropped so the LLM cannot smuggle arbitrary keys into
+    the snapshot; status is clamped to QA_TEST_RESULT_STATUSES.
+    """
+    if not isinstance(raw, list):
+        return []
+    cleaned: list[dict[str, Any]] = []
+    for row in raw:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "unknown").lower()
+        if status not in QA_TEST_RESULT_STATUSES:
+            status = "unknown"
+        cleaned.append({
+            "test": str(row.get("test") or "").strip(),
+            "arch": str(row.get("arch") or "").strip(),
+            "status": status,
+            "perf": str(row.get("perf") or "").strip(),
+            "note": str(row.get("note") or "").strip(),
+        })
+    return cleaned
 
 
 def qa_set_status_batch(
@@ -2208,6 +2286,235 @@ def get_qa_log(conn: sqlite3.Connection, release_id: str) -> dict[str, str] | No
         (release_id,),
     ).fetchone()
     return dict(row) if row else None
+
+
+def _qa_analysis_inventory(release: dict[str, Any], apps: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build the per-app test inventory the LLM uses as its target schema.
+
+    Only release-decision=release apps are included; each app lists its
+    enabled, non-weekly tests with the test_cmd string so the model can match
+    log lines back to a specific (app, test, arch).
+    """
+    inventory: list[dict[str, Any]] = []
+    for app_id, snapshot in release["snapshots"].items():
+        if snapshot.get("release_decision") != "release":
+            continue
+        app = apps.get(app_id) or {}
+        tests = []
+        for test in snapshot.get("tests") or []:
+            if not test.get("enabled", True):
+                continue
+            tests.append({
+                "name": test.get("name") or test.get("path") or "",
+                "path": test.get("path") or "",
+                "command": test.get("command") or "",
+                "supported_chips": test.get("supported_chips") or [],
+                "arches": test.get("arch_list") or [],
+            })
+        inventory.append({
+            "app_id": app_id,
+            "app_name": snapshot.get("app_name") or app.get("name") or app_id,
+            "version": snapshot.get("version") or snapshot.get("app_version") or "",
+            "tests": tests,
+        })
+    return inventory
+
+
+_QA_ANALYSIS_SYSTEM = (
+    "You analyze QA test logs/summary tables for an HPC release. Match the "
+    "log content to the provided per-app test inventory and report results.\n"
+    "Return STRICT JSON of the form: "
+    "{\"apps\": [{\"app_id\": str, "
+    "\"qa_status\": \"qa_passed\"|\"has_issues\"|\"cannot_release\"|\"not_checked\", "
+    "\"qa_issue_note\": str, \"tests\": [{\"test\": str, \"arch\": str, "
+    "\"status\": \"pass\"|\"fail\"|\"skip\"|\"unknown\", \"perf\": str, \"note\": str}]}]}.\n"
+    "Rules:\n"
+    "- Include EVERY app_id from the inventory. If the log has no data for an app, set its tests to status=unknown and qa_status=not_checked.\n"
+    "- qa_status=qa_passed only when every listed test for that app shows a clear pass in the log.\n"
+    "- qa_status=has_issues when any test fails or shows clear regression; qa_issue_note must concisely list which tests/arches failed and why (in Chinese).\n"
+    "- qa_status=cannot_release only when the log explicitly says release is blocked.\n"
+    "- Match app/test names case-insensitively and tolerate small spelling variants. The log may be plain text OR a multi-sheet spreadsheet rendered as TSV (each sheet preceded by `### Sheet: <name> ###`).\n"
+    "- perf: short numeric/throughput summary if the log contains one, else empty.\n"
+    "- note: at most one short Chinese sentence per test (cause of fail, perf delta, or empty).\n"
+    "- Do NOT invent tests not in the inventory. Output JSON only, no prose, no code fences."
+)
+
+
+def _xlsx_to_text(raw: bytes, *, max_rows_per_sheet: int = 2000) -> str:
+    """Render an xlsx workbook as TSV-ish plain text the LLM can read.
+
+    Each sheet is preceded by `### Sheet: <name> ###`; rows are tab-joined and
+    trailing empty cells are stripped so the prompt stays compact. Fails fast
+    with a clear message if the file isn't a valid xlsx.
+    """
+    import io as _io
+    from openpyxl import load_workbook
+
+    wb = load_workbook(_io.BytesIO(raw), data_only=True, read_only=True)
+    chunks: list[str] = []
+    for name in wb.sheetnames:
+        ws = wb[name]
+        chunks.append(f"### Sheet: {name} ###")
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if i >= max_rows_per_sheet:
+                chunks.append(f"...[truncated after {max_rows_per_sheet} rows]...")
+                break
+            cells: list[str] = []
+            for v in row:
+                if v is None:
+                    cells.append("")
+                else:
+                    # Cells legitimately contain tabs/newlines (multi-line perf
+                    # notes etc.), so neutralize them to keep the TSV unambiguous.
+                    cells.append(str(v).replace("\t", " ").replace("\r", " ").replace("\n", " "))
+            while cells and cells[-1] == "":
+                cells.pop()
+            if cells:
+                chunks.append("\t".join(cells))
+        chunks.append("")
+    wb.close()
+    return "\n".join(chunks)
+
+
+def _qa_log_to_text(path: Path, raw: bytes) -> str:
+    """Decode a QA-log file for the LLM. xlsx → TSV; everything else → utf-8."""
+    if path.suffix.lower() == ".xlsx":
+        try:
+            return _xlsx_to_text(raw)
+        except Exception as exc:
+            raise RuntimeError(f"无法解析 xlsx：{exc}") from exc
+    return raw.decode("utf-8", errors="replace")
+
+
+def _qa_progress(progress: Callable[..., None] | None, stage: str, message: str, **extra: Any) -> None:
+    if progress:
+        if extra:
+            try:
+                progress(stage, message, **extra)
+                return
+            except TypeError:
+                pass
+        progress(stage, message)
+
+
+def qa_analyze_log(
+    conn: sqlite3.Connection,
+    db_path: str | Path,
+    release_id: str,
+    *,
+    llm_call: Callable[[str, str], str] | None = None,
+    max_log_chars: int = 200_000,
+    progress: Callable[[str, str], None] | None = None,
+    max_llm_attempts: int = 2,
+) -> dict[str, Any]:
+    """Ask the LLM to summarize the uploaded QA log against the test inventory.
+
+    Pure read: no DB writes, no snapshot mutation. The caller (server handler)
+    returns the result to the UI which prefills the QA edit form, and only the
+    QA-confirmed values are later persisted via qa_set_status_batch.
+    """
+    _qa_progress(progress, "checking_log", "正在检查已上传的 QA log")
+    meta = get_qa_log(conn, release_id)
+    if not meta:
+        raise RuntimeError("本 release 还未上传 QA log")
+    log_path = Path(meta["storage_path"])
+    if not log_path.exists():
+        raise RuntimeError("QA log 文件丢失")
+    _qa_progress(progress, "reading_log", f"正在读取 QA log：{meta.get('filename', log_path.name)}")
+    raw = log_path.read_bytes()
+    if log_path.suffix.lower() == ".xlsx":
+        _qa_progress(progress, "parsing_excel", "正在解析 Excel 文件")
+    else:
+        _qa_progress(progress, "parsing_text", "正在解析文本 log")
+    text = _qa_log_to_text(log_path, raw)
+    truncated = False
+    if len(text) > max_log_chars:
+        _qa_progress(progress, "truncating_log", "log 较大，正在截断中段以控制 LLM 上下文")
+        head = text[: max_log_chars // 2]
+        tail = text[-max_log_chars // 2 :]
+        text = head + "\n\n...[log truncated]...\n\n" + tail
+        truncated = True
+
+    _qa_progress(progress, "building_inventory", "正在准备 app 和测试清单")
+    release = get_release(conn, release_id)
+    apps = {app["id"]: app for app in list_apps(conn)}
+    inventory = _qa_analysis_inventory(release, apps)
+    if not inventory:
+        raise RuntimeError("本 release 没有 release 决策为 release 的 app，无法分析")
+
+    _qa_progress(progress, "building_prompt", "正在构造 LLM 分析上下文")
+    user_payload = json.dumps({"inventory": inventory, "log": text}, ensure_ascii=False)
+
+    if llm_call is None:
+        from release_system.llm import chat_json
+
+        def default_llm_call(system: str, payload: str) -> str:
+            def stream_progress(token_count: int) -> None:
+                _qa_progress(
+                    progress,
+                    "streaming_llm",
+                    f"正在接收 LLM 输出：已收到 {token_count} token",
+                    token_count=token_count,
+                )
+
+            return chat_json(system, payload, progress=stream_progress)
+
+        llm_call = default_llm_call
+
+    max_llm_attempts = max(1, max_llm_attempts)
+    parsed: dict[str, Any] | None = None
+    for attempt in range(1, max_llm_attempts + 1):
+        try:
+            suffix = f"（第 {attempt}/{max_llm_attempts} 次）" if max_llm_attempts > 1 else ""
+            _qa_progress(progress, "waiting_llm", f"正在等待 LLM 返回结果{suffix}", token_count=0)
+            raw_reply = llm_call(_QA_ANALYSIS_SYSTEM, user_payload)
+            _qa_progress(progress, "parsing_llm", "正在解析 LLM 返回结果")
+            try:
+                parsed = json.loads(raw_reply)
+            except json.JSONDecodeError:
+                # Some local models wrap JSON in ```json fences — strip them and retry.
+                cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_reply.strip(), flags=re.MULTILINE)
+                parsed = json.loads(cleaned)
+            break
+        except Exception as exc:
+            if attempt >= max_llm_attempts:
+                raise
+            _qa_progress(progress, "retrying_llm", f"LLM 调用失败，正在重试：{exc}")
+            time.sleep(min(attempt, 3))
+
+    if parsed is None:
+        raise RuntimeError("LLM 未返回有效结果")
+
+    _qa_progress(progress, "normalizing_result", "正在整理 AI 建议")
+    valid_ids = {entry["app_id"] for entry in inventory}
+    apps_out: list[dict[str, Any]] = []
+    for row in parsed.get("apps") or []:
+        if not isinstance(row, dict):
+            continue
+        app_id = row.get("app_id")
+        if app_id not in valid_ids:
+            continue
+        status = row.get("qa_status") or "not_checked"
+        if status not in QA_STATUSES:
+            status = "not_checked"
+        apps_out.append({
+            "app_id": app_id,
+            "qa_status": status,
+            "qa_issue_note": str(row.get("qa_issue_note") or "").strip(),
+            "test_results": _normalize_test_results(row.get("tests")),
+        })
+
+    with transaction(conn):
+        audit(
+            conn,
+            f"QA AI 分析 log：{meta.get('filename', '')}",
+            user="qa-ai",
+            role="QA",
+            release_id=release_id,
+            event="qa_analyze_log",
+        )
+    _qa_progress(progress, "completed", "AI 分析完成")
+    return {"apps": apps_out, "log_truncated": truncated, "log_chars": len(raw)}
 
 
 def export_test_scope_csv(conn: sqlite3.Connection, release_id: str) -> str:
