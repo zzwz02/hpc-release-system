@@ -13,12 +13,141 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+try:
+    import ldap3
+    from ldap3 import Server as LdapServer, Connection as LdapConn, ALL as LDAP_ALL, SIMPLE as LDAP_SIMPLE, SUBTREE as LDAP_SUBTREE
+    from ldap3.core.exceptions import LDAPException
+    _LDAP3_AVAILABLE = True
+except ImportError:
+    _LDAP3_AVAILABLE = False
+
 from release_system import core
+from release_system import jira_client
 
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = ROOT / "release_system.db"
 ADMIN_PASSWORD_FILE = ROOT / "admin_password.local"
+LDAP_CONF_PATH = ROOT / "ldap.conf"
+
+# Populated at startup by main(); read-only after that (no lock needed).
+_LDAP_CONFIG: dict = {"enabled": False}
+
+
+def _load_ldap_config() -> dict:
+    """Parse ldap.conf into a plain dict.
+
+    Handles multi-word values (e.g. passwords with '=') by splitting only on
+    the first '=' per line.  Returns a safe default (disabled) if the file is
+    missing or unreadable.
+    """
+    defaults: dict = {
+        "enabled": False,
+        "uri": "",
+        "base": "",
+        "binddn": "",
+        "bindpw": "",
+        "user_filter": "(&(objectClass=user)(sAMAccountName={uid}))",
+        "uid_attr": "sAMAccountName",
+        "name_attr": "displayName",
+        "timeout": 10,
+    }
+    if not LDAP_CONF_PATH.exists():
+        return defaults
+    cfg = dict(defaults)
+    for line in LDAP_CONF_PATH.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        key = key.strip().lower()
+        value = value.strip()
+        if key == "enabled":
+            cfg["enabled"] = value.lower() in ("true", "1", "yes")
+        elif key in cfg:
+            cfg[key] = value
+    try:
+        cfg["timeout"] = int(cfg["timeout"])
+    except (ValueError, TypeError):
+        cfg["timeout"] = 10
+    return cfg
+
+
+def ldap_authenticate(username: str, password: str) -> tuple[str, str]:
+    """Verify *username*/*password* against LDAP.  Returns (username, display_name).
+
+    Raises PermissionError for wrong credentials, RuntimeError for config /
+    connectivity problems.  The two-step flow:
+      1. Bind with the service account to locate the user's full DN.
+      2. Bind as that DN with the supplied password to verify.
+    """
+    cfg = _LDAP_CONFIG
+    if not cfg.get("enabled"):
+        raise RuntimeError("LDAP 登录未启用")
+    if not _LDAP3_AVAILABLE:
+        raise RuntimeError("服务器未安装 ldap3 依赖（pip install ldap3）")
+    if not username or not password:
+        raise PermissionError("用户名和密码不能为空")
+
+    # Escape LDAP special chars in username to prevent filter injection
+    safe_uid = (
+        username
+        .replace("\\", "\\5c")
+        .replace("(",  "\\28")
+        .replace(")",  "\\29")
+        .replace("*",  "\\2a")
+    )
+    search_filter = cfg["user_filter"].replace("{uid}", safe_uid)
+
+    server = LdapServer(cfg["uri"], get_info=LDAP_ALL, connect_timeout=cfg["timeout"])
+
+    # Step 1: service-account bind to find user DN
+    try:
+        svc = LdapConn(
+            server,
+            user=cfg["binddn"],
+            password=cfg["bindpw"],
+            authentication=LDAP_SIMPLE,
+            auto_bind=True,
+            receive_timeout=cfg["timeout"],
+        )
+    except LDAPException as exc:
+        raise RuntimeError(f"LDAP 服务账号连接失败：{exc}") from exc
+
+    svc.search(
+        cfg["base"],
+        search_filter,
+        search_scope=LDAP_SUBTREE,
+        attributes=[cfg["uid_attr"], cfg["name_attr"]],
+    )
+    entries = svc.entries
+    svc.unbind()
+
+    if not entries:
+        raise PermissionError(f"域账号不存在：{username}")
+
+    entry = entries[0]
+    user_dn = entry.entry_dn
+    try:
+        display_name = str(entry[cfg["name_attr"]].value or username)
+    except Exception:
+        display_name = username
+
+    # Step 2: user-password bind to verify credentials
+    try:
+        uconn = LdapConn(
+            server,
+            user=user_dn,
+            password=password,
+            authentication=LDAP_SIMPLE,
+            auto_bind=True,
+            receive_timeout=cfg["timeout"],
+        )
+        uconn.unbind()
+    except LDAPException:
+        raise PermissionError("域账号密码不正确")
+
+    return username, display_name
 
 
 class AuthzError(Exception):
@@ -54,6 +183,15 @@ class Handler(BaseHTTPRequestHandler):
                 if parsed.path == "/api/me":
                     user = self.current_user(required=False)
                     self.send_json({"user": user})
+                    return
+                if parsed.path == "/api/ldap/status":
+                    # Public endpoint — no auth required (front-end reads this before login)
+                    cfg = _LDAP_CONFIG
+                    self.send_json({"enabled": bool(cfg.get("enabled")), "uri": cfg.get("uri", "")})
+                    return
+                if parsed.path == "/api/admin/users":
+                    self.require_admin()
+                    self.send_json({"users": core.list_users(self.conn())})
                     return
                 if parsed.path == "/api/state":
                     self.current_user()
@@ -110,6 +248,59 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("release_id is required")
                     self.send_json(core.build_qa_reports(self.conn(), release_id, compare_id or None))
                     return
+                # --- CICD workbench ---
+                if parsed.path == "/api/cicd/tasks":
+                    self.current_user()
+                    status_filter = self.query().get("status", [None])[0]
+                    tasks = core.list_cicd_tasks(self.conn(), status_filter=status_filter)
+                    self.send_json({"tasks": tasks})
+                    return
+                if parsed.path.startswith("/api/cicd/tasks/") and parsed.path.endswith("/history"):
+                    self.current_user()
+                    task_id = parsed.path[len("/api/cicd/tasks/"):-len("/history")]
+                    history = core.get_cicd_task_history(self.conn(), task_id)
+                    self.send_json({"history": history})
+                    return
+                if parsed.path == "/api/cicd/requests":
+                    user = self.current_user()
+                    q = self.query()
+                    role = user["role"]
+                    username = user["username"]
+                    only_mine = q.get("only_mine", [""])[0] == "1"
+                    task_id = q.get("task_id", [None])[0]
+                    status_filter = q.get("status", [None])[0]
+                    since_days_str = q.get("since_days", [None])[0]
+                    since_days = int(since_days_str) if since_days_str else None
+                    requests = core.list_cicd_requests(
+                        self.conn(),
+                        username=username if only_mine else None,
+                        role=role,
+                        task_id=task_id,
+                        status_filter=status_filter,
+                        since_days=since_days,
+                        exclude_cancelled=True,
+                    )
+                    self.send_json({"requests": requests})
+                    return
+                if parsed.path == "/api/cicd/notifications":
+                    user = self.current_user()
+                    counts = core.get_cicd_notifications(self.conn(), user["username"], user["role"])
+                    self.send_json(counts)
+                    return
+                if parsed.path == "/api/cicd/deliveries":
+                    user = self.current_user()
+                    role = user["role"]
+                    if role not in {"SPD", "RM", "Admin"}:
+                        raise AuthzError("无权访问交付列表")
+                    q = self.query()
+                    status_filter = q.get("status", [None])[0]
+                    deliveries = core.list_cicd_deliveries(
+                        self.conn(),
+                        status_filter=status_filter,
+                        role=role,
+                    )
+                    self.send_json({"deliveries": deliveries})
+                    return
                 if parsed.path.startswith("/api/artifacts/"):
                     self.require_rm()
                     kind = parsed.path.rsplit("/", 1)[-1]
@@ -152,6 +343,12 @@ class Handler(BaseHTTPRequestHandler):
                         raise PermissionError("Invalid username or password")
                     self.send_json({"ok": True}, cookies=[f"hpc_session={token}; HttpOnly; SameSite=Strict; Path=/"])
                     return
+                if parsed.path == "/api/login/ldap":
+                    body = self.json_body()
+                    uname, display = ldap_authenticate(body.get("username", ""), body.get("password", ""))
+                    token = core.ldap_login_or_create(self.conn(), uname, display)
+                    self.send_json({"ok": True}, cookies=[f"hpc_session={token}; HttpOnly; SameSite=Strict; Path=/"])
+                    return
                 if parsed.path == "/api/logout":
                     core.logout_session(self.conn(), self.session_token())
                     self.send_json({"ok": True}, cookies=["hpc_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"])
@@ -180,6 +377,20 @@ class Handler(BaseHTTPRequestHandler):
                     backup = backup_database()
                     core.clear_business_data(self.conn(), user=username, role=role)
                     self.send_json({"ok": True, "backup": backup.name})
+                    return
+                if parsed.path == "/api/admin/users/set-role":
+                    self.require_admin()
+                    body = self.json_body()
+                    if not body.get("username") or not body.get("role"):
+                        raise ValueError("username 和 role 均为必填")
+                    core.set_user_role(
+                        self.conn(),
+                        body["username"],
+                        body["role"],
+                        actor=self.user(),
+                        actor_role=self.role(),
+                    )
+                    self.send_json({"ok": True})
                     return
                 if parsed.path == "/api/import-initial":
                     self.require_rm()
@@ -270,8 +481,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"ok": True, "deleted": deleted, "backup": backup.name})
                     return
                 if parsed.path == "/api/apps/new":
-                    if self.role() != "Owner":
-                        raise AuthzError("Only Owner can submit new app requests")
+                    if self.role() not in {"Owner", "RM"}:
+                        raise AuthzError("Only Owner or RM can submit new app requests")
                     body = self.json_body()
                     app_id = core.add_new_app_request(
                         self.conn(),
@@ -518,6 +729,177 @@ class Handler(BaseHTTPRequestHandler):
                     if not ok:
                         raise RuntimeError("entry not found")
                     self.send_json({"ok": True})
+                    return
+                # --- CICD workbench ---
+                if parsed.path == "/api/cicd/requests/submit":
+                    user = self.current_user()
+                    role = user["role"]
+                    if role not in core.CICD_CREATE_ROLES:
+                        raise AuthzError("只有 Owner、RM、Admin 可以提交 CICD 任务申请")
+                    body = self.json_body()
+                    req = core.submit_cicd_request(
+                        self.conn(),
+                        task_id=body.get("task_id") or None,
+                        request_type=body.get("request_type", "create"),
+                        payload=body.get("payload", {}),
+                        submitter=user["username"],
+                        submitter_role=role,
+                        submitter_display=user.get("display_name", ""),
+                    )
+                    self.send_json({"ok": True, "request": req})
+                    return
+                if parsed.path == "/api/cicd/requests/approve":
+                    user = self.current_user()
+                    if user["role"] not in core.CICD_APPROVER_ROLES:
+                        raise AuthzError("只有 RM/Admin 可以审批")
+                    body = self.json_body()
+                    approval_mode    = body.get("approval_mode", "immediate")
+                    jira_auto_created = int(body.get("jira_auto_created", 0))
+                    jira_id          = body.get("jira_id", "")
+
+                    # Auto-create Jira issue when dispatching to SPD
+                    if jira_auto_created and approval_mode == "dispatch_spd" and not jira_id:
+                        try:
+                            jcfg = jira_client.load_config()
+                            if jcfg:
+                                conn_tmp = self.conn()
+                                row = conn_tmp.execute(
+                                    "SELECT request_type, task_id, payload FROM cicd_task_requests WHERE id=?",
+                                    (int(body["request_id"]),),
+                                ).fetchone()
+                                if row:
+                                    import json as _json
+                                    payload_dict = _json.loads(row["payload"] or "{}")
+                                    title = jira_client.compute_title(
+                                        conn_tmp, row["request_type"], payload_dict, row["task_id"]
+                                    )
+                                    jira_id = jira_client.create_issue(jcfg, title)
+                        except Exception as _je:
+                            import logging as _log
+                            _log.getLogger(__name__).warning("Jira auto-create failed: %s", _je)
+                            # Do not block approval on Jira failure
+
+                    req = core.approve_cicd_request(
+                        self.conn(),
+                        int(body["request_id"]),
+                        reviewer=user["username"],
+                        reviewer_role=user["role"],
+                        review_note=body.get("review_note", ""),
+                        approval_mode=approval_mode,
+                        jira_id=jira_id,
+                        jira_auto_created=jira_auto_created,
+                    )
+                    self.send_json({"ok": True, "request": req})
+                    return
+                if parsed.path == "/api/cicd/requests/reject":
+                    user = self.current_user()
+                    if user["role"] not in core.CICD_APPROVER_ROLES:
+                        raise AuthzError("只有 RM/Admin 可以拒绝")
+                    body = self.json_body()
+                    req = core.reject_cicd_request(
+                        self.conn(),
+                        int(body["request_id"]),
+                        reviewer=user["username"],
+                        reviewer_role=user["role"],
+                        review_note=body.get("review_note", ""),
+                    )
+                    self.send_json({"ok": True, "request": req})
+                    return
+                if parsed.path == "/api/cicd/requests/cancel":
+                    user = self.current_user()
+                    body = self.json_body()
+                    req = core.cancel_cicd_request(
+                        self.conn(),
+                        int(body["request_id"]),
+                        username=user["username"],
+                        role=user["role"],
+                    )
+                    self.send_json({"ok": True, "request": req})
+                    return
+                if parsed.path == "/api/cicd/tasks/transfer-owner":
+                    user = self.current_user()
+                    if user["role"] not in core.CICD_APPROVER_ROLES:
+                        raise AuthzError("只有 RM/Admin 可以直接修改负责人")
+                    body = self.json_body()
+                    task = core.transfer_cicd_owner(
+                        self.conn(),
+                        body["task_id"],
+                        body["new_owner"],
+                        actor=user["username"],
+                        actor_role=user["role"],
+                    )
+                    self.send_json({"ok": True, "task": task})
+                    return
+                if parsed.path == "/api/cicd/tasks/delete":
+                    user = self.current_user()
+                    if user["role"] not in core.CICD_APPROVER_ROLES:
+                        raise AuthzError("只有 RM/Admin 可以删除 CICD 任务")
+                    body = self.json_body()
+                    core.delete_cicd_task(
+                        self.conn(),
+                        body["task_id"],
+                        actor=user["username"],
+                        actor_role=user["role"],
+                    )
+                    self.send_json({"ok": True})
+                    return
+                if parsed.path == "/api/cicd/notifications/mark-visited":
+                    user = self.current_user()
+                    core.mark_cicd_visited(self.conn(), user["username"])
+                    self.send_json({"ok": True})
+                    return
+                if parsed.path == "/api/cicd/requests/deliver":
+                    user = self.current_user()
+                    if user["role"] not in {"SPD", "RM", "Admin"}:
+                        raise AuthzError("只有 SPD、RM、Admin 可以标记已交付")
+                    body = self.json_body()
+                    req = core.deliver_cicd_request(
+                        self.conn(),
+                        int(body["request_id"]),
+                        deliverer=user["username"],
+                        deliverer_role=user["role"],
+                    )
+                    self.send_json({"ok": True, "request": req})
+                    return
+                if parsed.path == "/api/cicd/requests/return-delivery":
+                    user = self.current_user()
+                    if user["role"] != "SPD":
+                        raise AuthzError("只有 SPD 可以退回交付申请")
+                    body = self.json_body()
+                    req = core.return_cicd_request(
+                        self.conn(),
+                        int(body["request_id"]),
+                        returner=user["username"],
+                        returner_role=user["role"],
+                        reason=body.get("reason", ""),
+                    )
+                    self.send_json({"ok": True, "request": req})
+                    return
+                if parsed.path == "/api/cicd/requests/re-dispatch":
+                    user = self.current_user()
+                    if user["role"] not in core.CICD_APPROVER_ROLES:
+                        raise AuthzError("只有 RM/Admin 可以重新下发")
+                    body = self.json_body()
+                    req = core.re_dispatch_cicd_request(
+                        self.conn(),
+                        int(body["request_id"]),
+                        actor=user["username"],
+                        actor_role=user["role"],
+                    )
+                    self.send_json({"ok": True, "request": req})
+                    return
+                if parsed.path == "/api/cicd/requests/apply-returned":
+                    user = self.current_user()
+                    if user["role"] not in core.CICD_APPROVER_ROLES:
+                        raise AuthzError("只有 RM/Admin 可以直接生效")
+                    body = self.json_body()
+                    req = core.apply_returned_cicd_request(
+                        self.conn(),
+                        int(body["request_id"]),
+                        actor=user["username"],
+                        actor_role=user["role"],
+                    )
+                    self.send_json({"ok": True, "request": req})
                     return
                 if parsed.path == "/api/app-info":
                     body = self.json_body()
@@ -816,14 +1198,20 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8033)
     args = parser.parse_args()
     conn = core.connect(DB_PATH)
     admin_source = ensure_admin_user(conn)
     conn.close()
     if admin_source:
         print(f"Admin user created. Password source: {admin_source}")
+    global _LDAP_CONFIG
+    _LDAP_CONFIG = _load_ldap_config()
+    if _LDAP_CONFIG.get("enabled"):
+        print(f"LDAP authentication enabled: {_LDAP_CONFIG['uri']}")
+    else:
+        print("LDAP authentication disabled (set 'enabled = true' in ldap.conf to enable)")
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Serving http://{args.host}:{args.port}")
     server.serve_forever()

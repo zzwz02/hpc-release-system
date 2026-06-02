@@ -8,3 +8,7 @@ admin_password.local
 venv/
 dist/
 build/
+ldap.conf
+jira.conf
+hpc_app.csv
+.vscode

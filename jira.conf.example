@@ -1,0 +1,25 @@
+# Jira 配置文件模板 — 复制为 jira.conf 并填写真实值
+# jira.conf 已加入 .gitignore，不会被提交到 git
+
+# ── 必填 ────────────────────────────────────────────────────
+JIRA_BASE_URL     = http://jira.metax-tech.com
+JIRA_TOKEN        = your_personal_access_token_here
+JIRA_PROJECT      = SPD
+
+# ── 可选 ────────────────────────────────────────────────────
+# 指派给谁（Jira 用户名 / domain_id）
+JIRA_ASSIGNEE     = m00930
+
+# 父 issue key：有值则创建子任务；留空则创建顶级 Task
+JIRA_PARENT_ISSUE = SPD-1535
+
+# Component 名称（默认 SPD_CICD）
+JIRA_COMPONENT    = SPD_CICD
+
+# ETA 自定义字段 ID（脚本会自动发现；若发现失败可在此手动填写）
+# JIRA_FIELD_EXPECTED_ETA  = customfield_XXXXX
+# JIRA_FIELD_ESTIMATED_ETA = customfield_YYYYY
+
+# issue 类型名称覆盖（若自动识别错误时使用）
+# JIRA_ISSUE_TYPE_TASK    = Task
+# JIRA_ISSUE_TYPE_SUBTASK = 子任务
