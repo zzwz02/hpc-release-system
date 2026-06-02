@@ -3347,7 +3347,7 @@ def _attach_owner_display(conn: sqlite3.Connection, tasks: list[dict]) -> None:
     for t in tasks:
         u = t["owner_username"]
         dn = display_map.get(u, "")
-        t["owner_display"] = f"{dn}({u})" if dn else u
+        t["owner_display"] = f"{dn}" if dn else u
 
 
 def get_cicd_task(conn: sqlite3.Connection, task_id: str) -> dict | None:

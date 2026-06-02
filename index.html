@@ -697,7 +697,7 @@
           <div class="panel-body">
             <p class="hint" style="margin-top:0">
               列出所有内建账号与已通过域账号登录过的用户，可在此调整角色。
-              角色说明：<b>RM</b> — 发布管理；<b>Owner</b> — App 负责人；<b>QA</b> — 质量测试；<b>Admin</b> — 系统管理。
+              角色说明：<b>RM</b> — 发布管理；<b>Owner</b> — App 负责人；<b>QA</b> — 质量测试；<b>Admin</b> — 系统管理；<b>SPD</b> — 交付执行。
             </p>
             <div class="table" style="margin-top:12px">
               <table id="membersTable"></table>
@@ -3885,7 +3885,7 @@
           <td>${rolePill(u.role)}</td>
           <td>
             <select class="select sm" data-member-role="${esc(u.username)}" style="width:88px">
-              ${["RM","Owner","QA","Admin"].map(r => `<option value="${r}"${u.role===r?" selected":""}>${r}</option>`).join("")}
+              ${["RM","Owner","QA","Admin","SPD"].map(r => `<option value="${r}"${u.role===r?" selected":""}>${r}</option>`).join("")}
             </select>
           </td>
           <td><button class="btn sm primary" data-save-role="${esc(u.username)}">保存</button></td>
