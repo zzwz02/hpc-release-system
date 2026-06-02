@@ -10,6 +10,7 @@ import re
 import secrets
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -530,9 +531,28 @@ def normalize_doc_target(value: str | None) -> str:
     return aliases.get(target, "manual")
 
 
+def app_description_count(value: str | None) -> int:
+    text = (value or "").strip()
+    count = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch.isspace():
+            i += 1
+            continue
+        if ch.isascii() and ch.isalnum():
+            while i < len(text) and text[i].isascii() and text[i].isalnum():
+                i += 1
+            count += 1
+            continue
+        count += 1
+        i += 1
+    return count
+
+
 def normalize_app_description(value: str | None) -> str:
     description = (value or "").strip()
-    if len(description) > MAX_APP_DESCRIPTION_CHARS:
+    if app_description_count(description) > MAX_APP_DESCRIPTION_CHARS:
         raise ValueError(f"描述不能超过{MAX_APP_DESCRIPTION_CHARS}字")
     return description
 
@@ -2013,7 +2033,7 @@ def missing_items_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[dic
     description = (snapshot.get("description") or "").strip()
     if not description:
         add_doc("缺少描述（30字内）")
-    elif len(description) > MAX_APP_DESCRIPTION_CHARS:
+    elif app_description_count(description) > MAX_APP_DESCRIPTION_CHARS:
         add_doc("描述超过30字")
     if not snapshot.get("app_info"):
         add_doc("缺少可追溯 AppInfoSnapshot")
@@ -2366,6 +2386,17 @@ def _qa_log_to_text(path: Path, raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def _qa_progress(progress: Callable[..., None] | None, stage: str, message: str, **extra: Any) -> None:
+    if progress:
+        if extra:
+            try:
+                progress(stage, message, **extra)
+                return
+            except TypeError:
+                pass
+        progress(stage, message)
+
+
 def qa_analyze_log(
     conn: sqlite3.Connection,
     db_path: str | Path,
@@ -2373,6 +2404,8 @@ def qa_analyze_log(
     *,
     llm_call: Callable[[str, str], str] | None = None,
     max_log_chars: int = 200_000,
+    progress: Callable[[str, str], None] | None = None,
+    max_llm_attempts: int = 2,
 ) -> dict[str, Any]:
     """Ask the LLM to summarize the uploaded QA log against the test inventory.
 
@@ -2380,41 +2413,79 @@ def qa_analyze_log(
     returns the result to the UI which prefills the QA edit form, and only the
     QA-confirmed values are later persisted via qa_set_status_batch.
     """
+    _qa_progress(progress, "checking_log", "正在检查已上传的 QA log")
     meta = get_qa_log(conn, release_id)
     if not meta:
         raise RuntimeError("本 release 还未上传 QA log")
     log_path = Path(meta["storage_path"])
     if not log_path.exists():
         raise RuntimeError("QA log 文件丢失")
+    _qa_progress(progress, "reading_log", f"正在读取 QA log：{meta.get('filename', log_path.name)}")
     raw = log_path.read_bytes()
+    if log_path.suffix.lower() == ".xlsx":
+        _qa_progress(progress, "parsing_excel", "正在解析 Excel 文件")
+    else:
+        _qa_progress(progress, "parsing_text", "正在解析文本 log")
     text = _qa_log_to_text(log_path, raw)
     truncated = False
     if len(text) > max_log_chars:
+        _qa_progress(progress, "truncating_log", "log 较大，正在截断中段以控制 LLM 上下文")
         head = text[: max_log_chars // 2]
         tail = text[-max_log_chars // 2 :]
         text = head + "\n\n...[log truncated]...\n\n" + tail
         truncated = True
 
+    _qa_progress(progress, "building_inventory", "正在准备 app 和测试清单")
     release = get_release(conn, release_id)
     apps = {app["id"]: app for app in list_apps(conn)}
     inventory = _qa_analysis_inventory(release, apps)
     if not inventory:
         raise RuntimeError("本 release 没有 release 决策为 release 的 app，无法分析")
 
+    _qa_progress(progress, "building_prompt", "正在构造 LLM 分析上下文")
     user_payload = json.dumps({"inventory": inventory, "log": text}, ensure_ascii=False)
 
     if llm_call is None:
         from release_system.llm import chat_json
-        llm_call = chat_json
 
-    raw_reply = llm_call(_QA_ANALYSIS_SYSTEM, user_payload)
-    try:
-        parsed = json.loads(raw_reply)
-    except json.JSONDecodeError:
-        # Some local models wrap JSON in ```json fences — strip them and retry.
-        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_reply.strip(), flags=re.MULTILINE)
-        parsed = json.loads(cleaned)
+        def default_llm_call(system: str, payload: str) -> str:
+            def stream_progress(token_count: int) -> None:
+                _qa_progress(
+                    progress,
+                    "streaming_llm",
+                    f"正在接收 LLM 输出：已收到 {token_count} token",
+                    token_count=token_count,
+                )
 
+            return chat_json(system, payload, progress=stream_progress)
+
+        llm_call = default_llm_call
+
+    max_llm_attempts = max(1, max_llm_attempts)
+    parsed: dict[str, Any] | None = None
+    for attempt in range(1, max_llm_attempts + 1):
+        try:
+            suffix = f"（第 {attempt}/{max_llm_attempts} 次）" if max_llm_attempts > 1 else ""
+            _qa_progress(progress, "waiting_llm", f"正在等待 LLM 返回结果{suffix}", token_count=0)
+            raw_reply = llm_call(_QA_ANALYSIS_SYSTEM, user_payload)
+            _qa_progress(progress, "parsing_llm", "正在解析 LLM 返回结果")
+            try:
+                parsed = json.loads(raw_reply)
+            except json.JSONDecodeError:
+                # Some local models wrap JSON in ```json fences — strip them and retry.
+                cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_reply.strip(), flags=re.MULTILINE)
+                parsed = json.loads(cleaned)
+            break
+        except Exception as exc:
+            if attempt >= max_llm_attempts:
+                raise
+            _qa_progress(progress, "retrying_llm", f"LLM 调用失败，正在重试：{exc}")
+            time.sleep(min(attempt, 3))
+
+    if parsed is None:
+        raise RuntimeError("LLM 未返回有效结果")
+
+    _qa_progress(progress, "normalizing_result", "正在整理 AI 建议")
     valid_ids = {entry["app_id"] for entry in inventory}
     apps_out: list[dict[str, Any]] = []
     for row in parsed.get("apps") or []:
@@ -2442,6 +2513,7 @@ def qa_analyze_log(
             release_id=release_id,
             event="qa_analyze_log",
         )
+    _qa_progress(progress, "completed", "AI 分析完成")
     return {"apps": apps_out, "log_truncated": truncated, "log_chars": len(raw)}
 
 

@@ -131,7 +131,7 @@ python3.14 -m unittest tests.test_core
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\static_checks.ps1
 ```
 
-当前 86 个单元测试 + 静态检查。
+当前 94 个单元测试 + 静态检查。
 
 ## 已知问题与限制
 
@@ -229,6 +229,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\static_checks.ps1
 ### AI 辅助（需先决定是否引入外部 LLM API）
 
 引入 AI 等于接受一个外部 API 依赖 + 调用成本 + 输出不确定性。总原则：**AI 只产出「建议」，由人复核；不做最终判定，也不做硬性闸门。**
+
+QA 的 AI 分析默认从项目根目录的 `qa_llm.env` 读取配置，也支持直接设置环境变量；环境变量优先级高于文件。文件格式不依赖 shell，Windows 和 Linux 可共用：
+
+```text
+QA_LLM_BASE_URL=http://10.x.x.x:8000/v1
+QA_LLM_MODEL=your-model-name
+QA_LLM_API_KEY=
+```
+
+AI 分析调用使用 OpenAI Python SDK，生产环境需安装依赖：`python -m pip install openai`。LLM 调用使用流式返回，网页进度中会显示已接收的 token 数。部署时复制 `qa_llm.env.example` 为 `qa_llm.env` 并填写实际值；`qa_llm.env` 已被 `.gitignore` 忽略，不会提交密钥。若配置文件不放在项目根目录，可设置 `QA_LLM_ENV_FILE` 指向自定义路径，支持 `~`、`$HOME/...`、`%USERPROFILE%\...` 这类跨平台路径写法。服务会在每次 AI 分析调用时读取配置；如果运行环境里已设置同名环境变量，会覆盖文件中的值。
 
 - **QA log 拟稿**：QA 上传 log 后，AI 起草 `qa_issue_note`、建议 `qa_status`，QA 复核后确认。不让 AI 直接定 pass/fail —— 那是 QA 的问责性判断；log 中细节要命（「0 failed」可能是没跑、「5 failed」可能全是已知 flaky）。约束：log 需能按 app 切分；大 log 有 token 成本与上下文上限。
 - **doc 合理性提示**：在 RM 检查环节由 AI 提示 owner 所填文档是否像凑数，非阻塞、仅提示。注意 AI 只能判断「用没用心」，判断不了「对不对」—— 它是质量下限，不是正确性保证；正确性仍靠 RM review 和 QA 实测。

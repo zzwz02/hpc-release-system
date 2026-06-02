@@ -8,6 +8,7 @@ import os
 import secrets
 import subprocess
 import tarfile
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -32,6 +33,10 @@ LDAP_CONF_PATH = ROOT / "ldap.conf"
 
 # Populated at startup by main(); read-only after that (no lock needed).
 _LDAP_CONFIG: dict = {"enabled": False}
+
+_QA_ANALYSIS_LOCK = threading.Lock()
+_QA_ANALYSIS_JOBS: dict[str, dict] = {}
+_QA_ANALYSIS_TTL_SECONDS = 3600
 
 
 def _load_ldap_config() -> dict:
@@ -150,6 +155,121 @@ def ldap_authenticate(username: str, password: str) -> tuple[str, str]:
     return username, display_name
 
 
+def _qa_analysis_now() -> float:
+    return time.time()
+
+
+def _cleanup_qa_analysis_jobs() -> None:
+    cutoff = _qa_analysis_now() - _QA_ANALYSIS_TTL_SECONDS
+    with _QA_ANALYSIS_LOCK:
+        stale = [
+            job_id
+            for job_id, job in _QA_ANALYSIS_JOBS.items()
+            if job.get("status") != "running" and float(job.get("updated_at") or 0) < cutoff
+        ]
+        for job_id in stale:
+            _QA_ANALYSIS_JOBS.pop(job_id, None)
+
+
+def _qa_job_snapshot(job: dict) -> dict:
+    payload = {
+        "job_id": job["job_id"],
+        "release_id": job["release_id"],
+        "status": job["status"],
+        "stage": job.get("stage", ""),
+        "message": job.get("message", ""),
+        "started_at": job.get("started_at", 0),
+        "updated_at": job.get("updated_at", 0),
+        "finished_at": job.get("finished_at", 0),
+    }
+    if job.get("error"):
+        payload["error"] = job["error"]
+    if job.get("token_count") is not None:
+        payload["token_count"] = job.get("token_count", 0)
+    if job.get("result") is not None:
+        payload["result"] = job["result"]
+    return payload
+
+
+def _update_qa_analysis_job(job_id: str, **updates) -> None:
+    updates["updated_at"] = _qa_analysis_now()
+    with _QA_ANALYSIS_LOCK:
+        job = _QA_ANALYSIS_JOBS.get(job_id)
+        if job:
+            job.update(updates)
+
+
+def _run_qa_analysis_job(job_id: str, release_id: str) -> None:
+    conn = None
+    try:
+        conn = core.connect(DB_PATH)
+
+        def progress(stage: str, message: str, **extra) -> None:
+            _update_qa_analysis_job(job_id, stage=stage, message=message, **extra)
+
+        result = core.qa_analyze_log(conn, DB_PATH, release_id, progress=progress)
+        _update_qa_analysis_job(
+            job_id,
+            status="completed",
+            stage="completed",
+            message="AI 分析完成",
+            result=result,
+            finished_at=_qa_analysis_now(),
+        )
+    except Exception as exc:
+        _update_qa_analysis_job(
+            job_id,
+            status="failed",
+            stage="failed",
+            message=f"AI 分析失败：{exc}",
+            error=str(exc),
+            finished_at=_qa_analysis_now(),
+        )
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def start_qa_analysis_job(release_id: str, user: str, role: str) -> dict:
+    _cleanup_qa_analysis_jobs()
+    job_id = secrets.token_urlsafe(12)
+    now = _qa_analysis_now()
+    job = {
+        "job_id": job_id,
+        "release_id": release_id,
+        "user": user,
+        "role": role,
+        "status": "running",
+        "stage": "queued",
+        "message": "AI 分析任务已提交",
+        "started_at": now,
+        "updated_at": now,
+        "finished_at": 0,
+        "token_count": 0,
+        "result": None,
+        "error": "",
+    }
+    with _QA_ANALYSIS_LOCK:
+        _QA_ANALYSIS_JOBS[job_id] = job
+    thread = threading.Thread(target=_run_qa_analysis_job, args=(job_id, release_id), daemon=True)
+    thread.start()
+    return _qa_job_snapshot(job)
+
+
+def get_qa_analysis_job(job_id: str, user: str, role: str) -> dict | None:
+    _cleanup_qa_analysis_jobs()
+    with _QA_ANALYSIS_LOCK:
+        job = _QA_ANALYSIS_JOBS.get(job_id)
+        if not job:
+            return None
+        if role != "RM" and job.get("user") != user:
+            raise AuthzError("无权查看该 AI 分析任务")
+        return _qa_job_snapshot(job)
+
+
 class AuthzError(Exception):
     """Authenticated user lacks permission for an action -> HTTP 403.
 
@@ -196,6 +316,19 @@ class Handler(BaseHTTPRequestHandler):
                 if parsed.path == "/api/state":
                     self.current_user()
                     self.send_json(self.state_payload())
+                    return
+                if parsed.path == "/api/qa/analyze-log/status":
+                    user = self.current_user()
+                    if user["role"] not in {"QA", "RM"}:
+                        raise AuthzError("只有 QA 或 RM 可查看 AI 分析进度")
+                    job_id = self.query().get("job_id", [""])[0]
+                    if not job_id:
+                        raise ValueError("job_id is required")
+                    job = get_qa_analysis_job(job_id, user["username"], user["role"])
+                    if not job:
+                        self.send_json({"error": "AI 分析任务不存在或已过期"}, status=404)
+                        return
+                    self.send_json(job)
                     return
                 if parsed.path == "/api/app-audit":
                     self.current_user()
@@ -705,6 +838,17 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     self.send_json(result)
                     return
+                if parsed.path == "/api/qa/analyze-log/start":
+                    user = self.current_user()
+                    if user["role"] not in {"QA", "RM"}:
+                        raise AuthzError("只有 QA 或 RM 可使用 AI 分析 log")
+                    body = self.json_body()
+                    release_id = body.get("release_id", "")
+                    if not release_id:
+                        raise ValueError("release_id is required")
+                    job = start_qa_analysis_job(release_id, user["username"], user["role"])
+                    self.send_json(job)
+                    return
                 if parsed.path == "/api/release-schedule/upsert":
                     self.require_rm()
                     body = self.json_body()
@@ -1059,7 +1203,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def require_app_audit_access(self, app_id: str, release_id: str = "") -> None:
         role = self.role()
-        if role in {"RM", "Admin"}:
+        if role in {"RM", "Admin", "QA"}:
             return
         if role != "Owner":
             raise AuthzError("App audit access denied")
