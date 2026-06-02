@@ -734,7 +734,7 @@
           <table class="cicd-table">
             <thead><tr>
               <th>ID</th><th>项目名称</th><th>版本</th><th>仓库类型</th><th>仓库名</th><th>分支</th>
-              <th>构建产物</th><th>构建依赖镜像</th><th>超时(min)</th><th>maca/hpcc互转</th>
+              <th>构建产物</th><th>开发者社区产物</th><th></th>构建依赖镜像</th><th>超时(min)</th><th>maca/hpcc互转</th>
               <th>负责人</th><th>状态</th><th>备注</th><th>操作</th>
             </tr></thead>
             <tbody id="cicdOverviewBody"></tbody>
@@ -753,7 +753,7 @@
           <table class="cicd-table">
             <thead><tr>
               <th>ID</th><th>项目名称</th><th>版本</th><th>仓库类型</th><th>仓库名</th><th>分支</th>
-              <th>构建产物</th><th>状态</th><th>备注</th><th>操作</th>
+              <th>构建产物</th><th>开发者社区产物</th><th>状态</th><th>备注</th><th>操作</th>
             </tr></thead>
             <tbody id="cicdMyBody"></tbody>
           </table>
@@ -855,6 +855,12 @@
               <label class="inline"><input type="checkbox" value="maca"> maca</label>
               <label class="inline"><input type="checkbox" value="hpcc"> hpcc</label>
               <label class="inline"><input type="checkbox" value="pkg"> pkg</label>
+            </div>
+          </label>
+          <label class="full">开发者社区产物（可多选）
+            <div class="cicd-product-group" id="cf_community_artifact_group">
+              <label class="inline"><input type="checkbox" value="image"> 镜像 (Image)</label>
+              <label class="inline"><input type="checkbox" value="pkg"> 软件包 (Pkg)</label>
             </div>
           </label>
           <label>构建依赖镜像<input id="cf_build_image" class="input" autocomplete="off"></label>
@@ -2770,6 +2776,7 @@
     const cicdFieldLabel = {
       app_name: "项目名称", app_version: "项目版本", repo_type: "仓库类型",
       repo_name: "仓库名", branch: "分支", build_product: "构建产物",
+      community_artifact: "开发者社区产物",
       build_image: "构建依赖镜像", test_timeout: "超时(min)", supports_maca_hpcc: "maca/hpcc互转",
       owner_username: "负责人", status: "状态", notes: "备注",
     };
@@ -2825,6 +2832,12 @@
       return (Array.isArray(arr) ? arr : []).join(", ") || "—";
     }
 
+    function cicdCommunityArtifactStr(arr) {
+      const items = Array.isArray(arr) ? arr : [];
+      if (!items.length) return "—";
+      return items.map(v => v === "image" ? "镜像" : v === "pkg" ? "软件包" : v).join("\u3001");
+    }
+
     function cicdStatusPill(status) {
       const cls = status === "Running" ? "ok" : status === "Stopped" ? "warnp" : "";
       return `<span class="pill ${cls}">${esc(status)}</span>`;
@@ -2846,7 +2859,7 @@
         t.owner_username.toLowerCase().includes(q)
       );
       if (!tasks.length) {
-        body.innerHTML = `<tr><td colspan="14" class="empty" style="text-align:center;color:var(--muted);padding:30px">暂无任务</td></tr>`;
+        body.innerHTML = `<tr><td colspan="15" class="empty" style="text-align:center;color:var(--muted);padding:30px">暂无任务</td></tr>`;
         return;
       }
       const canEdit = canSubmitCicd();
@@ -2872,6 +2885,7 @@
           <td style="max-width:160px;word-break:break-all">${esc(t.repo_name)}</td>
           <td>${esc(t.branch)}</td>
           <td>${esc(cicdBuildProductStr(t.build_product))}</td>
+          <td>${esc(cicdCommunityArtifactStr(t.community_artifact))}</td>
           <td style="max-width:160px;word-break:break-all">${esc(t.build_image)}</td>
           <td style="text-align:center">${esc(String(t.test_timeout))}</td>
           <td style="text-align:center">${esc(t.supports_maca_hpcc)}</td>
@@ -2894,7 +2908,7 @@
       // Also check if there's any pending "create" request for me
       // This is loaded separately when cicdPendingPane is shown; for now show note
       if (!tasks.length) {
-        body.innerHTML = `<tr><td colspan="10" class="empty" style="text-align:center;color:var(--muted);padding:30px">暂无我负责的 CICD 任务</td></tr>`;
+        body.innerHTML = `<tr><td colspan="11" class="empty" style="text-align:center;color:var(--muted);padding:30px">暂无我负责的 CICD 任务</td></tr>`;
         return;
       }
       body.innerHTML = tasks.map(t => {
@@ -2909,6 +2923,7 @@
           <td style="max-width:140px;word-break:break-all">${esc(t.repo_name)}</td>
           <td>${esc(t.branch)}</td>
           <td>${esc(cicdBuildProductStr(t.build_product))}</td>
+          <td>${esc(cicdCommunityArtifactStr(t.community_artifact))}</td>
           <td>${cicdStatusPill(t.status)}</td>
           <td style="max-width:120px">${esc(t.notes)}</td>
           <td style="white-space:nowrap">
@@ -3082,6 +3097,12 @@
         cb.checked = selected.includes(cb.value);
       });
 
+      // Community artifact checkboxes
+      const selCA = Array.isArray(task?.community_artifact) ? task.community_artifact : [];
+      $("cf_community_artifact_group").querySelectorAll("input[type=checkbox]").forEach(cb => {
+        cb.checked = selCA.includes(cb.value);
+      });
+
       // Lock branch if repo type is repo
       cicdUpdateBranchLock();
 
@@ -3106,6 +3127,10 @@
       $("cf_build_product_group").querySelectorAll("input[type=checkbox]:checked").forEach(cb => {
         buildProduct.push(cb.value);
       });
+      const communityArtifact = [];
+      $("cf_community_artifact_group").querySelectorAll("input[type=checkbox]:checked").forEach(cb => {
+        communityArtifact.push(cb.value);
+      });
       return {
         app_name: $("cf_app_name").value.trim(),
         app_version: $("cf_app_version").value.trim(),
@@ -3114,6 +3139,7 @@
         repo_name: $("cf_repo_name").value.trim(),
         branch: $("cf_branch").value.trim(),
         build_product: buildProduct,
+        community_artifact: communityArtifact,
         build_image: $("cf_build_image").value.trim(),
         test_timeout: parseInt($("cf_test_timeout").value) || 40,
         supports_maca_hpcc: $("cf_supports_maca_hpcc").value,

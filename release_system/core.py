@@ -400,6 +400,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             repo_name TEXT NOT NULL DEFAULT '',
             branch TEXT NOT NULL DEFAULT '',
             build_product TEXT NOT NULL DEFAULT '[]',
+            community_artifact TEXT NOT NULL DEFAULT '[]',
             build_image TEXT NOT NULL DEFAULT '',
             test_timeout INTEGER NOT NULL DEFAULT 40,
             supports_maca_hpcc TEXT NOT NULL DEFAULT 'No',
@@ -451,6 +452,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         ("cicd_task_requests", "delivered_at",     "TEXT NOT NULL DEFAULT ''"),
         ("cicd_task_requests", "returned_reason",  "TEXT NOT NULL DEFAULT ''"),
         ("cicd_task_requests", "returned_at",      "TEXT NOT NULL DEFAULT ''"),
+        ("cicd_tasks",         "community_artifact", "TEXT NOT NULL DEFAULT '[]'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} {_col_def}")
@@ -3295,6 +3297,10 @@ def _cicd_task_row(row) -> dict:
         d["build_product"] = json.loads(d.get("build_product") or "[]")
     except Exception:
         d["build_product"] = []
+    try:
+        d["community_artifact"] = json.loads(d.get("community_artifact") or "[]")
+    except Exception:
+        d["community_artifact"] = []
     return d
 
 
@@ -3420,13 +3426,14 @@ def _apply_cicd_request(
     if request_type == "create":
         new_id = _next_cicd_id(conn)
         build_product = payload.get("build_product", [])
+        community_artifact = payload.get("community_artifact", [])
         conn.execute(
             """
             INSERT INTO cicd_tasks
               (id, app_name, app_version, repo_type, repo_name, branch,
-               build_product, build_image, test_timeout, supports_maca_hpcc,
+               build_product, community_artifact, build_image, test_timeout, supports_maca_hpcc,
                owner_username, status, notes, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id,
@@ -3436,6 +3443,7 @@ def _apply_cicd_request(
                 payload.get("repo_name", ""),
                 payload.get("branch", ""),
                 json.dumps(build_product, ensure_ascii=False),
+                json.dumps(community_artifact, ensure_ascii=False),
                 payload.get("build_image", ""),
                 int(payload.get("test_timeout", 40)),
                 payload.get("supports_maca_hpcc", "No"),
@@ -3459,6 +3467,8 @@ def _apply_cicd_request(
         for field, change in payload.items():
             new_val = change.get("new")
             if field == "build_product":
+                new_val = json.dumps(new_val or [], ensure_ascii=False)
+            elif field == "community_artifact":
                 new_val = json.dumps(new_val or [], ensure_ascii=False)
             elif field == "test_timeout":
                 new_val = int(new_val or 40)
