@@ -441,6 +441,20 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE users ADD COLUMN {_col} {_col_def}")
         except sqlite3.OperationalError:
             pass  # column already exists
+    for _tbl, _col, _col_def in [
+        ("cicd_task_requests", "approval_mode",    "TEXT NOT NULL DEFAULT 'immediate'"),
+        ("cicd_task_requests", "delivery_status",  "TEXT NOT NULL DEFAULT ''"),
+        ("cicd_task_requests", "jira_id",           "TEXT NOT NULL DEFAULT ''"),
+        ("cicd_task_requests", "jira_auto_created", "INTEGER NOT NULL DEFAULT 0"),
+        ("cicd_task_requests", "delivered_by",     "TEXT NOT NULL DEFAULT ''"),
+        ("cicd_task_requests", "delivered_at",     "TEXT NOT NULL DEFAULT ''"),
+        ("cicd_task_requests", "returned_reason",  "TEXT NOT NULL DEFAULT ''"),
+        ("cicd_task_requests", "returned_at",      "TEXT NOT NULL DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} {_col_def}")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
 
 
@@ -459,9 +473,10 @@ DEFAULT_USERS: tuple[tuple[str, str, str], ...] = (
     ("rm", "rm", "RM"),
     ("owner_test", "owner_test", "Owner"),
     ("qa", "qa", "QA"),
+    ("spd_test", "spd_test", "SPD"),
 )
 
-ROLES = {"RM", "Owner", "QA", "Admin"}
+ROLES = {"RM", "Owner", "QA", "Admin", "SPD"}
 RELEASE_DECISIONS = {"release", "cicd_only", "stopped"}
 NON_RELEASE_DECISIONS = {"cicd_only", "stopped"}
 DOC_TARGETS = {"manual", "ai4sci"}
@@ -2996,8 +3011,16 @@ def list_cicd_tasks(
             "SELECT DISTINCT task_id FROM cicd_task_requests WHERE status = 'pending' AND task_id IS NOT NULL"
         ).fetchall()
     }
+    delivery_pending_ids = {
+        r["task_id"]
+        for r in conn.execute(
+            "SELECT DISTINCT task_id FROM cicd_task_requests "
+            "WHERE delivery_status IN ('pending', 'returned') AND task_id IS NOT NULL"
+        ).fetchall()
+    }
     for t in tasks:
         t["has_pending"] = t["id"] in pending_task_ids
+        t["has_pending_delivery"] = t["id"] in delivery_pending_ids
     # attach owner display_name
     _attach_owner_display(conn, tasks)
     return tasks
@@ -3146,7 +3169,15 @@ def approve_cicd_request(
     reviewer: str,
     reviewer_role: str,
     review_note: str = "",
+    approval_mode: str = "immediate",   # "immediate" | "dispatch_spd"
+    jira_id: str = "",
+    jira_auto_created: int = 0,
 ) -> dict:
+    """Approve a pending CICD request.
+
+    approval_mode='immediate': apply change right away (立即生效).
+    approval_mode='dispatch_spd': defer apply until SPD delivers (批准并下发).
+    """
     if reviewer_role not in CICD_APPROVER_ROLES:
         raise PermissionError("只有 RM/Admin 可以审批 CICD 任务申请")
     row = conn.execute("SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)).fetchone()
@@ -3158,11 +3189,25 @@ def approve_cicd_request(
     ts = now()
     payload = json.loads(req["payload"] or "{}")
     with transaction(conn):
-        conn.execute(
-            "UPDATE cicd_task_requests SET status='approved', reviewer=?, reviewed_at=?, review_note=? WHERE id=?",
-            (reviewer, ts, review_note, req_id),
-        )
-        _apply_cicd_request(conn, req_id, payload, req["task_id"], req["request_type"], ts)
+        if approval_mode == "dispatch_spd":
+            conn.execute(
+                """UPDATE cicd_task_requests
+                   SET status='approved', reviewer=?, reviewed_at=?, review_note=?,
+                       approval_mode='dispatch_spd', delivery_status='pending',
+                       jira_id=?, jira_auto_created=?
+                   WHERE id=?""",
+                (reviewer, ts, review_note, jira_id, jira_auto_created, req_id),
+            )
+            # _apply_cicd_request intentionally deferred until SPD delivers
+        else:
+            conn.execute(
+                """UPDATE cicd_task_requests
+                   SET status='approved', reviewer=?, reviewed_at=?, review_note=?,
+                       approval_mode='immediate'
+                   WHERE id=?""",
+                (reviewer, ts, review_note, req_id),
+            )
+            _apply_cicd_request(conn, req_id, payload, req["task_id"], req["request_type"], ts)
         row = conn.execute("SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)).fetchone()
     return dict(row)
 
@@ -3373,13 +3418,22 @@ def get_cicd_notifications(
     ).fetchone()
     last_visited = row["last_visited_at"] if row else ""
 
-    if role in CICD_APPROVER_ROLES:
-        # Count pending requests for RM/Admin
+    if role == "SPD":
+        # SPD: count requests awaiting delivery
         count = conn.execute(
+            "SELECT COUNT(*) FROM cicd_task_requests WHERE delivery_status = 'pending'",
+        ).fetchone()[0]
+    elif role in CICD_APPROVER_ROLES:
+        # RM/Admin: pending approval + returned by SPD (both need action)
+        pending = conn.execute(
             "SELECT COUNT(*) FROM cicd_task_requests WHERE status = 'pending'",
         ).fetchone()[0]
+        returned = conn.execute(
+            "SELECT COUNT(*) FROM cicd_task_requests WHERE delivery_status = 'returned'",
+        ).fetchone()[0]
+        count = pending + returned
     else:
-        # Count new reviewed results (approved/rejected) since last visit
+        # Owner: new approved/rejected since last visit
         if last_visited:
             count = conn.execute(
                 """
@@ -3407,3 +3461,194 @@ def mark_cicd_visited(conn: sqlite3.Connection, username: str) -> None:
             """,
             (username, ts),
         )
+
+
+# ---------------------------------------------------------------------------
+# Delivery workflow functions (SPD path)
+# ---------------------------------------------------------------------------
+
+def deliver_cicd_request(
+    conn: sqlite3.Connection,
+    req_id: int,
+    *,
+    deliverer: str,
+    deliverer_role: str,
+) -> dict:
+    """SPD (or RM/Admin) marks a dispatched request as delivered.
+    Applies the change to cicd_tasks at this point.
+    """
+    if deliverer_role not in {"SPD", "RM", "Admin"}:
+        raise PermissionError("只有 SPD、RM、Admin 可以标记已交付")
+    row = conn.execute("SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)).fetchone()
+    if not row:
+        raise RuntimeError("申请不存在")
+    req = dict(row)
+    if req.get("delivery_status") not in ("pending", "returned"):
+        raise RuntimeError(f"该申请的交付状态为 '{req.get('delivery_status')}'，无法标记已交付")
+    ts = now()
+    payload = json.loads(req["payload"] or "{}")
+    with transaction(conn):
+        _apply_cicd_request(conn, req_id, payload, req["task_id"], req["request_type"], ts)
+        conn.execute(
+            """UPDATE cicd_task_requests
+               SET delivery_status='delivered', delivered_by=?, delivered_at=?
+               WHERE id=?""",
+            (deliverer, ts, req_id),
+        )
+        row = conn.execute("SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)).fetchone()
+    return dict(row)
+
+
+def return_cicd_request(
+    conn: sqlite3.Connection,
+    req_id: int,
+    *,
+    returner: str,
+    returner_role: str,
+    reason: str,
+) -> dict:
+    """SPD returns a delivery back to RM with a reason."""
+    if returner_role != "SPD":
+        raise PermissionError("只有 SPD 可以退回交付申请")
+    if not reason or not reason.strip():
+        raise ValueError("退回必须填写原因")
+    row = conn.execute("SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)).fetchone()
+    if not row:
+        raise RuntimeError("申请不存在")
+    req = dict(row)
+    if req.get("delivery_status") != "pending":
+        raise RuntimeError(f"该申请的交付状态为 '{req.get('delivery_status')}'，无法退回")
+    ts = now()
+    with transaction(conn):
+        conn.execute(
+            """UPDATE cicd_task_requests
+               SET delivery_status='returned', returned_reason=?, returned_at=?
+               WHERE id=?""",
+            (reason.strip(), ts, req_id),
+        )
+        row = conn.execute("SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)).fetchone()
+    return dict(row)
+
+
+def re_dispatch_cicd_request(
+    conn: sqlite3.Connection,
+    req_id: int,
+    *,
+    actor: str,
+    actor_role: str,
+) -> dict:
+    """RM/Admin re-dispatches a returned delivery back to SPD."""
+    if actor_role not in CICD_APPROVER_ROLES:
+        raise PermissionError("只有 RM/Admin 可以重新下发")
+    row = conn.execute("SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)).fetchone()
+    if not row:
+        raise RuntimeError("申请不存在")
+    req = dict(row)
+    if req.get("delivery_status") != "returned":
+        raise RuntimeError(f"该申请的交付状态为 '{req.get('delivery_status')}'，只有 returned 状态可以重新下发")
+    with transaction(conn):
+        conn.execute(
+            "UPDATE cicd_task_requests SET delivery_status='pending' WHERE id=?",
+            (req_id,),
+        )
+        row = conn.execute("SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)).fetchone()
+    return dict(row)
+
+
+def apply_returned_cicd_request(
+    conn: sqlite3.Connection,
+    req_id: int,
+    *,
+    actor: str,
+    actor_role: str,
+) -> dict:
+    """RM/Admin decides to apply a returned (or pending) request immediately, bypassing SPD."""
+    if actor_role not in CICD_APPROVER_ROLES:
+        raise PermissionError("只有 RM/Admin 可以直接生效")
+    row = conn.execute("SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)).fetchone()
+    if not row:
+        raise RuntimeError("申请不存在")
+    req = dict(row)
+    if req.get("delivery_status") not in ("pending", "returned"):
+        raise RuntimeError(f"该申请的交付状态为 '{req.get('delivery_status')}'，无法直接生效")
+    ts = now()
+    payload = json.loads(req["payload"] or "{}")
+    with transaction(conn):
+        _apply_cicd_request(conn, req_id, payload, req["task_id"], req["request_type"], ts)
+        conn.execute(
+            """UPDATE cicd_task_requests
+               SET delivery_status='delivered', delivered_by=?, delivered_at=?,
+                   approval_mode='immediate'
+               WHERE id=?""",
+            (actor, ts, req_id),
+        )
+        row = conn.execute("SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)).fetchone()
+    return dict(row)
+
+
+def list_cicd_deliveries(
+    conn: sqlite3.Connection,
+    *,
+    status_filter: str | None = None,
+    role: str = "SPD",
+) -> list[dict]:
+    """List requests that went through the dispatch_spd delivery workflow.
+
+    status_filter:
+      'pending'            — awaiting SPD delivery
+      'returned'           — SPD returned, RM needs to act
+      'pending_or_returned'— both (RM view)
+      'delivered'          — completed deliveries (history)
+      None                 — all dispatch_spd requests
+    """
+    clauses = ["approval_mode = 'dispatch_spd'"]
+    params: list = []
+
+    if status_filter == "pending_or_returned":
+        clauses.append("delivery_status IN ('pending', 'returned')")
+    elif status_filter:
+        clauses.append("delivery_status = ?")
+        params.append(status_filter)
+
+    where = "WHERE " + " AND ".join(clauses)
+    rows = conn.execute(
+        f"SELECT * FROM cicd_task_requests {where} ORDER BY reviewed_at DESC",
+        params,
+    ).fetchall()
+
+    result = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["payload"] = json.loads(d.get("payload") or "{}")
+        except Exception:
+            d["payload"] = {}
+        result.append(d)
+    _attach_delivery_task_info(conn, result)
+    return result
+
+
+def _attach_delivery_task_info(conn: sqlite3.Connection, deliveries: list[dict]) -> None:
+    """Attach current task app_name/app_version/status to each delivery record."""
+    task_ids = [d["task_id"] for d in deliveries if d.get("task_id")]
+    task_map: dict = {}
+    if task_ids:
+        rows = conn.execute(
+            "SELECT id, app_name, app_version, status FROM cicd_tasks WHERE id IN ({})".format(
+                ",".join("?" * len(task_ids))
+            ),
+            task_ids,
+        ).fetchall()
+        task_map = {r["id"]: dict(r) for r in rows}
+    for d in deliveries:
+        t = task_map.get(d.get("task_id") or "", {})
+        if not t and d.get("request_type") == "create":
+            # task not yet created; get display info from the create payload
+            p = d.get("payload") or {}
+            d["task_app_name"] = p.get("app_name", "")
+            d["task_app_version"] = p.get("app_version", "")
+            d["task_status"] = p.get("status", "Running")
+        else:
+            d["task_app_name"] = t.get("app_name", "")
+            d["task_app_version"] = t.get("app_version", "")
+            d["task_status"] = t.get("status", "")

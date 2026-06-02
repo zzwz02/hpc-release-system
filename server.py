@@ -22,6 +22,7 @@ except ImportError:
     _LDAP3_AVAILABLE = False
 
 from release_system import core
+from release_system import jira_client
 
 
 ROOT = Path(__file__).resolve().parent
@@ -285,6 +286,20 @@ class Handler(BaseHTTPRequestHandler):
                     user = self.current_user()
                     counts = core.get_cicd_notifications(self.conn(), user["username"], user["role"])
                     self.send_json(counts)
+                    return
+                if parsed.path == "/api/cicd/deliveries":
+                    user = self.current_user()
+                    role = user["role"]
+                    if role not in {"SPD", "RM", "Admin"}:
+                        raise AuthzError("无权访问交付列表")
+                    q = self.query()
+                    status_filter = q.get("status", [None])[0]
+                    deliveries = core.list_cicd_deliveries(
+                        self.conn(),
+                        status_filter=status_filter,
+                        role=role,
+                    )
+                    self.send_json({"deliveries": deliveries})
                     return
                 if parsed.path.startswith("/api/artifacts/"):
                     self.require_rm()
@@ -727,12 +742,41 @@ class Handler(BaseHTTPRequestHandler):
                     if user["role"] not in core.CICD_APPROVER_ROLES:
                         raise AuthzError("只有 RM/Admin 可以审批")
                     body = self.json_body()
+                    approval_mode    = body.get("approval_mode", "immediate")
+                    jira_auto_created = int(body.get("jira_auto_created", 0))
+                    jira_id          = body.get("jira_id", "")
+
+                    # Auto-create Jira issue when dispatching to SPD
+                    if jira_auto_created and approval_mode == "dispatch_spd" and not jira_id:
+                        try:
+                            jcfg = jira_client.load_config()
+                            if jcfg:
+                                conn_tmp = self.conn()
+                                row = conn_tmp.execute(
+                                    "SELECT request_type, task_id, payload FROM cicd_task_requests WHERE id=?",
+                                    (int(body["request_id"]),),
+                                ).fetchone()
+                                if row:
+                                    import json as _json
+                                    payload_dict = _json.loads(row["payload"] or "{}")
+                                    title = jira_client.compute_title(
+                                        conn_tmp, row["request_type"], payload_dict, row["task_id"]
+                                    )
+                                    jira_id = jira_client.create_issue(jcfg, title)
+                        except Exception as _je:
+                            import logging as _log
+                            _log.getLogger(__name__).warning("Jira auto-create failed: %s", _je)
+                            # Do not block approval on Jira failure
+
                     req = core.approve_cicd_request(
                         self.conn(),
                         int(body["request_id"]),
                         reviewer=user["username"],
                         reviewer_role=user["role"],
                         review_note=body.get("review_note", ""),
+                        approval_mode=approval_mode,
+                        jira_id=jira_id,
+                        jira_auto_created=jira_auto_created,
                     )
                     self.send_json({"ok": True, "request": req})
                     return
@@ -792,6 +836,59 @@ class Handler(BaseHTTPRequestHandler):
                     user = self.current_user()
                     core.mark_cicd_visited(self.conn(), user["username"])
                     self.send_json({"ok": True})
+                    return
+                if parsed.path == "/api/cicd/requests/deliver":
+                    user = self.current_user()
+                    if user["role"] not in {"SPD", "RM", "Admin"}:
+                        raise AuthzError("只有 SPD、RM、Admin 可以标记已交付")
+                    body = self.json_body()
+                    req = core.deliver_cicd_request(
+                        self.conn(),
+                        int(body["request_id"]),
+                        deliverer=user["username"],
+                        deliverer_role=user["role"],
+                    )
+                    self.send_json({"ok": True, "request": req})
+                    return
+                if parsed.path == "/api/cicd/requests/return-delivery":
+                    user = self.current_user()
+                    if user["role"] != "SPD":
+                        raise AuthzError("只有 SPD 可以退回交付申请")
+                    body = self.json_body()
+                    req = core.return_cicd_request(
+                        self.conn(),
+                        int(body["request_id"]),
+                        returner=user["username"],
+                        returner_role=user["role"],
+                        reason=body.get("reason", ""),
+                    )
+                    self.send_json({"ok": True, "request": req})
+                    return
+                if parsed.path == "/api/cicd/requests/re-dispatch":
+                    user = self.current_user()
+                    if user["role"] not in core.CICD_APPROVER_ROLES:
+                        raise AuthzError("只有 RM/Admin 可以重新下发")
+                    body = self.json_body()
+                    req = core.re_dispatch_cicd_request(
+                        self.conn(),
+                        int(body["request_id"]),
+                        actor=user["username"],
+                        actor_role=user["role"],
+                    )
+                    self.send_json({"ok": True, "request": req})
+                    return
+                if parsed.path == "/api/cicd/requests/apply-returned":
+                    user = self.current_user()
+                    if user["role"] not in core.CICD_APPROVER_ROLES:
+                        raise AuthzError("只有 RM/Admin 可以直接生效")
+                    body = self.json_body()
+                    req = core.apply_returned_cicd_request(
+                        self.conn(),
+                        int(body["request_id"]),
+                        actor=user["username"],
+                        actor_role=user["role"],
+                    )
+                    self.send_json({"ok": True, "request": req})
                     return
                 if parsed.path == "/api/app-info":
                     body = self.json_body()
