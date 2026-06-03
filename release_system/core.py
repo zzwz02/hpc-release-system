@@ -3908,15 +3908,18 @@ def list_cicd_deliveries(
     *,
     status_filter: str | None = None,
     role: str = "SPD",
+    submitter: str | None = None,
 ) -> list[dict]:
     """List requests that went through the dispatch_spd delivery workflow.
 
     status_filter:
       'pending'            — awaiting SPD delivery
       'returned'           — SPD returned, RM needs to act
-      'pending_or_returned'— both (RM view)
+      'pending_or_returned'— both (RM/Owner view)
       'delivered'          — completed deliveries (history)
       None                 — all dispatch_spd requests
+    submitter:
+      When set, restricts results to a single submitter (used for Owner role).
     """
     clauses = ["approval_mode = 'dispatch_spd'"]
     params: list = []
@@ -3926,6 +3929,10 @@ def list_cicd_deliveries(
     elif status_filter:
         clauses.append("delivery_status = ?")
         params.append(status_filter)
+
+    if submitter:
+        clauses.append("submitter = ?")
+        params.append(submitter)
 
     where = "WHERE " + " AND ".join(clauses)
     rows = conn.execute(

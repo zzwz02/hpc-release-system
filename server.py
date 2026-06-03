@@ -423,14 +423,16 @@ class Handler(BaseHTTPRequestHandler):
                 if parsed.path == "/api/cicd/deliveries":
                     user = self.current_user()
                     role = user["role"]
-                    if role not in {"SPD", "RM", "Admin"}:
+                    if role not in {"SPD", "RM", "Admin", "Owner"}:
                         raise AuthzError("无权访问交付列表")
                     q = self.query()
                     status_filter = q.get("status", [None])[0]
+                    submitter_filter = user["username"] if role == "Owner" else None
                     deliveries = core.list_cicd_deliveries(
                         self.conn(),
                         status_filter=status_filter,
                         role=role,
+                        submitter=submitter_filter,
                     )
                     self.send_json({"deliveries": deliveries})
                     return

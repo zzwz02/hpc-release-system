@@ -734,7 +734,7 @@
           <table class="cicd-table">
             <thead><tr>
               <th>ID</th><th>项目名称</th><th>版本</th><th>仓库类型</th><th>仓库名</th><th>分支</th>
-              <th>构建产物</th><th>开发者社区产物</th><th></th>构建依赖镜像</th><th>超时(min)</th><th>maca/hpcc互转</th>
+              <th>构建产物</th><th>开发者社区产物</th><th>构建依赖镜像</th><th>超时(min)</th><th>maca/hpcc互转</th>
               <th>负责人</th><th>状态</th><th>备注</th><th>操作</th>
             </tr></thead>
             <tbody id="cicdOverviewBody"></tbody>
@@ -2798,7 +2798,7 @@
         renderCicdMy();
         renderCicdPending();
         const _role = currentUser().role;
-        if (["SPD", "RM", "Admin"].includes(_role)) {
+        if (["SPD", "RM", "Admin", "Owner"].includes(_role)) {
           renderCicdDelivery();
           renderCicdDelivered();
         }
@@ -3396,7 +3396,7 @@
         const q = ($("cicdDeliverySearch")?.value || "").toLowerCase();
         const filtered = deliveries.filter(d =>
           !q ||
-          (d.app_name || "").toLowerCase().includes(q) ||
+          (d.task_app_name || "").toLowerCase().includes(q) ||
           (d.submitter || "").toLowerCase().includes(q) ||
           (d.task_id || "").toLowerCase().includes(q)
         );
@@ -3422,8 +3422,8 @@
           return `<tr>
             <td class="cicd-id">#${d.id}</td>
             <td>${esc(cicdReqTypeLabel[d.request_type] || d.request_type)}</td>
-            <td><b>${esc(d.app_name || "—")}</b></td>
-            <td>${esc(d.app_version || "—")}</td>
+            <td><b>${esc(d.task_app_name || "—")}</b></td>
+            <td>${esc(d.task_app_version || "—")}</td>
             <td>${esc(d.submitter_display || d.submitter)}</td>
             <td>${esc((d.reviewed_at || "").slice(0, 16))}</td>
             <td>${cicdJiraLink(d.jira_id)}</td>
@@ -3445,7 +3445,7 @@
         const q = ($("cicdDeliveredSearch")?.value || "").toLowerCase();
         const filtered = deliveries.filter(d =>
           !q ||
-          (d.app_name || "").toLowerCase().includes(q) ||
+          (d.task_app_name || "").toLowerCase().includes(q) ||
           (d.delivered_by || "").toLowerCase().includes(q) ||
           (d.task_id || "").toLowerCase().includes(q)
         );
@@ -3457,8 +3457,8 @@
           <td class="cicd-id">#${d.id}</td>
           <td>${esc(cicdReqTypeLabel[d.request_type] || d.request_type)}</td>
           <td class="cicd-id">${d.task_id ? esc(d.task_id) : "—"}</td>
-          <td><b>${esc(d.app_name || "—")}</b></td>
-          <td>${esc(d.app_version || "—")}</td>
+          <td><b>${esc(d.task_app_name || "—")}</b></td>
+          <td>${esc(d.task_app_version || "—")}</td>
           <td>${esc(d.delivered_by || "—")}</td>
           <td>${esc((d.delivered_at || "").slice(0, 16))}</td>
           <td>${cicdJiraLink(d.jira_id)}</td>
@@ -3520,6 +3520,28 @@
             document.querySelectorAll(".tab,.view").forEach(x => x.classList.remove("active"));
             b.classList.add("active");
             $("cicd").classList.add("active");
+            // Reset all subtab/button visibility before applying role rules
+            document.querySelectorAll(".cicd-subtab").forEach(sub => { sub.hidden = false; });
+            if ($("cicdNewTaskBtn")) $("cicdNewTaskBtn").hidden = false;
+            if ($("cicdMyNewBtn")) $("cicdMyNewBtn").hidden = false;
+            // Apply role-specific subtab visibility (runs after login, role is known)
+            const _role = currentUser().role;
+            if (_role === "SPD") {
+              document.querySelectorAll(".cicd-subtab").forEach(sub => {
+                if (["cicdMyPane", "cicdPendingPane", "cicdRecentPane"].includes(sub.dataset.cicdPane)) sub.hidden = true;
+              });
+              if ($("cicdNewTaskBtn")) $("cicdNewTaskBtn").hidden = true;
+              if ($("cicdMyNewBtn")) $("cicdMyNewBtn").hidden = true;
+              // Default active pane: 待交付
+              document.querySelectorAll(".cicd-subtab,.cicd-pane").forEach(x => x.classList.remove("active"));
+              const delivTab = document.querySelector('[data-cicd-pane="cicdDeliveryPane"]');
+              if (delivTab) { delivTab.classList.add("active"); $("cicdDeliveryPane").classList.add("active"); }
+            } else if (!["RM", "Admin", "Owner"].includes(_role)) {
+              // QA and others: hide delivery tabs
+              document.querySelectorAll(".cicd-subtab").forEach(sub => {
+                if (["cicdDeliveryPane", "cicdDeliveredPane"].includes(sub.dataset.cicdPane)) sub.hidden = true;
+              });
+            }
             await loadCicdAndRender();
             await markCicdVisited();
           };
@@ -3635,24 +3657,6 @@
         if (applyId) { applyReturnedCicdRequest(applyId); return; }
       });
 
-      // SPD / role visibility
-      const _role = currentUser().role;
-      if (_role === "SPD") {
-        document.querySelectorAll(".cicd-subtab").forEach(b => {
-          if (["cicdMyPane", "cicdPendingPane", "cicdRecentPane"].includes(b.dataset.cicdPane)) b.hidden = true;
-        });
-        if ($("cicdNewTaskBtn")) $("cicdNewTaskBtn").hidden = true;
-        if ($("cicdMyNewBtn")) $("cicdMyNewBtn").hidden = true;
-        // Default active: 待交付
-        document.querySelectorAll(".cicd-subtab,.cicd-pane").forEach(x => x.classList.remove("active"));
-        const delivTab = document.querySelector('[data-cicd-pane="cicdDeliveryPane"]');
-        if (delivTab) { delivTab.classList.add("active"); $("cicdDeliveryPane").classList.add("active"); }
-      } else if (!["RM", "Admin"].includes(_role)) {
-        // Owner / QA: hide delivery tabs
-        document.querySelectorAll(".cicd-subtab").forEach(b => {
-          if (["cicdDeliveryPane", "cicdDeliveredPane"].includes(b.dataset.cicdPane)) b.hidden = true;
-        });
-      }
     }
 
     function bind() {

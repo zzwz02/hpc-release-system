@@ -191,6 +191,7 @@ def create_issue(cfg: dict, title: str) -> str:
         fields[exp_field] = eta
     if est_field:
         fields[est_field] = eta
+    fields["description"] = f"由 CICD 发布系统自动创建（审批模式：下发给 SPD 执行交付）。\n\n摘要：{title}"
 
     result = _request(cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"],
                       "POST", "/rest/api/2/issue", {"fields": fields})
