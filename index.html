@@ -1217,7 +1217,7 @@
       const u = String(username || "").trim();
       if (!u) return "";
       const dn = userDisplayName(u, fallbackDisplayName);
-      return dn && dn !== u ? `${dn}(${u})` : u;
+      return dn && dn !== u ? `${dn}` : u;
     }
     function usersLabel(usernames) {
       const items = (usernames || []).map(u => userLabel(u)).filter(Boolean);
