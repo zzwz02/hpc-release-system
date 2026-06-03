@@ -97,6 +97,10 @@ def beijing_now() -> dt.datetime:
     return dt.datetime.now(BEIJING_TZ).replace(tzinfo=None, microsecond=0)
 
 
+def beijing_timestamp() -> str:
+    return beijing_now().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def normalize_deadline(value: str | None) -> str:
     """Normalize a deadline string to ``YYYY-MM-DD HH:MM`` (Beijing time).
 
@@ -603,7 +607,8 @@ def session_user(conn: sqlite3.Connection, token: str | None) -> dict[str, str] 
     if not token:
         return None
     row = conn.execute(
-        "SELECT users.username, users.role FROM sessions JOIN users ON sessions.username = users.username WHERE sessions.token = ?",
+        "SELECT users.username, users.role, users.display_name "
+        "FROM sessions JOIN users ON sessions.username = users.username WHERE sessions.token = ?",
         (token,),
     ).fetchone()
     return dict(row) if row else None
@@ -2258,6 +2263,7 @@ def qa_upload_log(
     target_dir = qa_log_dir(db_path)
     storage_path = target_dir / f"{release_id}__{safe_name}"
     storage_path.write_bytes(content)
+    uploaded_at = beijing_timestamp()
     with transaction(conn):
         conn.execute(
             """
@@ -2269,7 +2275,7 @@ def qa_upload_log(
               uploaded_at=excluded.uploaded_at,
               uploaded_by=excluded.uploaded_by
             """,
-            (release_id, safe_name, str(storage_path), now(), user),
+            (release_id, safe_name, str(storage_path), uploaded_at, user),
         )
         audit(
             conn,
@@ -2279,7 +2285,7 @@ def qa_upload_log(
             release_id=release_id,
             event="qa_upload_log",
         )
-    return {"filename": safe_name, "storage_path": str(storage_path), "uploaded_at": now(), "uploaded_by": user}
+    return {"filename": safe_name, "storage_path": str(storage_path), "uploaded_at": uploaded_at, "uploaded_by": user}
 
 
 def get_qa_log(conn: sqlite3.Connection, release_id: str) -> dict[str, str] | None:
@@ -2556,7 +2562,8 @@ def export_test_scope_csv(conn: sqlite3.Connection, release_id: str) -> str:
 
 QA_RELEASE_REPORT_COLUMNS = [
     "类别", "名称", "Owner", "类型", "描述", "官方URL", "git_url", "git_branch",
-    "对应官方版本", "X86支持芯片系列", "ARM支持芯片类型", "对比",
+    "对应官方版本", "OS", "Python version", "PyTorch version",
+    "X86支持芯片系列", "ARM支持芯片类型", "对比",
     "开发者社区发布情况", "开发者社区发布包支持python版本",
     "开发者社区发布包支持的底层框架及版本",
     "ARM / Kylin sanity", "Ubuntu / 兼容性 sanity",
@@ -2812,6 +2819,9 @@ def build_qa_reports(
             app.get("git_url", ""),
             app.get("git_branch", ""),
             snapshot.get("version", ""),
+            snapshot.get("build_os", ""),
+            snapshot.get("python_labels", ""),
+            snapshot.get("pytorch_labels", ""),
             ",".join(order_chips(snapshot.get("x86_chips", ""))),
             ",".join(order_chips(snapshot.get("arm_chips", ""))),
             compare_value,

@@ -1138,6 +1138,10 @@ class Handler(BaseHTTPRequestHandler):
             "release": None,
             "artifacts": [],
             "user": user,
+            "user_display_names": {
+                row["username"]: row["display_name"]
+                for row in conn.execute("SELECT username, display_name FROM users WHERE display_name <> ''")
+            },
             "qa_log": None,
             "release_schedule": core.list_release_schedule(conn),
         }

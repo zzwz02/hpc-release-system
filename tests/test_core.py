@@ -313,6 +313,22 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         self.assertEqual(snapshot["x86_chips"], "C500,X301")
         self.assertEqual(len(snapshot["test_docs"]), 1)
 
+    def test_qa_release_report_includes_runtime_optional_columns(self) -> None:
+        release_id, app_id = self.import_initial()
+        app_info = json.loads(json.dumps(APP_INFO_V1))
+        app_info["app_build"]["ubuntu20.04_amd64"].update({
+            "os": "ubuntu20.04",
+            "python_label": "py310",
+            "pytorch_label": "torch2.1",
+        })
+        core.apply_app_info(self.conn, release_id, app_id, app_info, source="unit")
+        report = core.build_qa_reports(self.conn, release_id)["release_report"]
+        row = report["rows"][0]
+        by_column = dict(zip(report["columns"], row))
+        self.assertEqual(by_column["OS"], "ubuntu20.04")
+        self.assertEqual(by_column["Python version"], "py310")
+        self.assertEqual(by_column["PyTorch version"], "torch2.1")
+
     def test_app_info_reupload_same_content_preserves_owner_confirm(self) -> None:
         # Re-uploading identical app_info (e.g. an idempotent Gerrit re-fetch)
         # must not silently wipe out an Owner's prior confirmation — that
@@ -405,12 +421,15 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
 
     def test_qa_log_upload_creates_file_and_metadata(self) -> None:
         release_id, _ = self.import_initial()
-        meta = core.qa_upload_log(self.conn, self.db_path, release_id, b"hello-log", "test.log", user="qa", role="QA")
+        with mock.patch("release_system.core.beijing_now", return_value=dt.datetime(2026, 6, 3, 11, 22, 33)):
+            meta = core.qa_upload_log(self.conn, self.db_path, release_id, b"hello-log", "test.log", user="qa", role="QA")
         self.assertEqual(meta["filename"], "test.log")
+        self.assertEqual(meta["uploaded_at"], "2026-06-03 11:22:33")
         self.assertTrue(Path(meta["storage_path"]).exists())
         self.assertEqual(Path(meta["storage_path"]).read_bytes(), b"hello-log")
         stored = core.get_qa_log(self.conn, release_id)
         self.assertEqual(stored["filename"], "test.log")
+        self.assertEqual(stored["uploaded_at"], "2026-06-03 11:22:33")
         self.assertEqual(stored["uploaded_by"], "qa")
 
     def test_qa_log_upload_replaces_previous(self) -> None:
@@ -1011,6 +1030,13 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         self.assertIsNotNone(token)
         core.logout_session(self.conn, token)
         self.assertIsNone(core.session_user(self.conn, token))
+
+    def test_ldap_session_user_includes_display_name(self) -> None:
+        token = core.ldap_login_or_create(self.conn, "m123456", "David Brown")
+        user = core.session_user(self.conn, token)
+        self.assertEqual(user["username"], "m123456")
+        self.assertEqual(user["role"], "Owner")
+        self.assertEqual(user["display_name"], "David Brown")
 
     def test_admin_bootstrap_and_clear_business_data(self) -> None:
         os.environ["HPC_ADMIN_PASSWORD"] = "admin-test-password"

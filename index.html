@@ -65,6 +65,10 @@
   .page{padding:18px 22px 60px;}
   .view{display:none;}
   .view.active{display:block;}
+  .page-toolbar{display:flex;align-items:center;gap:10px;margin:0 0 14px;min-height:34px;}
+  .page-toolbar h2{font-size:16px;font-weight:800;}
+  .page-refresh-meta{font-size:12px;color:var(--muted);font-weight:700;white-space:nowrap;}
+  .page-toolbar .btn{white-space:nowrap;}
   .workspace{display:grid;grid-template-columns:344px minmax(0,1fr);gap:18px;align-items:start;}
   /* ---- phase banner ---- */
   .phase{display:flex;align-items:center;gap:11px;padding:11px 15px;margin-bottom:16px;
@@ -157,6 +161,18 @@
   .qa-chip-legend{font-size:12px;color:var(--muted);line-height:1.7;margin:0 0 11px;
     background:#fafbfc;border:1px solid var(--border);border-radius:8px;padding:7px 11px;}
   .qa-report-search{max-width:220px;padding:5px 9px;}
+  .qa-report-compare{display:flex;align-items:center;gap:7px;white-space:nowrap;}
+  .qa-report-compare .select{width:auto;min-width:170px;max-width:240px;}
+  .qa-col-picker{position:relative;}
+  .qa-col-picker summary{list-style:none;display:inline-flex;align-items:center;gap:6px;
+    padding:5px 10px;border:1px solid var(--border-2);border-radius:8px;background:#fff;
+    font-size:12.5px;font-weight:700;cursor:pointer;color:var(--ink);}
+  .qa-col-picker summary::-webkit-details-marker{display:none;}
+  .qa-col-picker summary:hover{background:#f6f7f9;}
+  .qa-col-menu{position:absolute;z-index:9;top:34px;left:0;width:560px;max-width:min(82vw,560px);
+    display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px 12px;padding:12px;
+    background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);}
+  .qa-col-menu label.check{font-size:12px;min-width:0;}
   /* width:auto lets each column size to its content instead of being squeezed */
   .report-table table{font-size:12px;width:auto;min-width:100%;}
   .report-table th.sortable{cursor:pointer;user-select:none;}
@@ -468,7 +484,7 @@
     <div class="spacer"></div>
     <span id="sessionBox" class="sessionbox" hidden>
       <span class="ctl">Release <select id="release" class="select" style="min-width:170px"></select></span>
-      <button id="refresh" class="iconbtn" title="刷新">&#x21bb;</button>
+      <button id="refresh" class="iconbtn" title="刷新当前页">&#x21bb;</button>
       <span class="userchip"><span class="avatar" id="meAvatar">·</span><span id="meBox">未登录</span></span>
       <button id="logoutBtn" class="btn ghost sm">退出</button>
     </span>
@@ -488,6 +504,12 @@
     <div id="phaseBanner"></div>
 
     <section id="dashboard" class="view active">
+      <div class="page-toolbar">
+        <h2>总览</h2>
+        <span class="spacer"></span>
+        <span class="page-refresh-meta" data-page-refreshed-at="dashboard"></span>
+        <button class="btn sm" data-page-refresh="dashboard" title="刷新当前页">&#x21bb; 刷新</button>
+      </div>
       <div class="dashboard-top">
         <div id="summary" class="stats"></div>
         <!-- <div class="panel">
@@ -513,6 +535,12 @@
     </section>
 
     <section id="init" class="view" data-roles="RM">
+      <div class="page-toolbar">
+        <h2>周期管理</h2>
+        <span class="spacer"></span>
+        <span class="page-refresh-meta" data-page-refreshed-at="init"></span>
+        <button class="btn sm" data-page-refresh="init" title="刷新当前页">&#x21bb; 刷新</button>
+      </div>
       <div class="subtabs">
         <button class="subtab active" data-init-pane="releaseCyclePane">发布周期</button>
         <button class="subtab" data-init-pane="initialImportPane">首次初始化</button>
@@ -577,6 +605,12 @@
     </section>
 
     <section id="apps" class="view" data-roles="RM,Owner,QA">
+      <div class="page-toolbar">
+        <h2>App 工作台</h2>
+        <span class="spacer"></span>
+        <span class="page-refresh-meta" data-page-refreshed-at="apps"></span>
+        <button class="btn sm" data-page-refresh="apps" title="刷新当前页">&#x21bb; 刷新</button>
+      </div>
       <div class="workspace">
         <div class="panel">
           <div class="panel-head"><h2>App 列表</h2><span class="count" id="appCount"></span></div>
@@ -601,6 +635,12 @@
     </section>
 
     <section id="qa" class="view" data-roles="QA,RM">
+      <div class="page-toolbar">
+        <h2>QA</h2>
+        <span class="spacer"></span>
+        <span class="page-refresh-meta" data-page-refreshed-at="qa"></span>
+        <button class="btn sm" data-page-refresh="qa" title="刷新当前页">&#x21bb; 刷新</button>
+      </div>
       <div class="subtabs">
         <button class="subtab active" data-qa-pane="qaMarkPane">QA 标注</button>
         <button class="subtab" data-qa-pane="qaReleaseReportPane">Release Report</button>
@@ -612,6 +652,12 @@
     </section>
 
     <section id="artifacts" class="view" data-roles="RM">
+      <div class="page-toolbar">
+        <h2>Markdown 生成</h2>
+        <span class="spacer"></span>
+        <span class="page-refresh-meta" data-page-refreshed-at="artifacts"></span>
+        <button class="btn sm" data-page-refresh="artifacts" title="刷新当前页">&#x21bb; 刷新</button>
+      </div>
       <div class="panel">
         <div class="panel-head"><h2>Markdown / release-data</h2></div>
         <div class="panel-body">
@@ -661,6 +707,12 @@
     </section>
 
     <section id="admin" class="view" data-roles="Admin">
+      <div class="page-toolbar">
+        <h2>系统管理</h2>
+        <span class="spacer"></span>
+        <span class="page-refresh-meta" data-page-refreshed-at="admin"></span>
+        <button class="btn sm" data-page-refresh="admin" title="刷新当前页">&#x21bb; 刷新</button>
+      </div>
       <div class="subtabs">
         <button class="subtab active" data-admin-pane="adminDbPane">数据库管理</button>
         <button class="subtab" data-admin-pane="adminMemberPane">成员管理</button>
@@ -709,6 +761,12 @@
     </section>
 
     <section id="cicd" class="view" data-roles="RM,Owner,QA,Admin,SPD">
+      <div class="page-toolbar">
+        <h2>CICD 工作台</h2>
+        <span class="spacer"></span>
+        <span class="page-refresh-meta" data-page-refreshed-at="cicd"></span>
+        <button class="btn sm" data-page-refresh="cicd" title="刷新当前页">&#x21bb; 刷新</button>
+      </div>
       <div class="cicd-subtabs">
         <button class="cicd-subtab active" data-cicd-pane="cicdOverviewPane">任务总览</button>
         <button class="cicd-subtab" data-cicd-pane="cicdMyPane">我的 CICD 任务</button>
@@ -1013,10 +1071,10 @@
   </dialog>
 
   <script>
-    let state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, release_schedule: [] };
+    let state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, release_schedule: [], user_display_names: {} };
     let selectedApp = "";
-    let autoRefreshTimer = null;
-    let lastUserInputAt = 0;
+    const stateBackedViews = ["dashboard", "init", "apps", "qa", "artifacts", "admin"];
+    const pageRefreshTimes = {};
     let pendingAppInfoFile = null;
     let pendingAppInfoAppId = "";
     let appInfoPickerHoldUntil = 0;
@@ -1025,7 +1083,6 @@
     let appDetailEditAppId = "";
     let lateDecisionEditAppId = "";
     const detailSectionOpen = {};
-    let detailRenderSig = "";
     let qaEditMode = false;
     let qaEditReleaseId = "";
     // Pending AI suggestions keyed by app_id. Populated by /api/qa/analyze-log,
@@ -1040,10 +1097,11 @@
     let qaReportFilter = { release: "", test: "" };
     let qaReportColFilters = { release: {}, test: {} };
     let qaReportSort = { release: { col: -1, dir: 1 }, test: { col: -1, dir: 1 } };
+    let qaReportVisibleColumns = { release: null };
     let qaReportCompareId = "";
+    const qaReleaseReportDefaultHidden = new Set(["描述", "官方URL", "OS", "Python version", "PyTorch version"]);
     let ldapStatus = { enabled: false, uri: "" };
     let memberList = [];
-    document.addEventListener("keydown", () => { lastUserInputAt = Date.now(); }, true);
     document.addEventListener("input", markUserEdit, true);
     document.addEventListener("change", markUserEdit, true);
 
@@ -1138,6 +1196,31 @@
       const s = String(name || "").replace(/[^a-zA-Z0-9一-龥]/g, "");
       return (s.slice(0, 2) || "··").toUpperCase();
     };
+    function rememberUserDisplayNames(users) {
+      const map = state.user_display_names || {};
+      (users || []).forEach(u => {
+        if (u && u.username && u.display_name) map[u.username] = u.display_name;
+      });
+      state.user_display_names = map;
+    }
+    function userDisplayName(username, fallback = "") {
+      const u = String(username || "").trim();
+      if (!u) return "";
+      return String(fallback || (state.user_display_names || {})[u] || "").trim();
+    }
+    function userLabel(username, fallbackDisplayName = "") {
+      const u = String(username || "").trim();
+      if (!u) return "";
+      const dn = userDisplayName(u, fallbackDisplayName);
+      return dn && dn !== u ? `${dn}(${u})` : u;
+    }
+    function usersLabel(usernames) {
+      const items = (usernames || []).map(u => userLabel(u)).filter(Boolean);
+      return items.join(",") || "无 owner";
+    }
+    function usersSearchText(usernames) {
+      return (usernames || []).map(u => [u, userDisplayName(u)].filter(Boolean).join(" ")).join(" ");
+    }
     const releaseDecisionLabels = {
       release: "release：进入 release note/RST/QA",
       cicd_only: "cicd_only：仅纳入 CICD 构建/测试管控",
@@ -1202,7 +1285,7 @@
       const tokenText = tokenCount ? `；已收到 ${tokenCount} token` : "";
       return `<div id="qaAiProgress" class="${qaAiProgressClass(job)}">
         <div class="row"><span class="${pillClass}">${statusLabel}</span><b>${esc(message)}</b><span class="stage">${esc(stage)}</span></div>
-        <div class="small muted" style="margin-top:4px">已运行 ${elapsed}s${tokenText}；页面会自动刷新当前阶段。</div>
+        <div class="small muted" style="margin-top:4px">已运行 ${elapsed}s${tokenText}；进度会在当前提示中更新。</div>
       </div>`;
     }
 
@@ -1253,12 +1336,14 @@
     async function loadState(releaseId = currentReleaseId(), options = {}) {
       const qs = releaseId ? "?release_id=" + encodeURIComponent(releaseId) : "";
       state = await api("/api/state" + qs);
+      state.user_display_names = state.user_display_names || {};
+      rememberUserDisplayNames([state.user]);
       showLoggedIn(state.user);
       render(options);
+      markPageRefreshed(stateBackedViews);
     }
 
     function markUserEdit(event) {
-      lastUserInputAt = Date.now();
       if (event.target?.closest?.("[data-no-dirty]")) return;
       if (event.target?.closest?.("#detail") && event.target?.type !== "file") {
         appDetailDirty = true;
@@ -1270,32 +1355,54 @@
       return document.querySelector(".tab.active")?.dataset.view || "";
     }
 
-    function recentlyTyping() {
-      if (Date.now() < appInfoPickerHoldUntil) return true;
-      if (pendingAppInfoFile && activeView() === "apps") return true;
-      if (appDetailEditMode && activeView() === "apps") return true;
-      if (appDetailDirty && activeView() === "apps") return true;
-      if (lateDecisionEditAppId && activeView() === "apps") return true;
-      if (qaAiJobRunning() && activeView() === "qa") return true;
-      if (qaEditMode && activeView() === "qa") return true;
-      if (scheduleEditId && activeView() === "dashboard") return true;
-      if (Date.now() - lastUserInputAt > 3000) return false;
-      const tag = document.activeElement?.tagName;
-      return ["INPUT", "TEXTAREA", "SELECT"].includes(tag);
+    function markPageRefreshed(views, at = new Date()) {
+      views.forEach(view => { pageRefreshTimes[view] = at; });
+      updateRefreshMeta();
     }
 
-    function canAutoRefresh() {
-      return !!state.user && !document.hidden && !recentlyTyping() && ["dashboard", "apps", "qa", "admin", "cicd"].includes(activeView());
+    function updateRefreshMeta() {
+      document.querySelectorAll("[data-page-refreshed-at]").forEach(el => {
+        const view = el.dataset.pageRefreshedAt || "";
+        const at = pageRefreshTimes[view];
+        el.textContent = at ? `刷新于 ${fmtDateTime(at)}` : "尚未刷新";
+      });
     }
 
-    function refreshIfIdle() {
-      if (!canAutoRefresh()) return;
-      loadState(currentReleaseId(), { preserveDetail: activeView() === "apps" && !!selectedApp }).catch(err => console.warn("auto-refresh failed:", err.message));
+    async function refreshCurrentView() {
+      const view = activeView();
+      if (view === "apps" && selectedApp && (appDetailDirty || appDetailEditMode || lateDecisionEditAppId)) {
+        if (!confirm("当前 App 详情有未保存修改或处于编辑状态，刷新会丢失这些修改。确认刷新？")) return;
+        appDetailDirty = false;
+        appDetailEditMode = false;
+        appDetailEditAppId = "";
+        lateDecisionEditAppId = "";
+      }
+      if (view === "dashboard" && scheduleEditId) {
+        if (!confirm("当前时间线有未保存编辑，刷新会丢失这些修改。确认刷新？")) return;
+        scheduleEditId = null;
+      }
+      if (view === "qa" && qaEditMode) {
+        if (!confirm("QA 页面处于编辑状态，刷新会丢失未保存修改。确认刷新？")) return;
+        qaEditMode = false;
+        qaAiSuggestions = {};
+        if (!qaAiJobRunning()) qaAiJob = null;
+      }
+      if (view === "cicd") {
+        await loadCicdAndRender();
+        await markCicdVisited();
+        return;
+      }
+      await loadState(currentReleaseId(), { preserveDetail: false });
+      if (view === "qa" && document.querySelector("#qaReleaseReportPane.active,#qaTestCmdPane.active")) {
+        await loadQaReports(true);
+      }
+      if (view === "admin" && $("adminMemberPane")?.classList.contains("active")) {
+        await loadMembers();
+      }
     }
 
-    function startAutoRefresh() {
-      if (autoRefreshTimer) return;
-      autoRefreshTimer = setInterval(refreshIfIdle, 5000);
+    function requestPageRefresh() {
+      refreshCurrentView().catch(e => alert("刷新失败：" + e.message));
     }
 
     function releaseSnap(appId) { return state.release?.snapshots?.[appId] || null; }
@@ -1407,6 +1514,7 @@
       if ($("preview")) $("preview").disabled = releaseLocked();
       renderNewAppControls();
       updateCicdBadge();
+      updateRefreshMeta();
     }
     function renderRoleChrome() {
       const role = currentUser().role || "";
@@ -1607,7 +1715,7 @@
           </div>` : "";
         const subLine = ownerView
           ? esc(snap.type || "—")
-          : `${esc(snap.type || "—")} · ${esc((snap.owners || []).join(",") || "无 owner")}`;
+          : `${esc(snap.type || "—")} · ${esc(usersLabel(snap.owners))}`;
         return `<div class="qa-card">
           <div class="qa-card-h">
             <span class="app-ico">${esc(initials(displayName(snap)))}</span>
@@ -1648,6 +1756,12 @@
       return `${b.getUTCFullYear()}-${p(b.getUTCMonth() + 1)}-${p(b.getUTCDate())} `
         + `${p(b.getUTCHours())}:${p(b.getUTCMinutes())}:${p(b.getUTCSeconds())}`;
     }
+    function qaLogUploadedAt(ts) {
+      const s = String(ts || "").trim();
+      if (!s) return "";
+      if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s)) return toBeijing(s);
+      return s.replace("T", " ").replace(/\.\d+$/, "");
+    }
 
     function renderAdmin() {
       if (!$("adminAppTable")) return;
@@ -1656,7 +1770,7 @@
         return `
         <tr>
           <td><b>${esc(displayName(snap))}</b><div class="small muted">${esc(app.id)}</div></td>
-          <td>${esc((snap.owners || []).join(","))}</td>
+          <td>${esc(usersLabel(snap.owners))}</td>
           <td>${esc(app.git_url || "")}<div class="small muted">${esc(app.git_branch || "")}</div></td>
           <td><button class="btn danger sm" data-delete-app="${esc(app.id)}">删除</button></td>
         </tr>`; }).join("") || `<tr><td colspan="4" class="muted">无数据</td></tr>`}</tbody>`;
@@ -1675,7 +1789,7 @@
       const ownOnly = isOwner() && $("ownOnly")?.checked;
       let rows = state.apps.map(app => ({ app, snap: releaseSnap(app.id) })).filter(x => x.snap);
       if (ownOnly) rows = rows.filter(x => isOwnApp(x.snap));
-      if (q) rows = rows.filter(x => [displayName(x.snap), x.snap.type, (x.snap.owners || []).join(",")].join(" ").toLowerCase().includes(q));
+      if (q) rows = rows.filter(x => [displayName(x.snap), x.snap.type, usersSearchText(x.snap.owners)].join(" ").toLowerCase().includes(q));
       rows.sort(compareAppRows);
       if ($("appCount")) $("appCount").textContent = `共 ${rows.length} 个`;
       $("appTable").innerHTML = rows.map(({ app, snap }) => `
@@ -1683,7 +1797,7 @@
           ${qaDot(snap)}
           <div class="app-meta">
             <div class="name">${esc(displayName(snap))}</div>
-            <div class="sub">${esc(snap.type || "—")} · ${esc((snap.owners || []).join(",") || "无 owner")}</div>
+            <div class="sub">${esc(snap.type || "—")} · ${esc(usersLabel(snap.owners))}</div>
           </div>
           <div class="tail">
             ${decisionPill(snap.release_decision)}
@@ -1692,13 +1806,12 @@
         </div>`).join("") || `<p class="muted small" style="padding:14px;text-align:center">无数据</p>`;
       document.querySelectorAll("[data-app]").forEach(tr => tr.onclick = () => {
         const nextApp = tr.dataset.app;
+        if (selectedApp === nextApp) return;
         if ((appDetailDirty || appDetailEditMode || lateDecisionEditAppId) && selectedApp && selectedApp !== nextApp && !confirm("当前 App 详情有未保存修改或处于编辑状态，切换 App 会丢失这些修改。确认切换？")) return;
-        if (selectedApp !== nextApp) {
-          appDetailDirty = false;
-          appDetailEditMode = false;
-          appDetailEditAppId = "";
-          lateDecisionEditAppId = "";
-        }
+        appDetailDirty = false;
+        appDetailEditMode = false;
+        appDetailEditAppId = "";
+        lateDecisionEditAppId = "";
         selectedApp = nextApp;
         render();
       });
@@ -1802,7 +1915,7 @@
       const info = snap.app_info || {};
       if (!info.source_type) return "未提供";
       if (info.source_type === "gerrit_fetch") return `Gerrit 拉取；commit=${info.commit_id || "未知"}；${info.source || ""}`;
-      if (info.source_type === "owner_upload") return `Owner 上传；上传人=${info.uploaded_by || "未知"}；文件=${info.source || ""}`;
+      if (info.source_type === "owner_upload") return `Owner 上传；上传人=${userLabel(info.uploaded_by) || "未知"}；文件=${info.source || ""}`;
       return `${info.source_type}: ${info.source || ""}`;
     }
     function renderDiffs(snap) {
@@ -1839,7 +1952,7 @@
           const detail = e.detail || [];
           const has = detail.length > 0;
           const main = `<tr class="cl-row ${has ? "cl-clickable" : ""}" ${has ? `data-cl="${i}"` : ""}>
-            <td>${esc(toBeijing(e.ts))}</td><td>${esc(e.user || "")}</td><td>${esc(e.role || "")}</td>
+            <td>${esc(toBeijing(e.ts))}</td><td>${esc(userLabel(e.user) || "")}</td><td>${esc(e.role || "")}</td>
             <td>${esc(e.message || "")}${has ? ` <span class="cl-toggle">▸ 详情</span>` : ""}</td></tr>`;
           const detailRow = has
             ? `<tr class="cl-detail" data-cl-detail="${i}" hidden><td colspan="4">
@@ -1873,10 +1986,7 @@
       const host = $("detail");
       if (!host) return;
       if (!app || !snap) {
-        if (detailRenderSig !== "__empty__") {
-          host.innerHTML = `<div class="empty"><div class="empty-ic">▤</div><p>从左侧选择一个 App，查看与编辑发布信息。</p></div>`;
-          detailRenderSig = "__empty__";
-        }
+        host.innerHTML = `<div class="empty"><div class="empty-ic">▤</div><p>从左侧选择一个 App，查看与编辑发布信息。</p></div>`;
         return;
       }
       if (appDetailEditAppId !== app.id) {
@@ -1909,7 +2019,7 @@
         rel ? (docsItems(snap).length ? `<span class="pill warnp">待补 ${docsItems(snap).length} 项</span>` : `<span class="pill ok">信息齐全</span>`) : "",
         rel ? qaPill(snap.qa_status) : "",
       ].filter(Boolean).join("");
-      const greet = isOwner() ? `<div class="greet">你好，${esc(currentUser().username)} 👋<br>完成清单后提交确认</div>` : "";
+      const greet = isOwner() ? `<div class="greet">你好，${esc(userLabel(currentUser().username, currentUser().display_name))} 👋<br>完成清单后提交确认</div>` : "";
 
       let topInfo = "";
       if (rel) {
@@ -1985,7 +2095,7 @@
         }
       }
       const footNote = appDetailEditMode
-        ? "编辑中 · 自动刷新已暂停"
+        ? "编辑中 · 刷新前请先保存或取消"
         : (releaseLocked() ? "Release 已锁定，只读"
           : (!beforeDocDeadline() ? "Doc deadline 已过，表单只读"
             : (canEditDetail ? "点击「修改」开始编辑" : "你没有此 app 的编辑权限")));
@@ -1997,14 +2107,6 @@
         ? `<label class="docfield desc-field">描述（30字内）<div class="textarea-wrap"><textarea id="description" ${appMetaDisabled}>${esc(snap.description)}</textarea><span id="descriptionCounter" class="desc-counter ${descCount > APP_DESCRIPTION_LIMIT ? "over" : ""}">${descCount}/${APP_DESCRIPTION_LIMIT}</span></div></label>`
         : mdField("描述（30字内）", snap.description, "", "docfield");
 
-      const sig = JSON.stringify([
-        app, snap, currentUser().username, currentUser().role,
-        appDetailEditMode, appDetailDirty, lateDecisionEditAppId,
-        pendingAppInfoAppId === app.id ? (pendingAppInfoFile?.name || "") : "",
-        releaseLocked(), phase(), currentReleaseId(),
-      ]);
-      if (sig === detailRenderSig) return;
-      detailRenderSig = sig;
       host.querySelectorAll("details[data-sec]").forEach(d => { detailSectionOpen[d.dataset.sec] = d.open; });
       host.innerHTML = `
         <div class="detail-head">
@@ -2015,7 +2117,7 @@
         <div class="detail-body">
           ${phaseBanner}
           ${lateDecisionBlock}
-          <div id="dirtyBanner" class="banner warnp" ${appDetailDirty || appDetailEditMode ? "" : "hidden"}>${appDetailDirty ? "有未保存修改，自动刷新已暂停。保存后会恢复。" : "当前处于编辑状态，自动刷新已暂停。"}</div>
+          <div id="dirtyBanner" class="banner warnp" ${appDetailDirty || appDetailEditMode ? "" : "hidden"}>${appDetailDirty ? "有未保存修改，刷新前请先保存或取消编辑。" : "当前处于编辑状态，刷新前请先保存或取消编辑。"}</div>
           ${topInfo}
           ${qaIssueBanner}
           ${copyFromButton}
@@ -2024,7 +2126,7 @@
             <div class="section-body">
               <div class="form">
                 <label>官方名称<input id="officialName" class="input" value="${esc(snap.official_name)}" ${rmMetaDisabled}></label>
-                <label>Owner<input id="owners" class="input" value="${esc((snap.owners || []).join(","))}" ${rmMetaDisabled}></label>
+                <label>Owner<input id="owners" class="input" value="${esc(writable ? (snap.owners || []).join(",") : usersLabel(snap.owners))}" ${rmMetaDisabled}></label>
                 <label>类型<select id="docTarget" class="select" ${rmMetaDisabled}>${docTargetOptions.map(v => `<option value="${v}" ${snap.doc_target === v ? "selected" : ""}>${esc(docTargetLabels[v])}</option>`).join("")}</select></label>
                 <label>App类型<input id="type" class="input" value="${esc(snap.type)}" ${appMetaDisabled}></label>
                 <label>Gerrit URL<input id="gitUrl" class="input" value="${esc(app.git_url)}" ${rmMetaDisabled}></label>
@@ -2116,7 +2218,7 @@
         .sort((a, b) => appSortName(a.snap).localeCompare(appSortName(b.snap), "zh-CN"));
       const canAnalyze = writable && !!state.qa_log && !qaAiJobRunning();
       const logStatusRow = state.qa_log
-        ? `<div class="row"><span class="pill ok">已上传：${esc(state.qa_log.filename)}</span><span class="muted small">${esc(state.qa_log.uploaded_at)} · ${esc(state.qa_log.uploaded_by)}</span><a href="/api/qa-log/download?release_id=${encodeURIComponent(currentReleaseId())}" target="_blank"><button class="btn ghost sm">下载</button></a></div>`
+        ? `<div class="row"><span class="pill ok">已上传：${esc(state.qa_log.filename)}</span><span class="muted small">${esc(qaLogUploadedAt(state.qa_log.uploaded_at))} · ${esc(userLabel(state.qa_log.uploaded_by))}</span><a href="/api/qa-log/download?release_id=${encodeURIComponent(currentReleaseId())}" target="_blank"><button class="btn ghost sm">下载</button></a></div>`
         : `<p class="muted small">本 release 暂无 QA log。</p>`;
       const logEditRow = qaEditMode
         ? `<div class="row" style="margin-top:9px"><input id="qaLogFile" type="file" class="input"><button class="btn primary" id="qaLogUpload" ${qaAiJobRunning() ? "disabled" : ""}>上传 log（覆盖）</button><button class="btn" id="qaLogAnalyze" ${canAnalyze ? "" : "disabled"} title="${canAnalyze ? "调用 LLM 分析已上传的 log，自动填写各 app 的 QA 状态" : (qaAiJobRunning() ? "AI 分析进行中" : "需先上传 log")}">${qaAiJobRunning() ? "AI 分析中…" : "🤖 AI 分析 log"}</button></div>`
@@ -2131,7 +2233,7 @@
           ? `<button class="btn primary qaSaveAll" ${writable ? "" : "disabled"}>保存 QA 状态</button><button class="btn ghost qaCancel">取消编辑</button>`
           : `<button class="btn primary qaEdit" ${writable ? "" : "disabled"}>✎ 修改（上传 log / 填写 QA 状态）</button>`
       }</div>`;
-      const editBanner = qaEditMode ? `<div class="banner warnp" style="margin-top:14px">编辑中 · 自动刷新已暂停。上传 log、AI 分析、改 QA 状态都在保存后才会生效。</div>` : "";
+      const editBanner = qaEditMode ? `<div class="banner warnp" style="margin-top:14px">编辑中 · 刷新前请先保存或取消。上传 log、AI 分析、改 QA 状态都在保存后才会生效。</div>` : "";
       const cards = rows.map(({ app, snap }) => {
         const suggestion = qaAiSuggestions[app.id];
         const useSuggestion = qaEditMode && suggestion;
@@ -2155,7 +2257,7 @@
         return `<div class="qa-card" data-qa-app="${esc(app.id)}">
           <div class="qa-card-h">
             <span class="app-ico">${esc(initials(displayName(snap)))}</span>
-            <div><div class="name">${esc(displayName(snap))} ${aiTag}</div><div class="sub">${esc((snap.owners || []).join(",") || "无 owner")}</div></div>
+            <div><div class="name">${esc(displayName(snap))} ${aiTag}</div><div class="sub">${esc(usersLabel(snap.owners))}</div></div>
             <span class="qa-cur">${qaPill(status)}</span>
           </div>
           <div class="qa-card-b">
@@ -2263,37 +2365,90 @@
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(url);
     }
+    function reportData(kind) {
+      return kind === "release" ? qaReports.release_report : qaReports.test_cmd;
+    }
+    function qaReportColumnVisibleMap(kind, columns) {
+      if (kind !== "release") {
+        return Object.fromEntries(columns.map(c => [c, true]));
+      }
+      let map = qaReportVisibleColumns.release;
+      if (!map) map = {};
+      columns.forEach(c => {
+        if (!(c in map)) map[c] = !qaReleaseReportDefaultHidden.has(c);
+      });
+      Object.keys(map).forEach(c => {
+        if (!columns.includes(c)) delete map[c];
+      });
+      qaReportVisibleColumns.release = map;
+      return map;
+    }
+    function qaReportVisibleIndexes(kind, columns) {
+      const map = qaReportColumnVisibleMap(kind, columns);
+      const idxs = columns.map((c, i) => (map[c] ? i : -1)).filter(i => i >= 0);
+      return idxs.length ? idxs : [0];
+    }
+    function reportSelectedCsv(columns, rows, kind) {
+      const idxs = qaReportVisibleIndexes(kind, columns);
+      return {
+        columns: idxs.map(i => columns[i]),
+        rows: rows.map(entry => {
+          const row = entry.row || entry;
+          return idxs.map(i => row[i]);
+        }),
+      };
+    }
+    function reportHeaderClass(kind, columnName) {
+      if (kind === "release" && String(columnName || "").startsWith("开发者社区")) return "sortable col-comm";
+      return "sortable";
+    }
+    function reportCellHtml(kind, columnName, value) {
+      const v = esc(value);
+      if (kind === "test" && columnName === "docker_cmd") return `<td class="cmd">${v}</td>`;
+      if (kind === "release") {
+        if (columnName === "描述") return `<td class="clamp" title="${v}"><div class="clamp-box">${v}</div></td>`;
+        if (["X86支持芯片系列", "ARM支持芯片类型"].includes(columnName)) return `<td class="col-chip"><div class="cell-wrap">${v.replace(/,/g, ",\u200b")}</div></td>`;
+        if (["git_url", "git_branch"].includes(columnName)) return `<td class="col-git"><div class="cell-wrap">${v}</div></td>`;
+        if (columnName === "对比") return `<td class="col-compare"><div class="cell-wrap">${v}</div></td>`;
+      }
+      return `<td>${v}</td>`;
+    }
+    function qaReportColumnPickerHtml(columns) {
+      const map = qaReportColumnVisibleMap("release", columns);
+      const visible = columns.filter(c => map[c]).length || 1;
+      return `<details class="qa-col-picker">
+        <summary>列 <span id="qaReportColCount_release">${visible}/${columns.length}</span></summary>
+        <div class="qa-col-menu">
+          ${columns.map((c, i) => `<label class="check"><input type="checkbox" data-qa-report-col="release:${i}" ${map[c] ? "checked" : ""}>${esc(c)}</label>`).join("")}
+        </div>
+      </details>`;
+    }
+    function updateQaReportColumnCount(kind, columns) {
+      const el = $(`qaReportColCount_${kind}`);
+      if (!el) return;
+      const map = qaReportColumnVisibleMap(kind, columns);
+      const visible = columns.filter(c => map[c]).length || 1;
+      el.textContent = `${visible}/${columns.length}`;
+    }
     function reportTableHtml(columns, rows, kind) {
-      const cmdCol = kind === "test" ? 6 : -1;       // docker_cmd
-      const clampCol = kind === "release" ? 4 : -1;  // 描述
-      const gitCols = kind === "release" ? [6, 7] : [];          // git_url / git_branch
-      const chipCols = kind === "release" ? [9, 10] : [];        // X86 / ARM 芯片
-      const commCols = kind === "release" ? [12, 13, 14] : [];   // 开发者社区三列
-      const compareCol = kind === "release" ? 11 : -1;            // 对比
+      const visibleIndexes = qaReportVisibleIndexes(kind, columns);
       const sort = qaReportSort[kind] || { col: -1, dir: 1 };
       const colFilters = qaReportColFilters[kind] || {};
-      const head = `<thead><tr>${columns.map((c, i) => {
+      const head = `<thead><tr>${visibleIndexes.map(i => {
+        const c = columns[i];
         const ind = i === sort.col ? (sort.dir > 0 ? " ▲" : " ▼") : "";
-        const cls = "sortable" + (commCols.includes(i) ? " col-comm" : "");
+        const cls = reportHeaderClass(kind, c);
         return `<th class="${cls}" data-qa-sort="${kind}:${i}"><span class="th-text">${esc(c)}${ind}</span></th>`;
       }).join("")}</tr>
-      <tr class="colfilter-row">${columns.map((c, i) => `<th><input data-qa-col-filter="${kind}:${i}" value="${esc(colFilters[i] || "")}" placeholder="筛选…" autocomplete="off"></th>`).join("")}</tr></thead>`;
+      <tr class="colfilter-row">${visibleIndexes.map(i => `<th><input data-qa-col-filter="${kind}:${i}" value="${esc(colFilters[i] || "")}" placeholder="筛选…" autocomplete="off"></th>`).join("")}</tr></thead>`;
       const body = rows.length
         ? rows.map(entry => {
             const r = entry.row || entry;
             const meta = entry.meta || null;
             const trCls = meta && meta.is_release === false ? "row-not-release" : "";
-            return `<tr class="${trCls}">${r.map((c, i) => {
-            const v = esc(c);
-            if (i === cmdCol) return `<td class="cmd">${v}</td>`;
-            if (i === clampCol) return `<td class="clamp" title="${v}"><div class="clamp-box">${v}</div></td>`;
-            if (chipCols.includes(i)) return `<td class="col-chip"><div class="cell-wrap">${v.replace(/,/g, ",\u200b")}</div></td>`;
-            if (gitCols.includes(i)) return `<td class="col-git"><div class="cell-wrap">${v}</div></td>`;
-            if (i === compareCol) return `<td class="col-compare"><div class="cell-wrap">${v}</div></td>`;
-            return `<td>${v}</td>`;
-          }).join("")}</tr>`;
+            return `<tr class="${trCls}">${visibleIndexes.map(i => reportCellHtml(kind, columns[i], r[i])).join("")}</tr>`;
           }).join("")
-        : `<tr><td colspan="${columns.length}" class="muted">无匹配数据</td></tr>`;
+        : `<tr><td colspan="${visibleIndexes.length}" class="muted">无匹配数据</td></tr>`;
       return `<table>${head}<tbody>${body}</tbody></table>`;
     }
     function reportRows(kind) {
@@ -2318,7 +2473,7 @@
     }
     function renderReportTable(kind) {
       if (!qaReports) return;
-      const data = kind === "release" ? qaReports.release_report : qaReports.test_cmd;
+      const data = reportData(kind);
       const rows = reportRows(kind);
       const box = $(`qaReportTable_${kind}`);
       if (box) {
@@ -2350,6 +2505,7 @@
           }
         }
       }
+      updateQaReportColumnCount(kind, data.columns);
       const count = $(`qaReportCount_${kind}`);
       if (count) count.textContent = rows.length === data.rows.length
         ? `${data.rows.length} 行`
@@ -2370,22 +2526,26 @@
           ? `<p class="qa-chip-legend">芯片系列说明：${esc(CHIP_LEGEND)}</p>`
           : "";
         const compareControl = kind === "release"
-          ? `<span class="muted small" style="font-size:12px">对比版本</span>
-            <select class="select sm" data-qa-report-compare="1" style="min-width:160px">
-              <option value="">— 不对比 —</option>
-              ${state.releases
-                .filter(r => r.id !== currentReleaseId())
-                .map(r => `<option value="${esc(r.id)}" ${qaReportCompareId === r.id ? "selected" : ""}>${esc(r.name)}</option>`)
-                .join("")}
-            </select>`
+          ? `<span class="qa-report-compare">
+              <span class="muted small" style="font-size:12px">对比版本</span>
+              <select class="select sm" data-qa-report-compare="1">
+                <option value="">— 不对比 —</option>
+                ${state.releases
+                  .filter(r => r.id !== currentReleaseId())
+                  .map(r => `<option value="${esc(r.id)}" ${qaReportCompareId === r.id ? "selected" : ""}>${esc(r.name)}</option>`)
+                  .join("")}
+              </select>
+            </span>`
           : "";
+        const columnControl = kind === "release" ? qaReportColumnPickerHtml(data.columns) : "";
         body = `<div class="qa-report-bar">
             <button class="btn ghost sm" data-qa-report-refresh="1">↻ 刷新</button>
             <button class="btn primary sm" data-qa-report-csv="${kind}">导出 CSV</button>
+            ${columnControl}
             <input class="input qa-report-search" data-qa-report-filter="${kind}" placeholder="全表关键词筛选…" value="${esc(qaReportFilter[kind] || "")}">
-            ${compareControl}
             <span class="muted small qa-report-time" id="qaReportTime_${kind}"></span>
             <span class="muted small count" id="qaReportCount_${kind}"></span>
+            ${compareControl}
           </div>
           ${legend}
           <div class="table report-table" id="qaReportTable_${kind}"></div>`;
@@ -2401,6 +2561,7 @@
         qaReportFilter = { release: "", test: "" };
         qaReportColFilters = { release: {}, test: {} };
         qaReportSort = { release: { col: -1, dir: 1 }, test: { col: -1, dir: 1 } };
+        qaReportVisibleColumns = { release: null };
         qaReportCompareId = "";
       }
       const sig = `${rid}|${qaReports ? "data" : "none"}|${qaReportsLoading ? "load" : "idle"}|${qaReportsVersion}|${qaReportCompareId}`;
@@ -2429,9 +2590,29 @@
       document.querySelectorAll("[data-qa-report-csv]").forEach(b => b.onclick = () => {
         if (!qaReports) return;
         const kind = b.dataset.qaReportCsv;
-        const data = kind === "release" ? qaReports.release_report : qaReports.test_cmd;
+        const data = reportData(kind);
+        const selected = reportSelectedCsv(data.columns, reportRows(kind), kind);
         const rel = qaReports.release_name || currentReleaseId();
-        reportDownloadCsv(`${kind === "release" ? "release_report" : "test_cmd"}_${rel}_${csvTimestamp(qaReports.loadedAt)}.csv`, data.columns, reportRows(kind).map(x => x.row || x));
+        reportDownloadCsv(`${kind === "release" ? "release_report" : "test_cmd"}_${rel}_${csvTimestamp(qaReports.loadedAt)}.csv`, selected.columns, selected.rows);
+      });
+      document.querySelectorAll("[data-qa-report-col]").forEach(cb => {
+        cb.onchange = () => {
+          const [kind, idxText] = cb.dataset.qaReportCol.split(":");
+          if (!qaReports || kind !== "release") return;
+          const data = reportData(kind);
+          const idx = Number(idxText);
+          const col = data.columns[idx];
+          const map = qaReportColumnVisibleMap(kind, data.columns);
+          map[col] = cb.checked;
+          if (!data.columns.some(c => map[c])) {
+            map[col] = true;
+            cb.checked = true;
+            return;
+          }
+          if (!cb.checked && qaReportColFilters[kind]) delete qaReportColFilters[kind][idx];
+          if (!cb.checked && qaReportSort[kind]?.col === idx) qaReportSort[kind] = { col: -1, dir: 1 };
+          renderReportTable(kind);
+        };
       });
       document.querySelectorAll("[data-qa-report-filter]").forEach(inp => {
         inp.oninput = () => {
@@ -2816,6 +2997,7 @@
           renderCicdDelivered();
         }
         await updateCicdBadge();
+        markPageRefreshed(["cicd"]);
       } catch (e) {
         console.error("cicd load failed:", e.message);
       }
@@ -2855,6 +3037,11 @@
       const cls = status === "Running" ? "ok" : status === "Stopped" ? "warnp" : "";
       return `<span class="pill ${cls}">${esc(status)}</span>`;
     }
+    function cicdOwnerLabel(task) {
+      const mapped = userLabel(task?.owner_username);
+      if (mapped && mapped !== task?.owner_username) return mapped;
+      return task?.owner_display || mapped || task?.owner_username || "";
+    }
 
     function cicdReqStatusEl(status) {
       return `<span class="cicd-req-status-${status}">${esc(cicdReqStatusLabel[status] || status)}</span>`;
@@ -2868,7 +3055,7 @@
       if (cicdOverviewFilter) tasks = tasks.filter(t => t.status === cicdOverviewFilter);
       if (q) tasks = tasks.filter(t =>
         t.app_name.toLowerCase().includes(q) ||
-        t.owner_display.toLowerCase().includes(q) ||
+        cicdOwnerLabel(t).toLowerCase().includes(q) ||
         t.owner_username.toLowerCase().includes(q)
       );
       if (!tasks.length) {
@@ -2902,7 +3089,7 @@
           <td style="max-width:160px;word-break:break-all">${esc(t.build_image)}</td>
           <td style="text-align:center">${esc(String(t.test_timeout))}</td>
           <td style="text-align:center">${esc(t.supports_maca_hpcc)}</td>
-          <td>${esc(t.owner_display)}</td>
+          <td>${esc(cicdOwnerLabel(t))}</td>
           <td>${cicdStatusPill(t.status)}${pending}${pendingDelivery}</td>
           <td style="max-width:160px">${esc(t.notes)}</td>
           <td style="white-space:nowrap">${actions.join(" ")}</td>
@@ -2958,6 +3145,7 @@
           !q ||
           (r.payload?.app_name || "").toLowerCase().includes(q) ||
           r.submitter.toLowerCase().includes(q) ||
+          userLabel(r.submitter, r.submitter_display).toLowerCase().includes(q) ||
           (r.task_id || "").toLowerCase().includes(q)
         );
         // Update subtab badge
@@ -2988,7 +3176,7 @@
             <td class="cicd-id">#${r.id}</td>
             <td>${esc(cicdReqTypeLabel[r.request_type] || r.request_type)}</td>
             <td class="cicd-id">${esc(r.task_id || "(新建)")}</td>
-            <td>${esc(r.submitter_display || r.submitter)}</td>
+            <td>${esc(userLabel(r.submitter, r.submitter_display))}</td>
             <td class="small muted">${esc((r.submitted_at || "").slice(0, 16))}</td>
             <td style="max-width:220px;font-size:12px">${diffSummary}</td>
             <td style="white-space:nowrap">${actions.join(" ")}</td>
@@ -3010,6 +3198,7 @@
         if (q) reqs = reqs.filter(r =>
           (r.payload?.app_name || "").toLowerCase().includes(q) ||
           r.submitter.toLowerCase().includes(q) ||
+          userLabel(r.submitter, r.submitter_display).toLowerCase().includes(q) ||
           (r.task_id || "").toLowerCase().includes(q)
         );
         if (!reqs.length) {
@@ -3029,10 +3218,10 @@
             <td class="cicd-id">#${r.id}</td>
             <td>${esc(cicdReqTypeLabel[r.request_type] || r.request_type)}</td>
             <td class="cicd-id">${esc(r.task_id || "(新建)")}</td>
-            <td>${esc(r.submitter_display || r.submitter)}</td>
+            <td>${esc(userLabel(r.submitter, r.submitter_display))}</td>
             <td class="small muted">${esc((r.submitted_at || "").slice(0, 16))}</td>
             <td>${cicdReqStatusEl(r.status)}</td>
-            <td class="small muted">${esc(r.reviewer || "—")}</td>
+            <td class="small muted">${esc(userLabel(r.reviewer) || "—")}</td>
             <td style="max-width:160px;font-size:12px">${esc(r.review_note || "—")}</td>
             <td style="white-space:nowrap">${actions.join(" ")}</td>
           </tr>`;
@@ -3242,7 +3431,7 @@
         $("cicdJiraTitlePreview").textContent = cicdJiraTitle(req);
         $("cicdApproveDiff").innerHTML = `
           <div class="small muted" style="margin-bottom:8px">
-            提交人：${esc(req.submitter_display || req.submitter)} &nbsp;|&nbsp;
+            提交人：${esc(userLabel(req.submitter, req.submitter_display))} &nbsp;|&nbsp;
             类型：${esc(cicdReqTypeLabel[req.request_type] || req.request_type)} &nbsp;|&nbsp;
             ${req.task_id ? "任务：" + esc(req.task_id) : "新建任务"}
           </div>
@@ -3329,12 +3518,12 @@
           const isSelf = h.is_self_approved;
           const reviewerInfo = isSelf
             ? `<span class="pill accent" style="font-size:11px">RM/Admin 自动过审</span>`
-            : (h.reviewer ? `审批人：${esc(h.reviewer)}` : "");
+            : (h.reviewer ? `审批人：${esc(userLabel(h.reviewer))}` : "");
           return `
             <div class="cicd-history-entry">
               <div class="cicd-history-meta">
                 <b>${esc(cicdReqTypeLabel[h.request_type] || h.request_type)}</b>
-                &nbsp;·&nbsp; 提交人：${esc(h.submitter_display || h.submitter)}
+                &nbsp;·&nbsp; 提交人：${esc(userLabel(h.submitter, h.submitter_display))}
                 &nbsp;·&nbsp; ${esc((h.reviewed_at || h.submitted_at || "").slice(0, 16))}
                 ${reviewerInfo ? " &nbsp;·&nbsp; " + reviewerInfo : ""}
                 ${h.review_note ? ` &nbsp;·&nbsp; 备注：<b>${esc(h.review_note)}</b>` : ""}
@@ -3443,6 +3632,7 @@
           !q ||
           (d.task_app_name || "").toLowerCase().includes(q) ||
           (d.submitter || "").toLowerCase().includes(q) ||
+          userLabel(d.submitter, d.submitter_display).toLowerCase().includes(q) ||
           (d.task_id || "").toLowerCase().includes(q)
         );
         const sub = $("cicdDeliverySubtab");
@@ -3494,6 +3684,7 @@
           !q ||
           (d.task_app_name || "").toLowerCase().includes(q) ||
           (d.delivered_by || "").toLowerCase().includes(q) ||
+          userLabel(d.delivered_by).toLowerCase().includes(q) ||
           (d.task_id || "").toLowerCase().includes(q)
         );
         if (!filtered.length) {
@@ -3760,10 +3951,8 @@
         const msg = e.reason && e.reason.message ? e.reason.message : String(e.reason || "未知错误");
         alert("操作失败：" + msg);
       });
-      document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshIfIdle(); });
       window.addEventListener("focus", () => {
         if (Date.now() < appInfoPickerHoldUntil) appInfoPickerHoldUntil = Date.now() + 1500;
-        refreshIfIdle();
       });
       $("lpBtn").onclick = login;
       $("lpUser").addEventListener("keydown", e => { if (e.key === "Enter") $("lpPass").focus(); });
@@ -3773,7 +3962,8 @@
         b.classList.add("active");
       });
       $("logoutBtn").onclick = logout;
-      $("refresh").onclick = () => loadState();
+      $("refresh").onclick = requestPageRefresh;
+      document.querySelectorAll("[data-page-refresh]").forEach(btn => { btn.onclick = requestPageRefresh; });
       $("scheduleAddBtn").onclick = () => { scheduleEditId = "__new__"; renderSchedule(); };
       $("scheduleBox").addEventListener("click", ev => {
         const editId = ev.target.closest("[data-schedule-edit]")?.dataset.scheduleEdit;
@@ -3943,7 +4133,6 @@
       try {
         await post(endpoint, { username, password });
         await loadState();
-        startAutoRefresh();
       } catch (e) {
         $("lpError").textContent = e.message || "用户名或密码不正确";
         $("lpPass").value = "";
@@ -3959,7 +4148,9 @@
       try {
         const data = await api("/api/admin/users");
         memberList = data.users || [];
+        rememberUserDisplayNames(memberList);
         renderMembers();
+        markPageRefreshed(["admin"]);
         if (log) log.textContent = "";
       } catch (e) {
         if (log) log.textContent = "加载失败：" + e.message;
@@ -3976,7 +4167,7 @@
       };
       const rows = memberList.map(u => `
         <tr>
-          <td><b>${esc(u.username)}</b>${u.display_name ? `<div class="small muted">${esc(u.display_name)}</div>` : ""}</td>
+          <td><b>${esc(userLabel(u.username, u.display_name))}</b></td>
           <td><span class="pill ${u.auth_source === "ldap" ? "accent" : ""}">${esc(sourceLabel[u.auth_source] || u.auth_source)}</span></td>
           <td>${rolePill(u.role)}</td>
           <td>
@@ -4007,8 +4198,7 @@
 
     async function logout() {
       await post("/api/logout", {});
-      if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
-      state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, release_schedule: [], user: null };
+      state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, release_schedule: [], user_display_names: {}, user: null };
       selectedApp = "";
       $("release").innerHTML = "";
       showLoggedOut();
@@ -4022,8 +4212,10 @@
       $("loadingPage").hidden = true;
       $("loginPage").hidden = true;
       $("sessionBox").hidden = false;
-      $("meBox").textContent = `${user.role} · ${user.username}`;
-      $("meAvatar").textContent = (user.username || "·").slice(0, 1).toUpperCase();
+      rememberUserDisplayNames([user]);
+      const label = userLabel(user.username, user.display_name);
+      $("meBox").textContent = `${user.role} · ${label}`;
+      $("meAvatar").textContent = initials(label).slice(0, 1);
     }
 
     function showLoggedOut() {
@@ -4049,7 +4241,6 @@
       } catch (_) { /* LDAP status failure must not block login */ }
       try {
         await loadState();
-        startAutoRefresh();
       } catch (_) {
         showLoggedOut();
       }
