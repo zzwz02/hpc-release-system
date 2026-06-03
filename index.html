@@ -821,7 +821,7 @@
         <div class="cicd-table-wrap">
           <table class="cicd-table">
             <thead><tr>
-              <th>申请ID</th><th>类型</th><th>任务ID</th><th>项目名称</th><th>版本</th><th>交付人</th><th>交付时间</th><th>Jira</th>
+              <th>申请ID</th><th>类型</th><th>任务ID</th><th>项目名称</th><th>版本</th><th>交付人</th><th>交付时间</th><th>Jira</th><th>操作</th>
             </tr></thead>
             <tbody id="cicdDeliveredBody"></tbody>
           </table>
@@ -938,6 +938,19 @@
         <div id="cicdHistoryBody" style="max-height:480px;overflow:auto;"></div>
         <div class="row dialog-actions">
           <button id="cicdHistoryClose" type="button" class="btn">关闭</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- CICD 任务详情对话框（只读） -->
+  <dialog id="cicdDetailDialog" class="cicd-dialog-md">
+    <div class="dialog-card">
+      <h2 id="cicdDetailTitle">任务详情</h2>
+      <div class="dialog-body">
+        <div id="cicdDetailContent" style="max-height:520px;overflow:auto;"></div>
+        <div class="row dialog-actions">
+          <button id="cicdDetailClose" type="button" class="btn">关闭</button>
         </div>
       </div>
     </div>
@@ -2769,6 +2782,7 @@
     let cicdApproveReqId = null;
     let cicdEditTaskId = null;     // null = new task; taskId = editing existing
     let cicdEditFromReqId = null;  // if editing after rejection
+    let cicdReqMap = {};           // id → request object (populated by render functions)
 
     const cicdStatusLabel = { Running: "Running", Stopped: "Stopped", Abandoned: "Abandoned" };
     const cicdReqTypeLabel = { create: "新建", modify: "修改", owner_transfer: "负责人变更" };
@@ -2959,6 +2973,7 @@
         }
         const me = currentUser().username;
         body.innerHTML = filtered.map(r => {
+          cicdReqMap[String(r.id)] = r;
           const isMyReq = r.submitter === me;
           const actions = [];
           if (canApproveCicd()) {
@@ -2967,6 +2982,7 @@
           if (isMyReq || canApproveCicd()) {
             actions.push(`<button class="btn sm warn" data-cicd-cancel="${r.id}">取消</button>`);
           }
+          actions.push(`<button class="btn sm" data-cicd-detail="${r.id}">详情</button>`);
           // After rejection, allow re-edit: shown in recent pane
           const diffSummary = cicdDiffSummary(r.payload, r.request_type);
           return `<tr>
@@ -3003,11 +3019,13 @@
         }
         const me = currentUser().username;
         body.innerHTML = reqs.map(r => {
+          cicdReqMap[String(r.id)] = r;
           const canReEdit = r.status === "rejected" && r.submitter === me;
           const actions = [];
           if (canReEdit) {
             actions.push(`<button class="btn sm" data-cicd-reedit="${r.id}">重新编辑</button>`);
           }
+          actions.push(`<button class="btn sm" data-cicd-detail="${r.id}">详情</button>`);
           return `<tr>
             <td class="cicd-id">#${r.id}</td>
             <td>${esc(cicdReqTypeLabel[r.request_type] || r.request_type)}</td>
@@ -3330,6 +3348,34 @@
       }
     }
 
+    // --- Detail dialog (read-only, shared across all tables) ---
+    function openCicdDetailDialog(reqId) {
+      const req = cicdReqMap[String(reqId)];
+      if (!req) { alert("详情数据未加载，请刷新后重试"); return; }
+      $("cicdDetailTitle").textContent = `申请详情 #${req.id}`;
+      const jiraCell = req.jira_id ? ` &nbsp;|&nbsp; Jira：${cicdJiraLink(req.jira_id)}` : "";
+      const delivCell = req.delivery_status
+        ? ` &nbsp;|&nbsp; 交付状态：<b>${esc(cicdDeliveryStatusLabel[req.delivery_status] || req.delivery_status)}</b>` : "";
+      const reviewRow = req.reviewer
+        ? `<div class="small muted" style="margin-bottom:8px">审批人：${esc(req.reviewer)}`
+          + ` &nbsp;|&nbsp; 审批时间：${esc((req.reviewed_at || "").slice(0, 16))}`
+          + (req.review_note ? ` &nbsp;|&nbsp; 备注：<b>${esc(req.review_note)}</b>` : "")
+          + `</div>`
+        : "";
+      $("cicdDetailContent").innerHTML =
+        `<div class="small muted" style="margin-bottom:8px">`
+        + `提交人：<b>${esc(req.submitter_display || req.submitter)}</b>`
+        + ` &nbsp;|&nbsp; 类型：${esc(cicdReqTypeLabel[req.request_type] || req.request_type)}`
+        + ` &nbsp;|&nbsp; ${req.task_id ? "任务：" + esc(req.task_id) : "新建任务"}`
+        + ` &nbsp;|&nbsp; 状态：${cicdReqStatusEl(req.status)}`
+        + jiraCell + delivCell
+        + `</div>`
+        + reviewRow
+        + cicdDiffTable(req.payload, req.request_type);
+      const dlg = $("cicdDetailDialog");
+      if (dlg.showModal) dlg.showModal(); else dlg.open = true;
+    }
+
     // --- Delete task ---
     async function deleteCicdTask(taskId) {
       if (!confirm(`确认删除 Abandoned 任务 ${taskId}？此操作不可恢复。`)) return;
@@ -3407,6 +3453,7 @@
           return;
         }
         body.innerHTML = filtered.map(d => {
+          cicdReqMap[String(d.id)] = d;
           const actions = [];
           if (["SPD", "RM", "Admin"].includes(role)) {
             actions.push(`<button class="btn sm primary" data-cicd-deliver="${d.id}">确认交付</button>`);
@@ -3418,6 +3465,7 @@
             actions.push(`<button class="btn sm" data-cicd-redispatch="${d.id}">重新下发</button>`);
             actions.push(`<button class="btn sm warn" data-cicd-apply-returned="${d.id}">直接生效</button>`);
           }
+          actions.push(`<button class="btn sm" data-cicd-detail="${d.id}">详情</button>`);
           const statusCls = `cicd-delivery-status-${d.delivery_status}`;
           return `<tr>
             <td class="cicd-id">#${d.id}</td>
@@ -3450,10 +3498,12 @@
           (d.task_id || "").toLowerCase().includes(q)
         );
         if (!filtered.length) {
-          body.innerHTML = `<tr><td colspan="8" class="empty" style="text-align:center;color:var(--muted);padding:30px">暂无已交付记录</td></tr>`;
+          body.innerHTML = `<tr><td colspan="9" class="empty" style="text-align:center;color:var(--muted);padding:30px">暂无已交付记录</td></tr>`;
           return;
         }
-        body.innerHTML = filtered.map(d => `<tr>
+        body.innerHTML = filtered.map(d => {
+          cicdReqMap[String(d.id)] = d;
+          return `<tr>
           <td class="cicd-id">#${d.id}</td>
           <td>${esc(cicdReqTypeLabel[d.request_type] || d.request_type)}</td>
           <td class="cicd-id">${d.task_id ? esc(d.task_id) : "—"}</td>
@@ -3462,9 +3512,11 @@
           <td>${esc(d.delivered_by || "—")}</td>
           <td>${esc((d.delivered_at || "").slice(0, 16))}</td>
           <td>${cicdJiraLink(d.jira_id)}</td>
-        </tr>`).join("");
+          <td style="white-space:nowrap"><button class="btn sm" data-cicd-detail="${d.id}">详情</button></td>
+        </tr>`;
+        }).join("");
       } catch (e) {
-        body.innerHTML = `<tr><td colspan="8" style="color:var(--bad-fg);padding:14px">${esc(e.message)}</td></tr>`;
+        body.innerHTML = `<tr><td colspan="9" style="color:var(--bad-fg);padding:14px">${esc(e.message)}</td></tr>`;
       }
     }
 
@@ -3612,6 +3664,8 @@
 
       // Pending table delegate
       $("cicdPendingBody").addEventListener("click", async ev => {
+        const detailId = ev.target.closest("[data-cicd-detail]")?.dataset.cicdDetail;
+        if (detailId) { openCicdDetailDialog(detailId); return; }
         const appId = ev.target.closest("[data-cicd-approve]")?.dataset.cicdApprove;
         if (appId) { openCicdApproveDialog(appId); return; }
         const cancelId = ev.target.closest("[data-cicd-cancel]")?.dataset.cicdCancel;
@@ -3628,6 +3682,8 @@
 
       // Recent table delegate
       $("cicdRecentBody").addEventListener("click", async ev => {
+        const detailId = ev.target.closest("[data-cicd-detail]")?.dataset.cicdDetail;
+        if (detailId) { openCicdDetailDialog(detailId); return; }
         const reeditId = ev.target.closest("[data-cicd-reedit]")?.dataset.cicdReedit;
         if (reeditId) { openCicdReEdit(reeditId); return; }
       });
@@ -3645,8 +3701,13 @@
       // History dialog
       $("cicdHistoryClose").onclick = () => $("cicdHistoryDialog").close();
 
+      // Detail dialog
+      $("cicdDetailClose").onclick = () => $("cicdDetailDialog").close();
+
       // Delivery table delegate
       $("cicdDeliveryBody").addEventListener("click", async ev => {
+        const detailId = ev.target.closest("[data-cicd-detail]")?.dataset.cicdDetail;
+        if (detailId) { openCicdDetailDialog(detailId); return; }
         const deliverId = ev.target.closest("[data-cicd-deliver]")?.dataset.cicdDeliver;
         if (deliverId) { deliverCicdRequest(deliverId); return; }
         const returnId = ev.target.closest("[data-cicd-return]")?.dataset.cicdReturn;
@@ -3655,6 +3716,12 @@
         if (redispatchId) { reDispatchCicdRequest(redispatchId); return; }
         const applyId = ev.target.closest("[data-cicd-apply-returned]")?.dataset.cicdApplyReturned;
         if (applyId) { applyReturnedCicdRequest(applyId); return; }
+      });
+
+      // Delivered table delegate
+      $("cicdDeliveredBody").addEventListener("click", ev => {
+        const detailId = ev.target.closest("[data-cicd-detail]")?.dataset.cicdDetail;
+        if (detailId) { openCicdDetailDialog(detailId); return; }
       });
 
     }
