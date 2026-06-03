@@ -736,6 +736,24 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         out = core.render_guide("Guide", [], stopped_rows=[(app, snapshot)])
         self.assertIn("TestApp（已停止支持）", out)
 
+    def test_render_guide_preserves_owner_markdown_without_shell_fence(self) -> None:
+        app = {"name": "TestApp", "description": "desc", "doc_target": "manual"}
+        snapshot = {
+            "version": "1.0",
+            "doc": {
+                "intro": "intro",
+                "image_usage": "镜像说明\n\n```bash\ndocker run app\n```",
+                "binary_usage": "- 下载二进制包\n- 运行 `app --help`",
+                "env_setup": "export APP_HOME=/opt/app",
+            },
+            "test_docs": [],
+        }
+        out = core.render_guide("Guide", [(app, snapshot)])
+        self.assertIn("```bash\ndocker run app\n```", out)
+        self.assertIn("- 下载二进制包\n- 运行 `app --help`", out)
+        self.assertIn("export APP_HOME=/opt/app", out)
+        self.assertNotIn("```shell", out)
+
     def test_generate_artifacts_preview_ok_after_unlock(self) -> None:
         release_id, app_id = self.import_initial()
         core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")

@@ -2977,6 +2977,16 @@ def code_block(content: str, lang: str = "shell") -> str:
     return f"```{lang}\n{content}\n```\n\n"
 
 
+def owner_markdown_block(content: str) -> str:
+    if not content:
+        return "\n"
+    if content.endswith("\n\n"):
+        return content
+    if content.endswith("\n"):
+        return content + "\n"
+    return content + "\n\n"
+
+
 def _md_cell(value: Any) -> str:
     s = "" if value is None else str(value)
     s = s.replace("\\", "\\\\").replace("|", "\\|")
@@ -3151,9 +3161,9 @@ def _render_guide_entries(rows: list[tuple[dict[str, Any], dict[str, Any]]], *, 
         out += f"版本：{snapshot.get('version') or ''}\n\n"
         if app.get("official_url"):
             out += f"官方网址：{app['official_url']}\n\n"
-        out += "**镜像使用方法：**\n\n" + code_block(doc.get("image_usage", ""))
-        out += "**二进制包使用方法：**\n\n" + code_block(doc.get("binary_usage", ""))
-        out += "**环境搭建：**\n\n" + code_block(doc.get("env_setup", ""))
+        out += "**镜像使用方法：**\n\n" + owner_markdown_block(doc.get("image_usage", ""))
+        out += "**二进制包使用方法：**\n\n" + owner_markdown_block(doc.get("binary_usage", ""))
+        out += "**环境搭建：**\n\n" + owner_markdown_block(doc.get("env_setup", ""))
         out += "**测试方法：**\n\n"
         for test_doc in snapshot.get("test_docs", []):
             if test_doc.get("obsolete"):
