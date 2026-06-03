@@ -780,10 +780,9 @@
         <div class="cicd-toolbar">
           <div class="cicd-filters" id="cicdRecentTimeFilters">
             <button class="cicd-filter-btn active" data-days="30">近1个月</button>
-            <button class="cicd-filter-btn" data-days="60">近2个月</button>
             <button class="cicd-filter-btn" data-days="90">近3个月</button>
             <button class="cicd-filter-btn" data-days="180">近半年</button>
-            <button class="cicd-filter-btn" data-days="365">近1年</button>
+            <button class="cicd-filter-btn" data-days="0">全部</button>
           </div>
           <label class="check" style="margin-left:10px"><input type="checkbox" id="cicdRecentOnlyMine"> 只看我的</label>
           <input class="input sm cicd-search" id="cicdRecentSearch" placeholder="搜索 app / 提交人">
@@ -3006,7 +3005,7 @@
       try {
         const onlyMine = $("cicdRecentOnlyMine")?.checked ? "1" : "0";
         const q = ($("cicdRecentSearch")?.value || "").toLowerCase();
-        const data = await api(`/api/cicd/requests?since_days=${cicdRecentDays}&only_mine=${onlyMine}`);
+        const data = await api(`/api/cicd/requests?${cicdRecentDays ? `since_days=${cicdRecentDays}&` : ""}only_mine=${onlyMine}`);
         let reqs = data.requests || [];
         if (q) reqs = reqs.filter(r =>
           (r.payload?.app_name || "").toLowerCase().includes(q) ||
@@ -3627,7 +3626,7 @@
         if (!btn) return;
         $("cicdRecentTimeFilters").querySelectorAll(".cicd-filter-btn").forEach(x => x.classList.remove("active"));
         btn.classList.add("active");
-        cicdRecentDays = parseInt(btn.dataset.days) || 30;
+        cicdRecentDays = parseInt(btn.dataset.days);
         await renderCicdRecent();
       });
 

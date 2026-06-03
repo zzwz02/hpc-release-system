@@ -910,7 +910,7 @@ class Handler(BaseHTTPRequestHandler):
                             if jcfg:
                                 conn_tmp = self.conn()
                                 row = conn_tmp.execute(
-                                    "SELECT request_type, task_id, payload FROM cicd_task_requests WHERE id=?",
+                                    "SELECT request_type, task_id, payload, submitter FROM cicd_task_requests WHERE id=?",
                                     (int(body["request_id"]),),
                                 ).fetchone()
                                 if row:
@@ -919,7 +919,16 @@ class Handler(BaseHTTPRequestHandler):
                                     title = jira_client.compute_title(
                                         conn_tmp, row["request_type"], payload_dict, row["task_id"]
                                     )
-                                    jira_id = jira_client.create_issue(jcfg, title)
+                                    desc = jira_client.build_description(
+                                        request_id=int(body["request_id"]),
+                                        request_type=row["request_type"],
+                                        payload=payload_dict,
+                                        task_id=row["task_id"],
+                                        submitter=row["submitter"],
+                                        title=title,
+                                        review_note=body.get("review_note", ""),
+                                    )
+                                    jira_id = jira_client.create_issue(jcfg, title, description=desc)
                         except Exception as _je:
                             import logging as _log
                             _log.getLogger(__name__).warning("Jira auto-create failed: %s", _je)

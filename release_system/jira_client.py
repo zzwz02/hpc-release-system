@@ -132,10 +132,100 @@ def compute_title(conn, request_type: str, payload: dict, task_id: str | None) -
 
 
 # ─────────────────────────────────────────────────────────────
+# Description builder (Jira wiki markup)
+# ─────────────────────────────────────────────────────────────
+
+_FIELD_LABEL: dict[str, str] = {
+    "app_name":        "应用名称",
+    "app_version":     "应用版本",
+    "repo_url":        "代码仓库",
+    "branch":          "分支",
+    "repo_type":       "仓库类型",
+    "pipeline_url":    "流水线地址",
+    "build_cmd":       "构建命令",
+    "deploy_cmd":      "部署命令",
+    "rollback_cmd":    "回滚命令",
+    "test_cmd":        "测试命令",
+    "env":             "环境",
+    "owner_username":  "负责人",
+    "qa_username":     "QA负责人",
+    "description":     "描述",
+    "jira_id":         "Jira",
+}
+
+_REQ_TYPE_LABEL: dict[str, str] = {
+    "create":         "新建任务",
+    "modify":         "修改任务",
+    "owner_transfer": "负责人变更",
+}
+
+
+def build_description(
+    request_id: int | None,
+    request_type: str,
+    payload: dict,
+    task_id: str | None,
+    submitter: str,
+    title: str,
+    review_note: str = "",
+) -> str:
+    """Build a Jira wiki-markup description string from a CICD request.
+
+    Compatible with Jira Server / DC wiki markup (also renders reasonably
+    on Cloud as plain text fallback).
+    """
+    lines: list[str] = []
+    lines.append("由 CICD 发布系统自动创建（审批模式：下发给 SPD 执行交付）。")
+    lines.append("")
+
+    # ── 基本信息 ──
+    lines.append("h3. 基本信息")
+    lines.append("||字段||值||")
+    if request_id is not None:
+        lines.append(f"|申请 ID|#{request_id}|")
+    lines.append(f"|类型|{_REQ_TYPE_LABEL.get(request_type, request_type)}|")
+    lines.append(f"|申请人|{submitter}|")
+    if task_id:
+        lines.append(f"|任务 ID|{task_id}|")
+    lines.append("")
+
+    # ── 变更详情 ──
+    lines.append("h3. 变更详情")
+    if request_type == "create":
+        lines.append("||字段||值||")
+        for k, v in payload.items():
+            if v is None or v == "":
+                continue
+            label = _FIELD_LABEL.get(k, k)
+            val = ", ".join(v) if isinstance(v, list) else str(v)
+            lines.append(f"|{label}|{val}|")
+    elif payload:
+        lines.append("||字段||原值||新值||")
+        for k, ch in payload.items():
+            if not isinstance(ch, dict):
+                continue
+            label = _FIELD_LABEL.get(k, k)
+            old_v = ", ".join(ch["old"]) if isinstance(ch.get("old"), list) else str(ch.get("old", ""))
+            new_v = ", ".join(ch["new"]) if isinstance(ch.get("new"), list) else str(ch.get("new", ""))
+            lines.append(f"|{label}|{old_v}|{new_v}|")
+    else:
+        lines.append("（无变更详情）")
+    lines.append("")
+
+    if review_note and review_note.strip():
+        lines.append(f"*审批备注：* {review_note.strip()}")
+        lines.append("")
+
+    lines.append(f"----")
+    lines.append(f"摘要：{title}")
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────
 # Create issue
 # ─────────────────────────────────────────────────────────────
 
-def create_issue(cfg: dict, title: str) -> str:
+def create_issue(cfg: dict, title: str, description: str | None = None) -> str:
     """Create a Jira issue and return its key (e.g. 'SPD-456').
 
     Sets component to JIRA_COMPONENT (default 'SPD_CICD') and both ETA
@@ -191,7 +281,7 @@ def create_issue(cfg: dict, title: str) -> str:
         fields[exp_field] = eta
     if est_field:
         fields[est_field] = eta
-    fields["description"] = f"由 CICD 发布系统自动创建（审批模式：下发给 SPD 执行交付）。\n\n摘要：{title}"
+    fields["description"] = description or f"由 CICD 发布系统自动创建（审批模式：下发给 SPD 执行交付）。\n\n摘要：{title}"
 
     result = _request(cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"],
                       "POST", "/rest/api/2/issue", {"fields": fields})
