@@ -1433,6 +1433,47 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         self.assertNotIn("create_app", r2_events)
         self.assertGreaterEqual(len(core.app_audit_log(self.conn, app_id)), len(r1_events) + len(r2_events))
 
+    def test_release_qa_audit_logs_groups_status_changes(self) -> None:
+        release_id, app_id = self.import_initial()
+        other = core.add_new_app_request(
+            self.conn,
+            release_id,
+            official_name="Second",
+            git_url="ssh://second",
+            git_branch="main",
+            release_decision="release",
+            owner="o2",
+        )
+        untouched = core.add_new_app_request(
+            self.conn,
+            release_id,
+            official_name="Third",
+            git_url="ssh://third",
+            git_branch="main",
+            release_decision="release",
+            owner="o3",
+        )
+        core.qa_upload_log(self.conn, self.db_path, release_id, b"log", "qa.log")
+        core.qa_set_status_batch(
+            self.conn,
+            release_id,
+            [
+                {"app_id": app_id, "status": "qa_passed"},
+                {"app_id": other, "status": "has_issues", "issue_note": "flaky on c500"},
+            ],
+            user="qa_user",
+            role="QA",
+        )
+
+        logs = core.release_qa_audit_logs(self.conn, release_id)
+        self.assertEqual(set(logs), {app_id, other, untouched})
+        self.assertEqual(logs[untouched], [])
+        self.assertEqual([entry["event"] for entry in logs[app_id]], ["qa_set_status"])
+        self.assertEqual(logs[app_id][0]["app_id"], app_id)
+        self.assertEqual(logs[app_id][0]["user"], "qa_user")
+        self.assertTrue(any(d["field"] == "qa_status" for d in logs[other][0]["detail"]))
+        self.assertNotIn("qa_upload_log", [entry["event"] for values in logs.values() for entry in values])
+
     def test_app_audit_access_allows_rm_admin_qa_and_current_owner(self) -> None:
         release_id, app_id = self.import_initial()
 

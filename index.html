@@ -334,6 +334,9 @@
   .qa-card-h .sub{font-size:12px;color:var(--muted);}
   .qa-card-h .qa-cur{margin-left:auto;}
   .qa-card-b{padding:13px 14px;display:flex;flex-direction:column;gap:10px;}
+  .qa-change-log-panel{margin-top:14px;}
+  .qa-change-log-panel .table{max-height:420px;}
+  .qa-change-log-panel table{font-size:12px;}
   .qa-actions{margin-top:14px;display:flex;}
   .qa-ai-progress{margin-top:10px;padding:10px 12px;border:1px solid var(--accent-bd);
     border-radius:9px;background:var(--accent-soft);color:var(--accent-2);font-size:12.5px;line-height:1.55;}
@@ -1071,7 +1074,7 @@
   </dialog>
 
   <script>
-    let state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, release_schedule: [], user_display_names: {} };
+    let state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, qa_audit_logs: {}, release_schedule: [], user_display_names: {} };
     let selectedApp = "";
     const stateBackedViews = ["dashboard", "init", "apps", "qa", "artifacts", "admin"];
     const pageRefreshTimes = {};
@@ -1099,6 +1102,8 @@
     let qaReportSort = { release: { col: -1, dir: 1 }, test: { col: -1, dir: 1 } };
     let qaReportVisibleColumns = { release: null };
     let qaReportCompareId = "";
+    const qaAuditLoading = new Set();
+    const qaAuditErrors = {};
     const qaReleaseReportDefaultHidden = new Set(["描述", "官方URL", "OS", "Python version", "PyTorch version"]);
     let ldapStatus = { enabled: false, uri: "" };
     let memberList = [];
@@ -1337,6 +1342,7 @@
       const qs = releaseId ? "?release_id=" + encodeURIComponent(releaseId) : "";
       state = await api("/api/state" + qs);
       state.user_display_names = state.user_display_names || {};
+      state.qa_audit_logs = state.qa_audit_logs || {};
       rememberUserDisplayNames([state.user]);
       showLoggedIn(state.user);
       render(options);
@@ -1943,30 +1949,148 @@
       return `<thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${headers.length}" class="muted">无数据</td></tr>`}</tbody>`;
     }
 
+    function auditDetailValue(detail, key) {
+      const value = detail?.[key] ?? "";
+      if (!value) return "(空)";
+      if (detail?.field === "qa_status") return qaStatusLabels[value] || value;
+      return value;
+    }
+
+    function changeLogTableHtml(entries) {
+      const body = (entries || []).map((e, i) => {
+        const detail = e.detail || [];
+        const has = detail.length > 0;
+        const main = `<tr class="cl-row ${has ? "cl-clickable" : ""}" ${has ? `data-cl="${i}"` : ""}>
+          <td>${esc(toBeijing(e.ts))}</td><td>${esc(userLabel(e.user) || "")}</td><td>${esc(e.role || "")}</td>
+          <td>${esc(e.message || "")}${has ? ` <span class="cl-toggle">▸ 详情</span>` : ""}</td></tr>`;
+        const detailRow = has
+          ? `<tr class="cl-detail" hidden><td colspan="4">
+               <table class="cl-detail-table"><thead><tr><th>字段</th><th>原值</th><th>新值</th></tr></thead><tbody>${
+                 detail.map(d => `<tr><td>${esc(d.label || d.field || "")}</td><td>${esc(auditDetailValue(d, "old"))}</td><td>${esc(auditDetailValue(d, "new"))}</td></tr>`).join("")
+               }</tbody></table></td></tr>`
+          : "";
+        return main + detailRow;
+      }).join("") || `<tr><td colspan="4" class="muted">无数据</td></tr>`;
+      return `<table><thead><tr><th>时间（北京时间）</th><th>操作人</th><th>角色</th><th>事件</th></tr></thead><tbody>${body}</tbody></table>`;
+    }
+
+    function bindChangeLogToggles(root) {
+      if (!root) return;
+      root.querySelectorAll("[data-cl]").forEach(tr => {
+        tr.onclick = () => {
+          const row = tr.nextElementSibling;
+          if (row?.classList.contains("cl-detail")) row.hidden = !row.hidden;
+        };
+      });
+    }
+
+    function qaAuditKey(appId, releaseId = currentReleaseId()) {
+      return `${releaseId}|${appId}`;
+    }
+
+    function hasQaAuditLog(appId) {
+      return Object.prototype.hasOwnProperty.call(state.qa_audit_logs || {}, appId);
+    }
+
+    function qaRows() {
+      return state.apps
+        .map(app => ({ app, snap: releaseSnap(app.id) }))
+        .filter(x => isReleaseSnap(x.snap))
+        .sort((a, b) => appSortName(a.snap).localeCompare(appSortName(b.snap), "zh-CN"));
+    }
+
+    function qaAuditEntries(rows) {
+      const entries = [];
+      for (const { app, snap } of rows) {
+        for (const entry of ((state.qa_audit_logs || {})[app.id] || [])) {
+          entries.push({ ...entry, app_id: entry.app_id || app.id, app_label: displayName(snap) });
+        }
+      }
+      return entries.sort((a, b) => {
+        const at = new Date(a.ts || "").getTime() || 0;
+        const bt = new Date(b.ts || "").getTime() || 0;
+        return bt - at;
+      });
+    }
+
+    function qaChangeLogTableHtml(rows) {
+      const entries = qaAuditEntries(rows);
+      const body = entries.map((e, i) => {
+        const detail = e.detail || [];
+        const has = detail.length > 0;
+        const main = `<tr class="cl-row ${has ? "cl-clickable" : ""}" ${has ? `data-cl="${i}"` : ""}>
+          <td>${esc(toBeijing(e.ts))}</td><td>${esc(e.app_label || e.app_id || "")}</td>
+          <td>${esc(userLabel(e.user) || "")}</td><td>${esc(e.role || "")}</td>
+          <td>${esc(e.message || "")}${has ? ` <span class="cl-toggle">▸ 详情</span>` : ""}</td></tr>`;
+        const detailRow = has
+          ? `<tr class="cl-detail" hidden><td colspan="5">
+               <table class="cl-detail-table"><thead><tr><th>字段</th><th>原值</th><th>新值</th></tr></thead><tbody>${
+                 detail.map(d => `<tr><td>${esc(d.label || d.field || "")}</td><td>${esc(auditDetailValue(d, "old"))}</td><td>${esc(auditDetailValue(d, "new"))}</td></tr>`).join("")
+               }</tbody></table></td></tr>`
+          : "";
+        return main + detailRow;
+      }).join("") || `<tr><td colspan="5" class="muted">无数据</td></tr>`;
+      return `<table><thead><tr><th>时间（北京时间）</th><th>App</th><th>操作人</th><th>角色</th><th>事件</th></tr></thead><tbody>${body}</tbody></table>`;
+    }
+
+    function qaChangeLogPanelHtml(rows, open = false) {
+      const entries = qaAuditEntries(rows);
+      const loadingCount = rows.filter(({ app }) => qaAuditLoading.has(qaAuditKey(app.id))).length;
+      const errors = rows
+        .map(({ app, snap }) => ({ app, snap, error: qaAuditErrors[qaAuditKey(app.id)] || "" }))
+        .filter(x => x.error);
+      const countText = loadingCount ? `加载中 · 已有 ${entries.length} 条` : `${entries.length} 条`;
+      const errorHtml = errors.length
+        ? `<div class="banner bad" style="margin-bottom:12px">部分变更记录加载失败：${
+            errors.map(x => `${esc(displayName(x.snap))}: ${esc(x.error)}`).join("；")
+          }</div>`
+        : "";
+      return `<details class="section qa-change-log-panel" id="qaChangeLogPanel" ${open ? "open" : ""}>
+        <summary><span class="chev">▶</span> QA 变更记录（本 release）<span class="badge">${esc(countText)}</span></summary>
+        <div class="section-body">${errorHtml}<div class="table">${qaChangeLogTableHtml(rows)}</div></div>
+      </details>`;
+    }
+
+    function updateQaChangeLogPanel() {
+      const host = $("qaChangeLogPanel");
+      if (!host) return;
+      const wasOpen = !!host.open;
+      host.outerHTML = qaChangeLogPanelHtml(qaRows(), wasOpen);
+      bindChangeLogToggles($("qaChangeLogPanel"));
+    }
+
+    async function loadMissingQaChangeLogs(appIds) {
+      const releaseId = currentReleaseId();
+      if (!releaseId) return;
+      for (const appId of appIds) {
+        if (hasQaAuditLog(appId)) continue;
+        const key = qaAuditKey(appId, releaseId);
+        if (qaAuditLoading.has(key)) continue;
+        qaAuditLoading.add(key);
+        delete qaAuditErrors[key];
+        updateQaChangeLogPanel();
+        api(`/api/app-audit?app_id=${encodeURIComponent(appId)}&release_id=${encodeURIComponent(releaseId)}`)
+          .then(data => {
+            state.qa_audit_logs = state.qa_audit_logs || {};
+            state.qa_audit_logs[appId] = (data.entries || [])
+              .filter(e => e.event === "qa_set_status")
+              .map(e => ({ ...e, app_id: appId }));
+          })
+          .catch(err => { qaAuditErrors[key] = err.message || String(err); })
+          .finally(() => {
+            qaAuditLoading.delete(key);
+            if (currentReleaseId() === releaseId) updateQaChangeLogPanel();
+          });
+      }
+    }
+
     async function loadChangeLog(appId) {
       try {
         const data = await api(`/api/app-audit?app_id=${encodeURIComponent(appId)}&release_id=${encodeURIComponent(currentReleaseId())}`);
         if (selectedApp !== appId || !$("changeLog")) return;
-        const entries = data.entries || [];
-        const body = entries.map((e, i) => {
-          const detail = e.detail || [];
-          const has = detail.length > 0;
-          const main = `<tr class="cl-row ${has ? "cl-clickable" : ""}" ${has ? `data-cl="${i}"` : ""}>
-            <td>${esc(toBeijing(e.ts))}</td><td>${esc(userLabel(e.user) || "")}</td><td>${esc(e.role || "")}</td>
-            <td>${esc(e.message || "")}${has ? ` <span class="cl-toggle">▸ 详情</span>` : ""}</td></tr>`;
-          const detailRow = has
-            ? `<tr class="cl-detail" data-cl-detail="${i}" hidden><td colspan="4">
-                 <table class="cl-detail-table"><thead><tr><th>字段</th><th>原值</th><th>新值</th></tr></thead><tbody>${
-                   detail.map(d => `<tr><td>${esc(d.label || d.field || "")}</td><td>${esc(d.old || "(空)")}</td><td>${esc(d.new || "(空)")}</td></tr>`).join("")
-                 }</tbody></table></td></tr>`
-            : "";
-          return main + detailRow;
-        }).join("") || `<tr><td colspan="4" class="muted">无数据</td></tr>`;
-        $("changeLog").innerHTML = `<table><thead><tr><th>时间（北京时间）</th><th>操作人</th><th>角色</th><th>事件</th></tr></thead><tbody>${body}</tbody></table>`;
-        document.querySelectorAll("#changeLog [data-cl]").forEach(tr => tr.onclick = () => {
-          const row = document.querySelector(`#changeLog [data-cl-detail="${tr.dataset.cl}"]`);
-          if (row) row.hidden = !row.hidden;
-        });
+        const host = $("changeLog");
+        host.innerHTML = changeLogTableHtml(data.entries || []);
+        bindChangeLogToggles(host);
       } catch (err) {
         if ($("changeLog")) $("changeLog").innerHTML = `<p class="muted">Change log 加载失败：${esc(err.message)}</p>`;
       }
@@ -2188,7 +2312,7 @@
           </details>
           <details class="section" data-sec="changelog">
             <summary><span class="chev">▶</span> 变更记录（本 release）</summary>
-            <div class="section-body"><div id="changeLog" class="table"><table>${table(["时间", "操作人", "角色", "Release", "事件", "内容"], [])}</table></div></div>
+            <div class="section-body"><div id="changeLog" class="table">${changeLogTableHtml([])}</div></div>
           </details>
         </div>
         <div class="detail-foot">
@@ -2212,10 +2336,7 @@
       if (qaEditReleaseId !== currentReleaseId()) { qaEditReleaseId = currentReleaseId(); qaEditMode = false; qaAiSuggestions = {}; qaAiJob = null; }
       if (!writable) { qaEditMode = false; qaAiSuggestions = {}; qaAiJob = null; }
       const qaFieldsWritable = writable && qaEditMode;
-      const rows = state.apps
-        .map(app => ({ app, snap: releaseSnap(app.id) }))
-        .filter(x => isReleaseSnap(x.snap))
-        .sort((a, b) => appSortName(a.snap).localeCompare(appSortName(b.snap), "zh-CN"));
+      const rows = qaRows();
       const canAnalyze = writable && !!state.qa_log && !qaAiJobRunning();
       const logStatusRow = state.qa_log
         ? `<div class="row"><span class="pill ok">已上传：${esc(state.qa_log.filename)}</span><span class="muted small">${esc(qaLogUploadedAt(state.qa_log.uploaded_at))} · ${esc(userLabel(state.qa_log.uploaded_by))}</span><a href="/api/qa-log/download?release_id=${encodeURIComponent(currentReleaseId())}" target="_blank"><button class="btn ghost sm">下载</button></a></div>`
@@ -2270,7 +2391,9 @@
           </div></div>`;
       }).join("");
       const grid = rows.length ? `<div class="qa-grid">${cards}</div>` : `<div class="banner" style="margin-top:14px">本 release 暂无 release 决策为 release 的 app。</div>`;
-      panel.innerHTML = actionBar + logBlock + editBanner + grid + actionBar;
+      panel.innerHTML = actionBar + logBlock + editBanner + grid + actionBar + qaChangeLogPanelHtml(rows);
+      bindChangeLogToggles(panel);
+      loadMissingQaChangeLogs(rows.map(({ app }) => app.id));
       bindQa();
     }
 
@@ -4198,7 +4321,7 @@
 
     async function logout() {
       await post("/api/logout", {});
-      state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, release_schedule: [], user_display_names: {}, user: null };
+      state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, qa_audit_logs: {}, release_schedule: [], user_display_names: {}, user: null };
       selectedApp = "";
       $("release").innerHTML = "";
       showLoggedOut();

@@ -1143,6 +1143,7 @@ class Handler(BaseHTTPRequestHandler):
                 for row in conn.execute("SELECT username, display_name FROM users WHERE display_name <> ''")
             },
             "qa_log": None,
+            "qa_audit_logs": {},
             "release_schedule": core.list_release_schedule(conn),
         }
         if release_id:
@@ -1151,6 +1152,8 @@ class Handler(BaseHTTPRequestHandler):
             payload["release"] = _serialize_release(release)
             payload["artifacts"] = [dict(row) for row in conn.execute("SELECT kind, name, final, generated_at FROM artifacts WHERE release_id = ?", (release_id,))]
             payload["qa_log"] = core.get_qa_log(conn, release_id)
+            if user["role"] in {"QA", "RM"}:
+                payload["qa_audit_logs"] = core.release_qa_audit_logs(conn, release_id)
         return payload
 
     def send_json(self, payload: dict, status: int = 200, cookies: list[str] | None = None) -> None:

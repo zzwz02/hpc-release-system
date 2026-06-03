@@ -727,6 +727,35 @@ def app_audit_log(conn: sqlite3.Connection, app_id: str, release_id: str = "") -
     return entries
 
 
+def release_qa_audit_logs(conn: sqlite3.Connection, release_id: str) -> dict[str, list[dict[str, Any]]]:
+    """QA status-change audit entries grouped by app for one release."""
+    release = get_release(conn, release_id)
+    logs: dict[str, list[dict[str, Any]]] = {
+        app_id: []
+        for app_id, snapshot in release["snapshots"].items()
+        if snapshot.get("release_decision") == "release"
+    }
+    if not logs:
+        return logs
+    placeholders = ",".join("?" for _ in logs)
+    params: list[Any] = [release_id, "qa_set_status", *logs.keys()]
+    rows = conn.execute(
+        f"""
+        SELECT ts, user, role, app_id, release_id, event, message, detail
+        FROM audit
+        WHERE release_id = ? AND event = ? AND app_id IN ({placeholders})
+        ORDER BY id DESC
+        """,
+        params,
+    )
+    for row in rows:
+        entry = dict(row)
+        app_id = entry.get("app_id", "")
+        entry["detail"] = loads_json(entry.get("detail"), []) if entry.get("detail") else []
+        logs.setdefault(app_id, []).append(entry)
+    return logs
+
+
 def fmt_audit_value(v: Any) -> str:
     """Render an audit old/new value as a display string."""
     if v is None:
