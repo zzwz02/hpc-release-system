@@ -79,8 +79,20 @@ def _load_ldap_config() -> dict:
     return cfg
 
 
-def ldap_authenticate(username: str, password: str) -> tuple[str, str]:
-    """Verify *username*/*password* against LDAP.  Returns (username, display_name).
+def _ldap_entry_values(entry, attr: str) -> list[str]:
+    try:
+        value = entry[attr].value
+    except Exception:
+        return []
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if item]
+    return [str(value)]
+
+
+def ldap_authenticate(username: str, password: str) -> tuple[str, str, list[str]]:
+    """Verify *username*/*password* against LDAP.  Returns (username, display_name, groups).
 
     Raises PermissionError for wrong credentials, RuntimeError for config /
     connectivity problems.  The two-step flow:
@@ -124,7 +136,7 @@ def ldap_authenticate(username: str, password: str) -> tuple[str, str]:
         cfg["base"],
         search_filter,
         search_scope=LDAP_SUBTREE,
-        attributes=[cfg["uid_attr"], cfg["name_attr"]],
+        attributes=[cfg["uid_attr"], cfg["name_attr"], "memberOf"],
     )
     entries = svc.entries
     svc.unbind()
@@ -138,6 +150,7 @@ def ldap_authenticate(username: str, password: str) -> tuple[str, str]:
         display_name = str(entry[cfg["name_attr"]].value or username)
     except Exception:
         display_name = username
+    groups = _ldap_entry_values(entry, "memberOf")
 
     # Step 2: user-password bind to verify credentials
     try:
@@ -153,7 +166,7 @@ def ldap_authenticate(username: str, password: str) -> tuple[str, str]:
     except LDAPException:
         raise PermissionError("域账号密码不正确")
 
-    return username, display_name
+    return username, display_name, groups
 
 
 def _qa_analysis_now() -> float:
@@ -474,8 +487,10 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"deliveries": deliveries})
                     return
                 if parsed.path.startswith("/api/artifacts/"):
-                    self.require_rm()
+                    user = self.current_user()
                     kind = parsed.path.rsplit("/", 1)[-1]
+                    if user["role"] != "RM" and kind not in {"release_note", "manual", "ai4sci", "data"}:
+                        raise AuthzError("只有 RM 可查看该 artifact")
                     release_id = self.query().get("release_id", [""])[0]
                     row = self.conn().execute("SELECT name, content FROM artifacts WHERE release_id = ? AND kind = ?", (release_id, kind)).fetchone()
                     if not row:
@@ -517,8 +532,8 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if parsed.path == "/api/login/ldap":
                     body = self.json_body()
-                    uname, display = ldap_authenticate(body.get("username", ""), body.get("password", ""))
-                    token = core.ldap_login_or_create(self.conn(), uname, display)
+                    uname, display, groups = ldap_authenticate(body.get("username", ""), body.get("password", ""))
+                    token = core.ldap_login_or_create(self.conn(), uname, display, groups)
                     self.send_json({"ok": True}, cookies=[f"hpc_session={token}; HttpOnly; SameSite=Strict; Path=/"])
                     return
                 if parsed.path == "/api/logout":
@@ -691,7 +706,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"ok": True})
                     return
                 if parsed.path == "/api/artifacts/generate":
-                    self.require_rm()
+                    user = self.current_user()
+                    if user["role"] not in {"RM", "Owner"}:
+                        raise AuthzError("只有 RM、Owner 可生成 Markdown 预览")
                     body = self.json_body()
                     if body.get("final"):
                         raise RuntimeError("Final artifacts 只能通过最终 lock 生成")
@@ -1262,7 +1279,7 @@ class Handler(BaseHTTPRequestHandler):
             payload["release"] = _serialize_release(release)
             payload["artifacts"] = [dict(row) for row in conn.execute("SELECT kind, name, final, generated_at FROM artifacts WHERE release_id = ?", (release_id,))]
             payload["qa_log"] = core.get_qa_log(conn, release_id)
-            if user["role"] in {"QA", "RM"}:
+            if user["role"] in {"QA", "RM", "Owner", "Guest"}:
                 payload["qa_audit_logs"] = core.release_qa_audit_logs(conn, release_id)
         return payload
 

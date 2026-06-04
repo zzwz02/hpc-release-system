@@ -2,6 +2,7 @@
 
 import csv
 import datetime as dt
+import fnmatch
 import hashlib
 import io
 import json
@@ -486,7 +487,10 @@ DEFAULT_USERS: tuple[tuple[str, str, str], ...] = (
     ("spd_test", "spd_test", "SPD"),
 )
 
-ROLES = {"RM", "Owner", "QA", "Admin", "SPD"}
+ROLES = {"RM", "Owner", "QA", "Admin", "SPD", "Guest"}
+LDAP_OWNER_GROUP_PATTERNS = ("dl.pde_sc*", "dl.pde_sa*")
+LDAP_QA_GROUP_PATTERNS = ("dl.sw_qa*",)
+LDAP_SPD_GROUP_PATTERNS = ("dl.sw_spd*",)
 RELEASE_DECISIONS = {"release", "cicd_only", "stopped"}
 NON_RELEASE_DECISIONS = {"cicd_only", "stopped"}
 DOC_TARGETS = {"manual", "ai4sci"}
@@ -582,6 +586,35 @@ def create_user(conn: sqlite3.Connection, username: str, password: str, role: st
         )
 
 
+def ldap_group_name(group: str) -> str:
+    """Return the CN from a group DN, or the raw group value if it is not a DN."""
+    value = str(group or "").strip()
+    for part in value.split(","):
+        key, sep, item = part.strip().partition("=")
+        if sep and key.strip().lower() == "cn":
+            return item.strip()
+    return value
+
+
+def ldap_group_matches(group: str, pattern: str) -> bool:
+    name = ldap_group_name(group).lower()
+    raw = str(group or "").strip().lower()
+    pat = pattern.lower()
+    return fnmatch.fnmatchcase(name, pat) or fnmatch.fnmatchcase(raw, pat)
+
+
+def ldap_role_from_groups(groups: list[str] | tuple[str, ...] | None) -> str:
+    """Map LDAP/AD memberOf groups to the initial local role for first login."""
+    values = [str(group or "").strip() for group in (groups or []) if str(group or "").strip()]
+    if any(ldap_group_matches(group, pat) for group in values for pat in LDAP_OWNER_GROUP_PATTERNS):
+        return "Owner"
+    if any(ldap_group_matches(group, pat) for group in values for pat in LDAP_QA_GROUP_PATTERNS):
+        return "QA"
+    if any(ldap_group_matches(group, pat) for group in values for pat in LDAP_SPD_GROUP_PATTERNS):
+        return "SPD"
+    return "Guest"
+
+
 def clear_business_data(conn: sqlite3.Connection, *, user: str = "admin", role: str = "Admin") -> None:
     """Clear release data while preserving user accounts."""
     with transaction(conn):
@@ -625,28 +658,36 @@ def logout_session(conn: sqlite3.Connection, token: str | None) -> None:
             conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
 
 
-def ldap_login_or_create(conn: sqlite3.Connection, username: str, display_name: str = "") -> str:
+def ldap_login_or_create(
+    conn: sqlite3.Connection,
+    username: str,
+    display_name: str = "",
+    groups: list[str] | tuple[str, ...] | None = None,
+) -> str:
     """Ensure an LDAP-authenticated user exists in the local users table, then return a session token.
 
-    First-time LDAP logins are auto-provisioned with role='Owner'.  Subsequent logins
-    update display_name if it changed; the stored role is always preserved.
+    First-time LDAP logins are auto-provisioned from LDAP groups.  Subsequent
+    logins update display_name if it changed; the stored role is always
+    preserved so Admin manual changes are not overwritten by LDAP.
     """
     with transaction(conn):
         row = conn.execute(
             "SELECT username, role, display_name FROM users WHERE username = ?", (username,)
         ).fetchone()
         if not row:
+            initial_role = ldap_role_from_groups(groups)
             conn.execute(
                 "INSERT INTO users(username, password_hash, role, auth_source, display_name) "
-                "VALUES (?, '', 'Owner', 'ldap', ?)",
-                (username, display_name),
+                "VALUES (?, '', ?, 'ldap', ?)",
+                (username, initial_role, display_name),
             )
             audit(
                 conn,
-                f"域账号首次登录，自动创建 Owner 用户：{username}",
+                f"域账号首次登录，自动创建 {initial_role} 用户：{username}",
                 user=username,
-                role="Owner",
+                role=initial_role,
                 event="ldap_first_login",
+                detail={"groups": list(groups or [])},
             )
         elif display_name and dict(row).get("display_name", "") != display_name:
             conn.execute(

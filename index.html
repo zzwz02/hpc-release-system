@@ -544,11 +544,11 @@
   </header>
 
   <nav class="tabs">
-    <button class="tab active" data-view="dashboard" data-roles="RM,Owner,QA">总览</button>
+    <button class="tab active" data-view="dashboard" data-roles="RM,Owner,QA,Guest">总览</button>
     <button class="tab" data-view="init" data-roles="RM">周期管理</button>
-    <button class="tab" data-view="apps" data-roles="RM,Owner,QA">App 工作台</button>
-    <button class="tab" data-view="qa" data-roles="QA,RM">QA</button>
-    <button class="tab" data-view="artifacts" data-roles="RM">Markdown 生成</button>
+    <button class="tab" data-view="apps" data-roles="RM,Owner,QA,Guest">App 工作台</button>
+    <button class="tab" data-view="qa" data-roles="RM,Owner,QA,Guest">QA</button>
+    <button class="tab" data-view="artifacts" data-roles="RM,Owner,Guest">Markdown 生成</button>
     <button class="tab" data-view="cicd" data-roles="RM,Owner,QA,Admin,SPD" id="cicdTab">CICD 工作台<span id="cicdBadge" class="cicd-badge" hidden></span></button>
     <button class="tab" data-view="wiki" data-roles="RM,Owner,Admin">开发 WIKI</button>
     <button class="tab" data-view="admin" data-roles="Admin">系统管理</button>
@@ -658,7 +658,7 @@
       </div>
     </section>
 
-    <section id="apps" class="view" data-roles="RM,Owner,QA">
+    <section id="apps" class="view" data-roles="RM,Owner,QA,Guest">
       <div class="page-toolbar">
         <h2>App 工作台</h2>
         <span class="spacer"></span>
@@ -688,7 +688,7 @@
       </div>
     </section>
 
-    <section id="qa" class="view" data-roles="QA,RM">
+    <section id="qa" class="view" data-roles="QA,RM,Owner,Guest">
       <div class="page-toolbar">
         <h2>QA</h2>
         <span class="spacer"></span>
@@ -705,7 +705,7 @@
       <div id="qaTestCmdPane" class="qa-pane"><div id="qaTestCmd"></div></div>
     </section>
 
-    <section id="artifacts" class="view" data-roles="RM">
+    <section id="artifacts" class="view" data-roles="RM,Owner,Guest">
       <div class="page-toolbar">
         <h2>Markdown 生成</h2>
         <span class="spacer"></span>
@@ -717,18 +717,18 @@
         <div class="panel-body">
           <div class="subtabs">
             <button class="subtab active" data-artifact-pane="rstArtifactPane">Markdown 预览</button>
-            <button class="subtab" data-artifact-pane="managerReviewPane">Manager Review CSV</button>
+            <button class="subtab" data-artifact-pane="managerReviewPane" data-roles="RM">Manager Review CSV</button>
           </div>
           <div id="rstArtifactPane" class="artifact-pane active">
             <div class="row">
-              <button class="btn primary" id="preview">生成预览</button>
+              <button class="btn primary" id="preview" data-roles="RM,Owner">生成预览</button>
               <button class="btn download" data-kind="release_note">查看 release note</button>
               <button class="btn download" data-kind="manual">查看 HPC Manual</button>
               <button class="btn download" data-kind="ai4sci">查看 AI4Sci</button>
               <button class="btn download" data-kind="data">查看 release-data</button>
             </div>
           </div>
-          <div id="managerReviewPane" class="artifact-pane">
+          <div id="managerReviewPane" class="artifact-pane" data-roles="RM">
             <p class="hint" style="margin-top:0">Manager Review CSV 包含当前 release 的所有 app。请选择需要输出的字段。</p>
             <div class="form" style="grid-template-columns:repeat(4,1fr);margin-top:12px">
               <label class="check"><input type="checkbox" data-manager-field="app_name" checked>App</label>
@@ -1537,6 +1537,10 @@
     function isRM() { return currentUser().role === "RM"; }
     function isOwner() { return currentUser().role === "Owner"; }
     function isQA() { return currentUser().role === "QA"; }
+    function isGuest() { return currentUser().role === "Guest"; }
+    function canViewQa() { return ["QA", "RM", "Owner", "Guest"].includes(currentUser().role); }
+    function canEditQa() { return ["QA", "RM"].includes(currentUser().role); }
+    function canGenerateMarkdown() { return ["RM", "Owner"].includes(currentUser().role); }
     function canEditWiki() { return ["RM", "Admin"].includes(currentUser().role); }
     function canEdit(snap) { return currentUser().role === "RM" || (currentUser().role === "Owner" && (snap?.owners || []).includes(currentUser().username)); }
     function displayName(snap) {
@@ -1637,7 +1641,7 @@
       renderQa();
       renderQaReports();
       renderAdmin();
-      if ($("preview")) $("preview").disabled = releaseLocked();
+      if ($("preview")) $("preview").disabled = releaseLocked() || !canGenerateMarkdown();
       renderNewAppControls();
       updateCicdBadge();
       updateRefreshMeta();
@@ -1655,6 +1659,15 @@
         if (next) {
           next.classList.add("active");
           $(next.dataset.view).classList.add("active");
+        }
+      }
+      const activeArtifact = document.querySelector("[data-artifact-pane].active");
+      if (activeArtifact && activeArtifact.hidden) {
+        const nextArtifact = document.querySelector("[data-artifact-pane]:not([hidden])");
+        document.querySelectorAll("[data-artifact-pane],.artifact-pane").forEach(x => x.classList.remove("active"));
+        if (nextArtifact) {
+          nextArtifact.classList.add("active");
+          $(nextArtifact.dataset.artifactPane).classList.add("active");
         }
       }
     }
@@ -2450,9 +2463,9 @@
 
     function renderQa() {
       const panel = $("qaPanel");
-      if (!panel || (!isQA() && !isRM())) return;
+      if (!panel || !canViewQa()) return;
       if (!state.release) { panel.innerHTML = `<div class="panel"><div class="panel-body"><p class="muted">请选择 release。</p></div></div>`; return; }
-      const writable = !releaseLocked();
+      const writable = canEditQa() && !releaseLocked();
       if (qaEditReleaseId !== currentReleaseId()) { qaEditReleaseId = currentReleaseId(); qaEditMode = false; qaAiSuggestions = {}; qaAiJob = null; }
       if (!writable) { qaEditMode = false; qaAiSuggestions = {}; qaAiJob = null; }
       const qaFieldsWritable = writable && qaEditMode;
@@ -2469,11 +2482,13 @@
           ${logEditRow}
           ${qaAiProgressHtml()}
         </div></div>`;
-      const actionBar = `<div class="qa-actions" data-qa-actions>${
-        qaEditMode
-          ? `<button class="btn primary qaSaveAll" ${writable ? "" : "disabled"}>保存 QA 状态</button><button class="btn ghost qaCancel">取消编辑</button>`
-          : `<button class="btn primary qaEdit" ${writable ? "" : "disabled"}>✎ 修改（上传 log / 填写 QA 状态）</button>`
-      }</div>`;
+      const actionBar = canEditQa()
+        ? `<div class="qa-actions" data-qa-actions>${
+            qaEditMode
+              ? `<button class="btn primary qaSaveAll" ${writable ? "" : "disabled"}>保存 QA 状态</button><button class="btn ghost qaCancel">取消编辑</button>`
+              : `<button class="btn primary qaEdit" ${writable ? "" : "disabled"}>✎ 修改（上传 log / 填写 QA 状态）</button>`
+          }</div>`
+        : "";
       const editBanner = qaEditMode ? `<div class="banner warnp" style="margin-top:14px">编辑中 · 刷新前请先保存或取消。上传 log、AI 分析、改 QA 状态都在保存后才会生效。</div>` : "";
       const cards = rows.map(({ app, snap }) => {
         const suggestion = qaAiSuggestions[app.id];
@@ -2797,7 +2812,7 @@
         <div class="panel-body">${body}</div></div>`;
     }
     function renderQaReports() {
-      if ((!isQA() && !isRM()) || !$("qaReleaseReport") || !$("qaTestCmd")) return;
+      if (!canViewQa() || !$("qaReleaseReport") || !$("qaTestCmd")) return;
       const rid = currentReleaseId();
       if (qaReportsReleaseId !== rid) {
         qaReports = null; qaReportsReleaseId = rid;
@@ -4732,7 +4747,7 @@
       if (!table) return;
       const sourceLabel = { local: "内建账号", ldap: "域账号" };
       const rolePill = r => {
-        const cls = r === "RM" ? "accent" : r === "Admin" ? "bad" : r === "QA" ? "warn" : "";
+        const cls = r === "RM" ? "accent" : r === "Admin" ? "bad" : r === "QA" ? "warn" : r === "Guest" ? "" : "";
         return `<span class="pill ${cls}">${esc(r)}</span>`;
       };
       const rows = memberList.map(u => `
@@ -4742,7 +4757,7 @@
           <td>${rolePill(u.role)}</td>
           <td>
             <select class="select sm" data-member-role="${esc(u.username)}" style="width:88px">
-              ${["RM","Owner","QA","Admin","SPD"].map(r => `<option value="${r}"${u.role===r?" selected":""}>${r}</option>`).join("")}
+              ${["RM","Owner","QA","Guest","Admin","SPD"].map(r => `<option value="${r}"${u.role===r?" selected":""}>${r}</option>`).join("")}
             </select>
           </td>
           <td><button class="btn sm primary" data-save-role="${esc(u.username)}">保存</button></td>

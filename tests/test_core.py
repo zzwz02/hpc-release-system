@@ -1051,11 +1051,31 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         self.assertIsNone(core.session_user(self.conn, token))
 
     def test_ldap_session_user_includes_display_name(self) -> None:
-        token = core.ldap_login_or_create(self.conn, "m123456", "David Brown")
+        token = core.ldap_login_or_create(self.conn, "m123456", "David Brown", ["CN=dl.pde_sa,OU=Groups,DC=example"])
         user = core.session_user(self.conn, token)
         self.assertEqual(user["username"], "m123456")
         self.assertEqual(user["role"], "Owner")
         self.assertEqual(user["display_name"], "David Brown")
+
+    def test_ldap_first_login_role_from_groups(self) -> None:
+        owner_token = core.ldap_login_or_create(self.conn, "owner_ldap", "Owner User", ["dl.pde_sc_alpha"])
+        qa_token = core.ldap_login_or_create(self.conn, "qa_ldap", "QA User", ["CN=dl.sw_qa_hpc,OU=Groups,DC=example"])
+        spd_token = core.ldap_login_or_create(self.conn, "spd_ldap", "SPD User", ["CN=dl.sw_spd_ops,OU=Groups,DC=example"])
+        guest_token = core.ldap_login_or_create(self.conn, "guest_ldap", "Guest User", ["CN=other_group,OU=Groups,DC=example"])
+
+        self.assertEqual(core.session_user(self.conn, owner_token)["role"], "Owner")
+        self.assertEqual(core.session_user(self.conn, qa_token)["role"], "QA")
+        self.assertEqual(core.session_user(self.conn, spd_token)["role"], "SPD")
+        self.assertEqual(core.session_user(self.conn, guest_token)["role"], "Guest")
+
+    def test_ldap_existing_user_role_is_preserved(self) -> None:
+        first = core.ldap_login_or_create(self.conn, "stable_ldap", "Stable User", ["dl.sw_qa_hpc"])
+        self.assertEqual(core.session_user(self.conn, first)["role"], "QA")
+
+        second = core.ldap_login_or_create(self.conn, "stable_ldap", "Stable Renamed", ["dl.pde_sa"])
+        user = core.session_user(self.conn, second)
+        self.assertEqual(user["role"], "QA")
+        self.assertEqual(user["display_name"], "Stable Renamed")
 
     def test_admin_bootstrap_and_clear_business_data(self) -> None:
         os.environ["HPC_ADMIN_PASSWORD"] = "admin-test-password"
