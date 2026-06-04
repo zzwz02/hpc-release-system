@@ -708,7 +708,7 @@ class Handler(BaseHTTPRequestHandler):
                 if parsed.path == "/api/artifacts/generate":
                     user = self.current_user()
                     if user["role"] not in {"RM", "Owner"}:
-                        raise AuthzError("只有 RM、Owner 可生成 Markdown 预览")
+                        raise AuthzError("只有 RM、Owner 可刷新发布文档")
                     body = self.json_body()
                     if body.get("final"):
                         raise RuntimeError("Final artifacts 只能通过最终 lock 生成")

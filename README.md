@@ -45,6 +45,7 @@ python3.14 server.py --host 0.0.0.0 --port 9000
 | `rm` | `rm` | RM |
 | `owner_test` | `owner_test` | Owner |
 | `qa` | `qa` | QA |
+| `guest` | `guest` | Guest |
 | `admin` | 见 `admin_password.local` | Admin |
 
 ## 角色
@@ -92,7 +93,7 @@ python3.14 server.py --host 0.0.0.0 --port 9000
 3. Owner 在「App 工作台」确认 release 决策，维护本 release 的基本信息、文档、`app_info.json`、test_cmd 说明（可「从其他版本复制信息」），提交 Owner 确认。
 4. RM 导出测试范围 CSV 交给 QA。
 5. QA 在「QA」页上传 log，标注 `qa_passed` / `has_issues` / `cannot_release`。
-6. RM 生成预览 RST 和 Manager Review CSV，供部门 manager 审核。
+6. RM 刷新文档 RST 和 Manager Review CSV，供部门 manager 审核。
 7. manager review/merge 后，RM 执行最终 Lock Release。
 
 面向 owner 和 manager 的简明流程见 [release_process_owner_manager.md](./release_process_owner_manager.md)，设计文档见 [release_system_plan.md](./release_system_plan.md)。

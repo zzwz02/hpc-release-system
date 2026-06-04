@@ -485,6 +485,7 @@ DEFAULT_USERS: tuple[tuple[str, str, str], ...] = (
     ("owner_test", "owner_test", "Owner"),
     ("qa", "qa", "QA"),
     ("spd_test", "spd_test", "SPD"),
+    ("guest", "guest", "Guest"),
 )
 
 ROLES = {"RM", "Owner", "QA", "Admin", "SPD", "Guest"}
@@ -1345,27 +1346,6 @@ def previous_release(conn: sqlite3.Connection, release_id: str) -> dict[str, Any
     for i, release in enumerate(releases):
         if release["id"] == release_id and i > 0:
             return get_release(conn, releases[i - 1]["id"])
-    return None
-
-
-def last_published_snapshot(conn: sqlite3.Connection, app_id: str, before_release_id: str) -> dict[str, Any] | None:
-    """Find the most recent locked snapshot for *app_id* before *before_release_id*."""
-    releases = list_releases(conn)
-    target_idx = next((i for i, r in enumerate(releases) if r["id"] == before_release_id), None)
-    if target_idx is None:
-        return None
-    for i in range(target_idx - 1, -1, -1):
-        r = releases[i]
-        if not r.get("released_locked"):
-            continue
-        row = conn.execute(
-            "SELECT data_json FROM snapshots WHERE release_id = ? AND app_id = ?",
-            (r["id"], app_id),
-        ).fetchone()
-        if row:
-            snap = loads_json(row["data_json"], {})
-            if snap.get("locked_in_release"):
-                return snap
     return None
 
 
@@ -2986,7 +2966,7 @@ def save_snapshot_raw(conn: sqlite3.Connection, release_id: str, app_id: str, sn
 
 
 def _qualifies_for_final(snapshot: dict[str, Any]) -> bool:
-    """True if this snapshot should be included in the final release_note/manuals."""
+    """True if this snapshot should be included in the final release note."""
     if snapshot.get("release_decision") != "release":
         return False
     if not snapshot.get("owner_confirmed"):
@@ -2996,6 +2976,17 @@ def _qualifies_for_final(snapshot: dict[str, Any]) -> bool:
     if snapshot.get("qa_status") in {"qa_passed", "has_issues"}:
         return True
     return False
+
+
+def _qualifies_for_docs(snapshot: dict[str, Any]) -> bool:
+    """True if this snapshot should be included in HPC/AI4Sci docs."""
+    if snapshot.get("release_decision") != "release":
+        return False
+    if not snapshot.get("owner_confirmed"):
+        return False
+    if _docs_gate_items(snapshot):
+        return False
+    return True
 
 
 def _docs_gate_items(snapshot: dict[str, Any]) -> list[dict[str, str]]:
@@ -3057,7 +3048,7 @@ def guide_rows(
     release: dict[str, Any],
     doc_target: str,
 ) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], list[tuple[dict[str, Any], dict[str, Any]]]]:
-    """Return ``(active_rows, stopped_rows)`` for a manual/ai4sci guide."""
+    """Return current release-decision app rows for a manual/ai4sci guide."""
     apps = {app["id"]: app for app in list_apps(conn)}
     active: list[tuple[dict[str, Any], dict[str, Any]]] = []
     stopped: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -3069,28 +3060,10 @@ def guide_rows(
         if normalize_doc_target(snapshot.get("doc_target")) != doc_target:
             continue
 
-        decision = snapshot.get("release_decision", "release")
-        qualifies = _qualifies_for_final(snapshot)
-
-        if decision == "stopped":
-            prev = last_published_snapshot(conn, app_id, release["id"])
-            if prev:
-                stopped.append((app_view(app, prev), prev))
-            continue
-
-        if decision != "release":
-            continue
-
-        prev = last_published_snapshot(conn, app_id, release["id"])
-
-        if qualifies:
+        if _qualifies_for_docs(snapshot):
             active.append((app_view(app, snapshot), snapshot))
-        elif prev:
-            active.append((app_view(app, prev), prev))
-        # else: new app that didn't qualify — omit
 
     active.sort(key=lambda item: item[0]["name"].lower())
-    stopped.sort(key=lambda item: item[0]["name"].lower())
     return active, stopped
 
 
@@ -3253,14 +3226,8 @@ def generate_artifacts(conn: sqlite3.Connection, release_id: str, *, final: bool
             refresh_missing_items(conn, release_id)
             release = get_release(conn, release_id)
         rows = release_rows(conn, release, final=final)
-        if final:
-            manual_active, manual_stopped = guide_rows(conn, release, "manual")
-            ai4sci_active, ai4sci_stopped = guide_rows(conn, release, "ai4sci")
-        else:
-            manual_active = [(a, s) for a, s in rows if normalize_doc_target(a.get("doc_target")) == "manual"]
-            manual_stopped = []
-            ai4sci_active = [(a, s) for a, s in rows if normalize_doc_target(a.get("doc_target")) == "ai4sci"]
-            ai4sci_stopped = []
+        manual_active, manual_stopped = guide_rows(conn, release, "manual")
+        ai4sci_active, ai4sci_stopped = guide_rows(conn, release, "ai4sci")
         artifacts = {
             "release_note": render_release_note(release, rows),
             "manual": render_guide("HPC Manual App 章节", manual_active, manual_stopped),
@@ -3288,7 +3255,7 @@ def generate_artifacts(conn: sqlite3.Connection, release_id: str, *, final: bool
             )
         audit(
             conn,
-            "生成最终 artifacts" if final else "生成预览 artifacts",
+            "生成最终 artifacts" if final else "刷新文档 artifacts",
             release_id=release_id,
             event="generate_artifacts",
         )

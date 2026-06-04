@@ -548,7 +548,7 @@
     <button class="tab" data-view="init" data-roles="RM">周期管理</button>
     <button class="tab" data-view="apps" data-roles="RM,Owner,QA,Guest">App 工作台</button>
     <button class="tab" data-view="qa" data-roles="RM,Owner,QA,Guest">QA</button>
-    <button class="tab" data-view="artifacts" data-roles="RM,Owner,Guest">Markdown 生成</button>
+    <button class="tab" data-view="artifacts" data-roles="RM,Owner,Guest">发布文档</button>
     <button class="tab" data-view="cicd" data-roles="RM,Owner,QA,Admin,SPD" id="cicdTab">CICD 工作台<span id="cicdBadge" class="cicd-badge" hidden></span></button>
     <button class="tab" data-view="wiki" data-roles="RM,Owner,Admin">开发 WIKI</button>
     <button class="tab" data-view="admin" data-roles="Admin">系统管理</button>
@@ -707,24 +707,24 @@
 
     <section id="artifacts" class="view" data-roles="RM,Owner,Guest">
       <div class="page-toolbar">
-        <h2>Markdown 生成</h2>
+        <h2>发布文档</h2>
         <span class="spacer"></span>
         <span class="page-refresh-meta" data-page-refreshed-at="artifacts"></span>
         <button class="btn sm" data-page-refresh="artifacts" title="刷新当前页">&#x21bb; 刷新</button>
       </div>
       <div class="panel">
-        <div class="panel-head"><h2>Markdown / release-data</h2></div>
+        <div class="panel-head"><h2>发布文档 / release-data</h2></div>
         <div class="panel-body">
           <div class="subtabs">
-            <button class="subtab active" data-artifact-pane="rstArtifactPane">Markdown 预览</button>
+            <button class="subtab active" data-artifact-pane="rstArtifactPane">文档刷新</button>
             <button class="subtab" data-artifact-pane="managerReviewPane" data-roles="RM">Manager Review CSV</button>
           </div>
           <div id="rstArtifactPane" class="artifact-pane active">
             <div class="row">
-              <button class="btn primary" id="preview" data-roles="RM,Owner">生成预览</button>
+              <button class="btn primary" id="preview" data-roles="RM,Owner">刷新文档</button>
               <button class="btn download" data-kind="release_note">查看 release note</button>
               <button class="btn download" data-kind="manual">查看 HPC Manual</button>
-              <button class="btn download" data-kind="ai4sci">查看 AI4Sci</button>
+              <button class="btn download" data-kind="ai4sci">查看 AI4Sci Manual</button>
               <button class="btn download" data-kind="data">查看 release-data</button>
             </div>
           </div>
@@ -4623,7 +4623,7 @@
         try { await post("/api/releases/final-unlock", { release_id: currentReleaseId() }); await loadState(); }
         catch (e) { alert("解锁失败：" + e.message); }
       };
-      $("preview").onclick = async () => { try { await post("/api/artifacts/generate", { release_id: currentReleaseId(), final: false }); await loadState(); } catch (e) { alert("生成预览失败：" + e.message); } };
+      $("preview").onclick = async () => { try { await post("/api/artifacts/generate", { release_id: currentReleaseId(), final: false }); await loadState(); } catch (e) { alert("刷新文档失败：" + e.message); } };
       $("generateManagerReview").onclick = async () => {
         const fields = [...document.querySelectorAll("[data-manager-field]:checked")].map(el => el.dataset.managerField);
         if (!fields.length) return alert("请至少选择一个输出字段");

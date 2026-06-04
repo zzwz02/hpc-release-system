@@ -246,7 +246,7 @@ Owner 可以新增 `app_info.json` 中没有的测试项：
 9. RM 导出 release 决策为 `release` 的 app 测试范围 CSV，手动下载/拉取 app_info 形成 QA 测试范围。
 10. QA 只测试 release 决策为 `release` 的 app，并在 QA 页面上传测试 log、标注 QA 状态。
 11. RM 可随时在总览和 App 工作台查看实时发布待办/门禁。
-12. 测试尾声 RM 在 RST 页面生成预览；预览只包含当前可发布 app。
+12. 测试尾声 RM 在 RST 页面刷新文档；release note 只包含当前可发布 app，HPC Manual / AI4Sci User Guide 只包含 release 决策为 `release` 且文档完整、Owner 已确认的 app。
 13. RM 在 RST 页面生成 Manager Review CSV。CSV 覆盖当前 release 的所有 app，字段由复选框选择。
 14. 部门 manager review 后，RM 锁定 release。
 15. 系统冻结所有 release 快照。
@@ -355,13 +355,13 @@ QA 开始后禁止的新增：
 
 ## 10. Gerrit 和 Artifact 流程
 
-预览生成：
+文档刷新：
 
-- 发布锁定前，一键生成只创建系统内部预览。
-- 预览包括 release note、HPC Manual、AI4Sci User Guide RST。
-- RST 预览只包含当前可发布 app；未就绪 app 不进入 RST 预览，只保留在发布待办/门禁中。
-- 可发布条件：release 决策为 `release`、Owner 已确认、文档/测试说明/app_info/diff 等非 QA 门禁清空、QA 状态为 `qa_passed` 或 `has_issues`。
-- Release 未锁定时，预览可重复生成。
+- 发布锁定前，一键刷新只创建系统内部文档 artifact。
+- 文档 artifact 包括 release note、HPC Manual、AI4Sci User Guide RST。
+- Release note 只包含当前可发布 app；可发布条件：release 决策为 `release`、Owner 已确认、文档/测试说明/app_info/diff 等非 QA 门禁清空、QA 状态为 `qa_passed` 或 `has_issues`。
+- HPC Manual / AI4Sci User Guide 只包含 release 决策为 `release` 且文档完整、Owner 已确认的 app，不受 QA 状态影响。
+- Release 未锁定时，文档可重复刷新。
 
 Manager Review CSV：
 
@@ -439,8 +439,8 @@ Change request 状态：
 
 Artifact 状态：
 
-- `已生成预览`
-- `预览已更新`
+- `已刷新文档`
+- `文档已更新`
 - `已生成最终版本`
 - `Docs Gerrit 已推送`
 - `Data Gerrit 已推送`
@@ -491,8 +491,9 @@ QA 校验：
 
 Artifact 校验：
 
-- 发布锁定前可以生成预览。
-- RST 预览和最终 RST 都只包含可发布 app。
+- 发布锁定前可以刷新文档。
+- Release note 预览和最终 release note 都只包含可发布 app。
+- HPC Manual / AI4Sci User Guide 预览和最终文档都只包含 release 决策为 `release` 且文档完整、Owner 已确认的 app，不受 QA 状态影响。
 - Manager Review CSV 必须包含当前 release 的所有 app，并按 RM 选择的字段输出。
 - 最终 RST 只从冻结快照生成。
 - 最终 RST 推送到官方 docs Gerrit。

@@ -303,8 +303,11 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         self.assertEqual([a["id"] for a in core.list_apps(self.conn)], ["hpl"])
         self.assertIn("hpl", core.get_release(self.conn, release_id)["snapshots"])
 
-    def test_default_users_include_qa(self) -> None:
+    def test_default_users_include_qa_and_guest(self) -> None:
         self.assertIsNotNone(core.authenticate(self.conn, "qa", "qa"))
+        guest_token = core.authenticate(self.conn, "guest", "guest")
+        self.assertIsNotNone(guest_token)
+        self.assertEqual(core.session_user(self.conn, guest_token)["role"], "Guest")
 
     # --- app_info upload ---
 
@@ -716,7 +719,27 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         self.assertEqual(len(core.release_rows(self.conn, release, final=False)), 1)
         self.assertEqual(len(core.release_rows(self.conn, release, final=True)), 1)
 
-    def test_guide_rows_stopped_section(self) -> None:
+    def test_manual_includes_doc_ready_app_without_qa(self) -> None:
+        release_id, app_id = self.import_initial()
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        core.update_snapshot(self.conn, release_id, app_id, _fill_ready)
+        artifacts = core.generate_artifacts(self.conn, release_id)
+        self.assertIn("Amber", artifacts["manual"])
+        self.assertNotIn("Amber", artifacts["release_note"])
+
+    def test_ai4sci_manual_includes_doc_ready_app_without_qa(self) -> None:
+        release_id, app_id = self.import_initial()
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        def make_ai4sci_ready(snapshot: dict) -> None:
+            snapshot["doc_target"] = "ai4sci"
+            _fill_ready(snapshot)
+        core.update_snapshot(self.conn, release_id, app_id, make_ai4sci_ready)
+        artifacts = core.generate_artifacts(self.conn, release_id)
+        self.assertIn("Amber", artifacts["ai4sci"])
+        self.assertNotIn("Amber", artifacts["manual"])
+        self.assertNotIn("Amber", artifacts["release_note"])
+
+    def test_guide_rows_excludes_stopped_apps(self) -> None:
         release_id, app_id = self.import_initial()
         core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
         core.update_snapshot(self.conn, release_id, app_id, _fill_ready)
@@ -727,8 +750,7 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         rel = core.get_release(self.conn, next_release)
         active, stopped = core.guide_rows(self.conn, rel, "manual")
         self.assertEqual(active, [])
-        self.assertEqual(len(stopped), 1)
-        self.assertEqual(stopped[0][1].get("version"), "22")
+        self.assertEqual(stopped, [])
 
     def test_render_guide_stopped_marker(self) -> None:
         app = {"name": "TestApp", "description": "desc", "doc_target": "manual"}
