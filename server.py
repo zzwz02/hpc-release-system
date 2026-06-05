@@ -24,6 +24,7 @@ except ImportError:
 
 from release_system import core
 from release_system import jira_client
+from release_system.wiki import core as wiki_core
 
 
 ROOT = Path(__file__).resolve().parent
@@ -330,6 +331,42 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     self.send_json(job)
                     return
+                if parsed.path == "/api/wiki/articles":
+                    user = self.current_user()
+                    if user["role"] not in wiki_core.READ_ROLES:
+                        raise AuthzError("只有 Owner/RM/Admin 可以查看开发 WIKI")
+                    self.send_json({"articles": wiki_core.list_articles(self.conn())})
+                    return
+                if parsed.path.startswith("/api/wiki/images/"):
+                    user = self.current_user()
+                    if user["role"] not in wiki_core.READ_ROLES:
+                        raise AuthzError("只有 Owner/RM/Admin 可以查看开发 WIKI")
+                    image_id = parsed.path.rsplit("/", 1)[-1]
+                    try:
+                        image = wiki_core.get_image(self.conn(), image_id)
+                    except KeyError:
+                        self.send_json({"error": "图片不存在"}, status=404)
+                        return
+                    content = image["content"]
+                    self.send_response(200)
+                    self.send_header("Content-Type", image["content_type"])
+                    self.send_header("Content-Length", str(len(content)))
+                    self.send_header("Cache-Control", "private, max-age=86400")
+                    self.end_headers()
+                    self.wfile.write(content)
+                    return
+                if parsed.path.startswith("/api/wiki/articles/"):
+                    user = self.current_user()
+                    if user["role"] not in wiki_core.READ_ROLES:
+                        raise AuthzError("只有 Owner/RM/Admin 可以查看开发 WIKI")
+                    article_id = parsed.path.rsplit("/", 1)[-1]
+                    try:
+                        article = wiki_core.get_article(self.conn(), article_id)
+                    except KeyError:
+                        self.send_json({"error": "文章不存在"}, status=404)
+                        return
+                    self.send_json({"article": article})
+                    return
                 if parsed.path == "/api/app-audit":
                     self.current_user()
                     app_id = self.query().get("app_id", [""])[0]
@@ -526,6 +563,79 @@ class Handler(BaseHTTPRequestHandler):
                         actor_role=self.role(),
                     )
                     self.send_json({"ok": True})
+                    return
+                if parsed.path == "/api/wiki/articles/save":
+                    user = self.current_user()
+                    if user["role"] not in wiki_core.WRITE_ROLES:
+                        raise AuthzError("只有 RM/Admin 可以维护开发 WIKI")
+                    body = self.json_body()
+                    try:
+                        article = wiki_core.save_article(
+                            self.conn(),
+                            article_id=body.get("id") or None,
+                            title=body.get("title", ""),
+                            body_md=body.get("body_md", ""),
+                            pinned=bool(body.get("pinned")),
+                            user=user["username"],
+                            role=user["role"],
+                        )
+                    except KeyError:
+                        self.send_json({"error": "文章不存在"}, status=404)
+                        return
+                    self.send_json({"ok": True, "article": article})
+                    return
+                if parsed.path == "/api/wiki/articles/pin":
+                    user = self.current_user()
+                    if user["role"] not in wiki_core.WRITE_ROLES:
+                        raise AuthzError("只有 RM/Admin 可以维护开发 WIKI")
+                    body = self.json_body()
+                    try:
+                        article = wiki_core.set_pinned(
+                            self.conn(),
+                            body.get("id", ""),
+                            bool(body.get("pinned")),
+                            user=user["username"],
+                            role=user["role"],
+                        )
+                    except KeyError:
+                        self.send_json({"error": "文章不存在"}, status=404)
+                        return
+                    self.send_json({"ok": True, "article": article})
+                    return
+                if parsed.path == "/api/wiki/articles/delete":
+                    user = self.current_user()
+                    if user["role"] not in wiki_core.WRITE_ROLES:
+                        raise AuthzError("只有 RM/Admin 可以维护开发 WIKI")
+                    body = self.json_body()
+                    try:
+                        wiki_core.delete_article(
+                            self.conn(),
+                            body.get("id", ""),
+                            user=user["username"],
+                            role=user["role"],
+                        )
+                    except KeyError:
+                        self.send_json({"error": "文章不存在"}, status=404)
+                        return
+                    self.send_json({"ok": True})
+                    return
+                if parsed.path == "/api/wiki/images/upload":
+                    user = self.current_user()
+                    if user["role"] not in wiki_core.WRITE_ROLES:
+                        raise AuthzError("只有 RM/Admin 可以维护开发 WIKI")
+                    body = self.json_body()
+                    content_b64 = body.get("content_base64", "")
+                    if not content_b64:
+                        raise ValueError("content_base64 required")
+                    image = wiki_core.save_image(
+                        self.conn(),
+                        content=base64.b64decode(content_b64),
+                        filename=body.get("filename", ""),
+                        content_type=body.get("content_type", ""),
+                        user=user["username"],
+                        role=user["role"],
+                    )
+                    self.send_json({"ok": True, "image": image})
                     return
                 if parsed.path == "/api/import-initial":
                     self.require_rm()

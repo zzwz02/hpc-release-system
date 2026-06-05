@@ -17,6 +17,7 @@ from unittest import mock
 
 import server
 from release_system import core, llm
+from release_system.wiki import core as wiki_core
 
 
 INIT_CSV = """官方名称,类型,APP类型,Owner,app_version,maca_chip,hpcc_chip,arch,maca_version,git_url,git_branch
@@ -1514,6 +1515,102 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         later_log = core.app_audit_log(self.conn, app_id, r2)
         self.assertTrue(any(e["event"] == "create_app" for e in src_log))
         self.assertTrue(any(e["event"] == "sync_app" for e in later_log))
+
+
+class WikiCoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "test.db"
+        self.conn = core.connect(self.db_path)
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def test_wiki_articles_can_be_created_pinned_updated_and_soft_deleted(self) -> None:
+        first = wiki_core.save_article(
+            self.conn,
+            title="普通文章",
+            body_md="hello **wiki**",
+            pinned=False,
+            user="rm",
+            role="RM",
+        )
+        second = wiki_core.save_article(
+            self.conn,
+            title="置顶文章",
+            body_md="# pinned",
+            pinned=True,
+            user="admin",
+            role="Admin",
+        )
+
+        rows = wiki_core.list_articles(self.conn)
+        self.assertEqual([second["id"], first["id"]], [row["id"] for row in rows])
+        self.assertNotIn("body_md", rows[0])
+
+        updated = wiki_core.save_article(
+            self.conn,
+            article_id=first["id"],
+            title="普通文章 v2",
+            body_md="updated",
+            pinned=True,
+            user="rm",
+            role="RM",
+        )
+        self.assertTrue(updated["pinned"])
+        self.assertEqual("updated", wiki_core.get_article(self.conn, first["id"])["body_md"])
+
+        wiki_core.delete_article(self.conn, second["id"], user="admin", role="Admin")
+        self.assertNotIn(second["id"], [row["id"] for row in wiki_core.list_articles(self.conn)])
+        with self.assertRaises(KeyError):
+            wiki_core.get_article(self.conn, second["id"])
+
+    def test_wiki_write_requires_rm_or_admin(self) -> None:
+        with self.assertRaises(PermissionError):
+            wiki_core.save_article(
+                self.conn,
+                title="Owner draft",
+                body_md="not allowed",
+                user="owner_test",
+                role="Owner",
+            )
+
+    def test_wiki_images_can_be_saved_and_retrieved(self) -> None:
+        image = wiki_core.save_image(
+            self.conn,
+            content=b"\x89PNG\r\n\x1a\n",
+            filename="paste.png",
+            content_type="image/png",
+            user="rm",
+            role="RM",
+        )
+
+        self.assertTrue(image["url"].startswith("/api/wiki/images/"))
+        loaded = wiki_core.get_image(self.conn, image["id"])
+        self.assertEqual("paste.png", loaded["filename"])
+        self.assertEqual("image/png", loaded["content_type"])
+        self.assertEqual(b"\x89PNG\r\n\x1a\n", loaded["content"])
+
+    def test_wiki_images_reject_unsupported_types_and_non_writers(self) -> None:
+        with self.assertRaises(ValueError):
+            wiki_core.save_image(
+                self.conn,
+                content=b"<svg></svg>",
+                filename="bad.svg",
+                content_type="image/svg+xml",
+                user="rm",
+                role="RM",
+            )
+        with self.assertRaises(PermissionError):
+            wiki_core.save_image(
+                self.conn,
+                content=b"\x89PNG\r\n\x1a\n",
+                filename="owner.png",
+                content_type="image/png",
+                user="owner_test",
+                role="Owner",
+            )
 
 
 if __name__ == "__main__":

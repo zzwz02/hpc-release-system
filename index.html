@@ -313,6 +313,56 @@
     padding:10px 12px;overflow:auto;}
   .md-view pre code{background:transparent;border:0;color:inherit;padding:0;}
   .md-view a{color:var(--accent);font-weight:700;}
+  /* ---- developer wiki ---- */
+  .wiki-list-head{display:flex;align-items:flex-end;gap:14px;margin-bottom:14px;}
+  .wiki-list-head .searchbox{margin:0;min-width:280px;max-width:420px;flex:1;}
+  .wiki-list-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:13px;}
+  .wiki-card{border:1px solid var(--border);background:#fff;border-radius:10px;padding:15px 16px;
+    box-shadow:var(--shadow);cursor:pointer;min-height:144px;display:flex;flex-direction:column;gap:10px;}
+  .wiki-card:hover{border-color:var(--accent-bd);box-shadow:0 8px 20px rgba(37,99,235,.08);}
+  .wiki-card-title{font-size:15px;font-weight:800;line-height:1.35;word-break:break-word;color:var(--ink);}
+  .wiki-card-title.pinned{font-weight:900;}
+  .wiki-card-excerpt{color:var(--ink-2);font-size:13px;line-height:1.55;display:-webkit-box;
+    -webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
+  .wiki-card-meta,.wiki-meta{font-size:12px;color:var(--muted);}
+  .wiki-card-meta{margin-top:auto;}
+  .wiki-reader-grid{display:grid;grid-template-columns:250px minmax(0,1fr);gap:18px;align-items:start;}
+  .wiki-outline{position:sticky;top:136px;max-height:calc(100vh - 170px);overflow:auto;
+    border:1px solid var(--border);border-radius:10px;background:#fff;box-shadow:var(--shadow);}
+  .wiki-outline-head{padding:12px 14px;border-bottom:1px solid var(--border);font-weight:800;font-size:13px;background:#fafbfc;}
+  .wiki-outline-list{padding:9px 8px;}
+  .wiki-outline-tree{display:flex;flex-direction:column;gap:1px;}
+  .wiki-outline-row{display:flex;align-items:center;min-width:0;padding-left:var(--wiki-outline-indent,0);min-height:26px;}
+  .wiki-outline-row a{display:block;min-width:0;flex:1;padding:4px 6px;border-radius:6px;
+    color:var(--ink-2);font-size:12.5px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .wiki-outline-row a:hover{background:var(--accent-soft);color:var(--accent);}
+  .wiki-outline-row.lv3 a,.wiki-outline-row.lv4 a{font-size:12px;}
+  .wiki-detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:20px 22px;border-bottom:1px solid var(--border);}
+  .wiki-detail-head h2{font-size:24px;line-height:1.3;word-break:break-word;}
+  .wiki-title-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+  .wiki-detail-body{padding:22px;}
+  .wiki-detail-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
+  .wiki-md-view{border:0;padding:0;min-height:0;font-size:14px;line-height:1.78;}
+  .wiki-md-view h1{font-size:24px;margin:0 0 13px;}
+  .wiki-md-view h2{font-size:20px;margin:22px 0 11px;padding-bottom:5px;border-bottom:1px solid var(--border);}
+  .wiki-md-view h3{font-size:17px;margin:18px 0 8px;}
+  .wiki-md-view h4{font-size:15px;margin:14px 0 7px;}
+  .wiki-md-view img{max-width:100%;height:auto;border:1px solid var(--border);border-radius:10px;
+    box-shadow:var(--shadow);display:block;margin:12px 0;background:#fff;}
+  .wiki-md-view table{border-collapse:collapse;width:100%;margin:12px 0;display:block;overflow:auto;}
+  .wiki-md-view th,.wiki-md-view td{border:1px solid var(--border);padding:7px 9px;}
+  .wiki-md-view th{background:#fafbfc;}
+  dialog.wiki-dialog{width:calc(100vw - 28px);height:calc(100vh - 28px);max-width:none;max-height:none;}
+  dialog.wiki-dialog .dialog-card{height:100%;display:flex;flex-direction:column;}
+  dialog.wiki-dialog .dialog-body{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;}
+  .wiki-editor-top{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:end;}
+  .wiki-editor-grid{flex:1;min-height:0;overflow:hidden;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;margin-top:12px;}
+  .wiki-editor-grid label,.wiki-editor-grid>div{min-height:0;display:flex;flex-direction:column;}
+  .wiki-editor-grid textarea{flex:1;min-height:0;font-family:Consolas,"Courier New",monospace;font-size:13px;line-height:1.6;}
+  .wiki-preview{flex:1;min-height:0;overflow:auto;border:1px solid var(--border);border-radius:8px;background:#fff;padding:12px 14px;}
+  .wiki-paste-hint{font-size:12px;color:var(--muted);margin-top:6px;}
+  .wiki-editor-actions{position:sticky;bottom:0;z-index:2;margin:10px -16px -16px;padding:10px 16px;
+    background:#fff;border-top:1px solid var(--border);box-shadow:0 -8px 20px rgba(16,24,40,.06);}
   /* ---- diff / source ---- */
   .src-line{font-size:12.5px;color:var(--ink-2);background:#f6f7f9;border:1px solid var(--border);
     border-radius:8px;padding:8px 11px;margin-bottom:12px;}
@@ -371,7 +421,7 @@
   .schedule-box .past{color:var(--muted);}
   .schedule-box .past .ver{color:var(--ink-2);}
   .schedule-box .soon{color:var(--warn-fg);font-weight:700;}
-  @media (max-width:1080px){.workspace,.form,.tcard-b,.qa-card-b{grid-template-columns:1fr;}}
+  @media (max-width:1080px){.workspace,.form,.tcard-b,.qa-card-b,.wiki-reader-grid,.wiki-editor-grid{grid-template-columns:1fr;}.wiki-outline{position:static;max-height:none;}}
   /* ---- login page ---- */
   #loginPage{position:fixed;inset:0;z-index:100;
     background:linear-gradient(150deg,#1e2d5a 0%,#2563eb 55%,#4f35c2 100%);
@@ -500,6 +550,7 @@
     <button class="tab" data-view="qa" data-roles="QA,RM">QA</button>
     <button class="tab" data-view="artifacts" data-roles="RM">Markdown 生成</button>
     <button class="tab" data-view="cicd" data-roles="RM,Owner,QA,Admin,SPD" id="cicdTab">CICD 工作台<span id="cicdBadge" class="cicd-badge" hidden></span></button>
+    <button class="tab" data-view="wiki" data-roles="RM,Owner,Admin">开发 WIKI</button>
     <button class="tab" data-view="admin" data-roles="Admin">系统管理</button>
   </nav>
 
@@ -888,7 +939,65 @@
         </div>
       </div>
     </section>
+
+    <section id="wiki" class="view" data-roles="RM,Owner,Admin">
+      <div class="page-toolbar">
+        <h2>开发 WIKI</h2>
+        <span class="spacer"></span>
+        <span class="page-refresh-meta" data-page-refreshed-at="wiki"></span>
+        <button class="btn sm primary" id="wikiNewBtn" data-roles="RM,Admin">+ 新建文章</button>
+        <button class="btn sm" data-page-refresh="wiki" title="刷新当前页">&#x21bb; 刷新</button>
+      </div>
+      <div id="wikiListPage">
+        <div class="wiki-list-head">
+          <div>
+            <h2 style="font-size:18px">文章列表</h2>
+            <div class="small muted" id="wikiCount"></div>
+          </div>
+          <span class="spacer"></span>
+          <div class="searchbox"><input id="wikiSearch" class="input" placeholder="搜索标题"></div>
+        </div>
+        <div id="wikiList" class="wiki-list-grid"></div>
+      </div>
+      <div id="wikiArticlePage" hidden>
+        <div class="page-toolbar">
+          <button class="btn sm" id="wikiBackBtn">← 返回列表</button>
+          <span class="spacer"></span>
+        </div>
+        <div class="wiki-reader-grid">
+          <aside class="wiki-outline">
+            <div class="wiki-outline-head">文章大纲</div>
+            <div id="wikiOutline" class="wiki-outline-list"></div>
+          </aside>
+          <div id="wikiDetail" class="detailcard"></div>
+        </div>
+      </div>
+    </section>
   </main>
+
+  <dialog id="wikiEditorDialog" class="wiki-dialog">
+    <div class="dialog-card">
+      <h2 id="wikiEditorTitle">新建文章</h2>
+      <div class="dialog-body">
+        <div class="wiki-editor-top">
+          <label>标题<input id="wikiTitle" class="input" maxlength="160" autocomplete="off"></label>
+          <label class="check"><input type="checkbox" id="wikiPinned">置顶</label>
+        </div>
+        <div class="wiki-editor-grid">
+          <label>Markdown<textarea id="wikiBody" spellcheck="false"></textarea><span class="wiki-paste-hint">可直接粘贴截图或图片，系统会自动上传并插入 Markdown 图片链接。</span></label>
+          <div>
+            <div class="field-label" style="margin-bottom:5px">预览</div>
+            <div id="wikiPreview" class="wiki-preview"></div>
+          </div>
+        </div>
+        <div id="wikiEditorLog" class="small muted" style="margin-top:10px;min-height:18px"></div>
+        <div class="row dialog-actions wiki-editor-actions">
+          <button class="btn" id="wikiCancelBtn">取消</button>
+          <button class="btn primary" id="wikiSaveBtn">保存</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
 
   <!-- CICD 任务表单对话框 -->
   <dialog id="cicdTaskDialog" class="cicd-dialog">
@@ -1073,6 +1182,8 @@
     </div>
   </dialog>
 
+  <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script>
     let state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, qa_audit_logs: {}, release_schedule: [], user_display_names: {} };
     let selectedApp = "";
@@ -1107,6 +1218,8 @@
     const qaReleaseReportDefaultHidden = new Set(["描述", "官方URL", "OS", "Python version", "PyTorch version"]);
     let ldapStatus = { enabled: false, uri: "" };
     let memberList = [];
+    let wikiState = { articles: [], selectedId: "", article: null, filter: "", mode: "list" };
+    let wikiEditingId = "";
     document.addEventListener("input", markUserEdit, true);
     document.addEventListener("change", markUserEdit, true);
 
@@ -1398,6 +1511,12 @@
         await markCicdVisited();
         return;
       }
+      if (view === "wiki") {
+        if ($("wikiEditorDialog")?.open && !confirm("当前 WIKI 编辑窗口已打开，刷新会关闭编辑窗口。确认刷新？")) return;
+        if ($("wikiEditorDialog")?.open) $("wikiEditorDialog").close();
+        await loadWikiAndRender();
+        return;
+      }
       await loadState(currentReleaseId(), { preserveDetail: false });
       if (view === "qa" && document.querySelector("#qaReleaseReportPane.active,#qaTestCmdPane.active")) {
         await loadQaReports(true);
@@ -1418,6 +1537,7 @@
     function isRM() { return currentUser().role === "RM"; }
     function isOwner() { return currentUser().role === "Owner"; }
     function isQA() { return currentUser().role === "QA"; }
+    function canEditWiki() { return ["RM", "Admin"].includes(currentUser().role); }
     function canEdit(snap) { return currentUser().role === "RM" || (currentUser().role === "Owner" && (snap?.owners || []).includes(currentUser().username)); }
     function displayName(snap) {
       const official = (snap?.official_name || "").trim();
@@ -3077,6 +3197,310 @@
     }
 
     // ===========================================================
+    // Developer wiki
+    function normalizeWikiMarkdown(value) {
+      return String(value ?? "")
+        .replace(/\r\n/g, "\n")
+        .replace(/!\s*[\u200B\u200C\u200D]*\s*\[/g, "![");
+    }
+
+    function wikiTime(value) {
+      if (!value) return "";
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) return String(value).slice(0, 16);
+      const p = n => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    }
+
+    function wikiSlug(value, index) {
+      const base = String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, "-")
+        .replace(/^-+|-+$/g, "");
+      return `wiki-h-${index}-${base || "section"}`;
+    }
+
+    function wikiFallbackImageInline(value) {
+      return String(value).replace(
+        /!\[([^\]]*)\]\(((?:https?:\/\/|\/api\/wiki\/images\/|data:image\/(?:png|jpeg|gif|webp);base64,)[^\s)]+)\)/g,
+        (_, alt, src) => `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy">`
+      );
+    }
+
+    function renderWikiMarkdown(value, withOutline = false) {
+      const text = normalizeWikiMarkdown(value).trim();
+      if (!text) {
+        return { html: `<div class="md-view wiki-md-view empty">-</div>`, outline: [] };
+      }
+      let html = "";
+      const markedApi = window.marked;
+      if (markedApi && window.DOMPurify) {
+        const parse = markedApi.parse ? markedApi.parse.bind(markedApi) : markedApi;
+        html = window.DOMPurify.sanitize(parse(text, { gfm: true, breaks: false }), {
+          ADD_ATTR: ["target", "rel", "loading"],
+        });
+      } else {
+        html = renderMarkdown(text)
+          .replace(/^<div class="md-view">|<\/div>$/g, "");
+        html = wikiFallbackImageInline(html);
+      }
+      const tmp = document.createElement("template");
+      tmp.innerHTML = html;
+      tmp.content.querySelectorAll("a[href]").forEach(a => {
+        a.setAttribute("target", "_blank");
+        a.setAttribute("rel", "noopener noreferrer");
+      });
+      tmp.content.querySelectorAll("img").forEach(img => {
+        img.setAttribute("loading", "lazy");
+        if (!img.getAttribute("alt")) img.setAttribute("alt", "");
+      });
+      const outline = [];
+      if (withOutline) {
+        tmp.content.querySelectorAll("h1,h2,h3,h4").forEach((h, index) => {
+          const textContent = h.textContent || "";
+          const id = wikiSlug(textContent, index);
+          h.id = id;
+          outline.push({ id, title: textContent, level: Number(h.tagName.slice(1)) || 1 });
+        });
+      }
+      return { html: `<div class="md-view wiki-md-view">${tmp.innerHTML}</div>`, outline };
+    }
+
+    function buildWikiOutlineRows(outline) {
+      const rows = [];
+      const stack = [];
+      (outline || []).forEach(item => {
+        while (stack.length && stack[stack.length - 1].level >= item.level) stack.pop();
+        const parent = stack.length ? stack[stack.length - 1].index : "";
+        const row = { ...item, index: rows.length, parent };
+        rows.push(row);
+        stack.push(row);
+      });
+      return rows;
+    }
+
+    function wikiOutlineRowHtml(row) {
+      const indent = Math.max(0, Math.min(row.level, 4) - 1) * 10;
+      return `<div class="wiki-outline-row lv${Math.min(row.level, 4)}" style="--wiki-outline-indent:${indent}px">
+        <a href="#${esc(row.id)}" title="${esc(row.title)}">${esc(row.title)}</a>
+      </div>`;
+    }
+
+    function wikiOutlineHtml(outline) {
+      const rows = buildWikiOutlineRows(outline);
+      return rows.length
+        ? `<div class="wiki-outline-tree">${rows.map(wikiOutlineRowHtml).join("")}</div>`
+        : `<div class="small muted" style="padding:6px 8px">这篇文章还没有标题。</div>`;
+    }
+
+    function wikiFilteredArticles() {
+      const q = (wikiState.filter || "").trim().toLowerCase();
+      const rows = wikiState.articles || [];
+      if (!q) return rows;
+      return rows.filter(a => String(a.title || "").toLowerCase().includes(q));
+    }
+
+    async function loadWikiArticle(articleId) {
+      if (!articleId) { wikiState.article = null; return; }
+      const data = await api(`/api/wiki/articles/${encodeURIComponent(articleId)}`);
+      wikiState.article = data.article;
+    }
+
+    async function loadWikiAndRender(options = {}) {
+      const data = await api("/api/wiki/articles");
+      wikiState.articles = data.articles || [];
+      if (options.mode) wikiState.mode = options.mode;
+      if (options.selectId) {
+        wikiState.selectedId = options.selectId;
+        wikiState.mode = "article";
+      }
+      if (wikiState.mode === "article" && !wikiState.articles.some(a => a.id === wikiState.selectedId)) {
+        wikiState.mode = "list";
+        wikiState.selectedId = "";
+      }
+      wikiState.article = null;
+      if (wikiState.mode === "article" && wikiState.selectedId) {
+        await loadWikiArticle(wikiState.selectedId);
+      }
+      renderWiki();
+      markPageRefreshed(["wiki"]);
+    }
+
+    function renderWiki() {
+      const listPage = $("wikiListPage");
+      const articlePage = $("wikiArticlePage");
+      if (listPage) listPage.hidden = wikiState.mode === "article";
+      if (articlePage) articlePage.hidden = wikiState.mode !== "article";
+      renderWikiList();
+      renderWikiDetail();
+    }
+
+    function renderWikiList() {
+      const list = $("wikiList");
+      if (!list) return;
+      const rows = wikiFilteredArticles();
+      if ($("wikiCount")) $("wikiCount").textContent = rows.length ? `共 ${rows.length} 篇` : "";
+      list.innerHTML = rows.map(a => `
+        <article class="wiki-card" data-wiki-open="${esc(a.id)}">
+          <div class="wiki-card-title ${a.pinned ? "pinned" : ""}">${a.pinned ? '<span class="pill accent">置顶</span> ' : ""}${esc(a.title)}</div>
+          <div class="wiki-card-excerpt">${esc(a.excerpt || "暂无摘要")}</div>
+          <div class="wiki-card-meta">${esc(userLabel(a.updated_by || a.created_by))} · ${esc(wikiTime(a.updated_at || a.created_at))}</div>
+        </article>`).join("") || `<div class="empty" style="padding:44px 12px;grid-column:1/-1">暂无文章</div>`;
+    }
+
+    function renderWikiDetail() {
+      const host = $("wikiDetail");
+      if (!host) return;
+      const article = wikiState.article;
+      if (!article) {
+        host.innerHTML = "";
+        if ($("wikiOutline")) $("wikiOutline").innerHTML = `<div class="small muted" style="padding:6px 8px">暂无大纲</div>`;
+        return;
+      }
+      const rendered = renderWikiMarkdown(article.body_md || "", true);
+      if ($("wikiOutline")) {
+        $("wikiOutline").innerHTML = wikiOutlineHtml(rendered.outline);
+      }
+      const actions = canEditWiki() ? `
+        <div class="wiki-detail-actions">
+          <button class="btn sm" data-wiki-pin="${esc(article.id)}">${article.pinned ? "取消置顶" : "置顶"}</button>
+          <button class="btn sm primary" data-wiki-edit="${esc(article.id)}">编辑</button>
+          <button class="btn sm danger" data-wiki-delete="${esc(article.id)}">删除</button>
+        </div>` : "";
+      host.innerHTML = `
+        <div class="wiki-detail-head">
+          <div>
+            <h2 class="wiki-title-line">${article.pinned ? '<span class="pill accent">置顶</span>' : ""}<span>${esc(article.title)}</span></h2>
+            <div class="wiki-meta">${esc(userLabel(article.updated_by || article.created_by))} · ${esc(wikiTime(article.updated_at || article.created_at))}</div>
+          </div>
+          ${actions}
+        </div>
+        <div class="wiki-detail-body">${rendered.html}</div>`;
+    }
+
+    async function selectWikiArticle(articleId) {
+      wikiState.selectedId = articleId;
+      wikiState.mode = "article";
+      await loadWikiArticle(articleId);
+      renderWiki();
+    }
+
+    function showWikiList() {
+      wikiState.mode = "list";
+      wikiState.selectedId = "";
+      wikiState.article = null;
+      renderWiki();
+    }
+
+    function updateWikiPreview() {
+      const preview = $("wikiPreview");
+      if (preview) preview.innerHTML = renderWikiMarkdown($("wikiBody")?.value || "").html;
+    }
+
+    function openWikiEditor(article = null) {
+      if (!canEditWiki()) return;
+      wikiEditingId = article?.id || "";
+      $("wikiEditorTitle").textContent = wikiEditingId ? "编辑文章" : "新建文章";
+      $("wikiTitle").value = article?.title || "";
+      $("wikiBody").value = article?.body_md || "";
+      $("wikiPinned").checked = !!article?.pinned;
+      $("wikiEditorLog").textContent = "";
+      updateWikiPreview();
+      const dialog = $("wikiEditorDialog");
+      if (dialog.showModal) dialog.showModal();
+      else dialog.open = true;
+      $("wikiTitle").focus();
+    }
+
+    async function submitWikiEditor() {
+      const btn = $("wikiSaveBtn");
+      const log = $("wikiEditorLog");
+      btn.disabled = true;
+      log.textContent = "保存中...";
+      try {
+        const res = await post("/api/wiki/articles/save", {
+          id: wikiEditingId,
+          title: $("wikiTitle").value,
+          body_md: $("wikiBody").value,
+          pinned: $("wikiPinned").checked,
+        });
+        $("wikiEditorDialog").close();
+        await loadWikiAndRender({ selectId: res.article.id });
+      } catch (e) {
+        log.textContent = "保存失败：" + e.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function toggleWikiPinned(articleId) {
+      const article = wikiState.article;
+      if (!article || article.id !== articleId) return;
+      await post("/api/wiki/articles/pin", { id: articleId, pinned: !article.pinned });
+      await loadWikiAndRender({ selectId: articleId });
+    }
+
+    async function deleteWikiArticle(articleId) {
+      const article = wikiState.article;
+      if (!article || article.id !== articleId) return;
+      if (!confirm(`确认删除 WIKI 文章「${article.title}」？`)) return;
+      await post("/api/wiki/articles/delete", { id: articleId });
+      await loadWikiAndRender({ mode: "list" });
+    }
+
+    function insertWikiTextAtCursor(text) {
+      const el = $("wikiBody");
+      if (!el) return;
+      const start = el.selectionStart ?? el.value.length;
+      const end = el.selectionEnd ?? el.value.length;
+      el.value = el.value.slice(0, start) + text + el.value.slice(end);
+      const pos = start + text.length;
+      el.selectionStart = el.selectionEnd = pos;
+      el.focus();
+      updateWikiPreview();
+    }
+
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || "").split(",", 2)[1] || "");
+        reader.onerror = () => reject(reader.error || new Error("读取图片失败"));
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function uploadWikiImageFile(file) {
+      const content_base64 = await fileToBase64(file);
+      const res = await post("/api/wiki/images/upload", {
+        filename: file.name || "pasted-image.png",
+        content_type: file.type || "image/png",
+        content_base64,
+      });
+      return res.image;
+    }
+
+    async function handleWikiPaste(ev) {
+      const items = [...(ev.clipboardData?.items || [])];
+      const images = items
+        .filter(item => item.kind === "file" && item.type.startsWith("image/"))
+        .map(item => item.getAsFile())
+        .filter(Boolean);
+      if (!images.length) return;
+      ev.preventDefault();
+      const log = $("wikiEditorLog");
+      try {
+        for (const file of images) {
+          if (log) log.textContent = `正在上传图片 ${file.name || ""}...`;
+          const image = await uploadWikiImageFile(file);
+          insertWikiTextAtCursor(`\n![${image.filename || "image"}](${image.url})\n`);
+        }
+        if (log) log.textContent = `已插入 ${images.length} 张图片`;
+      } catch (e) {
+        if (log) log.textContent = "图片上传失败：" + e.message;
+      }
+    }
+
     // CICD workbench
     // ===========================================================
     let cicdTasks = [];
@@ -4046,8 +4470,31 @@
         b.classList.add("active");
         $(b.dataset.view).classList.add("active");
         if (["dashboard", "apps", "qa"].includes(b.dataset.view)) loadState().catch(err => alert(err.message));
+        if (b.dataset.view === "wiki") loadWikiAndRender({ mode: "list" }).catch(err => alert(err.message));
       });
       bindCicd();
+      if ($("wikiNewBtn")) $("wikiNewBtn").onclick = () => openWikiEditor(null);
+      if ($("wikiSearch")) $("wikiSearch").oninput = () => { wikiState.filter = $("wikiSearch").value; renderWikiList(); };
+      if ($("wikiBackBtn")) $("wikiBackBtn").onclick = showWikiList;
+      if ($("wikiList")) $("wikiList").addEventListener("click", ev => {
+        const id = ev.target.closest("[data-wiki-open]")?.dataset.wikiOpen;
+        if (id) selectWikiArticle(id).catch(e => alert("加载文章失败：" + e.message));
+      });
+      if ($("wikiDetail")) $("wikiDetail").addEventListener("click", ev => {
+        const editId = ev.target.closest("[data-wiki-edit]")?.dataset.wikiEdit;
+        const pinId = ev.target.closest("[data-wiki-pin]")?.dataset.wikiPin;
+        const delId = ev.target.closest("[data-wiki-delete]")?.dataset.wikiDelete;
+        if (editId) { openWikiEditor(wikiState.article); return; }
+        if (pinId) { toggleWikiPinned(pinId).catch(e => alert("置顶操作失败：" + e.message)); return; }
+        if (delId) { deleteWikiArticle(delId).catch(e => alert("删除失败：" + e.message)); return; }
+      });
+      if ($("wikiBody")) {
+        $("wikiBody").oninput = updateWikiPreview;
+        $("wikiBody").onpaste = ev => { handleWikiPaste(ev); };
+      }
+      if ($("wikiTitle")) $("wikiTitle").oninput = () => { $("wikiEditorLog").textContent = ""; };
+      if ($("wikiCancelBtn")) $("wikiCancelBtn").onclick = () => $("wikiEditorDialog").close();
+      if ($("wikiSaveBtn")) $("wikiSaveBtn").onclick = submitWikiEditor;
       document.querySelectorAll("[data-init-pane]").forEach(b => b.onclick = () => {
         document.querySelectorAll("[data-init-pane],.init-pane").forEach(x => x.classList.remove("active"));
         b.classList.add("active");

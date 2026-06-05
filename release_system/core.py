@@ -437,6 +437,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    from release_system.wiki import core as wiki_core
+
+    wiki_core.init_db(conn)
     ensure_default_user(conn)
     # --- online migration: add columns introduced after initial deployment ---
     for _col, _col_def in [
@@ -588,6 +591,8 @@ def clear_business_data(conn: sqlite3.Connection, *, user: str = "admin", role: 
         conn.execute("DELETE FROM releases")
         conn.execute("DELETE FROM apps")
         conn.execute("DELETE FROM release_schedule")
+        conn.execute("DELETE FROM wiki_images")
+        conn.execute("DELETE FROM wiki_articles")
         conn.execute("DELETE FROM audit")
         ensure_default_user(conn)
         audit(conn, "数据库已清空，默认账号已保留", user=user, role=role)
