@@ -93,8 +93,8 @@
   .subtab{padding:7px 13px;border-radius:8px;border:1px solid var(--border-2);background:#fff;
     font:inherit;font-weight:700;font-size:13px;color:var(--ink-2);cursor:pointer;}
   .subtab.active{color:var(--accent);background:var(--accent-soft);border-color:var(--accent-bd);}
-  .init-pane,.artifact-pane,.qa-pane,.admin-pane{display:none;}
-  .init-pane.active,.artifact-pane.active,.qa-pane.active,.admin-pane.active{display:block;}
+  .init-pane,.qa-pane,.admin-pane{display:none;}
+  .init-pane.active,.qa-pane.active,.admin-pane.active{display:block;}
   /* ---- rows / forms ---- */
   .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
   .form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:13px;}
@@ -301,10 +301,11 @@
   .md-view.empty{color:var(--muted);background:#fafbfc;}
   .md-view p{margin:0 0 8px;}
   .md-view p:last-child{margin-bottom:0;}
-  .md-view h1,.md-view h2,.md-view h3{margin:0 0 8px;line-height:1.35;color:var(--ink);}
+  .md-view h1,.md-view h2,.md-view h3,.md-view h4,.md-view h5,.md-view h6{margin:0 0 8px;line-height:1.35;color:var(--ink);}
   .md-view h1{font-size:17px;}
   .md-view h2{font-size:15px;}
   .md-view h3{font-size:14px;}
+  .md-view h4,.md-view h5,.md-view h6{font-size:13px;}
   .md-view ul,.md-view ol{margin:0 0 8px 18px;padding:0;}
   .md-view li+li{margin-top:3px;}
   .md-view code{font-family:Consolas,"Courier New",monospace;font-size:12.5px;
@@ -313,6 +314,9 @@
     padding:10px 12px;overflow:auto;}
   .md-view pre code{background:transparent;border:0;color:inherit;padding:0;}
   .md-view a{color:var(--accent);font-weight:700;}
+  .md-view table{width:auto;min-width:100%;display:block;overflow:auto;margin:0 0 10px;}
+  .md-view th,.md-view td{border:1px solid var(--border);padding:7px 9px;vertical-align:top;}
+  .md-view th{position:static;background:#fafbfc;color:var(--ink);text-transform:none;letter-spacing:0;}
   /* ---- developer wiki ---- */
   .wiki-list-head{display:flex;align-items:flex-end;gap:14px;margin-bottom:14px;}
   .wiki-list-head .searchbox{margin:0;min-width:280px;max-width:420px;flex:1;}
@@ -398,6 +402,15 @@
     color:#dbeafe;border-radius:9px;padding:12px;min-height:90px;margin-top:12px;}
   .artifact{width:100%;min-height:440px;font-family:Consolas,monospace;font-size:12.5px;
     background:#fff;color:var(--ink);margin-top:14px;}
+  .artifact-shell{margin-top:14px;}
+  .artifact-bar{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+  .artifact-title{font-weight:800;color:var(--ink);}
+  .artifact-render .md-view{min-height:440px;}
+  .artifact-shell .artifact{margin-top:0;}
+  .artifact-action-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;}
+  .artifact-action-row .btn.active{color:var(--accent);background:var(--accent-soft);border-color:var(--accent-bd);}
+  .artifact-refresh-meta{margin-left:auto;}
+  .manager-review-pane{margin-top:8px;}
   .muted{color:var(--muted);}
   .small{font-size:12px;}
   .qa-limit-note{margin-top:5px;padding:8px 10px;border:1px solid var(--warn-bd);
@@ -549,8 +562,8 @@
     <button class="tab" data-view="apps" data-roles="RM,Owner,QA,Guest">App 工作台</button>
     <button class="tab" data-view="qa" data-roles="RM,Owner,QA,Guest">QA</button>
     <button class="tab" data-view="artifacts" data-roles="RM,Owner,Guest">发布文档</button>
-    <button class="tab" data-view="cicd" data-roles="RM,Owner,QA,Admin,SPD" id="cicdTab">CICD 工作台<span id="cicdBadge" class="cicd-badge" hidden></span></button>
-    <button class="tab" data-view="wiki" data-roles="RM,Owner,Admin">开发 WIKI</button>
+    <button class="tab" data-view="cicd" data-roles="RM,Owner,SPD" id="cicdTab">CICD 工作台<span id="cicdBadge" class="cicd-badge" hidden></span></button>
+    <button class="tab" data-view="wiki" data-roles="RM,Owner">开发 WIKI</button>
     <button class="tab" data-view="admin" data-roles="Admin">系统管理</button>
   </nav>
 
@@ -708,27 +721,20 @@
     <section id="artifacts" class="view" data-roles="RM,Owner,Guest">
       <div class="page-toolbar">
         <h2>发布文档</h2>
-        <span class="spacer"></span>
-        <span class="page-refresh-meta" data-page-refreshed-at="artifacts"></span>
-        <button class="btn sm" data-page-refresh="artifacts" title="刷新当前页">&#x21bb; 刷新</button>
       </div>
       <div class="panel">
         <div class="panel-head"><h2>发布文档 / release-data</h2></div>
         <div class="panel-body">
-          <div class="subtabs">
-            <button class="subtab active" data-artifact-pane="markdownArtifactPane">文档 / release-data</button>
-            <button class="subtab" data-artifact-pane="managerReviewPane" data-roles="RM">Manager Review CSV</button>
+          <div class="artifact-action-row">
+            <button class="btn download" data-kind="release_note">查看 release note</button>
+            <button class="btn download" data-kind="manual">查看 HPC Manual</button>
+            <button class="btn download" data-kind="ai4sci">查看 AI4Sci Manual</button>
+            <button class="btn download" data-kind="data">查看 release-data</button>
+            <button class="btn" id="managerReviewToggle" data-roles="RM">Manager Review CSV</button>
+            <span class="page-refresh-meta artifact-refresh-meta" data-page-refreshed-at="artifacts"></span>
+            <button class="btn primary" id="preview" data-roles="RM,Owner">刷新</button>
           </div>
-          <div id="markdownArtifactPane" class="artifact-pane active">
-            <div class="row">
-              <button class="btn primary" id="preview" data-roles="RM,Owner">刷新文档</button>
-              <button class="btn download" data-kind="release_note">查看 release note</button>
-              <button class="btn download" data-kind="manual">查看 HPC Manual</button>
-              <button class="btn download" data-kind="ai4sci">查看 AI4Sci Manual</button>
-              <button class="btn download" data-kind="data">查看 release-data</button>
-            </div>
-          </div>
-          <div id="managerReviewPane" class="artifact-pane" data-roles="RM">
+          <div id="managerReviewPane" class="manager-review-pane" hidden>
             <p class="hint" style="margin-top:0">Manager Review CSV 包含当前 release 的所有 app。请选择需要输出的字段。</p>
             <div class="form" style="grid-template-columns:repeat(4,1fr);margin-top:12px">
               <label class="check"><input type="checkbox" data-manager-field="app_name" checked>App</label>
@@ -755,7 +761,18 @@
               <button class="btn" id="downloadManagerReview">下载 manager_review.csv</button>
             </div>
           </div>
-          <textarea id="artifactText" class="artifact" readonly></textarea>
+          <div id="artifactViewer" class="artifact-shell" hidden>
+            <div class="artifact-bar">
+              <div>
+                <div id="artifactTitle" class="artifact-title"></div>
+                <div id="artifactMeta" class="small muted"></div>
+              </div>
+              <span class="spacer"></span>
+              <button class="btn sm" id="artifactToggle" hidden>查看源码</button>
+            </div>
+            <div id="artifactRendered" class="artifact-render"></div>
+            <textarea id="artifactText" class="artifact" readonly hidden></textarea>
+          </div>
         </div>
       </div>
     </section>
@@ -1187,7 +1204,16 @@
   <script>
     let state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, qa_audit_logs: {}, release_schedule: [], user_display_names: {} };
     let selectedApp = "";
+    let artifactState = { kind: "", text: "", mode: "render" };
     const stateBackedViews = ["dashboard", "init", "apps", "qa", "artifacts", "admin"];
+    const markdownArtifactKinds = new Set(["release_note", "manual", "ai4sci"]);
+    const artifactKindLabels = {
+      release_note: "Release Note",
+      manual: "HPC Manual",
+      ai4sci: "AI4Sci Manual",
+      data: "release-data",
+      manager_review: "Manager Review CSV",
+    };
     const pageRefreshTimes = {};
     let pendingAppInfoFile = null;
     let pendingAppInfoAppId = "";
@@ -1244,9 +1270,9 @@
           return `\u0001${idx}\u0001`;
         });
       s = s.replace(/\*\*([^*\n][\s\S]*?[^*\n])\*\*/g, "<strong>$1</strong>");
-      s = s.replace(/__([^_\n][\s\S]*?[^_\n])__/g, "<strong>$1</strong>");
+      s = s.replace(/(^|[^\p{L}\p{N}_])__([^_\n][\s\S]*?[^_\n])__(?=$|[^\p{L}\p{N}_])/gu, "$1<strong>$2</strong>");
       s = s.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
-      s = s.replace(/_([^_\n]+)_/g, "<em>$1</em>");
+      s = s.replace(/(^|[^\p{L}\p{N}_])_([^_\n]+)_(?=$|[^\p{L}\p{N}_])/gu, "$1<em>$2</em>");
       return s
         .replace(/\u0001(\d+)\u0001/g, (_, idx) => links[Number(idx)] || "")
         .replace(/\u0000(\d+)\u0000/g, (_, idx) => code[Number(idx)] || "");
@@ -1255,49 +1281,123 @@
       const text = String(value ?? "").replace(/\r\n/g, "\n").trim();
       if (!text) return `<div class="md-view empty">-</div>`;
       const lines = text.split("\n");
-      let html = "", para = [], list = null, code = [], inCode = false;
+      let html = "", para = [], code = [], inCode = false;
       const flushPara = () => {
         if (!para.length) return;
         html += `<p>${mdInline(para.join("\n")).replace(/\n/g, "<br>")}</p>`;
         para = [];
       };
-      const flushList = () => {
-        if (!list) return;
-        html += `<${list.type}>${list.items.map(item => `<li>${mdInline(item)}</li>`).join("")}</${list.type}>`;
-        list = null;
-      };
       const flushCode = () => {
         html += `<pre><code>${esc(code.join("\n"))}</code></pre>`;
         code = [];
       };
-      lines.forEach(line => {
+      const listMatch = line => /^(\s*)([-*]|\d+\.)\s+(.+)$/.exec(line);
+      const renderList = items => {
+        const root = { children: [] };
+        const stack = [{ indent: -1, node: root }];
+        items.forEach(item => {
+          while (stack.length > 1 && item.indent <= stack[stack.length - 1].indent) stack.pop();
+          const node = { type: item.type, text: item.text, children: [] };
+          stack[stack.length - 1].node.children.push(node);
+          stack.push({ indent: item.indent, node });
+        });
+        const renderNodes = nodes => {
+          let out = "";
+          for (let i = 0; i < nodes.length;) {
+            const type = nodes[i].type;
+            out += `<${type}>`;
+            while (i < nodes.length && nodes[i].type === type) {
+              const node = nodes[i++];
+              out += `<li>${mdInline(node.text)}${node.children.length ? renderNodes(node.children) : ""}</li>`;
+            }
+            out += `</${type}>`;
+          }
+          return out;
+        };
+        return renderNodes(root.children);
+      };
+      const splitTableRow = line => {
+        let s = String(line || "").trim();
+        if (s.startsWith("|")) s = s.slice(1);
+        if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
+        const cells = [];
+        let cur = "", escaped = false;
+        for (const ch of s) {
+          if (escaped) { cur += ch; escaped = false; continue; }
+          if (ch === "\\") { cur += ch; escaped = true; continue; }
+          if (ch === "|") { cells.push(cur.trim()); cur = ""; continue; }
+          cur += ch;
+        }
+        cells.push(cur.trim());
+        return cells.map(cell => cell.replace(/\\\|/g, "|"));
+      };
+      const isTableDelimiter = line => {
+        const cells = splitTableRow(line);
+        return cells.length > 0 && cells.every(cell => /^:?-{3,}:?$/.test(cell.trim()));
+      };
+      const renderTableCell = (tag, cell) => {
+        const body = mdInline(cell).replace(/&lt;br\s*\/?&gt;/gi, "<br>");
+        return `<${tag}>${body}</${tag}>`;
+      };
+      const renderTable = (start) => {
+        const headers = splitTableRow(lines[start]);
+        const rows = [];
+        let end = start + 2;
+        while (end < lines.length && lines[end].includes("|") && lines[end].trim()) {
+          rows.push(splitTableRow(lines[end]));
+          end += 1;
+        }
+        const head = `<thead><tr>${headers.map(cell => renderTableCell("th", cell)).join("")}</tr></thead>`;
+        const body = rows.map(row => {
+          const cells = row.slice();
+          while (cells.length < headers.length) cells.push("");
+          return `<tr>${cells.map(cell => renderTableCell("td", cell)).join("")}</tr>`;
+        }).join("");
+        return { html: `<table>${head}<tbody>${body}</tbody></table>`, next: end };
+      };
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
         if (/^\s*```/.test(line)) {
           if (inCode) { flushCode(); inCode = false; }
-          else { flushPara(); flushList(); inCode = true; code = []; }
-          return;
+          else { flushPara(); inCode = true; code = []; }
+          continue;
         }
-        if (inCode) { code.push(line); return; }
-        if (!line.trim()) { flushPara(); flushList(); return; }
-        const heading = /^(#{1,3})\s+(.+)$/.exec(line);
-        if (heading) {
-          flushPara(); flushList();
-          html += `<h${heading[1].length}>${mdInline(heading[2])}</h${heading[1].length}>`;
-          return;
-        }
-        const bullet = /^\s*[-*]\s+(.+)$/.exec(line);
-        const ordered = /^\s*\d+\.\s+(.+)$/.exec(line);
-        if (bullet || ordered) {
+        if (inCode) { code.push(line); continue; }
+        if (!line.trim()) { flushPara(); continue; }
+        if (line.includes("|") && i + 1 < lines.length && isTableDelimiter(lines[i + 1])) {
           flushPara();
-          const type = bullet ? "ul" : "ol";
-          if (!list || list.type !== type) flushList();
-          if (!list) list = { type, items: [] };
-          list.items.push((bullet || ordered)[1]);
-          return;
+          const table = renderTable(i);
+          html += table.html;
+          i = table.next - 1;
+          continue;
+        }
+        const heading = /^(#{1,6})\s+(.+)$/.exec(line);
+        if (heading) {
+          flushPara();
+          html += `<h${heading[1].length}>${mdInline(heading[2])}</h${heading[1].length}>`;
+          continue;
+        }
+        if (listMatch(line)) {
+          flushPara();
+          const items = [];
+          while (i < lines.length) {
+            const item = listMatch(lines[i]);
+            if (!item) break;
+            items.push({
+              indent: item[1].replace(/\t/g, "  ").length,
+              type: item[2].endsWith(".") ? "ol" : "ul",
+              text: item[3],
+            });
+            i += 1;
+          }
+          html += renderList(items);
+          i -= 1;
+          continue;
         }
         para.push(line);
-      });
+      }
       if (inCode) flushCode();
-      flushPara(); flushList();
+      flushPara();
       return `<div class="md-view">${html}</div>`;
     }
     function mdField(label, value, extra = "", cls = "", code = false) {
@@ -1541,7 +1641,7 @@
     function canViewQa() { return ["QA", "RM", "Owner", "Guest"].includes(currentUser().role); }
     function canEditQa() { return ["QA", "RM"].includes(currentUser().role); }
     function canGenerateMarkdown() { return ["RM", "Owner"].includes(currentUser().role); }
-    function canEditWiki() { return ["RM", "Admin"].includes(currentUser().role); }
+    function canEditWiki() { return ["RM"].includes(currentUser().role); }
     function canEdit(snap) { return currentUser().role === "RM" || (currentUser().role === "Owner" && (snap?.owners || []).includes(currentUser().username)); }
     function displayName(snap) {
       const official = (snap?.official_name || "").trim();
@@ -1661,15 +1761,7 @@
           $(next.dataset.view).classList.add("active");
         }
       }
-      const activeArtifact = document.querySelector("[data-artifact-pane].active");
-      if (activeArtifact && activeArtifact.hidden) {
-        const nextArtifact = document.querySelector("[data-artifact-pane]:not([hidden])");
-        document.querySelectorAll("[data-artifact-pane],.artifact-pane").forEach(x => x.classList.remove("active"));
-        if (nextArtifact) {
-          nextArtifact.classList.add("active");
-          $(nextArtifact.dataset.artifactPane).classList.add("active");
-        }
-      }
+      if (role !== "RM" && $("managerReviewPane")) $("managerReviewPane").hidden = true;
     }
 
     function renderReleaseSelect() {
@@ -3205,9 +3297,60 @@
 
     async function readFile(id) { const f = $(id).files[0]; return f ? await f.text() : ""; }
 
-    async function showArtifact(kind) {
+    function isMarkdownArtifact(kind) {
+      return markdownArtifactKinds.has(kind);
+    }
+
+    function setArtifactActionActive(kind) {
+      document.querySelectorAll(".artifact-action-row [data-kind]").forEach(btn => {
+        btn.classList.toggle("active", btn.dataset.kind === kind);
+      });
+      const managerBtn = $("managerReviewToggle");
+      if (managerBtn) managerBtn.classList.toggle("active", kind === "manager_review");
+    }
+
+    function showManagerReviewPane() {
+      const pane = $("managerReviewPane");
+      if (pane) pane.hidden = false;
+      artifactState = { kind: "", text: "", mode: "render" };
+      renderArtifactViewer();
+      setArtifactActionActive("manager_review");
+    }
+
+    function renderArtifactViewer() {
+      const viewer = $("artifactViewer");
+      if (!viewer) return;
+      if (!artifactState.kind) {
+        viewer.hidden = true;
+        setArtifactActionActive("");
+        return;
+      }
+      const markdown = isMarkdownArtifact(artifactState.kind);
+      const sourceMode = !markdown || artifactState.mode === "source";
+      viewer.hidden = false;
+      $("artifactTitle").textContent = artifactKindLabels[artifactState.kind] || artifactState.kind;
+      $("artifactMeta").textContent = markdown
+        ? (sourceMode ? "Markdown 源码" : "Markdown 渲染预览")
+        : "源码";
+      $("artifactToggle").hidden = !markdown;
+      $("artifactToggle").textContent = sourceMode ? "查看渲染" : "查看源码";
+      $("artifactText").value = artifactState.text;
+      $("artifactText").hidden = !sourceMode;
+      $("artifactRendered").hidden = sourceMode;
+      $("artifactRendered").innerHTML = sourceMode ? "" : renderMarkdown(artifactState.text);
+    }
+
+    async function showArtifact(kind, options = {}) {
       const res = await fetch(`/api/artifacts/${kind}?release_id=${encodeURIComponent(currentReleaseId())}`, { headers: headers() });
-      $("artifactText").value = res.ok ? await res.text() : "未生成 artifact";
+      artifactState.kind = kind;
+      artifactState.text = res.ok ? await res.text() : "未生成 artifact";
+      artifactState.mode = options.preserveMode
+        ? artifactState.mode
+        : (isMarkdownArtifact(kind) ? "render" : "source");
+      const managerPane = $("managerReviewPane");
+      if (managerPane && kind !== "manager_review") managerPane.hidden = true;
+      setArtifactActionActive(kind);
+      renderArtifactViewer();
     }
 
     // ===========================================================
@@ -4514,11 +4657,7 @@
         b.classList.add("active");
         $(b.dataset.initPane).classList.add("active");
       });
-      document.querySelectorAll("[data-artifact-pane]").forEach(b => b.onclick = () => {
-        document.querySelectorAll("[data-artifact-pane],.artifact-pane").forEach(x => x.classList.remove("active"));
-        b.classList.add("active");
-        $(b.dataset.artifactPane).classList.add("active");
-      });
+      if ($("managerReviewToggle")) $("managerReviewToggle").onclick = showManagerReviewPane;
       document.querySelectorAll("[data-qa-pane]").forEach(b => b.onclick = () => {
         document.querySelectorAll("[data-qa-pane],.qa-pane").forEach(x => x.classList.remove("active"));
         b.classList.add("active");
@@ -4571,6 +4710,9 @@
         lateDecisionEditAppId = "";
         pendingAppInfoFile = null;
         pendingAppInfoAppId = "";
+        artifactState = { kind: "", text: "", mode: "render" };
+        renderArtifactViewer();
+        if ($("managerReviewPane")) $("managerReviewPane").hidden = true;
         loadState(target);
       };
       $("search").oninput = renderApps;
@@ -4622,7 +4764,13 @@
         try { await post("/api/releases/final-unlock", { release_id: currentReleaseId() }); await loadState(); }
         catch (e) { alert("解锁失败：" + e.message); }
       };
-      $("preview").onclick = async () => { try { await post("/api/artifacts/generate", { release_id: currentReleaseId(), final: false }); await loadState(); } catch (e) { alert("刷新文档失败：" + e.message); } };
+      $("preview").onclick = async () => {
+        try {
+          await post("/api/artifacts/generate", { release_id: currentReleaseId(), final: false });
+          await loadState();
+          if (artifactState.kind) await showArtifact(artifactState.kind, { preserveMode: true });
+        } catch (e) { alert("刷新文档失败：" + e.message); }
+      };
       $("generateManagerReview").onclick = async () => {
         const fields = [...document.querySelectorAll("[data-manager-field]:checked")].map(el => el.dataset.managerField);
         if (!fields.length) return alert("请至少选择一个输出字段");
@@ -4635,6 +4783,10 @@
       };
       $("downloadManagerReview").onclick = () => {
         window.open(`/api/artifacts/manager_review?release_id=${encodeURIComponent(currentReleaseId())}`, "_blank");
+      };
+      $("artifactToggle").onclick = () => {
+        artifactState.mode = artifactState.mode === "source" ? "render" : "source";
+        renderArtifactViewer();
       };
       document.querySelectorAll(".download").forEach(b => b.onclick = () => showArtifact(b.dataset.kind));
       if ($("refreshMembers")) $("refreshMembers").onclick = loadMembers;
@@ -4784,6 +4936,9 @@
       await post("/api/logout", {});
       state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, qa_audit_logs: {}, release_schedule: [], user_display_names: {}, user: null };
       selectedApp = "";
+      artifactState = { kind: "", text: "", mode: "render" };
+      renderArtifactViewer();
+      if ($("managerReviewPane")) $("managerReviewPane").hidden = true;
       $("release").innerHTML = "";
       showLoggedOut();
       renderRoleChrome();
