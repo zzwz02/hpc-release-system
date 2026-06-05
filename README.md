@@ -50,7 +50,7 @@ python3.14 server.py --host 0.0.0.0 --port 9000
 
 ## 角色
 
-- **RM**：建/克隆 release、设置 deadline、改 Gerrit URL/branch、导出测试范围 CSV、生成 RST 与 Manager Review CSV、最终锁定/解锁。
+- **RM**：建/克隆 release、设置 deadline、改 Gerrit URL/branch、导出测试范围 CSV、生成 Markdown 文档与 Manager Review CSV、最终锁定/解锁。
 - **Owner**：维护自己名下的 app —— 新增 app、维护本 release 的基本信息与文档、填测试说明、上传/拉取 `app_info.json`、从其他 release 复制信息、提交 Owner 确认。
 - **QA**：对 `release` 决策的 app 标注 QA 状态、上传 QA log。
 - **Admin**：备份并清空数据库、删除单个 app。
@@ -69,6 +69,10 @@ python3.14 server.py --host 0.0.0.0 --port 9000
 - `cicd_only`：仅作 CICD/infra 跟踪，不进 QA，不生成文档。
 - `stopped`：本轮停止发布或停止维护。
 
+### 文档格式
+
+Owner 在界面用 Markdown 填写文档字段，系统生成的 release note、HPC Manual、AI4Sci User Guide artifact 均为 `.md` 文件。
+
 ### 时间阶段
 
 每个 release 有两个北京时间 deadline，阶段由 deadline 和锁状态实时派生，不存状态字段：
@@ -84,7 +88,7 @@ python3.14 server.py --host 0.0.0.0 --port 9000
 
 ### 最终锁定
 
-部门 manager review 报告并 merge 进 Gerrit 后，RM 执行 final lock：冻结本 release 全部 snapshot、生成最终 RST 与 release-data JSON。可由 RM 解锁。
+部门 manager review 报告并 merge 进 Gerrit 后，RM 执行 final lock：冻结本 release 全部 snapshot、生成最终 Markdown 文档与 release-data JSON。可由 RM 解锁。
 
 ## 工作流程概览
 
@@ -93,7 +97,7 @@ python3.14 server.py --host 0.0.0.0 --port 9000
 3. Owner 在「App 工作台」确认 release 决策，维护本 release 的基本信息、文档、`app_info.json`、test_cmd 说明（可「从其他版本复制信息」），提交 Owner 确认。
 4. RM 导出测试范围 CSV 交给 QA。
 5. QA 在「QA」页上传 log，标注 `qa_passed` / `has_issues` / `cannot_release`。
-6. RM 刷新文档 RST 和 Manager Review CSV，供部门 manager 审核。
+6. RM 刷新 Markdown 文档和 Manager Review CSV，供部门 manager 审核。
 7. manager review/merge 后，RM 执行最终 Lock Release。
 
 面向 owner 和 manager 的简明流程见 [release_process_owner_manager.md](./release_process_owner_manager.md)，设计文档见 [release_system_plan.md](./release_system_plan.md)。
@@ -222,15 +226,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\static_checks.ps1
 ## 体验改善建议（待评估）
 
 以下为已讨论、尚未实现的体验增强方向，记录备查。
-
-### Owner 用 Markdown 编写文档
-
-- Owner 填写 doc 字段时用 Markdown（多数人不熟 RST），界面提供实时预览。
-- snapshot 仍只存 Markdown 原文；仅在 RM 生成 artifacts 时把 Markdown 转成 RST（官方 HPC Manual / AI4Sci 文档工程必须用 RST，MyST 不可选）。预览直接渲染所存的 Markdown。
-- MD→RST 转换器有两条路，**转换必须是确定性的，不要用 AI**：
-  - A：调用 `pandoc`（标准、健壮，几乎不用写转换代码）；代价是每个部署环境都要安装 pandoc，且文档生成会硬依赖它。
-  - B：自写一个受限 Markdown 子集转换器（纯 stdlib、完全自包含）；代价是要维护、有边界情况。可行性不低 —— owner 字段都很短，且 MD 与 RST 在段落、加粗、列表上基本重合，真正要转的只有围栏代码块、标题、链接、行内代码。
-  - 决策点：部署环境能否保证装有 pandoc。
 
 ### AI 辅助（需先决定是否引入外部 LLM API）
 

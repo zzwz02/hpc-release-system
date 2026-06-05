@@ -76,4 +76,4 @@ RM 生成的 `Manager Review CSV` 覆盖本 release 全部 app，重点字段：
 
 ## 最终输出
 
-Final Lock 后冻结本 release 的全部 snapshot，并生成 release note RST、HPC Manual RST、AI4Sci User Guide RST、release-data JSON。锁定后如需修正，由 RM 解锁处理，或放到下一个 release。
+Final Lock 后冻结本 release 的全部 snapshot，并生成 release note Markdown、HPC Manual Markdown、AI4Sci User Guide Markdown、release-data JSON。锁定后如需修正，由 RM 解锁处理，或放到下一个 release。

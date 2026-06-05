@@ -716,10 +716,10 @@
         <div class="panel-head"><h2>发布文档 / release-data</h2></div>
         <div class="panel-body">
           <div class="subtabs">
-            <button class="subtab active" data-artifact-pane="rstArtifactPane">文档刷新</button>
+            <button class="subtab active" data-artifact-pane="markdownArtifactPane">文档 / release-data</button>
             <button class="subtab" data-artifact-pane="managerReviewPane" data-roles="RM">Manager Review CSV</button>
           </div>
-          <div id="rstArtifactPane" class="artifact-pane active">
+          <div id="markdownArtifactPane" class="artifact-pane active">
             <div class="row">
               <button class="btn primary" id="preview" data-roles="RM,Owner">刷新文档</button>
               <button class="btn download" data-kind="release_note">查看 release note</button>
@@ -1340,7 +1340,7 @@
       return (usernames || []).map(u => [u, userDisplayName(u)].filter(Boolean).join(" ")).join(" ");
     }
     const releaseDecisionLabels = {
-      release: "release：进入 release note/RST/QA",
+      release: "release：进入 release note/文档/QA",
       cicd_only: "cicd_only：仅纳入 CICD 构建/测试管控",
       stopped: "stopped：停止维护/停止发布"
     };
@@ -2426,7 +2426,7 @@
             </div>
           </details>
           <details class="section" data-sec="doc" open>
-            <summary><span class="chev">▶</span> 文档字段 （markdown格式） <span class="badge">${rel ? docBadge(snap) : ""}</span></summary>
+            <summary><span class="chev">▶</span> 文档字段（Markdown 格式） <span class="badge">${rel ? docBadge(snap) : ""}</span></summary>
             <div class="section-body">
               ${docArea("intro", "基本介绍", snap.doc.intro, disabled)}
               ${docArea("image_usage", "镜像使用方法", snap.doc.image_usage, disabled)}

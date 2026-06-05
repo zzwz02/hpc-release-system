@@ -4,13 +4,13 @@
 
 ## 1. 目标
 
-构建一个内部发布信息协作系统。系统数据库是 release lock 前的工作主数据源，负责维护 app 发布信息、owner 填写内容、`app_info.json` 快照、QA 状态、发布门禁和生成 RST 文档所需信息。
+构建一个内部发布信息协作系统。系统数据库是 release lock 前的工作主数据源，负责维护 app 发布信息、owner 填写内容、`app_info.json` 快照、QA 状态、发布门禁和生成 Markdown 文档所需信息。
 
 数据源关系：
 
 - 系统数据库是 release lock 前的工作主数据源。
 - Release-data Gerrit 是发布锁定后的审计和追溯源，保存 owner 填写信息、`app_info.json` 来源和冻结快照。
-- 官方 docs 仓库是发布输出仓库，保存 review 后合入的 RST 文档；后续 release 不从官方 docs 反向导入作为主数据。
+- 官方 docs 仓库是发布输出仓库，保存 review 后合入的 Markdown 文档；后续 release 不从官方 docs 反向导入作为主数据。
 
 系统需要解决以下问题：
 
@@ -75,7 +75,7 @@ Release Manager：
 - 查看实时发布待办/门禁，导出 release 决策为 `release` 的 app 测试范围 CSV，交给 QA 获取测试范围。
 - 审批新增 app、停止发布和 QA 期间关键字段删减。
 - 锁定 release 快照。
-- 生成 RST 预览、Manager Review CSV、最终 RST，并准备 Gerrit review 流程。
+- 生成 Markdown 预览、Manager Review CSV、最终 Markdown 文档，并准备 Gerrit review 流程。
 
 QA：
 
@@ -131,9 +131,9 @@ QA：
 
 `GeneratedArtifact`
 
-- 生成的 RST 或 release-data 导出。
+- 生成的 Markdown 文档或 release-data 导出。
 - 字段：artifact 类型、release 周期、预览/最终标志、生成时间、内容、文件名、Gerrit project、Gerrit change URL、Gerrit patch set、状态。
-- 当前 artifact 类型包括：release note RST、HPC Manual RST、AI4Sci User Guide RST、release-data JSON、Manager Review CSV。
+- 当前 artifact 类型包括：release note Markdown、HPC Manual Markdown、AI4Sci User Guide Markdown、release-data JSON、Manager Review CSV。
 
 ## 5. 必填字段
 
@@ -177,7 +177,7 @@ HPC Manual 和 AI4Sci User Guide 都使用完整 app 文档模板。两份文档
 - Owner。
 - `git_url`。
 - `git_branch`。
-- Release 决策为 `cicd_only` 或 `stopped` 的 app 不进入 QA 表单，不生成 RST，不要求填写 RST 文档字段。
+- Release 决策为 `cicd_only` 或 `stopped` 的 app 不进入 QA 表单，不生成 Markdown 文档，不要求填写 Markdown 文档字段。
 - Manager Review CSV 仍会列出这些 app，方便 RM 和 manager 看到完整状态。
 
 ## 6. 测试说明强制规则
@@ -212,7 +212,7 @@ Owner 可以新增 `app_info.json` 中没有的测试项：
 - 未确认的 `AppInfoDiff` 会阻塞该 app 进入最终发布输出。
 - 如果没有可用且可追溯的 `AppInfoSnapshot`，系统必须阻止 release app 进入最终发布输出。
 - Release 决策不是 `release` 的 app 不显示 QA 未测试，不进入 QA 表单，发布待办/门禁项为空。
-- `has_issues` 表示 QA 存在已知问题但允许发布；其问题说明会合并到已知限制，供 RST 和 Manager Review CSV 使用。
+- `has_issues` 表示 QA 存在已知问题但允许发布；其问题说明会合并到已知限制，供 Markdown 文档和 Manager Review CSV 使用。
 
 可选一致性检查：
 
@@ -246,14 +246,14 @@ Owner 可以新增 `app_info.json` 中没有的测试项：
 9. RM 导出 release 决策为 `release` 的 app 测试范围 CSV，手动下载/拉取 app_info 形成 QA 测试范围。
 10. QA 只测试 release 决策为 `release` 的 app，并在 QA 页面上传测试 log、标注 QA 状态。
 11. RM 可随时在总览和 App 工作台查看实时发布待办/门禁。
-12. 测试尾声 RM 在 RST 页面刷新文档；release note 只包含当前可发布 app，HPC Manual / AI4Sci User Guide 只包含 release 决策为 `release` 且文档完整、Owner 已确认的 app。
-13. RM 在 RST 页面生成 Manager Review CSV。CSV 覆盖当前 release 的所有 app，字段由复选框选择。
+12. 测试尾声 RM 在发布文档页面刷新 Markdown 文档；release note 只包含当前可发布 app，HPC Manual / AI4Sci User Guide 只包含 release 决策为 `release` 且文档完整、Owner 已确认的 app。
+13. RM 在发布文档页面生成 Manager Review CSV。CSV 覆盖当前 release 的所有 app，字段由复选框选择。
 14. 部门 manager review 后，RM 锁定 release。
 15. 系统冻结所有 release 快照。
-16. 系统生成最终 release note、HPC Manual、AI4Sci User Guide RST 和 release-data JSON。
-17. 系统将 RST 推送到官方 docs Gerrit。
+16. 系统生成最终 release note、HPC Manual、AI4Sci User Guide Markdown 和 release-data JSON。
+17. 系统将 Markdown 文档推送到官方 docs Gerrit。
 18. 系统将 owner 填写信息和冻结快照推送到 release-data Gerrit。
-19. RM review RST 并合入官方 docs 仓库。
+19. RM review Markdown 文档并合入官方 docs 仓库。
 
 `app_info.json` 差异展示：
 
@@ -289,7 +289,7 @@ Owner 可以新增 `app_info.json` 中没有的测试项：
 
 - Owner 提交停止发布请求，包含原因和生效 release。
 - RM 在发布周期开始 deadline 前检查完整性和影响。
-- 审批通过后，该 app 从本 release QA 和生成 RST 中排除。
+- 审批通过后，该 app 从本 release QA 和生成 Markdown 文档中排除。
 - 系统通过总览、App 工作台和 Manager Review CSV 让 owner、RM、QA 和相关 infra 成员看到停止发布状态。
 - 停止发布状态流转：`停止申请` -> `RM 审批` -> `停止生效` -> `状态可见`。
 
@@ -314,7 +314,7 @@ QA 期间：
 - 从某个 app 的 release 范围中移除芯片。
 - 从某个 app 的 release 范围中移除架构。
 - 取消某种二进制包、镜像或发布形态。
-- 将 app 标记为 `cicd_only` 或 `stopped`，使其退出本 release 的 QA 和 RST 输出。
+- 将 app 标记为 `cicd_only` 或 `stopped`，使其退出本 release 的 QA 和 Markdown 文档输出。
 
 QA 开始后禁止的新增：
 
@@ -358,14 +358,14 @@ QA 开始后禁止的新增：
 文档刷新：
 
 - 发布锁定前，一键刷新只创建系统内部文档 artifact。
-- 文档 artifact 包括 release note、HPC Manual、AI4Sci User Guide RST。
+- 文档 artifact 包括 release note、HPC Manual、AI4Sci User Guide Markdown。
 - Release note 只包含当前可发布 app；可发布条件：release 决策为 `release`、Owner 已确认、文档/测试说明/app_info/diff 等非 QA 门禁清空、QA 状态为 `qa_passed` 或 `has_issues`。
 - HPC Manual / AI4Sci User Guide 只包含 release 决策为 `release` 且文档完整、Owner 已确认的 app，不受 QA 状态影响。
 - Release 未锁定时，文档可重复刷新。
 
 Manager Review CSV：
 
-- RST 页面提供 `Manager Review CSV` 子 tab。
+- 发布文档页面提供 `Manager Review CSV` 子 tab。
 - RM 通过复选框选择输出字段。
 - 默认字段：App、版本号、Owner、支持芯片类型、是否可发布、不可发布原因、已知限制。
 - 可选字段还包括：官方名称、文档类型、App类型、X86支持芯片、ARM支持芯片、Release决策、QA状态、Owner确认、Gerrit URL、Branch。
@@ -375,12 +375,12 @@ Manager Review CSV：
 最终生成：
 
 - 发布锁定会冻结所有快照。
-- 系统只从冻结快照生成最终 RST，且最终 RST 只包含可发布 app。
-- 系统保存最终 RST 的内容 hash。
+- 系统只从冻结快照生成最终 Markdown 文档，且最终 Markdown 文档只包含可发布 app。
+- 系统保存最终 Markdown 文档的内容 hash。
 
 Gerrit 推送：
 
-- Release note、HPC Manual、AI4Sci User Guide RST 推送到官方 docs Gerrit 仓库。
+- Release note、HPC Manual、AI4Sci User Guide Markdown 推送到官方 docs Gerrit 仓库。
 - Owner 填写信息、app-info 来源元数据、冻结 release 快照推送到独立 release-data Gerrit 仓库。
 - RM review 官方 docs Gerrit change，并合入官方 docs 仓库。
 
@@ -398,7 +398,7 @@ Gerrit 推送：
 - `QA 重新检查`
 - `等待发布锁定`
 - `Release 已锁定`
-- `最终 RST 已生成`
+- `最终 Markdown 已生成`
 - `Docs/Data Gerrit 已推送`
 - `Docs 已合入`
 - `已取消`
@@ -479,7 +479,7 @@ Artifact 状态：
 - Release app 未为每个 `app_info.json` `test_cmd` 填写完整测试说明时，不能进入最终发布输出。
 - Release app 没有可追溯 `AppInfoSnapshot` 时，不能进入最终发布输出。
 - 未确认的 `AppInfoDiff` 会阻塞该 app 进入最终发布输出。
-- `cicd_only` 和 `stopped` app 不要求 RST 字段，不进入 QA 表单，不显示 QA 未测试。
+- `cicd_only` 和 `stopped` app 不要求 Markdown 文档字段，不进入 QA 表单，不显示 QA 未测试。
 
 QA 校验：
 
@@ -495,17 +495,17 @@ Artifact 校验：
 - Release note 预览和最终 release note 都只包含可发布 app。
 - HPC Manual / AI4Sci User Guide 预览和最终文档都只包含 release 决策为 `release` 且文档完整、Owner 已确认的 app，不受 QA 状态影响。
 - Manager Review CSV 必须包含当前 release 的所有 app，并按 RM 选择的字段输出。
-- 最终 RST 只从冻结快照生成。
-- 最终 RST 推送到官方 docs Gerrit。
+- 最终 Markdown 文档只从冻结快照生成。
+- 最终 Markdown 文档推送到官方 docs Gerrit。
 - 冻结后的 owner data 和 release 快照推送到 release-data Gerrit。
-- ReleaseCycle 顶层状态必须能区分最终 RST 生成、Docs/Data Gerrit 推送和 Docs 合入。
-- 生成的 RST 能通过 RST/Sphinx 校验。
+- ReleaseCycle 顶层状态必须能区分最终 Markdown 文档生成、Docs/Data Gerrit 推送和 Docs 合入。
+- 生成的 Markdown 文档能通过 docs 构建校验。
 
 ## 13. V1 假设
 
 - 初版使用本地账号，不接 LDAP/SSO。
-- 初版不触发实际流水线；`cicd_only` 仅作为 release 决策，表示不进入 RST/QA/发布输出。
+- 初版不触发实际流水线；`cicd_only` 仅作为 release 决策，表示不进入 Markdown 文档/QA/发布输出。
 - 通知使用站内待办加 SMTP 邮件。
-- RST 推送到官方 docs Gerrit 仓库。
+- Markdown 文档推送到官方 docs Gerrit 仓库。
 - Owner 填写信息和冻结快照推送到独立 release-data Gerrit 仓库。
 - 状态机图片使用 SVG，不依赖 Mermaid、Graphviz、Node 或 npm。

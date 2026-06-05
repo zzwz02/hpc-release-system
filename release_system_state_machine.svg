@@ -64,7 +64,7 @@
   <text x="1463" y="268" text-anchor="middle" class="small">RM 在部门 manager 审核后</text>
   <text x="1463" y="286" text-anchor="middle" class="small">执行 Final Lock</text>
   <text x="1463" y="304" text-anchor="middle" class="small">快照不可变；生成最终</text>
-  <text x="1463" y="322" text-anchor="middle" class="small">RST + release-data</text>
+  <text x="1463" y="322" text-anchor="middle" class="small">Markdown + release-data</text>
 
   <text x="353" y="203" text-anchor="middle" class="tlabel">release 建立</text>
   <text x="670" y="203" text-anchor="middle" class="tlabel">过 App 冻结 deadline</text>
@@ -160,11 +160,11 @@
   <text x="636" y="1106" text-anchor="middle" class="small">快照冻结、不可变</text>
 
   <rect x="775" y="1014" width="300" height="40" class="data" />
-  <text x="925" y="1039" text-anchor="middle" class="label">release note RST</text>
+  <text x="925" y="1039" text-anchor="middle" class="label">release note Markdown</text>
   <rect x="775" y="1060" width="300" height="40" class="data" />
-  <text x="925" y="1085" text-anchor="middle" class="label">HPC Manual App 章节 RST</text>
+  <text x="925" y="1085" text-anchor="middle" class="label">HPC Manual App 章节 Markdown</text>
   <rect x="775" y="1106" width="300" height="40" class="data" />
-  <text x="925" y="1131" text-anchor="middle" class="label">AI4Sci User Guide 章节 RST</text>
+  <text x="925" y="1131" text-anchor="middle" class="label">AI4Sci User Guide 章节 Markdown</text>
   <rect x="775" y="1152" width="300" height="40" class="data" />
   <text x="925" y="1177" text-anchor="middle" class="label">release-data JSON</text>
 

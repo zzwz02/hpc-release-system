@@ -3028,8 +3028,9 @@ def _md_cell(value: Any) -> str:
 def release_rows(conn: sqlite3.Connection, release: dict[str, Any], *, final: bool = False) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     """Rows for the release note.
 
-    Preview and final RST both include only apps that currently qualify for
-    release. Unfinished apps stay visible in missing_items, not generated RST.
+    Preview and final Markdown both include only apps that currently qualify
+    for release. Unfinished apps stay visible in missing_items, not generated
+    Markdown.
     """
     apps = {app["id"]: app for app in list_apps(conn)}
     rows = []
