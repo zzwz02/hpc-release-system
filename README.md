@@ -18,10 +18,10 @@
 | 认证 | PBKDF2-HMAC-SHA256 口令，会话 token 存 cookie |
 | 测试 | `unittest` + PowerShell 静态检查 |
 
-开发 WIKI 的 Markdown 阅读/预览使用前端 CDN 依赖：
+开发 WIKI 的 Markdown 阅读/预览使用本地前端依赖，内网部署无需访问外部 CDN：
 
-- `marked`：Markdown → HTML
-- `DOMPurify`：清理 Markdown 渲染出的 HTML
+- `assets/vendor/marked-18.0.5.umd.js`：Markdown → HTML
+- `assets/vendor/dompurify-3.4.8.min.js`：清理 Markdown 渲染出的 HTML
 
 写接口和写 helper 应使用 `core.transaction(conn)` 包住完整业务操作；成功时只提交一次，失败时统一 rollback，避免 audit 与 snapshot 等相关写入出现半状态。
 
