@@ -507,6 +507,14 @@
   .cicd-diff-table td{padding:6px 10px;border:1px solid var(--border);vertical-align:top;}
   .cicd-diff-old{color:var(--bad-fg);background:var(--bad-bg);}
   .cicd-diff-new{color:var(--ok-fg);background:var(--ok-bg);}
+  .cicd-context{border:1px solid var(--border);border-radius:8px;background:#fafbfc;margin:10px 0 12px;overflow:hidden;}
+  .cicd-context-title{padding:8px 11px;border-bottom:1px solid var(--border);font-weight:800;font-size:12px;color:var(--ink);}
+  .cicd-context-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0;}
+  .cicd-context-item{padding:8px 11px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);min-width:0;}
+  .cicd-context-item:nth-child(2n){border-right:0;}
+  .cicd-context-item:nth-last-child(-n+2){border-bottom:0;}
+  .cicd-context-label{font-size:11px;color:var(--muted);margin-bottom:3px;}
+  .cicd-context-value{font-size:13px;color:var(--ink);font-weight:700;word-break:break-all;}
   .cicd-history-entry{border:1px solid var(--border);border-radius:9px;padding:11px 14px;margin-bottom:9px;}
   .cicd-history-entry:last-child{margin-bottom:0;}
   .cicd-history-meta{font-size:12px;color:var(--muted);margin-bottom:7px;}
@@ -3967,6 +3975,46 @@
       return `<table class="cicd-diff-table"><thead><tr><th>字段</th><th>原值</th><th>新值</th></tr></thead><tbody>${rows}</tbody></table>`;
     }
 
+    function cicdTaskContext(req) {
+      const task = req.task_id ? cicdTasks.find(t => t.id === req.task_id) : null;
+      const payload = req.payload || {};
+      const fromPayload = field => {
+        const value = payload[field];
+        if (req.request_type === "create") return value ?? "";
+        if (value && typeof value === "object" && !Array.isArray(value)) return value.old ?? value.new ?? "";
+        return "";
+      };
+      const pick = (field, taskField, reqField) =>
+        task?.[taskField] ?? req?.[reqField] ?? fromPayload(field) ?? "";
+      return {
+        id: req.task_id || "",
+        app_name: pick("app_name", "app_name", "task_app_name"),
+        app_version: pick("app_version", "app_version", "task_app_version"),
+        repo_name: pick("repo_name", "repo_name", "task_repo_name"),
+        branch: pick("branch", "branch", "task_branch"),
+      };
+    }
+
+    function cicdModifyContextBlock(req) {
+      if (req.request_type !== "modify") return "";
+      const ctx = cicdTaskContext(req);
+      const items = [
+        ["项目名称", ctx.app_name || "—"],
+        ["版本", ctx.app_version || "—"],
+        ["仓库名", ctx.repo_name || "—"],
+        ["分支", ctx.branch || "—"],
+      ];
+      return `<div class="cicd-context">
+        <div class="cicd-context-title">任务基础信息</div>
+        <div class="cicd-context-grid">
+          ${items.map(([label, value]) => `<div class="cicd-context-item">
+            <div class="cicd-context-label">${esc(label)}</div>
+            <div class="cicd-context-value">${esc(String(value))}</div>
+          </div>`).join("")}
+        </div>
+      </div>`;
+    }
+
     // --- Task form dialog ---
     function openCicdTaskDialog(taskId = null, prefillReqId = null) {
       cicdEditTaskId = taskId;
@@ -4130,6 +4178,7 @@
             类型：${esc(cicdReqTypeLabel[req.request_type] || req.request_type)} &nbsp;|&nbsp;
             ${req.task_id ? "任务：" + esc(req.task_id) : "新建任务"}
           </div>
+          ${cicdModifyContextBlock(req)}
           ${cicdDiffTable(req.payload, req.request_type)}
         `;
         // Bind approval mode radio
@@ -4254,6 +4303,7 @@
         + jiraCell + delivCell
         + `</div>`
         + reviewRow
+        + cicdModifyContextBlock(req)
         + cicdDiffTable(req.payload, req.request_type);
       const dlg = $("cicdDetailDialog");
       if (dlg.showModal) dlg.showModal(); else dlg.open = true;

@@ -3787,6 +3787,7 @@ def list_cicd_requests(
         d = dict(r)
         d["payload"] = _load_cicd_payload(d.get("payload") or "{}")
         result.append(d)
+    _attach_cicd_request_task_info(conn, result)
     return result
 
 
@@ -3805,6 +3806,7 @@ def get_cicd_task_history(conn: sqlite3.Connection, task_id: str) -> list[dict]:
         d = dict(r)
         d["payload"] = _load_cicd_payload(d.get("payload") or "{}")
         result.append(d)
+    _attach_cicd_request_task_info(conn, result)
     return result
 
 
@@ -4030,31 +4032,35 @@ def list_cicd_deliveries(
         d = dict(r)
         d["payload"] = _load_cicd_payload(d.get("payload") or "{}")
         result.append(d)
-    _attach_delivery_task_info(conn, result)
+    _attach_cicd_request_task_info(conn, result)
     return result
 
 
-def _attach_delivery_task_info(conn: sqlite3.Connection, deliveries: list[dict]) -> None:
-    """Attach current task app_name/app_version/status to each delivery record."""
-    task_ids = [d["task_id"] for d in deliveries if d.get("task_id")]
+def _attach_cicd_request_task_info(conn: sqlite3.Connection, requests: list[dict]) -> None:
+    """Attach current task context to CICD request records."""
+    task_ids = list({d["task_id"] for d in requests if d.get("task_id")})
     task_map: dict = {}
     if task_ids:
         rows = conn.execute(
-            "SELECT id, app_name, app_version, status FROM cicd_tasks WHERE id IN ({})".format(
+            "SELECT id, app_name, app_version, repo_name, branch, status FROM cicd_tasks WHERE id IN ({})".format(
                 ",".join("?" * len(task_ids))
             ),
             task_ids,
         ).fetchall()
         task_map = {r["id"]: dict(r) for r in rows}
-    for d in deliveries:
+    for d in requests:
         t = task_map.get(d.get("task_id") or "", {})
         if not t and d.get("request_type") == "create":
             # task not yet created; get display info from the create payload
             p = d.get("payload") or {}
             d["task_app_name"] = p.get("app_name", "")
             d["task_app_version"] = p.get("app_version", "")
+            d["task_repo_name"] = p.get("repo_name", "")
+            d["task_branch"] = p.get("branch", "")
             d["task_status"] = p.get("status", "Running")
         else:
             d["task_app_name"] = t.get("app_name", "")
             d["task_app_version"] = t.get("app_version", "")
+            d["task_repo_name"] = t.get("repo_name", "")
+            d["task_branch"] = t.get("branch", "")
             d["task_status"] = t.get("status", "")

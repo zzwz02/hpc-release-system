@@ -175,6 +175,50 @@ class CoreWorkflowTests(unittest.TestCase):
         release_id = core.import_initial(self.conn, self.init_csv, **kwargs)
         return release_id, core.normalize_name("amber")
 
+    # --- CICD workbench ---
+
+    def test_cicd_modify_request_includes_task_context(self) -> None:
+        create_req = core.submit_cicd_request(
+            self.conn,
+            task_id=None,
+            request_type="create",
+            payload={
+                "app_name": "hpc-demo",
+                "app_version": "1.0",
+                "repo_type": "git",
+                "repo_name": "ssh://gerrit/demo",
+                "branch": "main",
+                "build_product": ["maca"],
+                "community_artifact": ["image"],
+                "build_image": "demo/base:latest",
+                "test_timeout": 40,
+                "owner_username": "owner",
+                "status": "Running",
+                "notes": "",
+            },
+            submitter="rm",
+            submitter_role="RM",
+            submitter_display="RM",
+        )
+        task_id = create_req["task_id"]
+
+        core.submit_cicd_request(
+            self.conn,
+            task_id=task_id,
+            request_type="modify",
+            payload={"notes": {"old": "", "new": "update note"}},
+            submitter="owner",
+            submitter_role="Owner",
+            submitter_display="Owner",
+        )
+
+        req = core.list_cicd_requests(self.conn, status_filter="pending", role="RM")[0]
+        self.assertEqual(req["request_type"], "modify")
+        self.assertEqual(req["task_app_name"], "hpc-demo")
+        self.assertEqual(req["task_app_version"], "1.0")
+        self.assertEqual(req["task_repo_name"], "ssh://gerrit/demo")
+        self.assertEqual(req["task_branch"], "main")
+
     # --- deadline parsing ---
 
     def test_normalize_deadline_accepts_common_formats(self) -> None:
