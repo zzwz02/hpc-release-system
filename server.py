@@ -12,7 +12,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 try:
     import ldap3
@@ -38,6 +38,16 @@ _LDAP_CONFIG: dict = {"enabled": False}
 _QA_ANALYSIS_LOCK = threading.Lock()
 _QA_ANALYSIS_JOBS: dict[str, dict] = {}
 _QA_ANALYSIS_TTL_SECONDS = 3600
+
+
+def attachment_disposition(filename: str) -> str:
+    name = str(filename or "download").strip() or "download"
+    fallback = "".join(
+        ch if 32 <= ord(ch) < 127 and ch not in {'"', "\\", ";", "/"} else "_"
+        for ch in name
+    ).strip("._ ")
+    fallback = fallback or "download"
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(name, safe='')}"
 
 
 def _load_ldap_config() -> dict:
@@ -399,7 +409,7 @@ class Handler(BaseHTTPRequestHandler):
                     filename = f"test_scope_{release['name']}.csv"
                     self.send_response(200)
                     self.send_header("Content-Type", "text/csv; charset=utf-8-sig")
-                    self.send_header("Content-Disposition", f"attachment; filename={filename}")
+                    self.send_header("Content-Disposition", attachment_disposition(filename))
                     self.end_headers()
                     self.wfile.write("﻿".encode("utf-8") + csv_text.encode("utf-8"))
                     return
@@ -418,7 +428,7 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     self.send_response(200)
                     self.send_header("Content-Type", "application/octet-stream")
-                    self.send_header("Content-Disposition", f"attachment; filename={meta['filename']}")
+                    self.send_header("Content-Disposition", attachment_disposition(meta["filename"]))
                     self.end_headers()
                     self.wfile.write(path.read_bytes())
                     return
@@ -429,7 +439,9 @@ class Handler(BaseHTTPRequestHandler):
                     compare_id = q.get("compare_release_id", [""])[0]
                     if not release_id:
                         raise ValueError("release_id is required")
-                    self.send_json(core.build_qa_reports(self.conn(), release_id, compare_id or None))
+                    reports = core.build_qa_reports(self.conn(), release_id, compare_id or None)
+                    reports["generated_at"] = core.now()
+                    self.send_json(reports)
                     return
                 # --- CICD workbench ---
                 if parsed.path == "/api/cicd/tasks":
@@ -492,14 +504,16 @@ class Handler(BaseHTTPRequestHandler):
                     if user["role"] != "RM" and kind not in {"release_note", "manual", "ai4sci", "data"}:
                         raise AuthzError("只有 RM 可查看该 artifact")
                     release_id = self.query().get("release_id", [""])[0]
-                    row = self.conn().execute("SELECT name, content FROM artifacts WHERE release_id = ? AND kind = ?", (release_id, kind)).fetchone()
+                    row = self.conn().execute("SELECT name, content, generated_at FROM artifacts WHERE release_id = ? AND kind = ?", (release_id, kind)).fetchone()
                     if not row:
                         self.send_error(404, "artifact not found")
                         return
                     self.send_response(200)
                     content_type = "text/csv; charset=utf-8-sig" if row["name"].lower().endswith(".csv") else "text/plain; charset=utf-8"
                     self.send_header("Content-Type", content_type)
-                    self.send_header("Content-Disposition", f"attachment; filename={row['name']}")
+                    self.send_header("Content-Disposition", attachment_disposition(row["name"]))
+                    self.send_header("X-Artifact-Name", row["name"])
+                    self.send_header("X-Artifact-Generated-At", row["generated_at"])
                     self.end_headers()
                     if row["name"].lower().endswith(".csv"):
                         self.wfile.write("﻿".encode("utf-8"))

@@ -547,6 +547,7 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
 
     def test_generate_manager_review_csv_includes_all_apps_and_selected_fields(self) -> None:
         release_id, app_id = self.import_initial()
+        core.ldap_login_or_create(self.conn, "张三", "Zhang San", ["dl.pde_sa"])
         other_id = core.add_new_app_request(
             self.conn,
             release_id,
@@ -558,26 +559,62 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         )
         core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
         core.update_snapshot(self.conn, release_id, app_id, _fill_ready)
-        core.qa_set_status(self.conn, release_id, app_id, "has_issues", issue_note="known regression")
-        csv_text = core.generate_manager_review_csv(
+        core.update_snapshot(
             self.conn,
             release_id,
-            ["app_name", "version", "owners", "releasable", "not_releasable_reason", "known_limitations"],
+            app_id,
+            lambda s: s["doc"].update({"limitations": "owner limitation"}),
         )
+        core.qa_set_status(self.conn, release_id, app_id, "has_issues", issue_note="known regression")
+        generated_at = "2026-06-06T01:02:03+00:00"
+        with mock.patch("release_system.core.now", return_value=generated_at):
+            csv_text = core.generate_manager_review_csv(
+                self.conn,
+                release_id,
+                ["app_name", "version", "owners", "qa_issue_note", "releasable", "not_releasable_reason", "known_limitations"],
+            )
         rows = list(csv.DictReader(io.StringIO(csv_text)))
         by_name = {row["App"]: row for row in rows}
         self.assertEqual(set(by_name), {"Amber 22", "OtherApp"})
         self.assertEqual(by_name["Amber 22"]["是否可发布"], "是")
         self.assertEqual(by_name["Amber 22"]["不可发布原因"], "")
-        self.assertIn("QA 备注：known regression", by_name["Amber 22"]["已知限制"])
+        self.assertEqual(by_name["Amber 22"]["Owner"], "Zhang San")
+        self.assertEqual(by_name["Amber 22"]["QA问题"], "known regression")
+        self.assertEqual(by_name["Amber 22"]["已知限制"], "owner limitation")
         self.assertEqual(by_name["OtherApp"]["是否可发布"], "否")
-        self.assertIn("cicd_only", by_name["OtherApp"]["不可发布原因"])
+        self.assertEqual(by_name["OtherApp"]["Owner"], "x")
+        self.assertEqual(by_name["OtherApp"]["不可发布原因"], "Release决策非发布")
+        with mock.patch("release_system.core.now", return_value=generated_at):
+            default_header = next(csv.reader(io.StringIO(core.generate_manager_review_csv(self.conn, release_id))))
+        self.assertEqual(default_header, ["App", "Owner", "支持芯片类型", "QA问题", "是否可发布", "不可发布原因", "已知限制"])
         artifact = self.conn.execute(
-            "SELECT name, content FROM artifacts WHERE release_id = ? AND kind = 'manager_review'",
+            "SELECT name, content, generated_at FROM artifacts WHERE release_id = ? AND kind = 'manager_review'",
             (release_id,),
         ).fetchone()
-        self.assertEqual(artifact["name"], "manager_review.csv")
+        self.assertEqual(artifact["name"], "manager_review_20260511-695_20260606_090203.csv")
+        self.assertEqual(artifact["generated_at"], generated_at)
         self.assertIn(other_id, core.get_release(self.conn, release_id)["snapshots"])
+
+    def test_manager_review_not_releasable_reason_uses_categories(self) -> None:
+        release_id, app_id = self.import_initial()
+        core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")
+        csv_text = core.generate_manager_review_csv(
+            self.conn,
+            release_id,
+            ["app_name", "not_releasable_reason"],
+        )
+        row = next(csv.DictReader(io.StringIO(csv_text)))
+        self.assertEqual(row["不可发布原因"], "文档/发布信息未完成；Owner未确认；QA未测试")
+
+        core.update_snapshot(self.conn, release_id, app_id, _fill_ready)
+        core.qa_set_status(self.conn, release_id, app_id, "cannot_release")
+        csv_text = core.generate_manager_review_csv(
+            self.conn,
+            release_id,
+            ["app_name", "not_releasable_reason"],
+        )
+        row = next(csv.DictReader(io.StringIO(csv_text)))
+        self.assertEqual(row["不可发布原因"], "QA定为不可发布")
 
     # --- update_snapshot deadline gating ---
 

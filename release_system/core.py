@@ -504,6 +504,7 @@ MANAGER_REVIEW_FIELDS = [
     ("version", "版本号"),
     ("owners", "Owner"),
     ("chip_support", "支持芯片类型"),
+    ("qa_issue_note", "QA问题"),
     ("x86_chips", "X86支持芯片"),
     ("arm_chips", "ARM支持芯片"),
     ("release_decision", "Release决策"),
@@ -517,9 +518,9 @@ MANAGER_REVIEW_FIELDS = [
 ]
 DEFAULT_MANAGER_REVIEW_FIELDS = [
     "app_name",
-    "version",
     "owners",
     "chip_support",
+    "qa_issue_note",
     "releasable",
     "not_releasable_reason",
     "known_limitations",
@@ -2583,6 +2584,7 @@ def export_test_scope_csv(conn: sqlite3.Connection, release_id: str) -> str:
     """Return CSV text of release-decision=release apps in the release."""
     release = get_release(conn, release_id)
     apps = {app["id"]: app for app in list_apps(conn)}
+    display_names = _user_display_names(conn)
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow(["app_name", "version", "gerrit_url", "branch", "owners"])
@@ -2600,7 +2602,7 @@ def export_test_scope_csv(conn: sqlite3.Connection, release_id: str) -> str:
                 snapshot.get("version", ""),
                 view["git_url"],
                 view["git_branch"],
-                ",".join(view["owners"]),
+                _owner_display_text(view["owners"], display_names),
             )
         )
     rows.sort(key=lambda r: r[0].lower())
@@ -2857,6 +2859,7 @@ def build_qa_reports(
     release_rows_meta: list[dict[str, Any]] = []
     test_rows: list[list[str]] = []
     compare_active = bool(compare_release_id) and compare_release_id != release_id
+    display_names = _user_display_names(conn)
     for view, app, snapshot, app_id in items:
         community = snapshot.get("community") or {}
         sanity = snapshot.get("sanity") or {}
@@ -2866,7 +2869,7 @@ def build_qa_reports(
         release_rows.append([
             "AI4Sci" if view["doc_target"] == "ai4sci" else "HPC",  # 类别
             view["official_name"],
-            ",".join(view["owners"]),
+            _owner_display_text(view["owners"], display_names),
             view["type"],
             view["description"],
             view["official_url"],
@@ -3159,11 +3162,15 @@ def render_release_note(release: dict[str, Any], rows: list[tuple[dict[str, Any]
 
 def _merged_limitations(snapshot: dict[str, Any]) -> str:
     """Merge owner-written limitations with QA's issue note if any."""
-    text = (snapshot.get("doc", {}) or {}).get("limitations", "") or ""
+    text = _owner_limitations(snapshot)
     if snapshot.get("qa_status") == "has_issues" and snapshot.get("qa_issue_note"):
         prefix = f"QA 备注：{snapshot['qa_issue_note']}"
         text = f"{text}\n\n{prefix}".strip() if text else prefix
     return text
+
+
+def _owner_limitations(snapshot: dict[str, Any]) -> str:
+    return (snapshot.get("doc", {}) or {}).get("limitations", "") or ""
 
 
 def _chip_support_text(snapshot: dict[str, Any]) -> str:
@@ -3177,14 +3184,69 @@ def _chip_support_text(snapshot: dict[str, Any]) -> str:
     return "; ".join(parts)
 
 
+def _user_display_names(conn: sqlite3.Connection) -> dict[str, str]:
+    return {
+        row["username"]: str(row["display_name"] or "").strip()
+        for row in conn.execute("SELECT username, display_name FROM users WHERE display_name != ''")
+        if str(row["display_name"] or "").strip()
+    }
+
+
+def _owner_display_text(owners: list[str] | tuple[str, ...] | set[str] | None, display_names: dict[str, str]) -> str:
+    labels = []
+    for owner in owners or []:
+        username = str(owner or "").strip()
+        if username:
+            labels.append(display_names.get(username, username))
+    return ",".join(labels)
+
+
+def _csv_filename_component(value: str | None) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"[\\/:*?\"<>|\s]+", "_", text).strip("._")
+    return text or "release"
+
+
+def _csv_filename_timestamp(generated_at: str | None = None) -> str:
+    if generated_at:
+        try:
+            parsed = dt.datetime.fromisoformat(generated_at)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=BEIJING_TZ)
+            return parsed.astimezone(BEIJING_TZ).strftime("%Y%m%d_%H%M%S")
+        except ValueError:
+            pass
+    return beijing_now().strftime("%Y%m%d_%H%M%S")
+
+
+def artifact_csv_filename(prefix: str, release: dict[str, Any], generated_at: str | None = None) -> str:
+    version = _csv_filename_component(release.get("name") or release.get("maca_version") or release.get("id"))
+    return f"{prefix}_{version}_{_csv_filename_timestamp(generated_at)}.csv"
+
+
 def _not_releasable_reason(snapshot: dict[str, Any]) -> str:
     decision = normalize_release_decision(snapshot.get("release_decision"))
     if _qualifies_for_final(snapshot):
         return ""
+    reasons = []
     if decision != "release":
-        return f"Release决策为 {decision}"
-    missing = snapshot.get("missing_items", [])
-    return "；".join(missing_item_text(m) for m in missing) if missing else "未满足发布条件"
+        reasons.append("Release决策非发布")
+    else:
+        doc_items = [
+            item
+            for item in _docs_gate_items(snapshot)
+            if missing_item_text(item) != "Owner 未确认 doc"
+        ]
+        if doc_items:
+            reasons.append("文档/发布信息未完成")
+        if not snapshot.get("owner_confirmed"):
+            reasons.append("Owner未确认")
+        qa_status = snapshot.get("qa_status", "not_checked")
+        if qa_status == "not_checked":
+            reasons.append("QA未测试")
+        elif qa_status == "cannot_release":
+            reasons.append("QA定为不可发布")
+    return "；".join(reasons) if reasons else "未满足发布条件"
 
 
 def render_manager_review_csv(
@@ -3202,6 +3264,7 @@ def render_manager_review_csv(
         raise ValueError(f"未知 Manager Review 字段: {', '.join(invalid)}")
 
     apps = {app["id"]: app for app in list_apps(conn)}
+    display_names = _user_display_names(conn)
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow([field_labels[field] for field in selected])
@@ -3219,8 +3282,9 @@ def render_manager_review_csv(
             "doc_target": "AI4Sci" if normalize_doc_target(app.get("doc_target")) == "ai4sci" else "HPC",
             "app_type": app.get("type", ""),
             "version": snapshot.get("version", ""),
-            "owners": ",".join(app.get("owners", [])),
+            "owners": _owner_display_text(app.get("owners", []), display_names),
             "chip_support": _chip_support_text(snapshot),
+            "qa_issue_note": snapshot.get("qa_issue_note", ""),
             "x86_chips": snapshot.get("x86_chips", ""),
             "arm_chips": snapshot.get("arm_chips", ""),
             "release_decision": normalize_release_decision(snapshot.get("release_decision")),
@@ -3228,7 +3292,7 @@ def render_manager_review_csv(
             "owner_confirmed": "是" if snapshot.get("owner_confirmed") else "否",
             "releasable": "是" if _qualifies_for_final(snapshot) else "否",
             "not_releasable_reason": _not_releasable_reason(snapshot),
-            "known_limitations": _merged_limitations(snapshot),
+            "known_limitations": _owner_limitations(snapshot),
             "gerrit_url": app.get("git_url", ""),
             "git_branch": app.get("git_branch", ""),
         }
@@ -3347,7 +3411,9 @@ def generate_manager_review_csv(
     with transaction(conn):
         refresh_missing_items(conn, release_id)
         release = get_release(conn, release_id)
+        generated_at = now()
         content = render_manager_review_csv(conn, release, fields)
+        artifact_name = artifact_csv_filename("manager_review", release, generated_at)
         conn.execute(
             """
             INSERT INTO artifacts(release_id, kind, name, content, final, generated_at)
@@ -3358,7 +3424,7 @@ def generate_manager_review_csv(
               final=excluded.final,
               generated_at=excluded.generated_at
             """,
-            (release_id, "manager_review", "manager_review.csv", content, 0, now()),
+            (release_id, "manager_review", artifact_name, content, 0, generated_at),
         )
         audit(
             conn,

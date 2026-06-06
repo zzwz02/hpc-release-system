@@ -33,9 +33,6 @@
     border:1px solid var(--border-2);border-radius:8px;padding:7px 10px;}
   .input:focus,.select:focus,textarea:focus,input:focus{outline:0;
     border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);}
-  .iconbtn{width:34px;height:34px;border-radius:8px;border:1px solid var(--border-2);
-    background:#fff;cursor:pointer;font-size:15px;color:var(--ink-2);}
-  .iconbtn:hover{background:#f6f7f9;}
   .userchip{display:flex;align-items:center;gap:8px;padding:4px 11px 4px 4px;
     border:1px solid var(--border);border-radius:999px;background:#fafbfc;font-size:13px;font-weight:600;}
   .avatar{width:26px;height:26px;border-radius:50%;background:#dbe6ff;color:#2851c4;
@@ -407,8 +404,11 @@
   .artifact-title{font-weight:800;color:var(--ink);}
   .artifact-render .md-view{min-height:440px;}
   .artifact-reader-grid{display:grid;grid-template-columns:250px minmax(0,1fr);gap:18px;align-items:start;}
+  .artifact-reader-grid.csv-grid{display:block;}
   .artifact-outline{top:96px;}
   .artifact-shell .artifact{margin-top:0;}
+  .artifact-csv-report{max-height:560px;}
+  .artifact-csv-empty{border:1px dashed var(--border);border-radius:10px;padding:22px;background:#fff;color:var(--muted);text-align:center;}
   .artifact-action-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;}
   .artifact-action-row .btn.active{color:var(--accent);background:var(--accent-soft);border-color:var(--accent-bd);}
   .artifact-refresh-meta{margin-left:auto;}
@@ -560,7 +560,6 @@
     <div class="spacer"></div>
     <span id="sessionBox" class="sessionbox" hidden>
       <span class="ctl">Release <select id="release" class="select" style="min-width:170px"></select></span>
-      <button id="refresh" class="iconbtn" title="刷新当前页">&#x21bb;</button>
       <span class="userchip"><span class="avatar" id="meAvatar">·</span><span id="meBox">未登录</span></span>
       <button id="logoutBtn" class="btn ghost sm">退出</button>
     </span>
@@ -751,9 +750,10 @@
               <label class="check"><input type="checkbox" data-manager-field="official_name">官方名称</label>
               <label class="check"><input type="checkbox" data-manager-field="doc_target">文档类型</label>
               <label class="check"><input type="checkbox" data-manager-field="app_type">App类型</label>
-              <label class="check"><input type="checkbox" data-manager-field="version" checked>版本号</label>
+              <label class="check"><input type="checkbox" data-manager-field="version">版本号</label>
               <label class="check"><input type="checkbox" data-manager-field="owners" checked>Owner</label>
               <label class="check"><input type="checkbox" data-manager-field="chip_support" checked>支持芯片类型</label>
+              <label class="check"><input type="checkbox" data-manager-field="qa_issue_note" checked>QA问题</label>
               <label class="check"><input type="checkbox" data-manager-field="x86_chips">X86支持芯片</label>
               <label class="check"><input type="checkbox" data-manager-field="arm_chips">ARM支持芯片</label>
               <label class="check"><input type="checkbox" data-manager-field="release_decision">Release决策</label>
@@ -766,9 +766,7 @@
               <label class="check"><input type="checkbox" data-manager-field="git_branch">Branch</label>
             </div>
             <div class="row" style="margin-top:13px">
-              <button class="btn primary" id="generateManagerReview">生成 Manager Review CSV</button>
-              <button class="btn download" data-kind="manager_review">查看 Manager Review CSV</button>
-              <button class="btn" id="downloadManagerReview">下载 manager_review.csv</button>
+              <button class="btn" id="downloadManagerReview">下载 Manager Review CSV</button>
             </div>
           </div>
           <div id="artifactViewer" class="artifact-shell" hidden>
@@ -1214,7 +1212,7 @@
   <script>
     let state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, qa_audit_logs: {}, release_schedule: [], user_display_names: {} };
     let selectedApp = "";
-    let artifactState = { kind: "", text: "", mode: "render" };
+    let artifactState = { kind: "", text: "", mode: "render", name: "", generatedAt: "" };
     const stateBackedViews = ["dashboard", "init", "apps", "qa", "artifacts", "admin"];
     const markdownArtifactKinds = new Set(["release_note", "manual", "ai4sci"]);
     const artifactKindLabels = {
@@ -1244,9 +1242,9 @@
     let qaReportsLoading = false;
     let qaReportsVersion = 0;
     let qaReportsRenderSig = "";
-    let qaReportFilter = { release: "", test: "" };
-    let qaReportColFilters = { release: {}, test: {} };
-    let qaReportSort = { release: { col: -1, dir: 1 }, test: { col: -1, dir: 1 } };
+    let qaReportFilter = { release: "", test: "", manager: "" };
+    let qaReportColFilters = { release: {}, test: {}, manager: {} };
+    let qaReportSort = { release: { col: -1, dir: 1 }, test: { col: -1, dir: 1 }, manager: { col: -1, dir: 1 } };
     let qaReportVisibleColumns = { release: null };
     let qaReportCompareId = "";
     const qaAuditLoading = new Set();
@@ -1595,6 +1593,10 @@
     function updateRefreshMeta() {
       document.querySelectorAll("[data-page-refreshed-at]").forEach(el => {
         const view = el.dataset.pageRefreshedAt || "";
+        if (view === "artifacts") {
+          el.textContent = artifactRefreshText();
+          return;
+        }
         const at = pageRefreshTimes[view];
         el.textContent = at ? `刷新于 ${fmtDateTime(at)}` : "尚未刷新";
       });
@@ -1628,6 +1630,10 @@
         if ($("wikiEditorDialog")?.open && !confirm("当前 WIKI 编辑窗口已打开，刷新会关闭编辑窗口。确认刷新？")) return;
         if ($("wikiEditorDialog")?.open) $("wikiEditorDialog").close();
         await loadWikiAndRender();
+        return;
+      }
+      if (view === "artifacts") {
+        await refreshArtifactsView();
         return;
       }
       await loadState(currentReleaseId(), { preserveDetail: false });
@@ -2727,10 +2733,23 @@
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(url);
     }
+    function ensureReportState(kind) {
+      if (!(kind in qaReportFilter)) qaReportFilter[kind] = "";
+      if (!qaReportColFilters[kind]) qaReportColFilters[kind] = {};
+      if (!qaReportSort[kind]) qaReportSort[kind] = { col: -1, dir: 1 };
+    }
+    function resetReportState(kind) {
+      qaReportFilter[kind] = "";
+      qaReportColFilters[kind] = {};
+      qaReportSort[kind] = { col: -1, dir: 1 };
+    }
     function reportData(kind) {
+      if (kind === "manager") return managerReviewReportData();
+      if (!qaReports) return null;
       return kind === "release" ? qaReports.release_report : qaReports.test_cmd;
     }
     function qaReportColumnVisibleMap(kind, columns) {
+      ensureReportState(kind);
       if (kind !== "release") {
         return Object.fromEntries(columns.map(c => [c, true]));
       }
@@ -2793,6 +2812,7 @@
       el.textContent = `${visible}/${columns.length}`;
     }
     function reportTableHtml(columns, rows, kind) {
+      ensureReportState(kind);
       const visibleIndexes = qaReportVisibleIndexes(kind, columns);
       const sort = qaReportSort[kind] || { col: -1, dir: 1 };
       const colFilters = qaReportColFilters[kind] || {};
@@ -2814,7 +2834,9 @@
       return `<table>${head}<tbody>${body}</tbody></table>`;
     }
     function reportRows(kind) {
-      const data = kind === "release" ? qaReports.release_report : qaReports.test_cmd;
+      ensureReportState(kind);
+      const data = reportData(kind);
+      if (!data) return [];
       const q = (qaReportFilter[kind] || "").trim().toLowerCase();
       const colFilters = qaReportColFilters[kind] || {};
       const colEntries = Object.entries(colFilters)
@@ -2833,39 +2855,44 @@
       }
       return rows;
     }
+    function renderReportTableBox(box, columns, rows, kind, rerender) {
+      if (!box) return;
+      const active = document.activeElement;
+      const focusKey = active && active.dataset && active.dataset.qaColFilter ? active.dataset.qaColFilter : "";
+      const caret = focusKey ? [active.selectionStart, active.selectionEnd] : null;
+      box.innerHTML = reportTableHtml(columns, rows, kind);
+      box.querySelectorAll("[data-qa-sort]").forEach(th => th.onclick = () => {
+        const [k, idx] = th.dataset.qaSort.split(":");
+        ensureReportState(k);
+        const s = qaReportSort[k], i = Number(idx);
+        if (s.col === i) s.dir = -s.dir; else { s.col = i; s.dir = 1; }
+        rerender(k);
+      });
+      box.querySelectorAll("[data-qa-col-filter]").forEach(inp => {
+        inp.oninput = () => {
+          const [k, idx] = inp.dataset.qaColFilter.split(":");
+          ensureReportState(k);
+          const i = Number(idx);
+          const v = inp.value;
+          if (v) qaReportColFilters[k][i] = v; else delete qaReportColFilters[k][i];
+          rerender(k);
+        };
+      });
+      if (focusKey) {
+        const restored = box.querySelector(`[data-qa-col-filter="${focusKey}"]`);
+        if (restored) {
+          restored.focus();
+          try { restored.setSelectionRange(caret[0], caret[1]); } catch (e) {}
+        }
+      }
+    }
     function renderReportTable(kind) {
       if (!qaReports) return;
       const data = reportData(kind);
       const rows = reportRows(kind);
       const box = $(`qaReportTable_${kind}`);
       if (box) {
-        const active = document.activeElement;
-        const focusKey = active && active.dataset && active.dataset.qaColFilter ? active.dataset.qaColFilter : "";
-        const caret = focusKey ? [active.selectionStart, active.selectionEnd] : null;
-        box.innerHTML = reportTableHtml(data.columns, rows, kind);
-        box.querySelectorAll("[data-qa-sort]").forEach(th => th.onclick = () => {
-          const [k, idx] = th.dataset.qaSort.split(":");
-          const s = qaReportSort[k], i = Number(idx);
-          if (s.col === i) s.dir = -s.dir; else { s.col = i; s.dir = 1; }
-          renderReportTable(k);
-        });
-        box.querySelectorAll("[data-qa-col-filter]").forEach(inp => {
-          inp.oninput = () => {
-            const [k, idx] = inp.dataset.qaColFilter.split(":");
-            const i = Number(idx);
-            const v = inp.value;
-            qaReportColFilters[k] = qaReportColFilters[k] || {};
-            if (v) qaReportColFilters[k][i] = v; else delete qaReportColFilters[k][i];
-            renderReportTable(k);
-          };
-        });
-        if (focusKey) {
-          const restored = box.querySelector(`[data-qa-col-filter="${focusKey}"]`);
-          if (restored) {
-            restored.focus();
-            try { restored.setSelectionRange(caret[0], caret[1]); } catch (e) {}
-          }
-        }
+        renderReportTableBox(box, data.columns, rows, kind, renderReportTable);
       }
       updateQaReportColumnCount(kind, data.columns);
       const count = $(`qaReportCount_${kind}`);
@@ -2873,7 +2900,7 @@
         ? `${data.rows.length} 行`
         : `${rows.length} / ${data.rows.length} 行`;
       const timeEl = $(`qaReportTime_${kind}`);
-      if (timeEl) timeEl.textContent = qaReports.loadedAt ? "刷新于 " + fmtDateTime(qaReports.loadedAt) : "";
+      if (timeEl) timeEl.textContent = qaReports.generatedAt ? "生成于 " + toBeijing(qaReports.generatedAt) : "";
     }
     function qaReportPaneHtml(kind, title, hint) {
       const data = qaReports ? (kind === "release" ? qaReports.release_report : qaReports.test_cmd) : null;
@@ -2920,9 +2947,9 @@
       const rid = currentReleaseId();
       if (qaReportsReleaseId !== rid) {
         qaReports = null; qaReportsReleaseId = rid;
-        qaReportFilter = { release: "", test: "" };
-        qaReportColFilters = { release: {}, test: {} };
-        qaReportSort = { release: { col: -1, dir: 1 }, test: { col: -1, dir: 1 } };
+        qaReportFilter = { release: "", test: "", manager: "" };
+        qaReportColFilters = { release: {}, test: {}, manager: {} };
+        qaReportSort = { release: { col: -1, dir: 1 }, test: { col: -1, dir: 1 }, manager: { col: -1, dir: 1 } };
         qaReportVisibleColumns = { release: null };
         qaReportCompareId = "";
       }
@@ -2955,7 +2982,7 @@
         const data = reportData(kind);
         const selected = reportSelectedCsv(data.columns, reportRows(kind), kind);
         const rel = qaReports.release_name || currentReleaseId();
-        reportDownloadCsv(`${kind === "release" ? "release_report" : "test_cmd"}_${rel}_${csvTimestamp(qaReports.loadedAt)}.csv`, selected.columns, selected.rows);
+        reportDownloadCsv(`${kind === "release" ? "release_report" : "test_cmd"}_${rel}_${csvTimestamp(qaReports.generatedAtDate || qaReports.loadedAt)}.csv`, selected.columns, selected.rows);
       });
       document.querySelectorAll("[data-qa-report-col]").forEach(cb => {
         cb.onchange = () => {
@@ -3001,7 +3028,9 @@
         const data = await api(`/api/qa-reports?release_id=${encodeURIComponent(rid)}${cmpParam}`);
         if (currentReleaseId() !== rid) return;
         qaReports = data;
-        qaReports.loadedAt = new Date();
+        qaReports.generatedAt = data.generated_at || new Date().toISOString();
+        qaReports.generatedAtDate = new Date(qaReports.generatedAt);
+        qaReports.loadedAt = Number.isNaN(qaReports.generatedAtDate.getTime()) ? new Date() : qaReports.generatedAtDate;
         qaReportsVersion++;
       } catch (e) {
         alert("加载报告失败：" + e.message);
@@ -3314,6 +3343,10 @@
       return markdownArtifactKinds.has(kind);
     }
 
+    function isCsvArtifact(kind) {
+      return kind === "manager_review";
+    }
+
     function setArtifactActionActive(kind) {
       document.querySelectorAll(".artifact-action-row [data-kind]").forEach(btn => {
         btn.classList.toggle("active", btn.dataset.kind === kind);
@@ -3322,12 +3355,157 @@
       if (managerBtn) managerBtn.classList.toggle("active", kind === "manager_review");
     }
 
-    function showManagerReviewPane() {
+    function artifactRecord(kind) {
+      return (state.artifacts || []).find(a => a.kind === kind) || null;
+    }
+
+    function rememberArtifactRecord(kind, name, generatedAt) {
+      if (!kind || !generatedAt) return;
+      state.artifacts = state.artifacts || [];
+      let record = artifactRecord(kind);
+      if (!record) {
+        record = { kind, name: name || "", final: 0, generated_at: generatedAt };
+        state.artifacts.push(record);
+      } else {
+        if (name) record.name = name;
+        record.generated_at = generatedAt;
+      }
+    }
+
+    function artifactGeneratedAt(kind = artifactState.kind) {
+      if (!kind) return "";
+      if (artifactState.kind === kind && artifactState.generatedAt) return artifactState.generatedAt;
+      return artifactRecord(kind)?.generated_at || "";
+    }
+
+    function latestArtifactGeneratedAt() {
+      return (state.artifacts || [])
+        .map(a => a.generated_at || "")
+        .filter(Boolean)
+        .sort((a, b) => (new Date(b).getTime() || 0) - (new Date(a).getTime() || 0))[0] || "";
+    }
+
+    function artifactRefreshText() {
+      const activeAt = artifactGeneratedAt();
+      if (activeAt) return `存档于 ${toBeijing(activeAt)}`;
+      if (artifactState.kind) return "尚未生成";
+      const latest = latestArtifactGeneratedAt();
+      return latest ? `最新存档于 ${toBeijing(latest)}` : "尚未生成";
+    }
+
+    function managerReviewPaneVisible() {
+      const pane = $("managerReviewPane");
+      return !!pane && !pane.hidden;
+    }
+
+    function managerReviewFields() {
+      return [...document.querySelectorAll("[data-manager-field]:checked")].map(el => el.dataset.managerField);
+    }
+
+    async function generateManagerReviewCsvOnly() {
+      const fields = managerReviewFields();
+      if (!fields.length) throw new Error("请至少选择一个输出字段");
+      await post("/api/artifacts/manager-review", { release_id: currentReleaseId(), fields });
+    }
+
+    async function refreshManagerReviewCsv() {
+      await generateManagerReviewCsvOnly();
+      await loadState();
+      await showArtifact("manager_review", { preserveMode: true });
+    }
+
+    async function refreshArtifactsView() {
+      const managerReviewActive = managerReviewPaneVisible() || artifactState.kind === "manager_review";
+      const currentKind = managerReviewActive ? "manager_review" : artifactState.kind;
+      if (!releaseLocked()) {
+        if (canGenerateMarkdown()) {
+          await post("/api/artifacts/generate", { release_id: currentReleaseId(), final: false });
+        }
+        if (isRM()) {
+          await generateManagerReviewCsvOnly();
+        }
+      }
+      await loadState();
+      if (managerReviewActive) {
+        await showArtifact("manager_review", { preserveMode: true });
+      } else if (currentKind) {
+        await showArtifact(currentKind, { preserveMode: true });
+      }
+    }
+
+    async function showManagerReviewPane() {
       const pane = $("managerReviewPane");
       if (pane) pane.hidden = false;
-      artifactState = { kind: "", text: "", mode: "render" };
-      renderArtifactViewer();
       setArtifactActionActive("manager_review");
+      await showArtifact("manager_review");
+    }
+
+    function parseCsvRows(text) {
+      const input = String(text ?? "").replace(/^\uFEFF/, "");
+      const rows = [];
+      let row = [];
+      let cell = "";
+      let inQuotes = false;
+      const pushCell = () => { row.push(cell); cell = ""; };
+      const pushRow = () => {
+        pushCell();
+        rows.push(row);
+        row = [];
+      };
+      for (let i = 0; i < input.length; i++) {
+        const ch = input[i];
+        if (inQuotes) {
+          if (ch === '"') {
+            if (input[i + 1] === '"') { cell += '"'; i += 1; }
+            else inQuotes = false;
+          } else {
+            cell += ch;
+          }
+          continue;
+        }
+        if (ch === '"' && cell === "") { inQuotes = true; continue; }
+        if (ch === ",") { pushCell(); continue; }
+        if (ch === "\r") {
+          if (input[i + 1] === "\n") i += 1;
+          pushRow();
+          continue;
+        }
+        if (ch === "\n") { pushRow(); continue; }
+        cell += ch;
+      }
+      if (cell || row.length) pushRow();
+      return rows;
+    }
+
+    function managerReviewReportData() {
+      const text = artifactState.kind === "manager_review" ? artifactState.text : "";
+      const raw = String(text ?? "").replace(/^\uFEFF/, "").trim();
+      if (!raw || raw === "未生成 artifact") return null;
+      const rows = parseCsvRows(text).filter(row => row.some(cell => String(cell).trim()));
+      if (!rows.length) return null;
+      const colCount = Math.max(...rows.map(row => row.length));
+      const headers = Array.from({ length: colCount }, (_, i) => rows[0]?.[i] || `列 ${i + 1}`);
+      const bodyRows = rows.slice(1).map(row => Array.from({ length: colCount }, (_, i) => row[i] ?? ""));
+      return { columns: headers, rows: bodyRows };
+    }
+
+    function renderManagerReviewReport() {
+      const data = managerReviewReportData();
+      const rendered = $("artifactRendered");
+      if (!rendered) return;
+      if (!data) {
+        const raw = String(artifactState.text ?? "").replace(/^\uFEFF/, "").trim();
+        rendered.innerHTML = `<div class="artifact-csv-empty">${esc(raw || "暂无 CSV 内容，请点击刷新生成。")}</div>`;
+        return;
+      }
+      rendered.innerHTML = `<div class="table report-table artifact-csv-report" id="managerReviewReportTable"></div>`;
+      renderReportTableBox(
+        $("managerReviewReportTable"),
+        data.columns,
+        reportRows("manager"),
+        "manager",
+        () => renderArtifactViewer()
+      );
     }
 
     function renderArtifactViewer() {
@@ -3339,40 +3517,58 @@
         return;
       }
       const markdown = isMarkdownArtifact(artifactState.kind);
-      const sourceMode = !markdown || artifactState.mode === "source";
+      const csv = isCsvArtifact(artifactState.kind);
+      const renderable = markdown || csv;
+      const sourceMode = !renderable || artifactState.mode === "source";
       viewer.hidden = false;
       $("artifactTitle").textContent = artifactKindLabels[artifactState.kind] || artifactState.kind;
-      $("artifactMeta").textContent = markdown
+      const modeText = markdown
         ? (sourceMode ? "Markdown 源码" : "Markdown 渲染预览")
-        : "源码";
-      $("artifactToggle").hidden = !markdown;
-      $("artifactToggle").textContent = sourceMode ? "查看渲染" : "查看源码";
+        : (csv ? (sourceMode ? "CSV 源码" : "CSV 表格预览") : "源码");
+      const archivedAt = artifactGeneratedAt();
+      $("artifactMeta").textContent = archivedAt ? `${modeText} · 存档于 ${toBeijing(archivedAt)}` : modeText;
+      $("artifactToggle").hidden = !renderable;
+      $("artifactToggle").textContent = sourceMode ? (csv ? "查看表格" : "查看渲染") : "查看源码";
       $("artifactText").value = artifactState.text;
       $("artifactText").hidden = !sourceMode;
-      if ($("artifactRenderedWrap")) $("artifactRenderedWrap").hidden = sourceMode;
+      const renderedWrap = $("artifactRenderedWrap");
+      if (renderedWrap) {
+        renderedWrap.hidden = sourceMode;
+        renderedWrap.classList.toggle("csv-grid", csv && !sourceMode);
+      }
+      const outline = $("artifactOutline")?.closest(".artifact-outline");
+      if (outline) outline.hidden = sourceMode || csv;
       if ($("artifactRendered")) $("artifactRendered").innerHTML = "";
       if ($("artifactOutline")) $("artifactOutline").innerHTML = "";
-      if (!sourceMode) {
+      if (!sourceMode && markdown) {
         const rendered = renderMarkdownDocument(artifactState.text, {
           className: "md-view wiki-md-view",
           withOutline: true,
         });
         if ($("artifactRendered")) $("artifactRendered").innerHTML = rendered.html;
         if ($("artifactOutline")) $("artifactOutline").innerHTML = wikiOutlineHtml(rendered.outline);
+      } else if (!sourceMode && csv) {
+        renderManagerReviewReport();
       }
     }
 
     async function showArtifact(kind, options = {}) {
       const res = await fetch(`/api/artifacts/${kind}?release_id=${encodeURIComponent(currentReleaseId())}`, { headers: headers() });
+      const previousKind = artifactState.kind;
       artifactState.kind = kind;
       artifactState.text = res.ok ? await res.text() : "未生成 artifact";
+      artifactState.name = res.ok ? (res.headers.get("X-Artifact-Name") || artifactRecord(kind)?.name || "") : "";
+      artifactState.generatedAt = res.ok ? (res.headers.get("X-Artifact-Generated-At") || artifactRecord(kind)?.generated_at || "") : "";
+      if (res.ok) rememberArtifactRecord(kind, artifactState.name, artifactState.generatedAt);
+      if (kind === "manager_review" && previousKind !== "manager_review") resetReportState("manager");
       artifactState.mode = options.preserveMode
         ? artifactState.mode
-        : (isMarkdownArtifact(kind) ? "render" : "source");
+        : ((isMarkdownArtifact(kind) || isCsvArtifact(kind)) ? "render" : "source");
       const managerPane = $("managerReviewPane");
       if (managerPane && kind !== "manager_review") managerPane.hidden = true;
       setArtifactActionActive(kind);
       renderArtifactViewer();
+      updateRefreshMeta();
     }
 
     // ===========================================================
@@ -4724,12 +4920,12 @@
         b.classList.add("active");
         $(b.dataset.initPane).classList.add("active");
       });
-      if ($("managerReviewToggle")) $("managerReviewToggle").onclick = showManagerReviewPane;
+      if ($("managerReviewToggle")) $("managerReviewToggle").onclick = () => showManagerReviewPane().catch(e => alert("加载 Manager Review CSV 失败：" + e.message));
       document.querySelectorAll("[data-qa-pane]").forEach(b => b.onclick = () => {
         document.querySelectorAll("[data-qa-pane],.qa-pane").forEach(x => x.classList.remove("active"));
         b.classList.add("active");
         $(b.dataset.qaPane).classList.add("active");
-        if (b.dataset.qaPane !== "qaMarkPane") loadQaReports(true);
+        if (b.dataset.qaPane !== "qaMarkPane") loadQaReports(false);
       });
       document.querySelectorAll("[data-admin-pane]").forEach(b => b.onclick = () => {
         document.querySelectorAll("[data-admin-pane],.admin-pane").forEach(x => x.classList.remove("active"));
@@ -4752,7 +4948,6 @@
         b.classList.add("active");
       });
       $("logoutBtn").onclick = logout;
-      $("refresh").onclick = requestPageRefresh;
       document.querySelectorAll("[data-page-refresh]").forEach(btn => { btn.onclick = requestPageRefresh; });
       $("scheduleAddBtn").onclick = () => { scheduleEditId = "__new__"; renderSchedule(); };
       $("scheduleBox").addEventListener("click", ev => {
@@ -4777,7 +4972,7 @@
         lateDecisionEditAppId = "";
         pendingAppInfoFile = null;
         pendingAppInfoAppId = "";
-        artifactState = { kind: "", text: "", mode: "render" };
+        artifactState = { kind: "", text: "", mode: "render", name: "", generatedAt: "" };
         renderArtifactViewer();
         if ($("managerReviewPane")) $("managerReviewPane").hidden = true;
         loadState(target);
@@ -4833,20 +5028,8 @@
       };
       $("preview").onclick = async () => {
         try {
-          await post("/api/artifacts/generate", { release_id: currentReleaseId(), final: false });
-          await loadState();
-          if (artifactState.kind) await showArtifact(artifactState.kind, { preserveMode: true });
-        } catch (e) { alert("刷新文档失败：" + e.message); }
-      };
-      $("generateManagerReview").onclick = async () => {
-        const fields = [...document.querySelectorAll("[data-manager-field]:checked")].map(el => el.dataset.managerField);
-        if (!fields.length) return alert("请至少选择一个输出字段");
-        try {
-          await post("/api/artifacts/manager-review", { release_id: currentReleaseId(), fields });
-          await loadState();
-          await showArtifact("manager_review");
-          alert("Manager Review CSV 已生成");
-        } catch (e) { alert("生成 Manager Review CSV 失败：" + e.message); }
+          await refreshArtifactsView();
+        } catch (e) { alert("刷新发布文档失败：" + e.message); }
       };
       $("downloadManagerReview").onclick = () => {
         window.open(`/api/artifacts/manager_review?release_id=${encodeURIComponent(currentReleaseId())}`, "_blank");
@@ -5003,7 +5186,7 @@
       await post("/api/logout", {});
       state = { apps: [], releases: [], release: null, artifacts: [], qa_log: null, qa_audit_logs: {}, release_schedule: [], user_display_names: {}, user: null };
       selectedApp = "";
-      artifactState = { kind: "", text: "", mode: "render" };
+      artifactState = { kind: "", text: "", mode: "render", name: "", generatedAt: "" };
       renderArtifactViewer();
       if ($("managerReviewPane")) $("managerReviewPane").hidden = true;
       $("release").innerHTML = "";
