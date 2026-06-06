@@ -3010,6 +3010,17 @@ def code_block(content: str, lang: str = "shell", *, indent: str = "") -> str:
     return f"{indent}```{lang}\n{body}\n{indent}```\n\n"
 
 
+def inline_code(content: str) -> str:
+    text = str(content or "").replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ").strip()
+    if not text:
+        return "``"
+    max_ticks = max((len(match.group(0)) for match in re.finditer(r"`+", text)), default=0)
+    ticks = "`" * (max_ticks + 1)
+    if max_ticks:
+        return f"{ticks} {text} {ticks}"
+    return f"`{text}`"
+
+
 def markdown_fences_on_new_lines(content: str) -> str:
     text = str(content or "").replace("\r\n", "\n").replace("\r", "\n")
     split_lines = []
@@ -3243,12 +3254,12 @@ def _render_guide_entries(rows: list[tuple[dict[str, Any], dict[str, Any]]], *, 
             if test_doc.get("obsolete"):
                 continue
             out += f"- {test_doc['path']}\n"
+            if test_doc.get("command"):
+                out += f"  - 测试命令：{inline_code(test_doc['command'])}\n"
             out += f"  - 测试数据集：{test_doc.get('dataset', '')}\n"
             out += f"  - 测试内容：{test_doc.get('content', '')}\n"
             out += f"  - 结果查看：{test_doc.get('result_view', '')}\n"
             out += f"  - 通过标准：{test_doc.get('pass_criteria', '')}\n\n"
-            if test_doc.get("command"):
-                out += code_block(test_doc["command"], indent="  ")
         limits = _merged_limitations(snapshot)
         if limits:
             out += f"**已知限制：**\n\n{limits}\n\n"

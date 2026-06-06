@@ -844,8 +844,9 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         self.assertIn("镜像说明\n```bash\n", out)
         self.assertIn("运行前检查\n```text\n", out)
         self.assertIn("限制说明\n```text\n", out)
-        self.assertIn("  - 通过标准：p\n\n  ```shell\n  app --version\n  ```\n\n", out)
-        self.assertNotIn("\n```shell\napp --version", out)
+        self.assertIn("- sanity\n  - 测试命令：`app --version`\n  - 测试数据集：d\n", out)
+        self.assertIn("  - 通过标准：p\n\n", out)
+        self.assertNotIn("```shell\napp --version", out)
 
         positions = []
         start = 0
@@ -873,6 +874,23 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
     def test_indented_code_block_indents_multiline_command(self) -> None:
         out = core.code_block("line1\nline2", indent="  ")
         self.assertEqual(out, "  ```shell\n  line1\n  line2\n  ```\n\n")
+
+    def test_render_guide_inlines_multiline_test_command_first(self) -> None:
+        app = {"name": "TestApp", "description": "desc", "doc_target": "manual"}
+        snapshot = {
+            "version": "1.0",
+            "doc": {"intro": "intro"},
+            "test_docs": [{
+                "path": "sanity",
+                "command": "line1\nline2 `quoted`",
+                "dataset": "d",
+                "content": "c",
+                "result_view": "r",
+                "pass_criteria": "p",
+            }],
+        }
+        out = core.render_guide("Guide", [(app, snapshot)])
+        self.assertIn("- sanity\n  - 测试命令：`` line1 line2 `quoted` ``\n  - 测试数据集：d\n", out)
 
     def test_generate_artifacts_preview_ok_after_unlock(self) -> None:
         release_id, app_id = self.import_initial()
