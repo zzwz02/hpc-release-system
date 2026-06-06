@@ -820,6 +820,60 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         self.assertIn("export APP_HOME=/opt/app", out)
         self.assertNotIn("```shell", out)
 
+    def test_render_guide_places_all_fences_on_new_lines_and_keeps_list_indent(self) -> None:
+        app = {"name": "TestApp", "description": "desc", "doc_target": "manual"}
+        snapshot = {
+            "version": "1.0",
+            "doc": {
+                "intro": "intro",
+                "image_usage": "镜像说明```bash\ndocker run app\n  ```",
+                "binary_usage": "运行前检查 ```text\napp --help\n```",
+                "env_setup": "export APP_HOME=/opt/app",
+                "limitations": "限制说明```text\nknown issue\n```",
+            },
+            "test_docs": [{
+                "path": "sanity",
+                "command": "app --version",
+                "dataset": "d",
+                "content": "c",
+                "result_view": "r",
+                "pass_criteria": "p",
+            }],
+        }
+        out = core.render_guide("Guide", [(app, snapshot)])
+        self.assertIn("镜像说明\n```bash\n", out)
+        self.assertIn("运行前检查\n```text\n", out)
+        self.assertIn("限制说明\n```text\n", out)
+        self.assertIn("  - 通过标准：p\n\n  ```shell\n  app --version\n  ```\n\n", out)
+        self.assertNotIn("\n```shell\napp --version", out)
+
+        positions = []
+        start = 0
+        while True:
+            idx = out.find("```", start)
+            if idx < 0:
+                break
+            positions.append(idx)
+            start = idx + 3
+        self.assertTrue(positions)
+        for idx in positions:
+            line_start = out.rfind("\n", 0, idx) + 1
+            self.assertEqual(out[line_start:idx].strip(), "")
+
+    def test_markdown_fences_on_new_lines_preserves_nested_list_after_code_block(self) -> None:
+        source = "- a\n  - b ```text\n  ddd\n  ```\n  - e"
+        out = core.markdown_fences_on_new_lines(source)
+        self.assertEqual(out, "- a\n  - b\n  ```text\n  ddd\n  ```\n  - e")
+
+    def test_markdown_fences_on_new_lines_indents_code_body_with_moved_fence(self) -> None:
+        source = "- a\n  - b ```text\naaa\n   bbb\n```\n  - e"
+        out = core.markdown_fences_on_new_lines(source)
+        self.assertEqual(out, "- a\n  - b\n  ```text\n  aaa\n     bbb\n  ```\n  - e")
+
+    def test_indented_code_block_indents_multiline_command(self) -> None:
+        out = core.code_block("line1\nline2", indent="  ")
+        self.assertEqual(out, "  ```shell\n  line1\n  line2\n  ```\n\n")
+
     def test_generate_artifacts_preview_ok_after_unlock(self) -> None:
         release_id, app_id = self.import_initial()
         core.apply_app_info(self.conn, release_id, app_id, APP_INFO_V1, source="unit")

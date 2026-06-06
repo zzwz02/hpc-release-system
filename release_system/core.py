@@ -3002,13 +3002,73 @@ def md_title(title: str, level: int = 1) -> str:
     return f"{hashes} {title}\n\n"
 
 
-def code_block(content: str, lang: str = "shell") -> str:
+def code_block(content: str, lang: str = "shell", *, indent: str = "") -> str:
     if not content:
         return "\n"
-    return f"```{lang}\n{content}\n```\n\n"
+    text = str(content).replace("\r\n", "\n").replace("\r", "\n")
+    body = "\n".join(f"{indent}{line}" for line in text.split("\n"))
+    return f"{indent}```{lang}\n{body}\n{indent}```\n\n"
+
+
+def markdown_fences_on_new_lines(content: str) -> str:
+    text = str(content or "").replace("\r\n", "\n").replace("\r", "\n")
+    split_lines = []
+    for line in text.split("\n"):
+        fence_at = line.find("```")
+        if fence_at < 0:
+            split_lines.append(line)
+            continue
+
+        indent_len = len(line) - len(line.lstrip(" \t"))
+        if fence_at == indent_len:
+            split_lines.append(line)
+            continue
+
+        before = line[:fence_at].rstrip()
+        fence = line[fence_at:].lstrip(" \t")
+        if before:
+            split_lines.append(before)
+        split_lines.append(line[:indent_len] + fence)
+
+    lines = []
+    in_fence = False
+    fence_indent = ""
+    code_lines = []
+
+    def flush_code_lines() -> None:
+        if fence_indent and not all(line.startswith(fence_indent) for line in code_lines if line):
+            lines.extend(fence_indent + line for line in code_lines)
+        else:
+            lines.extend(code_lines)
+
+    for line in split_lines:
+        stripped = line.lstrip(" \t")
+        is_fence = stripped.startswith("```")
+        if not in_fence:
+            lines.append(line)
+            if is_fence:
+                in_fence = True
+                fence_indent = line[:len(line) - len(stripped)]
+                code_lines = []
+            continue
+
+        if is_fence:
+            flush_code_lines()
+            lines.append(fence_indent + stripped)
+            in_fence = False
+            fence_indent = ""
+            code_lines = []
+        else:
+            code_lines.append(line)
+
+    if in_fence:
+        flush_code_lines()
+
+    return "\n".join(lines)
 
 
 def owner_markdown_block(content: str) -> str:
+    content = markdown_fences_on_new_lines(content)
     if not content:
         return "\n"
     if content.endswith("\n\n"):
@@ -3188,7 +3248,7 @@ def _render_guide_entries(rows: list[tuple[dict[str, Any], dict[str, Any]]], *, 
             out += f"  - 结果查看：{test_doc.get('result_view', '')}\n"
             out += f"  - 通过标准：{test_doc.get('pass_criteria', '')}\n\n"
             if test_doc.get("command"):
-                out += code_block(test_doc["command"])
+                out += code_block(test_doc["command"], indent="  ")
         limits = _merged_limitations(snapshot)
         if limits:
             out += f"**已知限制：**\n\n{limits}\n\n"
@@ -3204,7 +3264,7 @@ def render_guide(
     out += _render_guide_entries(rows)
     if stopped_rows:
         out += _render_guide_entries(stopped_rows, stopped=True)
-    return out
+    return markdown_fences_on_new_lines(out)
 
 
 def generate_artifacts(conn: sqlite3.Connection, release_id: str, *, final: bool = False, from_lock: bool = False) -> dict[str, str]:

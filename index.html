@@ -406,6 +406,8 @@
   .artifact-bar{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
   .artifact-title{font-weight:800;color:var(--ink);}
   .artifact-render .md-view{min-height:440px;}
+  .artifact-reader-grid{display:grid;grid-template-columns:250px minmax(0,1fr);gap:18px;align-items:start;}
+  .artifact-outline{top:96px;}
   .artifact-shell .artifact{margin-top:0;}
   .artifact-action-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;}
   .artifact-action-row .btn.active{color:var(--accent);background:var(--accent-soft);border-color:var(--accent-bd);}
@@ -434,7 +436,7 @@
   .schedule-box .past{color:var(--muted);}
   .schedule-box .past .ver{color:var(--ink-2);}
   .schedule-box .soon{color:var(--warn-fg);font-weight:700;}
-  @media (max-width:1080px){.workspace,.form,.tcard-b,.qa-card-b,.wiki-reader-grid,.wiki-editor-grid{grid-template-columns:1fr;}.wiki-outline{position:static;max-height:none;}}
+  @media (max-width:1080px){.workspace,.form,.tcard-b,.qa-card-b,.wiki-reader-grid,.wiki-editor-grid,.artifact-reader-grid{grid-template-columns:1fr;}.wiki-outline{position:static;max-height:none;}}
   /* ---- login page ---- */
   #loginPage{position:fixed;inset:0;z-index:100;
     background:linear-gradient(150deg,#1e2d5a 0%,#2563eb 55%,#4f35c2 100%);
@@ -778,7 +780,13 @@
               <span class="spacer"></span>
               <button class="btn sm" id="artifactToggle" hidden>查看源码</button>
             </div>
-            <div id="artifactRendered" class="artifact-render"></div>
+            <div id="artifactRenderedWrap" class="artifact-reader-grid">
+              <aside class="wiki-outline artifact-outline">
+                <div class="wiki-outline-head">文档大纲</div>
+                <div id="artifactOutline" class="wiki-outline-list"></div>
+              </aside>
+              <div id="artifactRendered" class="artifact-render"></div>
+            </div>
             <textarea id="artifactText" class="artifact" readonly hidden></textarea>
           </div>
         </div>
@@ -1279,7 +1287,7 @@
         .replace(/\u0001(\d+)\u0001/g, (_, idx) => links[Number(idx)] || "")
         .replace(/\u0000(\d+)\u0000/g, (_, idx) => code[Number(idx)] || "");
     }
-    function renderMarkdown(value) {
+    function renderMarkdownFallback(value) {
       const text = String(value ?? "").replace(/\r\n/g, "\n").trim();
       if (!text) return `<div class="md-view empty">-</div>`;
       const lines = text.split("\n");
@@ -1401,6 +1409,9 @@
       if (inCode) flushCode();
       flushPara();
       return `<div class="md-view">${html}</div>`;
+    }
+    function renderMarkdown(value) {
+      return renderMarkdownDocument(value).html;
     }
     function mdField(label, value, extra = "", cls = "", code = false) {
       const body = code
@@ -3338,8 +3349,17 @@
       $("artifactToggle").textContent = sourceMode ? "查看渲染" : "查看源码";
       $("artifactText").value = artifactState.text;
       $("artifactText").hidden = !sourceMode;
-      $("artifactRendered").hidden = sourceMode;
-      $("artifactRendered").innerHTML = sourceMode ? "" : renderMarkdown(artifactState.text);
+      if ($("artifactRenderedWrap")) $("artifactRenderedWrap").hidden = sourceMode;
+      if ($("artifactRendered")) $("artifactRendered").innerHTML = "";
+      if ($("artifactOutline")) $("artifactOutline").innerHTML = "";
+      if (!sourceMode) {
+        const rendered = renderMarkdownDocument(artifactState.text, {
+          className: "md-view wiki-md-view",
+          withOutline: true,
+        });
+        if ($("artifactRendered")) $("artifactRendered").innerHTML = rendered.html;
+        if ($("artifactOutline")) $("artifactOutline").innerHTML = wikiOutlineHtml(rendered.outline);
+      }
     }
 
     async function showArtifact(kind, options = {}) {
@@ -3387,10 +3407,12 @@
       );
     }
 
-    function renderWikiMarkdown(value, withOutline = false) {
+    function renderMarkdownDocument(value, options = {}) {
       const text = normalizeWikiMarkdown(value).trim();
+      const className = options.className || "md-view";
+      const withOutline = !!options.withOutline;
       if (!text) {
-        return { html: `<div class="md-view wiki-md-view empty">-</div>`, outline: [] };
+        return { html: `<div class="${esc(className)} empty">-</div>`, outline: [] };
       }
       let html = "";
       const markedApi = window.marked;
@@ -3400,7 +3422,7 @@
           ADD_ATTR: ["target", "rel", "loading"],
         });
       } else {
-        html = renderMarkdown(text)
+        html = renderMarkdownFallback(text)
           .replace(/^<div class="md-view">|<\/div>$/g, "");
         html = wikiFallbackImageInline(html);
       }
@@ -3423,7 +3445,11 @@
           outline.push({ id, title: textContent, level: Number(h.tagName.slice(1)) || 1 });
         });
       }
-      return { html: `<div class="md-view wiki-md-view">${tmp.innerHTML}</div>`, outline };
+      return { html: `<div class="${esc(className)}">${tmp.innerHTML}</div>`, outline };
+    }
+
+    function renderWikiMarkdown(value, withOutline = false) {
+      return renderMarkdownDocument(value, { className: "md-view wiki-md-view", withOutline });
     }
 
     function buildWikiOutlineRows(outline) {
