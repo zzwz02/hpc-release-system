@@ -408,7 +408,6 @@ def init_db(conn: sqlite3.Connection) -> None:
             community_artifact TEXT NOT NULL DEFAULT '[]',
             build_image TEXT NOT NULL DEFAULT '',
             test_timeout INTEGER NOT NULL DEFAULT 40,
-            supports_maca_hpcc TEXT NOT NULL DEFAULT 'No',
             owner_username TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'Running',
             notes TEXT NOT NULL DEFAULT '',
@@ -3340,6 +3339,34 @@ CICD_BUILD_PRODUCTS = ["maca", "hpcc", "pkg"]
 CICD_STATUSES = {"Running", "Stopped", "Abandoned"}
 CICD_APPROVER_ROLES = {"RM", "Admin"}
 CICD_CREATE_ROLES = {"Owner", "RM", "Admin"}
+CICD_TASK_FIELDS = {
+    "app_name",
+    "app_version",
+    "repo_type",
+    "repo_name",
+    "branch",
+    "build_product",
+    "community_artifact",
+    "build_image",
+    "test_timeout",
+    "owner_username",
+    "status",
+    "notes",
+}
+
+
+def _validate_cicd_payload_fields(payload: dict) -> None:
+    for field in (payload or {}):
+        if field not in CICD_TASK_FIELDS:
+            raise RuntimeError(f"不支持的 CICD 字段：{field}")
+
+
+def _load_cicd_payload(raw: str) -> dict:
+    try:
+        payload = json.loads(raw or "{}")
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _next_cicd_id(conn: sqlite3.Connection) -> str:
@@ -3446,6 +3473,7 @@ def submit_cicd_request(
     """
     if submitter_role not in CICD_CREATE_ROLES:
         raise PermissionError("只有 Owner、RM、Admin 可以提交 CICD 任务申请")
+    _validate_cicd_payload_fields(payload)
     is_auto = submitter_role in CICD_APPROVER_ROLES
     ts = now()
     with transaction(conn):
@@ -3486,6 +3514,7 @@ def _apply_cicd_request(
     ts: str,
 ) -> str:
     """Actually create or update cicd_tasks after approval. Returns the task_id."""
+    _validate_cicd_payload_fields(payload)
     if request_type == "create":
         new_id = _next_cicd_id(conn)
         build_product = payload.get("build_product", [])
@@ -3494,9 +3523,9 @@ def _apply_cicd_request(
             """
             INSERT INTO cicd_tasks
               (id, app_name, app_version, repo_type, repo_name, branch,
-               build_product, community_artifact, build_image, test_timeout, supports_maca_hpcc,
+               build_product, community_artifact, build_image, test_timeout,
                owner_username, status, notes, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id,
@@ -3509,7 +3538,6 @@ def _apply_cicd_request(
                 json.dumps(community_artifact, ensure_ascii=False),
                 payload.get("build_image", ""),
                 int(payload.get("test_timeout", 40)),
-                payload.get("supports_maca_hpcc", "No"),
                 payload.get("owner_username", ""),
                 payload.get("status", "Running"),
                 payload.get("notes", ""),
@@ -3757,10 +3785,7 @@ def list_cicd_requests(
     result = []
     for r in rows:
         d = dict(r)
-        try:
-            d["payload"] = json.loads(d.get("payload") or "{}")
-        except Exception:
-            d["payload"] = {}
+        d["payload"] = _load_cicd_payload(d.get("payload") or "{}")
         result.append(d)
     return result
 
@@ -3778,10 +3803,7 @@ def get_cicd_task_history(conn: sqlite3.Connection, task_id: str) -> list[dict]:
     result = []
     for r in rows:
         d = dict(r)
-        try:
-            d["payload"] = json.loads(d.get("payload") or "{}")
-        except Exception:
-            d["payload"] = {}
+        d["payload"] = _load_cicd_payload(d.get("payload") or "{}")
         result.append(d)
     return result
 
@@ -4006,10 +4028,7 @@ def list_cicd_deliveries(
     result = []
     for r in rows:
         d = dict(r)
-        try:
-            d["payload"] = json.loads(d.get("payload") or "{}")
-        except Exception:
-            d["payload"] = {}
+        d["payload"] = _load_cicd_payload(d.get("payload") or "{}")
         result.append(d)
     _attach_delivery_task_info(conn, result)
     return result

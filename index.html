@@ -863,7 +863,7 @@
           <table class="cicd-table">
             <thead><tr>
               <th>ID</th><th>项目名称</th><th>版本</th><th>仓库类型</th><th>仓库名</th><th>分支</th>
-              <th>构建产物</th><th>开发者社区产物</th><th>构建依赖镜像</th><th>超时(min)</th><th>maca/hpcc互转</th>
+              <th>构建产物</th><th>开发者社区产物</th><th>构建依赖镜像</th><th>超时(min)</th>
               <th>负责人</th><th>状态</th><th>备注</th><th>操作</th>
             </tr></thead>
             <tbody id="cicdOverviewBody"></tbody>
@@ -1051,12 +1051,6 @@
           </label>
           <label>构建依赖镜像<input id="cf_build_image" class="input" autocomplete="off"></label>
           <label>测试超时时间 (min)<input id="cf_test_timeout" class="input" type="number" min="1" value="40"></label>
-          <label>支持maca/hpcc互转
-            <select id="cf_supports_maca_hpcc" class="select">
-              <option value="No">No</option>
-              <option value="Yes">Yes</option>
-            </select>
-          </label>
           <label>状态
             <select id="cf_status" class="select">
               <option value="Running">Running</option>
@@ -3675,7 +3669,7 @@
       app_name: "项目名称", app_version: "项目版本", repo_type: "仓库类型",
       repo_name: "仓库名", branch: "分支", build_product: "构建产物",
       community_artifact: "开发者社区产物",
-      build_image: "构建依赖镜像", test_timeout: "超时(min)", supports_maca_hpcc: "maca/hpcc互转",
+      build_image: "构建依赖镜像", test_timeout: "超时(min)",
       owner_username: "负责人", status: "状态", notes: "备注",
     };
 
@@ -3763,7 +3757,7 @@
         t.owner_username.toLowerCase().includes(q)
       );
       if (!tasks.length) {
-        body.innerHTML = `<tr><td colspan="15" class="empty" style="text-align:center;color:var(--muted);padding:30px">暂无任务</td></tr>`;
+        body.innerHTML = `<tr><td colspan="14" class="empty" style="text-align:center;color:var(--muted);padding:30px">暂无任务</td></tr>`;
         return;
       }
       const canEdit = canSubmitCicd();
@@ -3792,7 +3786,6 @@
           <td>${esc(cicdCommunityArtifactStr(t.community_artifact))}</td>
           <td style="max-width:160px;word-break:break-all">${esc(t.build_image)}</td>
           <td style="text-align:center">${esc(String(t.test_timeout))}</td>
-          <td style="text-align:center">${esc(t.supports_maca_hpcc)}</td>
           <td>${esc(cicdOwnerLabel(t))}</td>
           <td>${cicdStatusPill(t.status)}${pending}${pendingDelivery}</td>
           <td style="max-width:160px">${esc(t.notes)}</td>
@@ -3997,7 +3990,6 @@
       $("cf_branch").value = task?.branch || "";
       $("cf_build_image").value = task?.build_image || "";
       $("cf_test_timeout").value = task?.test_timeout ?? 40;
-      $("cf_supports_maca_hpcc").value = task?.supports_maca_hpcc || "No";
       $("cf_status").value = task?.status || "Running";
       $("cf_notes").value = task?.notes || "";
 
@@ -4052,7 +4044,6 @@
         community_artifact: communityArtifact,
         build_image: $("cf_build_image").value.trim(),
         test_timeout: parseInt($("cf_test_timeout").value) || 40,
-        supports_maca_hpcc: $("cf_supports_maca_hpcc").value,
         status: $("cf_status").value,
         notes: $("cf_notes").value.trim(),
       };
