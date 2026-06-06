@@ -1,203 +1,243 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1660" height="1300" viewBox="0 0 1660 1300">
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1420" viewBox="0 0 1800 1420" role="img" aria-labelledby="title desc">
+  <title id="title">HPC App 发布信息协作系统状态机</title>
+  <desc id="desc">展示 release 生命周期、每个 app 的 release snapshot、CICD 交付申请、开发 WIKI 和最终产物之间的流转关系。</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L0,6 L9,3 z" fill="#475569" />
     </marker>
     <style>
-      .title { font: 700 25px "Microsoft YaHei","SimHei",Arial,sans-serif; fill:#0f172a; }
+      .title { font: 700 26px "Microsoft YaHei","SimHei",Arial,sans-serif; fill:#0f172a; }
       .subtitle { font: 400 14px "Microsoft YaHei","SimHei",Arial,sans-serif; fill:#475569; }
       .lane { fill:#f8fafc; stroke:#cbd5e1; stroke-width:1; rx:14; }
       .lane-title { font:700 17px "Microsoft YaHei","SimHei",Arial,sans-serif; fill:#0f172a; }
-      .box { fill:#ffffff; stroke:#475569; stroke-width:1.4; rx:9; }
       .phase { fill:#eef3ff; stroke:#2563eb; stroke-width:1.7; rx:9; }
-      .gate { fill:#fff8ea; stroke:#b45309; stroke-width:1.6; rx:9; }
+      .box { fill:#ffffff; stroke:#475569; stroke-width:1.4; rx:9; }
       .ok { fill:#ecfdf3; stroke:#15803d; stroke-width:1.5; rx:9; }
-      .lock { fill:#fef3f2; stroke:#b42318; stroke-width:1.7; rx:9; }
+      .warn { fill:#fff8ea; stroke:#b45309; stroke-width:1.5; rx:9; }
+      .bad { fill:#fef3f2; stroke:#b42318; stroke-width:1.6; rx:9; }
       .data { fill:#eff6ff; stroke:#2563eb; stroke-width:1.4; rx:9; }
+      .side { fill:#f5f3ff; stroke:#7c3aed; stroke-width:1.4; rx:9; }
       .note { fill:#fffbeb; stroke:#d97706; stroke-width:1.3; rx:9; }
       .label { font:700 14px "Microsoft YaHei","SimHei",Arial,sans-serif; fill:#0f172a; }
       .small { font:400 11.5px "Microsoft YaHei","SimHei",Arial,sans-serif; fill:#475569; }
+      .tiny { font:400 10.5px "Microsoft YaHei","SimHei",Arial,sans-serif; fill:#475569; }
       .tlabel { font:600 11.5px "Microsoft YaHei","SimHei",Arial,sans-serif; fill:#1d4ed8; }
       .edge { stroke:#475569; stroke-width:1.5; fill:none; marker-end:url(#arrow); }
       .edge-dash { stroke:#94a3b8; stroke-width:1.4; fill:none; stroke-dasharray:6 5; marker-end:url(#arrow); }
     </style>
   </defs>
 
-  <rect x="0" y="0" width="1660" height="1300" fill="#ffffff" />
-  <text x="40" y="46" class="title">HPC App 发布信息协作系统 · 流程总览</text>
-  <text x="40" y="73" class="subtitle">一个 release 由「App 冻结」「Doc deadline」两个北京时间 deadline 推进；每个 app 的发布信息逐 release 独立保存。角色：RM 发布管理 / Owner 应用负责人 / QA 测试。</text>
+  <rect x="0" y="0" width="1800" height="1420" fill="#ffffff" />
+  <text x="44" y="46" class="title">HPC App 发布信息协作系统 · 状态机与协作流</text>
+  <text x="44" y="73" class="subtitle">当前实现围绕 release snapshot、deadline 派生阶段、QA 状态、CICD 交付申请和开发 WIKI 协作。SQLite 保存业务状态，前端轮询 /api/state 展示最新视图。</text>
 
-  <!-- ===== Lane A: release lifecycle ===== -->
-  <rect x="30" y="90" width="1600" height="335" class="lane" />
-  <text x="52" y="124" class="lane-title">① Release 生命周期 —— 随两个北京时间 deadline 自动推进</text>
+  <!-- Release lifecycle -->
+  <rect x="32" y="94" width="1736" height="344" class="lane" />
+  <text x="56" y="128" class="lane-title">① Release 生命周期：阶段由北京时间 deadline 和最终锁定状态实时派生</text>
 
-  <rect x="60" y="210" width="270" height="168" class="phase" />
-  <text x="195" y="244" text-anchor="middle" class="label">① 创建 Release</text>
-  <text x="195" y="268" text-anchor="middle" class="small">RM：首版用单个 CSV 初始化</text>
-  <text x="195" y="286" text-anchor="middle" class="small">导入；后续从上一版克隆，</text>
-  <text x="195" y="304" text-anchor="middle" class="small">继承每个 app 的快照信息</text>
-  <text x="195" y="322" text-anchor="middle" class="small">并设两个 deadline</text>
+  <rect x="62" y="180" width="260" height="170" class="data" />
+  <text x="192" y="215" text-anchor="middle" class="label">创建 release</text>
+  <text x="192" y="240" text-anchor="middle" class="small">RM 首次 CSV 初始化</text>
+  <text x="192" y="258" text-anchor="middle" class="small">或从上一版克隆</text>
+  <text x="192" y="276" text-anchor="middle" class="small">设置 app freeze</text>
+  <text x="192" y="294" text-anchor="middle" class="small">和 doc deadline</text>
+  <text x="192" y="321" text-anchor="middle" class="tiny">deadline 为空表示尚未到期</text>
 
-  <rect x="377" y="210" width="270" height="168" class="phase" />
-  <text x="512" y="244" text-anchor="middle" class="label">② App 冻结前</text>
-  <text x="512" y="268" text-anchor="middle" class="small">可新增 app、任意设定</text>
-  <text x="512" y="286" text-anchor="middle" class="small">release 决策</text>
-  <text x="512" y="304" text-anchor="middle" class="small">文档 / app_info / 表单</text>
-  <text x="512" y="322" text-anchor="middle" class="small">均可自由编辑</text>
+  <rect x="368" y="180" width="290" height="170" class="phase" />
+  <text x="513" y="215" text-anchor="middle" class="label">before_app_freeze</text>
+  <text x="513" y="240" text-anchor="middle" class="small">可新增 release app</text>
+  <text x="513" y="258" text-anchor="middle" class="small">可新增 cicd_only / stopped app</text>
+  <text x="513" y="276" text-anchor="middle" class="small">可升降 release 决策</text>
+  <text x="513" y="294" text-anchor="middle" class="small">可编辑文档、表单、app_info</text>
+  <text x="513" y="321" text-anchor="middle" class="tiny">QA 可上传 log 并标注状态</text>
 
-  <rect x="694" y="210" width="270" height="168" class="phase" />
-  <text x="829" y="244" text-anchor="middle" class="label">③ App 冻结后</text>
-  <text x="829" y="268" text-anchor="middle" class="small">发布范围冻结：不可新增</text>
-  <text x="829" y="286" text-anchor="middle" class="small">release 决策的 app；决策</text>
-  <text x="829" y="304" text-anchor="middle" class="small">只能下调、不能升回 release</text>
-  <text x="829" y="322" text-anchor="middle" class="small">文档 / app_info 仍可编辑</text>
+  <rect x="704" y="180" width="290" height="170" class="phase" />
+  <text x="849" y="215" text-anchor="middle" class="label">after_app_freeze</text>
+  <text x="849" y="240" text-anchor="middle" class="small">发布范围冻结</text>
+  <text x="849" y="258" text-anchor="middle" class="small">不能新增或升回 release</text>
+  <text x="849" y="276" text-anchor="middle" class="small">仍可下调到 cicd_only / stopped</text>
+  <text x="849" y="294" text-anchor="middle" class="small">文档、表单、app_info 仍可编辑</text>
+  <text x="849" y="321" text-anchor="middle" class="tiny">app_info 不能扩大 QA 范围</text>
 
-  <rect x="1011" y="210" width="270" height="168" class="phase" />
-  <text x="1146" y="244" text-anchor="middle" class="label">④ Doc deadline 后</text>
-  <text x="1146" y="268" text-anchor="middle" class="small">文档 / 表单 / app_info 冻结</text>
-  <text x="1146" y="286" text-anchor="middle" class="small">仅 QA 可标注 QA 状态</text>
-  <text x="1146" y="304" text-anchor="middle" class="small">RM 仍可下调决策，把 app</text>
-  <text x="1146" y="322" text-anchor="middle" class="small">移出本次发布</text>
+  <rect x="1040" y="180" width="290" height="170" class="phase" />
+  <text x="1185" y="215" text-anchor="middle" class="label">after_doc_deadline</text>
+  <text x="1185" y="240" text-anchor="middle" class="small">文档、表单、app_info 冻结</text>
+  <text x="1185" y="258" text-anchor="middle" class="small">仍可新增非 release app</text>
+  <text x="1185" y="276" text-anchor="middle" class="small">仍可下调 release 决策</text>
+  <text x="1185" y="294" text-anchor="middle" class="small">QA 可继续上传 log、标注状态</text>
+  <text x="1185" y="321" text-anchor="middle" class="tiny">发布文档预览不可再改业务字段</text>
 
-  <rect x="1328" y="210" width="270" height="168" class="lock" />
-  <text x="1463" y="244" text-anchor="middle" class="label">⑤ Release 最终锁定</text>
-  <text x="1463" y="268" text-anchor="middle" class="small">RM 在部门 manager 审核后</text>
-  <text x="1463" y="286" text-anchor="middle" class="small">执行 Final Lock</text>
-  <text x="1463" y="304" text-anchor="middle" class="small">快照不可变；生成最终</text>
-  <text x="1463" y="322" text-anchor="middle" class="small">Markdown + release-data</text>
+  <rect x="1376" y="180" width="290" height="170" class="bad" />
+  <text x="1521" y="215" text-anchor="middle" class="label">released_locked</text>
+  <text x="1521" y="240" text-anchor="middle" class="small">RM 执行 Final Lock</text>
+  <text x="1521" y="258" text-anchor="middle" class="small">所有 snapshot 写入冻结</text>
+  <text x="1521" y="276" text-anchor="middle" class="small">生成 final Markdown</text>
+  <text x="1521" y="294" text-anchor="middle" class="small">和 release_data.json</text>
+  <text x="1521" y="321" text-anchor="middle" class="tiny">RM 可解锁，回到 deadline 派生阶段</text>
 
-  <text x="353" y="203" text-anchor="middle" class="tlabel">release 建立</text>
-  <text x="670" y="203" text-anchor="middle" class="tlabel">过 App 冻结 deadline</text>
-  <text x="987" y="203" text-anchor="middle" class="tlabel">过 Doc deadline</text>
-  <text x="1304" y="203" text-anchor="middle" class="tlabel">RM 执行 Final Lock</text>
+  <path d="M322 265 L368 265" class="edge" />
+  <path d="M658 265 L704 265" class="edge" />
+  <path d="M994 265 L1040 265" class="edge" />
+  <path d="M1330 265 L1376 265" class="edge" />
+  <text x="345" y="251" text-anchor="middle" class="tlabel">创建完成</text>
+  <text x="681" y="251" text-anchor="middle" class="tlabel">过 app freeze</text>
+  <text x="1017" y="251" text-anchor="middle" class="tlabel">过 doc deadline</text>
+  <text x="1353" y="251" text-anchor="middle" class="tlabel">Final Lock</text>
+  <path d="M1521 350 C1521 402 1185 402 1185 350" class="edge-dash" />
+  <text x="1352" y="404" text-anchor="middle" class="tlabel">Final Unlock 后重新按当前 deadline 计算阶段</text>
 
-  <path d="M330 294 L377 294" class="edge" />
-  <path d="M647 294 L694 294" class="edge" />
-  <path d="M964 294 L1011 294" class="edge" />
-  <path d="M1281 294 L1328 294" class="edge" />
-  <path d="M1463 378 C1463 408 1146 408 1146 380" class="edge-dash" />
-  <text x="1304" y="404" text-anchor="middle" class="tlabel">RM 解锁可回退到 Doc deadline 后</text>
+  <!-- App snapshot -->
+  <rect x="32" y="462" width="1736" height="472" class="lane" />
+  <text x="56" y="496" class="lane-title">② 每个 App 的 release snapshot：发布信息逐 release 独立保存</text>
 
-  <!-- ===== Lane B: per-app publish snapshot ===== -->
-  <rect x="30" y="445" width="1600" height="510" class="lane" />
-  <text x="52" y="479" class="lane-title">② Release 内每个 App 的发布快照 —— 发布信息逐 release 独立</text>
+  <rect x="62" y="590" width="198" height="96" class="box" />
+  <text x="161" y="625" text-anchor="middle" class="label">App 进入 release</text>
+  <text x="161" y="648" text-anchor="middle" class="small">初始化导入</text>
+  <text x="161" y="666" text-anchor="middle" class="small">克隆继承或 Owner 新增</text>
 
-  <rect x="60" y="578" width="180" height="92" class="box" />
-  <text x="150" y="616" text-anchor="middle" class="label">App 进入本 release</text>
-  <text x="150" y="636" text-anchor="middle" class="small">导入 / 克隆继承 / Owner 新增</text>
+  <rect x="306" y="514" width="220" height="70" class="ok" />
+  <text x="416" y="542" text-anchor="middle" class="label">release</text>
+  <text x="416" y="562" text-anchor="middle" class="small">进入文档、QA、最终产物</text>
 
-  <rect x="276" y="508" width="195" height="62" class="ok" />
-  <text x="373" y="533" text-anchor="middle" class="label">release 决策 = release</text>
-  <text x="373" y="552" text-anchor="middle" class="small">进入文档与 QA 流程</text>
+  <rect x="306" y="616" width="220" height="70" class="box" />
+  <text x="416" y="644" text-anchor="middle" class="label">cicd_only</text>
+  <text x="416" y="664" text-anchor="middle" class="small">仅 CICD / infra 管控</text>
 
-  <rect x="276" y="598" width="195" height="62" class="box" />
-  <text x="373" y="623" text-anchor="middle" class="label">release 决策 = cicd_only</text>
-  <text x="373" y="642" text-anchor="middle" class="small">仅 CICD 跟踪，不进文档 / QA</text>
+  <rect x="306" y="718" width="220" height="70" class="box" />
+  <text x="416" y="746" text-anchor="middle" class="label">stopped</text>
+  <text x="416" y="766" text-anchor="middle" class="small">本轮停止发布或维护</text>
 
-  <rect x="276" y="688" width="195" height="62" class="box" />
-  <text x="373" y="713" text-anchor="middle" class="label">release 决策 = stopped</text>
-  <text x="373" y="732" text-anchor="middle" class="small">本轮停止发布 / 停止维护</text>
+  <rect x="578" y="514" width="250" height="96" class="data" />
+  <text x="703" y="548" text-anchor="middle" class="label">app_info.json</text>
+  <text x="703" y="571" text-anchor="middle" class="small">Owner 上传或 Gerrit 拉取</text>
+  <text x="703" y="589" text-anchor="middle" class="small">派生版本、芯片、测试项、diff</text>
 
-  <rect x="510" y="508" width="210" height="92" class="data" />
-  <text x="615" y="540" text-anchor="middle" class="label">上传 / 拉取 app_info</text>
-  <text x="615" y="560" text-anchor="middle" class="small">解析 版本 / 芯片 / 测试项</text>
-  <text x="615" y="578" text-anchor="middle" class="small">列出与上一版本的 diff</text>
+  <rect x="578" y="648" width="250" height="96" class="warn" />
+  <text x="703" y="682" text-anchor="middle" class="label">app_info 变更影响</text>
+  <text x="703" y="705" text-anchor="middle" class="small">内容变化会使 Owner 确认失效</text>
+  <text x="703" y="723" text-anchor="middle" class="small">冻结后禁止新增芯片或测试 path</text>
 
-  <rect x="760" y="478" width="175" height="56" class="box" />
-  <text x="847" y="501" text-anchor="middle" class="label">补齐文档字段</text>
-  <text x="847" y="520" text-anchor="middle" class="small">5 段说明文字</text>
+  <rect x="884" y="514" width="222" height="70" class="box" />
+  <text x="995" y="542" text-anchor="middle" class="label">补齐基本信息与文档</text>
+  <text x="995" y="562" text-anchor="middle" class="small">官方名、类型、描述、Manual 段落</text>
 
-  <rect x="760" y="572" width="175" height="56" class="box" />
-  <text x="847" y="595" text-anchor="middle" class="label">补齐测试说明</text>
-  <text x="847" y="614" text-anchor="middle" class="small">每个 test_cmd 的测试说明</text>
+  <rect x="884" y="616" width="222" height="70" class="box" />
+  <text x="995" y="644" text-anchor="middle" class="label">补齐测试说明</text>
+  <text x="995" y="664" text-anchor="middle" class="small">每个 test_cmd 的数据集、内容、标准</text>
 
-  <rect x="975" y="508" width="170" height="92" class="ok" />
-  <text x="1060" y="548" text-anchor="middle" class="label">Owner 提交确认</text>
-  <text x="1060" y="568" text-anchor="middle" class="small">确认发布信息已齐</text>
+  <rect x="1158" y="540" width="205" height="90" class="ok" />
+  <text x="1260" y="575" text-anchor="middle" class="label">Owner 确认</text>
+  <text x="1260" y="598" text-anchor="middle" class="small">确认当前 snapshot</text>
+  <text x="1260" y="616" text-anchor="middle" class="small">可用于本 release</text>
 
-  <rect x="1185" y="508" width="220" height="92" class="ok" />
-  <text x="1295" y="539" text-anchor="middle" class="label">QA 测试并标注状态</text>
-  <text x="1295" y="558" text-anchor="middle" class="small">未测试 / 通过 / 存在问题 / 不可发布</text>
-  <text x="1295" y="576" text-anchor="middle" class="small">QA 上传 QA log</text>
+  <rect x="1415" y="514" width="260" height="116" class="ok" />
+  <text x="1545" y="548" text-anchor="middle" class="label">QA 标注状态</text>
+  <text x="1545" y="571" text-anchor="middle" class="small">上传 QA log</text>
+  <text x="1545" y="589" text-anchor="middle" class="small">可用 AI 建议预填，人工保存</text>
+  <text x="1545" y="607" text-anchor="middle" class="small">qa_passed / has_issues / cannot_release</text>
 
-  <rect x="1445" y="500" width="150" height="108" class="gate" />
-  <text x="1520" y="544" text-anchor="middle" class="label">进入最终发布</text>
-  <text x="1520" y="564" text-anchor="middle" class="small">满足全部</text>
-  <text x="1520" y="580" text-anchor="middle" class="small">门禁条件</text>
+  <rect x="1415" y="672" width="260" height="116" class="warn" />
+  <text x="1545" y="706" text-anchor="middle" class="label">最终发布门禁</text>
+  <text x="1545" y="729" text-anchor="middle" class="small">release 决策</text>
+  <text x="1545" y="747" text-anchor="middle" class="small">Owner 已确认、文档类待补为空</text>
+  <text x="1545" y="765" text-anchor="middle" class="small">QA 为 qa_passed 或 has_issues</text>
 
-  <path d="M240 624 C262 624 254 539 276 539" class="edge" />
-  <path d="M240 624 C260 626 258 629 276 629" class="edge" />
-  <path d="M240 624 C262 624 254 719 276 719" class="edge" />
-  <path d="M471 539 C492 539 490 554 510 554" class="edge" />
-  <path d="M720 554 C742 554 740 506 760 506" class="edge" />
-  <path d="M720 554 C742 554 740 600 760 600" class="edge" />
-  <path d="M935 506 C957 506 955 532 975 532" class="edge" />
-  <path d="M935 600 C957 600 955 576 975 576" class="edge" />
-  <path d="M1145 554 L1185 554" class="edge" />
-  <path d="M1405 554 L1445 554" class="edge" />
+  <path d="M260 638 C288 638 278 549 306 549" class="edge" />
+  <path d="M260 638 C288 638 278 651 306 651" class="edge" />
+  <path d="M260 638 C288 638 278 753 306 753" class="edge" />
+  <path d="M526 549 L578 562" class="edge" />
+  <path d="M828 562 C858 562 854 549 884 549" class="edge" />
+  <path d="M828 562 C858 562 854 651 884 651" class="edge" />
+  <path d="M1106 549 C1132 549 1132 570 1158 570" class="edge" />
+  <path d="M1106 651 C1132 651 1132 600 1158 600" class="edge" />
+  <path d="M1363 585 L1415 572" class="edge" />
+  <path d="M1545 630 L1545 672" class="edge" />
+  <path d="M703 610 L703 648" class="edge-dash" />
 
-  <rect x="60" y="775" width="1535" height="165" class="note" />
-  <text x="80" y="803" class="label">说明</text>
-  <text x="80" y="826" class="small">「进入最终发布」门禁：release 决策 + Owner 已确认 + 文档字段与测试说明齐全 + QA 状态为「通过」或「存在问题」。</text>
-  <text x="80" y="848" class="small">QA 标注「存在问题」仍会发布，问题写入文档「已知限制」段；「不可发布」不进入本次发布。Owner 可新增 owner-added 测试项。</text>
-  <text x="80" y="870" class="small">上传 / 拉取 app_info 会列出与上一版本的 diff，无需 owner 逐项确认；上传后停留在编辑状态，可继续补充文档与测试说明。</text>
-  <text x="80" y="892" class="small">cicd_only / stopped 决策的 app 不进入文档与 QA 流程。每个 app 的「变更记录」按 release 分别查看，并展开到字段级改动。</text>
+  <rect x="62" y="826" width="1613" height="84" class="note" />
+  <text x="84" y="854" class="label">Snapshot 说明</text>
+  <text x="84" y="878" class="small">apps 表只保存全局身份：id、git_url、git_branch、别名。官方名称、Owner、文档、测试说明、release 决策、QA 状态都在 release snapshot 中。</text>
+  <text x="84" y="900" class="small">has_issues 仍可发布，QA 说明会合并到已知限制；not_checked 或 cannot_release 不进入最终 Release Note / Manual。</text>
 
-  <!-- ===== Lane C: wrap-up and outputs ===== -->
-  <rect x="30" y="975" width="1600" height="250" class="lane" />
-  <text x="52" y="1009" class="lane-title">③ 收尾与产出</text>
+  <!-- CICD, Wiki, Admin -->
+  <rect x="32" y="958" width="1736" height="280" class="lane" />
+  <text x="56" y="992" class="lane-title">③ 旁路工作流：CICD 交付申请、开发 WIKI、系统管理</text>
 
-  <rect x="60" y="1052" width="220" height="78" class="box" />
-  <text x="170" y="1086" text-anchor="middle" class="label">RM 生成 Manager Review CSV</text>
-  <text x="170" y="1106" text-anchor="middle" class="small">覆盖本 release 全部 app</text>
+  <rect x="62" y="1044" width="230" height="84" class="side" />
+  <text x="177" y="1077" text-anchor="middle" class="label">提交 CICD 申请</text>
+  <text x="177" y="1100" text-anchor="middle" class="small">Owner / RM / Admin</text>
+  <text x="177" y="1118" text-anchor="middle" class="small">create / modify</text>
 
-  <rect x="322" y="1052" width="180" height="78" class="gate" />
-  <text x="412" y="1086" text-anchor="middle" class="label">部门 Manager 审核</text>
-  <text x="412" y="1106" text-anchor="middle" class="small">在 Gerrit 上 merge 报告</text>
+  <rect x="340" y="1044" width="210" height="84" class="warn" />
+  <text x="445" y="1077" text-anchor="middle" class="label">待审批 pending</text>
+  <text x="445" y="1100" text-anchor="middle" class="small">Owner 提交进入队列</text>
+  <text x="445" y="1118" text-anchor="middle" class="small">RM/Admin 可拒绝或批准</text>
 
-  <rect x="544" y="1052" width="185" height="78" class="lock" />
-  <text x="636" y="1086" text-anchor="middle" class="label">RM 执行 Final Lock</text>
-  <text x="636" y="1106" text-anchor="middle" class="small">快照冻结、不可变</text>
+  <rect x="598" y="1010" width="230" height="72" class="ok" />
+  <text x="713" y="1038" text-anchor="middle" class="label">立即生效</text>
+  <text x="713" y="1058" text-anchor="middle" class="small">RM/Admin 自提交或审批通过</text>
 
-  <rect x="775" y="1014" width="300" height="40" class="data" />
-  <text x="925" y="1039" text-anchor="middle" class="label">release note Markdown</text>
-  <rect x="775" y="1060" width="300" height="40" class="data" />
-  <text x="925" y="1085" text-anchor="middle" class="label">HPC Manual App 章节 Markdown</text>
-  <rect x="775" y="1106" width="300" height="40" class="data" />
-  <text x="925" y="1131" text-anchor="middle" class="label">AI4Sci User Guide 章节 Markdown</text>
-  <rect x="775" y="1152" width="300" height="40" class="data" />
-  <text x="925" y="1177" text-anchor="middle" class="label">release-data JSON</text>
+  <rect x="598" y="1110" width="230" height="72" class="side" />
+  <text x="713" y="1138" text-anchor="middle" class="label">下发 SPD</text>
+  <text x="713" y="1158" text-anchor="middle" class="small">可选自动创建 Jira issue</text>
 
-  <path d="M280 1091 L322 1091" class="edge" />
-  <path d="M502 1091 L544 1091" class="edge" />
-  <path d="M729 1091 C752 1091 752 1034 775 1034" class="edge" />
-  <path d="M729 1091 C752 1091 752 1080 775 1080" class="edge" />
-  <path d="M729 1091 C752 1091 752 1126 775 1126" class="edge" />
-  <path d="M729 1091 C752 1091 752 1172 775 1172" class="edge" />
+  <rect x="876" y="1110" width="230" height="72" class="warn" />
+  <text x="991" y="1138" text-anchor="middle" class="label">SPD 交付</text>
+  <text x="991" y="1158" text-anchor="middle" class="small">delivered 生效，returned 退回</text>
 
-  <rect x="1110" y="1052" width="490" height="120" class="note" />
-  <text x="1130" y="1079" class="label">其他</text>
-  <text x="1130" y="1101" class="small">QA 阶段，RM 可导出「测试范围 CSV」交 QA 使用。</text>
-  <text x="1130" y="1123" class="small">Final Lock 后如需修正：由 RM 解锁，或留到下一个 release。</text>
-  <text x="1130" y="1145" class="small">Admin 负责账号与数据库管理（备份 / 清空）。</text>
+  <rect x="1154" y="1044" width="250" height="84" class="data" />
+  <text x="1279" y="1077" text-anchor="middle" class="label">开发 WIKI</text>
+  <text x="1279" y="1100" text-anchor="middle" class="small">RM/Admin 维护文章和图片</text>
+  <text x="1279" y="1118" text-anchor="middle" class="small">Owner/RM 读取 Markdown</text>
 
-  <!-- ===== legend ===== -->
-  <rect x="30" y="1245" width="1600" height="54" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1" rx="12" />
-  <text x="52" y="1278" class="label">图例</text>
-  <rect x="128" y="1264" width="20" height="15" class="phase" />
-  <text x="156" y="1277" class="small">Release 阶段</text>
-  <rect x="288" y="1264" width="20" height="15" class="box" />
-  <text x="316" y="1277" class="small">步骤 / 状态</text>
-  <rect x="440" y="1264" width="20" height="15" class="gate" />
-  <text x="468" y="1277" class="small">门禁 / 条件</text>
-  <rect x="592" y="1264" width="20" height="15" class="ok" />
-  <text x="620" y="1277" class="small">完成 / 活动</text>
-  <rect x="744" y="1264" width="20" height="15" class="lock" />
-  <text x="772" y="1277" class="small">锁定 / 最终</text>
-  <rect x="896" y="1264" width="20" height="15" class="data" />
-  <text x="924" y="1277" class="small">数据 / 产出</text>
-  <line x1="1050" y1="1272" x2="1096" y2="1272" class="edge" />
-  <text x="1108" y="1277" class="small">流转</text>
-  <line x1="1210" y1="1272" x2="1256" y2="1272" class="edge-dash" />
-  <text x="1268" y="1277" class="small">条件 / 回退</text>
+  <rect x="1452" y="1044" width="250" height="84" class="bad" />
+  <text x="1577" y="1077" text-anchor="middle" class="label">Admin 管理</text>
+  <text x="1577" y="1100" text-anchor="middle" class="small">用户角色、清空业务数据</text>
+  <text x="1577" y="1118" text-anchor="middle" class="small">删除 app 前自动备份</text>
+
+  <path d="M292 1086 L340 1086" class="edge" />
+  <path d="M550 1086 C574 1086 574 1046 598 1046" class="edge" />
+  <path d="M550 1086 C574 1086 574 1146 598 1146" class="edge" />
+  <path d="M828 1146 L876 1146" class="edge" />
+  <path d="M991 1110 C991 1068 820 1068 820 1046" class="edge-dash" />
+  <text x="925" y="1084" text-anchor="middle" class="tlabel">退回后可重新下发或直接生效</text>
+
+  <!-- Outputs -->
+  <rect x="32" y="1262" width="1736" height="96" class="lane" />
+  <text x="56" y="1296" class="lane-title">④ 产物与外部交付</text>
+
+  <rect x="62" y="1318" width="250" height="40" class="data" />
+  <text x="187" y="1343" text-anchor="middle" class="label">test_scope.csv</text>
+  <rect x="352" y="1318" width="250" height="40" class="data" />
+  <text x="477" y="1343" text-anchor="middle" class="label">manager_review.csv</text>
+  <rect x="642" y="1318" width="250" height="40" class="data" />
+  <text x="767" y="1343" text-anchor="middle" class="label">release_note.md</text>
+  <rect x="932" y="1318" width="250" height="40" class="data" />
+  <text x="1057" y="1343" text-anchor="middle" class="label">hpc_manual_apps.md</text>
+  <rect x="1222" y="1318" width="250" height="40" class="data" />
+  <text x="1347" y="1343" text-anchor="middle" class="label">ai4sci_user_guide_apps.md</text>
+  <rect x="1512" y="1318" width="210" height="40" class="data" />
+  <text x="1617" y="1343" text-anchor="middle" class="label">release_data.json</text>
+
+  <!-- Legend -->
+  <rect x="32" y="1376" width="1736" height="36" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1" rx="12" />
+  <text x="56" y="1399" class="label">图例</text>
+  <rect x="130" y="1387" width="18" height="13" class="phase" />
+  <text x="156" y="1399" class="tiny">Release 阶段</text>
+  <rect x="270" y="1387" width="18" height="13" class="box" />
+  <text x="296" y="1399" class="tiny">普通状态</text>
+  <rect x="405" y="1387" width="18" height="13" class="ok" />
+  <text x="431" y="1399" class="tiny">活动 / 完成</text>
+  <rect x="540" y="1387" width="18" height="13" class="warn" />
+  <text x="566" y="1399" class="tiny">门禁 / 待处理</text>
+  <rect x="690" y="1387" width="18" height="13" class="bad" />
+  <text x="716" y="1399" class="tiny">冻结 / 管理</text>
+  <rect x="835" y="1387" width="18" height="13" class="data" />
+  <text x="861" y="1399" class="tiny">数据 / 产物</text>
+  <rect x="980" y="1387" width="18" height="13" class="side" />
+  <text x="1006" y="1399" class="tiny">旁路工作流</text>
+  <line x1="1150" y1="1394" x2="1196" y2="1394" class="edge" />
+  <text x="1208" y="1399" class="tiny">主流转</text>
+  <line x1="1310" y1="1394" x2="1356" y2="1394" class="edge-dash" />
+  <text x="1368" y="1399" class="tiny">条件 / 回退</text>
 </svg>
