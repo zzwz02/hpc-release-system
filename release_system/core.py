@@ -3038,6 +3038,11 @@ def markdown_fences_on_new_lines(content: str) -> str:
             split_lines.append(line)
             continue
 
+        before_fence = line[:fence_at].lstrip(" \t")
+        if before_fence and re.fullmatch(r"(>\s*)+", before_fence):
+            split_lines.append(line)
+            continue
+
         before = line[:fence_at].rstrip()
         fence = line[fence_at:].lstrip(" \t")
         if before:
@@ -3090,6 +3095,23 @@ def owner_markdown_block(content: str) -> str:
     if content.endswith("\n"):
         return content + "\n"
     return content + "\n\n"
+
+
+def _guide_test_doc_field(label: str, value: Any, *, indent: str = "  ", quote: bool = False) -> str:
+    text = markdown_fences_on_new_lines("" if value is None else str(value))
+    lines = text.split("\n")
+    continuation_indent = indent + "  "
+    if quote:
+        rendered = [f"{indent}- {label}："]
+        rendered.extend(f"{continuation_indent}>{line}" for line in lines)
+        return "\n".join(rendered) + "\n"
+    if lines[0].lstrip(" \t").startswith("```"):
+        rendered = [f"{indent}- {label}："]
+        rendered.extend(f"{continuation_indent}{line}" if line else "" for line in lines)
+    else:
+        rendered = [f"{indent}- {label}：{lines[0]}"]
+        rendered.extend(f"{continuation_indent}{line}" if line else "" for line in lines[1:])
+    return "\n".join(rendered) + "\n"
 
 
 def _md_cell(value: Any) -> str:
@@ -3319,11 +3341,12 @@ def _render_guide_entries(rows: list[tuple[dict[str, Any], dict[str, Any]]], *, 
                 continue
             out += f"- {test_doc['path']}\n"
             if test_doc.get("command"):
-                out += f"  - 测试命令：{inline_code(test_doc['command'])}\n"
-            out += f"  - 测试数据集：{test_doc.get('dataset', '')}\n"
-            out += f"  - 测试内容：{test_doc.get('content', '')}\n"
-            out += f"  - 结果查看：{test_doc.get('result_view', '')}\n"
-            out += f"  - 通过标准：{test_doc.get('pass_criteria', '')}\n\n"
+                out += _guide_test_doc_field("测试命令", inline_code(test_doc["command"]))
+            out += _guide_test_doc_field("测试数据集", test_doc.get("dataset", ""), quote=True)
+            out += _guide_test_doc_field("测试内容", test_doc.get("content", ""), quote=True)
+            out += _guide_test_doc_field("结果查看", test_doc.get("result_view", ""), quote=True)
+            out += _guide_test_doc_field("通过标准", test_doc.get("pass_criteria", ""), quote=True)
+            out += "\n"
         limits = _merged_limitations(snapshot)
         if limits:
             out += f"**已知限制：**\n\n{limits}\n\n"

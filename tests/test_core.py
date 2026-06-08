@@ -881,8 +881,8 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         self.assertIn("镜像说明\n```bash\n", out)
         self.assertIn("运行前检查\n```text\n", out)
         self.assertIn("限制说明\n```text\n", out)
-        self.assertIn("- sanity\n  - 测试命令：`app --version`\n  - 测试数据集：d\n", out)
-        self.assertIn("  - 通过标准：p\n\n", out)
+        self.assertIn("- sanity\n  - 测试命令：`app --version`\n  - 测试数据集：\n    >d\n", out)
+        self.assertIn("  - 通过标准：\n    >p\n\n", out)
         self.assertNotIn("```shell\napp --version", out)
 
         positions = []
@@ -902,6 +902,11 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         source = "- a\n  - b ```text\n  ddd\n  ```\n  - e"
         out = core.markdown_fences_on_new_lines(source)
         self.assertEqual(out, "- a\n  - b\n  ```text\n  ddd\n  ```\n  - e")
+
+    def test_markdown_fences_on_new_lines_preserves_blockquote_fences(self) -> None:
+        source = "  - 结果查看：\n    >```text\n    >abc\n    >```\n  - 通过标准：\n    >p"
+        out = core.markdown_fences_on_new_lines(source)
+        self.assertEqual(out, source)
 
     def test_markdown_fences_on_new_lines_indents_code_body_with_moved_fence(self) -> None:
         source = "- a\n  - b ```text\naaa\n   bbb\n```\n  - e"
@@ -927,7 +932,27 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
             }],
         }
         out = core.render_guide("Guide", [(app, snapshot)])
-        self.assertIn("- sanity\n  - 测试命令：`` line1 line2 `quoted` ``\n  - 测试数据集：d\n", out)
+        self.assertIn("- sanity\n  - 测试命令：`` line1 line2 `quoted` ``\n  - 测试数据集：\n    >d\n", out)
+
+    def test_render_guide_indents_multiline_test_doc_fields(self) -> None:
+        app = {"name": "TestApp", "description": "desc", "doc_target": "manual"}
+        snapshot = {
+            "version": "1.0",
+            "doc": {"intro": "intro"},
+            "test_docs": [{
+                "path": "si16_pw",
+                "command": "app --version",
+                "dataset": "amber20_benchmark_suite 数据集。\nsss\nccc",
+                "content": "bbb\n\nbbb\n\nbbb",
+                "result_view": "```text\nabc\n```",
+                "pass_criteria": "aaa_bbb\nccc",
+            }],
+        }
+        out = core.render_guide("Guide", [(app, snapshot)])
+        self.assertIn("  - 测试数据集：\n    >amber20_benchmark_suite 数据集。\n    >sss\n    >ccc\n", out)
+        self.assertIn("  - 测试内容：\n    >bbb\n    >\n    >bbb\n    >\n    >bbb\n", out)
+        self.assertIn("  - 结果查看：\n    >```text\n    >abc\n    >```\n", out)
+        self.assertIn("  - 通过标准：\n    >aaa_bbb\n    >ccc\n\n", out)
 
     def test_generate_artifacts_preview_ok_after_unlock(self) -> None:
         release_id, app_id = self.import_initial()
