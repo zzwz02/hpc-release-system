@@ -377,6 +377,81 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         self.assertEqual(by_column["Python version"], "py310")
         self.assertEqual(by_column["PyTorch version"], "torch2.1")
 
+    def test_qa_test_cmd_expands_release_image_placeholders_from_enabled_builds(self) -> None:
+        release_id, app_id = self.import_initial()
+        app_info = {
+            "app_version": "3.7.0",
+            "app_name": "abacus",
+            "app_build": {
+                "ubuntu20.04_amd64": {
+                    "build_target": "dbg, release",
+                    "os": "ubuntu20.04",
+                    "arch": "amd64",
+                    "enabled": False,
+                },
+                "kylin2309a_arm64": {
+                    "build_target": "dbg, release",
+                    "os": "kylin2309a",
+                    "arch": "arm64",
+                },
+                "kylinv10_arm64": {
+                    "build_target": "dbg, release",
+                    "os": "kylinv10",
+                    "arch": "arm64",
+                },
+                "centos9_amd64": {
+                    "build_target": "dbg, release",
+                    "os": "centos9",
+                    "arch": "amd64",
+                },
+            },
+            "app_test": {
+                "aaa": {
+                    "test_cmd": "echo aaa",
+                    "supported_chip": {"C500": ["ubuntu20.04_amd64"]},
+                    "enabled": True,
+                    "img_target": "release",
+                },
+            },
+        }
+        core.apply_app_info(self.conn, release_id, app_id, app_info, source="unit")
+
+        report = core.build_qa_reports(self.conn, release_id)["test_cmd"]
+        rows = report["rows"]
+        images = [row[6].split(" sh -c ", 1)[0].split()[-1] for row in rows]
+
+        self.assertEqual(len(rows), 3)
+        self.assertEqual([row[3] for row in rows], ["arm", "arm", "x86"])
+        self.assertEqual(images, [
+            "abacus-maca:3.7.0-<hpc_version>-kylin2309a-arm64",
+            "abacus-maca:3.7.0-<hpc_version>-kylinv10-arm64",
+            "abacus-maca:3.7.0-<hpc_version>-centos9-amd64",
+        ])
+        self.assertFalse(any("[docker_image_release]" in row[6] for row in rows))
+        self.assertFalse(any("ubuntu20.04" in row[6] for row in rows))
+
+    def test_qa_test_cmd_expands_dbg_image_placeholders_with_optional_fields(self) -> None:
+        release_id, app_id = self.import_initial()
+        app_info = json.loads(json.dumps(APP_INFO_V1))
+        app_info["spec"] = "gpu"
+        app_info["app_build"]["ubuntu20.04_amd64"].update({
+            "build_target": "dbg",
+            "os": "ubuntu20.04",
+            "python_label": "py310",
+            "pytorch_label": "torch2.1",
+        })
+        app_info["app_test"]["run_make_test"]["img_target"] = "dbg"
+        core.apply_app_info(self.conn, release_id, app_id, app_info, source="unit")
+
+        report = core.build_qa_reports(self.conn, release_id)["test_cmd"]
+        rows = report["rows"]
+        images = [row[6].split(" sh -c ", 1)[0].split()[-1] for row in rows]
+
+        self.assertEqual(images, [
+            "amber-gpu-maca-dbg:22-<hpc_version>-torch2.1-py310-ubuntu20.04-amd64"
+        ])
+        self.assertFalse(any("[docker_image_dbg]" in row[6] for row in rows))
+
     def test_app_info_reupload_same_content_preserves_owner_confirm(self) -> None:
         # Re-uploading identical app_info (e.g. an idempotent Gerrit re-fetch)
         # must not silently wipe out an Owner's prior confirmation — that

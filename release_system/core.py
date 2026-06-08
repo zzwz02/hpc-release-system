@@ -5,6 +5,7 @@ import datetime as dt
 import fnmatch
 import hashlib
 import io
+import itertools
 import json
 import os
 import re
@@ -2652,10 +2653,12 @@ def _report_denormalize_arch(value: Any) -> str:
 
 
 def _report_build_arches(app_info: dict[str, Any]) -> set[str]:
-    """Normalized arches declared in app_info.app_build.*.arch."""
+    """Normalized arches declared in enabled app_info.app_build.*.arch."""
     arches: set[str] = set()
     for cfg in (app_info.get("app_build") or {}).values():
         if not isinstance(cfg, dict):
+            continue
+        if cfg.get("enabled") is False:
             continue
         a = _report_normalize_arch(cfg.get("arch"))
         if a:
@@ -2693,12 +2696,128 @@ def _report_test_skip(test_cfg: dict[str, Any], arch: str) -> bool:
     return True
 
 
-def _report_docker_cmd(test_cfg: dict[str, Any]) -> str:
+_REPORT_IMAGE_TARGET_SUFFIX = {
+    "release": "maca",
+    "dbg": "maca-dbg",
+}
+
+
+def _report_split_image_values(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, (list, tuple, set)):
+        raw_values = value
+    else:
+        raw_values = re.split(r"[,，、;；/]+", str(value))
+    values: list[str] = []
+    for item in raw_values:
+        text = str(item or "").strip()
+        if text and text not in values:
+            values.append(text)
+    return values
+
+
+def _report_image_field_options(raw: dict[str, Any], build_cfg: dict[str, Any], field: str) -> list[str]:
+    if field == "sdk_version":
+        return ["<hpc_version>"]
+    if field in ("app_name", "app_version"):
+        value = raw.get(field)
+        if value in (None, ""):
+            value = build_cfg.get(field)
+    else:
+        value = build_cfg.get(field)
+        if value in (None, ""):
+            value = raw.get(field)
+    values = _report_split_image_values(value)
+    return values or [""]
+
+
+def _report_build_target_matches(build_cfg: dict[str, Any], image_target: str) -> bool:
+    targets = {v.lower() for v in _report_split_image_values(build_cfg.get("build_target"))}
+    if not targets:
+        return image_target == "release"
+    return image_target in targets
+
+
+def _report_image_values_for_build(
+    raw: dict[str, Any], build_cfg: dict[str, Any], image_target: str
+) -> list[tuple[str, str]]:
+    suffix = _REPORT_IMAGE_TARGET_SUFFIX.get(image_target)
+    if not suffix:
+        return []
+    name_fields = [
+        _report_image_field_options(raw, build_cfg, "app_name"),
+        _report_image_field_options(raw, build_cfg, "spec"),
+        [suffix],
+    ]
+    app_versions = _report_image_field_options(raw, build_cfg, "app_version")
+    sdk_versions = _report_image_field_options(raw, build_cfg, "sdk_version")
+    pytorch_labels = _report_image_field_options(raw, build_cfg, "pytorch_label")
+    python_labels = _report_image_field_options(raw, build_cfg, "python_label")
+    os_values = _report_image_field_options(raw, build_cfg, "os")
+    arch_values = _report_image_field_options(raw, build_cfg, "arch")
+
+    images: list[tuple[str, str]] = []
+    for name_parts in itertools.product(*name_fields):
+        image_name = "-".join(part for part in name_parts if part)
+        if not image_name:
+            continue
+        for app_version, sdk_version, pytorch_label, python_label, os_value, arch in itertools.product(
+            app_versions, sdk_versions, pytorch_labels, python_labels, os_values, arch_values
+        ):
+            tag_parts = [app_version, sdk_version, pytorch_label, python_label, os_value, arch]
+            tag = "-".join(part for part in tag_parts if part)
+            image = f"{image_name}:{tag}" if tag else image_name
+            images.append((_report_denormalize_arch(arch), image))
+    return images
+
+
+def _report_docker_images(raw: dict[str, Any], image_target: str) -> list[tuple[str, str]]:
+    image_target = str(image_target or "").strip().lower()
+    if image_target not in _REPORT_IMAGE_TARGET_SUFFIX:
+        return []
+
+    rows: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    app_build = raw.get("app_build") or {}
+    build_items = app_build.values() if isinstance(app_build, dict) else []
+    for cfg in build_items:
+        if not isinstance(cfg, dict):
+            continue
+        if cfg.get("enabled") is False:
+            continue
+        if not _report_build_target_matches(cfg, image_target):
+            continue
+        for row in _report_image_values_for_build(raw, cfg, image_target):
+            if row not in seen:
+                seen.add(row)
+                rows.append(row)
+
+    if not rows and not app_build:
+        for row in _report_image_values_for_build(raw, {}, image_target):
+            if row not in seen:
+                seen.add(row)
+                rows.append(row)
+    return rows
+
+
+def _report_expanded_docker_cmds(raw: dict[str, Any], test_cfg: dict[str, Any]) -> list[tuple[str, str]]:
+    img_target = str(test_cfg.get("img_target") or "").strip().lower()
+    return [
+        (arch, _report_docker_cmd(test_cfg, image))
+        for arch, image in _report_docker_images(raw, img_target)
+    ]
+
+
+def _report_docker_cmd(test_cfg: dict[str, Any], docker_image: str | None = None) -> str:
     """Assemble the `docker run ...` command for one app_test entry."""
     container_args = str(test_cfg.get("container_args") or "").strip()
     test_cmd = str(test_cfg.get("test_cmd") or "").strip()
     img_target = str(test_cfg.get("img_target") or "").strip().lower()
-    image = f"[docker_image_{img_target}]" if img_target else "[docker_image]"
+    if docker_image is not None:
+        image = docker_image
+    else:
+        image = f"[docker_image_{img_target}]" if img_target else "[docker_image]"
     parts = ["docker run --pull always --rm -e MACA_PERF_DIR=/tmp"]
     if test_cfg.get("mount_dataset"):
         parts.append("-v /pde_hpc/dataset:/hpc_dataset:ro")
@@ -2714,7 +2833,9 @@ def _report_test_cmd_rows(
 ) -> list[list[str]]:
     """Build test-command rows for one app from its raw app_info.json dict.
 
-    Only enabled, non-weekly tests are kept; each (test, arch) is one row.
+    Only enabled, non-weekly tests are kept. release/dbg image placeholders
+    are expanded against enabled app_build entries, so one test can become
+    multiple docker-command rows.
     """
     version_value = raw.get("app_version")
     app_version = str(version_value).strip() if version_value not in (None, "") else ""
@@ -2727,6 +2848,19 @@ def _report_test_cmd_rows(
         if str(test_cfg.get("test_period") or "").strip().lower() == "weekly":
             continue
         if test_cfg.get("ignore_release"):
+            continue
+        expanded_cmds = _report_expanded_docker_cmds(raw, test_cfg)
+        if expanded_cmds:
+            for arch, docker_cmd in expanded_cmds:
+                rows.append([
+                    app_name,
+                    git_branch,
+                    app_version,
+                    arch,
+                    maca_version,
+                    str(test_name),
+                    docker_cmd,
+                ])
             continue
         docker_cmd = _report_docker_cmd(test_cfg)
         for n_arch in sorted(a for a in (_report_test_arches(test_cfg) or app_arches) if a):
@@ -2782,7 +2916,12 @@ def _compare_summary(
                 continue
             if cfg.get("ignore_release"):
                 continue
-            out.add((str(name), _report_docker_cmd(cfg)))
+            expanded_cmds = _report_expanded_docker_cmds(raw, cfg)
+            if expanded_cmds:
+                for _, cmd in expanded_cmds:
+                    out.add((str(name), cmd))
+            else:
+                out.add((str(name), _report_docker_cmd(cfg)))
         return out
 
     if _test_cmd_set(snapshot) != _test_cmd_set(base_snapshot):
