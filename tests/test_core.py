@@ -956,7 +956,7 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         self.assertIn("镜像说明\n```bash\n", out)
         self.assertIn("运行前检查\n```text\n", out)
         self.assertIn("限制说明\n```text\n", out)
-        self.assertIn("- sanity\n  - 测试命令：`app --version`\n  - 测试数据集：\n    >d\n", out)
+        self.assertIn("- sanity\n  - 测试内容：\n    >c\n  - 测试命令：`app --version`\n  - 测试数据集：\n    >d\n", out)
         self.assertIn("  - 通过标准：\n    >p\n\n", out)
         self.assertNotIn("```shell\napp --version", out)
 
@@ -992,7 +992,7 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         out = core.code_block("line1\nline2", indent="  ")
         self.assertEqual(out, "  ```shell\n  line1\n  line2\n  ```\n\n")
 
-    def test_render_guide_inlines_multiline_test_command_first(self) -> None:
+    def test_render_guide_orders_test_content_before_command(self) -> None:
         app = {"name": "TestApp", "description": "desc", "doc_target": "manual"}
         snapshot = {
             "version": "1.0",
@@ -1007,7 +1007,7 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
             }],
         }
         out = core.render_guide("Guide", [(app, snapshot)])
-        self.assertIn("- sanity\n  - 测试命令：`` line1 line2 `quoted` ``\n  - 测试数据集：\n    >d\n", out)
+        self.assertIn("- sanity\n  - 测试内容：\n    >c\n  - 测试命令：`` line1 line2 `quoted` ``\n  - 测试数据集：\n    >d\n", out)
 
     def test_render_guide_indents_multiline_test_doc_fields(self) -> None:
         app = {"name": "TestApp", "description": "desc", "doc_target": "manual"}
@@ -1024,10 +1024,14 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
             }],
         }
         out = core.render_guide("Guide", [(app, snapshot)])
-        self.assertIn("  - 测试数据集：\n    >amber20_benchmark_suite 数据集。\n    >sss\n    >ccc\n", out)
-        self.assertIn("  - 测试内容：\n    >bbb\n    >\n    >bbb\n    >\n    >bbb\n", out)
-        self.assertIn("  - 结果查看：\n    >```text\n    >abc\n    >```\n", out)
-        self.assertIn("  - 通过标准：\n    >aaa_bbb\n    >ccc\n\n", out)
+        self.assertIn(
+            "  - 测试内容：\n    >bbb\n    >\n    >bbb\n    >\n    >bbb\n"
+            "  - 测试命令：`app --version`\n"
+            "  - 测试数据集：\n    >amber20_benchmark_suite 数据集。\n    >sss\n    >ccc\n"
+            "  - 结果查看：\n    >```text\n    >abc\n    >```\n"
+            "  - 通过标准：\n    >aaa_bbb\n    >ccc\n\n",
+            out,
+        )
 
     def test_generate_artifacts_preview_ok_after_unlock(self) -> None:
         release_id, app_id = self.import_initial()

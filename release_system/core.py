@@ -3479,10 +3479,10 @@ def _render_guide_entries(rows: list[tuple[dict[str, Any], dict[str, Any]]], *, 
             if test_doc.get("obsolete"):
                 continue
             out += f"- {test_doc['path']}\n"
+            out += _guide_test_doc_field("测试内容", test_doc.get("content", ""), quote=True)
             if test_doc.get("command"):
                 out += _guide_test_doc_field("测试命令", inline_code(test_doc["command"]))
             out += _guide_test_doc_field("测试数据集", test_doc.get("dataset", ""), quote=True)
-            out += _guide_test_doc_field("测试内容", test_doc.get("content", ""), quote=True)
             out += _guide_test_doc_field("结果查看", test_doc.get("result_view", ""), quote=True)
             out += _guide_test_doc_field("通过标准", test_doc.get("pass_criteria", ""), quote=True)
             out += "\n"

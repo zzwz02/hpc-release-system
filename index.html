@@ -372,7 +372,8 @@
   .tcard{border:1px solid var(--border);border-radius:10px;margin-bottom:11px;overflow:hidden;}
   .tcard-h{padding:10px 13px;border-bottom:1px solid var(--border);background:#fafbfc;
     display:flex;align-items:center;gap:8px;font-weight:700;}
-  .tcard-b{padding:13px;display:grid;grid-template-columns:1fr 1fr;gap:11px;}
+  .tcard-b{padding:13px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px;}
+  .tcard-b>label,.tcard-b>.md-field{min-width:0;}
   .tcard-b .full{grid-column:1 / -1;}
   /* ---- qa ---- */
   .qa-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(390px,1fr));gap:14px;
@@ -2177,14 +2178,14 @@
           ${d.owner_added ? `<span class="pill">owner-added</span>` : ""}</div>
         <div class="tcard-b">${disabled ? `
           ${mdField("命令", d.command || "", "", "full", true)}
-          ${mdField("测试数据集", d.dataset || "")}
           ${mdField("测试内容", d.content || "")}
+          ${mdField("测试数据集", d.dataset || "")}
           ${mdField("结果查看", d.result_view || "")}
           ${mdField("通过标准", d.pass_criteria || "")}
         ` : `
           <label class="full">命令<textarea class="code" data-test="${d.id}" data-field="command" ${d.owner_added ? "" : "disabled"}>${esc(d.command || "")}</textarea></label>
-          <label>测试数据集<textarea data-test="${d.id}" data-field="dataset">${esc(d.dataset || "")}</textarea></label>
           <label>测试内容<textarea data-test="${d.id}" data-field="content">${esc(d.content || "")}</textarea></label>
+          <label>测试数据集<textarea data-test="${d.id}" data-field="dataset">${esc(d.dataset || "")}</textarea></label>
           <label>结果查看<textarea data-test="${d.id}" data-field="result_view">${esc(d.result_view || "")}</textarea></label>
           <label>通过标准<textarea data-test="${d.id}" data-field="pass_criteria">${esc(d.pass_criteria || "")}</textarea></label>
         `}</div></div>`).join("") || `<p class="muted small">上传 app_info 后会自动生成测试项。</p>`;
