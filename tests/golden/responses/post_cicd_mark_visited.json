@@ -1,6 +1,11 @@
 {
   "_golden_name": "post_cicd_mark_visited",
   "_note": "mark CICD notifications as visited",
+  "_method": "POST",
+  "_path": "/api/cicd/notifications/mark-visited",
+  "_params": "",
+  "_role": "rm",
+  "_body": {},
   "status": 200,
   "body": {
     "ok": true

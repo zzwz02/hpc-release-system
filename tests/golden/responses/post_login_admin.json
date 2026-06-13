@@ -1,6 +1,14 @@
 {
   "_golden_name": "post_login_admin",
   "_note": "Admin login response body",
+  "_method": "POST",
+  "_path": "/api/login",
+  "_params": "",
+  "_role": "admin",
+  "_body": {
+    "username": "admin",
+    "password": "golden_admin_pw"
+  },
   "status": 200,
   "body": {
     "ok": true

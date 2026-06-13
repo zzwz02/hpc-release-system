@@ -1,6 +1,11 @@
 {
   "_golden_name": "get_app_audit",
   "_note": "audit log for first seeded app",
+  "_method": "GET",
+  "_path": "/api/app-audit",
+  "_params": "app_id=goldenamber&release_id=rel_d13b4cc2e9b4",
+  "_role": "rm",
+  "_body": null,
   "status": 200,
   "body": {
     "entries": [
@@ -8,7 +13,7 @@
         "ts": "SCRUBBED_TIMESTAMP",
         "user": "qa",
         "role": "QA",
-        "release_id": "rel_4ea5db4e91b6",
+        "release_id": "rel_d13b4cc2e9b4",
         "event": "qa_set_status",
         "message": "QA 标注 goldenamber 为 qa_passed",
         "detail": [
@@ -24,7 +29,7 @@
         "ts": "SCRUBBED_TIMESTAMP",
         "user": "import",
         "role": "system",
-        "release_id": "rel_4ea5db4e91b6",
+        "release_id": "rel_d13b4cc2e9b4",
         "event": "create_app",
         "message": "导入 app：goldenamber",
         "detail": []

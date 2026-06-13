@@ -1,6 +1,11 @@
 {
   "_golden_name": "get_cicd_requests_owner_mine",
   "_note": "Owner's own CICD requests",
+  "_method": "GET",
+  "_path": "/api/cicd/requests",
+  "_params": "only_mine=1",
+  "_role": "owner",
+  "_body": null,
   "status": 200,
   "body": {
     "requests": [

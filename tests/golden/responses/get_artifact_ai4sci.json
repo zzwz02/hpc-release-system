@@ -1,6 +1,11 @@
 {
   "_golden_name": "get_artifact_ai4sci",
   "_note": "artifact kind=ai4sci for seeded release",
+  "_method": "GET",
+  "_path": "/api/artifacts/ai4sci",
+  "_params": "release_id=rel_d13b4cc2e9b4",
+  "_role": "rm",
+  "_body": null,
   "status": 200,
   "body": "# AI4Sci User Guide App 章节\n\n"
 }

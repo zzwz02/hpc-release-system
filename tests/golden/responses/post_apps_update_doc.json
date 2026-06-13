@@ -1,6 +1,19 @@
 {
   "_golden_name": "post_apps_update_doc",
   "_note": "RM updates doc field on first app",
+  "_method": "POST",
+  "_path": "/api/apps/update",
+  "_params": "",
+  "_role": "rm",
+  "_body": {
+    "app_id": "goldenamber",
+    "release_id": "rel_d13b4cc2e9b4",
+    "snapshot": {
+      "doc": {
+        "intro": "Golden intro text for parity test."
+      }
+    }
+  },
   "status": 200,
   "body": {
     "snapshot": {

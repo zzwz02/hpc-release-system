@@ -1,6 +1,11 @@
 {
   "_golden_name": "get_cicd_task_history",
   "_note": "task request history",
+  "_method": "GET",
+  "_path": "/api/cicd/tasks/CICD-0001/history",
+  "_params": "",
+  "_role": "rm",
+  "_body": null,
   "status": 200,
   "body": {
     "history": [

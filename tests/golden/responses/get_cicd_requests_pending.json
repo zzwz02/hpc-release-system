@@ -1,6 +1,11 @@
 {
   "_golden_name": "get_cicd_requests_pending",
   "_note": "CICD requests pending only",
+  "_method": "GET",
+  "_path": "/api/cicd/requests",
+  "_params": "status=pending",
+  "_role": "rm",
+  "_body": null,
   "status": 200,
   "body": {
     "requests": [

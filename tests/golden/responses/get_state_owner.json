@@ -1,6 +1,11 @@
 {
   "_golden_name": "get_state_owner",
   "_note": "/api/state for Owner",
+  "_method": "GET",
+  "_path": "/api/state",
+  "_params": "release_id=rel_d13b4cc2e9b4",
+  "_role": "owner",
+  "_body": null,
   "status": 200,
   "body": {
     "apps": [
@@ -37,7 +42,7 @@
     ],
     "releases": [
       {
-        "id": "rel_4ea5db4e91b6",
+        "id": "rel_d13b4cc2e9b4",
         "name": "Golden-Release-1",
         "maca_version": "20260511",
         "app_freeze_deadline": "2026-12-31 23:59",
@@ -52,7 +57,7 @@
       }
     ],
     "release": {
-      "id": "rel_4ea5db4e91b6",
+      "id": "rel_d13b4cc2e9b4",
       "name": "Golden-Release-1",
       "maca_version": "20260511",
       "app_freeze_deadline": "2026-12-31 23:59",
@@ -341,7 +346,7 @@
           "user": "qa",
           "role": "QA",
           "app_id": "goldenamber",
-          "release_id": "rel_4ea5db4e91b6",
+          "release_id": "rel_d13b4cc2e9b4",
           "event": "qa_set_status",
           "message": "QA 标注 goldenamber 为 qa_passed",
           "detail": [
@@ -359,7 +364,7 @@
     },
     "release_schedule": [
       {
-        "id": "sched_bda909880629",
+        "id": "sched_1265776a4aba",
         "version": "Golden-2.0",
         "branch_cut_at": "2026-07-01",
         "release_at": "2026-08-01",

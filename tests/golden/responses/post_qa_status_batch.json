@@ -1,6 +1,20 @@
 {
   "_golden_name": "post_qa_status_batch",
   "_note": "QA status batch update (qa_passed)",
+  "_method": "POST",
+  "_path": "/api/qa/status-batch",
+  "_params": "",
+  "_role": "qa",
+  "_body": {
+    "release_id": "rel_d13b4cc2e9b4",
+    "items": [
+      {
+        "app_id": "goldenamber",
+        "status": "qa_passed",
+        "note": "golden qa passed"
+      }
+    ]
+  },
   "status": 200,
   "body": {
     "ok": true,

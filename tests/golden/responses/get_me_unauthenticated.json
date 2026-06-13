@@ -1,6 +1,11 @@
 {
   "_golden_name": "get_me_unauthenticated",
   "_note": "me with no session -> user: null",
+  "_method": "GET",
+  "_path": "/api/me",
+  "_params": "",
+  "_role": "",
+  "_body": null,
   "status": 200,
   "body": {
     "user": null

@@ -1,10 +1,15 @@
 {
   "_golden_name": "get_wiki_article_by_id",
   "_note": "single wiki article",
+  "_method": "GET",
+  "_path": "/api/wiki/articles/wiki_cbd5c625e992",
+  "_params": "",
+  "_role": "rm",
+  "_body": null,
   "status": 200,
   "body": {
     "article": {
-      "id": "wiki_4f7a2c9b5806",
+      "id": "wiki_cbd5c625e992",
       "title": "Golden Test Article",
       "body_md": "# Golden\nThis is a golden capture test article.",
       "pinned": false,

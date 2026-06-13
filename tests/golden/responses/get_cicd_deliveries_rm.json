@@ -1,6 +1,11 @@
 {
   "_golden_name": "get_cicd_deliveries_rm",
   "_note": "CICD deliveries RM view",
+  "_method": "GET",
+  "_path": "/api/cicd/deliveries",
+  "_params": "",
+  "_role": "rm",
+  "_body": null,
   "status": 200,
   "body": {
     "deliveries": []

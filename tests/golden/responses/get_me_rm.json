@@ -1,6 +1,11 @@
 {
   "_golden_name": "get_me_rm",
   "_note": "me with RM session",
+  "_method": "GET",
+  "_path": "/api/me",
+  "_params": "",
+  "_role": "rm",
+  "_body": null,
   "status": 200,
   "body": {
     "user": {

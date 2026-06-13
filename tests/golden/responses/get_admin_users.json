@@ -1,6 +1,11 @@
 {
   "_golden_name": "get_admin_users",
   "_note": "user list (Admin only)",
+  "_method": "GET",
+  "_path": "/api/admin/users",
+  "_params": "",
+  "_role": "admin",
+  "_body": null,
   "status": 200,
   "body": {
     "users": [

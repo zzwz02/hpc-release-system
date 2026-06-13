@@ -1,11 +1,16 @@
 {
   "_golden_name": "get_wiki_articles",
   "_note": "list wiki articles (RM)",
+  "_method": "GET",
+  "_path": "/api/wiki/articles",
+  "_params": "",
+  "_role": "rm",
+  "_body": null,
   "status": 200,
   "body": {
     "articles": [
       {
-        "id": "wiki_4f7a2c9b5806",
+        "id": "wiki_cbd5c625e992",
         "title": "Golden Test Article",
         "pinned": false,
         "created_by": "rm",

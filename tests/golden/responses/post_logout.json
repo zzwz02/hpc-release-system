@@ -1,6 +1,11 @@
 {
   "_golden_name": "post_logout",
   "_note": "logout clears session cookie",
+  "_method": "POST",
+  "_path": "/api/logout",
+  "_params": "",
+  "_role": "rm",
+  "_body": {},
   "status": 200,
   "body": {
     "ok": true

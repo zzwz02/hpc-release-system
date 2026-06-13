@@ -1,6 +1,11 @@
 {
   "_golden_name": "get_ldap_status",
   "_note": "LDAP status (public endpoint)",
+  "_method": "GET",
+  "_path": "/api/ldap/status",
+  "_params": "",
+  "_role": "",
+  "_body": null,
   "status": 200,
   "body": {
     "enabled": false,

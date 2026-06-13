@@ -1,22 +1,21 @@
 """Shared pytest fixtures for the HPC release system test suite.
 
-Phase 0: fixtures are built on the working release_system.core (init_db +
-helpers) so they are green immediately.
+Phase 1: temp_db and related fixtures now use app.db.connection.connect (the
+canonical new connection module) instead of release_system.core.connect.
 
-TODO Phase 1: switch to app.db.connection once impl-backend-core lands it.
-              Expected import path: from app.db.connection import ManagedConnection
-              Coordinate with impl-backend-core to confirm the interface before
-              switching (get_db/connect signature, transaction context manager).
+The seed helper functions (seed_release, seed_app, etc.) still call
+release_system.core for data operations — those functions accept any
+sqlite3.Connection, so they remain compatible with both old and new connections.
 """
 
 from __future__ import annotations
 
-import json
 import tempfile
 from pathlib import Path
 
 import pytest
 
+from app.db.connection import connect as _app_connect
 from release_system import core
 
 
@@ -26,7 +25,7 @@ from release_system import core
 
 @pytest.fixture()
 def tmp_dir():
-    """A temporary directory that is cleaned up after the test."""
+    """A temporary directory cleaned up after the test."""
     with tempfile.TemporaryDirectory() as d:
         yield Path(d)
 
@@ -35,29 +34,30 @@ def tmp_dir():
 def temp_db(tmp_dir):
     """A fresh, schema-initialised SQLite connection backed by a temp file.
 
-    Uses release_system.core.connect so init_db + default users are applied.
-    The connection is closed and the file removed after the test.
-
-    TODO Phase 1: replace core.connect with app.db.connection.ManagedConnection
-    once impl-backend-core has landed the new connection module.
+    Uses app.db.connection.connect so the new schema (including app_id on
+    cicd_tasks, origin on cicd_task_requests, and the new indexes) is
+    applied.  Compatible with all release_system.core helper functions.
     """
     db_path = tmp_dir / "test.db"
-    conn = core.connect(db_path)
+    conn = _app_connect(db_path)
     yield conn
     conn.close()
 
 
 @pytest.fixture()
 def db_path(tmp_dir):
-    """Absolute path to a temp DB file — useful for functions that need the path
-    alongside the connection (e.g. backup, qa_log storage)."""
+    """Absolute path to a temp DB file.
+
+    Use this when a function needs the path alongside the connection
+    (e.g. core.backup_sqlite, core.qa_upload_log).
+    """
     return tmp_dir / "test.db"
 
 
 @pytest.fixture()
 def temp_db_with_path(db_path):
     """Yields (conn, db_path) for tests that need both."""
-    conn = core.connect(db_path)
+    conn = _app_connect(db_path)
     yield conn, db_path
     conn.close()
 
@@ -76,13 +76,16 @@ _INIT_CSV = (
 
 # ---------------------------------------------------------------------------
 # Seed / factory helpers
+#
+# These are plain functions (not fixtures) so capture.py and other scripts
+# can import and call them directly: from tests.conftest import seed_release
 # ---------------------------------------------------------------------------
 
 def seed_release(conn, *, csv_text: str = _INIT_CSV, tmp_path: Path | None = None) -> str:
     """Import an initial release from *csv_text* and return the release_id.
 
-    *tmp_path* is required when csv_text contains rows without inline paths;
-    if omitted a fresh TemporaryDirectory is used internally.
+    *tmp_path*: an existing directory to write the temporary CSV into.
+    If omitted a TemporaryDirectory is created and cleaned up internally.
     """
     if tmp_path is None:
         with tempfile.TemporaryDirectory() as d:
@@ -125,7 +128,7 @@ def seed_snapshot(
     owner_confirmed: bool = False,
     qa_status: str | None = None,
 ) -> dict:
-    """Apply *app_info* to a snapshot and optionally confirm owner / set QA status.
+    """Apply *app_info* to a snapshot; optionally confirm owner and set QA status.
 
     Returns the final snapshot dict.
     """
@@ -248,6 +251,7 @@ def seed_wiki_article(
 ) -> dict:
     """Create a wiki article and return its dict."""
     from release_system.wiki import core as wiki_core
+
     return wiki_core.save_article(conn, title=title, body_md=body_md, pinned=pinned, user=user, role=role)
 
 
