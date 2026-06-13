@@ -6,18 +6,26 @@ canonical new connection module) instead of release_system.core.connect.
 The seed helper functions (seed_release, seed_app, etc.) still call
 release_system.core for data operations — those functions accept any
 sqlite3.Connection, so they remain compatible with both old and new connections.
+
+Phase 2: fastapi_base_url and fastapi_session_cookies fixtures boot the new
+FastAPI app via httpx ASGITransport against a DB seeded identically to
+tests/golden/capture.py seed_db().  Do NOT un-skip test_fastapi_parity yet
+(that is Wave 3).
 """
 
 from __future__ import annotations
 
+import json
+import socket
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
 
 from app.db.connection import connect as _app_connect
+from app.db.connection import reset_init_state
 from release_system import core
-
 
 # ---------------------------------------------------------------------------
 # Core infrastructure fixtures
@@ -252,7 +260,9 @@ def seed_wiki_article(
     """Create a wiki article and return its dict."""
     from release_system.wiki import core as wiki_core
 
-    return wiki_core.save_article(conn, title=title, body_md=body_md, pinned=pinned, user=user, role=role)
+    return wiki_core.save_article(
+        conn, title=title, body_md=body_md, pinned=pinned, user=user, role=role
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -274,3 +284,264 @@ def release_with_snapshot(release_with_app):
     conn, release_id, app_id = release_with_app
     seed_snapshot(conn, release_id, app_id, owner_confirmed=True)
     yield conn, release_id, app_id
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 FastAPI parity fixtures
+#
+# These fixtures boot the new FastAPI app via uvicorn in a background thread
+# against a DB seeded identically to tests/golden/capture.py seed_db().
+# The session scope ensures the server starts once per test session.
+#
+# Do NOT remove the @pytest.mark.skip on test_fastapi_parity — that is Wave 3.
+# ---------------------------------------------------------------------------
+
+# CSV matching capture.py SEED_CSV_TEXT exactly
+_PARITY_SEED_CSV = (
+    "官方名称,类型,APP类型,Owner,app_version,maca_chip,hpcc_chip,arch,maca_version,git_url,git_branch\n"
+    "GoldenAmber,HPC,分子动力学,owner_test,22,\"c500,x301\",x201,x86,20260511,"
+    "ssh://gerrit/PDE/HPC/hpc_amber,maca\n"
+    "GoldenLammps,AI4Sci,分子动力学,owner_test,stable,,,,20260511,"
+    "ssh://gerrit/PDE/HPC/hpc_lammps,main\n"
+    "GoldenHpl,HPC,高性能计算,owner_test,2.3,c500,,x86,20260511,"
+    "ssh://gerrit/PDE/HPC/hpc_hpl,maca\n"
+)
+
+# Admin password used by capture.py
+_PARITY_ADMIN_PW = "golden_admin_pw"
+
+
+def _seed_parity_db(db_path: Path) -> dict:
+    """Seed db_path identically to capture.py seed_db().
+
+    Returns {"release_id", "app_ids", "first_app_id", "cicd_task_id",
+             "wiki_article_id"}.
+    """
+    from release_system.wiki import core as wiki_core
+
+    conn = _app_connect(db_path)
+
+    # 1. Create admin user
+    core.create_user(conn, "admin", _PARITY_ADMIN_PW, "Admin")
+
+    # 2. Seed default users (idempotent — connect already calls ensure_default_user)
+    core.ensure_default_user(conn)
+
+    # 3. Import initial CSV → creates first release and three apps
+    rows = list(core.parse_csv_text(_PARITY_SEED_CSV))
+    release_id = core.import_initial_rows(
+        conn,
+        rows,
+        release_name="Golden-Release-1",
+        maca_version="20260511",
+        app_freeze_deadline="2026-12-31 23:59",
+        doc_deadline="2026-12-31 23:59",
+    )
+
+    # 4. Collect app_ids
+    release = core.get_release(conn, release_id)
+    app_ids = list(release["snapshots"].keys())
+
+    # 5. Seed a CICD task via RM auto-approve path
+    cicd_req = core.submit_cicd_request(
+        conn,
+        task_id=None,
+        request_type="create",
+        payload={
+            "app_name": "GoldenAmber",
+            "app_version": "22",
+            "repo_type": "git",
+            "repo_name": "ssh://gerrit/PDE/HPC/hpc_amber",
+            "branch": "maca",
+            "build_product": ["maca"],
+            "community_artifact": [],
+            "build_image": "hpc/amber-builder:latest",
+            "test_timeout": 40,
+            "owner_username": "owner_test",
+            "status": "Running",
+            "notes": "golden capture seed task",
+        },
+        submitter="rm",
+        submitter_role="RM",
+        submitter_display="RM User",
+    )
+    cicd_task_id = cicd_req["task_id"]
+
+    # 6. Leave a pending Owner modify request
+    core.submit_cicd_request(
+        conn,
+        task_id=cicd_task_id,
+        request_type="modify",
+        payload={"notes": {"old": "golden capture seed task", "new": "owner wants change"}},
+        submitter="owner_test",
+        submitter_role="Owner",
+        submitter_display="Owner Test",
+    )
+
+    # 7. Seed a wiki article
+    wiki_article = wiki_core.save_article(
+        conn,
+        article_id=None,
+        title="Golden Test Article",
+        body_md="# Golden\nThis is a golden capture test article.",
+        pinned=False,
+        user="rm",
+        role="RM",
+    )
+    wiki_article_id = wiki_article["id"]
+
+    # 8. Set QA status on one app
+    core.qa_set_status_batch(
+        conn,
+        release_id,
+        [{"app_id": app_ids[0], "status": "qa_passed", "note": "golden qa note"}],
+        user="qa",
+        role="QA",
+    )
+
+    # 9. Generate artifacts (best-effort)
+    try:
+        core.generate_artifacts(conn, release_id, final=False)
+    except Exception as exc:
+        print(f"  [warn] generate_artifacts: {exc}")
+
+    # 10. Seed a release schedule entry
+    core.upsert_release_schedule(
+        conn,
+        entry_id=None,
+        version="Golden-2.0",
+        branch_cut_at="2026-07-01",
+        release_at="2026-08-01",
+        note="golden schedule entry",
+        user="rm",
+        role="RM",
+    )
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "release_id": release_id,
+        "app_ids": app_ids,
+        "first_app_id": app_ids[0] if app_ids else "",
+        "cicd_task_id": cicd_task_id,
+        "wiki_article_id": wiki_article_id,
+    }
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.fixture(scope="session")
+def fastapi_base_url():
+    """Boot the new FastAPI app via uvicorn in a background thread.
+
+    Yields the base URL (http://127.0.0.1:<port>) pointing at the live app
+    seeded identically to capture.py seed_db().
+
+    The server runs for the entire test session and is stopped on teardown.
+    The DB is a temp file that is deleted after the session.
+    """
+    import uvicorn
+
+    tmp = tempfile.mkdtemp(prefix="hpc_parity_")
+    db_path = Path(tmp) / "parity.db"
+
+    # Reset the once-guard so connect() runs init_db on our fresh file
+    reset_init_state()
+
+    # Seed the DB identically to capture.py
+    _seed_parity_db(db_path)
+
+    port = _find_free_port()
+
+    # Override settings.db_path for this process
+    from app import config as _cfg
+    original_db_path = _cfg.settings.db_path
+    _cfg.settings.db_path = db_path
+
+    # Reset once-guard again so the FastAPI lifespan connect() picks up the new path
+    reset_init_state()
+
+    from app.main import create_app
+    fastapi_app = create_app()
+
+    server_config = uvicorn.Config(
+        fastapi_app,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+    )
+    server = uvicorn.Server(server_config)
+
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    # Wait until server is ready
+    import time
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                break
+        except OSError:
+            time.sleep(0.1)
+    else:
+        raise RuntimeError(f"FastAPI test server did not start on port {port}")
+
+    yield f"http://127.0.0.1:{port}"
+
+    # Teardown
+    server.should_exit = True
+    thread.join(timeout=5)
+    _cfg.settings.db_path = original_db_path
+    reset_init_state()
+
+    import shutil
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def fastapi_session_cookies(fastapi_base_url: str) -> dict:
+    """Return {role: cookie_str} for rm/owner/qa/admin via /api/login.
+
+    Roles match capture.py's login sequence exactly.  The cookie string is in
+    the format "hpc_session=<token>" ready to be passed as a Cookie header.
+    """
+    import httpx
+
+    base = fastapi_base_url
+    credentials = {
+        "rm":    ("rm",         "rm"),
+        "owner": ("owner_test", "owner_test"),
+        "qa":    ("qa",         "qa"),
+        "admin": ("admin",      _PARITY_ADMIN_PW),
+    }
+    cookies: dict[str, str] = {}
+    with httpx.Client(trust_env=False, timeout=15) as client:
+        for role, (username, password) in credentials.items():
+            resp = client.post(
+                f"{base}/api/login",
+                content=json.dumps(
+                    {"username": username, "password": password},
+                    ensure_ascii=False,
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                follow_redirects=False,
+            )
+            assert resp.status_code == 200, (
+                f"Login failed for role={role} ({username}): HTTP {resp.status_code}"
+            )
+            # Extract hpc_session from Set-Cookie header
+            set_cookie = resp.headers.get("set-cookie", "")
+            token = ""
+            for part in set_cookie.split(";"):
+                if part.strip().startswith("hpc_session="):
+                    token = part.strip()
+                    break
+            assert token, f"No hpc_session cookie in login response for role={role}"
+            cookies[role] = token
+    return cookies

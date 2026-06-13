@@ -98,7 +98,7 @@ def connect(path: str | Path = "release_system.db") -> sqlite3.Connection:
     WAL mode + foreign_keys + busy_timeout are set unconditionally.
     init_db() is called exactly once per resolved path (once-guard).
     """
-    conn = sqlite3.connect(path, timeout=10.0, factory=ManagedConnection)
+    conn = sqlite3.connect(path, timeout=10.0, factory=ManagedConnection, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 5000")
