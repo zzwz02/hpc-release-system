@@ -1,0 +1,6 @@
+{
+  "_golden_name": "get_artifact_manual",
+  "_note": "artifact kind=manual for seeded release",
+  "status": 200,
+  "body": "# HPC Manual App 章节\n\n"
+}

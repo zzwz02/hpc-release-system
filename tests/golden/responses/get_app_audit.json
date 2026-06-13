@@ -1,0 +1,34 @@
+{
+  "_golden_name": "get_app_audit",
+  "_note": "audit log for first seeded app",
+  "status": 200,
+  "body": {
+    "entries": [
+      {
+        "ts": "SCRUBBED_TIMESTAMP",
+        "user": "qa",
+        "role": "QA",
+        "release_id": "rel_4ea5db4e91b6",
+        "event": "qa_set_status",
+        "message": "QA 标注 goldenamber 为 qa_passed",
+        "detail": [
+          {
+            "field": "qa_status",
+            "label": "QA 状态",
+            "new": "qa_passed",
+            "old": "not_checked"
+          }
+        ]
+      },
+      {
+        "ts": "SCRUBBED_TIMESTAMP",
+        "user": "import",
+        "role": "system",
+        "release_id": "rel_4ea5db4e91b6",
+        "event": "create_app",
+        "message": "导入 app：goldenamber",
+        "detail": []
+      }
+    ]
+  }
+}

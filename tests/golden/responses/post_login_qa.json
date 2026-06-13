@@ -1,0 +1,8 @@
+{
+  "_golden_name": "post_login_qa",
+  "_note": "QA login response body",
+  "status": 200,
+  "body": {
+    "ok": true
+  }
+}

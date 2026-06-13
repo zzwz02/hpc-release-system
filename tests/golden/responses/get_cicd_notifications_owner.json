@@ -1,0 +1,9 @@
+{
+  "_golden_name": "get_cicd_notifications_owner",
+  "_note": "CICD notification counts for Owner",
+  "status": 200,
+  "body": {
+    "count": 0,
+    "last_visited_at": "SCRUBBED_TIMESTAMP"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "_golden_name": "get_cicd_tasks_running",
+  "_note": "CICD tasks filtered to Running",
+  "status": 200,
+  "body": {
+    "tasks": [
+      {
+        "id": "CICD-0001",
+        "app_name": "GoldenAmber",
+        "app_version": "22",
+        "repo_type": "git",
+        "repo_name": "ssh://gerrit/PDE/HPC/hpc_amber",
+        "branch": "maca",
+        "build_product": [
+          "maca"
+        ],
+        "community_artifact": [],
+        "build_image": "hpc/amber-builder:latest",
+        "test_timeout": 40,
+        "owner_username": "owner_test",
+        "status": "Running",
+        "notes": "golden capture seed task",
+        "created_at": "SCRUBBED_TIMESTAMP",
+        "updated_at": "SCRUBBED_TIMESTAMP",
+        "has_pending": true,
+        "has_pending_delivery": false,
+        "owner_display": "owner_test"
+      }
+    ]
+  }
+}

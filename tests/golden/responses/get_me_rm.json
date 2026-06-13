@@ -1,0 +1,12 @@
+{
+  "_golden_name": "get_me_rm",
+  "_note": "me with RM session",
+  "status": 200,
+  "body": {
+    "user": {
+      "username": "rm",
+      "role": "RM",
+      "display_name": ""
+    }
+  }
+}

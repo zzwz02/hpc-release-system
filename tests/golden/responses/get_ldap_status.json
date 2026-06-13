@@ -1,0 +1,9 @@
+{
+  "_golden_name": "get_ldap_status",
+  "_note": "LDAP status (public endpoint)",
+  "status": 200,
+  "body": {
+    "enabled": false,
+    "uri": ""
+  }
+}

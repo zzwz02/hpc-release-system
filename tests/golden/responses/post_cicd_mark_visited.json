@@ -1,0 +1,8 @@
+{
+  "_golden_name": "post_cicd_mark_visited",
+  "_note": "mark CICD notifications as visited",
+  "status": 200,
+  "body": {
+    "ok": true
+  }
+}

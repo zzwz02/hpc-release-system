@@ -1,0 +1,8 @@
+{
+  "_golden_name": "get_me_unauthenticated",
+  "_note": "me with no session -> user: null",
+  "status": 200,
+  "body": {
+    "user": null
+  }
+}

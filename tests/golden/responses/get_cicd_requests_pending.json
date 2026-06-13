@@ -1,0 +1,41 @@
+{
+  "_golden_name": "get_cicd_requests_pending",
+  "_note": "CICD requests pending only",
+  "status": 200,
+  "body": {
+    "requests": [
+      {
+        "id": 2,
+        "task_id": "CICD-0001",
+        "request_type": "modify",
+        "payload": {
+          "notes": {
+            "old": "golden capture seed task",
+            "new": "owner wants change"
+          }
+        },
+        "submitter": "owner_test",
+        "submitter_display": "Owner Test",
+        "submitted_at": "SCRUBBED_TIMESTAMP",
+        "status": "pending",
+        "reviewer": "",
+        "reviewed_at": "SCRUBBED_TIMESTAMP",
+        "review_note": "",
+        "is_self_approved": 0,
+        "approval_mode": "immediate",
+        "delivery_status": "",
+        "jira_id": "",
+        "jira_auto_created": 0,
+        "delivered_by": "",
+        "delivered_at": "SCRUBBED_TIMESTAMP",
+        "returned_reason": "",
+        "returned_at": "SCRUBBED_TIMESTAMP",
+        "task_app_name": "GoldenAmber",
+        "task_app_version": "22",
+        "task_repo_name": "ssh://gerrit/PDE/HPC/hpc_amber",
+        "task_branch": "maca",
+        "task_status": "Running"
+      }
+    ]
+  }
+}

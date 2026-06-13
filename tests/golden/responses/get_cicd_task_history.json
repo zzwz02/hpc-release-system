@@ -1,0 +1,51 @@
+{
+  "_golden_name": "get_cicd_task_history",
+  "_note": "task request history",
+  "status": 200,
+  "body": {
+    "history": [
+      {
+        "id": 1,
+        "task_id": "CICD-0001",
+        "request_type": "create",
+        "payload": {
+          "app_name": "GoldenAmber",
+          "app_version": "22",
+          "repo_type": "git",
+          "repo_name": "ssh://gerrit/PDE/HPC/hpc_amber",
+          "branch": "maca",
+          "build_product": [
+            "maca"
+          ],
+          "community_artifact": [],
+          "build_image": "hpc/amber-builder:latest",
+          "test_timeout": 40,
+          "owner_username": "owner_test",
+          "status": "Running",
+          "notes": "golden capture seed task"
+        },
+        "submitter": "rm",
+        "submitter_display": "RM User",
+        "submitted_at": "SCRUBBED_TIMESTAMP",
+        "status": "approved",
+        "reviewer": "rm",
+        "reviewed_at": "SCRUBBED_TIMESTAMP",
+        "review_note": "",
+        "is_self_approved": 1,
+        "approval_mode": "immediate",
+        "delivery_status": "",
+        "jira_id": "",
+        "jira_auto_created": 0,
+        "delivered_by": "",
+        "delivered_at": "SCRUBBED_TIMESTAMP",
+        "returned_reason": "",
+        "returned_at": "SCRUBBED_TIMESTAMP",
+        "task_app_name": "GoldenAmber",
+        "task_app_version": "22",
+        "task_repo_name": "ssh://gerrit/PDE/HPC/hpc_amber",
+        "task_branch": "maca",
+        "task_status": "Running"
+      }
+    ]
+  }
+}

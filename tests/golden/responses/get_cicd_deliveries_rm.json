@@ -1,0 +1,8 @@
+{
+  "_golden_name": "get_cicd_deliveries_rm",
+  "_note": "CICD deliveries RM view",
+  "status": 200,
+  "body": {
+    "deliveries": []
+  }
+}

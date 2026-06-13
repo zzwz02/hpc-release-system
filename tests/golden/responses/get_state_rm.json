@@ -1,0 +1,374 @@
+{
+  "_golden_name": "get_state_rm",
+  "_note": "/api/state for RM with seeded release",
+  "status": 200,
+  "body": {
+    "apps": [
+      {
+        "id": "goldenamber",
+        "git_url": "ssh://gerrit/PDE/HPC/hpc_amber",
+        "git_branch": "maca",
+        "created_by": "import",
+        "created_at": "SCRUBBED_TIMESTAMP",
+        "aliases": [
+          "GoldenAmber"
+        ]
+      },
+      {
+        "id": "goldenhpl",
+        "git_url": "ssh://gerrit/PDE/HPC/hpc_hpl",
+        "git_branch": "maca",
+        "created_by": "import",
+        "created_at": "SCRUBBED_TIMESTAMP",
+        "aliases": [
+          "GoldenHpl"
+        ]
+      },
+      {
+        "id": "goldenlammps",
+        "git_url": "ssh://gerrit/PDE/HPC/hpc_lammps",
+        "git_branch": "main",
+        "created_by": "import",
+        "created_at": "SCRUBBED_TIMESTAMP",
+        "aliases": [
+          "GoldenLammps"
+        ]
+      }
+    ],
+    "releases": [
+      {
+        "id": "rel_4ea5db4e91b6",
+        "name": "Golden-Release-1",
+        "maca_version": "20260511",
+        "app_freeze_deadline": "2026-12-31 23:59",
+        "doc_deadline": "2026-12-31 23:59",
+        "released_locked": false,
+        "released_locked_at": "SCRUBBED_TIMESTAMP",
+        "released_locked_by": "",
+        "created_at": "SCRUBBED_TIMESTAMP",
+        "source": "initial_csv",
+        "cloned_from": "",
+        "phase": "before_app_freeze"
+      }
+    ],
+    "release": {
+      "id": "rel_4ea5db4e91b6",
+      "name": "Golden-Release-1",
+      "maca_version": "20260511",
+      "app_freeze_deadline": "2026-12-31 23:59",
+      "doc_deadline": "2026-12-31 23:59",
+      "released_locked": false,
+      "released_locked_at": "SCRUBBED_TIMESTAMP",
+      "released_locked_by": "",
+      "created_at": "SCRUBBED_TIMESTAMP",
+      "source": "initial_csv",
+      "cloned_from": "",
+      "snapshots": {
+        "goldenamber": {
+          "app_id": "goldenamber",
+          "app_info": null,
+          "app_info_diffs": [],
+          "arch": "x86",
+          "arm_chips": "",
+          "build_arches": "",
+          "build_os": "",
+          "community": {
+            "framework_version": "",
+            "python_version": "",
+            "release_status": ""
+          },
+          "description": "",
+          "doc": {
+            "binary_usage": "",
+            "env_setup": "",
+            "image_usage": "",
+            "intro": "",
+            "limitations": ""
+          },
+          "doc_target": "manual",
+          "hpcc_chip": "x201",
+          "maca_version": "20260511",
+          "missing_items": [
+            {
+              "kind": "doc",
+              "text": "缺少描述（30字内）"
+            },
+            {
+              "kind": "doc",
+              "text": "缺少可追溯 AppInfoSnapshot"
+            },
+            {
+              "kind": "doc",
+              "text": "缺少基本介绍"
+            },
+            {
+              "kind": "doc",
+              "text": "缺少镜像使用方法"
+            },
+            {
+              "kind": "doc",
+              "text": "缺少二进制包使用方法"
+            },
+            {
+              "kind": "doc",
+              "text": "缺少环境搭建"
+            },
+            {
+              "kind": "doc",
+              "text": "Owner 未确认 doc"
+            }
+          ],
+          "official_name": "GoldenAmber",
+          "official_url": "",
+          "owner_confirmed": false,
+          "owners": [
+            "owner_test"
+          ],
+          "python_labels": "",
+          "pytorch_labels": "",
+          "qa_issue_note": "",
+          "qa_status": "qa_passed",
+          "release_decision": "release",
+          "sanity": {
+            "arm_kylin": false,
+            "ubuntu": false
+          },
+          "test_docs": [],
+          "type": "分子动力学",
+          "version": "22",
+          "x86_chips": "c500,x301"
+        },
+        "goldenhpl": {
+          "app_id": "goldenhpl",
+          "app_info": null,
+          "app_info_diffs": [],
+          "arch": "x86",
+          "arm_chips": "",
+          "build_arches": "",
+          "build_os": "",
+          "community": {
+            "framework_version": "",
+            "python_version": "",
+            "release_status": ""
+          },
+          "description": "",
+          "doc": {
+            "binary_usage": "",
+            "env_setup": "",
+            "image_usage": "",
+            "intro": "",
+            "limitations": ""
+          },
+          "doc_target": "manual",
+          "hpcc_chip": "",
+          "maca_version": "20260511",
+          "missing_items": [
+            {
+              "kind": "doc",
+              "text": "缺少描述（30字内）"
+            },
+            {
+              "kind": "doc",
+              "text": "缺少可追溯 AppInfoSnapshot"
+            },
+            {
+              "kind": "doc",
+              "text": "缺少基本介绍"
+            },
+            {
+              "kind": "doc",
+              "text": "缺少镜像使用方法"
+            },
+            {
+              "kind": "doc",
+              "text": "缺少二进制包使用方法"
+            },
+            {
+              "kind": "doc",
+              "text": "缺少环境搭建"
+            },
+            {
+              "kind": "doc",
+              "text": "Owner 未确认 doc"
+            },
+            {
+              "kind": "qa",
+              "text": "QA 未测试"
+            }
+          ],
+          "official_name": "GoldenHpl",
+          "official_url": "",
+          "owner_confirmed": false,
+          "owners": [
+            "owner_test"
+          ],
+          "python_labels": "",
+          "pytorch_labels": "",
+          "qa_issue_note": "",
+          "qa_status": "not_checked",
+          "release_decision": "release",
+          "sanity": {
+            "arm_kylin": false,
+            "ubuntu": false
+          },
+          "test_docs": [],
+          "type": "高性能计算",
+          "version": "2.3",
+          "x86_chips": "c500"
+        },
+        "goldenlammps": {
+          "app_id": "goldenlammps",
+          "app_info": null,
+          "app_info_diffs": [],
+          "arch": "",
+          "arm_chips": "",
+          "build_arches": "",
+          "build_os": "",
+          "community": {
+            "framework_version": "",
+            "python_version": "",
+            "release_status": ""
+          },
+          "description": "",
+          "doc": {
+            "binary_usage": "",
+            "env_setup": "",
+            "image_usage": "",
+            "intro": "",
+            "limitations": ""
+          },
+          "doc_target": "ai4sci",
+          "hpcc_chip": "",
+          "maca_version": "20260511",
+          "missing_items": [
+            {
+              "kind": "doc",
+              "text": "缺少描述（30字内）"
+            },
+            {
+              "kind": "doc",
+              "text": "缺少可追溯 AppInfoSnapshot"
+            },
+            {
+              "kind": "doc",
+              "text": "缺少 X86支持芯片系列"
+            },
+            {
+              "kind": "doc",
+              "text": "缺少基本介绍"
+            },
+            {
+              "kind": "doc",
+              "text": "缺少镜像使用方法"
+            },
+            {
+              "kind": "doc",
+              "text": "缺少二进制包使用方法"
+            },
+            {
+              "kind": "doc",
+              "text": "缺少环境搭建"
+            },
+            {
+              "kind": "doc",
+              "text": "Owner 未确认 doc"
+            },
+            {
+              "kind": "qa",
+              "text": "QA 未测试"
+            }
+          ],
+          "official_name": "GoldenLammps",
+          "official_url": "",
+          "owner_confirmed": false,
+          "owners": [
+            "owner_test"
+          ],
+          "python_labels": "",
+          "pytorch_labels": "",
+          "qa_issue_note": "",
+          "qa_status": "not_checked",
+          "release_decision": "release",
+          "sanity": {
+            "arm_kylin": false,
+            "ubuntu": false
+          },
+          "test_docs": [],
+          "type": "分子动力学",
+          "version": "stable",
+          "x86_chips": ""
+        }
+      },
+      "phase": "before_app_freeze"
+    },
+    "artifacts": [
+      {
+        "kind": "ai4sci",
+        "name": "ai4sci_user_guide_apps.md",
+        "final": 0,
+        "generated_at": "SCRUBBED_TIMESTAMP"
+      },
+      {
+        "kind": "data",
+        "name": "release_data.json",
+        "final": 0,
+        "generated_at": "SCRUBBED_TIMESTAMP"
+      },
+      {
+        "kind": "manual",
+        "name": "hpc_manual_apps.md",
+        "final": 0,
+        "generated_at": "SCRUBBED_TIMESTAMP"
+      },
+      {
+        "kind": "release_note",
+        "name": "release_note.md",
+        "final": 0,
+        "generated_at": "SCRUBBED_TIMESTAMP"
+      }
+    ],
+    "user": {
+      "username": "rm",
+      "role": "RM",
+      "display_name": ""
+    },
+    "user_display_names": {},
+    "qa_log": null,
+    "qa_audit_logs": {
+      "goldenamber": [
+        {
+          "ts": "SCRUBBED_TIMESTAMP",
+          "user": "qa",
+          "role": "QA",
+          "app_id": "goldenamber",
+          "release_id": "rel_4ea5db4e91b6",
+          "event": "qa_set_status",
+          "message": "QA 标注 goldenamber 为 qa_passed",
+          "detail": [
+            {
+              "field": "qa_status",
+              "label": "QA 状态",
+              "new": "qa_passed",
+              "old": "not_checked"
+            }
+          ]
+        }
+      ],
+      "goldenhpl": [],
+      "goldenlammps": []
+    },
+    "release_schedule": [
+      {
+        "id": "sched_bda909880629",
+        "version": "Golden-2.0",
+        "branch_cut_at": "2026-07-01",
+        "release_at": "2026-08-01",
+        "note": "golden schedule entry",
+        "created_at": "SCRUBBED_TIMESTAMP",
+        "created_by": "rm",
+        "updated_at": "SCRUBBED_TIMESTAMP",
+        "updated_by": ""
+      }
+    ]
+  }
+}

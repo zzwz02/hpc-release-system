@@ -1,0 +1,8 @@
+{
+  "_golden_name": "get_wiki_article_404",
+  "_note": "nonexistent wiki article returns 404",
+  "status": 404,
+  "body": {
+    "error": "文章不存在"
+  }
+}

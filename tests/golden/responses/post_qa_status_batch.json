@@ -1,0 +1,9 @@
+{
+  "_golden_name": "post_qa_status_batch",
+  "_note": "QA status batch update (qa_passed)",
+  "status": 200,
+  "body": {
+    "ok": true,
+    "updated": 1
+  }
+}
