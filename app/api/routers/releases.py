@@ -33,7 +33,7 @@ router = APIRouter(tags=["releases"])
 @router.post("/api/import-initial")
 async def post_import_initial(
     request: Request,
-    user: dict = Depends(require_roles("RM")),
+    user: dict = Depends(require_roles("RM", message="RM role required")),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> JSONResponse:
     """Bootstrap the first release from a CSV payload.
@@ -61,7 +61,7 @@ async def post_import_initial(
 @router.post("/api/releases/create")
 async def post_releases_create(
     request: Request,
-    user: dict = Depends(require_roles("RM")),
+    user: dict = Depends(require_roles("RM", message="RM role required")),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> JSONResponse:
     """Clone the most recent release into a new one.
@@ -90,7 +90,7 @@ async def post_releases_create(
 @router.post("/api/releases/deadlines")
 async def post_releases_deadlines(
     request: Request,
-    user: dict = Depends(require_roles("RM")),
+    user: dict = Depends(require_roles("RM", message="RM role required")),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> JSONResponse:
     """Update a release's name and/or deadline fields.
@@ -119,7 +119,7 @@ async def post_releases_deadlines(
 @router.post("/api/releases/final-lock")
 async def post_releases_final_lock(
     request: Request,
-    user: dict = Depends(require_roles("RM")),
+    user: dict = Depends(require_roles("RM", message="RM role required")),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> JSONResponse:
     """Final-lock a release and generate final artifacts.
@@ -145,7 +145,7 @@ async def post_releases_final_lock(
 @router.post("/api/releases/final-unlock")
 async def post_releases_final_unlock(
     request: Request,
-    user: dict = Depends(require_roles("RM")),
+    user: dict = Depends(require_roles("RM", message="RM role required")),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> JSONResponse:
     """Reverse a final lock.
@@ -171,7 +171,7 @@ async def post_releases_final_unlock(
 @router.post("/api/release-schedule/upsert")
 async def post_release_schedule_upsert(
     request: Request,
-    user: dict = Depends(require_roles("RM")),
+    user: dict = Depends(require_roles("RM", message="RM role required")),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> JSONResponse:
     """Create or update a release schedule entry.
@@ -201,7 +201,7 @@ async def post_release_schedule_upsert(
 @router.post("/api/release-schedule/delete")
 async def post_release_schedule_delete(
     request: Request,
-    user: dict = Depends(require_roles("RM")),
+    user: dict = Depends(require_roles("RM", message="RM role required")),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> JSONResponse:
     """Delete a release schedule entry.

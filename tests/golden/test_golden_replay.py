@@ -363,7 +363,6 @@ def _resolve_golden(record: dict, parity_ids: dict) -> tuple[str, str, dict | No
     return path, params, post_body
 
 
-@pytest.mark.skip(reason="Phase 2 — requires fastapi_base_url fixture from impl-backend-core")
 @pytest.mark.phase2
 @pytest.mark.parametrize("name,record", _goldens_with_metadata())
 def test_fastapi_parity(

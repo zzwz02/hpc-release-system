@@ -52,14 +52,21 @@ def require_login(
     raise PermissionError("Login required")
 
 
-def require_roles(*roles: str):
+def require_roles(*roles: str, message: str | None = None):
     """Return a dependency that raises 403 if the user's role is not in *roles*.
 
+    *message*: optional custom AuthzError message to match the old server's
+    verbatim text (e.g. "RM role required").  Defaults to a generic English
+    string when not specified.
+
     Usage:
+        Depends(require_roles("RM", message="RM role required"))
         Depends(require_roles("RM", "Admin"))
     """
+    _msg = message or f"Role required: {', '.join(roles)}"
+
     def _check(user: dict = Depends(require_login)) -> dict:
         if user.get("role") not in roles:
-            raise AuthzError(f"Role required: {', '.join(roles)}")
+            raise AuthzError(_msg)
         return user
     return _check

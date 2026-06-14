@@ -18,7 +18,9 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, Query
 
-from app.deps import get_db, require_login, require_roles
+import release_system.core as core
+from app.api.errors import AuthzError
+from app.deps import get_db, require_login
 from app.services import app_service
 
 router = APIRouter(tags=["apps"])
@@ -58,7 +60,7 @@ def api_app_audit(
 @router.post("/api/apps/new")
 def api_apps_new(
     body: dict,
-    user: dict = Depends(require_roles("Owner", "RM")),
+    user: dict = Depends(require_login),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Create a new app request in a release.
@@ -66,6 +68,8 @@ def api_apps_new(
     Mirrors server.py:759-773.
     Only Owner or RM can submit.
     """
+    if user["role"] not in {"Owner", "RM"}:
+        raise AuthzError("Only Owner or RM can submit new app requests")
     result = app_service.add_new_app(
         conn,
         release_id=body["release_id"],
@@ -119,9 +123,6 @@ def api_app_info(
     Mirrors server.py:1200-1216.
     Auth enforced inside apply_app_info (require_owner_or_rm on snapshot owners).
     """
-    import release_system.core as core
-    from app.api.errors import AuthzError as _AuthzError
-
     # Replicate require_owner_or_rm check from server.py:1203-1205
     release = core.get_release(conn, body["release_id"])
     snap = release["snapshots"].get(body["app_id"], {})
@@ -129,7 +130,7 @@ def api_app_info(
     username = user["username"]
     if role != "RM":
         if role != "Owner" or username not in (snap.get("owners") or []):
-            raise _AuthzError("Owner permission required")
+            raise AuthzError("Owner permission required")
 
     return app_service.apply_app_info(
         conn,
@@ -157,9 +158,6 @@ def api_app_info_fetch(
 
     Mirrors server.py:1218-1237.
     """
-    import release_system.core as core
-    from app.api.errors import AuthzError as _AuthzError
-
     # Replicate require_owner_or_rm check from server.py:1221-1224
     release = core.get_release(conn, body["release_id"])
     snap = release["snapshots"].get(body["app_id"], {})
@@ -167,7 +165,7 @@ def api_app_info_fetch(
     username = user["username"]
     if role != "RM":
         if role != "Owner" or username not in (snap.get("owners") or []):
-            raise _AuthzError("Owner permission required")
+            raise AuthzError("Owner permission required")
 
     return app_service.fetch_app_info(
         conn,
@@ -185,13 +183,15 @@ def api_app_info_fetch(
 @router.post("/api/app-info/fetch-all")
 def api_app_info_fetch_all(
     body: dict,
-    user: dict = Depends(require_roles("RM")),
+    user: dict = Depends(require_login),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Fetch app_info from Gerrit for all apps in a release (RM only).
 
-    Mirrors server.py:1239-1243.
+    Mirrors server.py:1239-1243.  Uses require_rm() message exactly.
     """
+    if user["role"] != "RM":
+        raise AuthzError("RM role required")
     return app_service.fetch_all_app_infos(
         conn,
         release_id=body["release_id"],

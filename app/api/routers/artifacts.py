@@ -73,7 +73,7 @@ router.add_api_route(
 
 def get_test_scope_csv(
     release_id: str = "",
-    _user: dict = Depends(require_roles("RM")),
+    _user: dict = Depends(require_roles("RM", message="RM role required")),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> Response:
     """Download the test-scope CSV for a release.
@@ -140,7 +140,7 @@ router.add_api_route(
 
 async def post_manager_review(
     request: Request,
-    user: dict = Depends(require_roles("RM")),
+    user: dict = Depends(require_roles("RM", message="RM role required")),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Generate the manager-review CSV and persist it.
@@ -171,7 +171,7 @@ router.add_api_route(
 
 async def post_gerrit_plan(
     request: Request,
-    user: dict = Depends(require_roles("RM")),
+    user: dict = Depends(require_roles("RM", message="RM role required")),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Return the Gerrit push plan for a locked release.
