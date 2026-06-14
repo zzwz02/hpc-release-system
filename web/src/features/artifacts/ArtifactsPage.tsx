@@ -22,6 +22,7 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../../api/AuthContext";
+import { apiGet } from "../../api/http";
 import { useUiStore } from "../../store/uiStore";
 import { RefreshBar } from "../../components/RefreshBar";
 import { Markdown } from "../../components/Markdown";
@@ -29,7 +30,7 @@ import type { MarkdownOutlineItem } from "../../lib/markdown";
 import { formatServerTime } from "../../lib/time";
 import { isRM, canGenerateMarkdown } from "../../lib/roles";
 import { parseCsvRows } from "../../lib/csv";
-import type { ArtifactKind } from "../../types";
+import type { ArtifactKind, StatePayload } from "../../types";
 import {
   ARTIFACT_KEY,
   TEST_SCOPE_KEY,
@@ -328,8 +329,25 @@ export function ArtifactsPage() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const selectedReleaseId = useUiStore((s) => s.selectedReleaseId);
+  const setSelectedReleaseId = useUiStore((s) => s.setSelectedReleaseId);
 
   const releaseId = selectedReleaseId;
+
+  // Releases list for the version selector (shared cache key with the other
+  // tabs).  R2: staleTime Infinity, no polling — explicit refetch only.
+  const { data: stateData } = useQuery({
+    queryKey: ["state", releaseId || ""],
+    queryFn: () =>
+      apiGet<StatePayload>(
+        releaseId ? `/api/state?release_id=${encodeURIComponent(releaseId)}` : "/api/state",
+      ),
+    staleTime: Infinity,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: true,
+  });
+  const releases = stateData?.releases ?? [];
   const rmRole = isRM(user);
   const canGenerate = canGenerateMarkdown(user);  // RM or Owner
   const canManagerReview = rmRole;
@@ -459,6 +477,22 @@ export function ArtifactsPage() {
     <section className="view active">
       <div className="page-toolbar">
         <h2>发布文档</h2>
+        {releases.length > 0 && (
+          <select
+            className="input"
+            style={{ width: "auto", minWidth: 160 }}
+            value={releaseId || ""}
+            onChange={(e) => setSelectedReleaseId(e.target.value)}
+            aria-label="选择 release"
+          >
+            {releases.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+                {r.maca_version ? ` (${r.maca_version})` : ""}
+              </option>
+            ))}
+          </select>
+        )}
         <span className="spacer" />
         {refreshError && (
           <span className="small" style={{ color: "var(--danger)" }}>{refreshError}</span>
