@@ -22,14 +22,15 @@
  * Markdown sole sink: <Markdown> component is the only allowed innerHTML sink.
  */
 
-import React, { useState, useRef, useCallback, useMemo } from "react";
+import React, { useState, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { RefreshBar } from "../../components/RefreshBar";
+import { Markdown } from "../../components/Markdown";
 import { apiGet, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { canEditWiki } from "../../lib/roles";
 import { formatServerTime } from "../../lib/time";
-import { renderWikiMarkdown } from "../../lib/markdown";
+import type { MarkdownOutlineItem } from "../../lib/markdown";
 import type {
   WikiArticleSummary,
   WikiArticle,
@@ -255,11 +256,8 @@ function ArticleDetailPane({
   pinning,
   deleting,
 }: ArticleDetailPaneProps) {
-  // Compute rendered markdown + outline once per article
-  const { html, outline } = useMemo(
-    () => renderWikiMarkdown(article.body_md || "", true),
-    [article.body_md],
-  );
+  // Outline is populated via the Markdown component's onOutline callback.
+  const [outline, setOutline] = useState<MarkdownOutlineItem[]>([]);
 
   return (
     <div className="wiki-reader-grid">
@@ -312,14 +310,13 @@ function ArticleDetailPane({
             )}
           </div>
         </div>
-        {/* Safe: html is DOMPurify output via Markdown component */}
         <div className="wiki-detail-body">
-          <div
+          {/* <Markdown> is the sole sanitized-HTML sink; onOutline feeds the sidebar. */}
+          <Markdown
+            value={article.body_md}
             className="md-view wiki-md-view"
-            // Safe: this is renderWikiMarkdown output (marked + DOMPurify).
-            // We can't use <Markdown> here because we need the outline too,
-            // and calling renderWikiMarkdown twice would be wasteful.
-            dangerouslySetInnerHTML={{ __html: html }}
+            withOutline
+            onOutline={setOutline}
           />
         </div>
       </div>
@@ -345,12 +342,6 @@ function EditorPane({ article, onSaved, onCancel }: EditorPaneProps) {
   const [log, setLog] = useState("");
   const [saving, setSaving] = useState(false);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
-
-  // Live preview (mirrors index.html:3780 updateWikiPreview)
-  const { html: previewHtml } = useMemo(
-    () => renderWikiMarkdown(body, false),
-    [body],
-  );
 
   // Insert text at cursor in the textarea (mirrors index.html:3798)
   const insertAtCursor = useCallback((text: string) => {
@@ -508,12 +499,10 @@ function EditorPane({ article, onSaved, onCancel }: EditorPaneProps) {
           <span className="small muted" style={{ marginBottom: 4 }}>
             预览
           </span>
-          {/* Safe: previewHtml is DOMPurify output from renderWikiMarkdown */}
-          <div
-            className="md-view wiki-md-view"
-            dangerouslySetInnerHTML={{ __html: previewHtml }}
-            data-testid="wiki-preview"
-          />
+          {/* <Markdown> is the sole sanitized-HTML sink. */}
+          <div data-testid="wiki-preview">
+            <Markdown value={body} className="md-view wiki-md-view" />
+          </div>
         </div>
       </div>
       {!isNew && (

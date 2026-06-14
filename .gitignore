@@ -21,3 +21,5 @@ hpc_app.csv
 # React/Vite frontend
 web/node_modules/
 web_dist/
+web/playwright-report/
+web/test-results/
