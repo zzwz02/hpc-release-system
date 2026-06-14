@@ -548,6 +548,8 @@ export interface WikiImage {
   id: string;
   filename: string;
   content_type: string;
+  /** Absolute URL path served by GET /api/wiki/images/{id} */
+  url: string;
   created_by: string;
   created_at: string;
 }

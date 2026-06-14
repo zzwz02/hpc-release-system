@@ -63,3 +63,25 @@ export async function apiPost<T = unknown>(path: string, body: unknown): Promise
 export async function apiGet<T = unknown>(path: string): Promise<T> {
   return apiFetch<T>(path);
 }
+
+/**
+ * Raw text GET — for endpoints that return plain text or CSV (not JSON envelopes).
+ * Returns the response text plus selected headers.
+ * On 401 clears the session; on non-OK throws.
+ */
+export async function apiGetText(path: string): Promise<{
+  text: string;
+  headers: Headers;
+}> {
+  const res = await fetch(path, { credentials: "include" });
+  if (res.status === 401) {
+    _on401();
+    throw new Error("Login required");
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => res.statusText);
+    throw new Error(body || res.statusText);
+  }
+  const text = await res.text();
+  return { text, headers: res.headers };
+}

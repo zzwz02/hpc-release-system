@@ -21,19 +21,23 @@ function Placeholder({ label }: { label: string }) {
 
 // Feature imports — replace placeholders as waves progress.
 import { DashboardPage } from "../features/dashboard/DashboardPage";
+import { ReleaseCyclePage } from "../features/init/ReleaseCyclePage";
 import { AppWorkbenchPage } from "../features/appWorkbench/AppWorkbenchPage";
 import { QaPage } from "../features/qa/QaPage";
+import { ArtifactsPage } from "../features/artifacts/ArtifactsPage";
 import { CicdPage } from "../features/cicd/CicdPage";
+import { WikiPage } from "../features/wiki/WikiPage";
+import { AdminPage } from "../features/admin/AdminPage";
 
 const FEATURE_MAP: Record<string, React.ReactNode> = {
   dashboard: <DashboardPage />,
-  init:      <Placeholder label="周期管理" />,
+  init:      <ReleaseCyclePage />,
   apps:      <AppWorkbenchPage />,
   qa:        <QaPage />,
-  artifacts: <Placeholder label="发布文档" />,
+  artifacts: <ArtifactsPage />,
   cicd:      <CicdPage />,
-  wiki:      <Placeholder label="开发 WIKI" />,
-  admin:     <Placeholder label="系统管理" />,
+  wiki:      <WikiPage />,
+  admin:     <AdminPage />,
 };
 
 export function AppRouter() {
