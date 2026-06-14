@@ -887,14 +887,6 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
                   上传 app_info
                 </button>
                 <button className="btn sm" onClick={() => void handleFetchAppInfo()}>从 Gerrit 拉取</button>
-                <button
-                  className="btn sm"
-                  onClick={() => setShowCopyDialog(true)}
-                  data-testid="copy-from-version-btn"
-                  title="从其他 release 复制本 app 的文档/测试等可编辑信息"
-                >
-                  从其他版本复制
-                </button>
               </div>
             )}
             {(snap.app_info_diffs ?? []).length > 0 && (
@@ -1022,6 +1014,16 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       {/* Footer actions */}
       <div className="detail-foot">
         <span className="foot-note">{footNote}</span>
+        {canEditDetail && editMode && (
+          <button
+            className="btn ghost sm"
+            onClick={() => setShowCopyDialog(true)}
+            data-testid="copy-from-version-btn"
+            title="从其他 release 复制本 app 的文档 / 测试说明 / 社区 / Sanity 等可编辑信息到当前表单"
+          >
+            ⇄ 从其他版本复制信息
+          </button>
+        )}
         <div className="spacer" />
         {canEditDetail && !editMode && (
           <button className="btn primary" onClick={() => setEditMode(true)}>✎ 修改</button>
