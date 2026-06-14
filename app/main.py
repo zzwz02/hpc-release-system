@@ -62,17 +62,39 @@ def create_app() -> FastAPI:
 
 
 def _mount_static(app: FastAPI) -> None:
-    """Mount the React build output as StaticFiles if the directory exists."""
+    """Mount the React build output as StaticFiles if the directory exists.
+
+    Uses an SPA-aware static handler: real files (index.html, /assets/*) are
+    served normally, but any *unknown* non-/api path falls back to index.html so
+    that client-side routes (e.g. /apps, /cicd) survive a hard refresh / direct
+    nav instead of returning a 404.  Unknown /api/* paths keep their JSON 404.
+    """
     from pathlib import Path
 
     web_dist = Path(__file__).resolve().parents[1] / "web_dist"
     if not web_dist.exists():
         return
 
+    from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
+    from starlette.exceptions import HTTPException as StarletteHTTPException
 
-    # html=True makes FastAPI serve index.html for unmatched paths (SPA routing)
-    app.mount("/", StaticFiles(directory=str(web_dist), html=True), name="static")
+    index_file = web_dist / "index.html"
+
+    class SPAStaticFiles(StaticFiles):
+        async def get_response(self, path, scope):
+            try:
+                return await super().get_response(path, scope)
+            except StarletteHTTPException as exc:
+                # Missing file: rewrite client-side routes to index.html, but
+                # never mask API paths (those should 404 as JSON via the router).
+                if exc.status_code == 404 and not path.startswith("api"):
+                    return FileResponse(index_file)
+                raise
+
+    # Mounted LAST so /api/* routers take priority; html=True serves index.html
+    # at "/" and the subclass handles SPA deep-link fallback for everything else.
+    app.mount("/", SPAStaticFiles(directory=str(web_dist), html=True), name="static")
 
 
 app = create_app()
