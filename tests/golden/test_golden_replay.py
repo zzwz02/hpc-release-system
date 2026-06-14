@@ -51,12 +51,77 @@ def _load_goldens() -> list[tuple[str, dict]]:
 
 
 def _goldens_with_metadata() -> list[tuple[str, dict]]:
-    """Return only golden files that carry replay metadata (_method/_path)."""
-    return [
+    """Return only golden files that carry replay metadata (_method/_path).
+
+    Sorted to preserve the capture order from capture.py (Phase 1–12).  The
+    capture sequence matters for state-mutating POST tests: e.g.
+    ``post_qa_status_batch`` must run before ``post_apps_update_decision``
+    which changes the app's release_decision and would make the batch return 400.
+    Goldens without an explicit phase slot sort after phased ones, alphabetically.
+    """
+    # Explicit replay order — matches the capture.py Phase 1–12 sequence.
+    # Only names that NEED a specific relative order appear here; the rest
+    # are appended alphabetically after.
+    _REPLAY_ORDER: dict[str, int] = {
+        # Phase 1 — login
+        "post_login_admin": 10,
+        "post_login_rm": 11,
+        "post_login_owner": 12,
+        "post_login_qa": 13,
+        # Phase 2 — public GETs
+        "get_me_unauthenticated": 20,
+        "get_me_rm": 21,
+        "get_ldap_status": 22,
+        # Phase 3 — core state
+        "get_state_rm": 30,
+        "get_state_owner": 31,
+        # Phase 4 — CICD
+        "get_cicd_tasks": 40,
+        "get_cicd_tasks_running": 41,
+        "get_cicd_requests_rm": 42,
+        "get_cicd_requests_pending": 43,
+        "get_cicd_requests_owner_mine": 44,
+        "get_cicd_notifications_rm": 45,
+        "get_cicd_notifications_owner": 46,
+        "get_cicd_task_history": 47,
+        "get_cicd_deliveries_rm": 48,
+        # Phase 5 — QA reports
+        "get_qa_reports": 50,
+        # Phase 6 — wiki
+        "get_wiki_articles": 60,
+        "get_wiki_article_by_id": 61,
+        "get_wiki_article_404": 62,
+        # Phase 7 — artifacts
+        "get_artifact_ai4sci": 70,
+        "get_artifact_data": 71,
+        "get_artifact_manual": 72,
+        "get_artifact_release_note": 73,
+        # Phase 8 — test scope CSV
+        "get_test_scope_csv": 80,
+        # Phase 9 — app audit
+        "get_app_audit": 90,
+        # Phase 10 — admin
+        "get_admin_users": 100,
+        # Phase 11 — state-mutating POSTs (order matters!)
+        "post_qa_status_batch": 110,          # must run BEFORE apps_update_decision
+        "post_apps_update_decision": 111,     # sets release_decision → cicd_only
+        "post_apps_update_doc": 112,
+        "post_cicd_mark_visited": 113,
+        "post_cicd_request_submit_owner": 114,
+        # Phase 12 — logout (run last so other tests can still use the session)
+        "post_logout": 120,
+    }
+
+    def _sort_key(item: tuple[str, dict]) -> tuple[int, str]:
+        name = item[0]
+        return (_REPLAY_ORDER.get(name, 999), name)
+
+    items = [
         (name, rec)
         for name, rec in _load_goldens()
         if rec.get("_method") and rec.get("_path")
     ]
+    return sorted(items, key=_sort_key)
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +325,44 @@ class TestGoldenReplayMetadata:
 #     the first test runs (conftest session-scoped fixture).
 
 
+def _resolve_golden(record: dict, parity_ids: dict) -> tuple[str, str, dict | None]:
+    """Translate golden request metadata to use live non-deterministic IDs.
+
+    Returns ``(path, params, post_body)`` with golden IDs replaced by their
+    live equivalents so the request hits the correct resource on the parity
+    server.
+
+    The inverse translation (live → golden) is applied to the *response* via
+    ``normalize_ids`` before comparison.
+    """
+    # Build forward map: golden_id → live_id for request substitution
+    request_map = {
+        parity_ids["golden_release_id"]: parity_ids["live_release_id"],
+        parity_ids["golden_wiki_id"]: parity_ids["live_wiki_id"],
+    }
+
+    path: str = record.get("_path") or ""
+    params: str = record.get("_params") or ""
+    post_body: dict | None = record.get("_body")
+
+    # Substitute in path (e.g. /api/wiki/articles/wiki_cbd5c625e992)
+    for golden_id, live_id in request_map.items():
+        path = path.replace(golden_id, live_id)
+        params = params.replace(golden_id, live_id)
+
+    # Substitute in POST body (handles release_id in JSON values)
+    if post_body is not None:
+        post_body = json.loads(
+            json.dumps(post_body, ensure_ascii=False).replace(
+                parity_ids["golden_release_id"], parity_ids["live_release_id"]
+            ).replace(
+                parity_ids["golden_wiki_id"], parity_ids["live_wiki_id"]
+            )
+        )
+
+    return path, params, post_body
+
+
 @pytest.mark.skip(reason="Phase 2 — requires fastapi_base_url fixture from impl-backend-core")
 @pytest.mark.phase2
 @pytest.mark.parametrize("name,record", _goldens_with_metadata())
@@ -268,24 +371,30 @@ def test_fastapi_parity(
     record: dict,
     fastapi_base_url: str,  # injected by Phase 2 conftest
     fastapi_session_cookies: dict,  # injected by Phase 2 conftest: {role: cookie_str}
+    fastapi_parity_ids: dict,  # injected by Phase 2 conftest: id substitution map
 ) -> None:
     """Re-issue the captured request against FastAPI and diff the response.
 
     Uses ``_method``, ``_path``, ``_params``, ``_role``, and ``_body`` from
     the golden envelope to reconstruct the original request without any
     hand-written request specs.
+
+    Non-deterministic IDs (release_id, wiki_article_id) are substituted via
+    ``_resolve_golden`` before the request and ``normalize_ids`` after the
+    response so golden comparison remains stable across DB seeds.
     """
     import httpx
+    from scrub import normalize_ids  # type: ignore[import]  # noqa: PLC0415
 
     # Skip login goldens — they are used only to seed session cookies
     if record["_path"] == "/api/login":
         pytest.skip("Login goldens are used for cookie setup, not parity testing")
 
     method: str = record["_method"]
-    path: str = record["_path"]
-    params: str = record.get("_params") or ""
     role: str = record.get("_role") or ""
-    post_body: dict | None = record.get("_body")
+
+    # Translate golden IDs → live IDs in request metadata
+    path, params, post_body = _resolve_golden(record, fastapi_parity_ids)
 
     url = f"{fastapi_base_url}{path}"
     if params:
@@ -307,11 +416,14 @@ def test_fastapi_parity(
                 follow_redirects=False,
             )
 
-    # For artifact / CSV endpoints the body is plain text, not JSON
-    _text_paths = {"/api/test-scope.csv"}
-    is_text_endpoint = path in _text_paths or path.startswith("/api/artifacts/")
+    # Some artifact / CSV endpoints return plain text rather than JSON.
+    # Use the golden body type to determine how to parse the live response:
+    # a string golden means the capture stored a truncated text preview;
+    # a dict/list golden means the capture received and stored parsed JSON.
+    golden_body = record["body"]
+    golden_is_text = isinstance(golden_body, str)
 
-    if is_text_endpoint:
+    if golden_is_text:
         live_body: object = resp.text[:500] + (
             "...[truncated]" if len(resp.text) > 500 else ""
         )
@@ -321,8 +433,9 @@ def test_fastapi_parity(
         except Exception:
             live_body = resp.text
 
+    # Translate live IDs → golden IDs in response before scrubbing
+    live_body = normalize_ids(live_body, fastapi_parity_ids["id_map"])
     live_scrubbed = scrub(live_body)
-    golden_body = record["body"]
 
     assert resp.status_code == record["status"], (
         f"{name}: expected HTTP {record['status']}, got {resp.status_code}"

@@ -56,7 +56,11 @@ def get_state(
         "releases": [_serialize_release(r) for r in releases],
         "release": None,
         "artifacts": [],
-        "user": user,
+        "user": {
+            "username": user["username"],
+            "role": user["role"],
+            "display_name": user.get("display_name", ""),
+        },
         "user_display_names": {
             row["username"]: row["display_name"]
             for row in conn.execute(

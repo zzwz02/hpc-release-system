@@ -71,3 +71,30 @@ def is_scrubbed(obj: object) -> bool:
     scrubbed_once = scrub(obj)
     scrubbed_twice = scrub(scrubbed_once)
     return scrubbed_once == scrubbed_twice
+
+
+def normalize_ids(obj: object, id_map: dict[str, str]) -> object:
+    """Replace live non-deterministic IDs with their golden counterparts.
+
+    *id_map* maps ``live_id → golden_id`` (e.g. the release_id assigned to
+    the parity DB's seed release may differ from the one captured in the
+    golden files).  Substitution is applied to all **string values** —
+    both standalone strings and strings inside dicts/lists — but never to
+    dict **keys** (IDs never appear as keys in our response envelopes).
+
+    The replacement is a simple ``str.replace`` scan, so it works even when
+    the ID is embedded in a longer string (e.g. inside a path or a note).
+
+    Idempotent: calling it twice with the same map produces the same result.
+    """
+    if not id_map:
+        return obj
+    if isinstance(obj, dict):
+        return {k: normalize_ids(v, id_map) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [normalize_ids(item, id_map) for item in obj]
+    if isinstance(obj, str):
+        for live_id, golden_id in id_map.items():
+            obj = obj.replace(live_id, golden_id)
+        return obj
+    return obj

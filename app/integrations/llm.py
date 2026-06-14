@@ -1,8 +1,8 @@
 """LLM integration — QA analysis via local OpenAI-compatible endpoint.
 
-Background threads use this (not the event loop).
-
-# TODO Phase 2 — wrap release_system/llm.py
+Thin wrapper around release_system/llm.py, which is used by background
+threads (not the event loop).  The underlying chat_json function is blocking;
+callers should invoke this from a daemon thread, not from an async handler.
 """
 from __future__ import annotations
 
@@ -14,6 +14,13 @@ def analyze_qa_log(
 ) -> str:
     """Run LLM analysis on a QA log and return the result text.
 
-    # TODO Phase 2
+    This is a thin wrapper kept for interface compatibility.  The actual
+    analysis is driven by release_system.core.qa_analyze_log (which calls
+    release_system.llm.chat_json internally).  Direct callers that need
+    more control (progress callbacks, retry logic) should call
+    release_system.core.qa_analyze_log directly.
     """
-    raise NotImplementedError
+    from release_system.core import _QA_ANALYSIS_SYSTEM  # type: ignore[attr-defined]
+    from release_system.llm import chat_json
+
+    return chat_json(_QA_ANALYSIS_SYSTEM, log_content)

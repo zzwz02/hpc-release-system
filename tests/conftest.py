@@ -505,6 +505,73 @@ def fastapi_base_url():
 
 
 @pytest.fixture(scope="session")
+def fastapi_parity_ids(
+    fastapi_base_url: str,
+    fastapi_session_cookies: dict,
+) -> dict:
+    """Discover non-deterministic IDs from the live parity server.
+
+    Returns a dict with mapping ``live_id → golden_id`` for each ID type that
+    is random at creation time (release_id, wiki_article_id, schedule_id).
+    App IDs and CICD task IDs are deterministic and need no mapping.
+
+    The dict is used by test_fastapi_parity to:
+      1. Substitute golden IDs → live IDs in request _params/_path/_body.
+      2. Substitute live IDs → golden IDs in the live response before scrub().
+    """
+    import httpx
+
+    GOLDEN_RELEASE_ID = "rel_d13b4cc2e9b4"
+    GOLDEN_WIKI_ID = "wiki_cbd5c625e992"
+    GOLDEN_SCHED_ID = "sched_1265776a4aba"
+
+    rm_cookie = fastapi_session_cookies.get("rm", "")
+    headers = {"Content-Type": "application/json", "Cookie": rm_cookie}
+
+    with httpx.Client(trust_env=False, timeout=15) as client:
+        # Discover live release_id and sched_id from /api/state.
+        # No release_id param → returns the most recent release (the only seeded one).
+        resp = client.get(f"{fastapi_base_url}/api/state", headers=headers)
+        live_release_id = GOLDEN_RELEASE_ID  # fallback
+        live_sched_id = GOLDEN_SCHED_ID  # fallback
+        if resp.status_code == 200:
+            state = resp.json()
+            releases = state.get("releases") or []
+            if releases:
+                live_release_id = releases[0]["id"]
+            schedule = state.get("release_schedule") or []
+            if schedule:
+                live_sched_id = schedule[0]["id"]
+
+        # Discover live wiki article id from /api/wiki/articles
+        resp = client.get(f"{fastapi_base_url}/api/wiki/articles", headers=headers)
+        live_wiki_id = GOLDEN_WIKI_ID  # fallback
+        if resp.status_code == 200:
+            articles = resp.json().get("articles") or []
+            if articles:
+                live_wiki_id = articles[0]["id"]
+
+    # Map: live → golden  (used in normalize_ids before comparison)
+    id_map: dict[str, str] = {}
+    if live_release_id != GOLDEN_RELEASE_ID:
+        id_map[live_release_id] = GOLDEN_RELEASE_ID
+    if live_wiki_id != GOLDEN_WIKI_ID:
+        id_map[live_wiki_id] = GOLDEN_WIKI_ID
+    if live_sched_id != GOLDEN_SCHED_ID:
+        id_map[live_sched_id] = GOLDEN_SCHED_ID
+
+    return {
+        "id_map": id_map,
+        "live_release_id": live_release_id,
+        "live_wiki_id": live_wiki_id,
+        "live_sched_id": live_sched_id,
+        "golden_release_id": GOLDEN_RELEASE_ID,
+        "golden_wiki_id": GOLDEN_WIKI_ID,
+        "golden_sched_id": GOLDEN_SCHED_ID,
+    }
+
+
+@pytest.fixture(scope="session")
 def fastapi_session_cookies(fastapi_base_url: str) -> dict:
     """Return {role: cookie_str} for rm/owner/qa/admin via /api/login.
 
