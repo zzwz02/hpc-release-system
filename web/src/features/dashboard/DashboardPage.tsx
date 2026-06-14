@@ -431,9 +431,11 @@ function ScheduleReadRow({ entry, isRM, today, onEdit, onDelete }: ScheduleReadR
       <td className={soon}>{formatServerTime(rel) || "—"}</td>
       <td>{entry.note || ""}</td>
       {isRM && (
-        <td className="actions" style={{ textAlign: "right" }}>
-          <button className="btn sm" onClick={onEdit}>编辑</button>{" "}
-          <button className="btn sm danger" onClick={onDelete}>删除</button>
+        <td>
+          <div className="cell-actions">
+            <button className="btn sm" onClick={onEdit}>编辑</button>
+            <button className="btn sm danger" onClick={onDelete}>删除</button>
+          </div>
         </td>
       )}
     </tr>
@@ -483,13 +485,15 @@ function ScheduleEditRow({ form, onChange, onSave, onCancel, saving }: ScheduleE
           onChange={(e) => onChange({ ...form, note: e.target.value })}
         />
       </td>
-      <td className="actions" style={{ textAlign: "right" }}>
-        <button className="btn sm primary" onClick={onSave} disabled={saving}>
-          {saving ? "…" : "保存"}
-        </button>{" "}
-        <button className="btn sm" onClick={onCancel} disabled={saving}>
-          取消
-        </button>
+      <td>
+        <div className="cell-actions">
+          <button className="btn sm primary" onClick={onSave} disabled={saving}>
+            {saving ? "…" : "保存"}
+          </button>
+          <button className="btn sm" onClick={onCancel} disabled={saving}>
+            取消
+          </button>
+        </div>
       </td>
     </tr>
   );

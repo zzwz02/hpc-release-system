@@ -116,35 +116,48 @@ describe("ArtifactsPage", () => {
     expect(screen.getByText(/请先.*Release/)).toBeInTheDocument();
   });
 
-  // ── Kind selector buttons ──────────────────────────────────────────────────
+  // ── Kind picker cards (cards ARE the picker; no redundant 查看 button row) ──
 
-  it("shows all 4 non-manager kind buttons", () => {
+  it("shows all 4 non-manager kind picker cards", () => {
     renderPage("RM");
-    expect(screen.getByText(/查看 Release Note/)).toBeInTheDocument();
-    expect(screen.getByText(/查看 HPC Manual/)).toBeInTheDocument();
-    expect(screen.getByText(/查看 AI4Sci Manual/)).toBeInTheDocument();
-    expect(screen.getByText(/查看 release-data/)).toBeInTheDocument();
+    expect(screen.getByText("Release Note")).toBeInTheDocument();
+    expect(screen.getByText("HPC Manual")).toBeInTheDocument();
+    expect(screen.getByText("AI4Sci Manual")).toBeInTheDocument();
+    expect(screen.getByText("release-data")).toBeInTheDocument();
   });
 
-  it("shows Manager Review CSV button for RM", () => {
+  it("does NOT render the redundant 查看 button row", () => {
     renderPage("RM");
-    expect(screen.getByText("Manager Review CSV")).toBeInTheDocument();
+    expect(screen.queryByText(/查看 Release Note/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/查看 HPC Manual/)).not.toBeInTheDocument();
   });
 
-  it("hides Manager Review CSV button for Guest", () => {
+  it("shows Manager Review picker card for RM", () => {
+    renderPage("RM");
+    expect(screen.getByText("管理评审导出")).toBeInTheDocument();
+  });
+
+  it("hides Manager Review picker card for Guest", () => {
     renderPage("Guest");
-    expect(screen.queryByText("Manager Review CSV")).not.toBeInTheDocument();
+    expect(screen.queryByText("管理评审导出")).not.toBeInTheDocument();
   });
 
-  // ── Refresh button ─────────────────────────────────────────────────────────
+  // ── Refresh button (contextual — only once a document is open) ──────────────
 
-  it("shows Refresh button for RM", () => {
+  it("shows Refresh button for RM after opening a doc", async () => {
     renderPage("RM");
-    expect(screen.getByText("刷新")).toBeInTheDocument();
+    await userEvent.click(screen.getByText("Release Note"));
+    await waitFor(() => {
+      expect(screen.getByText("刷新")).toBeInTheDocument();
+    });
   });
 
-  it("hides Refresh button for Guest (cannot generate)", () => {
+  it("hides Refresh button for Guest (cannot generate)", async () => {
     renderPage("Guest");
+    await userEvent.click(screen.getByText("Release Note"));
+    await waitFor(() => {
+      expect(screen.getByText("← 文档列表")).toBeInTheDocument();
+    });
     expect(screen.queryByText("刷新")).not.toBeInTheDocument();
   });
 
@@ -162,9 +175,9 @@ describe("ArtifactsPage", () => {
 
   // ── Clicking a kind button fetches artifact ────────────────────────────────
 
-  it("clicking Release Note button triggers apiGetText for release_note", async () => {
+  it("clicking Release Note card triggers apiGetText for release_note", async () => {
     renderPage("RM");
-    await userEvent.click(screen.getByText(/查看 Release Note/));
+    await userEvent.click(screen.getByText("Release Note"));
 
     await waitFor(() => {
       expect(vi.mocked(apiGetText)).toHaveBeenCalledWith(
@@ -173,9 +186,9 @@ describe("ArtifactsPage", () => {
     });
   });
 
-  it("clicking data button triggers apiGetText for data artifact", async () => {
+  it("clicking data card triggers apiGetText for data artifact", async () => {
     renderPage("RM");
-    await userEvent.click(screen.getByText(/查看 release-data/));
+    await userEvent.click(screen.getByText("release-data"));
 
     await waitFor(() => {
       expect(vi.mocked(apiGetText)).toHaveBeenCalledWith(
@@ -196,7 +209,7 @@ describe("ArtifactsPage", () => {
     });
 
     renderPage("RM");
-    await userEvent.click(screen.getByText(/查看 release-data/));
+    await userEvent.click(screen.getByText("release-data"));
 
     await waitFor(() => {
       const ta = document.querySelector("textarea.artifact");
@@ -207,7 +220,7 @@ describe("ArtifactsPage", () => {
 
   it("renders source/render toggle button for Markdown kind", async () => {
     renderPage("RM");
-    await userEvent.click(screen.getByText(/查看 Release Note/));
+    await userEvent.click(screen.getByText("Release Note"));
 
     await waitFor(() => {
       // In render mode the toggle shows "查看源码"
@@ -221,7 +234,7 @@ describe("ArtifactsPage", () => {
     vi.mocked(apiGetText).mockRejectedValue(new Error("网络错误"));
 
     renderPage("RM");
-    await userEvent.click(screen.getByText(/查看 Release Note/));
+    await userEvent.click(screen.getByText("Release Note"));
 
     await waitFor(() => {
       expect(screen.getByText(/加载失败.*网络错误/)).toBeInTheDocument();
@@ -232,7 +245,7 @@ describe("ArtifactsPage", () => {
 
   it("clicking Manager Review CSV shows field picker pane", async () => {
     renderPage("RM");
-    await userEvent.click(screen.getByText("Manager Review CSV"));
+    await userEvent.click(screen.getByText("管理评审导出"));
 
     await waitFor(() => {
       expect(screen.getByText(/请选择需要输出的字段/)).toBeInTheDocument();
@@ -241,7 +254,7 @@ describe("ArtifactsPage", () => {
 
   it("manager review pane has App checkbox checked by default", async () => {
     renderPage("RM");
-    await userEvent.click(screen.getByText("Manager Review CSV"));
+    await userEvent.click(screen.getByText("管理评审导出"));
 
     await waitFor(() => {
       const appCheckbox = screen.getByRole("checkbox", { name: "App" });
@@ -251,7 +264,7 @@ describe("ArtifactsPage", () => {
 
   it("manager review pane has Owner checkbox checked by default", async () => {
     renderPage("RM");
-    await userEvent.click(screen.getByText("Manager Review CSV"));
+    await userEvent.click(screen.getByText("管理评审导出"));
 
     await waitFor(() => {
       const ownerCheckbox = screen.getByRole("checkbox", { name: "Owner" });
@@ -261,7 +274,7 @@ describe("ArtifactsPage", () => {
 
   it("manager review pane has 官方名称 unchecked by default", async () => {
     renderPage("RM");
-    await userEvent.click(screen.getByText("Manager Review CSV"));
+    await userEvent.click(screen.getByText("管理评审导出"));
 
     await waitFor(() => {
       const checkbox = screen.getByRole("checkbox", { name: "官方名称" });

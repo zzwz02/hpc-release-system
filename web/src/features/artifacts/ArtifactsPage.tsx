@@ -19,12 +19,13 @@
  * R2: staleTime:Infinity, no polling.  Explicit refetch only.
  */
 
-import { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
 import { RefreshBar } from "../../components/RefreshBar";
 import { Markdown } from "../../components/Markdown";
+import type { MarkdownOutlineItem } from "../../lib/markdown";
 import { formatServerTime } from "../../lib/time";
 import { isRM, canGenerateMarkdown } from "../../lib/roles";
 import { parseCsvRows } from "../../lib/csv";
@@ -124,6 +125,40 @@ function CsvTable({ text }: { text: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// OutlineNav — sticky narrow ToC for a rendered Markdown doc (mirrors wiki)
+// ---------------------------------------------------------------------------
+
+function OutlineNav({ outline }: { outline: MarkdownOutlineItem[] }) {
+  return (
+    <div className="wiki-outline" data-testid="artifact-outline">
+      <div className="wiki-outline-head">目录</div>
+      <div className="wiki-outline-list">
+        {outline.length === 0 ? (
+          <div className="small muted" style={{ padding: "6px 8px" }}>
+            这份文档暂无小标题。
+          </div>
+        ) : (
+          <div className="wiki-outline-tree">
+            {outline.map((item, idx) => {
+              const indent = Math.max(0, Math.min(item.level, 4) - 1) * 10;
+              return (
+                <div
+                  key={idx}
+                  className={`wiki-outline-row lv${Math.min(item.level, 4)}`}
+                  style={{ "--wiki-outline-indent": `${indent}px` } as React.CSSProperties}
+                >
+                  <a href={`#${item.id}`} title={item.title}>{item.title}</a>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // ArtifactViewer — source/render/table toggle for one kind
 // ---------------------------------------------------------------------------
 
@@ -139,6 +174,7 @@ function ArtifactViewer({ kind, result }: ArtifactViewerProps) {
 
   // Default to render mode for renderable kinds; source mode for plain text
   const [mode, setMode] = useState<"source" | "render">(renderable ? "render" : "source");
+  const [outline, setOutline] = useState<MarkdownOutlineItem[]>([]);
 
   // Reset to render when kind changes
   useEffect(() => {
@@ -184,14 +220,18 @@ function ArtifactViewer({ kind, result }: ArtifactViewerProps) {
         />
       )}
 
-      {/* Rendered: Markdown */}
+      {/* Rendered: Markdown — content wide (first) + sticky narrow outline (G + H) */}
       {!sourceMode && isMarkdown && (
         <div className="artifact-reader-grid">
-          <Markdown
-            value={result.text}
-            className="md-view wiki-md-view"
-            withOutline
-          />
+          <div className="artifact-reader-main">
+            <Markdown
+              value={result.text}
+              className="md-view wiki-md-view"
+              withOutline
+              onOutline={setOutline}
+            />
+          </div>
+          <OutlineNav outline={outline} />
         </div>
       )}
 
@@ -294,10 +334,8 @@ export function ArtifactsPage() {
   const canGenerate = canGenerateMarkdown(user);  // RM or Owner
   const canManagerReview = rmRole;
 
-  // Which artifact kind is currently shown (null = nothing)
+  // Which artifact kind is currently shown (null = nothing → picker cards)
   const [activeKind, setActiveKind] = useState<ViewKind>(null);
-  // Whether the manager-review field picker pane is open
-  const [showManagerPane, setShowManagerPane] = useState(false);
   // Generating spinner for the main 刷新 button
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState("");
@@ -337,17 +375,14 @@ export function ArtifactsPage() {
     try { window.scrollTo({ top: 0 }); } catch { /* no-op in test env */ }
   }, [activeKind]);
 
+  // Cards ARE the picker — selecting a card opens that doc in the viewer.
   function handleSelectKind(kind: ArtifactKind) {
-    if (kind === "manager_review") {
-      // manager_review: toggle manager pane visibility + set as active viewer
-      setShowManagerPane((prev) => !prev);
-      if (activeKind !== "manager_review") {
-        setActiveKind("manager_review");
-      }
-    } else {
-      setShowManagerPane(false);
-      setActiveKind(kind);
-    }
+    setActiveKind(kind);
+  }
+
+  // Contextual "← 文档列表" — return to the card picker.
+  function handleBackToPicker() {
+    setActiveKind(null);
   }
 
   // 刷新 button: generate draft artifacts then reload the active kind.
@@ -425,6 +460,17 @@ export function ArtifactsPage() {
       <div className="page-toolbar">
         <h2>发布文档</h2>
         <span className="spacer" />
+        {refreshError && (
+          <span className="small" style={{ color: "var(--danger)" }}>{refreshError}</span>
+        )}
+        {releaseId && rmRole && (
+          <button
+            className="btn sm"
+            onClick={() => void handleDownloadTestScope()}
+          >
+            下载 test-scope.csv
+          </button>
+        )}
         <RefreshBar
           dataUpdatedAt={dataUpdatedAt}
           onRefresh={() => void handleRefresh()}
@@ -443,82 +489,16 @@ export function ArtifactsPage() {
 
           {releaseId && (
             <>
-              {/* Action row — artifact kind selector buttons + refresh */}
-              <div className="artifact-action-row">
-                {(["release_note", "manual", "ai4sci", "data"] as ArtifactKind[]).map(
-                  (kind) => (
-                    <button
-                      key={kind}
-                      className={`btn download${activeKind === kind ? " active" : ""}`}
-                      onClick={() => handleSelectKind(kind)}
-                    >
-                      查看 {KIND_LABELS[kind]}
-                    </button>
-                  ),
-                )}
-                {canManagerReview && (
-                  <button
-                    className={`btn${showManagerPane || activeKind === "manager_review" ? " active" : ""}`}
-                    onClick={() => handleSelectKind("manager_review")}
-                  >
-                    Manager Review CSV
-                  </button>
-                )}
-                {refreshError && (
-                  <span className="small" style={{ color: "var(--danger)", marginLeft: 8 }}>
-                    {refreshError}
-                  </span>
-                )}
-                {(canGenerate || canManagerReview) && (
-                  <button
-                    className="btn primary"
-                    onClick={() => void handleRefresh()}
-                    disabled={refreshing || !releaseId}
-                    style={{ marginLeft: "auto" }}
-                  >
-                    {refreshing ? "刷新中…" : "刷新"}
-                  </button>
-                )}
-              </div>
-
-              {/* Test-scope CSV download (RM only) */}
-              {rmRole && (
-                <div style={{ marginTop: 8 }}>
-                  <button
-                    className="btn sm"
-                    onClick={() => void handleDownloadTestScope()}
-                  >
-                    下载 test-scope.csv
-                  </button>
-                </div>
-              )}
-
-              {/* Manager review field picker */}
-              {showManagerPane && canManagerReview && (
-                <ManagerReviewPane
-                  releaseId={releaseId}
-                  onGenerated={() => void handleManagerGenerated()}
-                />
-              )}
-
-              {/* Manager review CSV download button (shown when viewer is open) */}
-              {activeKind === "manager_review" && artifactResult?.text && (
-                <div className="row" style={{ marginTop: 8 }}>
-                  <button className="btn" onClick={handleDownloadManagerCsv}>
-                    下载 Manager Review CSV
-                  </button>
-                </div>
-              )}
-
-              {/* Landing empty-state — shown until a document is picked. */}
-              {!activeKind && !showManagerPane && (
+              {/* Landing — the 5 doc-kind cards ARE the picker (no redundant
+                  button row). Shown until a document is selected. */}
+              {!activeKind && (
                 <div className="artifact-empty" data-testid="artifact-empty">
                   <div className="artifact-empty-head">
                     <span className="artifact-empty-ic">📂</span>
                     <div>
                       <h3>选择一份发布文档查看</h3>
                       <p className="muted small">
-                        点击上方按钮或下方任一文档卡片，在此处渲染对应内容。
+                        点击下方任一文档卡片，在此处渲染对应内容。
                       </p>
                     </div>
                   </div>
@@ -550,19 +530,51 @@ export function ArtifactsPage() {
                 </div>
               )}
 
-              {/* Artifact viewer */}
+              {/* Document view — contextual actions bar + viewer */}
               {activeKind && (
-                <div id="artifactViewer">
-                  {artifactError ? (
-                    <p className="log" style={{ color: "var(--danger)", marginTop: 12 }}>
-                      加载失败：{(artifactError as Error).message}
-                    </p>
-                  ) : artifactFetching ? (
-                    <p className="muted" style={{ marginTop: 12 }}>加载中…</p>
-                  ) : artifactResult ? (
-                    <ArtifactViewer kind={activeKind} result={artifactResult} />
-                  ) : null}
-                </div>
+                <>
+                  <div className="artifact-context-bar">
+                    <button className="btn sm" onClick={handleBackToPicker}>
+                      ← 文档列表
+                    </button>
+                    <span className="artifact-context-title">{KIND_LABELS[activeKind]}</span>
+                    <span className="spacer" />
+                    {(canGenerate || canManagerReview) && (
+                      <button
+                        className="btn sm primary"
+                        onClick={() => void handleRefresh()}
+                        disabled={refreshing || !releaseId}
+                      >
+                        {refreshing ? "刷新中…" : "刷新"}
+                      </button>
+                    )}
+                    {activeKind === "manager_review" && artifactResult?.text && (
+                      <button className="btn sm" onClick={handleDownloadManagerCsv}>
+                        下载 CSV
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Manager review field picker (contextual to the manager kind) */}
+                  {activeKind === "manager_review" && canManagerReview && (
+                    <ManagerReviewPane
+                      releaseId={releaseId}
+                      onGenerated={() => void handleManagerGenerated()}
+                    />
+                  )}
+
+                  <div id="artifactViewer">
+                    {artifactError ? (
+                      <p className="log" style={{ color: "var(--danger)", marginTop: 12 }}>
+                        加载失败：{(artifactError as Error).message}
+                      </p>
+                    ) : artifactFetching ? (
+                      <p className="muted" style={{ marginTop: 12 }}>加载中…</p>
+                    ) : artifactResult ? (
+                      <ArtifactViewer kind={activeKind} result={artifactResult} />
+                    ) : null}
+                  </div>
+                </>
               )}
             </>
           )}

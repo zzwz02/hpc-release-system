@@ -261,11 +261,8 @@ function ArticleDetailPane({
 
   return (
     <div className="wiki-reader-grid">
-      {/* Outline sidebar */}
-      <OutlineSidebar outline={outline} />
-
-      {/* Article body */}
-      <div>
+      {/* Article body — wide column (content first) */}
+      <div className="wiki-reader-main">
         <div className="wiki-detail-head">
           <div>
             <h2 className="wiki-title-line">
@@ -320,6 +317,9 @@ function ArticleDetailPane({
           />
         </div>
       </div>
+
+      {/* Outline sidebar — narrow column on the right */}
+      <OutlineSidebar outline={outline} />
     </div>
   );
 }

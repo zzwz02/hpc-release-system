@@ -27,7 +27,13 @@
  *   "2026-05-11T14:00:00"         → "2026-05-11 14:00:00"
  *   "2026-05-11T14:00:00.123456"  → "2026-05-11 14:00:00"
  *   "2026-05-11T14:00:00Z"        → "2026-05-11 14:00:00"  (no +8 applied)
+ *   "2026-5-1 9:3:5"              → "2026-05-01 09:03:05"  (zero-padded)
+ *   "2026-05-11"                  → "2026-05-11"           (date-only)
  *   ""                            → ""
+ *
+ * Display contract (brief §J): every displayed date is yyyy-mm-dd (2-digit
+ * month & day) and every time is hh:mm:ss (2-digit), zero-padded — still with
+ * zero offset.  We normalize then zero-pad each component for a uniform look.
  */
 export function formatServerTime(s: string | null | undefined): string {
   if (!s) return "";
@@ -43,7 +49,17 @@ export function formatServerTime(s: string | null | undefined): string {
   // Strip timezone suffix ("Z", "+08:00", "-05:00", "+0800", etc.)
   t = t.replace(/[Zz]$/, "").replace(/[+-]\d{2}:?\d{2}$/, "").trim();
 
-  return t;
+  // Zero-pad date + time components so the display is uniformly
+  // yyyy-mm-dd / hh:mm:ss.  Non-matching strings are returned as-is.
+  const m = t.match(
+    /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ ](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/,
+  );
+  if (!m) return t;
+  const pad = (n: string) => n.padStart(2, "0");
+  const date = `${m[1]}-${pad(m[2])}-${pad(m[3])}`;
+  if (m[4] === undefined) return date;
+  const time = `${pad(m[4])}:${pad(m[5])}:${pad(m[6] ?? "00")}`;
+  return `${date} ${time}`;
 }
 
 /**

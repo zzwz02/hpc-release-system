@@ -15,6 +15,8 @@
 import React, { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshBar } from "../../components/RefreshBar";
+import { Markdown } from "../../components/Markdown";
+import { formatServerTime } from "../../lib/time";
 import { apiGet, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
@@ -88,6 +90,23 @@ function QaDot({ snap }: { snap: Snapshot }) {
   );
 }
 
+/**
+ * Browse-mode renderer for a free-text field: renders the value as Markdown
+ * (via the sole <Markdown> sink) inside a capped-height, internally-scrolling
+ * box so one long field can't blow up the page.  Empty → muted placeholder.
+ */
+function ReadField({ value, code = false }: { value?: string | null; code?: boolean }) {
+  const v = (value ?? "").trim();
+  if (!v) return <div className="readfield empty">（空）</div>;
+  // Shell commands are shown verbatim as plain text (NOT a Markdown sink).
+  if (code) return <div className="readfield code-block"><pre>{v}</pre></div>;
+  return (
+    <div className="readfield">
+      <Markdown value={value} className="md-view" />
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // App list panel
 // ---------------------------------------------------------------------------
@@ -142,31 +161,44 @@ function AppListPanel({
         {rows.length === 0 ? (
           <p className="muted small" style={{ padding: "14px", textAlign: "center" }}>无数据</p>
         ) : (
-          rows.map(({ app, snap }) => (
-            <div
-              key={app.id}
-              className={`app-row ${selectedAppId === app.id ? "active" : ""}`}
-              onClick={() => onSelectApp(app.id)}
-              data-testid={`app-row-${app.id}`}
-            >
-              <QaDot snap={snap} />
-              <div className="app-meta">
-                <div className="name">
-                  <span className="nm-txt">{displayName(snap)}</span>
-                  {snap.version && <span className="ver-tag">v{snap.version}</span>}
-                </div>
-                <div className="sub">
-                  {snap.type || "—"} · {usersLabel(snap.owners, displayNames)}
+          rows.map(({ app, snap }) => {
+            const nm = displayName(snap);
+            const ver = (snap.version ?? "").trim();
+            // E: only show the small version chip when the name does NOT already
+            // carry that version (avoids "Amber 22 · v22" duplication).
+            const showVer = !!ver && !nm.includes(ver);
+            const rel = isReleaseSnap(snap);
+            const docMissing = docsItems(snap).length;
+            return (
+              <div
+                key={app.id}
+                className={`app-row ${selectedAppId === app.id ? "active" : ""}`}
+                onClick={() => onSelectApp(app.id)}
+                data-testid={`app-row-${app.id}`}
+              >
+                <QaDot snap={snap} />
+                <div className="app-meta">
+                  <div className="name">
+                    <span className="nm-txt">{nm}</span>
+                    {showVer && <span className="ver-tag">v{ver}</span>}
+                  </div>
+                  <div className="sub">
+                    {snap.type || "—"} · {usersLabel(snap.owners, displayNames)}
+                  </div>
+                  {/* D: blocking status at a glance — decision + doc + QA pills */}
+                  <div className="app-status">
+                    <DecisionPill decision={snap.release_decision} />
+                    {rel && (
+                      docMissing > 0
+                        ? <span className="pill warnp" title="文档信息待补充">文档待补 {docMissing}</span>
+                        : <span className="pill ok" title="文档信息齐全">文档 OK</span>
+                    )}
+                    {rel && <QaPill status={snap.qa_status} />}
+                  </div>
                 </div>
               </div>
-              <div className="tail">
-                <DecisionPill decision={snap.release_decision} />
-                {isReleaseSnap(snap) && docsItems(snap).length > 0 && (
-                  <span className="pill warnp">待补 {docsItems(snap).length}</span>
-                )}
-              </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>
@@ -698,17 +730,20 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
             {/* Description with char counter */}
             <label className="docfield desc-field">
               描述（30字内）
-              <div className="textarea-wrap">
-                <textarea
-                  value={form.description}
-                  onChange={(e) => patch("description", e.target.value)}
-                  disabled={!editMode}
-                  data-testid="field-description"
-                />
-                <span className={`desc-counter ${descCount > APP_DESCRIPTION_LIMIT ? "over" : ""}`}>
-                  {descCount}/{APP_DESCRIPTION_LIMIT}
-                </span>
-              </div>
+              {editMode ? (
+                <div className="textarea-wrap">
+                  <textarea
+                    value={form.description}
+                    onChange={(e) => patch("description", e.target.value)}
+                    data-testid="field-description"
+                  />
+                  <span className={`desc-counter ${descCount > APP_DESCRIPTION_LIMIT ? "over" : ""}`}>
+                    {descCount}/{APP_DESCRIPTION_LIMIT}
+                  </span>
+                </div>
+              ) : (
+                <ReadField value={form.description} />
+              )}
             </label>
           </div>
         </details>
@@ -818,21 +853,24 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
                 : <span className="badge warnp">未就绪</span>
             )}
           </summary>
-          <div className="section-body">
+          <div className="section-body docfields-2col">
             {(["intro", "image_usage", "binary_usage", "env_setup", "limitations"] as const).map((key) => {
               const labels: Record<string, string> = {
                 intro: "基本介绍", image_usage: "镜像使用方法", binary_usage: "二进制包使用方法",
                 env_setup: "环境搭建", limitations: "已知限制",
               };
               return (
-                <label key={key} className="docfield">
-                  {labels[key]}
-                  <textarea
-                    value={form[key]}
-                    onChange={(e) => patch(key, e.target.value)}
-                    disabled={!editMode}
-                    data-testid={`field-doc-${key}`}
-                  />
+                <label key={key} className="docfield docfield-split">
+                  <span className="df-label">{labels[key]}</span>
+                  {editMode ? (
+                    <textarea
+                      value={form[key]}
+                      onChange={(e) => patch(key, e.target.value)}
+                      data-testid={`field-doc-${key}`}
+                    />
+                  ) : (
+                    <ReadField value={form[key]} />
+                  )}
                 </label>
               );
             })}
@@ -925,22 +963,34 @@ function TestDocsEditor({ testDocs, editMode, userIsOwner, onChange }: TestDocsE
           </div>
           <div className="tcard-b">
             <label className="full">命令
-              <textarea className="code"
-                value={d.command ?? ""}
-                onChange={(e) => patchDoc(d.id, "command", e.target.value)}
-                disabled={!editMode || !d.owner_added} />
+              {editMode ? (
+                <textarea className="code"
+                  value={d.command ?? ""}
+                  onChange={(e) => patchDoc(d.id, "command", e.target.value)}
+                  disabled={!d.owner_added} />
+              ) : (
+                <ReadField value={d.command} code />
+              )}
             </label>
             <label>测试内容
-              <textarea value={d.content ?? ""} onChange={(e) => patchDoc(d.id, "content", e.target.value)} disabled={!editMode} />
+              {editMode
+                ? <textarea value={d.content ?? ""} onChange={(e) => patchDoc(d.id, "content", e.target.value)} />
+                : <ReadField value={d.content} />}
             </label>
             <label>测试数据集
-              <textarea value={d.dataset ?? ""} onChange={(e) => patchDoc(d.id, "dataset", e.target.value)} disabled={!editMode} />
+              {editMode
+                ? <textarea value={d.dataset ?? ""} onChange={(e) => patchDoc(d.id, "dataset", e.target.value)} />
+                : <ReadField value={d.dataset} />}
             </label>
             <label>结果查看
-              <textarea value={d.result_view ?? ""} onChange={(e) => patchDoc(d.id, "result_view", e.target.value)} disabled={!editMode} />
+              {editMode
+                ? <textarea value={d.result_view ?? ""} onChange={(e) => patchDoc(d.id, "result_view", e.target.value)} />
+                : <ReadField value={d.result_view} />}
             </label>
             <label>通过标准
-              <textarea value={d.pass_criteria ?? ""} onChange={(e) => patchDoc(d.id, "pass_criteria", e.target.value)} disabled={!editMode} />
+              {editMode
+                ? <textarea value={d.pass_criteria ?? ""} onChange={(e) => patchDoc(d.id, "pass_criteria", e.target.value)} />
+                : <ReadField value={d.pass_criteria} />}
             </label>
           </div>
         </div>
@@ -985,7 +1035,7 @@ function ChangeLogTable({ entries, loading }: ChangeLogTableProps) {
         <tbody>
           {entries.map((e, i) => (
             <tr key={i}>
-              <td>{e.ts}</td>
+              <td>{formatServerTime(e.ts)}</td>
               <td>{e.user}</td>
               <td>{e.role}</td>
               <td>{e.message}</td>

@@ -198,6 +198,8 @@ code { background: var(--surface-2); border: 1px solid var(--border); border-rad
 .btn.accent, .btn.active { color: var(--accent); border-color: var(--accent-bd); background: var(--accent-soft); }
 .btn.sm { padding: 5px 10px; font-size: 12px; border-radius: var(--r-sm); }
 .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+/* inline (并排) action buttons inside a table cell — never stack */
+.cell-actions { display: inline-flex; gap: 6px; flex-wrap: nowrap; align-items: center; justify-content: flex-end; }
 
 /* ============================ form controls ============================ */
 .input, .select, select, textarea, input[type="text"], input[type="password"],
@@ -387,8 +389,8 @@ tbody tr:hover td { background: var(--surface-2); }
 
 /* compact list rows — table-like, info-dense, one glance */
 .app-row {
-  display: flex; align-items: center; gap: 9px;
-  padding: 8px 11px;
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 9px 11px;
   border: 0; border-bottom: 1px solid var(--border);
   border-left: 3px solid transparent;
   background: var(--surface); border-radius: 0; margin: 0; box-shadow: none;
@@ -398,10 +400,14 @@ tbody tr:hover td { background: var(--surface-2); }
 .app-row:hover { background: var(--surface-2); }
 .app-row.active { background: var(--accent-soft); border-left-color: var(--accent); }
 .app-row .app-meta { flex: 1; min-width: 0; }
+.app-row > .app-dot { margin-top: 5px; }
 .app-row .name { display: flex; align-items: baseline; gap: 6px; font-weight: 700; font-size: 13px; white-space: nowrap; overflow: hidden; }
 .app-row .name .nm-txt { overflow: hidden; text-overflow: ellipsis; }
 .ver-tag { flex-shrink: 0; font-size: 10.5px; font-weight: 600; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; }
 .app-row .sub { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* D: status pills row — decision + doc + QA so blockers show without opening */
+.app-row .app-status { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
+.app-row .app-status .pill { font-size: 10.5px; padding: 1px 7px; }
 .app-row .tail { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
 .app-row .tail .pill-group { gap: 4px; }
 .app-ico {
@@ -476,6 +482,47 @@ tbody tr:hover td { background: var(--surface-2); }
 .detail-body .docfield, .detail-body .desc-field { display: block; margin-top: 12px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
 .detail-body .form + .docfield { grid-column: 1 / -1; }
 .detail-body .docfield textarea { margin-top: 5px; font-weight: 400; }
+
+/* A: comfortably taller edit fields so owners can write without cramping */
+.detail-body .input, .detail-body .select { padding-top: 8px; padding-bottom: 8px; }
+.detail-body .docfield textarea { min-height: 140px; }
+.detail-body .desc-field textarea { min-height: 64px; }
+.detail-body .tcard-b textarea { min-height: 96px; }
+
+/* B: browse-mode read field — Markdown in a capped, scrolling box */
+.readfield {
+  margin-top: 5px; max-height: 260px; overflow: auto;
+  padding: 9px 12px; font-weight: 400;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r);
+}
+.readfield.empty { color: var(--muted); font-style: italic; font-size: 12.5px; }
+.readfield .md-view { font-size: 13px; }
+.readfield .md-view > :first-child { margin-top: 0; }
+.readfield .md-view > :last-child { margin-bottom: 0; }
+.readfield.code-block { padding: 0; background: transparent; border: 0; max-height: 220px; }
+.readfield.code-block pre {
+  margin: 5px 0 0; background: #0f172a; color: #e2e8f0;
+  padding: 10px 12px; border-radius: var(--r); overflow: auto;
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word;
+}
+
+/* C: 文档字段 & 测试说明 label-left / content-right two-column where it reads well */
+.detail-body .docfields-2col { display: grid; gap: 12px; }
+.detail-body .docfield-split {
+  display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 12px;
+  align-items: start; margin-top: 0;
+}
+.detail-body .docfield-split .df-label { padding-top: 8px; }
+.detail-body .docfield-split textarea { margin-top: 0; }
+.detail-body .docfield-split .readfield { margin-top: 0; }
+.detail-body .tcard-b { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.detail-body .tcard-b label.full { grid-column: 1 / -1; }
+@media (max-width: 860px) {
+  .detail-body .docfield-split { grid-template-columns: 1fr; gap: 5px; }
+  .detail-body .docfield-split .df-label { padding-top: 0; }
+  .detail-body .tcard-b { grid-template-columns: 1fr; }
+}
 .textarea-wrap { position: relative; }
 .desc-counter { position: absolute; right: 8px; bottom: 6px; font-size: 11px; color: var(--muted); background: rgba(255,255,255,.85); padding: 0 4px; border-radius: 4px; }
 .desc-counter.over { color: var(--bad-fg); font-weight: 700; }
@@ -542,7 +589,12 @@ tbody tr:hover td { background: var(--surface-2); }
   display: grid; gap: 12px;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
 }
-.wiki-reader-grid, .wiki-editor-grid, .artifact-reader-grid {
+/* H: reader grids — content WIDE (first), outline NARROW (second) */
+.wiki-reader-grid, .artifact-reader-grid {
+  display: grid; gap: 18px; grid-template-columns: minmax(0,1fr) 240px;
+  align-items: start;
+}
+.wiki-editor-grid {
   display: grid; gap: 16px; grid-template-columns: minmax(0,1fr) 280px;
 }
 .wiki-editor-grid { grid-template-columns: 1fr 1fr; }
@@ -565,7 +617,7 @@ tbody tr:hover td { background: var(--surface-2); }
   background: var(--accent-soft); color: var(--accent); font-size: 20px;
 }
 .artifact-kind-grid {
-  display: grid; gap: 12px;
+  display: grid; gap: 14px;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
 }
 .artifact-kind-card {
@@ -580,6 +632,23 @@ tbody tr:hover td { background: var(--surface-2); }
 .artifact-kind-card .ak-ic { font-size: 22px; }
 .artifact-kind-card .ak-title { font-weight: 700; font-size: 14px; }
 .artifact-kind-card .ak-desc { line-height: 1.5; }
+
+/* artifacts document view (G) */
+.artifact-context-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border);
+}
+.artifact-context-bar .spacer { flex: 1; }
+.artifact-context-title { font-weight: 700; font-size: 15px; }
+.artifact-shell { margin-top: 4px; }
+.artifact-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.artifact-bar .spacer { flex: 1; }
+.artifact-title { font-weight: 700; font-size: 14px; }
+.artifact-reader-main { min-width: 0; }
+textarea.artifact {
+  width: 100%; min-height: 460px; resize: vertical;
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; line-height: 1.55;
+}
 
 /* ============================ banners ============================ */
 .banner, .error-banner {
@@ -667,6 +736,16 @@ tbody tr:hover td { background: var(--surface-2); }
 .md-view a, .wiki-md-view a { color: var(--accent); }
 
 /* ============================ wiki specifics ============================ */
+/* I: list header — give the count + new-article button breathing room */
+.wiki-list-head {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.wiki-list-head .input { flex: 1 1 240px; max-width: 360px; }
+.wiki-list-head .muted { white-space: nowrap; }
+.wiki-list-head .btn { margin-left: auto; }
+.wiki-list-grid { margin-top: 2px; }
+.wiki-reader-main { min-width: 0; }
 .wiki-card { padding: 14px; cursor: pointer; }
 .wiki-card:hover { border-color: var(--accent-bd); box-shadow: var(--shadow); }
 .wiki-card-title { font-weight: 700; font-size: 14px; }

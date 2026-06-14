@@ -51,6 +51,26 @@ describe("formatServerTime", () => {
   it("does not modify a plain date-only string", () => {
     expect(formatServerTime("2026-05-11")).toBe("2026-05-11");
   });
+
+  it("zero-pads un-padded month/day/hour/minute/second components", () => {
+    expect(formatServerTime("2026-5-1 9:3:5")).toBe("2026-05-01 09:03:05");
+  });
+
+  it("zero-pads an un-padded date-only string", () => {
+    expect(formatServerTime("2026-5-1")).toBe("2026-05-01");
+  });
+
+  it("pads a time missing the seconds component to :00", () => {
+    expect(formatServerTime("2026-05-11 14:00")).toBe("2026-05-11 14:00:00");
+  });
+
+  it("keeps an already-padded value unchanged (no +8 offset)", () => {
+    expect(formatServerTime("2026-05-11 06:00:00")).toBe("2026-05-11 06:00:00");
+  });
+
+  it("normalizes + zero-pads an un-padded ISO value without applying offset", () => {
+    expect(formatServerTime("2026-5-1T9:3:5Z")).toBe("2026-05-01 09:03:05");
+  });
 });
 
 describe("formatClientFetchTime", () => {

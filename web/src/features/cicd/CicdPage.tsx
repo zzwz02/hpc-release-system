@@ -23,6 +23,7 @@ import React, { useState, useCallback, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../../api/AuthContext";
 import { RefreshBar } from "../../components/RefreshBar";
+import { formatServerTime } from "../../lib/time";
 import { useUiStore } from "../../store/uiStore";
 import {
   CICD_TASKS_KEY,
@@ -795,7 +796,7 @@ function HistoryDialog({
               <div className="cicd-history-meta">
                 <b>{REQ_TYPE_LABEL[h.request_type] ?? h.request_type}</b>
                 &nbsp;·&nbsp; 提交人：{userLabel(h.submitter, h.submitter_display)}
-                &nbsp;·&nbsp; {(h.reviewed_at || h.submitted_at || "").slice(0, 16)}
+                &nbsp;·&nbsp; {formatServerTime(h.reviewed_at || h.submitted_at || "")}
                 {h.is_self_approved
                   ? <>&nbsp;·&nbsp;<span className="pill accent" style={{ fontSize: 11 }}>RM/Admin 自动过审</span></>
                   : h.reviewer
@@ -868,7 +869,7 @@ function DetailDialog({
           {req.reviewer && (
             <div className="small muted" style={{ marginBottom: 8 }}>
               审批人：{req.reviewer}
-              &nbsp;|&nbsp; 审批时间：{(req.reviewed_at || "").slice(0, 16)}
+              &nbsp;|&nbsp; 审批时间：{formatServerTime(req.reviewed_at || "")}
               {req.review_note && (
                 <>&nbsp;|&nbsp; 备注：<b>{req.review_note}</b></>
               )}
@@ -1302,7 +1303,7 @@ function PendingPane({
                       <td className="cicd-id">{r.task_id ?? "(新建)"}</td>
                       <td>{userLabel(r.submitter, r.submitter_display)}</td>
                       <td className="small muted">
-                        {(r.submitted_at ?? "").slice(0, 16)}
+                        {formatServerTime(r.submitted_at ?? "")}
                       </td>
                       <td style={{ maxWidth: 220, fontSize: 12 }}>
                         {diffSummary(payload, r.request_type)}
@@ -1467,7 +1468,7 @@ function RecentPane({
                       <td className="cicd-id">{r.task_id ?? "(新建)"}</td>
                       <td>{userLabel(r.submitter, r.submitter_display)}</td>
                       <td className="small muted">
-                        {(r.submitted_at ?? "").slice(0, 16)}
+                        {formatServerTime(r.submitted_at ?? "")}
                       </td>
                       <td>
                         <ReqStatusSpan status={r.status} />
@@ -1676,7 +1677,7 @@ function DeliveryPane({
                     </td>
                     <td>{d.task_app_version || "—"}</td>
                     <td>{d.delivered_by || "—"}</td>
-                    <td>{(d.delivered_at ?? "").slice(0, 16)}</td>
+                    <td>{formatServerTime(d.delivered_at ?? "")}</td>
                     <td>
                       {d.jira_id ? (
                         <a
@@ -1707,7 +1708,7 @@ function DeliveryPane({
                     </td>
                     <td>{d.task_app_version || "—"}</td>
                     <td>{d.submitter_display || d.submitter}</td>
-                    <td>{(d.reviewed_at ?? "").slice(0, 16)}</td>
+                    <td>{formatServerTime(d.reviewed_at ?? "")}</td>
                     <td>
                       {d.jira_id ? (
                         <a
