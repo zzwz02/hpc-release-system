@@ -107,8 +107,19 @@ export interface SnapshotMissingItem {
 }
 
 export interface SnapshotTestDoc {
-  name: string;
+  /** Unique ID within the snapshot (from app_info or owner-added). */
+  id: string;
+  /** Relative path of the test script (e.g. "tests/test_foo.sh"). */
+  path: string;
+  command: string;
+  dataset: string;
   content: string;
+  result_view: string;
+  pass_criteria: string;
+  /** True when this entry was added by an Owner (not from app_info). */
+  owner_added?: boolean;
+  /** True when obsolete (app_info no longer contains this path). */
+  obsolete?: boolean;
 }
 
 export type QaStatus =

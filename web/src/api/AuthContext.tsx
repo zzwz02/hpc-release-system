@@ -43,7 +43,7 @@ const AuthContext = createContext<AuthState | null>(null);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   // null = still bootstrapping, undefined = logged out, User = logged in
   const [user, setUser] = useState<User | null | undefined>(null);
-  const [ldapStatus, setLdapStatus] = useState<LdapStatus>({ enabled: false });
+  const [ldapStatus, setLdapStatus] = useState<LdapStatus>({ enabled: false, uri: "" });
 
   const clearUser = useCallback(() => {
     setUser(undefined);

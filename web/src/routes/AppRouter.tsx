@@ -19,17 +19,19 @@ function Placeholder({ label }: { label: string }) {
   );
 }
 
-// Feature imports — Wave 1 implements DashboardPage; others are placeholders.
-// impl-2/impl-3 will replace these as waves progress.
+// Feature imports — replace placeholders as waves progress.
 import { DashboardPage } from "../features/dashboard/DashboardPage";
+import { AppWorkbenchPage } from "../features/appWorkbench/AppWorkbenchPage";
+import { QaPage } from "../features/qa/QaPage";
+import { CicdPage } from "../features/cicd/CicdPage";
 
 const FEATURE_MAP: Record<string, React.ReactNode> = {
   dashboard: <DashboardPage />,
   init:      <Placeholder label="周期管理" />,
-  apps:      <Placeholder label="App 工作台" />,
-  qa:        <Placeholder label="QA" />,
+  apps:      <AppWorkbenchPage />,
+  qa:        <QaPage />,
   artifacts: <Placeholder label="发布文档" />,
-  cicd:      <Placeholder label="CICD 工作台" />,
+  cicd:      <CicdPage />,
   wiki:      <Placeholder label="开发 WIKI" />,
   admin:     <Placeholder label="系统管理" />,
 };

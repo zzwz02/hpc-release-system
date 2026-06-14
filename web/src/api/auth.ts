@@ -1,25 +1,21 @@
 /**
  * Auth API wrappers — mirrors legacy index.html:5112-5130, 5186-5198.
+ *
+ * L2: User and LdapStatus are the canonical types from types/index.ts.
+ * Re-exported here for convenience so callers don't need two imports.
  */
 import { apiGet, apiPost } from "./http";
+import type { User, LdapStatusResponse } from "../types";
 
-export interface User {
-  username: string;
-  display_name: string;
-  role: "RM" | "Owner" | "QA" | "Guest" | "Admin" | "SPD";
-  auth_source?: "local" | "ldap";
-}
-
-export interface LdapStatus {
-  enabled: boolean;
-}
+// Re-export so legacy callers of `import { User } from "./auth"` still work.
+export type { User, LdapStatusResponse as LdapStatus };
 
 /** GET /api/ldap/status — never throws; returns {enabled:false} on failure. */
-export async function fetchLdapStatus(): Promise<LdapStatus> {
+export async function fetchLdapStatus(): Promise<LdapStatusResponse> {
   try {
-    return await apiGet<LdapStatus>("/api/ldap/status");
+    return await apiGet<LdapStatusResponse>("/api/ldap/status");
   } catch {
-    return { enabled: false };
+    return { enabled: false, uri: "" };
   }
 }
 

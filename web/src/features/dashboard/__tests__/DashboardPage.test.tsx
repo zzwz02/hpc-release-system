@@ -34,8 +34,30 @@ vi.mock("../../../api/AuthContext", () => ({
   useAuth: vi.fn(),
 }));
 
+// Mock uiStore: dashboard reads selectedReleaseId + setSelectedReleaseId.
+// Start empty ("") so the seed-if-unset effect fires on first data load.
+vi.mock("../../../store/uiStore", () => {
+  let _releaseId = "";
+  const setSelectedReleaseId = (id: string) => { _releaseId = id; };
+  const useUiStore = (selector?: (s: { selectedReleaseId: string; setSelectedReleaseId: typeof setSelectedReleaseId }) => unknown) => {
+    const state = { selectedReleaseId: _releaseId, setSelectedReleaseId };
+    return selector ? selector(state) : state;
+  };
+  useUiStore.getState = () => ({ selectedReleaseId: _releaseId, setSelectedReleaseId });
+  return {
+    useUiStore,
+    __setReleaseId: (id: string) => { _releaseId = id; },
+    __resetReleaseId: () => { _releaseId = ""; },
+  };
+});
+
 import { apiGet } from "../../../api/http";
 import { useAuth } from "../../../api/AuthContext";
+
+// Top-level import to access the __resetReleaseId helper from the mock
+const uiStoreMod = await import("../../../store/uiStore") as unknown as {
+  __resetReleaseId: () => void;
+};
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -189,6 +211,8 @@ function renderDashboard(queryClient: QueryClient) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Reset shared release selector so each test starts from unset state
+  uiStoreMod.__resetReleaseId();
   // Default: logged in as RM
   (useAuth as ReturnType<typeof vi.fn>).mockReturnValue({
     user: { username: "alice", role: "RM", display_name: "Alice" },

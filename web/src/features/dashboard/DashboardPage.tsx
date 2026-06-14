@@ -20,6 +20,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshBar } from "../../components/RefreshBar";
 import { apiGet, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
+import { useUiStore } from "../../store/uiStore";
 import { isRM, isOwner } from "../../lib/roles";
 import { displayName } from "../../lib/identity";
 import { formatServerTime } from "../../lib/time";
@@ -632,10 +633,10 @@ export function DashboardPage() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
 
-  // The selected release ID — initially we fetch the default state,
-  // which returns the latest release.  After the first load we remember
-  // the release ID and can switch.
-  const [selectedReleaseId, setSelectedReleaseId] = useState<string | undefined>(undefined);
+  // Shared release selector — kept in uiStore so all tabs stay in sync.
+  // "" means "not yet seeded"; the seed effect below fills it on first load.
+  const selectedReleaseId = useUiStore((s) => s.selectedReleaseId) || undefined;
+  const setSelectedReleaseId = useUiStore((s) => s.setSelectedReleaseId);
 
   const queryKey = STATE_QUERY_KEY(selectedReleaseId);
 
@@ -655,15 +656,15 @@ export function DashboardPage() {
   const userIsOwner = isOwner(user ?? undefined);
   const username = user?.username ?? "";
 
-  // After the initial fetch (no specific release ID), seed the cache for the
-  // release-specific key and switch to it — this avoids a second network fetch.
+  // After the initial fetch (no specific release ID), seed the shared store and
+  // the release-specific query-cache key — this avoids a second network fetch.
   React.useEffect(() => {
     if (data?.release?.id && !selectedReleaseId) {
       // Pre-populate the more specific key so switching doesn't re-fetch
       queryClient.setQueryData(STATE_QUERY_KEY(data.release.id), data);
       setSelectedReleaseId(data.release.id);
     }
-  }, [data, data?.release?.id, selectedReleaseId, queryClient]);
+  }, [data, data?.release?.id, selectedReleaseId, setSelectedReleaseId, queryClient]);
 
   function handleReleaseChange(id: string) {
     setSelectedReleaseId(id);

@@ -60,11 +60,14 @@ describe("fetchLdapStatus", () => {
   it("returns {enabled:false} on any error — must not block login", async () => {
     mockApiGet.mockRejectedValue(new Error("connection refused"));
     const status = await fetchLdapStatus();
-    expect(status).toEqual({ enabled: false });
+    expect(status.enabled).toBe(false);
+    expect(status.uri).toBe("");
   });
 
   it("returns {enabled:false} on network failure without throwing", async () => {
     mockApiGet.mockRejectedValue(new TypeError("fetch failed"));
-    await expect(fetchLdapStatus()).resolves.toEqual({ enabled: false });
+    const status = await fetchLdapStatus();
+    expect(status.enabled).toBe(false);
+    expect(status.uri).toBe("");
   });
 });

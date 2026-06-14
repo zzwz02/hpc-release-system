@@ -35,6 +35,7 @@
  *   wikiEditingId                   :1257
  *   cicdOverviewFilter              :3889
  *   cicdRecentDays                  :3890
+ *   selectedReleaseId               :L3 (cross-tab shared release selector)
  */
 
 import { create } from "zustand";
@@ -84,6 +85,16 @@ export interface WikiUiState {
 // ---------------------------------------------------------------------------
 
 export interface UiStore {
+  // ── Shared release selector (L3) ───────────────────────────────────────
+  /**
+   * The release_id currently selected in the header release selector.
+   * Shared across ALL tabs (dashboard, apps, qa, artifacts, init, cicd).
+   * "" means "not yet seeded" — the first tab to load /api/state sets it.
+   * Mirrors legacy index.html currentReleaseId() / state.release?.id logic.
+   */
+  selectedReleaseId: string;
+  setSelectedReleaseId: (id: string) => void;
+
   // ── App workbench ──────────────────────────────────────────────────────
   /** Currently selected app_id (index.html:1215 selectedApp) */
   selectedApp: string;
@@ -176,6 +187,10 @@ export interface UiStore {
 // ---------------------------------------------------------------------------
 
 export const useUiStore = create<UiStore>((set) => ({
+  // ── Shared release selector ────────────────────────────────────────────
+  selectedReleaseId: "",
+  setSelectedReleaseId: (id) => set({ selectedReleaseId: id }),
+
   // ── App workbench ──────────────────────────────────────────────────────
   selectedApp: "",
   setSelectedApp: (id) => set({ selectedApp: id }),
