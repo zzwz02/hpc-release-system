@@ -1,6 +1,8 @@
 __pycache__/
 *.py[cod]
 *.db
+*.db.bak
+*.bak
 *.sqlite
 *.sqlite3
 admin_password.local

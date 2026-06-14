@@ -3,7 +3,7 @@
  *
  * All derived from legacy index.html — no React, no side-effects.
  */
-import type { Snapshot, SnapshotMissingItem, App, ReleaseDetail } from "../../types";
+import type { Snapshot, SnapshotMissingItem, App, ReleaseDetail, SnapshotTestDoc } from "../../types";
 import {
   releaseDecisionOrder,
   qaStatusLabels,
@@ -188,6 +188,85 @@ export { APP_DESCRIPTION_LIMIT };
 
 export function appDescriptionCount(text: string | null | undefined): number {
   return (text ?? "").trim().length;
+}
+
+// ---------------------------------------------------------------------------
+// F2 — copy editable fields from another release's snapshot
+//
+// Copies the owner-editable doc/test CONTENT fields an owner would re-enter.
+// Deliberately does NOT copy identity/version/owner-confirmed/QA fields
+// (official_name, owners, git_url/branch, release_decision, version, qa_*),
+// which are release-specific or come from app_info.
+// ---------------------------------------------------------------------------
+
+export interface CopiedSnapshotFields {
+  type: string;
+  official_url: string;
+  description: string;
+  doc_target: string;
+  intro: string;
+  image_usage: string;
+  binary_usage: string;
+  env_setup: string;
+  limitations: string;
+  community_release: string;
+  community_python: string;
+  community_framework: string;
+  sanity_arm: boolean;
+  sanity_ubuntu: boolean;
+}
+
+export function copiedScalarFields(s: Snapshot): CopiedSnapshotFields {
+  return {
+    type: s.type ?? "",
+    official_url: s.official_url ?? "",
+    description: s.description ?? "",
+    doc_target: s.doc_target ?? "manual",
+    intro: s.doc?.intro ?? "",
+    image_usage: s.doc?.image_usage ?? "",
+    binary_usage: s.doc?.binary_usage ?? "",
+    env_setup: s.doc?.env_setup ?? "",
+    limitations: s.doc?.limitations ?? "",
+    community_release: s.community?.release_status ?? "",
+    community_python: s.community?.python_version ?? "",
+    community_framework: s.community?.framework_version ?? "",
+    sanity_arm: s.sanity?.arm_kylin ?? false,
+    sanity_ubuntu: s.sanity?.ubuntu ?? false,
+  };
+}
+
+/**
+ * Merge a source release's test_docs content into the current form's test_docs.
+ *
+ * Matches by `path`: for each current entry that exists in the source, copy the
+ * text fields (and `command` only for owner-added rows, since auto rows keep the
+ * app_info command). Source owner-added rows whose path is absent are appended.
+ * Current rows with no source match are left untouched.
+ */
+export function mergeCopiedTestDocs(
+  current: SnapshotTestDoc[],
+  source: SnapshotTestDoc[],
+): SnapshotTestDoc[] {
+  const sourceByPath = new Map(source.map((d) => [d.path, d]));
+  const result: SnapshotTestDoc[] = current.map((d) => {
+    const src = sourceByPath.get(d.path);
+    if (!src) return { ...d };
+    return {
+      ...d,
+      content: src.content ?? d.content,
+      dataset: src.dataset ?? d.dataset,
+      result_view: src.result_view ?? d.result_view,
+      pass_criteria: src.pass_criteria ?? d.pass_criteria,
+      ...(d.owner_added ? { command: src.command ?? d.command } : {}),
+    };
+  });
+  const currentPaths = new Set(current.map((d) => d.path));
+  source
+    .filter((d) => d.owner_added && !currentPaths.has(d.path))
+    .forEach((d) => {
+      result.push({ ...d, id: `copied_${d.path}` });
+    });
+  return result;
 }
 
 // ---------------------------------------------------------------------------

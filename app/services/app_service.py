@@ -14,6 +14,7 @@ import sqlite3
 
 import release_system.core as core
 from app.api.errors import AuthzError
+from app.domain import decision_sync as decision_sync_domain
 from app.repositories.audit_repo import app_audit_log as repo_app_audit_log
 from app.services.authz import (
     require_app_audit_access as authz_require_app_audit_access,
@@ -446,10 +447,147 @@ def update_snapshot(
         if body.get("sync_decision") and snap_now.get("release_decision") != updated.get(
             "release_decision"
         ):
-            response["decision_sync"] = core.sync_decision_to_later_releases(
+            # R3: use the new app-layer gating rule (NOT core's). core stays frozen.
+            response["decision_sync"] = sync_decision_to_later_releases(
                 conn, rid, aid, updated.get("release_decision"), user=actor, role=role
             )
     return response
+
+
+# ---------------------------------------------------------------------------
+# Decision sync to later releases (R3 gating rule + dry-run preview)
+# ---------------------------------------------------------------------------
+
+def sync_decision_to_later_releases(
+    conn: sqlite3.Connection,
+    from_release_id: str,
+    app_id: str,
+    decision: str,
+    *,
+    user: str = "system",
+    role: str = "system",
+) -> dict:
+    """Apply a release_decision to every later (by created_at) release.
+
+    R3 reimplementation of ``core.sync_decision_to_later_releases`` with the
+    changed gating rule (see ``app.domain.decision_sync``):
+      - locked release → skipped (reason "已最终锁定")
+      - app absent → skipped (reason "本 release 无此 app")
+      - otherwise apply ``resolve_synced_decision(decision, phase)``: an upgrade
+        to ``release`` on a release past app-freeze OR doc-deadline becomes
+        ``cicd_only`` rather than being skipped.
+
+    Response shape mirrors core ({"applied": [...], "skipped": [...]}) but each
+    applied entry is extended with its ``resulting_decision``.
+    """
+    decision = core.normalize_release_decision(decision)
+    result: dict[str, list] = {"applied": [], "skipped": []}
+    releases = core.list_releases(conn)
+    idx = next((i for i, r in enumerate(releases) if r["id"] == from_release_id), None)
+    if idx is None:
+        return result
+    with core.transaction(conn):
+        for r in releases[idx + 1:]:
+            rid = r["id"]
+            if r.get("released_locked"):
+                result["skipped"].append(
+                    {"release_id": rid, "release_name": r["name"], "reason": "已最终锁定"}
+                )
+                continue
+            release = core.get_release(conn, rid)
+            snapshot = release["snapshots"].get(app_id)
+            if snapshot is None:
+                result["skipped"].append(
+                    {"release_id": rid, "release_name": r["name"], "reason": "本 release 无此 app"}
+                )
+                continue
+            phase = core.current_phase(release)
+            resulting = decision_sync_domain.resolve_synced_decision(decision, phase)
+            if snapshot.get("release_decision") != resulting:
+                snapshot["release_decision"] = resulting
+                snapshot["missing_items"] = core.missing_items_for(
+                    core.get_app(conn, app_id), snapshot
+                )
+                core.save_snapshot(conn, rid, app_id, snapshot)
+            result["applied"].append(
+                {
+                    "release_id": rid,
+                    "release_name": r["name"],
+                    "resulting_decision": resulting,
+                }
+            )
+        if result["applied"]:
+            core.audit(
+                conn,
+                f"同步 release 决策（{decision}）到 {len(result['applied'])} 个后续 release",
+                user=user,
+                role=role,
+                app_id=app_id,
+                release_id=from_release_id,
+                event="sync_decision",
+            )
+    return result
+
+
+def preview_decision_sync(
+    conn: sqlite3.Connection,
+    *,
+    release_id: str,
+    app_id: str,
+    decision: str,
+) -> dict:
+    """Dry-run of ``sync_decision_to_later_releases`` — NO writes.
+
+    Returns ``{"decision": <normalized>, "releases": [row, ...]}`` where each row
+    is one later release: ``{release_id, release_name, phase_label,
+    resulting_decision, skipped, reason?}``. ``resulting_decision`` is ``None``
+    for skipped rows. Drives the owner-choice dialog table before applying.
+    """
+    decision = core.normalize_release_decision(decision)
+    releases = core.list_releases(conn)
+    idx = next((i for i, r in enumerate(releases) if r["id"] == release_id), None)
+    rows: list[dict] = []
+    if idx is None:
+        return {"decision": decision, "releases": rows}
+    for r in releases[idx + 1:]:
+        rid = r["id"]
+        if r.get("released_locked"):
+            rows.append(
+                {
+                    "release_id": rid,
+                    "release_name": r["name"],
+                    "phase_label": decision_sync_domain.phase_label("released_locked"),
+                    "resulting_decision": None,
+                    "skipped": True,
+                    "reason": "已最终锁定",
+                }
+            )
+            continue
+        release = core.get_release(conn, rid)
+        phase = core.current_phase(release)
+        if app_id not in release.get("snapshots", {}):
+            rows.append(
+                {
+                    "release_id": rid,
+                    "release_name": r["name"],
+                    "phase_label": decision_sync_domain.phase_label(phase),
+                    "resulting_decision": None,
+                    "skipped": True,
+                    "reason": "本 release 无此 app",
+                }
+            )
+            continue
+        resulting = decision_sync_domain.resolve_synced_decision(decision, phase)
+        rows.append(
+            {
+                "release_id": rid,
+                "release_name": r["name"],
+                "phase_label": decision_sync_domain.phase_label(phase),
+                "resulting_decision": resulting,
+                "skipped": False,
+            }
+        )
+    return {"decision": decision, "releases": rows}
 
 
 # ---------------------------------------------------------------------------

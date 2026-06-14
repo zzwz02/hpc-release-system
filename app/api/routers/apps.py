@@ -109,6 +109,37 @@ def api_apps_update(
 
 
 # ---------------------------------------------------------------------------
+# POST /api/apps/decision-sync/preview
+# ---------------------------------------------------------------------------
+
+@router.post("/api/apps/decision-sync/preview")
+def api_apps_decision_sync_preview(
+    body: dict,
+    user: dict = Depends(require_login),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    """Dry-run the decision-sync gating rule for the owner-choice dialog.
+
+    Body: {release_id, app_id, decision}. Returns
+    {decision, releases:[{release_id, release_name, phase_label,
+    resulting_decision, skipped, reason?}]}. No writes.
+
+    Auth mirrors /api/apps/update: RM, or an Owner of the app in this release.
+    """
+    release = core.get_release(conn, body["release_id"])
+    snap = release["snapshots"].get(body["app_id"], {})
+    from app.services.authz import require_owner_or_rm_with_owners
+
+    require_owner_or_rm_with_owners(snap.get("owners"), user["username"], user["role"])
+    return app_service.preview_decision_sync(
+        conn,
+        release_id=body["release_id"],
+        app_id=body["app_id"],
+        decision=body["decision"],
+    )
+
+
+# ---------------------------------------------------------------------------
 # POST /api/app-info
 # ---------------------------------------------------------------------------
 

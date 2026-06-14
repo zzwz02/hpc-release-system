@@ -24,8 +24,10 @@ import {
   orderChips,
   appDescriptionCount,
   filterAppRows,
+  copiedScalarFields,
+  mergeCopiedTestDocs,
 } from "../helpers";
-import type { SnapshotMissingItem, App } from "../../../types";
+import type { SnapshotMissingItem, App, SnapshotTestDoc } from "../../../types";
 import type { ReleaseDetail } from "../../../types";
 
 // ---------------------------------------------------------------------------
@@ -472,5 +474,80 @@ describe("filterAppRows", () => {
     const result = filterAppRows(rows, "carol", false, user, { alice: "Carol Chen" });
     expect(result).toHaveLength(1);
     expect(result[0].snap.official_name).toBe("AlphaApp");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F2 — copiedScalarFields + mergeCopiedTestDocs
+// ---------------------------------------------------------------------------
+
+describe("copiedScalarFields", () => {
+  it("copies editable doc/community/sanity content fields", () => {
+    const src = makeSnap({
+      type: "ai",
+      official_url: "https://x",
+      description: "desc",
+      doc_target: "ai4sci",
+      doc: { intro: "i", image_usage: "im", binary_usage: "bn", env_setup: "es", limitations: "lm" },
+      community: { release_status: "rs", python_version: "py", framework_version: "fw" },
+      sanity: { arm_kylin: true, ubuntu: true },
+    });
+    const out = copiedScalarFields(src);
+    expect(out).toEqual({
+      type: "ai",
+      official_url: "https://x",
+      description: "desc",
+      doc_target: "ai4sci",
+      intro: "i",
+      image_usage: "im",
+      binary_usage: "bn",
+      env_setup: "es",
+      limitations: "lm",
+      community_release: "rs",
+      community_python: "py",
+      community_framework: "fw",
+      sanity_arm: true,
+      sanity_ubuntu: true,
+    });
+  });
+});
+
+describe("mergeCopiedTestDocs", () => {
+  const doc = (over: Partial<SnapshotTestDoc>): SnapshotTestDoc => ({
+    id: "x", path: "p", command: "", dataset: "", content: "",
+    result_view: "", pass_criteria: "", ...over,
+  });
+
+  it("copies text fields onto matching paths but keeps auto command", () => {
+    const current = [doc({ id: "c1", path: "t/a.sh", command: "AUTO" })];
+    const source = [doc({ id: "s1", path: "t/a.sh", command: "SRC", content: "hi", dataset: "ds" })];
+    const out = mergeCopiedTestDocs(current, source);
+    expect(out).toHaveLength(1);
+    expect(out[0].id).toBe("c1");        // keeps current id
+    expect(out[0].command).toBe("AUTO"); // auto row keeps its command
+    expect(out[0].content).toBe("hi");
+    expect(out[0].dataset).toBe("ds");
+  });
+
+  it("copies command for owner-added matching rows", () => {
+    const current = [doc({ id: "c1", path: "owner.1", owner_added: true, command: "OLD" })];
+    const source = [doc({ id: "s1", path: "owner.1", owner_added: true, command: "NEW" })];
+    const out = mergeCopiedTestDocs(current, source);
+    expect(out[0].command).toBe("NEW");
+  });
+
+  it("appends source owner-added rows whose path is absent", () => {
+    const current = [doc({ id: "c1", path: "t/a.sh" })];
+    const source = [doc({ id: "s1", path: "owner.extra", owner_added: true, content: "extra" })];
+    const out = mergeCopiedTestDocs(current, source);
+    expect(out).toHaveLength(2);
+    expect(out[1].path).toBe("owner.extra");
+    expect(out[1].content).toBe("extra");
+  });
+
+  it("leaves current rows with no source match untouched", () => {
+    const current = [doc({ id: "c1", path: "t/a.sh", content: "keep" })];
+    const out = mergeCopiedTestDocs(current, []);
+    expect(out[0].content).toBe("keep");
   });
 });

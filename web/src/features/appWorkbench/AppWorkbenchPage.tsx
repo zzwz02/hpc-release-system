@@ -48,7 +48,27 @@ import {
   usersLabel,
   APP_DESCRIPTION_LIMIT,
   appDescriptionCount,
+  copiedScalarFields,
+  mergeCopiedTestDocs,
 } from "./helpers";
+
+// ---------------------------------------------------------------------------
+// F1 — decision-sync preview types
+// ---------------------------------------------------------------------------
+
+interface DecisionSyncPreviewRow {
+  release_id: string;
+  release_name: string;
+  phase_label: string;
+  resulting_decision: string | null;
+  skipped: boolean;
+  reason?: string;
+}
+
+interface DecisionSyncPreview {
+  decision: string;
+  releases: DecisionSyncPreviewRow[];
+}
 
 // ---------------------------------------------------------------------------
 // Query key + fetcher
@@ -353,6 +373,36 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [auditEntries, setAuditEntries] = useState<AppAuditEntry[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
+  // F1: pending decision-sync owner-choice dialog (null = closed)
+  const [syncDialog, setSyncDialog] = useState<{
+    preview: DecisionSyncPreview;
+    newDecision: string;
+    confirmOwner: boolean;
+    snapshotUpdate: Record<string, unknown>;
+  } | null>(null);
+  // F2: copy-from-version picker (null = closed)
+  const [showCopyDialog, setShowCopyDialog] = useState(false);
+
+  // F3: keep the shared store in sync so the page-level app-switch guard and
+  // the TabNav tab-switch guard know whether the detail form is dirty.
+  const setAppDetailDirty = useUiStore((s) => s.setAppDetailDirty);
+  React.useEffect(() => {
+    setAppDetailDirty(dirty);
+  }, [dirty, setAppDetailDirty]);
+  // Reset the shared dirty flag when the panel unmounts (e.g. leaving the tab).
+  React.useEffect(() => () => setAppDetailDirty(false), [setAppDetailDirty]);
+
+  // F3: native browser "Leave site?" prompt on refresh/close while dirty.
+  React.useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+      return "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [dirty]);
 
   // Sync form when app selection changes
   React.useEffect(() => {
@@ -363,6 +413,8 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       setSaveErr("");
       setPendingFile(null);
       setAuditEntries(null);
+      setSyncDialog(null);
+      setShowCopyDialog(false);
     }
   }, [app?.id, snap?.app_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -427,6 +479,37 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     }
   }
 
+  function buildSnapshotUpdate(confirmOwner: boolean): Record<string, unknown> {
+    const snapshotUpdate: Record<string, unknown> = {
+      release_decision: form.release_decision,
+      official_name: form.official_name,
+      type: form.type,
+      official_url: form.official_url,
+      description: form.description,
+      doc_target: form.doc_target,
+      owners: form.owners.split(/[,，、;；/]+/).map((x) => x.trim()).filter(Boolean),
+      doc: {
+        intro: form.intro,
+        image_usage: form.image_usage,
+        binary_usage: form.binary_usage,
+        env_setup: form.env_setup,
+        limitations: form.limitations,
+      },
+      community: {
+        release_status: form.community_release,
+        python_version: form.community_python,
+        framework_version: form.community_framework,
+      },
+      sanity: {
+        arm_kylin: form.sanity_arm,
+        ubuntu: form.sanity_ubuntu,
+      },
+      test_docs: form.test_docs,
+    };
+    if (confirmOwner) snapshotUpdate["owner_confirmed"] = true;
+    return snapshotUpdate;
+  }
+
   async function handleSave(confirmOwner: boolean) {
     if (!app || !snap || !release) return;
     const descCount = appDescriptionCount(form.description);
@@ -438,50 +521,45 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       alert("Owner 修改必须通过「保存并提交 Owner 确认」提交。");
       return;
     }
+    const snapshotUpdate = buildSnapshotUpdate(confirmOwner);
+    const newDecision = form.release_decision;
+
+    // F1: when the release_decision changed AND there are later unlocked
+    // releases containing this app, show the owner-choice dialog (image.png)
+    // instead of saving straight away. The dialog decides sync_decision.
+    if (newDecision !== snap.release_decision) {
+      const idx = releases.findIndex((r) => r.id === release.id);
+      const hasLater = idx >= 0 && idx < releases.length - 1;
+      if (hasLater) {
+        try {
+          const preview = await apiPost<DecisionSyncPreview>("/api/apps/decision-sync/preview", {
+            release_id: release.id,
+            app_id: app.id,
+            decision: newDecision,
+          });
+          const applicable = (preview.releases ?? []).filter((r) => !r.skipped);
+          if (applicable.length > 0) {
+            setSyncDialog({ preview, newDecision, confirmOwner, snapshotUpdate });
+            return; // wait for the user's choice (取消 / 仅本 release / 同步到后续)
+          }
+        } catch {
+          // Preview failed → fall through to a plain save (no sync).
+        }
+      }
+    }
+
+    await doSave(confirmOwner, snapshotUpdate, false);
+  }
+
+  async function doSave(
+    confirmOwner: boolean,
+    snapshotUpdate: Record<string, unknown>,
+    syncDecision: boolean,
+  ) {
+    if (!app || !snap || !release) return;
     setSaving(true);
     setSaveErr("");
     try {
-      const snapshotUpdate: Record<string, unknown> = {
-        release_decision: form.release_decision,
-        official_name: form.official_name,
-        type: form.type,
-        official_url: form.official_url,
-        description: form.description,
-        doc_target: form.doc_target,
-        owners: form.owners.split(/[,，、;；/]+/).map((x) => x.trim()).filter(Boolean),
-        doc: {
-          intro: form.intro,
-          image_usage: form.image_usage,
-          binary_usage: form.binary_usage,
-          env_setup: form.env_setup,
-          limitations: form.limitations,
-        },
-        community: {
-          release_status: form.community_release,
-          python_version: form.community_python,
-          framework_version: form.community_framework,
-        },
-        sanity: {
-          arm_kylin: form.sanity_arm,
-          ubuntu: form.sanity_ubuntu,
-        },
-        test_docs: form.test_docs,
-      };
-      if (confirmOwner) snapshotUpdate["owner_confirmed"] = true;
-
-      // Decision sync: if decision changed, ask whether to propagate to later releases
-      const currentDecision = snap.release_decision;
-      let syncDecision = false;
-      if (snapshotUpdate["release_decision"] !== currentDecision) {
-        const idx = releases.findIndex((r) => r.id === release.id);
-        const later = idx >= 0 ? releases.slice(idx + 1) : [];
-        if (later.length > 0) {
-          syncDecision = window.confirm(
-            `是否把 release 决策「${snapshotUpdate["release_decision"] as string}」同步到 ${later.length} 个后续 release？\n\n点「确定」同步，「取消」仅更改本 release。`,
-          );
-        }
-      }
-
       const result = await apiPost<{ snapshot?: Snapshot; missing_items?: unknown[] }>("/api/apps/update", {
         release_id: release.id,
         app_id: app.id,
@@ -490,6 +568,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
         sync_decision: syncDecision,
       });
 
+      setSyncDialog(null);
       setDirty(false);
       setEditMode(false);
       onSaved();
@@ -509,6 +588,33 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       setSaveErr(e instanceof Error ? e.message : "保存失败");
     } finally {
       setSaving(false);
+    }
+  }
+
+  // F2: copy this app's editable content fields from another release.
+  async function handleCopyFromVersion(sourceReleaseId: string) {
+    if (!app) return;
+    setShowCopyDialog(false);
+    if (dirty && !window.confirm("当前表单已有未保存修改，从其他版本复制会覆盖这些内容。确认继续？")) {
+      return;
+    }
+    try {
+      const state = await fetchState(sourceReleaseId);
+      const srcSnap = state.release?.snapshots?.[app.id] ?? null;
+      const srcName = state.release?.name ?? sourceReleaseId;
+      if (!srcSnap) {
+        alert(`版本「${srcName}」中没有此 app，无法复制。`);
+        return;
+      }
+      setForm((f) => ({
+        ...f,
+        ...copiedScalarFields(srcSnap),
+        test_docs: mergeCopiedTestDocs(f.test_docs, srcSnap.test_docs ?? []),
+      }));
+      setDirty(true);
+      alert(`已从版本「${srcName}」复制可编辑信息（文档/测试/社区/Sanity）。请检查后保存。`);
+    } catch (e) {
+      alert(`从其他版本复制失败：\n\n${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -781,6 +887,14 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
                   上传 app_info
                 </button>
                 <button className="btn sm" onClick={() => void handleFetchAppInfo()}>从 Gerrit 拉取</button>
+                <button
+                  className="btn sm"
+                  onClick={() => setShowCopyDialog(true)}
+                  data-testid="copy-from-version-btn"
+                  title="从其他 release 复制本 app 的文档/测试等可编辑信息"
+                >
+                  从其他版本复制
+                </button>
               </div>
             )}
             {(snap.app_info_diffs ?? []).length > 0 && (
@@ -926,6 +1040,163 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
             </button>
           </>
         )}
+      </div>
+
+      {/* F1 — decision-sync owner-choice dialog */}
+      {syncDialog && (
+        <DecisionSyncDialog
+          preview={syncDialog.preview}
+          newDecision={syncDialog.newDecision}
+          saving={saving}
+          onCancel={() => setSyncDialog(null)}
+          onLocalOnly={() => void doSave(syncDialog.confirmOwner, syncDialog.snapshotUpdate, false)}
+          onSyncAll={() => void doSave(syncDialog.confirmOwner, syncDialog.snapshotUpdate, true)}
+        />
+      )}
+
+      {/* F2 — copy-from-version picker */}
+      {showCopyDialog && release && (
+        <CopyFromVersionDialog
+          releases={releases}
+          currentReleaseId={release.id}
+          onClose={() => setShowCopyDialog(false)}
+          onPick={(rid) => void handleCopyFromVersion(rid)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// F1 — DecisionSyncDialog (the image.png owner-choice dialog)
+// ---------------------------------------------------------------------------
+
+interface DecisionSyncDialogProps {
+  preview: DecisionSyncPreview;
+  newDecision: string;
+  saving: boolean;
+  onCancel: () => void;
+  onLocalOnly: () => void;
+  onSyncAll: () => void;
+}
+
+function DecisionSyncDialog({
+  preview, newDecision, saving, onCancel, onLocalOnly, onSyncAll,
+}: DecisionSyncDialogProps) {
+  const rows = preview.releases ?? [];
+  const applicable = rows.filter((r) => !r.skipped);
+  return (
+    <div className="dialog-backdrop" data-testid="decision-sync-dialog">
+      <div className="dialog-box" style={{ minWidth: 560, maxWidth: 720 }}>
+        <div className="dialog-head"><h3>同步 release 决策到后续 release?</h3></div>
+        <div className="dialog-body">
+          <p className="muted">
+            你把 release 决策改为「{newDecision}」。是否把该决策同步到下列 {applicable.length} 个后续 release?
+          </p>
+          <div className="table">
+            <table>
+              <thead>
+                <tr><th>RELEASE</th><th>阶段</th><th>RELEASE 决策</th></tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => {
+                  const gated = !r.skipped && r.resulting_decision !== newDecision;
+                  return (
+                    <tr
+                      key={r.release_id}
+                      className={r.skipped ? "muted" : ""}
+                      data-testid={`sync-row-${r.release_id}`}
+                      style={r.skipped ? { opacity: 0.55 } : undefined}
+                    >
+                      <td>{r.release_name}</td>
+                      <td>{r.phase_label}</td>
+                      <td>
+                        {r.skipped ? (
+                          <span className="muted small">跳过：{r.reason}</span>
+                        ) : gated ? (
+                          <span className="pill warnp" title="该 release 处于冻结期，升级为 release 会扩大 QA 范围，已降级为 cicd_only">
+                            调整为 {r.resulting_decision}（冻结期降级）
+                          </span>
+                        ) : (
+                          <span>调整为 {r.resulting_decision}</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="dialog-actions">
+          <button className="btn" onClick={onCancel} disabled={saving} data-testid="sync-cancel">取消</button>
+          <button className="btn" onClick={onLocalOnly} disabled={saving} data-testid="sync-local-only">
+            不同步，仅本 release
+          </button>
+          <button className="btn primary" onClick={onSyncAll} disabled={saving} data-testid="sync-all">
+            同步到后续 release
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// F2 — CopyFromVersionDialog
+// ---------------------------------------------------------------------------
+
+interface CopyFromVersionDialogProps {
+  releases: ReleaseSummary[];
+  currentReleaseId: string;
+  onClose: () => void;
+  onPick: (releaseId: string) => void;
+}
+
+function CopyFromVersionDialog({
+  releases, currentReleaseId, onClose, onPick,
+}: CopyFromVersionDialogProps) {
+  const others = releases.filter((r) => r.id !== currentReleaseId);
+  const [selected, setSelected] = useState(others[0]?.id ?? "");
+  return (
+    <div className="dialog-backdrop" data-testid="copy-from-version-dialog">
+      <div className="dialog-box">
+        <div className="dialog-head"><h3>从其他版本复制</h3></div>
+        <div className="dialog-body">
+          {others.length === 0 ? (
+            <p className="muted">没有其他 release 可供复制。</p>
+          ) : (
+            <div className="form">
+              <p className="muted small">
+                选择一个 release，复制其中本 app 的文档 / 测试说明 / 社区 / Sanity 等可编辑信息到当前表单。
+                不会复制 Owner / Gerrit / 版本 / release 决策 / QA 等信息。
+              </p>
+              <label>源 release
+                <select
+                  className="select"
+                  value={selected}
+                  onChange={(e) => setSelected(e.target.value)}
+                  data-testid="copy-source-select"
+                >
+                  {others.map((r) => (
+                    <option key={r.id} value={r.id}>{r.name}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          )}
+        </div>
+        <div className="dialog-actions">
+          <button className="btn" onClick={onClose}>取消</button>
+          <button
+            className="btn primary"
+            disabled={!selected}
+            onClick={() => selected && onPick(selected)}
+            data-testid="copy-confirm"
+          >
+            复制
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -1113,7 +1384,7 @@ export function AppWorkbenchPage() {
   function handleSelectApp(id: string) {
     if (selectedApp === id) return;
     if (appDetailDirty && selectedApp && selectedApp !== id) {
-      if (!window.confirm("当前 App 详情有未保存修改或处于编辑状态，切换 App 会丢失这些修改。确认切换？")) return;
+      if (!window.confirm("有未保存的修改，确认放弃并切换 app?")) return;
     }
     setSelectedApp(id);
   }

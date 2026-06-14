@@ -9,9 +9,10 @@
  * Mirrors legacy cicdBadge logic (index.html:3940).
  * Badge clears when CicdPage mounts (markCicdVisited + invalidateQueries).
  */
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "../api/AuthContext";
+import { useUiStore } from "../store/uiStore";
 import { ROUTES, type Role } from "./routeConfig";
 import {
   CICD_NOTIFICATIONS_KEY,
@@ -21,6 +22,7 @@ import {
 export function TabNav() {
   const { user } = useAuth();
   const role = user?.role as Role | undefined;
+  const { pathname } = useLocation();
 
   // R2: staleTime:Infinity, no focus-refetch.  Badge refreshes via
   // invalidateQueries called by CicdPage on mount (after mark-visited).
@@ -43,6 +45,18 @@ export function TabNav() {
     ? ROUTES.filter((r) => r.roles.includes(role))
     : [];
 
+  // F3: when the App 工作台 detail form has unsaved edits, confirm before
+  // navigating to another tab. Reads the shared store at click time so it
+  // never interferes with navigation when the form is clean.
+  function handleNavClick(e: React.MouseEvent<HTMLAnchorElement>, isActive: boolean) {
+    if (isActive) return; // re-clicking the current tab does nothing
+    if (useUiStore.getState().appDetailDirty) {
+      if (!window.confirm("有未保存的修改，确认放弃并离开?")) {
+        e.preventDefault();
+      }
+    }
+  }
+
   return (
     <nav className="tabs">
       {ROUTES.map((route) => {
@@ -56,6 +70,10 @@ export function TabNav() {
               isActive ? "tab active" : "tab"
             }
             end={route.path === "/"}
+            onClick={(e) => {
+              const active = route.path === "/" ? pathname === "/" : pathname === route.path;
+              handleNavClick(e, active);
+            }}
           >
             {route.view === "cicd" && cicdBadge ? (
               <>

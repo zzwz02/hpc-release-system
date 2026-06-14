@@ -317,3 +317,274 @@ describe("AppWorkbenchPage", () => {
     expect(row2.textContent).toContain("cicd_only");
   });
 });
+
+// ---------------------------------------------------------------------------
+// F1 / F2 / F3 — decision-sync dialog, copy-from-version, unsaved guard
+// ---------------------------------------------------------------------------
+
+import { apiPost } from "../../../api/http";
+import { useUiStore } from "../../../store/uiStore";
+
+function twoReleaseSummaries(): ReleaseSummary[] {
+  const later: ReleaseSummary = {
+    ...makeReleaseSummary(), id: "rel-2", name: "3.1", created_at: "2026-02-01",
+  };
+  return [makeReleaseSummary(), later];
+}
+
+function payloadTwoReleases(): StatePayload {
+  return makePayload({ releases: twoReleaseSummaries() });
+}
+
+async function enterEditOnApp1(): Promise<void> {
+  await waitFor(() => screen.getByTestId("app-row-app1"));
+  fireEvent.click(screen.getByTestId("app-row-app1"));
+  await waitFor(() => screen.getByText("✎ 修改"));
+  fireEvent.click(screen.getByText("✎ 修改"));
+  await waitFor(() => screen.getByTestId("field-decision"));
+}
+
+describe("AppWorkbenchPage F1 decision-sync dialog", () => {
+  beforeEach(() => {
+    vi.stubGlobal("alert", vi.fn());
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    useUiStore.getState().setSelectedApp("");
+    useUiStore.getState().setAppDetailDirty(false);
+  });
+
+  it("opens the owner-choice dialog with a gated cicd_only row when decision changes", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.includes("decision-sync/preview")) {
+        return Promise.resolve({
+          decision: "stopped",
+          releases: [
+            { release_id: "rel-2", release_name: "3.1", phase_label: "App 冻结后",
+              resulting_decision: "stopped", skipped: false },
+          ],
+        });
+      }
+      return Promise.resolve({ snapshot: {}, missing_items: [] });
+    });
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "stopped" } });
+    fireEvent.click(screen.getByText("保存"));
+    await waitFor(() => screen.getByTestId("decision-sync-dialog"));
+    expect(screen.getByTestId("decision-sync-dialog").textContent).toContain("同步 release 决策到后续 release");
+    expect(screen.getByTestId("sync-row-rel-2").textContent).toContain("调整为 stopped");
+  });
+
+  it("shows the gated cicd_only downgrade row distinctly", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.includes("decision-sync/preview")) {
+        return Promise.resolve({
+          decision: "release",
+          releases: [
+            { release_id: "rel-2", release_name: "3.1", phase_label: "App 冻结后",
+              resulting_decision: "cicd_only", skipped: false },
+          ],
+        });
+      }
+      return Promise.resolve({ snapshot: {}, missing_items: [] });
+    });
+    const qc = makeQueryClient();
+    // app1 starts cicd_only so changing to release triggers the gate
+    const payload = payloadTwoReleases();
+    (payload.release as ReleaseDetail).snapshots.app1.release_decision = "cicd_only";
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    renderPage(qc);
+    await enterEditOnApp1();
+    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "release" } });
+    fireEvent.click(screen.getByText("保存"));
+    await waitFor(() => screen.getByTestId("sync-row-rel-2"));
+    expect(screen.getByTestId("sync-row-rel-2").textContent).toContain("冻结期降级");
+  });
+
+  it("同步到后续 release posts update with sync_decision=true", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
+    const postMock = vi.fn((url: string, _body?: unknown) => {
+      if (url.includes("decision-sync/preview")) {
+        return Promise.resolve({
+          decision: "stopped",
+          releases: [{ release_id: "rel-2", release_name: "3.1", phase_label: "App 冻结前",
+            resulting_decision: "stopped", skipped: false }],
+        });
+      }
+      return Promise.resolve({ snapshot: {}, missing_items: [] });
+    });
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(postMock);
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "stopped" } });
+    fireEvent.click(screen.getByText("保存"));
+    await waitFor(() => screen.getByTestId("sync-all"));
+    fireEvent.click(screen.getByTestId("sync-all"));
+    await waitFor(() => {
+      const updateCall = postMock.mock.calls.find((c) => c[0] === "/api/apps/update");
+      expect(updateCall).toBeTruthy();
+      expect((updateCall![1] as { sync_decision: boolean }).sync_decision).toBe(true);
+    });
+  });
+
+  it("不同步，仅本 release posts update with sync_decision=false", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
+    const postMock = vi.fn((url: string, _body?: unknown) => {
+      if (url.includes("decision-sync/preview")) {
+        return Promise.resolve({
+          decision: "stopped",
+          releases: [{ release_id: "rel-2", release_name: "3.1", phase_label: "App 冻结前",
+            resulting_decision: "stopped", skipped: false }],
+        });
+      }
+      return Promise.resolve({ snapshot: {}, missing_items: [] });
+    });
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(postMock);
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "stopped" } });
+    fireEvent.click(screen.getByText("保存"));
+    await waitFor(() => screen.getByTestId("sync-local-only"));
+    fireEvent.click(screen.getByTestId("sync-local-only"));
+    await waitFor(() => {
+      const updateCall = postMock.mock.calls.find((c) => c[0] === "/api/apps/update");
+      expect(updateCall).toBeTruthy();
+      expect((updateCall![1] as { sync_decision: boolean }).sync_decision).toBe(false);
+    });
+  });
+
+  it("取消 aborts without posting an update", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
+    const postMock = vi.fn((url: string, _body?: unknown) => {
+      if (url.includes("decision-sync/preview")) {
+        return Promise.resolve({
+          decision: "stopped",
+          releases: [{ release_id: "rel-2", release_name: "3.1", phase_label: "App 冻结前",
+            resulting_decision: "stopped", skipped: false }],
+        });
+      }
+      return Promise.resolve({ snapshot: {}, missing_items: [] });
+    });
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(postMock);
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "stopped" } });
+    fireEvent.click(screen.getByText("保存"));
+    await waitFor(() => screen.getByTestId("sync-cancel"));
+    fireEvent.click(screen.getByTestId("sync-cancel"));
+    await waitFor(() => {
+      expect(screen.queryByTestId("decision-sync-dialog")).toBeNull();
+    });
+    expect(postMock.mock.calls.find((c) => c[0] === "/api/apps/update")).toBeFalsy();
+  });
+});
+
+describe("AppWorkbenchPage F2 copy-from-version", () => {
+  beforeEach(() => {
+    vi.stubGlobal("alert", vi.fn());
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    useUiStore.getState().setSelectedApp("");
+    useUiStore.getState().setAppDetailDirty(false);
+  });
+
+  it("copies editable fields from the picked release into the form", async () => {
+    const base = payloadTwoReleases();
+    const other = makePayload({ releases: twoReleaseSummaries() });
+    const otherRelease = makeRelease({
+      app1: makeSnap("app1", { official_name: "AlphaApp", description: "COPIED-DESC",
+        doc: { intro: "COPIED-INTRO", image_usage: "", binary_usage: "", env_setup: "", limitations: "" } }),
+    });
+    otherRelease.id = "rel-2";
+    other.release = otherRelease;
+
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) =>
+      Promise.resolve(url.includes("rel-2") ? other : base),
+    );
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    fireEvent.click(screen.getByTestId("copy-from-version-btn"));
+    await waitFor(() => screen.getByTestId("copy-from-version-dialog"));
+    fireEvent.change(screen.getByTestId("copy-source-select"), { target: { value: "rel-2" } });
+    fireEvent.click(screen.getByTestId("copy-confirm"));
+    await waitFor(() => {
+      expect((screen.getByTestId("field-description") as HTMLTextAreaElement).value).toBe("COPIED-DESC");
+    });
+    expect((screen.getByTestId("field-doc-intro") as HTMLTextAreaElement).value).toBe("COPIED-INTRO");
+  });
+
+  it("shows a friendly message when the app is absent in the picked release", async () => {
+    const alertSpy = vi.fn();
+    vi.stubGlobal("alert", alertSpy);
+    const base = payloadTwoReleases();
+    const other = makePayload({ releases: twoReleaseSummaries() });
+    const otherRelease = makeRelease({}); // no app1
+    otherRelease.id = "rel-2";
+    other.release = otherRelease;
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) =>
+      Promise.resolve(url.includes("rel-2") ? other : base),
+    );
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    fireEvent.click(screen.getByTestId("copy-from-version-btn"));
+    await waitFor(() => screen.getByTestId("copy-confirm"));
+    fireEvent.click(screen.getByTestId("copy-confirm"));
+    await waitFor(() => {
+      expect(alertSpy.mock.calls.some((c) => String(c[0]).includes("没有此 app"))).toBe(true);
+    });
+  });
+});
+
+describe("AppWorkbenchPage F3 unsaved-changes guard", () => {
+  beforeEach(() => {
+    vi.stubGlobal("alert", vi.fn());
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    useUiStore.getState().setSelectedApp("");
+    useUiStore.getState().setAppDetailDirty(false);
+  });
+
+  it("sets the shared dirty flag when the form is edited", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    expect(useUiStore.getState().appDetailDirty).toBe(false);
+    fireEvent.change(screen.getByTestId("field-description"), { target: { value: "edited" } });
+    await waitFor(() => {
+      expect(useUiStore.getState().appDetailDirty).toBe(true);
+    });
+  });
+
+  it("registers a beforeunload handler that prevents unload while dirty", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    fireEvent.change(screen.getByTestId("field-description"), { target: { value: "edited" } });
+    await waitFor(() => expect(useUiStore.getState().appDetailDirty).toBe(true));
+    const evt = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(evt);
+    expect(evt.defaultPrevented).toBe(true);
+  });
+
+  it("confirms before switching app when dirty", async () => {
+    const confirmSpy = vi.fn(() => false); // user cancels the switch
+    vi.stubGlobal("confirm", confirmSpy);
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    fireEvent.change(screen.getByTestId("field-description"), { target: { value: "edited" } });
+    await waitFor(() => expect(useUiStore.getState().appDetailDirty).toBe(true));
+    fireEvent.click(screen.getByTestId("app-row-app2"));
+    expect(confirmSpy).toHaveBeenCalled();
+    // cancelled → still on app1
+    expect(useUiStore.getState().selectedApp).toBe("app1");
+  });
+});
