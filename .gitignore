@@ -17,3 +17,7 @@ hpc_app.csv
 *.pyc
 *.db-wal
 *.db-shm
+
+# React/Vite frontend
+web/node_modules/
+web_dist/
