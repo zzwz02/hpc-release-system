@@ -504,6 +504,22 @@ export function ReleaseCyclePage() {
     <section className="view active" data-testid="release-cycle-page">
       <div className="page-toolbar">
         <h2>周期管理</h2>
+        {releases.length > 0 && (
+          <select
+            className="input"
+            style={{ width: "auto", minWidth: 160 }}
+            value={selectedReleaseId ?? currentRelease?.id ?? ""}
+            onChange={(e) => setSelectedReleaseId(e.target.value)}
+            aria-label="选择 release"
+          >
+            {releases.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+                {r.maca_version ? ` (${r.maca_version})` : ""}
+              </option>
+            ))}
+          </select>
+        )}
         <span className="spacer" />
         <RefreshBar
           dataUpdatedAt={dataUpdatedAt}
