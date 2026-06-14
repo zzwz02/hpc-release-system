@@ -54,6 +54,15 @@ const KIND_LABELS: Record<ArtifactKind, string> = {
   manager_review: "Manager Review CSV",
 };
 
+// Short descriptions for the landing empty-state tiles.
+const KIND_DESC: Record<ArtifactKind, { icon: string; desc: string }> = {
+  release_note: { icon: "📝", desc: "本轮发布的整体说明，Markdown 渲染 / 源码切换 + 大纲。" },
+  manual:       { icon: "📘", desc: "HPC 应用使用手册，按 app 聚合，支持渲染与大纲导航。" },
+  ai4sci:       { icon: "🤖", desc: "AI4Sci 应用手册，AI4Sci 类型 app 的使用文档。" },
+  data:         { icon: "🗃️", desc: "结构化的 release-data 纯文本，便于核对原始字段。" },
+  manager_review: { icon: "📊", desc: "管理评审导出：自选字段生成可下载的 CSV 汇总表。" },
+};
+
 // Manager review field picker options (mirrors index.html:762-781)
 const MANAGER_FIELDS: Array<{ key: string; label: string; defaultChecked: boolean }> = [
   { key: "app_name",            label: "App",           defaultChecked: true  },
@@ -498,6 +507,46 @@ export function ArtifactsPage() {
                   <button className="btn" onClick={handleDownloadManagerCsv}>
                     下载 Manager Review CSV
                   </button>
+                </div>
+              )}
+
+              {/* Landing empty-state — shown until a document is picked. */}
+              {!activeKind && !showManagerPane && (
+                <div className="artifact-empty" data-testid="artifact-empty">
+                  <div className="artifact-empty-head">
+                    <span className="artifact-empty-ic">📂</span>
+                    <div>
+                      <h3>选择一份发布文档查看</h3>
+                      <p className="muted small">
+                        点击上方按钮或下方任一文档卡片，在此处渲染对应内容。
+                      </p>
+                    </div>
+                  </div>
+                  <div className="artifact-kind-grid">
+                    {(["release_note", "manual", "ai4sci", "data"] as ArtifactKind[]).map((kind) => (
+                      <button
+                        key={kind}
+                        type="button"
+                        className="artifact-kind-card"
+                        onClick={() => handleSelectKind(kind)}
+                      >
+                        <span className="ak-ic">{KIND_DESC[kind].icon}</span>
+                        <span className="ak-title">{KIND_LABELS[kind]}</span>
+                        <span className="ak-desc muted small">{KIND_DESC[kind].desc}</span>
+                      </button>
+                    ))}
+                    {canManagerReview && (
+                      <button
+                        type="button"
+                        className="artifact-kind-card"
+                        onClick={() => handleSelectKind("manager_review")}
+                      >
+                        <span className="ak-ic">{KIND_DESC.manager_review.icon}</span>
+                        <span className="ak-title">管理评审导出</span>
+                        <span className="ak-desc muted small">{KIND_DESC.manager_review.desc}</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
 

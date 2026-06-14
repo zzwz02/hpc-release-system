@@ -214,7 +214,7 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
       <div className="panel">
         <div className="panel-head"><h2>新建发布周期</h2></div>
         <div className="panel-body">
-          <div className="form">
+          <div className="form form-compact">
             <label>
               新 Release 名称
               <input
@@ -272,7 +272,7 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
             <p className="muted small">暂无当前 Release 数据。</p>
           ) : (
             <>
-              <div className="form">
+              <div className="form form-compact">
                 <label>
                   Release 名称
                   <input

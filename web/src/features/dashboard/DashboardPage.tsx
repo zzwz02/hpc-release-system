@@ -16,6 +16,7 @@
  */
 
 import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshBar } from "../../components/RefreshBar";
 import { apiGet, apiPost } from "../../api/http";
@@ -502,9 +503,10 @@ interface OwnerGridProps {
   payload: StatePayload;
   userIsOwner: boolean;
   username: string;
+  onJumpToApp: (appId: string) => void;
 }
 
-function OwnerGrid({ payload, userIsOwner, username }: OwnerGridProps) {
+function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridProps) {
   const apps = payload.apps ?? [];
   const allRows = apps
     .map((app) => ({ app, snap: releaseSnap(payload, app.id) }))
@@ -519,74 +521,82 @@ function OwnerGrid({ payload, userIsOwner, username }: OwnerGridProps) {
   const title = userIsOwner ? "我的 App 状态概览" : "App 状态概览";
 
   return (
-    <div id="dashboardOwnerPanel" className="panel" style={{ marginTop: 16 }}>
+    <div id="dashboardOwnerPanel" className="panel">
       <div className="panel-head">
         <h2 id="dashboardOwnerTitle">{title}</h2>
         <span className="count" id="dashboardOwnerCount">共 {gridRows.length} 个</span>
+        <span style={{ flex: 1 }} />
+        <span className="muted small">点击行 → App 工作台查看 / 编辑</span>
       </div>
-      <div className="panel-body">
+      <div className="panel-body" style={{ padding: 0 }}>
         <div id="dashboardOwnerGrid">
           {gridRows.length === 0 ? (
-            <p className="muted small">
+            <p className="muted small" style={{ padding: "14px" }}>
               {userIsOwner
                 ? "本 release 没有归属于你的 app。"
                 : "本 release 暂无 app。"}
             </p>
           ) : (
-            <div className="qa-grid">
-              {gridRows.map(({ app, snap }) => {
-                const rel = isReleaseSnap(snap);
-                const prog = ownerProgress(snap);
-                const todoCount = (snap.missing_items ?? []).length;
-                const ownersLabel = usersLabel(snap.owners, displayNames);
-
-                const statusPills = [
-                  <DecisionPill key="d" decision={snap.release_decision} />,
-                  rel ? <QaPill key="q" status={snap.qa_status} /> : null,
-                  rel
-                    ? todoCount > 0
-                      ? <span key="todo" className="pill warnp">待办 {todoCount}</span>
-                      : <span key="ok" className="pill ok">信息齐全</span>
-                    : null,
-                  rel && snap.owner_confirmed
-                    ? <span key="conf" className="pill ok">已确认</span>
-                    : null,
-                ].filter(Boolean);
-
-                const subLine = userIsOwner
-                  ? snap.type ?? "—"
-                  : `${snap.type ?? "—"} · ${ownersLabel}`;
-
-                return (
-                  <div key={app.id} className="qa-card">
-                    <div className="qa-card-h">
-                      <span className="app-ico">{initials(displayName(snap))}</span>
-                      <div>
-                        <div className="name">{displayName(snap)}</div>
-                        <div className="sub">{subLine}</div>
-                      </div>
-                    </div>
-                    <div className="qa-card-b">
-                      <div className="row2">{statusPills}</div>
-                      {rel && (
-                        <div>
-                          <div
-                            className="prog-label"
-                            style={{ display: "flex", justifyContent: "space-between" }}
-                          >
-                            <span>填写完成度</span>
-                            <span>{prog.pct}%</span>
-                          </div>
-                          <div className="bar">
-                            <span style={{ width: `${prog.pct}%` }} />
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+            <table className="app-overview-table" data-testid="dashboard-app-table">
+              <thead>
+                <tr>
+                  <th>App 名称</th>
+                  <th>类型</th>
+                  {!userIsOwner && <th>Owner</th>}
+                  <th>决策</th>
+                  <th>QA</th>
+                  <th style={{ width: 150 }}>填写完成度</th>
+                  <th style={{ width: 70 }}>待办</th>
+                  <th style={{ width: 40 }} aria-label="跳转" />
+                </tr>
+              </thead>
+              <tbody>
+                {gridRows.map(({ app, snap }) => {
+                  const rel = isReleaseSnap(snap);
+                  const prog = ownerProgress(snap);
+                  const todoCount = (snap.missing_items ?? []).length;
+                  const ownersLabel = usersLabel(snap.owners, displayNames);
+                  return (
+                    <tr
+                      key={app.id}
+                      onClick={() => onJumpToApp(app.id)}
+                      title="在 App 工作台中打开"
+                      data-testid={`dashboard-app-row-${app.id}`}
+                    >
+                      <td>
+                        <span className="row2" style={{ gap: 8, flexWrap: "nowrap" }}>
+                          <span className="app-ico">{initials(displayName(snap))}</span>
+                          <span className="ov-name">{displayName(snap)}</span>
+                          {rel && snap.owner_confirmed && <span className="pill ok">已确认</span>}
+                        </span>
+                      </td>
+                      <td className="muted">{snap.type ?? "—"}</td>
+                      {!userIsOwner && <td className="muted">{ownersLabel}</td>}
+                      <td><DecisionPill decision={snap.release_decision} /></td>
+                      <td>{rel ? <QaPill status={snap.qa_status} /> : <span className="muted">—</span>}</td>
+                      <td>
+                        {rel ? (
+                          <span className="row2" style={{ gap: 7, flexWrap: "nowrap" }}>
+                            <span className="bar" style={{ flex: 1 }}>
+                              <span style={{ width: `${prog.pct}%` }} />
+                            </span>
+                            <span className="prog-label">{prog.pct}%</span>
+                          </span>
+                        ) : <span className="muted">—</span>}
+                      </td>
+                      <td>
+                        {rel
+                          ? (todoCount > 0
+                              ? <span className="pill warnp">{todoCount}</span>
+                              : <span className="pill ok">齐全</span>)
+                          : <span className="muted">—</span>}
+                      </td>
+                      <td className="ov-jump" style={{ textAlign: "center" }}>›</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           )}
         </div>
       </div>
@@ -632,11 +642,20 @@ function ReleaseSelector({ releases, selectedId, onChange }: ReleaseSelectorProp
 export function DashboardPage() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   // Shared release selector — kept in uiStore so all tabs stay in sync.
   // "" means "not yet seeded"; the seed effect below fills it on first load.
   const selectedReleaseId = useUiStore((s) => s.selectedReleaseId) || undefined;
   const setSelectedReleaseId = useUiStore((s) => s.setSelectedReleaseId);
+  const setSelectedApp = useUiStore((s) => s.setSelectedApp);
+
+  // Cross-link: clicking a dashboard row selects the app (shared uiStore state)
+  // and jumps to the App workbench, where its detail opens immediately.
+  function handleJumpToApp(appId: string) {
+    setSelectedApp(appId);
+    navigate("/apps");
+  }
 
   const queryKey = STATE_QUERY_KEY(selectedReleaseId);
 
@@ -729,6 +748,7 @@ export function DashboardPage() {
             payload={data}
             userIsOwner={userIsOwner}
             username={username}
+            onJumpToApp={handleJumpToApp}
           />
         </>
       )}

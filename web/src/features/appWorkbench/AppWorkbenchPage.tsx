@@ -79,14 +79,6 @@ function QaPill({ status }: { status?: string }) {
   return <span className={`pill ${cls}`}>{qaStatusLabels[s as keyof typeof qaStatusLabels] ?? s}</span>;
 }
 
-function DocsPill({ snap }: { snap: Snapshot }) {
-  if (!isReleaseSnap(snap)) return null;
-  const count = docsItems(snap).length;
-  return count
-    ? <span className="pill warnp">待补 {count}</span>
-    : <span className="pill ok">文档齐全</span>;
-}
-
 function QaDot({ snap }: { snap: Snapshot }) {
   return (
     <span
@@ -159,18 +151,18 @@ function AppListPanel({
             >
               <QaDot snap={snap} />
               <div className="app-meta">
-                <div className="name">{displayName(snap)}</div>
+                <div className="name">
+                  <span className="nm-txt">{displayName(snap)}</span>
+                  {snap.version && <span className="ver-tag">v{snap.version}</span>}
+                </div>
                 <div className="sub">
                   {snap.type || "—"} · {usersLabel(snap.owners, displayNames)}
                 </div>
               </div>
               <div className="tail">
                 <DecisionPill decision={snap.release_decision} />
-                {isReleaseSnap(snap) && (
-                  <span className="pill-group">
-                    <DocsPill snap={snap} />
-                    <QaPill status={snap.qa_status} />
-                  </span>
+                {isReleaseSnap(snap) && docsItems(snap).length > 0 && (
+                  <span className="pill warnp">待补 {docsItems(snap).length}</span>
                 )}
               </div>
             </div>
@@ -1095,7 +1087,7 @@ export function AppWorkbenchPage() {
   }
 
   return (
-    <section className="view active" data-testid="appworkbench-page">
+    <section className="view view--split active" data-testid="appworkbench-page">
       <div className="page-toolbar">
         <h2>App 工作台</h2>
         {data && (
