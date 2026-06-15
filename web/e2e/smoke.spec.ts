@@ -360,3 +360,129 @@ test.describe("Admin role-gating (ruling C)", () => {
     expect(page.url()).toContain("/admin");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Suite 9: Wave 3 — CICD tab RM/SPD-only + sub-tabs + CICD-first
+// ---------------------------------------------------------------------------
+
+test.describe("W3 CICD tab RM/SPD-only gating", () => {
+  test("Owner does NOT see CICD 工作台 tab", async ({ page }) => {
+    await login(page, "owner_test");
+    await page.waitForLoadState("networkidle", { timeout: 15_000 });
+    const tabsText = await page.locator("nav.tabs").textContent();
+    // Owner sees App 工作台 but NOT CICD 工作台
+    expect(tabsText).toContain("App 工作台");
+    expect(tabsText).not.toContain("CICD 工作台");
+  });
+
+  test("Owner navigating to /cicd is redirected to /apps", async ({ page }) => {
+    await login(page, "owner_test");
+    await page.goto(`${BASE}/cicd`);
+    // Should redirect to /apps
+    await page.waitForURL(`${BASE}/apps`, { timeout: 8_000 });
+    expect(page.url()).toContain("/apps");
+  });
+
+  test("RM sees CICD 工作台 tab and can access /cicd", async ({ page }) => {
+    await login(page, "rm");
+    const tabsText = await page.locator("nav.tabs").textContent();
+    expect(tabsText).toContain("CICD 工作台");
+    await page.goto(`${BASE}/cicd`);
+    await page.waitForLoadState("networkidle", { timeout: 15_000 });
+    expect(page.url()).toContain("/cicd");
+  });
+});
+
+test.describe("W3 App 工作台 sub-tabs", () => {
+  test("detail panel shows 文档信息 and CICD sub-tabs after selecting an app", async ({ page }) => {
+    await login(page, "rm");
+    await page.goto(`${BASE}/apps`);
+    await page.waitForSelector('[data-testid="app-table"]', { timeout: 15_000 });
+
+    const firstRow = page.locator('[data-testid^="app-row-"]').first();
+    await firstRow.click();
+    await page.waitForSelector('[data-testid="detail-panel"]', { timeout: 10_000 });
+
+    // Both sub-tab buttons should be visible
+    await expect(page.locator('[data-testid="detail-tab-docs"]')).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('[data-testid="detail-tab-cicd"]')).toBeVisible({ timeout: 5_000 });
+  });
+
+  test("CICD sub-tab shows task info or empty state", async ({ page }) => {
+    await login(page, "rm");
+    await page.goto(`${BASE}/apps`);
+    await page.waitForSelector('[data-testid="app-table"]', { timeout: 15_000 });
+
+    const firstRow = page.locator('[data-testid^="app-row-"]').first();
+    await firstRow.click();
+    await page.waitForSelector('[data-testid="detail-panel"]', { timeout: 10_000 });
+
+    // Click CICD tab
+    await page.click('[data-testid="detail-tab-cicd"]');
+    await page.waitForSelector('[data-testid="detail-cicd-pane"]', { timeout: 8_000 });
+
+    const paneText = await page.textContent('[data-testid="detail-cicd-pane"]');
+    // Either shows task info OR "暂无关联 CICD 任务"
+    expect(paneText!.length).toBeGreaterThan(10);
+  });
+
+  test("W3 new-app dialog shows CICD-first wizard form", async ({ page }) => {
+    await login(page, "rm");
+    await page.goto(`${BASE}/apps`);
+    await page.waitForSelector('[data-testid="new-app-btn"]', { timeout: 15_000 });
+    await page.click('[data-testid="new-app-btn"]');
+    await page.waitForSelector('[data-testid="new-app-dialog"]', { timeout: 5_000 });
+
+    const dialogText = await page.textContent('[data-testid="new-app-dialog"]');
+    expect(dialogText).toContain("CICD-first");
+    // Step 1 fields visible
+    await expect(page.locator('[data-testid="new-app-name"]')).toBeVisible();
+    await expect(page.locator('[data-testid="new-app-fetch"]')).toBeVisible();
+    // RM escape hatch should be visible
+    await expect(page.locator('[data-testid="direct-create-btn"]')).toBeVisible();
+  });
+
+  test("W3 CICD-first wizard: fetch fails → skip → creates pending request", async ({ page }) => {
+    // Dismiss any browser alert that fires on app creation
+    page.on("dialog", (d) => void d.dismiss());
+
+    await login(page, "rm");
+    await page.goto(`${BASE}/apps`);
+    await page.waitForSelector('[data-testid="new-app-btn"]', { timeout: 15_000 });
+    await page.click('[data-testid="new-app-btn"]');
+    await page.waitForSelector('[data-testid="new-app-dialog"]', { timeout: 5_000 });
+
+    // Step 1: fill identity (unique name per run)
+    const uniq = Date.now();
+    await page.fill('[data-testid="new-app-name"]', `e2e-w3-${uniq}`);
+    await page.fill('input[placeholder*="sw-metax-open"]', `test/e2e-w3-${uniq}`);
+    await page.fill('input[placeholder*="master"]', "main");
+
+    // Click "拉取 Gerrit 信息" — will fail since Gerrit is not reachable
+    await page.click('[data-testid="new-app-fetch"]');
+
+    // Error state should appear with "跳过，直接创建" button
+    await page.waitForSelector('[data-testid="new-app-submit"]', { timeout: 10_000 });
+    const errText = await page.textContent('[data-testid="new-app-dialog"]');
+    expect(errText).toContain("拉取失败");
+
+    // Skip Gerrit → submit directly to /api/cicd/apps/new
+    await page.click('[data-testid="new-app-submit"]');
+
+    // Dialog closes on success
+    await page.waitForSelector('[data-testid="new-app-dialog"]', { state: "detached", timeout: 15_000 });
+
+    // Navigate to CICD 工作台 → 待审批 tab and verify a "新建" pending request exists
+    await page.goto(`${BASE}/cicd`);
+    await page.waitForLoadState("networkidle", { timeout: 15_000 });
+    await page.locator('button:has-text("待审批")').first().click();
+    // Wait for the pending-request table to finish loading (spinner disappears)
+    await page.waitForFunction(
+      () => !document.body.innerText.includes("加载中"),
+      { timeout: 10_000 },
+    );
+    const pendingBody = await page.textContent("body");
+    // A pending "create" request was produced — CICD table shows "(新建)" for new-task requests
+    expect(pendingBody).toMatch(/新建|create/i);
+  });
+});

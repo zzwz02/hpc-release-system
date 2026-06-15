@@ -15,7 +15,8 @@
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchCicdTasks, CICD_TASKS_KEY } from "../cicd/cicdApi";
+import { fetchCicdTasks, fetchCicdRequests, fetchCicdTaskHistory, cicdFirstNewApp, fetchCicdPreview, CICD_TASKS_KEY } from "../cicd/cicdApi";
+import type { FetchPreviewResponse } from "../cicd/cicdApi";
 import { RefreshBar } from "../../components/RefreshBar";
 import { Markdown } from "../../components/Markdown";
 import { formatServerTime } from "../../lib/time";
@@ -228,37 +229,145 @@ function AppListPanel({
 }
 
 // ---------------------------------------------------------------------------
-// New-app dialog
+// Git identity normalization (mirrors app/identity.py normalize_git_url)
+// ---------------------------------------------------------------------------
+
+const RESOLVED_REPO_BASE = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC";
+
+/** Expand a short repo name to the full Gerrit SSH URL — mirrors Python normalize_git_url(). */
+function normalizeGitUrl(url: string): string {
+  const v = (url ?? "").trim();
+  if (!v) return v;
+  // Already absolute (has ://, is git@ remote, or is a .xml manifest path) → pass through
+  if (v.includes("://") || v.startsWith("git@") || v.endsWith(".xml")) return v;
+  return `${RESOLVED_REPO_BASE}/${v.replace(/^\//, "")}`;
+}
+
+/**
+ * Return true if (repoName, taskBranch) matches (gitUrl, appBranch) after
+ * normalising both sides — mirrors identity.same_identity().
+ * Handles legacy bare-name apps AND cicd-first full-SSH-URL apps.
+ */
+function sameGitIdentity(repoName: string, taskBranch: string, gitUrl: string, appBranch: string): boolean {
+  if (!repoName || !gitUrl) return false;
+  return normalizeGitUrl(repoName) === normalizeGitUrl(gitUrl) && taskBranch === appBranch;
+}
+
+// ---------------------------------------------------------------------------
+// New-app dialog (CICD-first wizard, Wave 3 / 3.1)
 // ---------------------------------------------------------------------------
 
 interface NewAppDialogProps {
   releases: ReleaseSummary[];
   currentReleaseId: string;
+  currentUsername: string;
+  userRole: string;
   onClose: () => void;
   onCreated: (appId: string) => void;
 }
 
-function NewAppDialog({ releases, currentReleaseId, onClose, onCreated }: NewAppDialogProps) {
+function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, onClose, onCreated }: NewAppDialogProps) {
   const release = releases.find((r) => r.id === currentReleaseId) ?? null;
-  const decisionOpts = newAppDecisionOptions(release);
+
+  // ── Wizard state (CICD-first, step 1 → fetch → step 2 confirm) ──────────
   const [officialName, setOfficialName] = useState("");
+  const [repoType, setRepoType] = useState("git");
+  const [repoName, setRepoName] = useState("");
+  const [branch, setBranch] = useState("");
+
+  type WizardStep = "form" | "fetching" | "preview" | "fetch-error" | "creating";
+  const [step, setStep] = useState<WizardStep>("form");
+  const [preview, setPreview] = useState<FetchPreviewResponse | null>(null);
+  const [fetchErrMsg, setFetchErrMsg] = useState("");
+  const [createErrMsg, setCreateErrMsg] = useState("");
+
+  // ── RM escape-hatch: direct /api/apps/new (no CICD task) ────────────────
+  const [useDirectCreate, setUseDirectCreate] = useState(false);
+  const [directName, setDirectName] = useState("");
   const [gitUrl, setGitUrl] = useState("");
   const [gitBranch, setGitBranch] = useState("");
   const [docTarget, setDocTarget] = useState<"manual" | "ai4sci">("manual");
+  const decisionOpts = newAppDecisionOptions(release);
   const [decision, setDecision] = useState<string>(decisionOpts[0] ?? "release");
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState("");
+  const [directSaving, setDirectSaving] = useState(false);
+  const [directErr, setDirectErr] = useState("");
 
-  async function handleCreate() {
-    if (!officialName.trim()) return setErr("请填写官方 app/模型名称");
-    if (!gitUrl.trim()) return setErr("请填写 Gerrit URL");
-    if (!gitBranch.trim()) return setErr("请填写 Branch");
-    setErr("");
-    setSaving(true);
+  const isRM = userRole === "RM";
+  const isRepo = repoType === "repo";
+  const effectiveBranch = isRepo ? "master" : branch.trim();
+
+  // ── Wizard handlers ──────────────────────────────────────────────────────
+
+  async function handleFetch() {
+    if (!officialName.trim()) { setFetchErrMsg("请填写官方名称"); return; }
+    if (!repoName.trim()) { setFetchErrMsg("请填写仓库名"); return; }
+    if (!effectiveBranch) { setFetchErrMsg("请填写分支"); return; }
+    setFetchErrMsg("");
+    setStep("fetching");
+    try {
+      const data = await fetchCicdPreview({ repo_type: repoType, repo_name: repoName.trim(), branch: effectiveBranch });
+      setPreview(data);
+      setStep("preview");
+    } catch (e) {
+      setFetchErrMsg(e instanceof Error ? e.message : "Gerrit 信息拉取失败");
+      setStep("fetch-error");
+    }
+  }
+
+  /** Create without Gerrit preview (fetch failed or user skipped). */
+  async function handleSkipAndCreate() {
+    setStep("creating");
+    setCreateErrMsg("");
+    try {
+      const r = await cicdFirstNewApp({
+        release_id: currentReleaseId,
+        official_name: officialName.trim(),
+        app_name: officialName.trim(),
+        owner_username: currentUsername,
+        repo_type: repoType,
+        repo_name: repoName.trim(),
+        branch: effectiveBranch,
+      });
+      onCreated(r.app_id);
+    } catch (e) {
+      setCreateErrMsg(e instanceof Error ? e.message : "创建失败");
+      setStep("fetch-error");
+    }
+  }
+
+  /** Create with fetched app_info (step 2 confirm). */
+  async function handleConfirmCreate() {
+    setStep("creating");
+    setCreateErrMsg("");
+    try {
+      const r = await cicdFirstNewApp({
+        release_id: currentReleaseId,
+        official_name: officialName.trim(),
+        app_name: officialName.trim(),
+        owner_username: currentUsername,
+        repo_type: repoType,
+        repo_name: repoName.trim(),
+        branch: effectiveBranch,
+        app_info_parsed: preview?.parsed ?? undefined,
+        app_info_commit_id: preview?.commit_id ?? undefined,
+      });
+      onCreated(r.app_id);
+    } catch (e) {
+      setCreateErrMsg(e instanceof Error ? e.message : "创建失败");
+      setStep("preview");
+    }
+  }
+
+  async function handleDirectCreate() {
+    if (!directName.trim()) return setDirectErr("请填写官方 app/模型名称");
+    if (!gitUrl.trim()) return setDirectErr("请填写 Gerrit URL");
+    if (!gitBranch.trim()) return setDirectErr("请填写 Branch");
+    setDirectErr("");
+    setDirectSaving(true);
     try {
       const r = await apiPost<{ app_id: string }>("/api/apps/new", {
         release_id: currentReleaseId,
-        official_name: officialName.trim(),
+        official_name: directName.trim(),
         git_url: gitUrl.trim(),
         git_branch: gitBranch.trim(),
         release_decision: decision,
@@ -266,56 +375,415 @@ function NewAppDialog({ releases, currentReleaseId, onClose, onCreated }: NewApp
       });
       onCreated(r.app_id);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "创建失败");
+      setDirectErr(e instanceof Error ? e.message : "创建失败");
     } finally {
-      setSaving(false);
+      setDirectSaving(false);
     }
   }
 
+  // ── RM escape-hatch render ───────────────────────────────────────────────
+  if (useDirectCreate && isRM) {
+    return (
+      <div className="dialog-backdrop" data-testid="new-app-dialog">
+        <div className="dialog-box">
+          <div className="dialog-head"><h3>直连创建 App（RM 快捷通道）</h3></div>
+          <div className="dialog-body">
+            <div className="banner" style={{ marginBottom: 8, fontSize: 12 }}>
+              ⚠️ 直连创建绕过 CICD-first 流程，App 初始不关联 CICD 任务。
+            </div>
+            <div className="form">
+              <label>官方名称 <span className="required">*</span>
+                <input className="input" value={directName} onChange={(e) => setDirectName(e.target.value)} data-testid="new-app-name" />
+              </label>
+              <label>Gerrit URL
+                <input className="input" value={gitUrl} onChange={(e) => setGitUrl(e.target.value)} />
+              </label>
+              <label>Branch
+                <input className="input" value={gitBranch} onChange={(e) => setGitBranch(e.target.value)} />
+              </label>
+              <label>类型
+                <select className="select" value={docTarget} onChange={(e) => setDocTarget(e.target.value as "manual" | "ai4sci")}>
+                  {docTargetOptions.map((v) => (
+                    <option key={v} value={v}>{docTargetLabels[v]}</option>
+                  ))}
+                </select>
+              </label>
+              <label>Release 决策
+                <select className="select" value={decision} onChange={(e) => setDecision(e.target.value)}>
+                  {decisionOpts.map((v) => (
+                    <option key={v} value={v}>{releaseDecisionLabels[v]}</option>
+                  ))}
+                </select>
+              </label>
+              {!beforeAppFreeze(release) && (
+                <p className="hint" style={{ color: "var(--warn-fg)" }}>
+                  已过 App 冻结 deadline，本 release 不允许以 release 状态新增 app。
+                </p>
+              )}
+            </div>
+            {directErr && <p className="lerr">{directErr}</p>}
+          </div>
+          <div className="dialog-actions">
+            <button className="btn ghost sm" onClick={() => setUseDirectCreate(false)} style={{ marginRight: "auto" }}>← 返回 CICD-first</button>
+            <button className="btn" onClick={onClose}>取消</button>
+            <button className="btn primary" onClick={() => void handleDirectCreate()} disabled={directSaving}>
+              {directSaving ? "创建中…" : "直连创建"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Step 2: preview confirmation ─────────────────────────────────────────
+  if (step === "preview" || (step === "creating" && preview !== null)) {
+    const isCreating = step === "creating";
+    return (
+      <div className="dialog-backdrop" data-testid="new-app-dialog">
+        <div className="dialog-box" style={{ maxWidth: 560 }}>
+          <div className="dialog-head"><h3>确认 App 信息（CICD-first）</h3></div>
+          <div className="dialog-body">
+            <div className="banner" style={{ marginBottom: 8, fontSize: 12, background: "var(--surface2,#f0f7ff)", borderLeft: "3px solid var(--accent,#1976d2)" }}>
+              ✅ Gerrit 信息已拉取。请确认以下字段后提交创建请求（RM 审批后生效）。
+            </div>
+            <div className="form" style={{ pointerEvents: "none", opacity: 0.9 }} data-testid="new-app-preview">
+              <label>官方名称<input className="input" value={officialName.trim()} disabled /></label>
+              <label>仓库<input className="input" value={`${repoName.trim()} @ ${effectiveBranch}`} disabled /></label>
+              {preview && (<>
+                <label>版本<input className="input" value={preview.app_version || "—"} disabled /></label>
+                <label>x86 芯片<input className="input" value={preview.x86_chips || "—"} disabled /></label>
+                <label>arm 芯片<input className="input" value={preview.arm_chips || "—"} disabled /></label>
+                <label>Python label<input className="input" value={preview.python_label || "—"} disabled /></label>
+                <label>PyTorch label<input className="input" value={preview.pytorch_label || "—"} disabled /></label>
+                <label>OS<input className="input" value={preview.os || "—"} disabled /></label>
+                <label>架构<input className="input" value={preview.arch || "—"} disabled /></label>
+              </>)}
+            </div>
+            {createErrMsg && <p className="lerr">{createErrMsg}</p>}
+          </div>
+          <div className="dialog-actions">
+            <button className="btn ghost sm" onClick={() => setStep("form")} style={{ marginRight: "auto" }} disabled={isCreating}>← 重新填写</button>
+            <button className="btn" onClick={onClose} disabled={isCreating}>取消</button>
+            <button className="btn primary" onClick={() => void handleConfirmCreate()} disabled={isCreating} data-testid="new-app-submit">
+              {isCreating ? "提交中…" : "确认并创建"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Fetch-error: Gerrit unreachable ──────────────────────────────────────
+  if (step === "fetch-error" || (step === "creating" && preview === null)) {
+    const isCreating = step === "creating";
+    return (
+      <div className="dialog-backdrop" data-testid="new-app-dialog">
+        <div className="dialog-box" style={{ maxWidth: 520 }}>
+          <div className="dialog-head"><h3>新增 App（CICD-first）</h3></div>
+          <div className="dialog-body">
+            <div className="banner bad" style={{ marginBottom: 8 }}>
+              ⚠️ Gerrit 信息拉取失败：{fetchErrMsg || "网络不可达"}
+              <br />
+              <span className="small muted" style={{ marginTop: 4, display: "block" }}>
+                注：本环境 Gerrit 不可达，芯片/版本信息可在创建后于文档信息页手动完善。
+              </span>
+            </div>
+            <p className="small muted">
+              <b>官方名称：</b>{officialName.trim()}<br />
+              <b>仓库：</b>{repoName.trim()} @ {effectiveBranch}
+            </p>
+            {createErrMsg && <p className="lerr">{createErrMsg}</p>}
+          </div>
+          <div className="dialog-actions">
+            <button className="btn ghost sm" onClick={() => { setFetchErrMsg(""); setStep("form"); }} style={{ marginRight: "auto" }} disabled={isCreating}>← 返回修改</button>
+            <button className="btn" onClick={onClose} disabled={isCreating}>取消</button>
+            <button className="btn warn" onClick={() => void handleFetch()} disabled={isCreating}>重试拉取</button>
+            <button className="btn primary" onClick={() => void handleSkipAndCreate()} disabled={isCreating} data-testid="new-app-submit">
+              {isCreating ? "提交中…" : "跳过，直接创建"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Step 1: identity form (default / fetching) ───────────────────────────
+  const isFetching = step === "fetching";
   return (
     <div className="dialog-backdrop" data-testid="new-app-dialog">
-      <div className="dialog-box">
-        <div className="dialog-head"><h3>新增 App</h3></div>
+      <div className="dialog-box" style={{ maxWidth: 520 }}>
+        <div className="dialog-head"><h3>新增 App（CICD-first）</h3></div>
         <div className="dialog-body">
-          <div className="form">
-            <label>官方名称
-              <input className="input" value={officialName} onChange={(e) => setOfficialName(e.target.value)} data-testid="new-app-name" />
-            </label>
-            <label>Gerrit URL
-              <input className="input" value={gitUrl} onChange={(e) => setGitUrl(e.target.value)} />
-            </label>
-            <label>Branch
-              <input className="input" value={gitBranch} onChange={(e) => setGitBranch(e.target.value)} />
-            </label>
-            <label>类型
-              <select className="select" value={docTarget} onChange={(e) => setDocTarget(e.target.value as "manual" | "ai4sci")}>
-                {docTargetOptions.map((v) => (
-                  <option key={v} value={v}>{docTargetLabels[v]}</option>
-                ))}
-              </select>
-            </label>
-            <label>Release 决策
-              <select className="select" value={decision} onChange={(e) => setDecision(e.target.value)}>
-                {decisionOpts.map((v) => (
-                  <option key={v} value={v}>{releaseDecisionLabels[v]}</option>
-                ))}
-              </select>
-            </label>
-            {!beforeAppFreeze(release) && (
-              <p className="hint" style={{ color: "var(--warn-fg)" }}>
-                已过 App 冻结 deadline，本 release 不允许以 release 状态新增 app。
-              </p>
-            )}
+          <div className="banner" style={{ marginBottom: 8, fontSize: 12 }}>
+            📋 CICD-first 流程：创建后生成待审批请求，RM 审批通过后 CICD 任务正式生效。<br />
+            版本、芯片等信息从 Gerrit 拉取后确认；App 初始决策为 <b>cicd_only</b>。
           </div>
-          {err && <p className="lerr">{err}</p>}
+          <div className="form">
+            <label>官方名称 <span className="required">*</span>
+              <input className="input" value={officialName} onChange={(e) => setOfficialName(e.target.value)}
+                data-testid="new-app-name" placeholder="例：AMBER" disabled={isFetching} />
+            </label>
+            <label>仓库类型
+              <select className="select" value={repoType} disabled={isFetching} onChange={(e) => {
+                const v = e.target.value;
+                setRepoType(v);
+                if (v === "repo") setBranch("master");
+              }}>
+                <option value="git">git</option>
+                <option value="repo">repo</option>
+              </select>
+            </label>
+            <label>仓库名 / Gerrit URL <span className="required">*</span>
+              <input className="input" value={repoName} onChange={(e) => setRepoName(e.target.value)}
+                placeholder="例：sw-metax-open/amber" disabled={isFetching} />
+            </label>
+            <label>分支 <span className="required">*</span>
+              <input className="input" value={isRepo ? "master" : branch} disabled={isRepo || isFetching}
+                onChange={(e) => setBranch(e.target.value)} placeholder="例：master" />
+            </label>
+          </div>
+          {fetchErrMsg && <p className="lerr">{fetchErrMsg}</p>}
         </div>
         <div className="dialog-actions">
-          <button className="btn" onClick={onClose}>取消</button>
-          <button className="btn primary" onClick={() => void handleCreate()} disabled={saving}>
-            {saving ? "创建中…" : "创建"}
+          {isRM && (
+            <button className="btn ghost sm" onClick={() => setUseDirectCreate(true)} style={{ marginRight: "auto" }}
+              data-testid="direct-create-btn" disabled={isFetching}>
+              RM 直连创建 ↗
+            </button>
+          )}
+          <button className="btn" onClick={onClose} disabled={isFetching}>取消</button>
+          <button className="btn primary" onClick={() => void handleFetch()} disabled={isFetching} data-testid="new-app-fetch">
+            {isFetching ? "拉取中…" : "拉取 Gerrit 信息 →"}
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// AppCicdPane — CICD sub-tab inside the App detail panel
+// ---------------------------------------------------------------------------
+
+const REQ_TYPE_LABEL_APP: Record<string, string> = {
+  create: "新建",
+  modify: "修改",
+  owner_transfer: "负责人变更",
+};
+const REQ_STATUS_LABEL_APP: Record<string, string> = {
+  pending: "等待 RM 审批",
+  approved: "已通过",
+  rejected: "已拒绝",
+  cancelled: "已取消",
+};
+const FIELD_LABEL_APP: Record<string, string> = {
+  app_name: "项目名称",
+  app_version: "项目版本",
+  repo_type: "仓库类型",
+  repo_name: "仓库名",
+  branch: "分支",
+  build_product: "构建产物",
+  community_artifact: "开发者社区产物",
+  build_image: "构建依赖镜像",
+  test_timeout: "超时(min)",
+  owner_username: "负责人",
+  status: "状态",
+  notes: "备注",
+};
+
+function buildProductStr(arr: string[] | null | undefined): string {
+  return (Array.isArray(arr) ? arr : []).join(", ") || "—";
+}
+
+function communityArtifactStr(arr: string[] | null | undefined): string {
+  const items = Array.isArray(arr) ? arr : [];
+  if (!items.length) return "—";
+  return items.map((v) => (v === "image" ? "镜像" : v === "pkg" ? "软件包" : v)).join("、");
+}
+
+interface AppCicdPaneProps {
+  task: CicdTask | null;
+  app: App;
+  /** Used to conditionally show the CICD workbench link (RM/SPD only). */
+  userRole?: string;
+}
+
+function AppCicdPane({ task, app, userRole }: AppCicdPaneProps) {
+  const canAccessWorkbench = userRole === "RM" || userRole === "SPD";
+  const [showHistory, setShowHistory] = useState(false);
+
+  const { data: pendingData, isLoading: pendingLoading } = useQuery({
+    queryKey: ["cicd", "requests", "pending", task?.id ?? null],
+    queryFn: () => task ? fetchCicdRequests({ taskId: task.id, status: "pending" }) : Promise.resolve({ requests: [] }),
+    staleTime: 0,
+    refetchOnMount: true,
+    enabled: !!task,
+  });
+
+  const { data: historyData, isLoading: historyLoading } = useQuery({
+    queryKey: ["cicd", "history", task?.id ?? null],
+    queryFn: () => task ? fetchCicdTaskHistory(task.id) : Promise.resolve({ history: [] }),
+    staleTime: 0,
+    refetchOnMount: true,
+    enabled: !!task && showHistory,
+  });
+
+  if (!task) {
+    return (
+      <div style={{ padding: "1.5rem", color: "var(--muted, #888)" }}>
+        <div style={{ textAlign: "center", marginBottom: 12, fontSize: "1.2em" }}>⚙️</div>
+        <p>此 App 暂无关联 CICD 任务。</p>
+        <p className="small muted" style={{ marginTop: 8 }}>
+          CICD 任务通过 CICD-first 创建流程建立（新增 App 时自动提交，RM 审批后生效）。<br />
+          已有 CICD 任务的 App 通过 <b>仓库名 + 分支</b> 自动关联，当前 App 仓库信息：<br />
+          <code style={{ background: "var(--surface2, #f0f0f0)", padding: "2px 4px", borderRadius: 3 }}>
+            {app.git_url}@{app.git_branch}
+          </code>
+        </p>
+      </div>
+    );
+  }
+
+  const pendingReqs = pendingData?.requests ?? [];
+  const history = historyData?.history ?? [];
+
+  const statusCls = task.status === "Running" ? "ok" : task.status === "Stopped" ? "warnp" : "";
+
+  return (
+    <div data-testid="cicd-link-card" style={{ display: "flex", flexDirection: "column", gap: 12, padding: "4px 0" }}>
+      {/* Identity + status row */}
+      <div className="banner" style={{ background: "var(--surface2, #f5f5f5)", borderLeft: "3px solid var(--accent, #1976d2)" }}>
+        <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <b style={{ fontSize: 12 }}>CICD 任务</b>
+          <span className={`pill ${statusCls}`}>{task.status}</span>
+          <span className="small muted">{app.git_url}@{app.git_branch}</span>
+          {canAccessWorkbench && (
+            <Link to="/cicd" className="small" data-testid="cicd-task-link">
+              查看 CICD 工作台任务 #{task.id}
+            </Link>
+          )}
+        </div>
+        {task.has_pending && (
+          <div className="small warnp" style={{ marginTop: 4 }}>
+            ⏳ 有待审批的 CICD 修改申请
+          </div>
+        )}
+        <div className="small muted" style={{ marginTop: 2, fontSize: 11 }}>
+          运行/停止由本 app 决策决定
+          {canAccessWorkbench && "；构建配置在 CICD 工作台改"}
+        </div>
+      </div>
+
+      {/* Config section */}
+      <details className="section" open>
+        <summary><span className="chev">▶</span> 构建配置（只读）</summary>
+        <div className="section-body">
+          <div className="form" style={{ pointerEvents: "none", opacity: 0.85 }}>
+            <label>仓库类型<input className="input" value={task.repo_type} disabled /></label>
+            <label>仓库名<input className="input" value={task.repo_name} disabled /></label>
+            <label>分支<input className="input" value={task.branch} disabled /></label>
+            <label>负责人<input className="input" value={task.owner_display || task.owner_username} disabled /></label>
+            <label>构建产物<input className="input" value={buildProductStr(task.build_product)} disabled /></label>
+            <label>开发者社区产物<input className="input" value={communityArtifactStr(task.community_artifact)} disabled /></label>
+            <label>构建依赖镜像<input className="input" value={task.build_image || "—"} disabled /></label>
+            <label>超时(min)<input className="input" value={task.test_timeout ?? 40} disabled /></label>
+            {task.notes && <label>备注<input className="input" value={task.notes} disabled /></label>}
+          </div>
+        </div>
+      </details>
+
+      {/* Pending requests */}
+      <details className="section" open>
+        <summary>
+          <span className="chev">▶</span> 待审批申请
+          {pendingReqs.length > 0 && (
+            <span className="badge warnp" style={{ marginLeft: 6 }}>{pendingReqs.length}</span>
+          )}
+        </summary>
+        <div className="section-body">
+          {pendingLoading ? (
+            <p className="muted small">加载中…</p>
+          ) : pendingReqs.length === 0 ? (
+            <p className="muted small">无待审批申请</p>
+          ) : (
+            <div className="cicd-table-wrap">
+              <table className="cicd-table">
+                <thead>
+                  <tr>
+                    <th>申请ID</th>
+                    <th>类型</th>
+                    <th>提交人</th>
+                    <th>提交时间</th>
+                    <th>变更内容</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pendingReqs.map((r) => {
+                    const payload = (r.payload ?? {}) as Record<string, unknown>;
+                    const summary = Object.keys(payload)
+                      .filter((k) => FIELD_LABEL_APP[k])
+                      .map((k) => FIELD_LABEL_APP[k])
+                      .join(", ") || (r.request_type === "create" ? "新建任务" : "—");
+                    return (
+                      <tr key={r.id}>
+                        <td className="cicd-id">#{r.id}</td>
+                        <td>{REQ_TYPE_LABEL_APP[r.request_type] ?? r.request_type}</td>
+                        <td>{r.submitter_display || r.submitter}</td>
+                        <td className="small muted">{formatServerTime(r.submitted_at ?? "")}</td>
+                        <td style={{ maxWidth: 200, fontSize: 12 }}>{summary}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </details>
+
+      {/* History — lazy loaded */}
+      <details className="section" onToggle={(e) => setShowHistory((e.target as HTMLDetailsElement).open)}>
+        <summary><span className="chev">▶</span> 变更历史</summary>
+        <div className="section-body">
+          {!showHistory ? (
+            <p className="muted small">展开后加载</p>
+          ) : historyLoading ? (
+            <p className="muted small">加载中…</p>
+          ) : history.length === 0 ? (
+            <p className="muted small">暂无历史记录</p>
+          ) : (
+            <div className="cicd-table-wrap">
+              <table className="cicd-table">
+                <thead>
+                  <tr>
+                    <th>申请ID</th>
+                    <th>类型</th>
+                    <th>提交人</th>
+                    <th>审批时间</th>
+                    <th>状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...history].reverse().map((h) => (
+                    <tr key={h.id}>
+                      <td className="cicd-id">#{h.id}</td>
+                      <td>{REQ_TYPE_LABEL_APP[h.request_type] ?? h.request_type}</td>
+                      <td>{h.submitter_display || h.submitter}</td>
+                      <td className="small muted">{formatServerTime(h.reviewed_at || h.submitted_at || "")}</td>
+                      <td>
+                        <span className={`cicd-req-status-${h.status}`}>
+                          {REQ_STATUS_LABEL_APP[h.status] ?? h.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </details>
     </div>
   );
 }
@@ -364,6 +832,9 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
   const docDeadline = beforeDocDeadline(release);
   const appFreeze = beforeAppFreeze(release);
   const canEditDetail = !!(app && snap && canEdit(user, snap) && !locked && docDeadline);
+
+  // W3: two sub-tabs in the detail panel
+  const [detailTab, setDetailTab] = useState<"docs" | "cicd">("docs");
 
   const [editMode, setEditMode] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -428,6 +899,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       setAuditEntries(null);
       setSyncDialog(null);
       setShowCopyDialog(false);
+      setDetailTab("docs");
     }
   }, [app?.id, snap?.app_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -676,10 +1148,12 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     );
   }
 
-  // Find the CICD task linked to this app via (repo_name, branch) identity key.
+  // Find the CICD task linked to this app via normalized (repo_name, branch) identity key.
+  // sameGitIdentity mirrors Python identity.same_identity() so both legacy bare-name apps
+  // (app.git_url = "hpc_abacus") and cicd-first full-SSH-URL apps match task.repo_name.
   const cicdTask: CicdTask | null =
     (cicdTasksData?.tasks ?? []).find(
-      (t) => t.repo_name === app.git_url && t.branch === app.git_branch,
+      (t) => sameGitIdentity(t.repo_name, t.branch, app.git_url ?? "", app.git_branch ?? ""),
     ) ?? null;
 
   const rel = isReleaseSnap(snap);
@@ -719,31 +1193,34 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
         {userIsOwner && <div className="greet">你好 👋 完成清单后提交确认</div>}
       </div>
 
-      <div className="detail-body">
-        {/* CicdLinkCard — shows the linked CICD task (matched by repo_name+branch) */}
-        {cicdTask && (
-          <div className="banner" data-testid="cicd-link-card" style={{ background: "var(--surface2, #f5f5f5)", borderLeft: "3px solid var(--accent, #1976d2)" }}>
-            <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              <b style={{ fontSize: 12 }}>CICD：</b>
-              <span className={`pill ${cicdTask.status === "Running" ? "ok" : cicdTask.status === "Stopped" ? "warnp" : ""}`}>
-                {cicdTask.status}
-              </span>
-              <span className="small muted">{app.git_url}@{app.git_branch}</span>
-              <Link to="/cicd" className="small" data-testid="cicd-task-link">
-                查看 CICD 任务 #{cicdTask.id}
-              </Link>
-            </div>
-            {cicdTask.has_pending && (
-              <div className="small warnp" style={{ marginTop: 4 }}>
-                ⏳ 有待审批的 CICD 修改申请
-              </div>
-            )}
-            <div className="small muted" style={{ marginTop: 2, fontSize: 11 }}>
-              运行/停止由本 app 决策决定；构建配置在 CICD 工作台改
-            </div>
-          </div>
-        )}
+      {/* W3: Sub-tab navigation */}
+      <div className="cicd-subtabs" style={{ borderBottom: "1px solid var(--border, #ddd)", marginBottom: 0 }}>
+        <button
+          className={`cicd-subtab${detailTab === "docs" ? " active" : ""}`}
+          onClick={() => setDetailTab("docs")}
+          data-testid="detail-tab-docs"
+        >
+          文档信息
+        </button>
+        <button
+          className={`cicd-subtab${detailTab === "cicd" ? " active" : ""}`}
+          onClick={() => setDetailTab("cicd")}
+          data-testid="detail-tab-cicd"
+          style={{ position: "relative" }}
+        >
+          CICD
+          {cicdTask?.has_pending && (
+            <span className="cicd-badge" style={{ marginLeft: 4, fontSize: 10 }}>!</span>
+          )}
+        </button>
+      </div>
 
+      {detailTab === "cicd" ? (
+        <div className="detail-body" data-testid="detail-cicd-pane">
+          <AppCicdPane task={cicdTask} app={app} userRole={user?.role ?? ""} />
+        </div>
+      ) : (
+      <div className="detail-body">
         {/* Phase/lock banners */}
         {locked && (
           <div className="banner bad">🔒 Release 已最终锁定，所有信息冻结。</div>
@@ -1062,8 +1539,10 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
 
         {saveErr && <p className="lerr" style={{ padding: "0 1rem 1rem" }}>{saveErr}</p>}
       </div>
+      )}
 
-      {/* Footer actions */}
+      {/* Footer actions — only shown on docs tab */}
+      {detailTab === "docs" && (
       <div className="detail-foot">
         <span className="foot-note">{footNote}</span>
         {canEditDetail && editMode && (
@@ -1095,6 +1574,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
           </>
         )}
       </div>
+      )}
 
       {/* F1 — decision-sync owner-choice dialog */}
       {syncDialog && (
@@ -1523,6 +2003,8 @@ export function AppWorkbenchPage() {
         <NewAppDialog
           releases={releases}
           currentReleaseId={release.id}
+          currentUsername={user?.username ?? ""}
+          userRole={user?.role ?? ""}
           onClose={() => setShowNewApp(false)}
           onCreated={handleNewAppCreated}
         />

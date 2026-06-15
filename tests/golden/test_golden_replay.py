@@ -114,8 +114,13 @@ def _goldens_with_metadata() -> list[tuple[str, dict]]:
         "post_cicd_request_submit_rm": 117,     # R3 Ruling B: RM → pending, id=4
         "post_cicd_abandon_admin": 118,         # R3 Ruling C: Admin → 403 (no DB write)
         "post_cicd_abandon_rm_running": 119,    # R3 Ruling A: RM on Running → 400 (no DB write)
-        # Phase 12 — logout (run last so other tests can still use the session)
-        "post_logout": 120,
+        # Phase 12 — Wave 3: CICD-first app creation (order matters — setup → approval → collision)
+        "post_cicd_apps_new_admin_403": 120,    # R3 Wave 3: Admin → 403 (no DB write)
+        "post_cicd_apps_new_rm_success": 121,   # R3 Wave 3: RM creates w3cicdfirst, req #5
+        "post_cicd_apps_new_rm_approve": 122,   # R3 Wave 3: RM approves req #5 → CICD-0002
+        "post_cicd_apps_new_collision_reject": 123,  # R3 Wave 3: same identity → 400
+        # Phase 13 — logout (run last so other tests can still use the session)
+        "post_logout": 130,
     }
 
     def _sort_key(item: tuple[str, dict]) -> tuple[int, str]:
@@ -279,6 +284,11 @@ class TestGoldenHttpStatuses:
         # R3 Ruling A/C new goldens
         "post_cicd_abandon_admin": 403,
         "post_cicd_abandon_rm_running": 400,
+        # R3 Wave 3: CICD-first app creation goldens
+        "post_cicd_apps_new_admin_403": 403,
+        "post_cicd_apps_new_rm_success": 200,
+        "post_cicd_apps_new_rm_approve": 200,
+        "post_cicd_apps_new_collision_reject": 400,
     }
 
     @pytest.mark.parametrize("name,expected_status", EXPECTED_STATUS.items())

@@ -68,7 +68,7 @@ h1, h2, h3, h4 { margin: 0; font-weight: 700; letter-spacing: -.01em; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 [hidden] { display: none !important; }
-::selection { background: var(--accent-soft); }
+::selection { background: #1565c0; color: #fff; }
 
 /* App shell uses internal page scrolling (topbar + tabs are fixed flex rows,
    .page is the scroll container). Definite #root height lets the master–detail

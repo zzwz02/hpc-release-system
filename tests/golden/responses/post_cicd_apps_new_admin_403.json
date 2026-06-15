@@ -1,0 +1,24 @@
+{
+  "_golden_name": "post_cicd_apps_new_admin_403",
+  "_note": "R3 Wave 3: Admin gets 403 on POST /api/cicd/apps/new (CICD_CREATE_ROLES={Owner,RM}; Admin excluded by Ruling C)",
+  "_method": "POST",
+  "_path": "/api/cicd/apps/new",
+  "_params": "",
+  "_role": "admin",
+  "_body": {
+    "official_name": "W3CicdFirst",
+    "repo_type": "git",
+    "repo_name": "hpc_w3cicd",
+    "branch": "wave3",
+    "build_product": ["maca"],
+    "community_artifact": [],
+    "build_image": "hpc/w3cicd:latest",
+    "test_timeout": 40,
+    "notes": "wave3 cicd-first golden"
+  },
+  "status": 403,
+  "body": {
+    "ok": false,
+    "error": "只有 Owner、RM 可以发起 CICD-first 建 app"
+  }
+}

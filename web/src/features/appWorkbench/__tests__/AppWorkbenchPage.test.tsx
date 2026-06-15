@@ -29,6 +29,7 @@ vi.mock("../../../api/http", () => ({
   apiPost: vi.fn(),
 }));
 
+
 vi.mock("../../../api/AuthContext", () => ({
   useAuth: vi.fn(),
 }));
@@ -580,6 +581,13 @@ function mockApiGetWithCicd(cicdTasks: CicdTask[] = [makeCicdTask()]) {
   });
 }
 
+// Helper: click the CICD sub-tab in detail panel
+async function clickCicdTab() {
+  await waitFor(() => screen.getByTestId("detail-tab-cicd"));
+  fireEvent.click(screen.getByTestId("detail-tab-cicd"));
+  await waitFor(() => screen.getByTestId("detail-cicd-pane"));
+}
+
 describe("AppWorkbenchPage W2 CicdLinkCard", () => {
   beforeEach(() => {
     vi.stubGlobal("alert", vi.fn());
@@ -595,6 +603,7 @@ describe("AppWorkbenchPage W2 CicdLinkCard", () => {
     await waitFor(() => screen.getByTestId("app-row-app1"));
     fireEvent.click(screen.getByTestId("app-row-app1"));
     await waitFor(() => screen.getByTestId("detail-panel"));
+    await clickCicdTab();
     await waitFor(() => {
       expect(screen.getByTestId("cicd-link-card")).toBeInTheDocument();
     });
@@ -608,6 +617,8 @@ describe("AppWorkbenchPage W2 CicdLinkCard", () => {
     renderPage(qc);
     await waitFor(() => screen.getByTestId("app-row-app1"));
     fireEvent.click(screen.getByTestId("app-row-app1"));
+    await waitFor(() => screen.getByTestId("detail-panel"));
+    await clickCicdTab();
     await waitFor(() => screen.getByTestId("cicd-link-card"));
     expect(screen.getByTestId("cicd-link-card").textContent).toContain("待审批");
   });
@@ -619,7 +630,8 @@ describe("AppWorkbenchPage W2 CicdLinkCard", () => {
     await waitFor(() => screen.getByTestId("app-row-app1"));
     fireEvent.click(screen.getByTestId("app-row-app1"));
     await waitFor(() => screen.getByTestId("detail-panel"));
-    // Give the cicd query time to resolve
+    await clickCicdTab();
+    // Give the cicd query time to resolve — no matching task → no cicd-link-card
     await waitFor(() => expect(screen.queryByTestId("cicd-link-card")).not.toBeInTheDocument());
   });
 
@@ -629,6 +641,8 @@ describe("AppWorkbenchPage W2 CicdLinkCard", () => {
     renderPage(qc);
     await waitFor(() => screen.getByTestId("app-row-app1"));
     fireEvent.click(screen.getByTestId("app-row-app1"));
+    await waitFor(() => screen.getByTestId("detail-panel"));
+    await clickCicdTab();
     await waitFor(() => screen.getByTestId("cicd-link-card"));
     expect(screen.getByTestId("cicd-link-card").textContent).toContain("运行/停止由本 app 决策决定");
   });
@@ -756,5 +770,195 @@ describe("AppWorkbenchPage F3 unsaved-changes guard", () => {
     expect(confirmSpy).toHaveBeenCalled();
     // cancelled → still on app1
     expect(useUiStore.getState().selectedApp).toBe("app1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W3 — Sub-tabs + CICD-first new-app dialog
+// ---------------------------------------------------------------------------
+
+
+describe("AppWorkbenchPage W3 detail sub-tabs", () => {
+  beforeEach(() => {
+    vi.stubGlobal("alert", vi.fn());
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    useUiStore.getState().setSelectedApp("");
+    useUiStore.getState().setAppDetailDirty(false);
+  });
+
+  it("shows 文档信息 and CICD sub-tab buttons after selecting an app", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+    fireEvent.click(screen.getByTestId("app-row-app1"));
+    await waitFor(() => screen.getByTestId("detail-panel"));
+    expect(screen.getByTestId("detail-tab-docs")).toBeInTheDocument();
+    expect(screen.getByTestId("detail-tab-cicd")).toBeInTheDocument();
+  });
+
+  it("文档信息 tab is active by default and shows edit content", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+    fireEvent.click(screen.getByTestId("app-row-app1"));
+    await waitFor(() => screen.getByTestId("detail-panel"));
+    // docs tab is active → detail-cicd-pane not present
+    expect(screen.queryByTestId("detail-cicd-pane")).not.toBeInTheDocument();
+    // the ✎ 修改 button is visible on docs tab
+    expect(screen.getByText("✎ 修改")).toBeInTheDocument();
+  });
+
+  it("clicking CICD tab shows CICD pane", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+    fireEvent.click(screen.getByTestId("app-row-app1"));
+    await waitFor(() => screen.getByTestId("detail-panel"));
+    fireEvent.click(screen.getByTestId("detail-tab-cicd"));
+    await waitFor(() => screen.getByTestId("detail-cicd-pane"));
+    expect(screen.getByTestId("detail-cicd-pane")).toBeInTheDocument();
+  });
+
+  it("CICD pane shows 无关联 message when no task matches", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+    fireEvent.click(screen.getByTestId("app-row-app1"));
+    await waitFor(() => screen.getByTestId("detail-panel"));
+    fireEvent.click(screen.getByTestId("detail-tab-cicd"));
+    await waitFor(() => screen.getByTestId("detail-cicd-pane"));
+    expect(screen.getByTestId("detail-cicd-pane").textContent).toContain("暂无关联 CICD 任务");
+  });
+
+  it("switching to a different app resets to docs tab", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+    fireEvent.click(screen.getByTestId("app-row-app1"));
+    await waitFor(() => screen.getByTestId("detail-panel"));
+    // Switch to CICD tab
+    fireEvent.click(screen.getByTestId("detail-tab-cicd"));
+    await waitFor(() => screen.getByTestId("detail-cicd-pane"));
+    // Now switch to app2
+    fireEvent.click(screen.getByTestId("app-row-app2"));
+    await waitFor(() => {
+      // detail-tab-docs should be active again (no detail-cicd-pane)
+      expect(screen.queryByTestId("detail-cicd-pane")).not.toBeInTheDocument();
+    });
+  });
+});
+
+describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
+  beforeEach(() => {
+    vi.stubGlobal("alert", vi.fn());
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    useUiStore.getState().setSelectedApp("");
+    useUiStore.getState().setAppDetailDirty(false);
+  });
+
+  it("shows CICD-first dialog when new-app button clicked", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("new-app-btn"));
+    fireEvent.click(screen.getByTestId("new-app-btn"));
+    await waitFor(() => screen.getByTestId("new-app-dialog"));
+    expect(screen.getByTestId("new-app-dialog").textContent).toContain("CICD-first");
+  });
+
+  it("RM sees direct-create escape-hatch button", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("new-app-btn"));
+    fireEvent.click(screen.getByTestId("new-app-btn"));
+    await waitFor(() => screen.getByTestId("new-app-dialog"));
+    expect(screen.getByTestId("direct-create-btn")).toBeInTheDocument();
+  });
+
+  it("step 1 fetch → step 2 confirm → submits official_name to POST /api/cicd/apps/new", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    // Real backend keys from POST /api/cicd/apps/fetch-preview
+    const mockPreview = {
+      ok: true,
+      git_url: "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/myrepo",
+      git_branch: "main",
+      app_version: "3.7.0",
+      x86_chips: "C500",
+      arm_chips: "C500",
+      python_label: "python3.8",
+      pytorch_label: "",
+      os: "kylin",
+      arch: "x86",
+      commit_id: "abc123def456",
+      parsed: { version: "3.7.0", x86_chips: "C500", build_os: "kylin" },
+    };
+    const postMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("fetch-preview")) return mockPreview;
+      return { ok: true, app_id: "new-app-1", request_id: 1 };
+    });
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(postMock);
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("new-app-btn"));
+    fireEvent.click(screen.getByTestId("new-app-btn"));
+    await waitFor(() => screen.getByTestId("new-app-dialog"));
+    // Step 1: fill identity fields
+    fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "MyApp" } });
+    const repoInput = screen.getByPlaceholderText("例：sw-metax-open/amber");
+    fireEvent.change(repoInput, { target: { value: "myrepo" } });
+    const branchInput = screen.getByPlaceholderText("例：master");
+    fireEvent.change(branchInput, { target: { value: "main" } });
+    // Click fetch
+    fireEvent.click(screen.getByTestId("new-app-fetch"));
+    // Step 2 preview should appear with fetched data
+    await waitFor(() => screen.getByTestId("new-app-preview"));
+    // Verify the preview shows the real fetched value (app_version key, not version)
+    expect(screen.getByDisplayValue("3.7.0")).toBeTruthy();
+    // Click confirm → submits to /api/cicd/apps/new
+    fireEvent.click(screen.getByTestId("new-app-submit"));
+    await waitFor(() => {
+      const call = postMock.mock.calls.find((c) => c[0] === "/api/cicd/apps/new");
+      expect(call).toBeTruthy();
+      const body = call![1] as Record<string, unknown>;
+      expect(body.official_name).toBe("MyApp");
+      expect(body.app_name).toBe("MyApp");
+      // Must carry parsed blob + commit_id (not app_info) so backend can persist them
+      expect(body.app_info_parsed).toEqual(mockPreview.parsed);
+      expect(body.app_info_commit_id).toBe("abc123def456");
+    });
+  });
+
+  it("fetch error → shows skip button → skips to POST /api/cicd/apps/new directly", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    const postMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("fetch-preview")) throw new Error("Gerrit not reachable");
+      return { ok: true, app_id: "new-app-2", request_id: 2 };
+    });
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(postMock);
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("new-app-btn"));
+    fireEvent.click(screen.getByTestId("new-app-btn"));
+    await waitFor(() => screen.getByTestId("new-app-dialog"));
+    fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "ErrApp" } });
+    fireEvent.change(screen.getByPlaceholderText("例：sw-metax-open/amber"), { target: { value: "errrepo" } });
+    fireEvent.change(screen.getByPlaceholderText("例：master"), { target: { value: "dev" } });
+    fireEvent.click(screen.getByTestId("new-app-fetch"));
+    // Error state: skip button should appear
+    await waitFor(() => screen.getByTestId("new-app-submit"));
+    expect(screen.getByTestId("new-app-dialog").textContent).toContain("拉取失败");
+    // Click "跳过，直接创建"
+    fireEvent.click(screen.getByTestId("new-app-submit"));
+    await waitFor(() => {
+      const call = postMock.mock.calls.find((c) => c[0] === "/api/cicd/apps/new");
+      expect(call).toBeTruthy();
+      expect((call![1] as Record<string, string>).official_name).toBe("ErrApp");
+    });
   });
 });

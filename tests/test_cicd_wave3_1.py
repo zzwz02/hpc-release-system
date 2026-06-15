@@ -1,0 +1,633 @@
+"""Phase-4 Wave-3.1 tests — fetch-preview endpoint + cicd-first with app_info.
+
+New features (task 7 / impl-1 — now implemented):
+
+1. POST /api/cicd/apps/fetch-preview (auth Owner/RM):
+   Body: {repo_type, repo_name, branch}
+   - Derives (git_url, git_branch) via identity.repo_to_git_identity (offline for short names)
+   - Calls gerrit.fetch_app_info → core.parse_app_info → returns 7 derived fields
+   - Returns: {git_url, git_branch, app_version, x86_chips, arm_chips,
+               python_label, pytorch_label, os, arch, commit_id, parsed}
+     where x86_chips/arm_chips/python_label/pytorch_label/os/arch are
+     COMMA-JOINED STRINGS (not lists).
+   - On Gerrit failure: GerritNetworkError → HTTP 502
+   - On bad repo_name: ValueError → HTTP 400
+   - Auth: CICD_CREATE_ROLES (Owner/RM); Admin/Guest → 403
+
+2. cicd_first_new_app with optional app_info:
+   New kwargs: app_info_parsed: dict | None = None, app_info_commit_id: str = ""
+   - When provided: all unlocked release snapshots receive the parsed fields
+     (version, x86_chips, arm_chips, python_labels, pytorch_labels, build_os,
+     build_arches, app_info blob) and owner_confirmed=True
+   - When absent: snapshot stays at cicd_only defaults
+
+   Mockable: preview_cicd_app_info has _fetch_fn kwarg for direct injection.
+   For HTTP tests: patch app.integrations.gerrit.fetch_app_info at module level.
+
+3. FE-contract update (see TestCicdFirstFeContract in test_cicd_wave3.py):
+   New wizard payload: official_name + repo + app_info_parsed/commit_id + context.
+   Old per-field build params (build_product, build_image…) are no longer the
+   primary wizard fields; they come from app_info.
+"""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from app.services import cicd_service
+from tests.conftest import seed_release
+
+# ---------------------------------------------------------------------------
+# Shared constants
+# ---------------------------------------------------------------------------
+
+_REPO_SHORT = "hpc_w3cicd"
+_BRANCH = "wave3"
+_OFFICIAL_NAME = "W3CicdFirst"
+_RESOLVED_URL = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_w3cicd"
+_APP_ID = "w3cicdfirst"
+
+# ---------------------------------------------------------------------------
+# Mock Gerrit app_info — minimal but realistic app_info.json payload.
+# core.parse_app_info() produces the 7 preview fields from this.
+# ---------------------------------------------------------------------------
+
+_MOCK_APP_INFO_RAW = json.dumps({
+    "app_name": "W3CicdFirst",
+    "app_version": "1.0",
+    "app_build": {
+        "ubuntu20.04_amd64": {
+            "arch": "amd64",
+            "supported_chip": ["C500"],
+            "enabled": True,
+            "python_label": "3.10",
+            "pytorch_label": "2.1",
+            "os": "ubuntu20.04",
+        },
+    },
+    "app_test": {
+        "sanity": {
+            "test_cmd": "w3cicd --version",
+            "supported_chip": {"C500": ["ubuntu20.04_amd64"]},
+            "enabled": True,
+        }
+    },
+})
+_MOCK_COMMIT_ID = "abcdef1234567890abcdef12"
+
+
+def _mock_fetch_fn(git_url, git_branch, **kwargs):
+    """Injectable fetch function; returns (raw_json, commit_id) without network."""
+    return (_MOCK_APP_INFO_RAW, _MOCK_COMMIT_ID)
+
+
+def _mock_fetch_fail(git_url, git_branch, **kwargs):
+    """Injectable fetch that simulates a Gerrit outage."""
+    raise RuntimeError("无法连接 Gerrit: Connection refused")
+
+
+# ---------------------------------------------------------------------------
+# Helpers — TestClient factory
+# ---------------------------------------------------------------------------
+
+def _make_app(db_path, *, role: str = "RM", username: str = "rm"):
+    """Create a FastAPI app with test-DB + fixed-auth overrides."""
+    from app.db.connection import connect as app_connect
+    from app.deps import get_db, require_login
+    from app.main import create_app
+
+    fastapi_app = create_app()
+    fastapi_app.dependency_overrides[get_db] = (
+        lambda: (yield app_connect(db_path))
+    )
+    fastapi_app.dependency_overrides[require_login] = (
+        lambda: {"username": username, "role": role, "display_name": ""}
+    )
+    return fastapi_app
+
+
+# ---------------------------------------------------------------------------
+# Preview service — direct (no HTTP)
+# ---------------------------------------------------------------------------
+
+
+class TestPreviewCicdAppInfoService:
+    """Unit tests for preview_cicd_app_info() service function."""
+
+    def _preview(self, **overrides):
+        kwargs = dict(
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter_role="RM",
+            _fetch_fn=_mock_fetch_fn,
+        )
+        kwargs.update(overrides)
+        return cicd_service.preview_cicd_app_info(**kwargs)
+
+    # --- identity ---
+
+    def test_short_name_resolves_git_url(self):
+        result = self._preview()
+        assert result["git_url"] == _RESOLVED_URL
+
+    def test_branch_returned_unchanged(self):
+        result = self._preview()
+        assert result["git_branch"] == _BRANCH
+
+    # --- 7 app_info fields (all comma-joined strings) ---
+
+    def test_app_version(self):
+        result = self._preview()
+        assert result["app_version"] == "1.0"
+
+    def test_x86_chips_string(self):
+        result = self._preview()
+        assert result["x86_chips"] == "C500"
+
+    def test_arm_chips_empty_string(self):
+        result = self._preview()
+        # No ARM build env in mock → empty string (not None or [])
+        assert result["arm_chips"] == ""
+
+    def test_python_label_string(self):
+        result = self._preview()
+        assert result["python_label"] == "3.10"
+
+    def test_pytorch_label_string(self):
+        result = self._preview()
+        assert result["pytorch_label"] == "2.1"
+
+    def test_os_string(self):
+        result = self._preview()
+        assert result["os"] == "ubuntu20.04"
+
+    def test_arch_string(self):
+        result = self._preview()
+        assert result["arch"] == "amd64"
+
+    # --- extra response fields ---
+
+    def test_commit_id_returned(self):
+        result = self._preview()
+        assert result["commit_id"] == _MOCK_COMMIT_ID
+
+    def test_parsed_blob_returned(self):
+        """'parsed' blob is included for FE to pass back as app_info_parsed."""
+        result = self._preview()
+        assert "parsed" in result
+        assert result["parsed"]["app_version"] == "1.0"
+        assert "x86_chips" in result["parsed"]
+
+    # --- no DB writes ---
+
+    def test_no_db_access_needed(self):
+        """preview_cicd_app_info is stateless — no connection param."""
+        import inspect
+        sig = inspect.signature(cicd_service.preview_cicd_app_info)
+        assert "conn" not in sig.parameters
+
+    # --- Gerrit failure ---
+
+    def test_gerrit_failure_raises_gerrit_network_error(self):
+        from app.api.errors import GerritNetworkError
+        with pytest.raises(GerritNetworkError, match="Gerrit"):
+            self._preview(_fetch_fn=_mock_fetch_fail)
+
+    def test_empty_repo_name_raises_value_error(self):
+        with pytest.raises(ValueError, match="repo"):
+            self._preview(repo_name="")
+
+    def test_empty_branch_raises_value_error(self):
+        with pytest.raises(ValueError, match="repo"):
+            self._preview(branch="")
+
+
+# ---------------------------------------------------------------------------
+# Fetch-preview HTTP — role-gating
+# ---------------------------------------------------------------------------
+
+_PREVIEW_PATH = "/api/cicd/apps/fetch-preview"
+_PREVIEW_BODY = {"repo_type": "git", "repo_name": _REPO_SHORT, "branch": _BRANCH}
+
+
+class TestFetchPreviewRoleGating:
+    """Admin/Guest → 403; Owner/RM → past auth (200 or 502 on gerrit, not 403)."""
+
+    def test_admin_gets_403(self, db_path):
+        from fastapi.testclient import TestClient
+        app = _make_app(db_path, role="Admin", username="admin_user")
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post(_PREVIEW_PATH, json=_PREVIEW_BODY)
+        assert resp.status_code == 403, resp.text
+        body = resp.json()
+        assert body["ok"] is False
+        assert "Owner" in body["error"] or "RM" in body["error"]
+
+    def test_guest_gets_403(self, db_path):
+        from fastapi.testclient import TestClient
+        app = _make_app(db_path, role="Guest", username="guest_user")
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post(_PREVIEW_PATH, json=_PREVIEW_BODY)
+        assert resp.status_code == 403, resp.text
+
+    def test_spd_gets_403(self, db_path):
+        from fastapi.testclient import TestClient
+        app = _make_app(db_path, role="SPD", username="spd_user")
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post(_PREVIEW_PATH, json=_PREVIEW_BODY)
+        assert resp.status_code == 403, resp.text
+
+    def test_rm_passes_auth(self, db_path):
+        """RM is in CICD_CREATE_ROLES → gets past auth (mocked Gerrit → 200)."""
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        app = _make_app(db_path, role="RM", username="rm")
+        with TestClient(app, raise_server_exceptions=False) as client:
+            with patch(
+                "app.integrations.gerrit.fetch_app_info",
+                return_value=(_MOCK_APP_INFO_RAW, _MOCK_COMMIT_ID),
+            ):
+                resp = client.post(_PREVIEW_PATH, json=_PREVIEW_BODY)
+        assert resp.status_code not in (401, 403), (
+            f"RM should pass auth, got {resp.status_code}: {resp.text}"
+        )
+
+    def test_owner_passes_auth(self, db_path):
+        """Owner is in CICD_CREATE_ROLES → passes auth gate."""
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        app = _make_app(db_path, role="Owner", username="owner_user")
+        with TestClient(app, raise_server_exceptions=False) as client:
+            with patch(
+                "app.integrations.gerrit.fetch_app_info",
+                return_value=(_MOCK_APP_INFO_RAW, _MOCK_COMMIT_ID),
+            ):
+                resp = client.post(_PREVIEW_PATH, json=_PREVIEW_BODY)
+        assert resp.status_code not in (401, 403), (
+            f"Owner should pass auth, got {resp.status_code}: {resp.text}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Fetch-preview HTTP — success response shape
+# ---------------------------------------------------------------------------
+
+
+class TestFetchPreviewHttp:
+    """HTTP-level tests for POST /api/cicd/apps/fetch-preview success path."""
+
+    def _post_preview(self, db_path, body=None):
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        app = _make_app(db_path)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            with patch(
+                "app.integrations.gerrit.fetch_app_info",
+                return_value=(_MOCK_APP_INFO_RAW, _MOCK_COMMIT_ID),
+            ):
+                resp = client.post(_PREVIEW_PATH, json=body or _PREVIEW_BODY)
+        return resp
+
+    def test_returns_200(self, db_path):
+        resp = self._post_preview(db_path)
+        assert resp.status_code == 200, resp.text
+
+    def test_git_url_resolved(self, db_path):
+        body = self._post_preview(db_path).json()
+        assert body["git_url"] == _RESOLVED_URL
+
+    def test_git_branch_returned(self, db_path):
+        body = self._post_preview(db_path).json()
+        assert body["git_branch"] == _BRANCH
+
+    def test_app_version_field(self, db_path):
+        body = self._post_preview(db_path).json()
+        assert body["app_version"] == "1.0"
+
+    def test_x86_chips_comma_string(self, db_path):
+        body = self._post_preview(db_path).json()
+        assert body["x86_chips"] == "C500"
+
+    def test_arm_chips_empty(self, db_path):
+        body = self._post_preview(db_path).json()
+        assert body["arm_chips"] == ""
+
+    def test_python_label_comma_string(self, db_path):
+        body = self._post_preview(db_path).json()
+        assert body["python_label"] == "3.10"
+
+    def test_pytorch_label_comma_string(self, db_path):
+        body = self._post_preview(db_path).json()
+        assert body["pytorch_label"] == "2.1"
+
+    def test_os_comma_string(self, db_path):
+        body = self._post_preview(db_path).json()
+        assert body["os"] == "ubuntu20.04"
+
+    def test_arch_comma_string(self, db_path):
+        body = self._post_preview(db_path).json()
+        assert body["arch"] == "amd64"
+
+    def test_commit_id_in_response(self, db_path):
+        body = self._post_preview(db_path).json()
+        assert body["commit_id"] == _MOCK_COMMIT_ID
+
+    def test_parsed_blob_in_response(self, db_path):
+        """'parsed' key is present so FE can pass it back as app_info_parsed."""
+        body = self._post_preview(db_path).json()
+        assert "parsed" in body, "'parsed' blob must be in preview response"
+        assert body["parsed"]["app_version"] == "1.0"
+
+    def test_empty_repo_name_gives_400(self, db_path):
+        resp = self._post_preview(db_path, body={
+            "repo_type": "git", "repo_name": "", "branch": _BRANCH
+        })
+        assert resp.status_code == 400, resp.text
+
+    def test_no_db_writes(self, db_path, tmp_dir):
+        """fetch-preview is read-only — apps + requests tables unchanged."""
+        from app.db.connection import connect as app_connect
+        conn = app_connect(db_path)
+        seed_release(conn, tmp_path=tmp_dir)
+        before_apps = conn.execute("SELECT COUNT(*) FROM apps").fetchone()[0]
+        before_reqs = conn.execute("SELECT COUNT(*) FROM cicd_task_requests").fetchone()[0]
+        conn.close()
+
+        self._post_preview(db_path)
+
+        conn = app_connect(db_path)
+        after_apps = conn.execute("SELECT COUNT(*) FROM apps").fetchone()[0]
+        after_reqs = conn.execute("SELECT COUNT(*) FROM cicd_task_requests").fetchone()[0]
+        conn.close()
+        assert after_apps == before_apps
+        assert after_reqs == before_reqs
+
+
+# ---------------------------------------------------------------------------
+# Fetch-preview HTTP — Gerrit failure → 502
+# ---------------------------------------------------------------------------
+
+
+class TestFetchPreviewGerritFail:
+    """Gerrit outage → HTTP 502 Bad Gateway with ok=false error body."""
+
+    def _post_with_gerrit_fail(self, db_path, exc):
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        app = _make_app(db_path)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            with patch(
+                "app.integrations.gerrit.fetch_app_info",
+                side_effect=exc,
+            ):
+                return client.post(_PREVIEW_PATH, json=_PREVIEW_BODY)
+
+    def test_runtime_error_gives_502(self, db_path):
+        resp = self._post_with_gerrit_fail(
+            db_path, RuntimeError("无法连接 Gerrit: Connection refused")
+        )
+        assert resp.status_code == 502, (
+            f"Gerrit failure must map to 502, got {resp.status_code}: {resp.text}"
+        )
+
+    def test_502_body_ok_false(self, db_path):
+        resp = self._post_with_gerrit_fail(
+            db_path, RuntimeError("无法连接 Gerrit: Connection refused")
+        )
+        body = resp.json()
+        assert body.get("ok") is False
+        assert body.get("error"), "Error body must contain 'error' key"
+
+    def test_timeout_gives_502(self, db_path):
+        resp = self._post_with_gerrit_fail(
+            db_path, RuntimeError("无法从 Gerrit 拉取 app_info.json: timed out")
+        )
+        assert resp.status_code == 502, resp.text
+
+    def test_502_is_not_500(self, db_path):
+        """502 is the correct status — not 500 (internal server error)."""
+        resp = self._post_with_gerrit_fail(
+            db_path, RuntimeError("network error")
+        )
+        assert resp.status_code != 500, (
+            "Gerrit failure must not bubble up as 500 — use GerritNetworkError → 502"
+        )
+
+
+# ---------------------------------------------------------------------------
+# cicd_first_new_app WITH app_info — snapshot carries parsed fields
+# ---------------------------------------------------------------------------
+
+
+class TestCicdFirstWithAppInfo:
+    """cicd_first_new_app WITH app_info_parsed → snapshot fields + owner_confirmed=True."""
+
+    _BUILD_PAYLOAD: dict = {
+        "build_product": ["maca"],
+        "community_artifact": [],
+        "build_image": "hpc/w3cicd:latest",
+        "test_timeout": 40,
+        "notes": "wave3.1 test",
+    }
+
+    def _get_parsed(self):
+        """Get the parsed blob from preview (using mock fetch)."""
+        result = cicd_service.preview_cicd_app_info(
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter_role="RM",
+            _fetch_fn=_mock_fetch_fn,
+        )
+        return result["parsed"], result["commit_id"]
+
+    def _create_with_app_info(self, conn):
+        parsed, commit_id = self._get_parsed()
+        return cicd_service.cicd_first_new_app(
+            conn,
+            official_name=_OFFICIAL_NAME,
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter="rm",
+            submitter_role="RM",
+            submitter_display="",
+            payload=self._BUILD_PAYLOAD,
+            app_info_parsed=parsed,
+            app_info_commit_id=commit_id,
+        )
+
+    def _get_snap(self, conn, app_id: str) -> dict:
+        from release_system import core
+        releases = core.list_releases(conn)
+        unlocked = [r for r in releases if not r.get("released_locked")]
+        assert unlocked, "No unlocked release"
+        rel_full = core.get_release(conn, unlocked[0]["id"])
+        return rel_full["snapshots"][app_id]
+
+    # --- happy path ---
+
+    def test_action_created(self, temp_db, tmp_dir):
+        seed_release(temp_db, tmp_path=tmp_dir)
+        result = self._create_with_app_info(temp_db)
+        assert result["ok"] is True
+        assert result["action"] == "created"
+        assert result["app_id"] == _APP_ID
+
+    def test_owner_confirmed_true(self, temp_db, tmp_dir):
+        """owner_confirmed=True when app_info_parsed provided at creation."""
+        seed_release(temp_db, tmp_path=tmp_dir)
+        result = self._create_with_app_info(temp_db)
+        snap = self._get_snap(temp_db, result["app_id"])
+        assert snap.get("owner_confirmed") is True, (
+            "owner_confirmed must be True when app_info_parsed provided"
+        )
+
+    def test_version_set_from_app_info(self, temp_db, tmp_dir):
+        seed_release(temp_db, tmp_path=tmp_dir)
+        result = self._create_with_app_info(temp_db)
+        snap = self._get_snap(temp_db, result["app_id"])
+        assert snap.get("version") == "1.0", (
+            f"snapshot.version should be '1.0', got: {snap.get('version')}"
+        )
+
+    def test_x86_chips_set(self, temp_db, tmp_dir):
+        seed_release(temp_db, tmp_path=tmp_dir)
+        result = self._create_with_app_info(temp_db)
+        snap = self._get_snap(temp_db, result["app_id"])
+        assert "C500" in (snap.get("x86_chips") or ""), (
+            f"snapshot.x86_chips should contain C500, got: {snap.get('x86_chips')}"
+        )
+
+    def test_arm_chips_empty(self, temp_db, tmp_dir):
+        seed_release(temp_db, tmp_path=tmp_dir)
+        result = self._create_with_app_info(temp_db)
+        snap = self._get_snap(temp_db, result["app_id"])
+        assert snap.get("arm_chips", "") == "", (
+            f"No ARM in mock → arm_chips should be '', got: {snap.get('arm_chips')}"
+        )
+
+    def test_python_labels_set(self, temp_db, tmp_dir):
+        seed_release(temp_db, tmp_path=tmp_dir)
+        result = self._create_with_app_info(temp_db)
+        snap = self._get_snap(temp_db, result["app_id"])
+        assert "3.10" in (snap.get("python_labels") or ""), (
+            f"snapshot.python_labels should contain 3.10, got: {snap.get('python_labels')}"
+        )
+
+    def test_app_info_blob_stored(self, temp_db, tmp_dir):
+        """snapshot.app_info is set with source_type='cicd_workbench'."""
+        seed_release(temp_db, tmp_path=tmp_dir)
+        result = self._create_with_app_info(temp_db)
+        snap = self._get_snap(temp_db, result["app_id"])
+        ai = snap.get("app_info")
+        assert ai is not None, "snapshot.app_info should be set"
+        assert ai.get("source_type") == "cicd_workbench"
+        assert ai.get("commit_id") == _MOCK_COMMIT_ID
+
+    def test_pending_request_still_created(self, temp_db, tmp_dir):
+        """app_info attachment does not skip the pending CICD create request."""
+        seed_release(temp_db, tmp_path=tmp_dir)
+        result = self._create_with_app_info(temp_db)
+        req = result["request"]
+        assert req["status"] == "pending"
+        assert req["task_id"] is None  # task only on RM approval
+
+    # --- without app_info: owner_confirmed stays False ---
+
+    def test_owner_confirmed_false_without_app_info(self, temp_db, tmp_dir):
+        """Without app_info_parsed, owner_confirmed stays falsy (default)."""
+        from release_system import core
+        seed_release(temp_db, tmp_path=tmp_dir)
+        result = cicd_service.cicd_first_new_app(
+            temp_db,
+            official_name=_OFFICIAL_NAME,
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter="rm",
+            submitter_role="RM",
+            submitter_display="",
+            payload=self._BUILD_PAYLOAD,
+            # No app_info_parsed
+        )
+        releases = core.list_releases(temp_db)
+        unlocked = [r for r in releases if not r.get("released_locked")]
+        rel_full = core.get_release(temp_db, unlocked[0]["id"])
+        snap = rel_full["snapshots"].get(result["app_id"], {})
+        assert not snap.get("owner_confirmed"), (
+            "owner_confirmed should be falsy without app_info_parsed"
+        )
+
+    def test_version_empty_without_app_info(self, temp_db, tmp_dir):
+        """Without app_info_parsed, snapshot.version stays at default ('')."""
+        from release_system import core
+        seed_release(temp_db, tmp_path=tmp_dir)
+        result = cicd_service.cicd_first_new_app(
+            temp_db,
+            official_name=_OFFICIAL_NAME,
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter="rm",
+            submitter_role="RM",
+            submitter_display="",
+            payload=self._BUILD_PAYLOAD,
+        )
+        releases = core.list_releases(temp_db)
+        unlocked = [r for r in releases if not r.get("released_locked")]
+        rel_full = core.get_release(temp_db, unlocked[0]["id"])
+        snap = rel_full["snapshots"].get(result["app_id"], {})
+        assert snap.get("version", "") == "", (
+            f"version should be '' without app_info, got: {snap.get('version')}"
+        )
+
+    # --- HTTP contract: POST /api/cicd/apps/new with app_info_parsed ---
+
+    def test_http_create_with_app_info_parsed_gives_200(self, db_path, tmp_dir):
+        """POST /api/cicd/apps/new with app_info_parsed in body → 200."""
+        import json as _json
+        from fastapi.testclient import TestClient
+        from app.db.connection import connect as app_connect
+
+        # Seed release
+        conn = app_connect(db_path)
+        seed_release(conn, tmp_path=tmp_dir)
+        conn.close()
+
+        # Get the parsed blob via the service (mocked Gerrit)
+        preview = cicd_service.preview_cicd_app_info(
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter_role="RM",
+            _fetch_fn=_mock_fetch_fn,
+        )
+
+        # New wizard payload: official_name + repo + app_info_parsed + context fields
+        new_wizard_payload = {
+            "official_name": _OFFICIAL_NAME,
+            "repo_type": "git",
+            "repo_name": _REPO_SHORT,
+            "branch": _BRANCH,
+            "app_info_parsed": preview["parsed"],
+            "app_info_commit_id": preview["commit_id"],
+            # FE context fields — ignored by BE:
+            "release_id": "some-release-id",
+            "owner_username": "rm",
+        }
+
+        app = _make_app(db_path)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post("/api/cicd/apps/new", json=new_wizard_payload)
+
+        assert resp.status_code == 200, (
+            f"Expected 200 with new wizard payload, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["app_id"] == _APP_ID
+        assert body["request"]["status"] == "pending"
+        assert body["request"]["task_id"] is None

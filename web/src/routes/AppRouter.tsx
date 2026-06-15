@@ -50,6 +50,11 @@ export function AppRouter() {
     return <Navigate to="/admin" replace />;
   }
 
+  // Wave 3: CICD 工作台 is RM/SPD only — bounce Owner and Guest to /apps.
+  if (["Owner", "Guest"].includes(user?.role ?? "") && pathname.startsWith("/cicd")) {
+    return <Navigate to="/apps" replace />;
+  }
+
   return (
     <Routes>
       {ROUTES.map((route) => (

@@ -112,4 +112,31 @@ describe("AppRouter", () => {
     renderAt("Guest", "/");
     expect(screen.getByTestId("dashboard-page")).toBeInTheDocument();
   });
+
+  // ── Wave 3: CICD tab RM/SPD-only — Owner and Guest bounced to /apps ─────────
+
+  it("Owner at /cicd is redirected to /apps (W3 CICD tab gate)", () => {
+    // /apps renders the AppWorkbenchPage mock
+    renderAt("Owner", "/cicd");
+    // Should not see cicd component
+    expect(screen.queryByText("cicd")).not.toBeInTheDocument();
+    // Should see apps instead (the mock renders "apps" text)
+    expect(screen.getByText("apps")).toBeInTheDocument();
+  });
+
+  it("Guest at /cicd is redirected to /apps (W3 CICD tab gate)", () => {
+    renderAt("Guest", "/cicd");
+    expect(screen.queryByText("cicd")).not.toBeInTheDocument();
+    expect(screen.getByText("apps")).toBeInTheDocument();
+  });
+
+  it("RM at /cicd sees the CICD page (W3 RM allowed)", () => {
+    renderAt("RM", "/cicd");
+    expect(screen.getByText("cicd")).toBeInTheDocument();
+  });
+
+  it("SPD at /cicd sees the CICD page (W3 SPD allowed)", () => {
+    renderAt("SPD", "/cicd");
+    expect(screen.getByText("cicd")).toBeInTheDocument();
+  });
 });

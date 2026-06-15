@@ -5,7 +5,8 @@ Faithful port of release_system/core.py:3639-4364 plus Phase 4 rulings.
 Wave 1 (implemented): Ruling B (no auto-approve), Ruling C (Admin out of CICD).
 Wave 2 (implemented): Ruling D (sync_decision_to_cicd), Ruling A (abandon_task),
     V3 status-lock (submit modify rejects status field).
-Wave 3 stub (NOT implemented yet — raises NotImplementedError): cicd_first_new_app.
+Wave 3 (implemented): cicd_first_new_app, preview_cicd_app_info (fetch-preview wizard),
+    app_info attachment (owner_confirmed=True), 1:1 cardinality dedup gate.
 """
 from __future__ import annotations
 
@@ -158,13 +159,20 @@ def _apply_cicd_request(
     ts: str,
 ) -> str:
     """Create or update cicd_tasks after approval.  Returns the task_id."""
+    # Work on a local copy so we can extract internal-only fields without
+    # mutating the caller's dict and without exposing them to field validation.
+    payload = dict(payload)
+    # app_id is an internal-only field injected by cicd_first_new_app to link
+    # the new task to its parent app on approval.  Regular user create requests
+    # omit it (None) — submit_request validation already blocks unknown fields.
+    linked_app_id: str | None = payload.pop("app_id", None) or None
     _validate_payload_fields(payload)
     if request_type == "create":
         new_id = cicd_repo.next_cicd_id(conn)
         cicd_repo.create_task(
             conn,
             task_id=new_id,
-            app_id=None,
+            app_id=linked_app_id,  # None for regular creates; set for CICD-first
             app_name=payload.get("app_name", ""),
             app_version=payload.get("app_version", ""),
             repo_type=payload.get("repo_type", "git"),
@@ -859,22 +867,359 @@ def abandon_task(
 
 
 # ---------------------------------------------------------------------------
-# Wave 3 stub — CICD-first app creation (NOT implemented yet)
+# Wave 3 — CICD-first app creation (plan §3.5 a)
 # ---------------------------------------------------------------------------
+
+
+def _find_app_by_identity(
+    conn: sqlite3.Connection,
+    git_url: str,
+    git_branch: str,
+) -> dict | None:
+    """Return the app dict whose (git_url, git_branch) matches the derived identity.
+
+    Both sides are normalised through same_identity() / normalize_git_url() so
+    that short repo names in the DB ('hpc_hpl') compare equal to the full
+    SSH URL produced by repo_to_git_identity (plan §4.2 规范化对齐).
+    Returns None when no match is found.
+    """
+    from app.identity import same_identity
+
+    rows = conn.execute("SELECT id, git_url, git_branch FROM apps").fetchall()
+    for row in rows:
+        if same_identity(row["git_url"], row["git_branch"], git_url, git_branch):
+            return dict(row)
+    return None
+
+
+def _has_pending_cicd_create_for_app(
+    conn: sqlite3.Connection,
+    app_id: str,
+) -> bool:
+    """True if a pending 'create' CICD request already carries this app_id.
+
+    Guards against duplicate pending create requests from repeated CICD-first
+    calls before RM approves the first one.
+    """
+    import json as _json
+
+    rows = conn.execute(
+        "SELECT payload FROM cicd_task_requests "
+        "WHERE status = 'pending' AND request_type = 'create'"
+    ).fetchall()
+    for row in rows:
+        try:
+            p = _json.loads(row["payload"] or "{}")
+        except Exception:
+            continue
+        if p.get("app_id") == app_id:
+            return True
+    return False
+
+
+def preview_cicd_app_info(
+    *,
+    repo_type: str,
+    repo_name: str,
+    branch: str,
+    submitter_role: str,
+    _fetch_fn=None,
+) -> dict:
+    """Fetch and parse Gerrit app_info for a CICD-first preview (NO DB writes).
+
+    Returns a preview dict with key identity + app_info fields so the
+    frontend can show the user what will be created before they confirm.
+    Also returns the full `parsed` blob for passing back to
+    cicd_first_new_app as `app_info_parsed`.
+
+    Args:
+        repo_type: advisory repo type (git/repo/manifest)
+        repo_name: short repo name or .xml manifest path
+        branch: git branch / revision
+        submitter_role: caller's role (auth check already done in router)
+        _fetch_fn: injectable fetch function for tests; defaults to
+                   app.integrations.gerrit.fetch_app_info.  Tests can
+                   pass a mock directly without patching at the module level.
+
+    Raises:
+        ValueError: identity resolution failed (bad repo_name/branch)
+        GerritNetworkError: Gerrit unreachable or archive fetch failed → HTTP 502
+    """
+    import release_system.core as core
+
+    from app.api.errors import GerritNetworkError
+    from app.config import settings
+    from app.identity import repo_to_git_identity
+
+    # Derive identity (offline for short names; network only for .xml manifests)
+    git_url, git_branch = repo_to_git_identity(repo_type, repo_name, branch)
+    if not git_url or not git_branch:
+        raise ValueError(
+            "无法解析 repo 身份（repo_name 为空或 .xml manifest 解析失败），"
+            "请检查 repo_name / branch"
+        )
+
+    if _fetch_fn is None:
+        from app.integrations.gerrit import fetch_app_info as _default_fetch
+
+        _fetch_fn = _default_fetch
+
+    try:
+        raw_json, commit_id = _fetch_fn(
+            git_url,
+            git_branch,
+            project_root=settings.db_path.parent,
+        )
+    except Exception as exc:
+        raise GerritNetworkError(
+            f"无法从 Gerrit 获取 app_info.json（{git_url}@{git_branch}）：{exc}"
+        ) from exc
+
+    parsed = core.parse_app_info(raw_json)
+
+    return {
+        "git_url": git_url,
+        "git_branch": git_branch,
+        "app_version": parsed.get("app_version", ""),
+        "x86_chips": ",".join(core.order_chips(parsed.get("x86_chips", []))),
+        "arm_chips": ",".join(core.order_chips(parsed.get("arm_chips", []))),
+        "python_label": ",".join(parsed.get("python_labels", [])),
+        "pytorch_label": ",".join(parsed.get("pytorch_labels", [])),
+        "os": ",".join(parsed.get("build_os", [])),
+        "arch": ",".join(parsed.get("build_arches", [])),
+        "commit_id": commit_id,
+        "parsed": parsed,  # full blob — pass to cicd_first_new_app as app_info_parsed
+    }
+
+
+def _apply_parsed_app_info_to_snapshot(
+    snapshot: dict,
+    parsed: dict,
+    *,
+    submitter: str,
+    commit_id: str = "",
+) -> None:
+    """Apply a pre-parsed app_info blob to a snapshot dict in-place.
+
+    No DB access, no audit, no phase checks — used only when attaching the
+    owner-confirmed app_info at CICD-first create time (the app is brand new,
+    no existing content to diff against).
+
+    Sets owner_confirmed=True because the submitter explicitly provided the
+    app_info (equivalent to confirming the content they fetched).
+    """
+    import release_system.core as core
+
+    snapshot["app_info"] = {
+        "source": f"{parsed.get('app_name', '')} (cicd_first)",
+        "source_type": "cicd_workbench",
+        "synced_at": beijing_timestamp(),
+        "commit_id": commit_id,
+        "uploaded_by": submitter,
+        "raw": parsed.get("raw", {}),
+        "parsed": parsed,
+    }
+    snapshot["app_info_diffs"] = []  # no previous version to diff against
+    snapshot["version"] = parsed.get("app_version", "") or snapshot.get("version", "")
+    snapshot["x86_chips"] = ",".join(core.order_chips(parsed.get("x86_chips", [])))
+    snapshot["arm_chips"] = ",".join(core.order_chips(parsed.get("arm_chips", [])))
+    snapshot["python_labels"] = ",".join(parsed.get("python_labels", []))
+    snapshot["pytorch_labels"] = ",".join(parsed.get("pytorch_labels", []))
+    snapshot["build_os"] = ",".join(parsed.get("build_os", []))
+    snapshot["build_arches"] = ",".join(parsed.get("build_arches", []))
+    snapshot["owner_confirmed"] = True  # submitter confirmed by providing app_info
 
 
 def cicd_first_new_app(
     conn: sqlite3.Connection,
     *,
+    official_name: str,
     repo_type: str,
     repo_name: str,
     branch: str,
     submitter: str,
     submitter_role: str,
+    submitter_display: str = "",
     payload: dict,
+    app_info_parsed: dict | None = None,
+    app_info_commit_id: str = "",
 ) -> dict:
     """CICD-first app creation (plan §3.5 a, POST /api/cicd/apps/new).
 
-    # TODO Wave 3
+    Request body carries repo info but NO git_url/git_branch — those are
+    derived via the app/identity.py seam (may do network I/O for .xml
+    manifests) which MUST run OUTSIDE the write transaction.
+
+    One outer transaction wraps:
+      - app row + initial snapshot(cicd_only) in all unlocked releases
+        (OR: locate existing CICD-less orphan app, skip creation)
+      - optional app_info attachment to all unlocked snapshots (when
+        app_info_parsed is provided — sets owner_confirmed=True)
+      - pending CICD 'create' request (Ruling B: always pending)
+
+    The actual cicd_task row lands only when RM approves (ruling B).
+    app_id is embedded in the request payload so _apply_cicd_request links
+    the new task to its parent app on approval.
+
+    1:1 cardinality ruling:
+      - derived identity matches existing app that has a CICD task
+        → reject "该 app 已有 CICD 任务"
+      - derived identity matches existing app with NO CICD task (orphan)
+        → associate: create pending create request for that app
+      - no existing app → create new app + initial cicd_only snapshots
+
+    Optional app_info:
+      - app_info_parsed: full parsed dict from preview_cicd_app_info()
+      - app_info_commit_id: git commit id for source attribution
+      When provided, applied inline to all unlocked snapshots for the app
+      and owner_confirmed is set to True (owner confirmed the Gerrit content).
     """
-    raise NotImplementedError
+    import json as _json
+
+    import release_system.core as core
+
+    from app.identity import repo_to_git_identity
+
+    # ------------------------------------------------------------------
+    # Role check (mirrors CICD_CREATE_ROLES; Admin excluded — Ruling C)
+    # ------------------------------------------------------------------
+    if submitter_role not in CICD_CREATE_ROLES:
+        raise PermissionError("只有 Owner、RM 可以发起 CICD-first 建 app")
+
+    official_name = (official_name or "").strip()
+    if not official_name:
+        raise ValueError("必须提供 app 名称（official_name）")
+
+    # ------------------------------------------------------------------
+    # Step 1 — Derive identity OUTSIDE the write transaction
+    # (manifest fetches involve network I/O via git archive --remote)
+    # ------------------------------------------------------------------
+    git_url, git_branch = repo_to_git_identity(repo_type, repo_name, branch)
+    if not git_url or not git_branch:
+        raise ValueError(
+            "无法解析 repo 身份（repo_name 为空或 .xml manifest 解析失败），"
+            "请检查 repo_name / branch"
+        )
+
+    # ------------------------------------------------------------------
+    # Step 2 — Single write transaction: dedup gate + app + request
+    # ------------------------------------------------------------------
+    with transaction(conn):
+        # ---- dedup gate: find existing app with normalised identity ----
+        existing_app = _find_app_by_identity(conn, git_url, git_branch)
+
+        if existing_app:
+            app_id = existing_app["id"]
+            # 1:1 check: existing tasks?
+            existing_tasks = cicd_repo.tasks_for_app(conn, app_id)
+            if existing_tasks:
+                raise RuntimeError(
+                    f"该 app（{app_id}）已有 CICD 任务（{existing_tasks[0]['id']}），"
+                    "无法重复创建"
+                )
+            # Idempotency guard: pending create already waiting for approval?
+            if _has_pending_cicd_create_for_app(conn, app_id):
+                raise RuntimeError(
+                    f"该 app（{app_id}）已有待审批的 CICD 创建申请，请等待 RM 审批"
+                )
+            action = "associated"
+
+        else:
+            # ---- No existing app: create new app + initial cicd_only snapshots ----
+            # Find anchor release (first unlocked) so add_new_app_request can
+            # propagate the snapshot to it and all subsequent unlocked releases.
+            releases = core.list_releases(conn)
+            unlocked = [r for r in releases if not r.get("released_locked")]
+            if not unlocked:
+                raise RuntimeError("没有可用的未锁定 release，无法创建 app")
+            anchor_release_id = unlocked[0]["id"]
+
+            # Reuse core's single dedup gate (git_url/git_branch unique check +
+            # id allocation + current/future release forward-sync).
+            # core.add_new_app_request internally opens its own transaction()
+            # context; because conn is app.db.connection.ManagedConnection and
+            # _transaction_depth is already > 0, core's commit() calls are
+            # suppressed — all writes batch into our outer transaction.
+            app_id = core.add_new_app_request(
+                conn,
+                anchor_release_id,
+                official_name=official_name,
+                git_url=git_url,
+                git_branch=git_branch,
+                release_decision="cicd_only",
+                owner=submitter,
+                doc_target="manual",
+            )
+            action = "created"
+
+        # ---- Optional: attach app_info to all unlocked snapshots ----
+        # When the caller ran fetch-preview first and passes the parsed blob,
+        # we apply it inline (no round-trip, no phase checks needed — the app
+        # is brand new so there is no previous content to conflict with).
+        # owner_confirmed is set to True because the submitter explicitly
+        # confirmed the Gerrit content they fetched.
+        if app_info_parsed:
+            releases = core.list_releases(conn)
+            for rel in releases:
+                if rel.get("released_locked"):
+                    continue
+                rel_full = core.get_release(conn, rel["id"])
+                snap = rel_full["snapshots"].get(app_id)
+                if snap is None:
+                    continue
+                _apply_parsed_app_info_to_snapshot(
+                    snap,
+                    app_info_parsed,
+                    submitter=submitter,
+                    commit_id=app_info_commit_id,
+                )
+                core.save_snapshot(conn, rel["id"], app_id, snap)
+
+        # ---- Create pending CICD 'create' request (Ruling B: always pending) ----
+        # Embed app_id in payload: when RM approves, _apply_cicd_request will
+        # pop it and pass it to cicd_repo.create_task so the new task is linked.
+        create_payload: dict = {
+            "app_name": payload.get("app_name") or official_name,
+            "app_id": app_id,                            # internal linkage field
+            "repo_type": repo_type,
+            "repo_name": repo_name,
+            "branch": branch,
+            "app_version": payload.get("app_version", ""),
+            "build_product": payload.get("build_product", []),
+            "community_artifact": payload.get("community_artifact", []),
+            "build_image": payload.get("build_image", ""),
+            "test_timeout": int(payload.get("test_timeout") or 40),
+            "owner_username": submitter,
+            "status": "Running",  # initial task status — aligned with cicd_only decision
+            "notes": payload.get("notes", ""),
+        }
+
+        ts = beijing_timestamp()
+        req_id = cicd_repo.insert_request(
+            conn,
+            task_id=None,
+            request_type="create",
+            payload=create_payload,
+            submitter=submitter,
+            submitter_display=submitter_display,
+            submitted_at=ts,
+            status="pending",
+            reviewer="",
+            reviewed_at="",
+            review_note="",
+            is_self_approved=0,
+            origin="cicd_workbench",
+        )
+        row = conn.execute(
+            "SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)
+        ).fetchone()
+        req = _strip_request(dict(row))
+
+    return {
+        "ok": True,
+        "action": action,        # "created" | "associated"
+        "app_id": app_id,
+        "git_url": git_url,
+        "git_branch": git_branch,
+        "request": req,
+    }

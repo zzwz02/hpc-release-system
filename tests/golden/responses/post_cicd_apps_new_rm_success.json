@@ -1,0 +1,49 @@
+{
+  "_golden_name": "post_cicd_apps_new_rm_success",
+  "_note": "R3 Wave 3: RM creates new CICD-first app; action=created, pending create request #5; NO task yet (Ruling B). App w3cicdfirst with snapshot(cicd_only) created.",
+  "_method": "POST",
+  "_path": "/api/cicd/apps/new",
+  "_params": "",
+  "_role": "rm",
+  "_body": {
+    "official_name": "W3CicdFirst",
+    "repo_type": "git",
+    "repo_name": "hpc_w3cicd",
+    "branch": "wave3",
+    "build_product": ["maca"],
+    "community_artifact": [],
+    "build_image": "hpc/w3cicd:latest",
+    "test_timeout": 40,
+    "notes": "wave3 cicd-first golden"
+  },
+  "status": 200,
+  "body": {
+    "ok": true,
+    "action": "created",
+    "app_id": "w3cicdfirst",
+    "git_url": "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_w3cicd",
+    "git_branch": "wave3",
+    "request": {
+      "id": 5,
+      "task_id": null,
+      "request_type": "create",
+      "payload": "{\"app_name\": \"W3CicdFirst\", \"app_id\": \"w3cicdfirst\", \"repo_type\": \"git\", \"repo_name\": \"hpc_w3cicd\", \"branch\": \"wave3\", \"app_version\": \"\", \"build_product\": [\"maca\"], \"community_artifact\": [], \"build_image\": \"hpc/w3cicd:latest\", \"test_timeout\": 40, \"owner_username\": \"rm\", \"status\": \"Running\", \"notes\": \"wave3 cicd-first golden\"}",
+      "submitter": "rm",
+      "submitter_display": "",
+      "submitted_at": "SCRUBBED_TIMESTAMP",
+      "status": "pending",
+      "reviewer": "",
+      "reviewed_at": "SCRUBBED_TIMESTAMP",
+      "review_note": "",
+      "is_self_approved": 0,
+      "approval_mode": "immediate",
+      "delivery_status": "",
+      "jira_id": "",
+      "jira_auto_created": 0,
+      "delivered_by": "",
+      "delivered_at": "SCRUBBED_TIMESTAMP",
+      "returned_reason": "",
+      "returned_at": "SCRUBBED_TIMESTAMP"
+    }
+  }
+}

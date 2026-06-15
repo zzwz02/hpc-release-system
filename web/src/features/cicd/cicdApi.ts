@@ -158,6 +158,71 @@ export function abandonCicdTask(body: {
 }
 
 // ---------------------------------------------------------------------------
+// POST — CICD-first app creation (Wave 3)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// POST — CICD-first app fetch-preview (Wave 3.1)
+// ---------------------------------------------------------------------------
+
+export interface FetchPreviewPayload {
+  repo_type: string;
+  repo_name: string;
+  branch: string;
+}
+
+/** Fields returned by POST /api/cicd/apps/fetch-preview (exact backend keys). */
+export interface FetchPreviewResponse {
+  ok: boolean;
+  git_url: string;
+  git_branch: string;
+  app_version: string;
+  x86_chips: string;
+  arm_chips: string;
+  python_label: string;
+  pytorch_label: string;
+  os: string;
+  arch: string;
+  commit_id: string;
+  /** Parsed app_info dict — pass as app_info_parsed to /api/cicd/apps/new. */
+  parsed: Record<string, unknown>;
+}
+
+export function fetchCicdPreview(body: FetchPreviewPayload): Promise<FetchPreviewResponse> {
+  return apiPost<FetchPreviewResponse>("/api/cicd/apps/fetch-preview", body);
+}
+
+// ---------------------------------------------------------------------------
+// POST — CICD-first app creation (Wave 3)
+// ---------------------------------------------------------------------------
+
+export interface CicdFirstNewAppPayload {
+  release_id: string;
+  /** Human-readable name stored in apps table — required by backend (cicd_service.cicd_first_new_app). */
+  official_name: string;
+  /** Optional CICD-task display name; defaults to official_name server-side when omitted/empty. */
+  app_name?: string;
+  app_version?: string;
+  owner_username: string;
+  repo_type: string;
+  repo_name: string;
+  branch: string;
+  build_product?: string[];
+  community_artifact?: string[];
+  build_image?: string;
+  test_timeout?: number;
+  notes?: string;
+  /** Parsed app_info blob from fetch-preview; backend persists it directly. */
+  app_info_parsed?: Record<string, unknown> | null;
+  /** Gerrit commit ID accompanying the parsed blob. */
+  app_info_commit_id?: string;
+}
+
+export function cicdFirstNewApp(body: CicdFirstNewAppPayload): Promise<{ ok: boolean; app_id: string; request_id: number }> {
+  return apiPost<{ ok: boolean; app_id: string; request_id: number }>("/api/cicd/apps/new", body);
+}
+
+// ---------------------------------------------------------------------------
 // POST — notifications
 // ---------------------------------------------------------------------------
 

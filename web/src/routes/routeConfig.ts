@@ -22,7 +22,7 @@ export const ROUTES: RouteConfig[] = [
   { path: "/apps",      view: "apps",      label: "App 工作台",roles: ["RM", "Owner", "QA", "Guest"] },
   { path: "/qa",        view: "qa",        label: "QA",        roles: ["RM", "Owner", "QA", "Guest"] },
   { path: "/artifacts", view: "artifacts", label: "发布文档",  roles: ["RM", "Owner", "Guest"] },
-  { path: "/cicd",      view: "cicd",      label: "CICD 工作台",roles: ["RM", "Owner", "SPD"] },
+  { path: "/cicd",      view: "cicd",      label: "CICD 工作台",roles: ["RM", "SPD"] },
   { path: "/wiki",      view: "wiki",      label: "开发 WIKI", roles: ["RM", "Owner"] },
   { path: "/admin",     view: "admin",     label: "系统管理",  roles: ["Admin"] },
 ];
