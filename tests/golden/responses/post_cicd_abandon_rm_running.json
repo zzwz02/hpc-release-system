@@ -1,0 +1,16 @@
+{
+  "_golden_name": "post_cicd_abandon_rm_running",
+  "_note": "R3 Ruling A: RM tries to abandon Running task CICD-0001 → 400 (only Stopped may be abandoned)",
+  "_method": "POST",
+  "_path": "/api/cicd/tasks/abandon",
+  "_params": "",
+  "_role": "rm",
+  "_body": {
+    "task_id": "CICD-0001"
+  },
+  "status": 400,
+  "body": {
+    "ok": false,
+    "error": "只有 Stopped 状态的任务可以废弃（Ruling A：停止只能经 App 决策驱动）"
+  }
+}

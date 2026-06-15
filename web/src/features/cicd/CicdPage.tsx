@@ -42,6 +42,7 @@ import {
   reDispatchCicdRequest,
   applyReturnedCicdRequest,
   deleteCicdTask,
+  abandonCicdTask,
   markCicdVisited,
 } from "./cicdApi";
 import type { CicdTask, CicdRequest } from "../../types";
@@ -507,17 +508,10 @@ function TaskFormDialog({
               }
             />
           </label>
+          {/* Status is read-only — changed only via decision-sync or RM abandon action */}
           <label>
             状态
-            <select
-              className="input"
-              value={form.status}
-              onChange={(e) => setForm({ ...form, status: e.target.value })}
-            >
-              <option value="Running">Running</option>
-              <option value="Stopped">Stopped</option>
-              <option value="Abandoned">Abandoned</option>
-            </select>
+            <input className="input" value={form.status} disabled readOnly />
           </label>
           <label>
             备注
@@ -937,6 +931,7 @@ interface OverviewPaneProps {
   onEdit: (t: CicdTask) => void;
   onHistory: (t: CicdTask) => void;
   onDelete: (t: CicdTask) => void;
+  onAbandon: (t: CicdTask) => void;
 }
 
 function OverviewPane({
@@ -949,6 +944,7 @@ function OverviewPane({
   onEdit,
   onHistory,
   onDelete,
+  onAbandon,
 }: OverviewPaneProps) {
   const [search, setSearch] = useState("");
   const q = search.toLowerCase();
@@ -1068,6 +1064,15 @@ function OverviewPane({
                     <button className="btn sm" onClick={() => onHistory(t)}>
                       历史
                     </button>{" "}
+                    {canApprove && t.status === "Stopped" && (
+                      <button
+                        className="btn sm warn"
+                        onClick={() => onAbandon(t)}
+                        data-testid={`abandon-btn-${t.id}`}
+                      >
+                        废弃/退役
+                      </button>
+                    )}{" "}
                     {canApprove && t.status === "Abandoned" && (
                       <button
                         className="btn sm danger"
@@ -2012,6 +2017,15 @@ export function CicdPage() {
           onNewTask={() => setTaskFormTarget("new")}
           onEdit={(t) => setTaskFormTarget(t)}
           onHistory={(t) => setHistoryTaskId(t.id)}
+          onAbandon={async (t) => {
+            if (!confirm(`确认废弃/退役 Stopped 任务 ${t.id} (${t.app_name})？任务将变为 Abandoned 状态。`)) return;
+            try {
+              await abandonCicdTask({ task_id: t.id });
+              handleMutated();
+            } catch (e) {
+              alert("操作失败：" + (e instanceof Error ? e.message : String(e)));
+            }
+          }}
           onDelete={async (t) => {
             if (!confirm(`确认删除 Abandoned 任务 ${t.id}？此操作不可恢复。`)) return;
             try {

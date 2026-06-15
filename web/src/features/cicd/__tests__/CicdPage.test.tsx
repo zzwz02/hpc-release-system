@@ -61,8 +61,14 @@ vi.mock("../../../store/uiStore", () => {
 });
 
 // Import mocked modules after vi.mock
+// vi.mock is hoisted, so these imports get the mocked versions.
 import { apiGet, apiPost } from "../../../api/http";
 import { useAuth } from "../../../api/AuthContext";
+// Access __setState from the mocked uiStore to manipulate mock state in tests.
+// The vi.mock factory above exports it; casting bypasses missing types.
+import * as _uiStoreMod from "../../../store/uiStore";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const _uiSetState = (_uiStoreMod as any).__setState as (patch: Record<string, unknown>) => void;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -177,6 +183,8 @@ describe("CicdPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setDefaultMocks();
+    // Reset mock state to known defaults before each test
+    _uiSetState({ cicdOverviewFilter: "Running" });
   });
 
   // ── Query key exports ──────────────────────────────────────────────────────
@@ -484,6 +492,101 @@ describe("CicdPage", () => {
     // ApproveDialog opens — should show "本人提交" since submitter === "alice" === current user
     await waitFor(() => {
       expect(screen.getByText("本人提交")).toBeInTheDocument();
+    });
+  });
+
+  // ── W2: Status field read-only in TaskFormDialog ──────────────────────────
+
+  it("TaskFormDialog: status field is read-only (no editable select for status)", async () => {
+    renderCicd("RM");
+    await waitFor(() => expect(screen.getByText(/新建 CICD 任务/)).toBeInTheDocument());
+    await userEvent.click(screen.getByText(/新建 CICD 任务/));
+    // Dialog opens
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+    // Status should be shown as disabled input, not as a select
+    const statusInput = screen.getByDisplayValue("Running");
+    expect(statusInput.tagName).toBe("INPUT");
+    expect(statusInput).toBeDisabled();
+    // Should NOT have a <select> for status with Running/Stopped/Abandoned options
+    const selects = document.querySelectorAll("dialog select, .dialog-card select");
+    const hasStatusSelect = Array.from(selects).some((s) =>
+      Array.from(s.querySelectorAll("option")).some((o) => o.value === "Abandoned"),
+    );
+    expect(hasStatusSelect).toBe(false);
+  });
+
+  // ── W2: Abandon button in OverviewPane (RM on Stopped tasks) ─────────────
+
+  it("OverviewPane: shows 废弃/退役 button for RM on Stopped tasks", async () => {
+    // Show all tasks (not just Running) by setting filter to ""
+    _uiSetState({ cicdOverviewFilter: "" });
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) {
+        return Promise.resolve({
+          tasks: [makeTask({ id: "t1", app_name: "StoppedApp", status: "Stopped" })],
+        });
+      }
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      return Promise.resolve({ requests: [], deliveries: [] });
+    });
+    renderCicd("RM");
+    await waitFor(() => expect(screen.getByText("StoppedApp")).toBeInTheDocument());
+    expect(screen.getByTestId("abandon-btn-t1")).toBeInTheDocument();
+  });
+
+  it("OverviewPane: no 废弃/退役 button for Owner role on Stopped tasks", async () => {
+    _uiSetState({ cicdOverviewFilter: "" });
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) {
+        return Promise.resolve({
+          tasks: [makeTask({ id: "t1", app_name: "StoppedApp", status: "Stopped" })],
+        });
+      }
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      return Promise.resolve({ requests: [], deliveries: [] });
+    });
+    renderCicd("Owner");
+    await waitFor(() => expect(screen.getByText("StoppedApp")).toBeInTheDocument());
+    expect(screen.queryByTestId("abandon-btn-t1")).not.toBeInTheDocument();
+  });
+
+  it("OverviewPane: no 废弃/退役 button for RM on Running tasks", async () => {
+    // Running filter is fine here — Running tasks are visible by default
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) {
+        return Promise.resolve({
+          tasks: [makeTask({ id: "t1", app_name: "RunningApp", status: "Running" })],
+        });
+      }
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      return Promise.resolve({ requests: [], deliveries: [] });
+    });
+    renderCicd("RM");
+    await waitFor(() => expect(screen.getByText("RunningApp")).toBeInTheDocument());
+    expect(screen.queryByTestId("abandon-btn-t1")).not.toBeInTheDocument();
+  });
+
+  it("OverviewPane: abandon calls POST /api/cicd/tasks/abandon on confirm", async () => {
+    _uiSetState({ cicdOverviewFilter: "" });
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) {
+        return Promise.resolve({
+          tasks: [makeTask({ id: "t1", app_name: "StoppedApp", status: "Stopped" })],
+        });
+      }
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      return Promise.resolve({ requests: [], deliveries: [] });
+    });
+    vi.mocked(apiPost).mockResolvedValue({ ok: true });
+    renderCicd("RM");
+    await waitFor(() => expect(screen.getByTestId("abandon-btn-t1")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("abandon-btn-t1"));
+    await waitFor(() => {
+      expect(vi.mocked(apiPost)).toHaveBeenCalledWith(
+        "/api/cicd/tasks/abandon",
+        { task_id: "t1" },
+      );
     });
   });
 

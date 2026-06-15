@@ -151,6 +151,12 @@ export function deleteCicdTask(body: {
   return apiPost<{ ok: boolean }>("/api/cicd/tasks/delete", body);
 }
 
+export function abandonCicdTask(body: {
+  task_id: string;
+}): Promise<{ ok: boolean }> {
+  return apiPost<{ ok: boolean }>("/api/cicd/tasks/abandon", body);
+}
+
 // ---------------------------------------------------------------------------
 // POST — notifications
 // ---------------------------------------------------------------------------

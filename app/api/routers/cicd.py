@@ -383,6 +383,29 @@ async def post_transfer_owner(
     return {"ok": True, "task": task}
 
 
+@router.post("/tasks/abandon")
+async def post_abandon_task(
+    request: Request,
+    user: dict = Depends(require_login),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    """POST /api/cicd/tasks/abandon — RM retires a Stopped task to Abandoned (Ruling A).
+
+    Direct action (no pending queue) — mirrors transfer_owner semantics.
+    Only Stopped tasks can be abandoned; Abandoned is terminal.
+    """
+    body: dict = await request.json()
+    if user["role"] not in cicd_service.CICD_APPROVER_ROLES:
+        raise AuthzError("只有 RM 可以废弃 CICD 任务")
+    task = cicd_service.abandon_task(
+        conn,
+        body["task_id"],
+        reviewer=user["username"],
+        reviewer_role=user["role"],
+    )
+    return {"ok": True, "task": task}
+
+
 @router.post("/tasks/delete")
 async def post_delete_task(
     request: Request,

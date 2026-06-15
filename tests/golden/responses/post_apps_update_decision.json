@@ -1,6 +1,6 @@
 {
   "_golden_name": "post_apps_update_decision",
-  "_note": "RM updates release_decision on first app",
+  "_note": "RM updates release_decision on first app; R3 Ruling D: cicd_sync added (no linked task → created:false)",
   "_method": "POST",
   "_path": "/api/apps/update",
   "_params": "",
@@ -60,6 +60,10 @@
       "x86_chips": "c500,x301"
     },
     "missing_items": [],
-    "qa_status": "qa_passed"
+    "qa_status": "qa_passed",
+    "cicd_sync": {
+      "created": false,
+      "request": null
+    }
   }
 }

@@ -541,6 +541,176 @@ describe("AppWorkbenchPage F2 copy-from-version", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// W2 — CicdLinkCard + decision-change preview
+// ---------------------------------------------------------------------------
+
+import type { CicdTask } from "../../../types";
+
+function makeCicdTask(overrides: Partial<CicdTask> = {}): CicdTask {
+  return {
+    id: "task-99",
+    app_name: "AlphaApp",
+    app_version: "1.0",
+    owner_username: "alice",
+    owner_display: "Alice",
+    repo_type: "git",
+    repo_name: "repo/app1",   // matches makeApp("app1").git_url
+    branch: "main",            // matches makeApp("app1").git_branch
+    build_product: ["maca"],
+    community_artifact: [],
+    build_image: "gcc:12",
+    test_timeout: 40,
+    status: "Running",
+    notes: "",
+    has_pending: false,
+    has_pending_delivery: false,
+    created_at: "2026-01-01 00:00:00",
+    updated_at: "2026-01-01 00:00:00",
+    ...overrides,
+  };
+}
+
+function mockApiGetWithCicd(cicdTasks: CicdTask[] = [makeCicdTask()]) {
+  (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+    if (url.includes("/api/cicd/tasks")) {
+      return Promise.resolve({ tasks: cicdTasks });
+    }
+    return Promise.resolve(makePayload());
+  });
+}
+
+describe("AppWorkbenchPage W2 CicdLinkCard", () => {
+  beforeEach(() => {
+    vi.stubGlobal("alert", vi.fn());
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    useUiStore.getState().setSelectedApp("");
+    useUiStore.getState().setAppDetailDirty(false);
+  });
+
+  it("shows CicdLinkCard with status pill when task matches app identity", async () => {
+    mockApiGetWithCicd([makeCicdTask({ status: "Running" })]);
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+    fireEvent.click(screen.getByTestId("app-row-app1"));
+    await waitFor(() => screen.getByTestId("detail-panel"));
+    await waitFor(() => {
+      expect(screen.getByTestId("cicd-link-card")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("cicd-task-link").textContent).toContain("task-99");
+    expect(screen.getByTestId("cicd-link-card").textContent).toContain("Running");
+  });
+
+  it("shows pending-approval banner in CicdLinkCard when task has_pending", async () => {
+    mockApiGetWithCicd([makeCicdTask({ has_pending: true })]);
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+    fireEvent.click(screen.getByTestId("app-row-app1"));
+    await waitFor(() => screen.getByTestId("cicd-link-card"));
+    expect(screen.getByTestId("cicd-link-card").textContent).toContain("待审批");
+  });
+
+  it("does NOT show CicdLinkCard when no task matches app identity", async () => {
+    mockApiGetWithCicd([makeCicdTask({ repo_name: "other-repo", branch: "other-branch" })]);
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+    fireEvent.click(screen.getByTestId("app-row-app1"));
+    await waitFor(() => screen.getByTestId("detail-panel"));
+    // Give the cicd query time to resolve
+    await waitFor(() => expect(screen.queryByTestId("cicd-link-card")).not.toBeInTheDocument());
+  });
+
+  it("shows 'running/停止由本 app 决策决定' note in CicdLinkCard", async () => {
+    mockApiGetWithCicd();
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+    fireEvent.click(screen.getByTestId("app-row-app1"));
+    await waitFor(() => screen.getByTestId("cicd-link-card"));
+    expect(screen.getByTestId("cicd-link-card").textContent).toContain("运行/停止由本 app 决策决定");
+  });
+});
+
+describe("AppWorkbenchPage W2 decision-change CICD preview", () => {
+  beforeEach(() => {
+    vi.stubGlobal("alert", vi.fn());
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    useUiStore.getState().setSelectedApp("");
+    useUiStore.getState().setAppDetailDirty(false);
+  });
+
+  async function enterEditOnApp1WithCicd() {
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+    fireEvent.click(screen.getByTestId("app-row-app1"));
+    await waitFor(() => screen.getByText("✎ 修改"));
+    fireEvent.click(screen.getByText("✎ 修改"));
+    await waitFor(() => screen.getByTestId("field-decision"));
+  }
+
+  it("shows '待审批：CICD 任务将变为 Stopped' when decision changes to stopped", async () => {
+    // app1 starts with release_decision "release" — changing to "stopped" → preview shows Stopped
+    mockApiGetWithCicd();
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1WithCicd();
+    // Change decision to stopped
+    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "stopped" } });
+    await waitFor(() => {
+      expect(screen.getByTestId("cicd-decision-preview")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("cicd-decision-preview").textContent).toContain("Stopped");
+  });
+
+  it("shows '待审批：CICD 任务将变为 Running' when decision changes from stopped to release", async () => {
+    // Override app1 to start at "stopped"
+    const stoppedPayload = makePayload();
+    stoppedPayload.release!.snapshots.app1.release_decision = "stopped";
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) {
+        return Promise.resolve({ tasks: [makeCicdTask({ status: "Stopped" })] });
+      }
+      return Promise.resolve(stoppedPayload);
+    });
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1WithCicd();
+    // Change decision from stopped → cicd_only (Running)
+    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "cicd_only" } });
+    await waitFor(() => {
+      expect(screen.getByTestId("cicd-decision-preview")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("cicd-decision-preview").textContent).toContain("Running");
+  });
+
+  it("does NOT show decision preview when no CICD task is linked", async () => {
+    // No tasks returned → cicdTask is null → preview not shown
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [] });
+      return Promise.resolve(makePayload());
+    });
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1WithCicd();
+    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "stopped" } });
+    await waitFor(() => {
+      expect(screen.queryByTestId("cicd-decision-preview")).not.toBeInTheDocument();
+    });
+  });
+
+  it("does NOT show decision preview when decision hasn't changed from original", async () => {
+    // app1 starts "release" and user doesn't change it
+    mockApiGetWithCicd();
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1WithCicd();
+    // No decision change — preview should NOT appear
+    expect(screen.queryByTestId("cicd-decision-preview")).not.toBeInTheDocument();
+  });
+});
+
 describe("AppWorkbenchPage F3 unsaved-changes guard", () => {
   beforeEach(() => {
     vi.stubGlobal("alert", vi.fn());

@@ -112,6 +112,8 @@ def _goldens_with_metadata() -> list[tuple[str, dict]]:
         "post_cicd_request_submit_admin": 115,  # R3 Ruling C: Admin → 403 (no DB write)
         "post_cicd_request_approve_admin": 116, # R3 Ruling C: Admin → 403 (no DB write)
         "post_cicd_request_submit_rm": 117,     # R3 Ruling B: RM → pending, id=4
+        "post_cicd_abandon_admin": 118,         # R3 Ruling C: Admin → 403 (no DB write)
+        "post_cicd_abandon_rm_running": 119,    # R3 Ruling A: RM on Running → 400 (no DB write)
         # Phase 12 — logout (run last so other tests can still use the session)
         "post_logout": 120,
     }
@@ -274,6 +276,9 @@ class TestGoldenHttpStatuses:
         "post_cicd_request_submit_admin": 403,
         "post_cicd_request_approve_admin": 403,
         "post_cicd_request_submit_rm": 200,
+        # R3 Ruling A/C new goldens
+        "post_cicd_abandon_admin": 403,
+        "post_cicd_abandon_rm_running": 400,
     }
 
     @pytest.mark.parametrize("name,expected_status", EXPECTED_STATUS.items())

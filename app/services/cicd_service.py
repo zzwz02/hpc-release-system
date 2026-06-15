@@ -1,11 +1,11 @@
 """CICD service — task and request management.
 
-Faithful port of release_system/core.py:3639-4364.
+Faithful port of release_system/core.py:3639-4364 plus Phase 4 rulings.
 
-Phase-4 stubs (NOT implemented yet — raise NotImplementedError):
-  - sync_decision_to_cicd
-  - abandon_task
-  - cicd_first_new_app
+Wave 1 (implemented): Ruling B (no auto-approve), Ruling C (Admin out of CICD).
+Wave 2 (implemented): Ruling D (sync_decision_to_cicd), Ruling A (abandon_task),
+    V3 status-lock (submit modify rejects status field).
+Wave 3 stub (NOT implemented yet — raises NotImplementedError): cicd_first_new_app.
 """
 from __future__ import annotations
 
@@ -23,6 +23,14 @@ from app.timeutil import beijing_timestamp
 CICD_APPROVER_ROLES: frozenset[str] = frozenset({"RM"})
 CICD_CREATE_ROLES: frozenset[str] = frozenset({"Owner", "RM"})
 CICD_STATUSES: frozenset[str] = frozenset({"Running", "Stopped", "Abandoned"})
+
+# Ruling D: release_decision → CICD task status (plan §3.5 b)
+# release/cicd_only → Running; stopped → Stopped (uppercase CICD_STATUSES vocab)
+_DECISION_TO_CICD_STATUS: dict[str, str] = {
+    "release": "Running",
+    "cicd_only": "Running",
+    "stopped": "Stopped",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +336,12 @@ def submit_request(
     if submitter_role not in CICD_CREATE_ROLES:
         raise PermissionError("只有 Owner、RM 可以提交 CICD 任务申请")
     _validate_payload_fields(payload)
+    # V3 / status-lock: user-submitted MODIFY requests must NOT touch status.
+    # Only decision-sync (sync_decision_to_cicd) and abandon_task write status.
+    if request_type == "modify" and "status" in (payload or {}):
+        raise RuntimeError(
+            "CICD 修改申请不允许直接修改运行状态；运行/停止由 App 决策驱动（Ruling A/D）"
+        )
     ts = beijing_timestamp()
     with transaction(conn):
         req_id = cicd_repo.insert_request(
@@ -722,49 +736,8 @@ def apply_returned_request(
 
 
 # ---------------------------------------------------------------------------
-# Phase 4 stubs — do NOT implement; raise NotImplementedError
+# Ruling D — decision→CICD status sync (plan §3.5 b)
 # ---------------------------------------------------------------------------
-
-
-def create_task_request(
-    conn: sqlite3.Connection,
-    *,
-    submitter: str,
-    submitter_role: str,
-    payload: dict,
-) -> dict:
-    """Create a pending CICD task create/modify request (Ruling-B: always pending).
-
-    # TODO Phase 4
-    """
-    raise NotImplementedError
-
-
-def approve_request_ruling(
-    conn: sqlite3.Connection,
-    request_id: int,
-    *,
-    reviewer: str,
-    approval_mode: str,
-) -> dict:
-    """Approve a pending CICD request (RM only; may self-approve).
-
-    # TODO Phase 4
-    """
-    raise NotImplementedError
-
-
-def abandon_task(
-    conn: sqlite3.Connection,
-    task_id: str,
-    *,
-    reviewer: str,
-) -> dict:
-    """RM direct action: transition a Stopped task to Abandoned (Ruling-A gate).
-
-    # TODO Phase 4
-    """
-    raise NotImplementedError
 
 
 def sync_decision_to_cicd(
@@ -775,13 +748,119 @@ def sync_decision_to_cicd(
     submitter: str,
     origin: str = "release_decision_sync",
 ) -> dict | None:
-    """Create a pending modify request to update the task's status.
+    """Create a pending modify request to sync the CICD task's running/stopped state.
 
-    Called inside the same transaction as update_snapshot (plan §3.5 b).
+    Called INSIDE the same transaction as update_snapshot (plan §3.5 b).
+    Returns the created pending request dict, or None when no-op.
 
-    # TODO Phase 4
+    No-op cases:
+    * App has no linked CICD task (app_id not linked yet).
+    * Task is already at the target status.
+    * A pending modify-on-status request already exists (idempotent guard, plan P4).
     """
-    raise NotImplementedError
+    target_status = _DECISION_TO_CICD_STATUS.get(release_decision)
+    if not target_status:
+        return None  # unknown decision value — defensive no-op
+
+    tasks = cicd_repo.tasks_for_app(conn, app_id)
+    if not tasks:
+        return None  # app not yet linked to any CICD task
+
+    task = tasks[0]  # 1:1 cardinality: at most one linked task per app
+    current_status = task.get("status", "")
+
+    if current_status == target_status:
+        return None  # already at target — no-op (idempotent)
+
+    # Idempotent guard: skip if there is already a pending modify touching status
+    if cicd_repo.has_open_modify_on_field(conn, task["id"], "status"):
+        return None
+
+    ts = beijing_timestamp()
+    payload = {"status": {"old": current_status, "new": target_status}}
+    req_id = cicd_repo.insert_request(
+        conn,
+        task_id=task["id"],
+        request_type="modify",
+        payload=payload,
+        submitter=submitter,
+        submitter_display="",
+        submitted_at=ts,
+        status="pending",
+        reviewer="",
+        reviewed_at="",
+        review_note="",
+        is_self_approved=0,
+        origin=origin,
+    )
+    row = conn.execute(
+        "SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)
+    ).fetchone()
+    return _strip_request(dict(row))
+
+
+# ---------------------------------------------------------------------------
+# Ruling A — abandon task (plan §3.5 c)
+# ---------------------------------------------------------------------------
+
+
+def abandon_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reviewer: str,
+    reviewer_role: str,
+) -> dict:
+    """RM direct action: transition a Stopped task to Abandoned (terminal).
+
+    Like transfer_owner, this is a direct governance action — no pending queue.
+    Only Stopped tasks can be abandoned (Ruling A: stopping happens only via
+    App decision, so by the time a task reaches Abandoned it must have gone
+    through Stopped first).
+    Returns the updated task dict.
+
+    Mirrors plan §3.5 c.
+    """
+    import json as _json
+
+    if reviewer_role not in CICD_APPROVER_ROLES:
+        raise PermissionError("只有 RM 可以废弃 CICD 任务")
+    task = cicd_repo.get_task(conn, task_id)
+    if not task:
+        raise RuntimeError(f"CICD 任务 {task_id} 不存在")
+    if task["status"] != "Stopped":
+        raise RuntimeError(
+            "只有 Stopped 状态的任务可以废弃（Ruling A：停止只能经 App 决策驱动）"
+        )
+    ts = beijing_timestamp()
+    payload_json = _json.dumps(
+        {"status": {"old": "Stopped", "new": "Abandoned"}},
+        ensure_ascii=False,
+    )
+    with transaction(conn):
+        conn.execute(
+            "UPDATE cicd_tasks SET status='Abandoned', updated_at=? WHERE id=?",
+            (ts, task_id),
+        )
+        # Write an approved audit record (mirrors transfer_owner pattern)
+        conn.execute(
+            """
+            INSERT INTO cicd_task_requests
+              (task_id, request_type, payload, submitter, submitter_display,
+               submitted_at, status, reviewer, reviewed_at, review_note,
+               is_self_approved, origin)
+            VALUES (?, 'modify', ?, ?, ?, ?, 'approved', ?, ?, '废弃/退役任务', 0, 'abandon')
+            """,
+            (task_id, payload_json, reviewer, reviewer, ts, reviewer, ts),
+        )
+    updated = cicd_repo.get_task(conn, task_id)
+    _attach_owner_display(conn, [updated])
+    return _strip_task(updated)
+
+
+# ---------------------------------------------------------------------------
+# Wave 3 stub — CICD-first app creation (NOT implemented yet)
+# ---------------------------------------------------------------------------
 
 
 def cicd_first_new_app(
@@ -796,6 +875,6 @@ def cicd_first_new_app(
 ) -> dict:
     """CICD-first app creation (plan §3.5 a, POST /api/cicd/apps/new).
 
-    # TODO Phase 4
+    # TODO Wave 3
     """
     raise NotImplementedError

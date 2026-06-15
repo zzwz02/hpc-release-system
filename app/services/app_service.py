@@ -2,8 +2,8 @@
 
 Faithful 1:1 port of the matching server.py handlers + core.py functions.
 All transaction boundaries, audit messages, and error text match the old
-server exactly. Decision↔status sync (cicd_service.sync_decision_to_cicd)
-is Phase 4 and is NOT implemented here.
+server exactly.  Ruling D (decision↔CICD status sync) is wired into
+update_snapshot via cicd_service.sync_decision_to_cicd (Phase 4 Wave 2).
 
 Per the brief (DA finding P1): snapshots stay loose dicts — no strict
 Pydantic field validation.
@@ -160,8 +160,9 @@ def update_snapshot(
     optionally decision_sync when body.sync_decision is truthy and the
     release_decision actually changed.
 
-    Phase-4 note: cicd_service.sync_decision_to_cicd is NOT called here.
-    The response key is «decision_sync» (matches old server), NOT «cicd_sync».
+    Ruling D: when release_decision changes, cicd_service.sync_decision_to_cicd
+    is called INSIDE the same transaction to produce a pending CICD status-modify
+    request.  The response includes «cicd_sync» when the decision changed.
     """
     body = fields  # alias for readability — mirrors server.py variable name
 
@@ -444,12 +445,26 @@ def update_snapshot(
             "missing_items": updated.get("missing_items", []),
             "qa_status": updated.get("qa_status"),
         }
-        if body.get("sync_decision") and snap_now.get("release_decision") != updated.get(
-            "release_decision"
-        ):
+        new_decision = updated.get("release_decision", current_decision)
+        if new_decision != current_decision:
+            # Ruling D: unconditionally sync decision → CICD task status inside
+            # the same transaction, so the sync request and the snapshot save are
+            # atomic. Phase gate already ran above (raises before we get here).
+            from app.services import cicd_service as _cicd_svc
+            cicd_req = _cicd_svc.sync_decision_to_cicd(
+                conn,
+                aid,
+                new_decision,
+                submitter=actor,
+            )
+            response["cicd_sync"] = {
+                "created": cicd_req is not None,
+                "request": cicd_req,
+            }
+        if body.get("sync_decision") and new_decision != current_decision:
             # R3: use the new app-layer gating rule (NOT core's). core stays frozen.
             response["decision_sync"] = sync_decision_to_later_releases(
-                conn, rid, aid, updated.get("release_decision"), user=actor, role=role
+                conn, rid, aid, new_decision, user=actor, role=role
             )
     return response
 

@@ -13,7 +13,9 @@
  * No polling.
  */
 import React, { useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { fetchCicdTasks, CICD_TASKS_KEY } from "../cicd/cicdApi";
 import { RefreshBar } from "../../components/RefreshBar";
 import { Markdown } from "../../components/Markdown";
 import { formatServerTime } from "../../lib/time";
@@ -30,7 +32,7 @@ import {
   docTargetOptions,
   qaStatusLabels,
 } from "../../lib/labels";
-import type { StatePayload, App, Snapshot, ReleaseSummary, AppAuditEntry, SnapshotTestDoc } from "../../types";
+import type { StatePayload, App, Snapshot, ReleaseSummary, AppAuditEntry, SnapshotTestDoc, CicdTask } from "../../types";
 import {
   releaseSnap,
   isReleaseSnap,
@@ -383,6 +385,17 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
   // F2: copy-from-version picker (null = closed)
   const [showCopyDialog, setShowCopyDialog] = useState(false);
 
+  // CICD tasks — fetched once and cached; used for CicdLinkCard.
+  // staleTime:Infinity so this never re-fetches in the background (R2 rule).
+  const { data: cicdTasksData } = useQuery({
+    queryKey: CICD_TASKS_KEY,
+    queryFn: () => fetchCicdTasks(),
+    staleTime: Infinity,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+
   // F3: keep the shared store in sync so the page-level app-switch guard and
   // the TabNav tab-switch guard know whether the detail form is dirty.
   const setAppDetailDirty = useUiStore((s) => s.setAppDetailDirty);
@@ -663,6 +676,12 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     );
   }
 
+  // Find the CICD task linked to this app via (repo_name, branch) identity key.
+  const cicdTask: CicdTask | null =
+    (cicdTasksData?.tasks ?? []).find(
+      (t) => t.repo_name === app.git_url && t.branch === app.git_branch,
+    ) ?? null;
+
   const rel = isReleaseSnap(snap);
   const prog = ownerProgress(snap);
   const todo = docsItems(snap);
@@ -701,6 +720,30 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       </div>
 
       <div className="detail-body">
+        {/* CicdLinkCard — shows the linked CICD task (matched by repo_name+branch) */}
+        {cicdTask && (
+          <div className="banner" data-testid="cicd-link-card" style={{ background: "var(--surface2, #f5f5f5)", borderLeft: "3px solid var(--accent, #1976d2)" }}>
+            <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <b style={{ fontSize: 12 }}>CICD：</b>
+              <span className={`pill ${cicdTask.status === "Running" ? "ok" : cicdTask.status === "Stopped" ? "warnp" : ""}`}>
+                {cicdTask.status}
+              </span>
+              <span className="small muted">{app.git_url}@{app.git_branch}</span>
+              <Link to="/cicd" className="small" data-testid="cicd-task-link">
+                查看 CICD 任务 #{cicdTask.id}
+              </Link>
+            </div>
+            {cicdTask.has_pending && (
+              <div className="small warnp" style={{ marginTop: 4 }}>
+                ⏳ 有待审批的 CICD 修改申请
+              </div>
+            )}
+            <div className="small muted" style={{ marginTop: 2, fontSize: 11 }}>
+              运行/停止由本 app 决策决定；构建配置在 CICD 工作台改
+            </div>
+          </div>
+        )}
+
         {/* Phase/lock banners */}
         {locked && (
           <div className="banner bad">🔒 Release 已最终锁定，所有信息冻结。</div>
@@ -811,6 +854,15 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
                   ))}
                 </select>
               </label>
+              {/* Inline preview: show expected CICD status change when decision differs */}
+              {editMode && cicdTask && form.release_decision !== snap.release_decision && (
+                <div style={{ gridColumn: "1 / -1", marginTop: -4, marginBottom: 4 }} data-testid="cicd-decision-preview">
+                  <span className="small warnp">
+                    ⟳ 待审批：CICD 任务将变为{" "}
+                    <b>{form.release_decision === "stopped" ? "Stopped" : "Running"}</b>
+                  </span>
+                </div>
+              )}
               <label>版本（来自 app_info）
                 <input className="input" value={snap.version ?? ""} disabled />
               </label>
