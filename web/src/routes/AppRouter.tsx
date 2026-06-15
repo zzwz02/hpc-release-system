@@ -5,7 +5,8 @@
  * in Waves 2-3.  Each tab is wrapped in RequireRole so a URL-bar navigation
  * to a forbidden route shows a fallback instead of crashing.
  */
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { useAuth } from "../api/AuthContext";
 import { RequireRole } from "./RequireRole";
 import { ROUTES } from "./routeConfig";
 
@@ -41,6 +42,14 @@ const FEATURE_MAP: Record<string, React.ReactNode> = {
 };
 
 export function AppRouter() {
+  const { user } = useAuth();
+  const { pathname } = useLocation();
+
+  // Ruling C: Admin sees ONLY /admin — redirect from any other path after login.
+  if (user?.role === "Admin" && !pathname.startsWith("/admin")) {
+    return <Navigate to="/admin" replace />;
+  }
+
   return (
     <Routes>
       {ROUTES.map((route) => (

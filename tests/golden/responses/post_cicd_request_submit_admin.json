@@ -1,0 +1,20 @@
+{
+  "_golden_name": "post_cicd_request_submit_admin",
+  "_note": "R3 Ruling C: Admin gets 403 on POST /api/cicd/requests/submit (CICD_CREATE_ROLES={Owner,RM}; Admin excluded)",
+  "_method": "POST",
+  "_path": "/api/cicd/requests/submit",
+  "_params": "",
+  "_role": "admin",
+  "_body": {
+    "task_id": null,
+    "request_type": "create",
+    "payload": {
+      "app_name": "AdminAttempt"
+    }
+  },
+  "status": 403,
+  "body": {
+    "ok": false,
+    "error": "只有 Owner、RM 可以提交 CICD 任务申请"
+  }
+}

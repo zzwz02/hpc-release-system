@@ -85,6 +85,7 @@ def _goldens_with_metadata() -> list[tuple[str, dict]]:
         "get_cicd_notifications_owner": 46,
         "get_cicd_task_history": 47,
         "get_cicd_deliveries_rm": 48,
+        "get_cicd_deliveries_admin": 49,       # R3 Ruling C: Admin → 403
         # Phase 5 — QA reports
         "get_qa_reports": 50,
         # Phase 6 — wiki
@@ -108,6 +109,9 @@ def _goldens_with_metadata() -> list[tuple[str, dict]]:
         "post_apps_update_doc": 112,
         "post_cicd_mark_visited": 113,
         "post_cicd_request_submit_owner": 114,
+        "post_cicd_request_submit_admin": 115,  # R3 Ruling C: Admin → 403 (no DB write)
+        "post_cicd_request_approve_admin": 116, # R3 Ruling C: Admin → 403 (no DB write)
+        "post_cicd_request_submit_rm": 117,     # R3 Ruling B: RM → pending, id=4
         # Phase 12 — logout (run last so other tests can still use the session)
         "post_logout": 120,
     }
@@ -265,6 +269,11 @@ class TestGoldenHttpStatuses:
         "post_qa_status_batch": 200,
         "post_apps_update_decision": 200,
         "post_logout": 200,
+        # R3 Ruling B/C new goldens
+        "get_cicd_deliveries_admin": 403,
+        "post_cicd_request_submit_admin": 403,
+        "post_cicd_request_approve_admin": 403,
+        "post_cicd_request_submit_rm": 200,
     }
 
     @pytest.mark.parametrize("name,expected_status", EXPECTED_STATUS.items())

@@ -112,7 +112,7 @@ def get_deliveries(
     Mirrors server.py:do_GET:485-499.
     """
     role = user["role"]
-    if role not in {"SPD", "RM", "Admin", "Owner"}:
+    if role not in {"SPD", "RM", "Owner"}:
         raise AuthzError("无权访问交付列表")
     submitter_filter = user["username"] if role == "Owner" else None
     deliveries = cicd_service.list_deliveries(
@@ -142,7 +142,7 @@ async def post_submit(
     body: dict = await request.json()
     role = user["role"]
     if role not in cicd_service.CICD_CREATE_ROLES:
-        raise AuthzError("只有 Owner、RM、Admin 可以提交 CICD 任务申请")
+        raise AuthzError("只有 Owner、RM 可以提交 CICD 任务申请")
     req = cicd_service.submit_request(
         conn,
         task_id=body.get("task_id") or None,
@@ -161,7 +161,7 @@ async def post_approve(
     user: dict = Depends(require_login),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """POST /api/cicd/requests/approve — RM/Admin approves a pending request.
+    """POST /api/cicd/requests/approve — RM approves a pending request (Ruling C: Admin excluded).
 
     Mirrors server.py:do_POST:1038-1089.
     Jira auto-create: attempted before the approval transaction, failure is
@@ -169,7 +169,7 @@ async def post_approve(
     """
     body: dict = await request.json()
     if user["role"] not in cicd_service.CICD_APPROVER_ROLES:
-        raise AuthzError("只有 RM/Admin 可以审批")
+        raise AuthzError("只有 RM 可以审批")
     approval_mode = body.get("approval_mode", "immediate")
     jira_auto_created = int(body.get("jira_auto_created", 0))
     jira_id = body.get("jira_id", "")
@@ -229,13 +229,13 @@ async def post_reject(
     user: dict = Depends(require_login),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """POST /api/cicd/requests/reject — RM/Admin rejects a pending request.
+    """POST /api/cicd/requests/reject — RM rejects a pending request (Ruling C: Admin excluded).
 
     Mirrors server.py:do_POST:1090-1103.
     """
     body: dict = await request.json()
     if user["role"] not in cicd_service.CICD_APPROVER_ROLES:
-        raise AuthzError("只有 RM/Admin 可以拒绝")
+        raise AuthzError("只有 RM 可以拒绝")
     req = cicd_service.reject_request(
         conn,
         int(body["request_id"]),
@@ -272,13 +272,13 @@ async def post_deliver(
     user: dict = Depends(require_login),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """POST /api/cicd/requests/deliver — SPD/RM/Admin marks as delivered.
+    """POST /api/cicd/requests/deliver — SPD/RM marks as delivered (Ruling C: Admin excluded).
 
     Mirrors server.py:do_POST:1147-1159.
     """
     body: dict = await request.json()
-    if user["role"] not in {"SPD", "RM", "Admin"}:
-        raise AuthzError("只有 SPD、RM、Admin 可以标记已交付")
+    if user["role"] not in {"SPD", "RM"}:
+        raise AuthzError("只有 SPD、RM 可以标记已交付")
     req = cicd_service.deliver_request(
         conn,
         int(body["request_id"]),
@@ -317,13 +317,13 @@ async def post_re_dispatch(
     user: dict = Depends(require_login),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """POST /api/cicd/requests/re-dispatch — RM/Admin re-dispatches returned delivery.
+    """POST /api/cicd/requests/re-dispatch — RM re-dispatches returned delivery (Ruling C: Admin excluded).
 
     Mirrors server.py:do_POST:1174-1186.
     """
     body: dict = await request.json()
     if user["role"] not in cicd_service.CICD_APPROVER_ROLES:
-        raise AuthzError("只有 RM/Admin 可以重新下发")
+        raise AuthzError("只有 RM 可以重新下发")
     req = cicd_service.re_dispatch_request(
         conn,
         int(body["request_id"]),
@@ -339,13 +339,13 @@ async def post_apply_returned(
     user: dict = Depends(require_login),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """POST /api/cicd/requests/apply-returned — RM/Admin applies returned request immediately.
+    """POST /api/cicd/requests/apply-returned — RM applies returned request immediately (Ruling C: Admin excluded).
 
     Mirrors server.py:do_POST:1187-1199.
     """
     body: dict = await request.json()
     if user["role"] not in cicd_service.CICD_APPROVER_ROLES:
-        raise AuthzError("只有 RM/Admin 可以直接生效")
+        raise AuthzError("只有 RM 可以直接生效")
     req = cicd_service.apply_returned_request(
         conn,
         int(body["request_id"]),
@@ -366,13 +366,13 @@ async def post_transfer_owner(
     user: dict = Depends(require_login),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """POST /api/cicd/tasks/transfer-owner — direct owner transfer (RM/Admin).
+    """POST /api/cicd/tasks/transfer-owner — direct owner transfer (RM only; Ruling C).
 
     Mirrors server.py:do_POST:1115-1128.
     """
     body: dict = await request.json()
     if user["role"] not in cicd_service.CICD_APPROVER_ROLES:
-        raise AuthzError("只有 RM/Admin 可以直接修改负责人")
+        raise AuthzError("只有 RM 可以直接修改负责人")
     task = cicd_service.transfer_owner(
         conn,
         body["task_id"],
@@ -389,13 +389,13 @@ async def post_delete_task(
     user: dict = Depends(require_login),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """POST /api/cicd/tasks/delete — delete an Abandoned task (RM/Admin).
+    """POST /api/cicd/tasks/delete — delete an Abandoned task (RM only; Ruling C).
 
     Mirrors server.py:do_POST:1129-1141.
     """
     body: dict = await request.json()
     if user["role"] not in cicd_service.CICD_APPROVER_ROLES:
-        raise AuthzError("只有 RM/Admin 可以删除 CICD 任务")
+        raise AuthzError("只有 RM 可以删除 CICD 任务")
     cicd_service.delete_task(
         conn,
         body["task_id"],

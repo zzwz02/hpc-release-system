@@ -323,3 +323,40 @@ test.describe("Role-gating", () => {
     expect(visible).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Suite 8: Admin role-gating (ruling C) — only 系统管理 tab + /admin redirect
+// ---------------------------------------------------------------------------
+
+test.describe("Admin role-gating (ruling C)", () => {
+  test("Admin login is redirected to /admin", async ({ page }) => {
+    await login(page, "admin");
+    // After login, AppRouter should redirect Admin from / to /admin
+    await page.waitForURL(`${BASE}/admin`, { timeout: 8_000 });
+    const url = page.url();
+    expect(url).toContain("/admin");
+  });
+
+  test("Admin sees ONLY 系统管理 tab — no other tabs visible", async ({ page }) => {
+    await login(page, "admin");
+    await page.waitForURL(`${BASE}/admin`, { timeout: 8_000 });
+    await page.waitForLoadState("networkidle", { timeout: 10_000 });
+
+    const tabsText = await page.locator("nav.tabs").textContent();
+    expect(tabsText).toContain("系统管理");
+    // Tabs that should NOT be visible for Admin
+    expect(tabsText).not.toContain("总览");
+    expect(tabsText).not.toContain("App 工作台");
+    expect(tabsText).not.toContain("CICD");
+    expect(tabsText).not.toContain("周期管理");
+  });
+
+  test("Admin navigating to /cicd is redirected to /admin", async ({ page }) => {
+    await login(page, "admin");
+    await page.waitForURL(`${BASE}/admin`, { timeout: 8_000 });
+    // Try to navigate to CICD directly
+    await page.goto(`${BASE}/cicd`);
+    await page.waitForURL(`${BASE}/admin`, { timeout: 8_000 });
+    expect(page.url()).toContain("/admin");
+  });
+});

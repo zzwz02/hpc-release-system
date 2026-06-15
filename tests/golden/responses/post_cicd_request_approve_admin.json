@@ -1,0 +1,16 @@
+{
+  "_golden_name": "post_cicd_request_approve_admin",
+  "_note": "R3 Ruling C: Admin gets 403 on POST /api/cicd/requests/approve (CICD_APPROVER_ROLES={RM}; Admin excluded)",
+  "_method": "POST",
+  "_path": "/api/cicd/requests/approve",
+  "_params": "",
+  "_role": "admin",
+  "_body": {
+    "request_id": 2
+  },
+  "status": 403,
+  "body": {
+    "ok": false,
+    "error": "只有 RM 可以审批"
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "_golden_name": "post_cicd_request_submit_rm",
+  "_note": "R3 Ruling B: RM submit → status=pending (auto-approve removed; DA V1). req id=4: seeds have req#1+#2, owner golden creates req#3.",
+  "_method": "POST",
+  "_path": "/api/cicd/requests/submit",
+  "_params": "",
+  "_role": "rm",
+  "_body": {
+    "task_id": null,
+    "request_type": "create",
+    "payload": {
+      "app_name": "GoldenRmPending",
+      "app_version": "1.0",
+      "repo_type": "git",
+      "repo_name": "ssh://gerrit/PDE/HPC/hpc_rm_pending",
+      "branch": "main",
+      "build_product": ["maca"],
+      "community_artifact": [],
+      "build_image": "hpc/rm-pending:latest",
+      "test_timeout": 40,
+      "owner_username": "rm",
+      "status": "Running",
+      "notes": "ruling-b rm pending golden"
+    }
+  },
+  "status": 200,
+  "body": {
+    "ok": true,
+    "request": {
+      "id": 4,
+      "task_id": null,
+      "request_type": "create",
+      "payload": "{\"app_name\": \"GoldenRmPending\", \"app_version\": \"1.0\", \"repo_type\": \"git\", \"repo_name\": \"ssh://gerrit/PDE/HPC/hpc_rm_pending\", \"branch\": \"main\", \"build_product\": [\"maca\"], \"community_artifact\": [], \"build_image\": \"hpc/rm-pending:latest\", \"test_timeout\": 40, \"owner_username\": \"rm\", \"status\": \"Running\", \"notes\": \"ruling-b rm pending golden\"}",
+      "submitter": "rm",
+      "submitter_display": "",
+      "submitted_at": "SCRUBBED_TIMESTAMP",
+      "status": "pending",
+      "reviewer": "",
+      "reviewed_at": "SCRUBBED_TIMESTAMP",
+      "review_note": "",
+      "is_self_approved": 0,
+      "approval_mode": "immediate",
+      "delivery_status": "",
+      "jira_id": "",
+      "jira_auto_created": 0,
+      "delivered_by": "",
+      "delivered_at": "SCRUBBED_TIMESTAMP",
+      "returned_reason": "",
+      "returned_at": "SCRUBBED_TIMESTAMP"
+    }
+  }
+}

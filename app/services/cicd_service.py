@@ -16,10 +16,12 @@ from app.repositories import cicd_repo
 from app.timeutil import beijing_timestamp
 
 # ---------------------------------------------------------------------------
-# Role constants — mirrors core.py:3639-3640
+# Role constants — Ruling C (Admin out of CICD/release business)
+# CICD_APPROVER_ROLES={RM}: Admin no longer approves CICD requests (plan §3.7, DA V2)
+# CICD_CREATE_ROLES={Owner,RM}: Admin no longer submits CICD requests
 # ---------------------------------------------------------------------------
-CICD_APPROVER_ROLES: frozenset[str] = frozenset({"RM", "Admin"})
-CICD_CREATE_ROLES: frozenset[str] = frozenset({"Owner", "RM", "Admin"})
+CICD_APPROVER_ROLES: frozenset[str] = frozenset({"RM"})
+CICD_CREATE_ROLES: frozenset[str] = frozenset({"Owner", "RM"})
 CICD_STATUSES: frozenset[str] = frozenset({"Running", "Stopped", "Abandoned"})
 
 
@@ -317,16 +319,15 @@ def submit_request(
 ) -> dict:
     """Submit a CICD task create/modify request.
 
-    RM/Admin: auto-approves immediately and applies.
-    Owner: enters pending queue.
+    Ruling B: ALL submissions → status="pending"; no auto-approve path.
+    Approval happens ONLY via approve_request, performed by an RM.
     Returns the raw request row (payload as JSON string, mirroring core.py).
 
-    Mirrors core.py:submit_cicd_request.
+    Mirrors core.py:submit_cicd_request.  Auto-approve path removed (DA V1).
     """
     if submitter_role not in CICD_CREATE_ROLES:
-        raise PermissionError("只有 Owner、RM、Admin 可以提交 CICD 任务申请")
+        raise PermissionError("只有 Owner、RM 可以提交 CICD 任务申请")
     _validate_payload_fields(payload)
-    is_auto = submitter_role in CICD_APPROVER_ROLES
     ts = beijing_timestamp()
     with transaction(conn):
         req_id = cicd_repo.insert_request(
@@ -337,14 +338,12 @@ def submit_request(
             submitter=submitter,
             submitter_display=submitter_display,
             submitted_at=ts,
-            status="approved" if is_auto else "pending",
-            reviewer=submitter if is_auto else "",
-            reviewed_at=ts if is_auto else "",
+            status="pending",
+            reviewer="",
+            reviewed_at="",
             review_note="",
-            is_self_approved=1 if is_auto else 0,
+            is_self_approved=0,
         )
-        if is_auto:
-            _apply_cicd_request(conn, req_id, payload, task_id, request_type, ts)
         row = conn.execute(
             "SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)
         ).fetchone()
@@ -372,7 +371,7 @@ def approve_request(
     Mirrors core.py:approve_cicd_request.
     """
     if reviewer_role not in CICD_APPROVER_ROLES:
-        raise PermissionError("只有 RM/Admin 可以审批 CICD 任务申请")
+        raise PermissionError("只有 RM 可以审批 CICD 任务申请")
     row = conn.execute(
         "SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)
     ).fetchone()
@@ -381,6 +380,8 @@ def approve_request(
     req = dict(row)
     if req["status"] != "pending":
         raise RuntimeError(f"申请状态为 {req['status']}，无法审批")
+    # Ruling B: RM approving their own request sets is_self_approved=1 (audit flag)
+    is_self_approved = 1 if reviewer == req["submitter"] else 0
     ts = beijing_timestamp()
     import json as _json
 
@@ -391,17 +392,17 @@ def approve_request(
                 """UPDATE cicd_task_requests
                    SET status='approved', reviewer=?, reviewed_at=?, review_note=?,
                        approval_mode='dispatch_spd', delivery_status='pending',
-                       jira_id=?, jira_auto_created=?
+                       jira_id=?, jira_auto_created=?, is_self_approved=?
                    WHERE id=?""",
-                (reviewer, ts, review_note, jira_id, jira_auto_created, req_id),
+                (reviewer, ts, review_note, jira_id, jira_auto_created, is_self_approved, req_id),
             )
         else:
             conn.execute(
                 """UPDATE cicd_task_requests
                    SET status='approved', reviewer=?, reviewed_at=?, review_note=?,
-                       approval_mode='immediate'
+                       approval_mode='immediate', is_self_approved=?
                    WHERE id=?""",
-                (reviewer, ts, review_note, req_id),
+                (reviewer, ts, review_note, is_self_approved, req_id),
             )
             _apply_cicd_request(
                 conn, req_id, payload, req["task_id"], req["request_type"], ts
@@ -425,7 +426,7 @@ def reject_request(
     Mirrors core.py:reject_cicd_request.
     """
     if reviewer_role not in CICD_APPROVER_ROLES:
-        raise PermissionError("只有 RM/Admin 可以拒绝 CICD 任务申请")
+        raise PermissionError("只有 RM 可以拒绝 CICD 任务申请")
     if not review_note or not review_note.strip():
         raise ValueError("拒绝必须填写理由")
     row = conn.execute(
@@ -468,7 +469,7 @@ def cancel_request(
     if req["status"] != "pending":
         raise RuntimeError(f"申请状态为 {req['status']}，只有 pending 状态可以取消")
     if req["submitter"] != username and role not in CICD_APPROVER_ROLES:
-        raise PermissionError("只有提交人或 RM/Admin 可以取消申请")
+        raise PermissionError("只有提交人或 RM 可以取消申请")
     with transaction(conn):
         conn.execute(
             "UPDATE cicd_task_requests SET status='cancelled', reviewed_at=? WHERE id=?",
@@ -488,14 +489,14 @@ def transfer_owner(
     actor: str,
     actor_role: str,
 ) -> dict:
-    """Transfer task ownership directly (RM/Admin only, no approval needed).
+    """Transfer task ownership directly (RM only, no approval needed; Ruling C).
 
     Mirrors core.py:transfer_cicd_owner.
     """
     import json as _json
 
     if actor_role not in CICD_APPROVER_ROLES:
-        raise PermissionError("只有 RM/Admin 可以直接修改负责人")
+        raise PermissionError("只有 RM 可以直接修改负责人")
     task = cicd_repo.get_task(conn, task_id)
     if not task:
         raise RuntimeError(f"CICD 任务 {task_id} 不存在")
@@ -531,12 +532,12 @@ def delete_task(
     actor: str,
     actor_role: str,
 ) -> None:
-    """Delete an Abandoned CICD task and all its history (RM/Admin only).
+    """Delete an Abandoned CICD task and all its history (RM only; Ruling C).
 
     Mirrors core.py:delete_cicd_task.
     """
     if actor_role not in CICD_APPROVER_ROLES:
-        raise PermissionError("只有 RM/Admin 可以删除 CICD 任务")
+        raise PermissionError("只有 RM 可以删除 CICD 任务")
     task = cicd_repo.get_task(conn, task_id)
     if not task:
         raise RuntimeError(f"CICD 任务 {task_id} 不存在")
@@ -566,14 +567,14 @@ def deliver_request(
     deliverer: str,
     deliverer_role: str,
 ) -> dict:
-    """SPD (or RM/Admin) marks a dispatched request as delivered.
+    """SPD (or RM) marks a dispatched request as delivered (Ruling C: Admin excluded).
 
     Mirrors core.py:deliver_cicd_request.
     """
     import json as _json
 
-    if deliverer_role not in {"SPD", "RM", "Admin"}:
-        raise PermissionError("只有 SPD、RM、Admin 可以标记已交付")
+    if deliverer_role not in {"SPD", "RM"}:
+        raise PermissionError("只有 SPD、RM 可以标记已交付")
     row = conn.execute(
         "SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)
     ).fetchone()
@@ -649,12 +650,12 @@ def re_dispatch_request(
     actor: str,
     actor_role: str,
 ) -> dict:
-    """RM/Admin re-dispatches a returned delivery back to SPD.
+    """RM re-dispatches a returned delivery back to SPD (Ruling C: Admin excluded).
 
     Mirrors core.py:re_dispatch_cicd_request.
     """
     if actor_role not in CICD_APPROVER_ROLES:
-        raise PermissionError("只有 RM/Admin 可以重新下发")
+        raise PermissionError("只有 RM 可以重新下发")
     row = conn.execute(
         "SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)
     ).fetchone()
@@ -683,14 +684,14 @@ def apply_returned_request(
     actor: str,
     actor_role: str,
 ) -> dict:
-    """RM/Admin applies a returned (or pending-delivery) request immediately.
+    """RM applies a returned (or pending-delivery) request immediately (Ruling C: Admin excluded).
 
     Mirrors core.py:apply_returned_cicd_request.
     """
     import json as _json
 
     if actor_role not in CICD_APPROVER_ROLES:
-        raise PermissionError("只有 RM/Admin 可以直接生效")
+        raise PermissionError("只有 RM 可以直接生效")
     row = conn.execute(
         "SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)
     ).fetchone()

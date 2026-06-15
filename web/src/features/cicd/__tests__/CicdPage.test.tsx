@@ -416,6 +416,77 @@ describe("CicdPage", () => {
     });
   });
 
+  // ── Ruling C: Admin cannot submit or approve CICD requests ────────────────
+
+  it("Admin role: no new-task button (canSubmit=false for Admin, ruling C)", async () => {
+    renderCicd("Admin");
+    // Give the component a chance to render tasks
+    await waitFor(() => {
+      // Overview pane renders for Admin (they are not SPD)
+      expect(screen.queryByText(/新建 CICD 任务/)).not.toBeInTheDocument();
+    });
+  });
+
+  it("Admin role: no approve button in 待审批 pane (canApprove=false for Admin, ruling C)", async () => {
+    const pendingReq = makeRequest({ submitter: "bob", submitter_display: "Bob" });
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [] });
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      if (url.includes("/api/cicd/requests")) return Promise.resolve({ requests: [pendingReq] });
+      return Promise.resolve({ deliveries: [] });
+    });
+    renderCicd("Admin");
+    // Admin sees "待审批" pane button (it's in PANE_LABELS, not a role gate itself)
+    await waitFor(() => expect(screen.getByText("待审批")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("待审批"));
+    // Pending request should appear but NO approve button
+    await waitFor(() => expect(screen.getByText(/Bob/)).toBeInTheDocument());
+    // The "审批" button is only shown when canApprove is true (RM only)
+    expect(screen.queryByRole("button", { name: "审批" })).not.toBeInTheDocument();
+  });
+
+  // ── Ruling B: pending status label shows "等待 RM 审批" ───────────────────
+
+  it("RecentPane: pending request status shows '等待 RM 审批' (ruling B)", async () => {
+    const recentReq = makeRequest({ submitter: "alice", submitter_display: "Alice", status: "pending" });
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [] });
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      if (url.includes("/api/cicd/requests")) return Promise.resolve({ requests: [recentReq] });
+      return Promise.resolve({ deliveries: [] });
+    });
+    renderCicd("RM");
+    await waitFor(() => expect(screen.getByText("最近申请")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("最近申请"));
+    await waitFor(() => {
+      expect(screen.getByText("等待 RM 审批")).toBeInTheDocument();
+    });
+  });
+
+  // ── Ruling B: ApproveDialog shows "本人提交" for self-approval ─────────────
+
+  it("ApproveDialog: shows 本人提交 when submitter equals current user (ruling B self-approve)", async () => {
+    // renderCicd uses username "alice" — make the pending req also from "alice"
+    const selfReq = makeRequest({ submitter: "alice", submitter_display: "Alice" });
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [makeTask()] });
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      if (url.includes("/api/cicd/requests")) return Promise.resolve({ requests: [selfReq] });
+      return Promise.resolve({ deliveries: [] });
+    });
+    renderCicd("RM");
+    // Navigate to 待审批 pane
+    await waitFor(() => expect(screen.getByText("待审批")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("待审批"));
+    // Pending request shows with approve button
+    await waitFor(() => expect(screen.getByRole("button", { name: "审批" })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "审批" }));
+    // ApproveDialog opens — should show "本人提交" since submitter === "alice" === current user
+    await waitFor(() => {
+      expect(screen.getByText("本人提交")).toBeInTheDocument();
+    });
+  });
+
   // ── Notification count display ─────────────────────────────────────────────
 
   it("shows notification count badge when there are unvisited notifications", async () => {

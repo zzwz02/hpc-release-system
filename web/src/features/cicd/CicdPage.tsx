@@ -60,7 +60,7 @@ const REQ_TYPE_LABEL: Record<string, string> = {
 };
 
 const REQ_STATUS_LABEL: Record<string, string> = {
-  pending: "待审批",
+  pending: "等待 RM 审批",
   approved: "已通过",
   rejected: "已拒绝",
   cancelled: "已取消",
@@ -554,6 +554,8 @@ interface ApproveDialogProps {
 }
 
 function ApproveDialog({ req, tasks, onDone, onClose }: ApproveDialogProps) {
+  const { user } = useAuth();
+  const isSelfApproval = req.submitter === (user?.username ?? "");
   const [note, setNote] = useState("");
   const [approvalMode, setApprovalMode] = useState<"immediate" | "dispatch_spd">("immediate");
   const [jiraMode, setJiraMode] = useState<"none" | "auto" | "manual">("none");
@@ -630,7 +632,13 @@ function ApproveDialog({ req, tasks, onDone, onClose }: ApproveDialogProps) {
         <h2>审批申请 #{req.id}</h2>
         <div className="dialog-body">
           <div className="small muted" style={{ marginBottom: 8 }}>
-            提交人：{userLabel(req.submitter, req.submitter_display)} &nbsp;|&nbsp;
+            提交人：{userLabel(req.submitter, req.submitter_display)}
+            {isSelfApproval && (
+              <span className="pill accent" style={{ fontSize: 11, marginLeft: 4 }}>
+                本人提交
+              </span>
+            )}{" "}
+            &nbsp;|&nbsp;
             类型：{REQ_TYPE_LABEL[req.request_type] ?? req.request_type} &nbsp;|&nbsp;
             {req.task_id ? `任务：${req.task_id}` : "新建任务"}
           </div>
@@ -798,7 +806,7 @@ function HistoryDialog({
                 &nbsp;·&nbsp; 提交人：{userLabel(h.submitter, h.submitter_display)}
                 &nbsp;·&nbsp; {formatServerTime(h.reviewed_at || h.submitted_at || "")}
                 {h.is_self_approved
-                  ? <>&nbsp;·&nbsp;<span className="pill accent" style={{ fontSize: 11 }}>RM/Admin 自动过审</span></>
+                  ? <>&nbsp;·&nbsp;<span className="pill accent" style={{ fontSize: 11 }}>RM 本人提交</span></>
                   : h.reviewer
                   ? <>&nbsp;·&nbsp; 审批人：{h.reviewer}</>
                   : null}
@@ -1733,7 +1741,7 @@ function DeliveryPane({
                       )}
                     </td>
                     <td style={{ whiteSpace: "nowrap" }}>
-                      {["SPD", "RM", "Admin"].includes(role) && (
+                      {["SPD", "RM"].includes(role) && (
                         <button
                           className="btn sm primary"
                           onClick={() => handleDeliver(d.id)}
@@ -1749,7 +1757,7 @@ function DeliveryPane({
                           退回
                         </button>
                       )}{" "}
-                      {["RM", "Admin"].includes(role) &&
+                      {role === "RM" &&
                         d.delivery_status === "returned" && (
                           <>
                             <button
@@ -1802,9 +1810,10 @@ export function CicdPage() {
   const role = user?.role ?? "";
   const username = user?.username ?? "";
 
-  const canSubmit = ["Owner", "RM", "Admin"].includes(role);
-  const canApprove = ["RM", "Admin"].includes(role);
-  const canDelivery = ["SPD", "RM", "Admin", "Owner"].includes(role);
+  // Ruling C: Admin has NO CICD create/approve/deliver affordances.
+  const canSubmit = ["Owner", "RM"].includes(role);
+  const canApprove = ["RM"].includes(role);
+  const canDelivery = ["SPD", "RM", "Owner"].includes(role);
 
   // Pane visibility by role (mirrors bindCicd:4738-4754)
   const isSPD = role === "SPD";
