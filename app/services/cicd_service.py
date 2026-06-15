@@ -927,38 +927,73 @@ def preview_cicd_app_info(
 ) -> dict:
     """Fetch and parse Gerrit app_info for a CICD-first preview (NO DB writes).
 
-    Returns a preview dict with key identity + app_info fields so the
-    frontend can show the user what will be created before they confirm.
-    Also returns the full `parsed` blob for passing back to
-    cicd_first_new_app as `app_info_parsed`.
+    ALWAYS derives (git_url, git_branch) FIRST and RETURNS them even when the
+    Gerrit content fetch fails (Wave-4 requirement: identity surfaced to wizard).
+
+    Response shape — base (always present):
+      git_url             str | None  — derived identity (None if manifest unresolvable)
+      git_branch          str | None  — same
+      needs_network       bool        — True for .xml manifest repos (identity needs network)
+      app_info_unavailable bool       — True when the Gerrit content fetch failed
+      app_info_error      str | None  — error detail when unavailable, else None
+
+    Response shape — only when app_info_unavailable=False:
+      app_version, x86_chips, arm_chips, python_label, pytorch_label, os, arch
+      commit_id, parsed
 
     Args:
-        repo_type: advisory repo type (git/repo/manifest)
-        repo_name: short repo name or .xml manifest path
-        branch: git branch / revision
+        repo_type:      advisory repo type (git/repo/manifest; dispatch by name shape)
+        repo_name:      short repo name ('hpc_hpl') or .xml manifest path
+        branch:         git branch / revision
         submitter_role: caller's role (auth check already done in router)
-        _fetch_fn: injectable fetch function for tests; defaults to
-                   app.integrations.gerrit.fetch_app_info.  Tests can
-                   pass a mock directly without patching at the module level.
+        _fetch_fn:      injectable fetch function for tests/e2e.  Signature:
+                        (git_url: str, branch: str, **kwargs) -> (raw_json: str, commit_id: str)
+                        Defaults to app.integrations.gerrit.fetch_app_info.
+                        Use make_fake_app_info_fetch() for offline tests.
 
     Raises:
-        ValueError: identity resolution failed (bad repo_name/branch)
-        GerritNetworkError: Gerrit unreachable or archive fetch failed → HTTP 502
+        ValueError: repo_name is empty (caller input error → HTTP 400).
+                    All other failure modes (manifest unresolvable, Gerrit unreachable)
+                    are returned as soft flags in the response dict, NOT exceptions.
     """
     import release_system.core as core
 
-    from app.api.errors import GerritNetworkError
     from app.config import settings
     from app.identity import repo_to_git_identity
 
-    # Derive identity (offline for short names; network only for .xml manifests)
-    git_url, git_branch = repo_to_git_identity(repo_type, repo_name, branch)
-    if not git_url or not git_branch:
-        raise ValueError(
-            "无法解析 repo 身份（repo_name 为空或 .xml manifest 解析失败），"
-            "请检查 repo_name / branch"
-        )
+    # Guard: empty repo_name / branch are always caller-input errors (→ 400).
+    if not (repo_name or "").strip():
+        raise ValueError("repo_name 不能为空，请检查 repo_name / branch")
+    if not (branch or "").strip():
+        raise ValueError("branch 不能为空，请检查 repo_name / branch")
 
+    # Determine if this is a manifest repo (identity needs network).
+    is_manifest = (repo_name or "").strip().endswith(".xml")
+
+    # Step 1: Derive identity FIRST.
+    # For git-type short names this is offline and always succeeds.
+    # For .xml manifests it requires network; returns (None, None) on failure.
+    git_url, git_branch = repo_to_git_identity(repo_type, repo_name, branch)
+
+    base: dict = {
+        "git_url": git_url,
+        "git_branch": git_branch,
+        "needs_network": is_manifest,
+    }
+
+    if not git_url or not git_branch:
+        # Manifest identity resolution failed (network unreachable).
+        # Return what we have — identity is unresolved but not a fatal error.
+        return {
+            **base,
+            "app_info_unavailable": True,
+            "app_info_error": (
+                "manifest 路径需要联网解析（sw-gerrit-devops:29418 不可达）"
+                f"，无法确定 repo 身份 ({repo_name})"
+            ),
+        }
+
+    # Step 2: Fetch Gerrit content (may fail if Gerrit is unreachable).
     if _fetch_fn is None:
         from app.integrations.gerrit import fetch_app_info as _default_fetch
 
@@ -971,15 +1006,21 @@ def preview_cicd_app_info(
             project_root=settings.db_path.parent,
         )
     except Exception as exc:
-        raise GerritNetworkError(
-            f"无法从 Gerrit 获取 app_info.json（{git_url}@{git_branch}）：{exc}"
-        ) from exc
+        # Identity was resolved but content fetch failed.
+        # Return identity + soft unavailable flag — wizard can still show the mapping.
+        return {
+            **base,
+            "app_info_unavailable": True,
+            "app_info_error": str(exc),
+        }
 
+    # Happy path: identity resolved + content fetched.
     parsed = core.parse_app_info(raw_json)
 
     return {
-        "git_url": git_url,
-        "git_branch": git_branch,
+        **base,
+        "app_info_unavailable": False,
+        "app_info_error": None,
         "app_version": parsed.get("app_version", ""),
         "x86_chips": ",".join(core.order_chips(parsed.get("x86_chips", []))),
         "arm_chips": ",".join(core.order_chips(parsed.get("arm_chips", []))),
@@ -990,6 +1031,84 @@ def preview_cicd_app_info(
         "commit_id": commit_id,
         "parsed": parsed,  # full blob — pass to cicd_first_new_app as app_info_parsed
     }
+
+
+def make_fake_app_info_fetch(
+    *,
+    app_name: str = "fake-app",
+    app_version: str = "1.0.0-fake",
+    x86_chips: "list[str] | None" = None,
+    arm_chips: "list[str] | None" = None,
+    python_label: str = "3.10",
+    pytorch_label: str = "2.1",
+    os_label: str = "ubuntu22.04",
+    arch: str = "amd64",
+    commit_id: str = "fakefake0000000000000000000000000000fake",
+    extra_build_fields: "dict | None" = None,
+    extra_root_fields: "dict | None" = None,
+):
+    """Return a fake _fetch_fn for tests/e2e — no network required.
+
+    The returned function has signature:
+        (git_url: str, branch: str, **kwargs) -> (raw_json: str, commit_id: str)
+
+    It returns a realistic but fabricated app_info.json payload that
+    core.parse_app_info() can parse into the 7 preview fields.
+
+    Usage (direct service call)::
+
+        fetch = cicd_service.make_fake_app_info_fetch(app_version="2.0")
+        preview = cicd_service.preview_cicd_app_info(
+            repo_type="git",
+            repo_name="hpc_myapp",
+            branch="main",
+            submitter_role="RM",
+            _fetch_fn=fetch,
+        )
+
+    Usage (HTTP test — patch at module level)::
+
+        from unittest.mock import patch
+        fake = cicd_service.make_fake_app_info_fetch()
+        with patch("app.integrations.gerrit.fetch_app_info", fake):
+            resp = client.post("/api/cicd/apps/fetch-preview", json=body)
+    """
+    import json as _json
+
+    _x86 = x86_chips if x86_chips is not None else ["C500", "N100"]
+    _arm = arm_chips if arm_chips is not None else []
+    build_key = f"{os_label}_{arch}"
+    build_env: dict = {
+        "arch": arch,
+        "supported_chip": _x86,
+        "enabled": True,
+        "python_label": python_label,
+        "pytorch_label": pytorch_label,
+        "os": os_label,
+        **(extra_build_fields or {}),
+    }
+
+    data: dict = {
+        "app_name": app_name,
+        "app_version": app_version,
+        "app_build": {build_key: build_env},
+        **(extra_root_fields or {}),
+    }
+    if _arm:
+        arm_key = f"{os_label}_arm64"
+        data["app_build"][arm_key] = {
+            **build_env,
+            "arch": "arm64",
+            "supported_chip": _arm,
+        }
+
+    _raw = _json.dumps(data, ensure_ascii=False)
+    _cid = commit_id
+
+    def _fake(git_url: str, branch: str, **kwargs) -> "tuple[str, str]":
+        return (_raw, _cid)
+
+    return _fake
 
 
 def _apply_parsed_app_info_to_snapshot(

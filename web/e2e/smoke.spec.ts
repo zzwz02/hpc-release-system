@@ -446,6 +446,16 @@ test.describe("W3 App 工作台 sub-tabs", () => {
     // Dismiss any browser alert that fires on app creation
     page.on("dialog", (d) => void d.dismiss());
 
+    // Mock fetch-preview to return 502 immediately — avoids waiting on Gerrit
+    // TCP timeouts (which can exceed the 10 s wait in this environment).
+    await page.route("**/api/cicd/apps/fetch-preview", async (route) => {
+      await route.fulfill({
+        status: 502,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: false, error: "Gerrit 网络不可达（e2e w3 mock）" }),
+      });
+    });
+
     await login(page, "rm");
     await page.goto(`${BASE}/apps`);
     await page.waitForSelector('[data-testid="new-app-btn"]', { timeout: 15_000 });
@@ -458,11 +468,11 @@ test.describe("W3 App 工作台 sub-tabs", () => {
     await page.fill('input[placeholder*="sw-metax-open"]', `test/e2e-w3-${uniq}`);
     await page.fill('input[placeholder*="master"]', "main");
 
-    // Click "拉取 Gerrit 信息" — will fail since Gerrit is not reachable
+    // Click "拉取 Gerrit 信息" — immediately returns 502 via route mock
     await page.click('[data-testid="new-app-fetch"]');
 
     // Error state should appear with "跳过，直接创建" button
-    await page.waitForSelector('[data-testid="new-app-submit"]', { timeout: 10_000 });
+    await page.waitForSelector('[data-testid="new-app-submit"]', { timeout: 5_000 });
     const errText = await page.textContent('[data-testid="new-app-dialog"]');
     expect(errText).toContain("拉取失败");
 
@@ -484,5 +494,109 @@ test.describe("W3 App 工作台 sub-tabs", () => {
     const pendingBody = await page.textContent("body");
     // A pending "create" request was produced — CICD table shows "(新建)" for new-task requests
     expect(pendingBody).toMatch(/新建|create/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suite W4: Wizard derived-identity display
+//
+// Uses Playwright network interception to mock the 502 response from the
+// fetch-preview endpoint — avoids waiting on Gerrit TCP timeouts (which can
+// take 30-60 s in this environment) while still exercising the full frontend
+// identity-derivation + display logic.
+// ---------------------------------------------------------------------------
+
+/** Force a clean session: navigate home, logout if needed, then login fresh. */
+async function freshLogin(page: Page, username: string): Promise<void> {
+  // Navigate to base; if already logged in there may be no login form.
+  await page.goto(BASE);
+  // Try to find logout button (user might already be logged in from a prior test).
+  const logoutBtn = page.locator('button:has-text("退出"), button:has-text("Logout"), [data-testid="logout-btn"]').first();
+  if (await logoutBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
+    await logoutBtn.click();
+    await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
+  }
+  // Also clear session via the API logout endpoint for certainty.
+  await page.evaluate(() => {
+    return fetch("/api/logout", { method: "POST", credentials: "include" }).catch(() => {});
+  });
+  await page.goto(BASE);
+  await login(page, username);
+}
+
+test.describe("W4 wizard derived-identity display", () => {
+  test("fetch-error step shows derived git_url@branch for git-type repo", async ({ page }) => {
+    // Intercept fetch-preview to immediately return a 502 (Gerrit unreachable).
+    // This lets the frontend show the derived identity box without waiting on
+    // a real TCP timeout to sw-gerrit-devops (can be 30-60 s).
+    await page.route("**/api/cicd/apps/fetch-preview", async (route) => {
+      await route.fulfill({
+        status: 502,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: false, error: "Gerrit 网络不可达（e2e w4 mock）" }),
+      });
+    });
+
+    await freshLogin(page, "rm");
+    await page.goto(`${BASE}/apps`);
+    await page.waitForSelector('[data-testid="new-app-btn"]', { timeout: 15_000 });
+    await page.click('[data-testid="new-app-btn"]');
+    await page.waitForSelector('[data-testid="new-app-dialog"]', { timeout: 5_000 });
+
+    // Fill a git-type short repo name — identity is always derivable offline
+    const uniq = Date.now();
+    await page.fill('[data-testid="new-app-name"]', `e2e-w4-identity-${uniq}`);
+    await page.fill('input[placeholder*="sw-metax-open"]', `sw-metax-open/e2e-app-${uniq}`);
+    await page.fill('input[placeholder*="master"]', "main");
+
+    // Trigger fetch — immediately 502 via our route mock
+    await page.click('[data-testid="new-app-fetch"]');
+
+    // Error state must appear with the identity box (fast — no real network wait)
+    await page.waitForSelector('[data-testid="derived-identity-box"]', { timeout: 5_000 });
+
+    const boxText = await page.textContent('[data-testid="derived-identity-box"]');
+    // Full SSH URL derived offline from the short name
+    expect(boxText).toContain("sw-gerrit-devops");
+    expect(boxText).toContain(`sw-metax-open/e2e-app-${uniq}`);
+    expect(boxText).toContain("main");
+    expect(boxText).toContain("Gerrit 身份");
+
+    // Screenshot for team-lead verification
+    await page.screenshot({ path: "e2e/screenshots/w4-wizard-identity-fetch-error.png", fullPage: false });
+  });
+
+  test("fetch-error step shows 需联网解析 for repo-type", async ({ page }) => {
+    await page.route("**/api/cicd/apps/fetch-preview", async (route) => {
+      await route.fulfill({
+        status: 502,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: false, error: "Gerrit 网络不可达（e2e w4 mock）" }),
+      });
+    });
+
+    await freshLogin(page, "rm");
+    await page.goto(`${BASE}/apps`);
+    await page.waitForSelector('[data-testid="new-app-btn"]', { timeout: 15_000 });
+    await page.click('[data-testid="new-app-btn"]');
+    await page.waitForSelector('[data-testid="new-app-dialog"]', { timeout: 5_000 });
+
+    await page.fill('[data-testid="new-app-name"]', `e2e-w4-repo-${Date.now()}`);
+    // Switch to repo type — scope to dialog to avoid hitting the release picker
+    await page.locator('[data-testid="new-app-dialog"] select').selectOption("repo");
+    await page.fill('input[placeholder*="sw-metax-open"]', "manifests/releases/maca-4.0.xml");
+
+    // Trigger fetch — immediately 502 via route mock
+    await page.click('[data-testid="new-app-fetch"]');
+
+    // Error state: identity box should show "需联网解析" since repo-type
+    // requires Gerrit network access to resolve the manifest URL
+    await page.waitForSelector('[data-testid="derived-identity-box"]', { timeout: 5_000 });
+    const boxText = await page.textContent('[data-testid="derived-identity-box"]');
+    expect(boxText).toContain("需联网解析");
+    expect(boxText).toContain("master");
+
+    // Screenshot
+    await page.screenshot({ path: "e2e/screenshots/w4-wizard-identity-repo-type.png", fullPage: false });
   });
 });

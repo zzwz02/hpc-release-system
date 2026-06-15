@@ -4,15 +4,17 @@ New features (task 7 / impl-1 — now implemented):
 
 1. POST /api/cicd/apps/fetch-preview (auth Owner/RM):
    Body: {repo_type, repo_name, branch}
-   - Derives (git_url, git_branch) via identity.repo_to_git_identity (offline for short names)
-   - Calls gerrit.fetch_app_info → core.parse_app_info → returns 7 derived fields
-   - Returns: {git_url, git_branch, app_version, x86_chips, arm_chips,
-               python_label, pytorch_label, os, arch, commit_id, parsed}
-     where x86_chips/arm_chips/python_label/pytorch_label/os/arch are
-     COMMA-JOINED STRINGS (not lists).
-   - On Gerrit failure: GerritNetworkError → HTTP 502
-   - On bad repo_name: ValueError → HTTP 400
-   - Auth: CICD_CREATE_ROLES (Owner/RM); Admin/Guest → 403
+   - Derives (git_url, git_branch) FIRST via identity.repo_to_git_identity
+     (offline for short names; network only for .xml manifests).
+   - Returns identity REGARDLESS of whether the Gerrit content fetch succeeds
+     (Wave-4: wizard shows the mapping even when Gerrit is unreachable).
+   - Returns: {git_url, git_branch, needs_network, app_info_unavailable,
+               app_info_error, ...app_info fields when available}
+     app_info fields (app_version/x86_chips/arm_chips/python_label/pytorch_label/
+     os/arch/commit_id/parsed) are present only when app_info_unavailable=False.
+   - On Gerrit content failure: HTTP 200, app_info_unavailable=True, app_info_error set.
+   - On bad repo_name / branch: ValueError → HTTP 400.
+   - Auth: CICD_CREATE_ROLES (Owner/RM); Admin/Guest → 403.
 
 2. cicd_first_new_app with optional app_info:
    New kwargs: app_info_parsed: dict | None = None, app_info_commit_id: str = ""
@@ -23,6 +25,7 @@ New features (task 7 / impl-1 — now implemented):
 
    Mockable: preview_cicd_app_info has _fetch_fn kwarg for direct injection.
    For HTTP tests: patch app.integrations.gerrit.fetch_app_info at module level.
+   Factory: cicd_service.make_fake_app_info_fetch() for offline e2e without Gerrit.
 
 3. FE-contract update (see TestCicdFirstFeContract in test_cicd_wave3.py):
    New wizard payload: official_name + repo + app_info_parsed/commit_id + context.
@@ -188,19 +191,52 @@ class TestPreviewCicdAppInfoService:
         sig = inspect.signature(cicd_service.preview_cicd_app_info)
         assert "conn" not in sig.parameters
 
-    # --- Gerrit failure ---
+    # --- Gerrit content fetch failure: Wave-4 new behavior ---
+    # Identity is ALWAYS returned; app_info_unavailable=True soft flag (no exception).
 
-    def test_gerrit_failure_raises_gerrit_network_error(self):
-        from app.api.errors import GerritNetworkError
-        with pytest.raises(GerritNetworkError, match="Gerrit"):
-            self._preview(_fetch_fn=_mock_fetch_fail)
+    def test_gerrit_failure_returns_unavailable_flag(self):
+        """Gerrit failure → app_info_unavailable=True in response, no exception."""
+        result = self._preview(_fetch_fn=_mock_fetch_fail)
+        assert result["app_info_unavailable"] is True
+
+    def test_gerrit_failure_still_returns_identity(self):
+        """Even when Gerrit content fetch fails, git_url / git_branch are returned."""
+        result = self._preview(_fetch_fn=_mock_fetch_fail)
+        assert result["git_url"] == _RESOLVED_URL
+        assert result["git_branch"] == _BRANCH
+
+    def test_gerrit_failure_returns_error_string(self):
+        """app_info_error contains the failure detail."""
+        result = self._preview(_fetch_fn=_mock_fetch_fail)
+        assert result.get("app_info_error")
+
+    def test_gerrit_failure_no_app_info_fields(self):
+        """app_info fields (app_version etc.) absent when unavailable."""
+        result = self._preview(_fetch_fn=_mock_fetch_fail)
+        assert "app_version" not in result
+        assert "parsed" not in result
+
+    def test_success_returns_unavailable_false(self):
+        """Happy path: app_info_unavailable=False."""
+        result = self._preview()
+        assert result["app_info_unavailable"] is False
+        assert result.get("app_info_error") is None
+
+    # --- needs_network flag ---
+
+    def test_git_type_needs_network_false(self):
+        """Short git-type repo names: offline identity → needs_network=False."""
+        result = self._preview()
+        assert result["needs_network"] is False
+
+    # --- input validation (still raises ValueError → 400) ---
 
     def test_empty_repo_name_raises_value_error(self):
         with pytest.raises(ValueError, match="repo"):
             self._preview(repo_name="")
 
     def test_empty_branch_raises_value_error(self):
-        with pytest.raises(ValueError, match="repo"):
+        with pytest.raises(ValueError, match="branch"):
             self._preview(branch="")
 
 
@@ -366,12 +402,17 @@ class TestFetchPreviewHttp:
 
 
 # ---------------------------------------------------------------------------
-# Fetch-preview HTTP — Gerrit failure → 502
+# Fetch-preview HTTP — Gerrit content fetch failure (Wave-4 new behavior)
 # ---------------------------------------------------------------------------
+# Identity is ALWAYS returned; content failure → 200 with app_info_unavailable=True.
 
 
 class TestFetchPreviewGerritFail:
-    """Gerrit outage → HTTP 502 Bad Gateway with ok=false error body."""
+    """Gerrit outage → HTTP 200 with app_info_unavailable=True + identity.
+
+    Wave-4 change: previously → 502.  Now → 200 + soft flag so the wizard
+    can still display the derived git_url/git_branch even when Gerrit is down.
+    """
 
     def _post_with_gerrit_fail(self, db_path, exc):
         from unittest.mock import patch
@@ -384,35 +425,57 @@ class TestFetchPreviewGerritFail:
             ):
                 return client.post(_PREVIEW_PATH, json=_PREVIEW_BODY)
 
-    def test_runtime_error_gives_502(self, db_path):
+    def test_gerrit_failure_gives_200(self, db_path):
+        """Content fetch failure → 200 (identity still returned)."""
         resp = self._post_with_gerrit_fail(
             db_path, RuntimeError("无法连接 Gerrit: Connection refused")
         )
-        assert resp.status_code == 502, (
-            f"Gerrit failure must map to 502, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 200, (
+            f"Gerrit content failure must return 200 with unavailable flag, "
+            f"got {resp.status_code}: {resp.text}"
         )
 
-    def test_502_body_ok_false(self, db_path):
+    def test_unavailable_flag_set(self, db_path):
+        """Response contains app_info_unavailable=True."""
         resp = self._post_with_gerrit_fail(
             db_path, RuntimeError("无法连接 Gerrit: Connection refused")
         )
         body = resp.json()
-        assert body.get("ok") is False
-        assert body.get("error"), "Error body must contain 'error' key"
+        assert body.get("app_info_unavailable") is True
 
-    def test_timeout_gives_502(self, db_path):
+    def test_identity_still_returned(self, db_path):
+        """git_url and git_branch present even when content fetch failed."""
         resp = self._post_with_gerrit_fail(
-            db_path, RuntimeError("无法从 Gerrit 拉取 app_info.json: timed out")
+            db_path, RuntimeError("Connection refused")
         )
-        assert resp.status_code == 502, resp.text
+        body = resp.json()
+        assert body.get("git_url") == _RESOLVED_URL
+        assert body.get("git_branch") == _BRANCH
 
-    def test_502_is_not_500(self, db_path):
-        """502 is the correct status — not 500 (internal server error)."""
+    def test_error_detail_in_response(self, db_path):
+        """app_info_error contains the failure detail."""
+        resp = self._post_with_gerrit_fail(
+            db_path, RuntimeError("timed out fetching app_info.json")
+        )
+        body = resp.json()
+        assert body.get("app_info_error"), "app_info_error must be set on failure"
+
+    def test_no_app_info_fields_when_unavailable(self, db_path):
+        """app_version / parsed absent when content unavailable."""
+        resp = self._post_with_gerrit_fail(
+            db_path, RuntimeError("network error")
+        )
+        body = resp.json()
+        assert "app_version" not in body
+        assert "parsed" not in body
+
+    def test_not_500(self, db_path):
+        """Gerrit failure must not bubble up as 500."""
         resp = self._post_with_gerrit_fail(
             db_path, RuntimeError("network error")
         )
         assert resp.status_code != 500, (
-            "Gerrit failure must not bubble up as 500 — use GerritNetworkError → 502"
+            "Gerrit failure must not be a 500 — must return 200 with unavailable flag"
         )
 
 
@@ -631,3 +694,245 @@ class TestCicdFirstWithAppInfo:
         assert body["app_id"] == _APP_ID
         assert body["request"]["status"] == "pending"
         assert body["request"]["task_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# make_fake_app_info_fetch — injectable factory for offline tests/e2e
+# ---------------------------------------------------------------------------
+
+
+class TestMakeFakeAppInfoFetch:
+    """cicd_service.make_fake_app_info_fetch() returns a usable _fetch_fn."""
+
+    def _preview_with_fake(self, **factory_kwargs):
+        fetch = cicd_service.make_fake_app_info_fetch(**factory_kwargs)
+        return cicd_service.preview_cicd_app_info(
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter_role="RM",
+            _fetch_fn=fetch,
+        )
+
+    def test_returns_callable(self):
+        fetch = cicd_service.make_fake_app_info_fetch()
+        assert callable(fetch)
+
+    def test_callable_signature(self):
+        """Fake fetch must accept (git_url, branch, **kwargs) → (raw_json, commit_id)."""
+        fetch = cicd_service.make_fake_app_info_fetch()
+        raw_json, commit_id = fetch("ssh://example.com/repo", "main")
+        assert isinstance(raw_json, str)
+        assert isinstance(commit_id, str)
+
+    def test_default_yields_parseable_app_info(self):
+        """Default factory yields JSON that core.parse_app_info() can parse."""
+        import json
+        from release_system import core
+
+        fetch = cicd_service.make_fake_app_info_fetch()
+        raw_json, _ = fetch("ssh://example.com/repo", "main")
+        data = json.loads(raw_json)
+        assert "app_version" in data
+        parsed = core.parse_app_info(raw_json)
+        assert "app_version" in parsed
+
+    def test_custom_app_version(self):
+        result = self._preview_with_fake(app_version="9.9.9-custom")
+        assert result["app_version"] == "9.9.9-custom"
+
+    def test_custom_x86_chips(self):
+        result = self._preview_with_fake(x86_chips=["C600", "N200"])
+        assert "C600" in result["x86_chips"]
+
+    def test_custom_commit_id(self):
+        fetch = cicd_service.make_fake_app_info_fetch(
+            commit_id="deadbeef" * 5
+        )
+        result = cicd_service.preview_cicd_app_info(
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter_role="RM",
+            _fetch_fn=fetch,
+        )
+        assert result["commit_id"] == "deadbeef" * 5
+
+    def test_fake_identity_unaffected(self):
+        """Fake fetcher does not affect identity derivation."""
+        result = self._preview_with_fake()
+        assert result["git_url"] == _RESOLVED_URL
+        assert result["git_branch"] == _BRANCH
+
+    def test_unavailable_false_with_fake(self):
+        """Fake fetcher succeeds → app_info_unavailable=False."""
+        result = self._preview_with_fake()
+        assert result["app_info_unavailable"] is False
+
+    def test_fake_as_patch_target(self, db_path):
+        """Fake fetch works as a patch target for HTTP-level tests."""
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+
+        fake = cicd_service.make_fake_app_info_fetch(app_version="3.0.0-http")
+        app = _make_app(db_path)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            with patch("app.integrations.gerrit.fetch_app_info", fake):
+                resp = client.post(_PREVIEW_PATH, json=_PREVIEW_BODY)
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["app_version"] == "3.0.0-http"
+        assert body["app_info_unavailable"] is False
+
+    def test_cicd_first_with_fake_app_info(self, temp_db, tmp_dir):
+        """Full chain: make_fake_app_info_fetch → preview → cicd_first_new_app."""
+        from release_system import core
+        from tests.conftest import seed_release
+
+        seed_release(temp_db, tmp_path=tmp_dir)
+        fetch = cicd_service.make_fake_app_info_fetch(
+            app_version="2.5-e2e",
+            x86_chips=["C500"],
+            python_label="3.11",
+        )
+        preview = cicd_service.preview_cicd_app_info(
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter_role="RM",
+            _fetch_fn=fetch,
+        )
+        assert preview["app_info_unavailable"] is False
+
+        result = cicd_service.cicd_first_new_app(
+            temp_db,
+            official_name=_OFFICIAL_NAME,
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter="rm",
+            submitter_role="RM",
+            submitter_display="",
+            payload={
+                "build_product": [],
+                "community_artifact": [],
+                "build_image": "",
+                "test_timeout": 40,
+                "notes": "e2e fake",
+            },
+            app_info_parsed=preview["parsed"],
+            app_info_commit_id=preview["commit_id"],
+        )
+        assert result["ok"] is True
+
+        # Verify snapshot carries the fake app_info
+        releases = core.list_releases(temp_db)
+        unlocked = [r for r in releases if not r.get("released_locked")]
+        rel_full = core.get_release(temp_db, unlocked[0]["id"])
+        snap = rel_full["snapshots"][result["app_id"]]
+        assert snap.get("version") == "2.5-e2e"
+        assert snap.get("owner_confirmed") is True
+
+
+# ---------------------------------------------------------------------------
+# Manifest repo: needs_network=True, graceful identity failure
+# (identity mocked to avoid 60-second git-archive network timeout)
+# ---------------------------------------------------------------------------
+
+
+class TestFetchPreviewManifest:
+    """For .xml manifest paths: needs_network=True + graceful identity failure.
+
+    app.identity.repo_to_git_identity is mocked to (None, None) to simulate
+    the offline Gerrit-unreachable case without hitting the 60s timeout.
+    """
+
+    _MANIFEST_PATH = "APP/chroma/hpc_2024-7-devel.xml"
+    _MANIFEST_BRANCH = "master"
+    _RESOLVED_MANIFEST_URL = (
+        "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_chroma"
+    )
+
+    def _preview_manifest_offline(self):
+        """Simulate manifest identity resolution failure (network down)."""
+        from unittest.mock import patch
+
+        with patch(
+            "app.identity.repo_to_git_identity",
+            return_value=(None, None),
+        ):
+            return cicd_service.preview_cicd_app_info(
+                repo_type="repo",
+                repo_name=self._MANIFEST_PATH,
+                branch=self._MANIFEST_BRANCH,
+                submitter_role="RM",
+                _fetch_fn=_mock_fetch_fn,
+            )
+
+    def _preview_manifest_online(self):
+        """Simulate manifest identity resolved (network available)."""
+        from unittest.mock import patch
+
+        with patch(
+            "app.identity.repo_to_git_identity",
+            return_value=(self._RESOLVED_MANIFEST_URL, self._MANIFEST_BRANCH),
+        ):
+            return cicd_service.preview_cicd_app_info(
+                repo_type="repo",
+                repo_name=self._MANIFEST_PATH,
+                branch=self._MANIFEST_BRANCH,
+                submitter_role="RM",
+                _fetch_fn=_mock_fetch_fn,
+            )
+
+    def test_manifest_sets_needs_network_true(self):
+        """needs_network=True for .xml manifest repos."""
+        result = self._preview_manifest_offline()
+        assert result["needs_network"] is True
+
+    def test_manifest_offline_no_exception(self):
+        """Manifest identity failure (no network) → returns dict, no exception."""
+        try:
+            result = self._preview_manifest_offline()
+            assert "app_info_unavailable" in result
+        except ValueError:
+            pytest.fail(
+                "ValueError must not be raised for manifest identity failure"
+                " — should return soft flag"
+            )
+
+    def test_manifest_offline_sets_unavailable(self):
+        """Offline manifest → app_info_unavailable=True, git_url=None."""
+        result = self._preview_manifest_offline()
+        assert result["app_info_unavailable"] is True
+        assert result.get("git_url") is None
+        assert result.get("git_branch") is None
+
+    def test_manifest_offline_has_error_string(self):
+        """Offline manifest → app_info_error contains an explanation."""
+        result = self._preview_manifest_offline()
+        assert result.get("app_info_error"), "app_info_error must be set when offline"
+
+    def test_manifest_online_needs_network_true(self):
+        """needs_network stays True even when identity resolved (it's a manifest)."""
+        result = self._preview_manifest_online()
+        assert result["needs_network"] is True
+
+    def test_manifest_online_returns_identity(self):
+        """When manifest resolves and Gerrit content succeeds, returns full response."""
+        result = self._preview_manifest_online()
+        assert result["git_url"] == self._RESOLVED_MANIFEST_URL
+        assert result["app_info_unavailable"] is False
+        assert "app_version" in result
+
+    def test_git_type_always_needs_network_false(self):
+        """Short git-type names: offline identity → needs_network=False."""
+        result = cicd_service.preview_cicd_app_info(
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter_role="RM",
+            _fetch_fn=_mock_fetch_fn,
+        )
+        assert result["needs_network"] is False

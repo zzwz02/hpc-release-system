@@ -25,3 +25,5 @@ web/node_modules/
 web_dist/
 web/playwright-report/
 web/test-results/
+web/e2e/screenshots/
+test-results/

@@ -962,3 +962,152 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// W4 — Wizard derived-identity display
+// ---------------------------------------------------------------------------
+
+describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
+  const GERRIT_BASE = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC";
+
+  beforeEach(() => {
+    vi.stubGlobal("alert", vi.fn());
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    useUiStore.getState().setSelectedApp("");
+    useUiStore.getState().setAppDetailDirty(false);
+  });
+
+  async function openWizard() {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("new-app-btn"));
+    fireEvent.click(screen.getByTestId("new-app-btn"));
+    await waitFor(() => screen.getByTestId("new-app-dialog"));
+  }
+
+  it("fetch-error step shows derived git_url@branch for a git-type repo", async () => {
+    // Gerrit fetch throws (network unreachable)
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes("fetch-preview")) throw new Error("Gerrit not reachable");
+      return { ok: true, app_id: "x1", request_id: 1 };
+    });
+    await openWizard();
+
+    // Fill git-type repo (default)
+    fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "TestApp" } });
+    fireEvent.change(screen.getByPlaceholderText("例：sw-metax-open/amber"), {
+      target: { value: "sw-metax-open/myapp" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("例：master"), { target: { value: "main" } });
+
+    fireEvent.click(screen.getByTestId("new-app-fetch"));
+
+    // Error state should appear with the identity box
+    await waitFor(() => screen.getByTestId("derived-identity-box"));
+    const box = screen.getByTestId("derived-identity-box");
+
+    // The full SSH URL must be derived offline from the short name
+    expect(box.textContent).toContain(`${GERRIT_BASE}/sw-metax-open/myapp`);
+    expect(box.textContent).toContain("main");
+    // Labeling
+    expect(box.textContent).toContain("Gerrit 身份");
+  });
+
+  it("fetch-error step shows '需联网解析' for repo-type (manifest needs network)", async () => {
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes("fetch-preview")) throw new Error("Gerrit not reachable");
+      return { ok: true, app_id: "x2", request_id: 2 };
+    });
+    await openWizard();
+
+    fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "RepoApp" } });
+    // Switch to repo type
+    fireEvent.change(screen.getByDisplayValue("git"), { target: { value: "repo" } });
+    fireEvent.change(screen.getByPlaceholderText("例：sw-metax-open/amber"), {
+      target: { value: "manifests/releases/maca-4.0.xml" },
+    });
+
+    fireEvent.click(screen.getByTestId("new-app-fetch"));
+
+    // Error state: identity box should say "需联网解析" since repo-type needs network
+    await waitFor(() => screen.getByTestId("derived-identity-box"));
+    const box = screen.getByTestId("derived-identity-box");
+    expect(box.textContent).toContain("需联网解析");
+    // Branch (auto-fixed to master for repo-type)
+    expect(box.textContent).toContain("master");
+  });
+
+  it("preview step shows identity box with git_url from server response", async () => {
+    const mockPreview = {
+      git_url: `${GERRIT_BASE}/sw-metax-open/previewapp`,
+      git_branch: "release/4.0",
+      needs_network: false,
+      app_info_unavailable: false,
+      app_info_error: null,
+      app_version: "4.0.1",
+      x86_chips: "C500",
+      arm_chips: "",
+      python_label: "python3.10",
+      pytorch_label: "",
+      os: "kylin",
+      arch: "x86",
+      commit_id: "deadbeef1234",
+      parsed: { version: "4.0.1" },
+    };
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes("fetch-preview")) return mockPreview;
+      return { ok: true, app_id: "x3", request_id: 3 };
+    });
+    await openWizard();
+
+    fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "PreviewApp" } });
+    fireEvent.change(screen.getByPlaceholderText("例：sw-metax-open/amber"), {
+      target: { value: "sw-metax-open/previewapp" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("例：master"), { target: { value: "release/4.0" } });
+    fireEvent.click(screen.getByTestId("new-app-fetch"));
+
+    // Preview step: identity box should appear with server-provided URL
+    await waitFor(() => screen.getByTestId("new-app-preview"));
+    await waitFor(() => screen.getByTestId("derived-identity-box"));
+    const box = screen.getByTestId("derived-identity-box");
+    expect(box.textContent).toContain(`${GERRIT_BASE}/sw-metax-open/previewapp`);
+    expect(box.textContent).toContain("release/4.0");
+  });
+
+  it("handles app_info_unavailable=true response: shows identity from server, stays in fetch-error step", async () => {
+    // Simulates impl-1 Wave 4 backend: HTTP 200 with soft failure flag;
+    // identity (git_url / git_branch) always returned even when Gerrit content unavailable.
+    const partialResponse = {
+      git_url: `${GERRIT_BASE}/sw-metax-open/partialapp`,
+      git_branch: "main",
+      needs_network: false,
+      app_info_unavailable: true,
+      app_info_error: "Gerrit archive fetch failed: 502",
+      // No content fields (app_version, x86_chips, etc.) — unavailable
+    };
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes("fetch-preview")) return partialResponse;
+      return { ok: true, app_id: "x4", request_id: 4 };
+    });
+    await openWizard();
+
+    fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "PartialApp" } });
+    fireEvent.change(screen.getByPlaceholderText("例：sw-metax-open/amber"), {
+      target: { value: "sw-metax-open/partialapp" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("例：master"), { target: { value: "main" } });
+    fireEvent.click(screen.getByTestId("new-app-fetch"));
+
+    // Goes to fetch-error step (not preview) since app_info_unavailable=true
+    await waitFor(() => screen.getByTestId("new-app-submit")); // "跳过，直接创建" btn
+    // Identity box present with server-provided URL
+    await waitFor(() => screen.getByTestId("derived-identity-box"));
+    const box = screen.getByTestId("derived-identity-box");
+    expect(box.textContent).toContain(`${GERRIT_BASE}/sw-metax-open/partialapp`);
+    expect(box.textContent).toContain("main");
+    // Should NOT have shown the preview form (content unavailable)
+    expect(screen.queryByTestId("new-app-preview")).not.toBeInTheDocument();
+  });
+});

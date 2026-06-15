@@ -254,6 +254,50 @@ function sameGitIdentity(repoName: string, taskBranch: string, gitUrl: string, a
 }
 
 // ---------------------------------------------------------------------------
+// IdentityBox — W4: prominent display of derived Gerrit identity in the wizard
+// ---------------------------------------------------------------------------
+
+/**
+ * Prominently displays the derived (git_url @ git_branch) so the repo→Gerrit
+ * mapping is debuggable at real deployment even when the content fetch 502s.
+ *
+ * - git-type repos: git_url is always derivable offline (short name → full SSH URL)
+ * - repo-type (.xml manifests): identity needs network; gitUrl === null → "需联网解析"
+ */
+function IdentityBox({ gitUrl, gitBranch }: { gitUrl: string | null; gitBranch: string }) {
+  const isUnresolved = !gitUrl;
+  return (
+    <div
+      style={{
+        background: "var(--surface2, #e8f4fd)",
+        border: "1px solid var(--accent, #1976d2)",
+        borderLeft: "4px solid var(--accent, #1976d2)",
+        borderRadius: 4,
+        padding: "8px 12px",
+        marginBottom: 10,
+        fontSize: 12,
+      }}
+      data-testid="derived-identity-box"
+    >
+      <div style={{ fontWeight: 600, color: "var(--accent, #1976d2)", marginBottom: 5, fontSize: 11, letterSpacing: 0.5 }}>
+        🔗 Gerrit 身份（已解析）
+      </div>
+      <div style={{ fontFamily: "monospace", wordBreak: "break-all", lineHeight: 1.8 }}>
+        <span style={{ color: "var(--muted, #666)", minWidth: 80, display: "inline-block" }}>git_url:</span>
+        {isUnresolved
+          ? <span style={{ background: "var(--warn-bg, #fff3cd)", color: "var(--warn-fg, #856404)", padding: "1px 6px", borderRadius: 3 }}>需联网解析</span>
+          : <span style={{ color: "var(--fg, #111)", fontWeight: 500 }}>{gitUrl}</span>
+        }
+      </div>
+      <div style={{ fontFamily: "monospace", lineHeight: 1.8 }}>
+        <span style={{ color: "var(--muted, #666)", minWidth: 80, display: "inline-block" }}>git_branch:</span>
+        <span style={{ fontWeight: 500 }}>{gitBranch || "—"}</span>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // New-app dialog (CICD-first wizard, Wave 3 / 3.1)
 // ---------------------------------------------------------------------------
 
@@ -281,6 +325,12 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
   const [fetchErrMsg, setFetchErrMsg] = useState("");
   const [createErrMsg, setCreateErrMsg] = useState("");
 
+  // W4: derived identity — pre-computed from user inputs (or from server when
+  // impl-1's backend returns identity even on content-fetch failure).
+  // null git_url = repo-type manifest needs network to resolve.
+  const [derivedGitUrl, setDerivedGitUrl] = useState<string | null>(null);
+  const [derivedGitBranch, setDerivedGitBranch] = useState<string>("");
+
   // ── RM escape-hatch: direct /api/apps/new (no CICD task) ────────────────
   const [useDirectCreate, setUseDirectCreate] = useState(false);
   const [directName, setDirectName] = useState("");
@@ -302,13 +352,38 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
     if (!officialName.trim()) { setFetchErrMsg("请填写官方名称"); return; }
     if (!repoName.trim()) { setFetchErrMsg("请填写仓库名"); return; }
     if (!effectiveBranch) { setFetchErrMsg("请填写分支"); return; }
+
+    // W4: Pre-compute client-side derived identity BEFORE the network call so
+    // it is always displayable even if the Gerrit content fetch 502s.
+    // git-type: normalize short name → full SSH URL (offline, always derivable).
+    // repo-type (.xml manifest): needs Gerrit network to resolve → null = "需联网解析".
+    const clientUrl = isRepo ? null : normalizeGitUrl(repoName.trim());
+    setDerivedGitUrl(clientUrl);
+    setDerivedGitBranch(effectiveBranch);
+
     setFetchErrMsg("");
     setStep("fetching");
     try {
       const data = await fetchCicdPreview({ repo_type: repoType, repo_name: repoName.trim(), branch: effectiveBranch });
+
+      // W4: impl-1 backend always returns identity fields (git_url / git_branch)
+      // even when the Gerrit content fetch fails (app_info_unavailable=true, HTTP 200).
+      // Update derived identity from server — more authoritative than the client-computed value.
+      if (data.git_url) setDerivedGitUrl(data.git_url);
+      else if (data.needs_network) setDerivedGitUrl(null); // manifest still needs network
+      if (data.git_branch) setDerivedGitBranch(data.git_branch);
+
+      if (data.app_info_unavailable) {
+        // Gerrit content fetch failed (soft 200); identity already updated above.
+        setFetchErrMsg(data.app_info_error ?? "Gerrit app_info 不可用");
+        setStep("fetch-error");
+        return;
+      }
+
       setPreview(data);
       setStep("preview");
     } catch (e) {
+      // Only 400 / 403 / network errors reach here under the new impl-1 contract.
       setFetchErrMsg(e instanceof Error ? e.message : "Gerrit 信息拉取失败");
       setStep("fetch-error");
     }
@@ -438,6 +513,9 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
   // ── Step 2: preview confirmation ─────────────────────────────────────────
   if (step === "preview" || (step === "creating" && preview !== null)) {
     const isCreating = step === "creating";
+    // W4: Use server-returned identity (most authoritative); fall back to client-computed.
+    const identityUrl = (preview?.git_url) || derivedGitUrl;
+    const identityBranch = (preview?.git_branch) || derivedGitBranch || effectiveBranch;
     return (
       <div className="dialog-backdrop" data-testid="new-app-dialog">
         <div className="dialog-box" style={{ maxWidth: 560 }}>
@@ -446,6 +524,9 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
             <div className="banner" style={{ marginBottom: 8, fontSize: 12, background: "var(--surface2,#f0f7ff)", borderLeft: "3px solid var(--accent,#1976d2)" }}>
               ✅ Gerrit 信息已拉取。请确认以下字段后提交创建请求（RM 审批后生效）。
             </div>
+            {/* W4: Derived Gerrit identity — always shown so the repo→Gerrit mapping
+                is debuggable at real deployment (helps verify normalization is correct). */}
+            <IdentityBox gitUrl={identityUrl} gitBranch={identityBranch} />
             <div className="form" style={{ pointerEvents: "none", opacity: 0.9 }} data-testid="new-app-preview">
               <label>官方名称<input className="input" value={officialName.trim()} disabled /></label>
               <label>仓库<input className="input" value={`${repoName.trim()} @ ${effectiveBranch}`} disabled /></label>
@@ -476,6 +557,11 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
   // ── Fetch-error: Gerrit unreachable ──────────────────────────────────────
   if (step === "fetch-error" || (step === "creating" && preview === null)) {
     const isCreating = step === "creating";
+    // W4: show derived identity even when content fetch fails.
+    // derivedGitUrl was pre-computed just before the fetch call so it
+    // reflects the latest user inputs (or the server-returned value when
+    // impl-1's backend returns identity even on content_ok=false).
+    const errIdentityBranch = derivedGitBranch || effectiveBranch;
     return (
       <div className="dialog-backdrop" data-testid="new-app-dialog">
         <div className="dialog-box" style={{ maxWidth: 520 }}>
@@ -488,6 +574,10 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
                 注：本环境 Gerrit 不可达，芯片/版本信息可在创建后于文档信息页手动完善。
               </span>
             </div>
+            {/* W4: Derived identity — always shown so the repo→Gerrit URL mapping
+                is debuggable at real deployment even when Gerrit content is unreachable.
+                For git-type repos, the full SSH URL is derived offline. */}
+            <IdentityBox gitUrl={derivedGitUrl} gitBranch={errIdentityBranch} />
             <p className="small muted">
               <b>官方名称：</b>{officialName.trim()}<br />
               <b>仓库：</b>{repoName.trim()} @ {effectiveBranch}

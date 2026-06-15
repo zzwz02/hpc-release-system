@@ -171,21 +171,55 @@ export interface FetchPreviewPayload {
   branch: string;
 }
 
-/** Fields returned by POST /api/cicd/apps/fetch-preview (exact backend keys). */
+/** Fields returned by POST /api/cicd/apps/fetch-preview (exact backend keys).
+ *
+ * Wave 4 (impl-1) new contract — always HTTP 200; Gerrit failures are soft flags:
+ *
+ * Always present:
+ *   git_url            — derived identity URL; null only when manifest needs network
+ *   git_branch         — derived branch; null only when manifest needs network
+ *   needs_network      — true for .xml manifest repos (identity resolution needs Gerrit)
+ *   app_info_unavailable — true when Gerrit app_info content fetch failed
+ *   app_info_error     — error detail when unavailable; null on success
+ *
+ * Only present when app_info_unavailable === false (happy path):
+ *   app_version, x86_chips, arm_chips, python_label, pytorch_label,
+ *   os, arch, commit_id, parsed
+ *
+ * HTTP errors (still raised):
+ *   400 — empty repo_name / branch (bad input)
+ *   403 — role not in CICD_CREATE_ROLES
+ */
 export interface FetchPreviewResponse {
-  ok: boolean;
-  git_url: string;
-  git_branch: string;
-  app_version: string;
-  x86_chips: string;
-  arm_chips: string;
-  python_label: string;
-  pytorch_label: string;
-  os: string;
-  arch: string;
-  commit_id: string;
-  /** Parsed app_info dict — pass as app_info_parsed to /api/cicd/apps/new. */
-  parsed: Record<string, unknown>;
+  // ── Identity (always present) ────────────────────────────────────────────
+  /** Derived Gerrit SSH URL; null when manifest resolution requires Gerrit network. */
+  git_url: string | null;
+  /** Derived branch; null when manifest resolution requires Gerrit network. */
+  git_branch: string | null;
+  /** True for repo-type .xml manifests: identity resolution needs Gerrit network. */
+  needs_network: boolean;
+
+  // ── App-info availability flags (always present) ─────────────────────────
+  /** True when the Gerrit app_info content fetch failed (unreachable, archive error, …). */
+  app_info_unavailable: boolean;
+  /** Human-readable error when app_info_unavailable is true; null otherwise. */
+  app_info_error: string | null;
+
+  // ── App-info content fields (only when app_info_unavailable === false) ───
+  app_version?: string;
+  x86_chips?: string;
+  arm_chips?: string;
+  python_label?: string;
+  pytorch_label?: string;
+  os?: string;
+  arch?: string;
+  commit_id?: string;
+  /** Full parsed blob — pass as app_info_parsed to POST /api/cicd/apps/new. */
+  parsed?: Record<string, unknown>;
+
+  // ── Legacy / backward-compat ─────────────────────────────────────────────
+  /** Present in older responses; unused by new wizard logic. */
+  ok?: boolean;
 }
 
 export function fetchCicdPreview(body: FetchPreviewPayload): Promise<FetchPreviewResponse> {
