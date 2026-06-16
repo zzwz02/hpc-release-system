@@ -32,7 +32,8 @@
       "delivered_by": "",
       "delivered_at": "SCRUBBED_TIMESTAMP",
       "returned_reason": "",
-      "returned_at": "SCRUBBED_TIMESTAMP"
+      "returned_at": "SCRUBBED_TIMESTAMP",
+      "origin": "cicd_workbench"
     }
   }
 }

@@ -1,63 +1,105 @@
 # HPC App 发布信息协作系统
 
-面向 HPC App 发布周期的内部协作工具，用来把发布范围、Owner 文档、`app_info.json`、QA 结果、Manager Review、最终文档产物和 CICD 交付申请集中到同一个 Web 界面中管理。
+面向 HPC App 发布周期的内部协作工具，把发布范围、Owner 文档、`app_info.json`、QA 结果、Manager Review、最终文档产物和 CICD 交付申请集中到同一个 Web 界面中管理。
 
-当前代码是一个轻量级 Python Web 服务：后端使用 `http.server.ThreadingHTTPServer` + SQLite，前端是单文件 `index.html`，并带有 LDAP、Jira、OpenAI-compatible LLM、Excel 解析等集成功能。
+本仓库当前是一次 **FastAPI + React/Vite/TypeScript 全量重写**（分支 `rewrite/fastapi-react`），在保持旧系统业务行为的前提下，将原来的单文件 `http.server` + `index.html` 拆分为分层后端（`app/`）与单页前端（`web/`）。重写遵循以下命名变更：
 
-## 系统状态机
+- **R1**：一次性数据迁移工具（`tools/migrate_db.py`），把旧 DB 迁移到新 schema 并统一时区。
+- **R2**：前端去除轮询，数据只在显式刷新 / 进入页面 / 写操作后失效时更新。
+- **R3**：CICD 任务与 App 建立 1:1 关联，App 发布决策驱动 CICD 运行状态（Ruling A/B/C/D）。
+- **时区统一**：除历史遗留外，存储与展示的时间均为**北京时间 naive 字符串**（`YYYY-MM-DD HH:MM:SS`，零偏移）。
 
-![HPC App 发布信息协作系统状态机](./release_system_state_machine.svg)
+> 旧版单文件系统（`server.py` + `index.html` + `release_system/core.py`）仍保留在仓库中，**作为冻结的行为参照与 golden 回放基准，不再修改**。线上切换步骤见 [CUTOVER.md](./CUTOVER.md)。
 
-## 主要能力
+---
 
-- **发布周期管理**：首次 CSV 初始化、从上一版克隆新 release、维护 app freeze / doc deadline、最终 lock / unlock。
-- **App 工作台**：Owner/RM 维护 release 决策、基本信息、文档字段、测试说明、`app_info.json` 上传或 Gerrit 拉取。
-- **发布闸门**：按 release snapshot 计算待补项；最终产物只纳入满足条件的 release app。
-- **QA 协作**：导出测试范围 CSV、上传 QA log、批量标注 QA 状态、查看 QA 变更记录。
-- **AI 辅助 QA**：可调用 OpenAI-compatible 本地/内网 LLM 对已上传 QA log 给出状态建议，结果需人工确认后才写入。
-- **发布产物**：生成 Release Note、HPC Manual App 章节、AI4Sci User Guide App 章节、`release_data.json`、Manager Review CSV。
-- **CICD 工作台**：Owner 提交 CICD 新建/修改申请；RM/Admin 审批；可立即生效或下发 SPD 交付；支持 Jira issue 自动创建。
-- **开发 WIKI**：RM/Admin 维护 Markdown 文章和图片，Owner/RM 可阅读。
-- **成员与认证**：本地账号、Admin 角色管理、可选 LDAP 登录和自动角色映射。
+## 架构总览
+
+```mermaid
+flowchart TD
+  subgraph Client["浏览器 — web/ (React 18 + Vite + TS)"]
+    UI["features/ 8 个页签<br/>周期管理 · App 工作台 · QA · 发布文档 · CICD · WIKI · 总览 · 系统管理"]
+    Q["TanStack Query<br/>(staleTime: Infinity, 无轮询 = R2)"]
+    MD["components/Markdown.tsx<br/>(唯一 dangerouslySetInnerHTML 出口 · DOMPurify)"]
+    UI --> Q --> MD
+  end
+
+  subgraph Server["单进程 uvicorn — app/main.py (FastAPI)"]
+    direction TB
+    R["api/routers/*<br/>(薄路由: 认证/鉴权/解析)"]
+    S["services/*<br/>(业务编排 + 事务边界 + 单点 ts)"]
+    Repo["repositories/*<br/>(纯 SQL)"]
+    Dom["domain/*<br/>(phases · permissions · decision_sync 纯逻辑)"]
+    Conn["db/connection.py<br/>(ManagedConnection · WAL · 嵌套 savepoint)"]
+    Static["StaticFiles 挂载 web_dist/<br/>(SPA 深链回退 index.html)"]
+    R --> S --> Repo --> Conn
+    S --> Dom
+  end
+
+  DB[("SQLite release_system.db<br/>(WAL)")]
+  Ext["集成: LDAP · Gerrit(git) · Jira REST · OpenAI 兼容 LLM"]
+
+  Q -- "fetch /api/* (cookie 鉴权)" --> R
+  Client -. "页面深链 / 静态资源" .-> Static
+  Conn --> DB
+  S -. 可选 .-> Ext
+```
+
+请求路径分层职责：**router**（认证、鉴权、请求体解析，尽量薄）→ **service**（业务编排、拥有事务边界、每个操作取一次北京时间 `ts`）→ **repository**（只写 SQL）→ **ManagedConnection**（WAL、嵌套 savepoint 事务）。纯领域逻辑（阶段派生、权限策略、决策同步）放在 `app/domain/`，不触库。
+
+单进程 `uvicorn app.main:app` 同时提供 `/api/*` 和编译后的 React 应用（`web_dist/`）。`--workers 1` 为**强制要求**：QA AI 分析任务注册表与 LDAP 状态都在进程内。
+
+---
 
 ## 技术栈
 
 | 层 | 技术 |
 | --- | --- |
-| 后端 | Python 3.10+，`ThreadingHTTPServer` |
-| 数据库 | SQLite，WAL 模式 |
-| 前端 | 原生 HTML/CSS/JavaScript，单页应用，轮询 `/api/state` |
-| 认证 | PBKDF2-HMAC-SHA256 本地口令、HTTP-only session cookie；可选 LDAP |
-| 集成 | Gerrit `git ls-remote` / `git archive`、Jira REST、OpenAI-compatible Chat API |
-| 测试 | `unittest`、PowerShell 静态检查 |
+| 后端 | Python 3.10+，FastAPI，uvicorn（单进程） |
+| 数据库 | SQLite，WAL 模式，`ManagedConnection` 嵌套 savepoint |
+| 前端 | React 18 + Vite + TypeScript + TanStack Query + zustand + react-router |
+| 认证 | PBKDF2-HMAC-SHA256 本地口令，HttpOnly session cookie；可选 LDAP |
+| 集成 | Gerrit `git ls-remote` / `git archive`、Jira REST、OpenAI 兼容 Chat API |
+| 测试 | 后端 `pytest`（含 golden 回放）；前端 `vitest` + Playwright e2e；ESLint + tsc strict |
 
-Python 依赖见 [requirements.txt](./requirements.txt)：`ldap3`、`openpyxl`、`openai`。前端 Markdown 预览使用本地 vendor 文件：
+后端依赖见 [requirements.txt](./requirements.txt)。前端依赖见 [web/package.json](./web/package.json)，Markdown 走 `marked` + `DOMPurify`（仅在 `web/src/components/Markdown.tsx` 内）。
 
-- `assets/vendor/marked-18.0.5.umd.js`
-- `assets/vendor/dompurify-3.4.8.min.js`
+---
 
 ## 快速开始
 
+### 单进程（生产形态：API + 前端同源）
+
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+# 1) 后端依赖
+python3 -m venv .venv && source .venv/bin/activate
 python3 -m pip install -r requirements.txt
-python3 server.py
+
+# 2) 构建前端（产物落在仓库根的 web_dist/）
+cd web && npm install && npm run build && cd ..
+
+# 3) 启动单进程，同时服务 API 和 React 应用
+python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+# 打开 http://127.0.0.1:8000
 ```
 
-默认监听 `http://127.0.0.1:8765`。也可以指定地址和端口：
+### 开发态（前后端分离 + Vite 代理）
 
 ```bash
-python3 server.py --host 0.0.0.0 --port 9000
+# 终端 A：后端
+python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+
+# 终端 B：前端 dev server（/api 反向代理到 8000）
+cd web
+NO_PROXY=localhost,127.0.0.1 npm run dev   # http://localhost:5173
 ```
 
-首次启动会确保默认本地账号存在，并创建 `admin` 账号。Admin 初始口令来源优先级：
+> **本机代理注意**：本机 `http_proxy`/`https_proxy` 会劫持 localhost。运行 npm / curl 前请设置
+> `export no_proxy=localhost,127.0.0.1`（npm 脚本已内置；curl 用 `--noproxy '*'`）。
 
-1. 环境变量 `HPC_ADMIN_PASSWORD`
-2. `admin_password.local`
-3. 自动生成并写入 `admin_password.local`
+首次启动会确保默认本地账号存在并创建 `admin`。Admin 初始口令优先级：环境变量 `HPC_ADMIN_PASSWORD` → `admin_password.local` → 自动生成并写入 `admin_password.local`。
 
-默认开发账号：
+默认开发账号（生产环境请立即替换）：
 
 | 用户名 | 口令 | 角色 |
 | --- | --- | --- |
@@ -68,183 +110,210 @@ python3 server.py --host 0.0.0.0 --port 9000
 | `guest` | `guest` | Guest |
 | `admin` | 见 `admin_password.local` | Admin |
 
-生产或共享环境请立即替换默认口令，并通过 Admin 的「系统管理 -> 成员管理」调整角色。
+可选集成（LDAP / Jira / QA LLM / Gerrit）的配置文件与环境变量约定与旧系统一致，详见各 `*.example` / `*_demo` 模板。
 
-## 可选配置
-
-### LDAP 登录
-
-复制 [ldap.conf_demo](./ldap.conf_demo) 为 `ldap.conf` 并按环境修改。服务启动时读取一次配置，修改后需要重启。
-
-首次 LDAP 登录会自动创建本地用户，角色根据 `memberOf` 映射：
-
-- `dl.pde_sc*` / `dl.pde_sa*` -> Owner
-- `dl.sw_qa*` -> QA
-- `dl.sw_spd*` -> SPD
-- 其他 -> Guest
-
-后续可由 Admin 手动调整角色。
-
-### QA AI 分析
-
-复制 [qa_llm.env.example](./qa_llm.env.example) 为 `qa_llm.env`，或直接设置环境变量：
-
-```text
-QA_LLM_BASE_URL=http://10.x.x.x:8000/v1
-QA_LLM_MODEL=your-model-name
-QA_LLM_API_KEY=
-```
-
-系统会把已上传 QA log 与当前 release 的测试清单一起发送给 OpenAI-compatible Chat API。AI 输出只作为 QA 页面上的建议，保存前需要人工核对。
-
-### Jira 自动建单
-
-复制 [jira.conf.example](./jira.conf.example) 为 `jira.conf`。当 RM/Admin 审批 CICD 申请并选择「下发 SPD 执行交付」且启用自动创建 Jira 时，系统会尝试创建 Jira issue；失败不会阻塞审批。
-
-### Gerrit
-
-`/api/app-info/fetch` 和批量拉取依赖本机 `git` 命令以及对应 Gerrit SSH/HTTP 凭据。`/api/gerrit/plan` 只生成推送计划，不执行真实 push；需要以下环境变量才会返回 ready：
-
-```text
-HPC_DOCS_GERRIT_REMOTE=...
-HPC_RELEASE_DATA_GERRIT_REMOTE=...
-```
+---
 
 ## 角色
 
-- **RM**：管理 release、deadline、Gerrit 信息、测试范围导出、发布文档和 Manager Review CSV、最终锁定/解锁、CICD 审批。
-- **Owner**：维护自己负责的 app，提交 release 决策、文档、测试说明、`app_info.json` 和 CICD 申请。
+- **RM**：管理 release、deadline、Gerrit 信息、测试范围导出、发布文档与 Manager Review CSV、最终锁定/解锁；**唯一的 CICD 申请审批人**，也是 CICD 任务的创建者（Ruling B/C）。
+- **Owner**：维护自己负责的 app，提交 release 决策、文档、测试说明、`app_info.json`；可提交 CICD 申请。
 - **QA**：上传 QA log、标注 QA 状态、使用 AI 分析建议。
 - **SPD**：处理被下发的 CICD 交付申请，可标记交付或退回。
-- **Admin**：管理用户角色、清空业务数据、删除 app、维护系统级配置入口。
+- **Admin**：仅负责访问控制——用户/角色管理、清空业务数据、全局删除 app、审计只读；**完全不参与 CICD/release 业务**（Ruling C），看不到 CICD 任务处理页签。
 - **Guest**：只读查看发布状态和 QA 信息。
 
-## 核心模型
+---
 
-### Release Snapshot
+## 发布生命周期 / 阶段机
 
-`apps` 表只保存全局身份：`id`、`git_url`、`git_branch`、别名和创建信息。官方名称、类型、官方 URL、描述、文档目标、Owner、release 决策、文档字段、测试说明、`app_info`、QA 状态等都保存在每个 release 的 snapshot 中。
+阶段由北京时间 deadline 与 lock 状态实时派生（`app/domain/phases.py`：`derive_phase`）：
 
-因此同一个 app 在不同 release 中可以有不同版本、Owner、文档和 QA 状态。新建 release 会从上一版克隆 snapshot，并重置 QA 状态。
+```mermaid
+stateDiagram-v2
+  [*] --> before_app_freeze: 新建 / 克隆 release
+  before_app_freeze --> after_app_freeze: 到达 app freeze deadline
+  after_app_freeze --> after_doc_deadline: 到达 doc deadline
+  after_doc_deadline --> released_locked: RM 最终 Lock
+  released_locked --> before_app_freeze: RM 解锁后按 deadline 重新派生
+
+  before_app_freeze: before_app_freeze —— 可新增 app · 调整决策(含升回 release) · 编辑文档 · 上传 app_info
+  after_app_freeze: after_app_freeze —— 不能新增/升回 release · 可下调决策 · 编辑文档 · 上传不扩大 QA 范围的 app_info
+  after_doc_deadline: after_doc_deadline —— 文档/表单/app_info 冻结 · 仍可下调决策 · QA 继续
+  released_locked: released_locked —— 全部冻结 · 仅 RM 可解锁
+```
+
+> 阶段是**派生值**，不是存储字段：lock 状态优先，其次比较当前北京时间与 doc deadline、app freeze deadline。解锁后阶段会按 deadline 重新计算，因此可能直接落回任意更早阶段。旧的 `release_system_state_machine.svg` 与此图等价但已过时，以本图为准。
 
 ### Release 决策
 
-- `release`：进入正式发布、文档生成和 QA。
-- `cicd_only`：仅纳入 CICD/infra 管控，不进入正式文档和 QA。
+- `release`：进入正式发布、文档生成与 QA。
+- `cicd_only`：仅纳入 CICD/infra 管控，不进入正式文档与 QA。
 - `stopped`：本轮停止发布或停止维护。
 
-### 阶段权限
+### 决策跨版本同步（§5b）
 
-阶段由北京时间 deadline 和 lock 状态实时派生：
+当 Owner/RM 改一个 app 的 `release_decision` 时，变更会传播到**所有未锁定的后续 release**（`app/domain/decision_sync.py`：`resolve_synced_decision`）：
 
-1. **before_app_freeze**：可新增 app、调整 release 决策、编辑文档和上传 `app_info`。
-2. **after_app_freeze**：不能新增或升回 `release`；仍可下调决策、编辑文档和上传不扩大 QA 范围的 `app_info`。
-3. **after_doc_deadline**：文档、表单、`app_info` 冻结；仍可下调 release 决策；QA 可继续操作。
-4. **released_locked**：全部冻结，仅 RM 可解锁。
+- 目标为 `release`，但后续 release 已过 app freeze 或 doc deadline → 自动降级为 `cicd_only`（绝不向已冻结的 release 增加 QA/测试范围）。
+- 其他情况 → 原样套用目标决策。
+- 已锁定的 release、不含该 app 的 release：跳过。
 
 ### 可发布条件
 
-最终 Release Note / Manual 中纳入的 app 必须满足：
+最终 Release Note / Manual 纳入的 app 必须满足：release 决策为 `release`、Owner 已确认、文档类待补项为空、QA 状态为 `qa_passed` 或 `has_issues`（`has_issues` 不阻塞发布，问题说明合并到已知限制）。
 
-- release 决策为 `release`
-- Owner 已确认
-- 文档类待补项为空
-- QA 状态为 `qa_passed` 或 `has_issues`
+---
 
-`has_issues` 不阻塞发布，QA 问题说明会合并到已知限制中。QA 未测试或不可发布会作为提示/闸门状态展示。
+## R3 — CICD ↔ App 联动
+
+CICD 任务与 App 是 **1:1** 关系（`UNIQUE(app_id) WHERE app_id IS NOT NULL`）。所有写状态的动作都经由「待审批申请」队列，由 **RM** 唯一审批（Ruling B）。App 的发布决策驱动 CICD 运行状态（Ruling D）；停止/废弃只能经 App 决策与 RM 操作（Ruling A）。
+
+```mermaid
+flowchart TD
+  %% top-level nodes declared first so they are not captured into a subgraph
+  RQ["pending 申请 (create / modify)<br/>origin = cicd_workbench | release_decision_sync"]
+  RMrev{"RM 审批<br/>(Ruling C: Admin 不参与)"}
+  APPLY["应用变更 → cicd_tasks"]
+  REJ["驳回"]
+  ST(("任务状态<br/>Running / Stopped"))
+  DISP{"立即生效<br/>或下发 SPD?"}
+  SPD["SPD 交付 / 退回（可选 Jira 建单）"]
+  ABN["RM 对 Stopped 任务 → 废弃/退役<br/>(Ruling A: Stopped→Abandoned 终态)"]
+
+  subgraph Create["任务创建（两条入口）"]
+    A1["RM 在 CICD 工作台新建任务"]
+    A2["Owner/RM 提交 CICD 申请"]
+  end
+
+  subgraph Sync["Ruling D — App 决策联动"]
+    D1["App release_decision 变更"] --> D2{映射目标状态}
+    D2 -- "release / cicd_only" --> TRun["目标 Running"]
+    D2 -- "stopped" --> TStop["目标 Stopped"]
+  end
+
+  A1 --> RQ
+  A2 --> RQ
+  TRun --> RQ
+  TStop --> RQ
+
+  RQ --> RMrev
+  RMrev -- 通过 --> APPLY
+  RMrev -- 拒绝 --> REJ
+  APPLY --> ST
+  ST --> DISP
+  DISP -- 下发 --> SPD
+  ST --> ABN
+
+  classDef sync fill:#dbeafe,stroke:#2563eb;
+  class D1,D2,TRun,TStop sync;
+```
+
+要点：
+
+- **B — 无自动通过**：所有提交一律 `pending`，交给 RM；RM 可对自己提交的申请自审（`is_self_approved`）。
+- **C — Admin 出局**：Admin 不能提交/审批 CICD，也看不到 CICD 处理页签（仅 RM/SPD 可见）。
+- **D — 决策→状态**：决策联动产生一条 `origin="release_decision_sync"` 的 pending modify 申请；前端在申请列表上以「**同步联动**」徽标与普通构建配置申请（`cicd_workbench`）区分。
+- **A — 状态锁**：用户的 modify 申请**不允许**直接改 `status`；运行/停止只能由 App 决策驱动；废弃仅 RM 可对 `Stopped` 任务执行。
+
+---
+
+## 数据模型：Release Snapshot
+
+`apps` 表只保存全局身份（`id`、`git_url`、`git_branch`、别名、创建信息）。官方名称、类型、官方 URL、描述、文档目标、Owner、release 决策、文档字段、测试说明、`app_info`、QA 状态等都保存在**每个 release 的 snapshot** 中。因此同一个 app 在不同 release 中可以有不同版本、Owner、文档与 QA 状态。新建 release 会从上一版克隆 snapshot 并重置 QA 状态。
+
+CICD↔App 的统一身份键是 `(git_url, git_branch)`：`apps.git_url` 存裸仓库名，`repo_type='cicd'` 的行存 manifest 路径；身份解析见 `app/identity.py`（`repo_to_git_identity`）。
+
+---
 
 ## 典型流程
 
-1. RM 在「周期管理」导入初始化 CSV，或从上一版克隆新 release。
-2. RM 设置 app freeze deadline 和 doc deadline。
-3. Owner 在「App 工作台」维护本 release 的 app 信息、文档、`app_info.json` 和测试说明，并提交 Owner 确认。
-4. RM 导出测试范围 CSV 给 QA。
-5. QA 上传 log，必要时使用 AI 分析建议，核对后保存 QA 状态。
-6. RM 刷新发布文档和 Manager Review CSV。
-7. Manager review / Gerrit merge 完成后，RM 执行最终 Lock Release。
-8. 如需跟踪构建交付，Owner/RM/Admin 在「CICD 工作台」提交或审批 CICD 任务。
+1. RM 在「周期管理」导入初始化 CSV，或从上一版克隆新 release，并设置 app freeze / doc deadline。
+2. Owner 在「App 工作台」维护本 release 的 app 信息、文档、`app_info.json` 和测试说明，提交 Owner 确认。
+3. RM 导出测试范围 CSV；QA 上传 log，必要时用 AI 分析建议，核对后保存 QA 状态。
+4. RM 刷新发布文档与 Manager Review CSV。
+5. Manager review / Gerrit merge 完成后，RM 执行最终 Lock Release。
+6. 需要跟踪构建交付时，Owner/RM 在「CICD 工作台」提交或审批任务（受 R3 规则约束）。
 
-## 主要 API
+---
+
+## 主要 API（节选）
 
 - 认证：`POST /api/login`、`POST /api/login/ldap`、`POST /api/logout`、`GET /api/me`、`GET /api/ldap/status`
 - 状态：`GET /api/state`
 - Release：`POST /api/import-initial`、`POST /api/releases/create`、`POST /api/releases/deadlines`、`POST /api/releases/final-lock`、`POST /api/releases/final-unlock`
-- App：`POST /api/apps/new`、`POST /api/apps/update`、`POST /api/app-info`、`POST /api/app-info/fetch`、`POST /api/app-info/fetch-all`
-- QA：`POST /api/qa/status-batch`、`POST /api/qa/upload-log`、`POST /api/qa/analyze-log/start`、`GET /api/qa/analyze-log/status`、`GET /api/qa-log/download`、`GET /api/qa-reports`
-- 产物：`POST /api/artifacts/generate`、`POST /api/artifacts/manager-review`、`GET /api/artifacts/<kind>`、`GET /api/test-scope.csv`、`POST /api/gerrit/plan`
-- WIKI：`GET /api/wiki/articles`、`GET /api/wiki/articles/<id>`、`POST /api/wiki/articles/save`、`POST /api/wiki/articles/pin`、`POST /api/wiki/articles/delete`、`POST /api/wiki/images/upload`
-- CICD：`GET /api/cicd/tasks`、`GET /api/cicd/requests`、`POST /api/cicd/requests/submit`、`POST /api/cicd/requests/approve`、`POST /api/cicd/requests/reject`、`POST /api/cicd/requests/cancel`、`POST /api/cicd/requests/deliver`
+- App：`POST /api/apps/new`、`POST /api/apps/update`、`POST /api/app-info`、`POST /api/app-info/fetch`
+- QA：`POST /api/qa/status-batch`、`POST /api/qa/upload-log`、`POST /api/qa/analyze-log/start`、`GET /api/qa/analyze-log/status`、`GET /api/qa-reports`
+- 产物：`POST /api/artifacts/generate`、`POST /api/artifacts/manager-review`、`GET /api/artifacts/<kind>`、`GET /api/test-scope.csv`
+- WIKI：`GET /api/wiki/articles`、`POST /api/wiki/articles/save`、`POST /api/wiki/articles/pin`、`POST /api/wiki/articles/delete`、`POST /api/wiki/images/upload`
+- CICD：`GET /api/cicd/tasks`、`GET /api/cicd/requests`（含 `origin` 字段）、`POST /api/cicd/requests/submit`、`POST /api/cicd/requests/approve`、`POST /api/cicd/requests/reject`、`POST /api/cicd/tasks/abandon`
 - 管理：`GET /api/admin/users`、`POST /api/admin/users/set-role`、`POST /api/admin/clear-db`、`POST /api/admin/apps/delete`
-- 审计：`GET /api/app-audit`
 
-常见返回码：`401` 未登录，`403` 无权限，`400/500` 业务错误或服务端错误。
+常见返回码：`401` 未登录，`403` 无权限，`400/500` 业务或服务端错误。
+
+---
 
 ## 目录结构
 
 ```text
 release-system/
-├── server.py                    # HTTP 服务、路由、LDAP/Gerrit/Jira 调用入口
-├── index.html                   # 单页前端
-├── requirements.txt             # Python 依赖
-├── release_system/
-│   ├── core.py                  # DB schema、发布流程、QA、CICD、artifact 生成
-│   ├── jira_client.py           # Jira REST client
-│   ├── llm.py                   # OpenAI-compatible LLM client
-│   └── wiki/core.py             # 开发 WIKI 数据逻辑
-├── tests/
-│   ├── test_core.py
-│   ├── ldap_group_test.py
-│   ├── jira_test.py
-│   └── static_checks.ps1
-├── assets/
-│   ├── MACA_SDK_release_plan.jpg
-│   └── vendor/
-├── test_data/
-├── ldap.conf_demo
-├── jira.conf.example
-├── qa_llm.env.example
-└── release_system_state_machine.svg
+├── app/                         # FastAPI 后端（新）
+│   ├── main.py                  # create_app：装配 router + lifespan + StaticFiles(SPA)
+│   ├── api/routers/             # 薄路由（auth/apps/qa/artifacts/cicd/wiki/admin/...）
+│   ├── services/                # 业务编排 + 事务边界（含 cicd_service / wiki_service）
+│   ├── repositories/            # 纯 SQL
+│   ├── domain/                  # phases · permissions · decision_sync 等纯逻辑
+│   ├── db/connection.py         # ManagedConnection（WAL，嵌套 savepoint）
+│   ├── identity.py              # repo→git 身份解析（CICD↔App 统一键）
+│   └── timeutil.py              # beijing_timestamp()
+├── web/                         # React/Vite/TS 前端（新）
+│   ├── src/{api,types,lib,store,components,features,routes}/
+│   └── README-web.md            # 前端开发说明
+├── tools/migrate_db.py          # R1 一次性迁移工具（在副本上运行）
+├── tests/                       # pytest（含 tests/golden/ 回放）
+├── release_system/              # 旧系统（冻结，golden 基准，勿改）
+│   ├── core.py
+│   └── wiki/core.py
+├── server.py                    # 旧单文件服务（冻结，勿改）
+├── index.html                   # 旧单页前端（冻结，勿改）
+├── CUTOVER.md                   # 生产切换手册
+└── release_system_state_machine.svg  # 旧状态机图（已被上文 mermaid 取代）
 ```
 
-运行时可能生成：
+运行时生成且已被 `.gitignore` 忽略：`release_system.db*`、`web/node_modules/`、`web_dist/`、`qa_logs/`、`admin_password.local`、`ldap.conf`/`jira.conf`/`qa_llm.env` 等。
 
-- `release_system.db`、`release_system.db-wal`、`release_system.db-shm`
-- `qa_logs/`
-- `admin_password.local`
-- `release_system_admin_backup_*.sqlite`
-- `ldap.conf`、`jira.conf`、`qa_llm.env`
-
-这些本地文件已在 [.gitignore](./.gitignore) 中忽略。
+---
 
 ## 测试
 
 ```bash
-python3 -m unittest tests.test_core
+# 后端：全量（从仓库根运行）
+python3 -m pytest -q
+# golden 回放（Phase-2 parity）单独跑
+python3 -m pytest tests/golden/test_golden_replay.py -q
+
+# 前端（在 web/ 下）
+npm run build          # tsc strict + vite
+npm run lint           # eslint --max-warnings 0
+npx vitest run         # 单元测试
+npm run test:e2e       # Playwright e2e
 ```
 
-PowerShell 静态检查：
+> golden 文件位于 `tests/golden/responses/`，由 `tests/golden/capture.py` 基于**冻结的旧 core** 采集；时间戳被擦洗为 `SCRUBBED_TIMESTAMP`。行为不变的改动应保持 golden 不变；有意行为变更需把受影响 golden **重新基线为新的、已核对正确的响应体**，绝不删除或跳过来掩盖回归。
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tests\static_checks.ps1
-```
+---
 
-Linux/macOS 上如果命令名是 `pwsh`，可替换为：
+## 数据迁移与切换
 
-```bash
-pwsh -NoProfile -ExecutionPolicy Bypass -File tests/static_checks.ps1
-```
+`tools/migrate_db.py` 把旧 DB 迁移到新 schema：回填 `cicd_tasks.app_id`（关联→派生→冲突覆盖三遍），并按列把历史 UTC 时间转换为北京时间（含 `wiki_articles` 时间列）。**迁移始终在 DB 副本上进行**，产出候选 DB + 报告，绝不改动线上 `release_system.db`。完整切换步骤见 [CUTOVER.md](./CUTOVER.md)。
 
-LDAP / Jira 连通性脚本需要先准备对应配置和依赖，再按需手动运行：
+---
 
-```bash
-python3 tests/ldap_group_test.py <domain_user> --config ldap.conf
-python3 tests/jira_test.py --dry-run --config jira.conf
-```
+## 开发约定
 
-## 开发注意
-
-- 写接口和 helper 时优先用 `core.transaction(conn)` 包住完整业务操作，成功时统一提交，异常时统一 rollback。
-- 发布相关写入应走 `core.can(...)` / `core.require_can(...)` 的阶段权限模型。
-- `app_info.json` 会派生芯片、版本、测试命令和差异记录；过 app freeze 后不能扩大 QA 范围。
-- 最终 lock 生成的 final artifacts 视为不可变；预览 artifact 可在未锁定状态下刷新。
-- SQLite 适合单实例、小规模内部使用；高并发写入或多实例部署需要重新评估数据库和锁模型。
+- 业务写操作用 service 层的事务边界（`ManagedConnection.transaction()` / 嵌套 savepoint）包住，成功统一提交、异常统一回滚。
+- 时间统一用 `app.timeutil.beijing_timestamp()`，存与显示都是北京时间 naive 字符串，无 `+8` 计算、无 UTC 偏移。
+- 前端遵守 R2：无后台轮询（仅 QA AI 任务 1s 轮询，卸载/切版本即取消）；Markdown 只经 `Markdown.tsx` 渲染。
+- 旧系统三件套 `server.py` / `release_system/` / `index.html` 冻结，所有新行为写在 `app/` + `web/` + `tools/`。
+- 仓库内已有开发规范 skill：`.claude/skills/release-system-dev/`。
+</content>

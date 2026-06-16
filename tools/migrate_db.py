@@ -101,6 +101,10 @@ _UTC_COLUMNS: dict[str, list[str]] = {
         "submitted_at", "reviewed_at", "delivered_at", "returned_at",
     ],
     "cicd_notifications": ["last_visited_at"],
+    # F1: wiki timestamps were written as UTC-ISO by the old server; convert
+    # them to naive Beijing to match the new app's write convention.
+    "wiki_articles":      ["created_at", "updated_at"],
+    "wiki_images":        ["uploaded_at"],
 }
 
 _BEIJING_TZ = timezone(timedelta(hours=8))

@@ -10,7 +10,9 @@
     "repo_type": "git",
     "repo_name": "hpc_w3cicd",
     "branch": "wave3",
-    "build_product": ["maca"],
+    "build_product": [
+      "maca"
+    ],
     "community_artifact": [],
     "build_image": "hpc/w3cicd:latest",
     "test_timeout": 40,
@@ -43,7 +45,8 @@
       "delivered_by": "",
       "delivered_at": "SCRUBBED_TIMESTAMP",
       "returned_reason": "",
-      "returned_at": "SCRUBBED_TIMESTAMP"
+      "returned_at": "SCRUBBED_TIMESTAMP",
+      "origin": "cicd_workbench"
     }
   }
 }

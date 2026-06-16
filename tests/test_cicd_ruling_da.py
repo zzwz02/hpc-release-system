@@ -197,10 +197,9 @@ class TestRulingDRequestProperties:
         assert rows[0]["request_type"] == "modify"
 
     def test_request_origin_is_release_decision_sync(self, temp_db):
-        """origin column = 'release_decision_sync' (audit trail); note: stripped from API return."""
+        """origin column = 'release_decision_sync' (audit trail). F3: now ALSO exposed in API return."""
         task_id = _create_task(temp_db, app_id=_APP_A, status="Running")
         _sync(temp_db, _APP_A, "stopped")
-        # origin is stripped from the return value by _strip_request — check DB directly
         row = temp_db.execute(
             "SELECT origin FROM cicd_task_requests WHERE task_id=?", (task_id,)
         ).fetchone()
@@ -216,13 +215,14 @@ class TestRulingDRequestProperties:
         assert row["submitter"] == "actor_rm"
 
     def test_return_value_is_request_dict(self, temp_db):
-        """Non-None return value is the created pending request dict (minus origin)."""
+        """Non-None return value is the created pending request dict, incl. origin (F3)."""
         _create_task(temp_db, app_id=_APP_A, status="Running")
         result = _sync(temp_db, _APP_A, "stopped")
         assert isinstance(result, dict)
         assert result.get("status") == "pending"
         assert result.get("request_type") == "modify"
-        # origin is stripped from API return (_strip_request); verify via DB separately
+        # F3: origin is no longer stripped — the sync request self-identifies.
+        assert result.get("origin") == "release_decision_sync"
 
     def test_exactly_one_request_created(self, temp_db):
         """ONE modify request per sync call — no duplicates (plan §3.5 b+)."""
@@ -232,6 +232,46 @@ class TestRulingDRequestProperties:
             "SELECT COUNT(*) FROM cicd_task_requests WHERE task_id=?", (task_id,)
         ).fetchone()[0]
         assert total == 1
+
+
+# ---------------------------------------------------------------------------
+# F3 — origin exposed through the /api/cicd/requests read path
+# ---------------------------------------------------------------------------
+
+
+class TestRulingDOriginThroughApi:
+    """F3: cicd_task_requests.origin flows through list_requests (what
+    GET /api/cicd/requests returns), distinguishing decision-sync requests
+    from build-config (workbench) requests."""
+
+    def test_sync_request_carries_origin_through_list_requests(self, temp_db):
+        """A decision-sync request exposes origin='release_decision_sync' via the API read path."""
+        task_id = _create_task(temp_db, app_id=_APP_A, status="Running")
+        _sync(temp_db, _APP_A, "stopped")
+        # list_requests is exactly what GET /api/cicd/requests serializes.
+        reqs = cicd_service.list_requests(temp_db, role="RM", task_id=task_id)
+        sync_reqs = [r for r in reqs if r.get("request_type") == "modify"]
+        assert len(sync_reqs) == 1
+        assert sync_reqs[0]["origin"] == "release_decision_sync"
+
+    def test_workbench_request_reads_back_cicd_workbench(self, temp_db):
+        """Contrast: a user-submitted build-config request exposes origin='cicd_workbench'."""
+        task_id = _create_task(temp_db, app_id=_APP_A, status="Running")
+        with transaction(temp_db):
+            cicd_service.submit_request(
+                temp_db,
+                task_id=task_id,
+                request_type="modify",
+                payload={"notes": "owner tweak"},
+                submitter="owner_test",
+                submitter_role="Owner",
+            )
+        reqs = cicd_service.list_requests(temp_db, role="RM", task_id=task_id)
+        assert reqs, "expected at least one request"
+        assert all("origin" in r for r in reqs), "every request object must expose origin"
+        workbench = [r for r in reqs if r.get("submitter") == "owner_test"]
+        assert len(workbench) == 1
+        assert workbench[0]["origin"] == "cicd_workbench"
 
 
 def conn_execute_list(conn, sql: str) -> list[dict]:

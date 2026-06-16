@@ -611,4 +611,49 @@ describe("CicdPage", () => {
       expect(badge?.textContent).toBe("42");
     });
   });
+
+  // ── F3: 同步联动 badge for decision-sync requests (origin) ──────────────────
+
+  it("PendingPane: shows 同步联动 badge for release_decision_sync request", async () => {
+    const syncReq = makeRequest({
+      submitter: "rm",
+      submitter_display: "RM User",
+      request_type: "modify",
+      status: "pending",
+      origin: "release_decision_sync",
+    });
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [] });
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      if (url.includes("/api/cicd/requests")) return Promise.resolve({ requests: [syncReq] });
+      return Promise.resolve({ deliveries: [] });
+    });
+    renderCicd("RM");
+    await waitFor(() => expect(screen.getByText("待审批")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("待审批"));
+    await waitFor(() => {
+      expect(screen.getByText("同步联动")).toBeInTheDocument();
+    });
+  });
+
+  it("PendingPane: no 同步联动 badge for ordinary cicd_workbench request", async () => {
+    const wbReq = makeRequest({
+      submitter: "bob",
+      submitter_display: "Bob",
+      request_type: "modify",
+      status: "pending",
+      origin: "cicd_workbench",
+    });
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [] });
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      if (url.includes("/api/cicd/requests")) return Promise.resolve({ requests: [wbReq] });
+      return Promise.resolve({ deliveries: [] });
+    });
+    renderCicd("RM");
+    await waitFor(() => expect(screen.getByText("待审批")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("待审批"));
+    await waitFor(() => expect(screen.getByText(/Bob/)).toBeInTheDocument());
+    expect(screen.queryByText("同步联动")).not.toBeInTheDocument();
+  });
 });

@@ -60,6 +60,22 @@ const REQ_TYPE_LABEL: Record<string, string> = {
   owner_transfer: "负责人变更",
 };
 
+/** Marks requests auto-created by App release-decision sync (R3 Ruling D)
+ *  so reviewers can tell them apart from build-config (workbench) requests.
+ *  Renders nothing for ordinary "cicd_workbench" requests. */
+function OriginBadge({ origin }: { origin?: string }) {
+  if (origin !== "release_decision_sync") return null;
+  return (
+    <span
+      className="pill accent"
+      style={{ fontSize: 11, marginLeft: 4 }}
+      title="由 App 发布决策自动联动创建（Ruling D）"
+    >
+      同步联动
+    </span>
+  );
+}
+
 const REQ_STATUS_LABEL: Record<string, string> = {
   pending: "等待 RM 审批",
   approved: "已通过",
@@ -633,7 +649,8 @@ function ApproveDialog({ req, tasks, onDone, onClose }: ApproveDialogProps) {
               </span>
             )}{" "}
             &nbsp;|&nbsp;
-            类型：{REQ_TYPE_LABEL[req.request_type] ?? req.request_type} &nbsp;|&nbsp;
+            类型：{REQ_TYPE_LABEL[req.request_type] ?? req.request_type}
+            <OriginBadge origin={req.origin} /> &nbsp;|&nbsp;
             {req.task_id ? `任务：${req.task_id}` : "新建任务"}
           </div>
           <DiffTable
@@ -797,6 +814,7 @@ function HistoryDialog({
             <div key={h.id} className="cicd-history-entry">
               <div className="cicd-history-meta">
                 <b>{REQ_TYPE_LABEL[h.request_type] ?? h.request_type}</b>
+                <OriginBadge origin={h.origin} />
                 &nbsp;·&nbsp; 提交人：{userLabel(h.submitter, h.submitter_display)}
                 &nbsp;·&nbsp; {formatServerTime(h.reviewed_at || h.submitted_at || "")}
                 {h.is_self_approved
@@ -851,6 +869,7 @@ function DetailDialog({
           <div className="small muted" style={{ marginBottom: 8 }}>
             提交人：<b>{req.submitter_display || req.submitter}</b>
             &nbsp;|&nbsp; 类型：{REQ_TYPE_LABEL[req.request_type] ?? req.request_type}
+            <OriginBadge origin={req.origin} />
             &nbsp;|&nbsp; {req.task_id ? `任务：${req.task_id}` : "新建任务"}
             &nbsp;|&nbsp; 状态：<ReqStatusSpan status={req.status} />
             {req.jira_id && jiraHref && (
@@ -1312,7 +1331,10 @@ function PendingPane({
                   return (
                     <tr key={r.id}>
                       <td className="cicd-id">#{r.id}</td>
-                      <td>{REQ_TYPE_LABEL[r.request_type] ?? r.request_type}</td>
+                      <td>
+                        {REQ_TYPE_LABEL[r.request_type] ?? r.request_type}
+                        <OriginBadge origin={r.origin} />
+                      </td>
                       <td className="cicd-id">{r.task_id ?? "(新建)"}</td>
                       <td>{userLabel(r.submitter, r.submitter_display)}</td>
                       <td className="small muted">
@@ -1477,7 +1499,10 @@ function RecentPane({
                   return (
                     <tr key={r.id}>
                       <td className="cicd-id">#{r.id}</td>
-                      <td>{REQ_TYPE_LABEL[r.request_type] ?? r.request_type}</td>
+                      <td>
+                        {REQ_TYPE_LABEL[r.request_type] ?? r.request_type}
+                        <OriginBadge origin={r.origin} />
+                      </td>
                       <td className="cicd-id">{r.task_id ?? "(新建)"}</td>
                       <td>{userLabel(r.submitter, r.submitter_display)}</td>
                       <td className="small muted">

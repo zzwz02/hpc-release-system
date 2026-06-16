@@ -14,7 +14,9 @@
       "repo_type": "git",
       "repo_name": "ssh://gerrit/PDE/HPC/hpc_rm_pending",
       "branch": "main",
-      "build_product": ["maca"],
+      "build_product": [
+        "maca"
+      ],
       "community_artifact": [],
       "build_image": "hpc/rm-pending:latest",
       "test_timeout": 40,
@@ -46,7 +48,8 @@
       "delivered_by": "",
       "delivered_at": "SCRUBBED_TIMESTAMP",
       "returned_reason": "",
-      "returned_at": "SCRUBBED_TIMESTAMP"
+      "returned_at": "SCRUBBED_TIMESTAMP",
+      "origin": "cicd_workbench"
     }
   }
 }

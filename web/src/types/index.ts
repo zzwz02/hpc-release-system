@@ -360,6 +360,10 @@ export interface CicdRequest {
   task_repo_name: string;
   task_branch: string;
   task_status: string;
+  // origin distinguishes build-config requests ("cicd_workbench") from
+  // decision-sync requests ("release_decision_sync") auto-created when an
+  // App's release_decision changes (R3 Ruling D). Exposed by the API (F3).
+  origin?: string;
 }
 
 export interface CicdRequestsResponse {

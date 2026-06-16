@@ -128,7 +128,9 @@ _TASK_STRIP: frozenset[str] = frozenset({"app_id"})
 
 # origin was added in Phase 0 as an internal audit column; core.py never
 # selected it so it never appeared in any golden request responses.
-_REQUEST_STRIP: frozenset[str] = frozenset({"origin"})
+# F3 (follow-up): origin is now intentionally EXPOSED so the API returns
+# 'cicd_workbench' | 'release_decision_sync' on every request object.
+_REQUEST_STRIP: frozenset[str] = frozenset()
 
 
 def _strip_task(t: dict) -> dict:

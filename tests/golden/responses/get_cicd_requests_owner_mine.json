@@ -35,6 +35,7 @@
         "delivered_at": "SCRUBBED_TIMESTAMP",
         "returned_reason": "",
         "returned_at": "SCRUBBED_TIMESTAMP",
+        "origin": "cicd_workbench",
         "task_app_name": "GoldenAmber",
         "task_app_version": "22",
         "task_repo_name": "ssh://gerrit/PDE/HPC/hpc_amber",
