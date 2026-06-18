@@ -19,7 +19,7 @@ from app.repositories.base import row_to_dict
 
 # ---------------------------------------------------------------------------
 # Valid payload fields (mirrors core.py:CICD_TASK_FIELDS).
-# status is intentionally EXCLUDED — only decision-sync + abandon can write it.
+# status is intentionally EXCLUDED — only decision-sync can write it.
 # ---------------------------------------------------------------------------
 CICD_TASK_MUTABLE_FIELDS: frozenset[str] = frozenset(
     {
@@ -37,7 +37,7 @@ CICD_TASK_MUTABLE_FIELDS: frozenset[str] = frozenset(
     }
 )
 
-# Fields that decision-sync and abandon endpoints may write
+# Fields that decision-sync may write
 CICD_STATUS_FIELDS: frozenset[str] = frozenset({"status"})
 
 
@@ -151,10 +151,11 @@ def find_tasks_by_identity(
 def pending_task_ids(conn: sqlite3.Connection) -> set[str]:
     """Return set of task_ids that have at least one pending request."""
     return {
-        r["task_id"]
+        r["app_id"] or r["task_id"]
         for r in conn.execute(
-            "SELECT DISTINCT task_id FROM cicd_task_requests "
-            "WHERE status = 'pending' AND task_id IS NOT NULL"
+            "SELECT DISTINCT COALESCE(app_id, task_id) AS id, app_id, task_id "
+            "FROM cicd_task_requests "
+            "WHERE status = 'pending' AND COALESCE(app_id, task_id) IS NOT NULL"
         ).fetchall()
     }
 
@@ -162,10 +163,12 @@ def pending_task_ids(conn: sqlite3.Connection) -> set[str]:
 def delivery_pending_task_ids(conn: sqlite3.Connection) -> set[str]:
     """Return set of task_ids with pending or returned deliveries."""
     return {
-        r["task_id"]
+        r["app_id"] or r["task_id"]
         for r in conn.execute(
-            "SELECT DISTINCT task_id FROM cicd_task_requests "
-            "WHERE delivery_status IN ('pending', 'returned') AND task_id IS NOT NULL"
+            "SELECT DISTINCT COALESCE(app_id, task_id) AS id, app_id, task_id "
+            "FROM cicd_task_requests "
+            "WHERE delivery_status IN ('pending', 'returned') "
+            "AND COALESCE(app_id, task_id) IS NOT NULL"
         ).fetchall()
     }
 
@@ -182,7 +185,8 @@ def has_open_modify_on_field(
     """
     rows = conn.execute(
         "SELECT payload FROM cicd_task_requests "
-        "WHERE task_id = ? AND request_type = 'modify' AND status = 'pending'",
+        "WHERE COALESCE(app_id, task_id) = ? "
+        "AND request_type = 'modify' AND status = 'pending'",
         (task_id,),
     ).fetchall()
     for row in rows:
@@ -311,12 +315,6 @@ def update_task_app_id(
     )
 
 
-def delete_task(conn: sqlite3.Connection, task_id: str) -> None:
-    """Delete a cicd_task and all its request history."""
-    conn.execute("DELETE FROM cicd_task_requests WHERE task_id = ?", (task_id,))
-    conn.execute("DELETE FROM cicd_tasks WHERE id = ?", (task_id,))
-
-
 # ---------------------------------------------------------------------------
 # Request reads
 # ---------------------------------------------------------------------------
@@ -355,7 +353,7 @@ def list_requests(
     params: list[Any] = []
 
     if task_id:
-        clauses.append("task_id = ?")
+        clauses.append("COALESCE(app_id, task_id) = ?")
         params.append(task_id)
 
     if status_filter:
@@ -417,7 +415,7 @@ def task_history(conn: sqlite3.Connection, task_id: str) -> list[dict[str, Any]]
     """Return all approved requests for a task in chronological order."""
     rows = conn.execute(
         "SELECT * FROM cicd_task_requests "
-        "WHERE task_id = ? AND status = 'approved' ORDER BY reviewed_at ASC",
+        "WHERE COALESCE(app_id, task_id) = ? AND status = 'approved' ORDER BY reviewed_at ASC",
         (task_id,),
     ).fetchall()
     return [_request_row(r) for r in rows]
@@ -445,14 +443,29 @@ def notification_counts(
 
     if role == "SPD":
         count = conn.execute(
-            "SELECT COUNT(*) FROM cicd_task_requests WHERE delivery_status = 'pending'"
+            """
+            SELECT COUNT(*)
+            FROM cicd_task_requests r
+            JOIN apps a ON a.id = r.app_id
+            WHERE r.delivery_status = 'pending'
+            """
         ).fetchone()[0]
     elif role in approver_roles:
         pending = conn.execute(
-            "SELECT COUNT(*) FROM cicd_task_requests WHERE status = 'pending'"
+            """
+            SELECT COUNT(*)
+            FROM cicd_task_requests r
+            JOIN apps a ON a.id = r.app_id
+            WHERE r.status = 'pending'
+            """
         ).fetchone()[0]
         returned = conn.execute(
-            "SELECT COUNT(*) FROM cicd_task_requests WHERE delivery_status = 'returned'"
+            """
+            SELECT COUNT(*)
+            FROM cicd_task_requests r
+            JOIN apps a ON a.id = r.app_id
+            WHERE r.delivery_status = 'returned'
+            """
         ).fetchone()[0]
         count = pending + returned
     else:
@@ -460,7 +473,8 @@ def notification_counts(
             count = conn.execute(
                 """
                 SELECT COUNT(*) FROM cicd_task_requests
-                WHERE submitter = ? AND status IN ('approved', 'rejected')
+                WHERE app_id IN (SELECT id FROM apps)
+                AND submitter = ? AND status IN ('approved', 'rejected')
                 AND reviewed_at > ?
                 """,
                 (username, last_visited),
@@ -491,18 +505,20 @@ def insert_request(
     is_self_approved: int = 0,
     approval_mode: str = "immediate",
     origin: str = "cicd_workbench",
+    app_id: str | None = None,
 ) -> int:
     """Insert a cicd_task_request row; return the new row id."""
     conn.execute(
         """
         INSERT INTO cicd_task_requests
-          (task_id, request_type, payload, submitter, submitter_display,
+          (task_id, app_id, request_type, payload, submitter, submitter_display,
            submitted_at, status, reviewer, reviewed_at, review_note,
            is_self_approved, approval_mode, origin)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task_id,
+            app_id,
             request_type,
             json.dumps(payload, ensure_ascii=False),
             submitter,

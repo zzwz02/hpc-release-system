@@ -17,7 +17,7 @@ DECISION_TO_CICD_STATUS: dict[str, str] = {
 }
 
 # Valid CICD task statuses (upper-case per plan §4.1)
-CICD_STATUSES: frozenset[str] = frozenset({"Running", "Stopped", "Abandoned"})
+CICD_STATUSES: frozenset[str] = frozenset({"Running", "Stopped"})
 
 # The "running" boundary: decisions that map to a running CICD task
 RUNNING_DECISIONS: frozenset[str] = frozenset({"release", "cicd_only"})

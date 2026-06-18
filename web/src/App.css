@@ -323,7 +323,7 @@ input:disabled {
   color: var(--warn-fg); background: var(--warn-bg); border: 1px solid var(--warn-bd);
   padding: 1px 9px; border-radius: var(--r-pill); font-size: 11px; font-weight: 700; display: inline-block;
 }
-.cicd-status-Abandoned, .cicd-req-status-rejected, .cicd-req-status-cancelled, .cicd-delivery-status-returned {
+.cicd-req-status-rejected, .cicd-req-status-cancelled, .cicd-delivery-status-returned {
   color: var(--bad-fg); background: var(--bad-bg); border: 1px solid var(--bad-bd);
   padding: 1px 9px; border-radius: var(--r-pill); font-size: 11px; font-weight: 700; display: inline-block;
 }

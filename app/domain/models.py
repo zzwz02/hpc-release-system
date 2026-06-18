@@ -223,12 +223,6 @@ class CancelRequestBody(BaseModel):
     request_id: int
 
 
-class AbandonTaskRequest(BaseModel):
-    """Body for POST /api/cicd/tasks/abandon (Ruling-A, RM only)."""
-
-    task_id: str
-
-
 # ---------------------------------------------------------------------------
 # Release schedule
 # ---------------------------------------------------------------------------

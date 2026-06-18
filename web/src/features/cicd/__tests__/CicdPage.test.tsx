@@ -2,23 +2,20 @@
  * CicdPage tests.
  *
  * Covers:
- *  - Sub-panes visible for non-SPD roles (RM, Owner, QA)
- *  - SPD sees only delivery panes (no overview/my/pending/recent)
- *  - OverviewPane: renders task rows with status pills
- *  - OverviewPane: status filter changes visible tasks
+ *  - Sub-panes visible for RM
+ *  - SPD sees only delivery panes (no approval)
+ *  - CICD workbench shows read-only CICD info and recent requests
  *  - PendingPane: renders pending requests with approve/reject buttons
- *  - RecentPane: renders with since_days select and only_mine checkbox
  *  - DeliveryPane: renders 待交付 pane
  *  - DeliveryPane: renders 已交付 pane (delivered=true)
  *  - markCicdVisited called on mount
  *  - notifications query invalidated on mount
  *  - RefreshBar rendered with dataUpdatedAt
- *  - New task button visible for non-SPD roles
- *  - New task button absent for SPD
+ *  - CICD workbench has no direct modify / abandon / delete operations
  *  - CICD_NOTIFICATIONS_KEY and CICD_TASKS_KEY exported correctly
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -202,21 +199,23 @@ describe("CicdPage", () => {
   it("renders sub-tab buttons for non-SPD role (RM)", async () => {
     renderCicd("RM");
     await waitFor(() => {
-      expect(screen.getByText("任务总览")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "CICD 信息" })).toBeInTheDocument();
     });
-    expect(screen.getByText(/我的\s*CICD\s*任务/)).toBeInTheDocument();
-    expect(screen.getByText("待审批")).toBeInTheDocument();
-    expect(screen.getByText("最近申请")).toBeInTheDocument();
-    expect(screen.getByText("待交付")).toBeInTheDocument();
-    expect(screen.getByText("已交付")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "近期申请" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "待审批" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "待交付" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "已交付" })).toBeInTheDocument();
   });
 
-  it("renders sub-tab buttons for Owner role", async () => {
+  it("does not expose delivery panes for Owner when rendered directly", async () => {
     renderCicd("Owner");
     await waitFor(() => {
-      expect(screen.getByText("任务总览")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "CICD 信息" })).toBeInTheDocument();
     });
-    expect(screen.getByText(/我的\s*CICD\s*任务/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "近期申请" })).toBeInTheDocument();
+    expect(screen.getByText("待审批")).toBeInTheDocument();
+    expect(screen.queryByText("待交付")).not.toBeInTheDocument();
+    expect(screen.queryByText("已交付")).not.toBeInTheDocument();
   });
 
   it("SPD role: only sees 待交付 and 已交付 panes", async () => {
@@ -225,19 +224,15 @@ describe("CicdPage", () => {
       expect(screen.getByText("待交付")).toBeInTheDocument();
     });
     expect(screen.getByText("已交付")).toBeInTheDocument();
-    // Non-delivery panes should NOT be in DOM for SPD
-    expect(screen.queryByText("任务总览")).not.toBeInTheDocument();
-    expect(screen.queryByText(/我的\s*CICD\s*任务/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "CICD 信息" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "近期申请" })).not.toBeInTheDocument();
     expect(screen.queryByText("待审批")).not.toBeInTheDocument();
-    expect(screen.queryByText("最近申请")).not.toBeInTheDocument();
   });
-
-  // ── App-backed CICD config ────────────────────────────────────────────────
 
   it("does not show legacy new-task button for RM", async () => {
     renderCicd("RM");
     await waitFor(() => {
-      expect(screen.getByText("任务总览")).toBeInTheDocument();
+      expect(screen.getByText("待审批")).toBeInTheDocument();
     });
     expect(screen.queryByText(/新建 CICD 任务/)).not.toBeInTheDocument();
   });
@@ -248,53 +243,6 @@ describe("CicdPage", () => {
       expect(screen.getByText("待交付")).toBeInTheDocument();
     });
     expect(screen.queryByText(/新建 CICD 任务/)).not.toBeInTheDocument();
-  });
-
-  // ── OverviewPane task rows ─────────────────────────────────────────────────
-
-  it("OverviewPane: renders task row with app name and status pill", async () => {
-    vi.mocked(apiGet).mockImplementation((url: string) => {
-      if (url.includes("/api/cicd/tasks")) {
-        return Promise.resolve({
-          tasks: [makeTask({ app_name: "MyApp", status: "Running" })],
-        });
-      }
-      if (url.includes("/api/cicd/notifications")) {
-        return Promise.resolve({ count: 0, last_visited_at: "" });
-      }
-      return Promise.resolve({ requests: [], deliveries: [] });
-    });
-
-    renderCicd("RM");
-    await waitFor(() => {
-      expect(screen.getByText("MyApp")).toBeInTheDocument();
-    });
-    // Status pill — multiple "Running" elements expected (filter btn + pill)
-    expect(screen.getAllByText("Running").length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("OverviewPane: filters out Stopped tasks when filter is 'Running'", async () => {
-    vi.mocked(apiGet).mockImplementation((url: string) => {
-      if (url.includes("/api/cicd/tasks")) {
-        return Promise.resolve({
-          tasks: [
-            makeTask({ id: "t1", app_name: "RunningApp", status: "Running" }),
-            makeTask({ id: "t2", app_name: "StoppedApp", status: "Stopped" }),
-          ],
-        });
-      }
-      if (url.includes("/api/cicd/notifications")) {
-        return Promise.resolve({ count: 0, last_visited_at: "" });
-      }
-      return Promise.resolve({ requests: [], deliveries: [] });
-    });
-
-    renderCicd("RM");
-    await waitFor(() => {
-      expect(screen.getByText("RunningApp")).toBeInTheDocument();
-    });
-    // With default filter "Running", Stopped tasks should not appear
-    expect(screen.queryByText("StoppedApp")).not.toBeInTheDocument();
   });
 
   // ── PendingPane requests ──────────────────────────────────────────────────
@@ -327,22 +275,7 @@ describe("CicdPage", () => {
     await userEvent.click(screen.getByText("待审批"));
 
     await waitFor(() => {
-      expect(screen.getByText(/Bob Smith/)).toBeInTheDocument();
-    });
-  });
-
-  // ── RecentPane ─────────────────────────────────────────────────────────────
-
-  it("RecentPane: renders since_days selector and only_mine checkbox", async () => {
-    renderCicd("RM");
-    await waitFor(() => {
-      expect(screen.getByText("最近申请")).toBeInTheDocument();
-    });
-    await userEvent.click(screen.getByText("最近申请"));
-
-    await waitFor(() => {
-      // should show a days selector (select element with 30/90/180 options or similar)
-      expect(screen.getByText(/只看我的/)).toBeInTheDocument();
+      expect(screen.getAllByText(/Bob Smith/).length).toBeGreaterThan(0);
     });
   });
 
@@ -404,6 +337,61 @@ describe("CicdPage", () => {
     });
   });
 
+  it("renders read-only CICD information for all task statuses", async () => {
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) {
+        return Promise.resolve({
+          tasks: [
+            makeTask({ id: "task-running", app_name: "RunApp", status: "Running" }),
+            makeTask({ id: "task-stopped", app_name: "StopApp", status: "Stopped" }),
+          ],
+        });
+      }
+      if (url.includes("/api/cicd/notifications")) {
+        return Promise.resolve({ count: 0, last_visited_at: "" });
+      }
+      if (url.includes("/api/cicd/requests")) {
+        return Promise.resolve({ requests: [] });
+      }
+      return Promise.resolve({ deliveries: [] });
+    });
+
+    renderCicd("RM");
+    const section = await screen.findByTestId("cicd-info-section");
+    expect(await within(section).findByText("RunApp")).toBeInTheDocument();
+    expect(within(section).getByText("StopApp")).toBeInTheDocument();
+    expect(within(section).getByText("Running")).toBeInTheDocument();
+    expect(within(section).getByText("Stopped")).toBeInTheDocument();
+  });
+
+  it("renders recent request records as a read-only section", async () => {
+    const recentReq = makeRequest({
+      id: 77,
+      submitter: "carol",
+      submitter_display: "Carol",
+      status: "approved",
+      task_app_name: "RecentApp",
+    });
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [] });
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      if (url.includes("/api/cicd/requests") && url.includes("status=pending")) {
+        return Promise.resolve({ requests: [] });
+      }
+      if (url.includes("/api/cicd/requests")) return Promise.resolve({ requests: [recentReq] });
+      return Promise.resolve({ deliveries: [] });
+    });
+
+    renderCicd("RM");
+    await userEvent.click(await screen.findByRole("button", { name: "近期申请" }));
+    const section = await screen.findByTestId("cicd-recent-section");
+    expect(await within(section).findByText((_, el) => el?.textContent === "#77")).toBeInTheDocument();
+    expect(within(section).getByText("RecentApp")).toBeInTheDocument();
+    expect(within(section).getByText("Carol")).toBeInTheDocument();
+    expect(within(section).getByRole("button", { name: "详情" })).toBeInTheDocument();
+    expect(within(section).queryByRole("button", { name: "重新编辑" })).not.toBeInTheDocument();
+  });
+
   it("calls GET /api/cicd/notifications on mount", async () => {
     renderCicd("RM");
     await waitFor(() => {
@@ -448,14 +436,14 @@ describe("CicdPage", () => {
     await waitFor(() => expect(screen.getByText("待审批")).toBeInTheDocument());
     await userEvent.click(screen.getByText("待审批"));
     // Pending request should appear but NO approve button
-    await waitFor(() => expect(screen.getByText(/Bob/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/Bob/).length).toBeGreaterThan(0));
     // The "审批" button is only shown when canApprove is true (RM only)
     expect(screen.queryByRole("button", { name: "审批" })).not.toBeInTheDocument();
   });
 
   // ── Ruling B: pending status label shows "等待 RM 审批" ───────────────────
 
-  it("RecentPane: pending request status shows '等待 RM 审批' (ruling B)", async () => {
+  it("PendingPane: pending request status shows approval action (ruling B)", async () => {
     const recentReq = makeRequest({ submitter: "alice", submitter_display: "Alice", status: "pending" });
     vi.mocked(apiGet).mockImplementation((url: string) => {
       if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [] });
@@ -464,10 +452,9 @@ describe("CicdPage", () => {
       return Promise.resolve({ deliveries: [] });
     });
     renderCicd("RM");
-    await waitFor(() => expect(screen.getByText("最近申请")).toBeInTheDocument());
-    await userEvent.click(screen.getByText("最近申请"));
+    await userEvent.click(await screen.findByText(/待审批/));
     await waitFor(() => {
-      expect(screen.getByText("等待 RM 审批")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "审批" })).toBeInTheDocument();
     });
   });
 
@@ -495,101 +482,14 @@ describe("CicdPage", () => {
     });
   });
 
-  // ── W2: App CICD config form ──────────────────────────────────────────────
+  // ── CICD workbench is approval / delivery only ────────────────────────────
 
-  it("TaskFormDialog: edits App CICD config fields and has no editable status field", async () => {
+  it("has no direct modify / abandon / delete task operations", async () => {
     renderCicd("RM");
-    await waitFor(() => expect(screen.getByText("TestApp")).toBeInTheDocument());
-    await userEvent.click(screen.getByText("修改"));
-    // Dialog opens
-    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
-    const dialog = screen.getByRole("dialog");
-    expect(screen.getByText(/修改 App CICD 配置/)).toBeInTheDocument();
-    expect(dialog.textContent).toContain("开发者社区产物");
-    expect(screen.getByLabelText("构建依赖镜像")).toBeInTheDocument();
-    expect(screen.getByLabelText("镜像")).toBeInTheDocument();
-    expect(screen.getByLabelText("软件包")).toBeInTheDocument();
-    // Should NOT have a <select> for status with Running/Stopped/Abandoned options
-    const selects = document.querySelectorAll("dialog select, .dialog-card select");
-    const hasStatusSelect = Array.from(selects).some((s) =>
-      Array.from(s.querySelectorAll("option")).some((o) => o.value === "Abandoned"),
-    );
-    expect(hasStatusSelect).toBe(false);
-  });
-
-  // ── W2: Abandon button in OverviewPane (RM on Stopped tasks) ─────────────
-
-  it("OverviewPane: shows 废弃/退役 button for RM on Stopped tasks", async () => {
-    // Show all tasks (not just Running) by setting filter to ""
-    _uiSetState({ cicdOverviewFilter: "" });
-    vi.mocked(apiGet).mockImplementation((url: string) => {
-      if (url.includes("/api/cicd/tasks")) {
-        return Promise.resolve({
-          tasks: [makeTask({ id: "t1", app_name: "StoppedApp", status: "Stopped" })],
-        });
-      }
-      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
-      return Promise.resolve({ requests: [], deliveries: [] });
-    });
-    renderCicd("RM");
-    await waitFor(() => expect(screen.getByText("StoppedApp")).toBeInTheDocument());
-    expect(screen.getByTestId("abandon-btn-t1")).toBeInTheDocument();
-  });
-
-  it("OverviewPane: no 废弃/退役 button for Owner role on Stopped tasks", async () => {
-    _uiSetState({ cicdOverviewFilter: "" });
-    vi.mocked(apiGet).mockImplementation((url: string) => {
-      if (url.includes("/api/cicd/tasks")) {
-        return Promise.resolve({
-          tasks: [makeTask({ id: "t1", app_name: "StoppedApp", status: "Stopped" })],
-        });
-      }
-      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
-      return Promise.resolve({ requests: [], deliveries: [] });
-    });
-    renderCicd("Owner");
-    await waitFor(() => expect(screen.getByText("StoppedApp")).toBeInTheDocument());
-    expect(screen.queryByTestId("abandon-btn-t1")).not.toBeInTheDocument();
-  });
-
-  it("OverviewPane: no 废弃/退役 button for RM on Running tasks", async () => {
-    // Running filter is fine here — Running tasks are visible by default
-    vi.mocked(apiGet).mockImplementation((url: string) => {
-      if (url.includes("/api/cicd/tasks")) {
-        return Promise.resolve({
-          tasks: [makeTask({ id: "t1", app_name: "RunningApp", status: "Running" })],
-        });
-      }
-      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
-      return Promise.resolve({ requests: [], deliveries: [] });
-    });
-    renderCicd("RM");
-    await waitFor(() => expect(screen.getByText("RunningApp")).toBeInTheDocument());
-    expect(screen.queryByTestId("abandon-btn-t1")).not.toBeInTheDocument();
-  });
-
-  it("OverviewPane: abandon calls POST /api/cicd/tasks/abandon on confirm", async () => {
-    _uiSetState({ cicdOverviewFilter: "" });
-    vi.stubGlobal("confirm", vi.fn(() => true));
-    vi.mocked(apiGet).mockImplementation((url: string) => {
-      if (url.includes("/api/cicd/tasks")) {
-        return Promise.resolve({
-          tasks: [makeTask({ id: "t1", app_name: "StoppedApp", status: "Stopped" })],
-        });
-      }
-      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
-      return Promise.resolve({ requests: [], deliveries: [] });
-    });
-    vi.mocked(apiPost).mockResolvedValue({ ok: true });
-    renderCicd("RM");
-    await waitFor(() => expect(screen.getByTestId("abandon-btn-t1")).toBeInTheDocument());
-    await userEvent.click(screen.getByTestId("abandon-btn-t1"));
-    await waitFor(() => {
-      expect(vi.mocked(apiPost)).toHaveBeenCalledWith(
-        "/api/cicd/tasks/abandon",
-        { task_id: "t1" },
-      );
-    });
+    await waitFor(() => expect(screen.getByText("待审批")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "修改" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "废弃/退役" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "删除" })).not.toBeInTheDocument();
   });
 
   // ── Notification count display ─────────────────────────────────────────────
@@ -634,7 +534,7 @@ describe("CicdPage", () => {
     await waitFor(() => expect(screen.getByText("待审批")).toBeInTheDocument());
     await userEvent.click(screen.getByText("待审批"));
     await waitFor(() => {
-      expect(screen.getByText("同步联动")).toBeInTheDocument();
+      expect(screen.getAllByText("同步联动").length).toBeGreaterThan(0);
     });
   });
 
@@ -655,7 +555,7 @@ describe("CicdPage", () => {
     renderCicd("RM");
     await waitFor(() => expect(screen.getByText("待审批")).toBeInTheDocument());
     await userEvent.click(screen.getByText("待审批"));
-    await waitFor(() => expect(screen.getByText(/Bob/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/Bob/).length).toBeGreaterThan(0));
     expect(screen.queryByText("同步联动")).not.toBeInTheDocument();
   });
 });

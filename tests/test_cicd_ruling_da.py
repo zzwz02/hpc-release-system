@@ -1,4 +1,4 @@
-"""Phase-4 Wave-2 tests — Ruling D (decision→CICD status), Ruling A (abandon), status-lock V3.
+"""Phase-4 Wave-2 tests — Ruling D (decision→CICD status), status-lock V3.
 
 Ruling D (plan §3.5 b):
   sync_decision_to_cicd creates ONE pending modify request with correct mapping
@@ -7,19 +7,13 @@ Ruling D (plan §3.5 b):
   'status' already exists.  Wired into app_service.update_snapshot — response
   carries cicd_sync:{created, request}.
 
-Ruling A (plan §3.5 c):
-  abandon_task: RM-only direct action (no pending queue), Stopped→Abandoned (terminal).
-  Non-Stopped tasks and non-RM reviewer_role are rejected.
-  Creates an approved audit record (mirrors transfer_owner pattern).
-
 Status-lock V3 (plan §3.5, §6 V3):
   submit_request with request_type='modify' and 'status' in payload → RuntimeError.
-  Only sync_decision_to_cicd and abandon_task may write task status.
+  Only sync_decision_to_cicd may write task status.
 
 Golden notes:
   post_apps_update_decision already carries cicd_sync (parity golden: no linked task
-  → created=false).  New goldens added this wave: post_cicd_abandon_admin (403),
-  post_cicd_abandon_rm_running (RM on Running CICD-0001 → 400).
+  → created=false).
 """
 from __future__ import annotations
 
@@ -255,7 +249,7 @@ class TestRulingDOriginThroughApi:
         assert sync_reqs[0]["origin"] == "release_decision_sync"
 
     def test_workbench_request_reads_back_cicd_workbench(self, temp_db):
-        """Contrast: a user-submitted build-config request exposes origin='cicd_workbench'."""
+        """Contrast: an App-CICD submitted build-config request exposes origin='cicd_workbench'."""
         task_id = _create_task(temp_db, app_id=_APP_A, status="Running")
         with transaction(temp_db):
             cicd_service.submit_request(
@@ -265,6 +259,7 @@ class TestRulingDOriginThroughApi:
                 payload={"notes": "owner tweak"},
                 submitter="owner_test",
                 submitter_role="Owner",
+                source="app_workbench",
             )
         reqs = cicd_service.list_requests(temp_db, role="RM", task_id=task_id)
         assert reqs, "expected at least one request"
@@ -351,105 +346,18 @@ class TestRulingDIdempotency:
 
 
 # ---------------------------------------------------------------------------
-# Ruling A — abandon_task
+# Ruling A replacement — retire/delete happens through App lifecycle
 # ---------------------------------------------------------------------------
 
 
-class TestRulingAAbandon:
-    """abandon_task: RM-only direct action, Stopped → Abandoned (terminal)."""
+class TestRulingARemovedCicdRetireApi:
+    """CICD no longer exposes abandon/delete service operations."""
 
-    def test_stopped_becomes_abandoned(self, temp_db):
-        """Happy path: Stopped → Abandoned."""
-        task_id = _create_task(temp_db, status="Stopped")
-        result = cicd_service.abandon_task(
-            temp_db, task_id, reviewer="rm", reviewer_role="RM"
-        )
-        task = _get_task(temp_db, task_id)
-        assert task["status"] == "Abandoned"
-        assert result["status"] == "Abandoned"
-        assert result["id"] == task_id
+    def test_abandon_service_api_removed(self):
+        assert not hasattr(cicd_service, "abandon_task")
 
-    def test_return_value_is_updated_task_dict(self, temp_db):
-        """Return value: updated task dict with status=Abandoned."""
-        task_id = _create_task(temp_db, status="Stopped")
-        result = cicd_service.abandon_task(
-            temp_db, task_id, reviewer="rm", reviewer_role="RM"
-        )
-        assert isinstance(result, dict)
-        assert result["id"] == task_id
-        assert result["status"] == "Abandoned"
-
-    def test_running_task_rejected(self, temp_db):
-        """Running task cannot be abandoned (must stop through App decision first)."""
-        task_id = _create_task(temp_db, status="Running")
-        with pytest.raises(RuntimeError):
-            cicd_service.abandon_task(
-                temp_db, task_id, reviewer="rm", reviewer_role="RM"
-            )
-        assert _get_task(temp_db, task_id)["status"] == "Running"
-
-    def test_abandoned_task_rejected_terminal(self, temp_db):
-        """Already Abandoned → error (terminal state, cannot re-abandon)."""
-        task_id = _create_task(temp_db, status="Stopped")
-        cicd_service.abandon_task(temp_db, task_id, reviewer="rm", reviewer_role="RM")
-        with pytest.raises((RuntimeError, ValueError)):
-            cicd_service.abandon_task(
-                temp_db, task_id, reviewer="rm", reviewer_role="RM"
-            )
-
-    def test_non_rm_role_raises_permission_error(self, temp_db):
-        """Non-RM reviewer_role → PermissionError (role guard, plan §3.5 c)."""
-        task_id = _create_task(temp_db, status="Stopped")
-        with pytest.raises(PermissionError):
-            cicd_service.abandon_task(
-                temp_db, task_id, reviewer="owner_test", reviewer_role="Owner"
-            )
-        # Status unchanged
-        assert _get_task(temp_db, task_id)["status"] == "Stopped"
-
-    def test_spd_role_rejected(self, temp_db):
-        """SPD role also cannot abandon (RM-only)."""
-        task_id = _create_task(temp_db, status="Stopped")
-        with pytest.raises(PermissionError):
-            cicd_service.abandon_task(
-                temp_db, task_id, reviewer="spd_user", reviewer_role="SPD"
-            )
-
-    def test_nonexistent_task_raises(self, temp_db):
-        """Nonexistent task_id → RuntimeError."""
-        with pytest.raises(RuntimeError):
-            cicd_service.abandon_task(
-                temp_db, "CICD-9999", reviewer="rm", reviewer_role="RM"
-            )
-
-    def test_abandon_is_direct_no_pending_request(self, temp_db):
-        """Abandon is a direct action — creates APPROVED audit, NOT a pending request."""
-        task_id = _create_task(temp_db, status="Stopped")
-        cicd_service.abandon_task(temp_db, task_id, reviewer="rm", reviewer_role="RM")
-        reqs = _all_requests_for_task(temp_db, task_id)
-        # Exactly one record, and it's approved (not pending)
-        assert len(reqs) == 1
-        assert reqs[0]["status"] == "approved"
-
-    def test_abandon_audit_record_fields(self, temp_db):
-        """Audit record: request_type=modify, origin=abandon, payload={status:{old,new}}."""
-        task_id = _create_task(temp_db, status="Stopped")
-        cicd_service.abandon_task(temp_db, task_id, reviewer="rm", reviewer_role="RM")
-        reqs = _all_requests_for_task(temp_db, task_id)
-        audit = reqs[0]
-        assert audit["request_type"] == "modify"
-        assert audit["status"] == "approved"
-        assert audit["reviewer"] == "rm"
-        payload = audit["_payload"]
-        assert payload["status"]["old"] == "Stopped"
-        assert payload["status"]["new"] == "Abandoned"
-
-    def test_abandoned_task_deletable(self, temp_db):
-        """After Abandoned, delete_task (RM only, Abandoned gate) should succeed."""
-        task_id = _create_task(temp_db, status="Stopped")
-        cicd_service.abandon_task(temp_db, task_id, reviewer="rm", reviewer_role="RM")
-        cicd_service.delete_task(temp_db, task_id, actor="rm", actor_role="RM")
-        assert _get_task(temp_db, task_id) is None
+    def test_delete_service_api_removed(self):
+        assert not hasattr(cicd_service, "delete_task")
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +391,7 @@ def _submit_modify(conn, task_id: str, payload: dict) -> dict:
         payload=payload,
         submitter="rm",
         submitter_role="RM",
+        source="app_workbench",
     )
 
 

@@ -51,6 +51,19 @@ _OFFICIAL_NAME = "W3CicdFirst"
 _RESOLVED_URL = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_w3cicd"
 _APP_ID = "w3cicdfirst"
 
+
+def test_cicd_workbench_modify_requests_are_rejected(temp_db):
+    """CICD 工作台只用于审批/交付，配置修改必须从 App-CICD tab 发起。"""
+    with pytest.raises(RuntimeError, match="App 工作台"):
+        cicd_service.submit_request(
+            temp_db,
+            task_id="app1",
+            request_type="modify",
+            payload={"notes": {"old": "", "new": "x"}},
+            submitter="rm",
+            submitter_role="RM",
+        )
+
 # ---------------------------------------------------------------------------
 # Mock Gerrit app_info — minimal but realistic app_info.json payload.
 # core.parse_app_info() produces the 7 preview fields from this.
@@ -662,7 +675,8 @@ class TestCicdFirstWithAppInfo:
         result = self._create_with_app_info(temp_db)
         req = result["request"]
         assert req["status"] == "pending"
-        assert req["task_id"] is None  # task only on RM approval
+        assert req["task_id"] == result["app_id"]  # app-backed request id
+        assert req["app_id"] == result["app_id"]
 
     # --- without app_info: owner_confirmed stays False ---
 
@@ -759,7 +773,8 @@ class TestCicdFirstWithAppInfo:
         assert body["ok"] is True
         assert body["app_id"] == _APP_ID
         assert body["request"]["status"] == "pending"
-        assert body["request"]["task_id"] is None
+        assert body["request"]["task_id"] == body["app_id"]
+        assert body["request"]["app_id"] == body["app_id"]
 
 
 # ---------------------------------------------------------------------------

@@ -165,6 +165,11 @@ def delete_app(
 
     fresh_conn = connect(settings.db_path)
     try:
+        fresh_conn.execute(
+            "DELETE FROM cicd_task_requests WHERE app_id = ? OR task_id = ?",
+            (app_id, app_id),
+        )
+        fresh_conn.execute("DELETE FROM cicd_tasks WHERE app_id = ?", (app_id,))
         deleted = _core.delete_app(fresh_conn, app_id, user=actor, role="Admin")
         fresh_conn.commit()
     finally:

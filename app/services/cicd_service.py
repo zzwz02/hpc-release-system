@@ -3,7 +3,7 @@
 Faithful port of release_system/core.py:3639-4364 plus Phase 4 rulings.
 
 Wave 1 (implemented): Ruling B (no auto-approve), Ruling C (Admin out of CICD).
-Wave 2 (implemented): Ruling D (sync_decision_to_cicd), Ruling A (abandon_task),
+Wave 2 (implemented): Ruling D (sync_decision_to_cicd),
     V3 status-lock (submit modify rejects status field).
 Wave 3 (implemented): cicd_first_new_app, preview_cicd_app_info (fetch-preview wizard),
     app_info attachment (owner_confirmed=True), 1:1 cardinality dedup gate.
@@ -24,7 +24,7 @@ from app.timeutil import beijing_timestamp
 # ---------------------------------------------------------------------------
 CICD_APPROVER_ROLES: frozenset[str] = frozenset({"RM"})
 CICD_CREATE_ROLES: frozenset[str] = frozenset({"Owner", "RM"})
-CICD_STATUSES: frozenset[str] = frozenset({"Running", "Stopped", "Abandoned"})
+CICD_STATUSES: frozenset[str] = frozenset({"Running", "Stopped"})
 
 # Ruling D: release_decision → CICD task status (plan §3.5 b)
 # release/cicd_only → Running; stopped → Stopped (uppercase CICD_STATUSES vocab)
@@ -140,12 +140,9 @@ def _test_timeout_value(value: object) -> int:
 
 
 def _linked_task_by_app_id(conn: sqlite3.Connection) -> dict[str, dict]:
-    rows = conn.execute("SELECT * FROM cicd_tasks WHERE app_id IS NOT NULL").fetchall()
-    result: dict[str, dict] = {}
-    for row in rows:
-        task = cicd_repo._task_row(row)  # repository row shaper; keeps API compatibility
-        result.setdefault(task["app_id"], task)
-    return result
+    # New CICD data is app-backed.  Legacy cicd_tasks rows are no longer used
+    # as the task source of truth; keep this empty so task ids resolve to app ids.
+    return {}
 
 
 def _task_id_to_app_id(conn: sqlite3.Connection, task_id: str | None) -> str | None:
@@ -157,6 +154,13 @@ def _task_id_to_app_id(conn: sqlite3.Connection, task_id: str | None) -> str | N
     if task and task.get("app_id"):
         return task["app_id"]
     return None
+
+
+def _request_app_id(conn: sqlite3.Connection, req: dict) -> str | None:
+    app_id = req.get("app_id")
+    if app_id and apps_repo.get_app(conn, str(app_id)):
+        return str(app_id)
+    return _task_id_to_app_id(conn, req.get("task_id"))
 
 
 def _update_app_git_identity(
@@ -196,7 +200,7 @@ def _app_to_cicd_task(
     aliases = app.get("aliases") or []
     fallback_name = aliases[0] if aliases else app["id"]
     return {
-        "id": (linked_task or {}).get("id") or app["id"],
+        "id": app["id"],
         "app_id": app["id"],
         "app_name": snapshot.get("official_name") or fallback_name,
         "app_version": snapshot.get("version", ""),
@@ -256,7 +260,7 @@ def _apply_open_decision_status_overrides(
     app_to_row = {task["app_id"]: task for task in tasks if task.get("app_id")}
     rows = conn.execute(
         """
-        SELECT task_id, payload
+        SELECT COALESCE(app_id, task_id) AS app_ref, payload
         FROM cicd_task_requests
         WHERE origin = 'release_decision_sync'
           AND request_type = 'modify'
@@ -275,7 +279,7 @@ def _apply_open_decision_status_overrides(
         old_status = str(change.get("old") or "").strip()
         if not old_status:
             continue
-        task_id = row["task_id"] or ""
+        task_id = row["app_ref"] or ""
         task = task_to_row.get(task_id) or app_to_row.get(task_id)
         if task:
             task["status"] = old_status
@@ -289,7 +293,10 @@ def _attach_task_info(
     task_map = {task["id"]: task for task in _app_cicd_tasks(conn)}
     app_map = {task["app_id"]: task for task in task_map.values()}
     for d in items:
-        t = task_map.get(d.get("task_id") or "", {}) or app_map.get(d.get("task_id") or "", {})
+        app_ref = d.get("app_id") or d.get("task_id") or ""
+        if d.get("app_id") and not d.get("task_id"):
+            d["task_id"] = d["app_id"]
+        t = task_map.get(app_ref, {}) or app_map.get(app_ref, {})
         if not t and d.get("request_type") == "create":
             p = d.get("payload") or {}
             d["task_app_name"] = p.get("app_name", "")
@@ -422,6 +429,8 @@ def _strip_task(t: dict) -> dict:
 
 def _strip_request(r: dict) -> dict:
     """Remove Phase-0-only request columns that the old server never returned."""
+    if r.get("app_id") and not r.get("task_id"):
+        r["task_id"] = r["app_id"]
     for k in _REQUEST_STRIP:
         r.pop(k, None)
     return r
@@ -440,7 +449,7 @@ def _apply_cicd_request(
     request_type: str,
     ts: str,
 ) -> str:
-    """Create or update cicd_tasks after approval.  Returns the task_id."""
+    """Apply a CICD request to the app-backed CICD fields. Returns app/task id."""
     # Work on a local copy so we can extract internal-only fields without
     # mutating the caller's dict and without exposing them to field validation.
     payload = dict(payload)
@@ -450,7 +459,7 @@ def _apply_cicd_request(
     linked_app_id: str | None = payload.pop("app_id", None) or None
     _validate_payload_fields(payload)
     if request_type == "create":
-        app_id = linked_app_id or payload.get("app_id")
+        app_id = linked_app_id or payload.get("app_id") or _task_id_to_app_id(conn, task_id)
         if app_id and apps_repo.get_app(conn, app_id):
             apps_repo.update_cicd_config(
                 conn,
@@ -463,29 +472,9 @@ def _apply_cicd_request(
                     "cicd_notes": payload.get("notes", ""),
                 },
             )
+            cicd_repo.set_request_task_id(conn, req_id, app_id)
             return app_id
-        new_id = cicd_repo.next_cicd_id(conn)
-        cicd_repo.create_task(
-            conn,
-            task_id=new_id,
-            app_id=linked_app_id,  # None for regular creates; set for CICD-first
-            app_name=payload.get("app_name", ""),
-            app_version=payload.get("app_version", ""),
-            repo_type=payload.get("repo_type", "git"),
-            repo_name=payload.get("repo_name", ""),
-            branch=payload.get("branch", ""),
-            build_product=payload.get("build_product", []),
-            community_artifact=payload.get("community_artifact", []),
-            build_image=payload.get("build_image", ""),
-            test_timeout=_test_timeout_value(payload.get("test_timeout", 40)),
-            owner_username=payload.get("owner_username", ""),
-            status=payload.get("status", "Running"),
-            notes=payload.get("notes", ""),
-            created_at=ts,
-            updated_at=ts,
-        )
-        cicd_repo.set_request_task_id(conn, req_id, new_id)
-        return new_id
+        raise RuntimeError("CICD 创建申请缺少有效 app_id")
     else:
         # modify: apply diff — payload is {field: {old, new}}
         if not task_id:
@@ -517,13 +506,9 @@ def _apply_cicd_request(
                     git_branch=git_branch_update,
                 )
             apps_repo.update_cicd_config(conn, app_id, app_updates)
-            return task_id
-        _reject_linked_repo_mutation(conn, task_id, payload)
-        fields: dict = {}
-        for field, change in payload.items():
-            fields[field] = change.get("new")
-        cicd_repo.apply_modify_fields(conn, task_id, fields, updated_at=ts)
-        return task_id
+            cicd_repo.set_request_task_id(conn, req_id, app_id)
+            return app_id
+        raise RuntimeError("CICD 修改申请缺少有效 app_id")
 
 
 # ---------------------------------------------------------------------------
@@ -645,6 +630,7 @@ def submit_request(
     submitter: str,
     submitter_role: str,
     submitter_display: str = "",
+    source: str = "cicd_workbench",
 ) -> dict:
     """Submit a CICD task create/modify request.
 
@@ -658,11 +644,13 @@ def submit_request(
         raise PermissionError("只有 Owner、RM 可以提交 CICD 任务申请")
     _validate_payload_fields(payload)
     # V3 / status-lock: user-submitted MODIFY requests must NOT touch status.
-    # Only decision-sync (sync_decision_to_cicd) and abandon_task write status.
+    # Only decision-sync (sync_decision_to_cicd) writes status.
     if request_type == "modify" and "status" in (payload or {}):
         raise RuntimeError(
             "CICD 修改申请不允许直接修改运行状态；运行/停止由 App 决策驱动（Ruling A/D）"
         )
+    if request_type == "modify" and source != "app_workbench":
+        raise RuntimeError("CICD 配置修改请从 App 工作台的 CICD tab 提交")
     if request_type == "modify":
         app_id = _task_id_to_app_id(conn, task_id)
         if app_id:
@@ -670,15 +658,19 @@ def submit_request(
             if unsupported:
                 fields = "、".join(sorted(unsupported))
                 raise RuntimeError(
-                    f"CICD 工作台只能修改 App 表中的 CICD 配置字段；不支持：{fields}"
+                    f"App 工作台 CICD tab 只能修改 App 表中的 CICD 配置字段；不支持：{fields}"
                 )
         else:
             _reject_linked_repo_mutation(conn, task_id, payload)
     ts = beijing_timestamp()
+    request_app_id = _task_id_to_app_id(conn, task_id) or (payload or {}).get("app_id")
+    if request_app_id and not apps_repo.get_app(conn, str(request_app_id)):
+        request_app_id = None
     with transaction(conn):
         req_id = cicd_repo.insert_request(
             conn,
-            task_id=task_id,
+            task_id=request_app_id or task_id,
+            app_id=request_app_id,
             request_type=request_type,
             payload=payload,
             submitter=submitter,
@@ -751,7 +743,7 @@ def approve_request(
                 (reviewer, ts, review_note, is_self_approved, req_id),
             )
             _apply_cicd_request(
-                conn, req_id, payload, req["task_id"], req["request_type"], ts
+                conn, req_id, payload, req.get("app_id") or req["task_id"], req["request_type"], ts
             )
         row = conn.execute(
             "SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)
@@ -871,28 +863,6 @@ def transfer_owner(
     return _strip_task(updated)
 
 
-def delete_task(
-    conn: sqlite3.Connection,
-    task_id: str,
-    *,
-    actor: str,
-    actor_role: str,
-) -> None:
-    """Delete an Abandoned CICD task and all its history (RM only; Ruling C).
-
-    Mirrors core.py:delete_cicd_task.
-    """
-    if actor_role not in CICD_APPROVER_ROLES:
-        raise PermissionError("只有 RM 可以删除 CICD 任务")
-    task = cicd_repo.get_task(conn, task_id)
-    if not task:
-        raise RuntimeError(f"CICD 任务 {task_id} 不存在")
-    if task["status"] != "Abandoned":
-        raise RuntimeError("只有 Abandoned 状态的任务可以删除")
-    with transaction(conn):
-        cicd_repo.delete_task(conn, task_id)
-
-
 def mark_visited(
     conn: sqlite3.Connection,
     username: str,
@@ -935,7 +905,7 @@ def deliver_request(
     payload = _json.loads(req["payload"] or "{}")
     with transaction(conn):
         _apply_cicd_request(
-            conn, req_id, payload, req["task_id"], req["request_type"], ts
+            conn, req_id, payload, req.get("app_id") or req["task_id"], req["request_type"], ts
         )
         conn.execute(
             """UPDATE cicd_task_requests
@@ -1052,7 +1022,7 @@ def apply_returned_request(
     payload = _json.loads(req["payload"] or "{}")
     with transaction(conn):
         _apply_cicd_request(
-            conn, req_id, payload, req["task_id"], req["request_type"], ts
+            conn, req_id, payload, req.get("app_id") or req["task_id"], req["request_type"], ts
         )
         conn.execute(
             """UPDATE cicd_task_requests
@@ -1094,21 +1064,21 @@ def sync_decision_to_cicd(
     target_status = _DECISION_TO_CICD_STATUS.get(release_decision)
     if not target_status:
         return None  # unknown decision value — defensive no-op
+    if not apps_repo.get_app(conn, app_id):
+        return None
 
     ts = beijing_timestamp()
-    tasks = cicd_repo.tasks_for_app(conn, app_id)
-    if not tasks:
-        tasks = _link_unique_orphan_task_by_app_identity(conn, app_id, updated_at=ts)
-    task_id = tasks[0]["id"] if tasks else app_id
-    current_status = tasks[0].get("status", "") if tasks else (current_status_override or "")
+    task_id = app_id
+    current_status = current_status_override or (
+        "Running" if target_status == "Stopped" else "Stopped"
+    )
 
-    if tasks and current_status == target_status:
+    if current_status == target_status:
         return None
 
     # Idempotent guard: skip if there is already a pending modify touching status.
     if (
-        cicd_repo.has_open_modify_on_field(conn, task_id, "status")
-        or (task_id != app_id and cicd_repo.has_open_modify_on_field(conn, app_id, "status"))
+        cicd_repo.has_open_modify_on_field(conn, app_id, "status")
     ):
         return None
 
@@ -1116,6 +1086,7 @@ def sync_decision_to_cicd(
     req_id = cicd_repo.insert_request(
         conn,
         task_id=task_id,
+        app_id=app_id,
         request_type="modify",
         payload=payload,
         submitter=submitter,
@@ -1132,65 +1103,6 @@ def sync_decision_to_cicd(
         "SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)
     ).fetchone()
     return _strip_request(dict(row))
-
-
-# ---------------------------------------------------------------------------
-# Ruling A — abandon task (plan §3.5 c)
-# ---------------------------------------------------------------------------
-
-
-def abandon_task(
-    conn: sqlite3.Connection,
-    task_id: str,
-    *,
-    reviewer: str,
-    reviewer_role: str,
-) -> dict:
-    """RM direct action: transition a Stopped task to Abandoned (terminal).
-
-    Like transfer_owner, this is a direct governance action — no pending queue.
-    Only Stopped tasks can be abandoned (Ruling A: stopping happens only via
-    App decision, so by the time a task reaches Abandoned it must have gone
-    through Stopped first).
-    Returns the updated task dict.
-
-    Mirrors plan §3.5 c.
-    """
-    import json as _json
-
-    if reviewer_role not in CICD_APPROVER_ROLES:
-        raise PermissionError("只有 RM 可以废弃 CICD 任务")
-    task = cicd_repo.get_task(conn, task_id)
-    if not task:
-        raise RuntimeError(f"CICD 任务 {task_id} 不存在")
-    if task["status"] != "Stopped":
-        raise RuntimeError(
-            "只有 Stopped 状态的任务可以废弃（Ruling A：停止只能经 App 决策驱动）"
-        )
-    ts = beijing_timestamp()
-    payload_json = _json.dumps(
-        {"status": {"old": "Stopped", "new": "Abandoned"}},
-        ensure_ascii=False,
-    )
-    with transaction(conn):
-        conn.execute(
-            "UPDATE cicd_tasks SET status='Abandoned', updated_at=? WHERE id=?",
-            (ts, task_id),
-        )
-        # Write an approved audit record (mirrors transfer_owner pattern)
-        conn.execute(
-            """
-            INSERT INTO cicd_task_requests
-              (task_id, request_type, payload, submitter, submitter_display,
-               submitted_at, status, reviewer, reviewed_at, review_note,
-               is_self_approved, origin)
-            VALUES (?, 'modify', ?, ?, ?, ?, 'approved', ?, ?, '废弃/退役任务', 0, 'abandon')
-            """,
-            (task_id, payload_json, reviewer, reviewer, ts, reviewer, ts),
-        )
-    updated = cicd_repo.get_task(conn, task_id)
-    _attach_owner_display(conn, [updated])
-    return _strip_task(updated)
 
 
 # ---------------------------------------------------------------------------
@@ -1231,10 +1143,12 @@ def _has_pending_cicd_create_for_app(
     import json as _json
 
     rows = conn.execute(
-        "SELECT payload FROM cicd_task_requests "
+        "SELECT app_id, payload FROM cicd_task_requests "
         "WHERE status = 'pending' AND request_type = 'create'"
     ).fetchall()
     for row in rows:
+        if row["app_id"] == app_id:
+            return True
         try:
             p = _json.loads(row["payload"] or "{}")
         except Exception:
@@ -1710,7 +1624,8 @@ def cicd_first_new_app(
         ts = beijing_timestamp()
         req_id = cicd_repo.insert_request(
             conn,
-            task_id=None,
+            task_id=app_id,
+            app_id=app_id,
             request_type="create",
             payload=create_payload,
             submitter=submitter,

@@ -3,7 +3,6 @@
 Faithful port of server.py GET/POST /api/cicd/* handlers.
 
 Phase 4 additions (all wired):
-  POST /api/cicd/tasks/abandon      — abandon_task (Wave 2)
   POST /api/cicd/apps/fetch-preview — Gerrit preview wizard (Wave 3)
   POST /api/cicd/apps/new           — cicd_first_new_app (Wave 3)
 
@@ -152,6 +151,7 @@ async def post_submit(
         submitter=user["username"],
         submitter_role=role,
         submitter_display=user.get("display_name", ""),
+        source=body.get("source", "cicd_workbench"),
     )
     return {"ok": True, "request": req}
 
@@ -508,51 +508,6 @@ async def post_transfer_owner(
         actor_role=user["role"],
     )
     return {"ok": True, "task": task}
-
-
-@router.post("/tasks/abandon")
-async def post_abandon_task(
-    request: Request,
-    user: dict = Depends(require_login),
-    conn: sqlite3.Connection = Depends(get_db),
-) -> dict:
-    """POST /api/cicd/tasks/abandon — RM retires a Stopped task to Abandoned (Ruling A).
-
-    Direct action (no pending queue) — mirrors transfer_owner semantics.
-    Only Stopped tasks can be abandoned; Abandoned is terminal.
-    """
-    body: dict = await request.json()
-    if user["role"] not in cicd_service.CICD_APPROVER_ROLES:
-        raise AuthzError("只有 RM 可以废弃 CICD 任务")
-    task = cicd_service.abandon_task(
-        conn,
-        body["task_id"],
-        reviewer=user["username"],
-        reviewer_role=user["role"],
-    )
-    return {"ok": True, "task": task}
-
-
-@router.post("/tasks/delete")
-async def post_delete_task(
-    request: Request,
-    user: dict = Depends(require_login),
-    conn: sqlite3.Connection = Depends(get_db),
-) -> dict:
-    """POST /api/cicd/tasks/delete — delete an Abandoned task (RM only; Ruling C).
-
-    Mirrors server.py:do_POST:1129-1141.
-    """
-    body: dict = await request.json()
-    if user["role"] not in cicd_service.CICD_APPROVER_ROLES:
-        raise AuthzError("只有 RM 可以删除 CICD 任务")
-    cicd_service.delete_task(
-        conn,
-        body["task_id"],
-        actor=user["username"],
-        actor_role=user["role"],
-    )
-    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------

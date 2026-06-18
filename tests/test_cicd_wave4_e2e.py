@@ -20,10 +20,10 @@ This module proves the full R3 chain works:
   4. 停止只能经 App:
        • CICD workbench modify with 'status' → rejected (status-lock V3)
        • App.update_snapshot(stopped) → pending sync request
-       • abandon only works on Stopped (via App decision, not direct CICD stop)
+       • CICD abandon/delete APIs are removed; App lifecycle owns retire/delete
 
   5. 权限 (plan §3.7 Ruling C):
-       Admin → 403 on CICD create/approve/deliver/abandon
+       Admin → 403 on CICD create/approve/deliver
        RM → self-approve (is_self_approved=1)
        SPD → delivery chain allowed; create/approve → 403
        Owner → create allowed; approve → 403
@@ -1040,18 +1040,18 @@ class TestStopOnlyViaApp:
                 submitter_role="RM",
             )
 
-    def test_cicd_modify_without_status_allowed(self, temp_db):
-        """CICD workbench modify WITHOUT 'status' → accepted (pending)."""
+    def test_cicd_workbench_modify_without_status_rejected(self, temp_db):
+        """CICD workbench modify WITHOUT 'status' is still rejected; use App-CICD tab."""
         task_id = self._create_running_task(temp_db)
-        result = cicd_service.submit_request(
-            temp_db,
-            task_id=task_id,
-            request_type="modify",
-            payload={"notes": {"old": "old", "new": "new notes"}},
-            submitter="rm",
-            submitter_role="RM",
-        )
-        assert result["status"] == "pending"
+        with pytest.raises(RuntimeError, match="App 工作台"):
+            cicd_service.submit_request(
+                temp_db,
+                task_id=task_id,
+                request_type="modify",
+                payload={"notes": {"old": "old", "new": "new notes"}},
+                submitter="rm",
+                submitter_role="RM",
+            )
 
     def test_stop_via_decision_creates_pending_sync(self, temp_db):
         """App decision change (stopped) → pending sync request (Ruling D)."""
@@ -1064,28 +1064,12 @@ class TestStopOnlyViaApp:
         assert result["status"] == "pending"
         assert result["request_type"] == "modify"
 
-    def test_abandon_running_task_rejected(self, temp_db):
-        """Cannot abandon a Running task — must stop via App first (Ruling A)."""
-        task_id = self._create_running_task(temp_db)
-        with pytest.raises(RuntimeError, match="Stopped"):
-            cicd_service.abandon_task(
-                temp_db, task_id, reviewer="rm", reviewer_role="RM"
-            )
-        assert _get_task(temp_db, task_id)["status"] == "Running"
+    def test_cicd_abandon_service_removed(self):
+        """CICD retire/delete is handled through App operations, not CICD service APIs."""
+        assert not hasattr(cicd_service, "abandon_task")
 
-    def test_abandon_requires_stopped_state(self, temp_db):
-        """abandon_task works ONLY on Stopped tasks → Abandoned (Ruling A)."""
-        task_id = _insert_linked_task(
-            temp_db, app_id="abandon_test_app", status="Stopped"
-        )
-        result = cicd_service.abandon_task(
-            temp_db, task_id, reviewer="rm", reviewer_role="RM"
-        )
-        assert result["status"] == "Abandoned"
-        assert _get_task(temp_db, task_id)["status"] == "Abandoned"
-
-    def test_full_stop_then_abandon_flow(self, temp_db):
-        """Full flow: Running → sync(stopped) → RM approve → Stopped → abandon → Abandoned."""
+    def test_full_stop_flow_ends_at_stopped(self, temp_db):
+        """Full flow: Running → sync(stopped) → RM approve → Stopped."""
         task_id = _insert_linked_task(
             temp_db, app_id="full_stop_flow_app", status="Running"
         )
@@ -1103,25 +1087,6 @@ class TestStopOnlyViaApp:
             temp_db, req_id, reviewer="rm", reviewer_role="RM"
         )
         assert _get_task(temp_db, task_id)["status"] == "Stopped"
-
-        # Step 3: RM abandon (Stopped → Abandoned)
-        cicd_service.abandon_task(
-            temp_db, task_id, reviewer="rm", reviewer_role="RM"
-        )
-        assert _get_task(temp_db, task_id)["status"] == "Abandoned"
-
-    def test_abandoned_task_is_terminal(self, temp_db):
-        """Abandoned is terminal — cannot be abandoned again."""
-        task_id = _insert_linked_task(
-            temp_db, app_id="terminal_test_app", status="Stopped"
-        )
-        cicd_service.abandon_task(
-            temp_db, task_id, reviewer="rm", reviewer_role="RM"
-        )
-        with pytest.raises((RuntimeError, ValueError)):
-            cicd_service.abandon_task(
-                temp_db, task_id, reviewer="rm", reviewer_role="RM"
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -1237,32 +1202,6 @@ class TestPermissionsWave4:
         )
         assert approved["is_self_approved"] == 0
 
-    # --- CICD abandon: RM only ---
-
-    def test_admin_cannot_abandon(self, temp_db):
-        """Admin cannot abandon CICD tasks (Ruling C)."""
-        task_id = _insert_linked_task(temp_db, app_id="perm_abandon_app", status="Stopped")
-        with pytest.raises(PermissionError, match="RM"):
-            cicd_service.abandon_task(
-                temp_db, task_id, reviewer="admin", reviewer_role="Admin"
-            )
-
-    def test_owner_cannot_abandon(self, temp_db):
-        """Owner cannot abandon CICD tasks."""
-        task_id = _insert_linked_task(temp_db, app_id="perm_abandon2_app", status="Stopped")
-        with pytest.raises(PermissionError, match="RM"):
-            cicd_service.abandon_task(
-                temp_db, task_id, reviewer="owner_test", reviewer_role="Owner"
-            )
-
-    def test_rm_can_abandon_stopped(self, temp_db):
-        """RM can abandon Stopped tasks."""
-        task_id = _insert_linked_task(temp_db, app_id="perm_abandon3_app", status="Stopped")
-        result = cicd_service.abandon_task(
-            temp_db, task_id, reviewer="rm", reviewer_role="RM"
-        )
-        assert result["status"] == "Abandoned"
-
     # --- HTTP-level: Admin gets 403 on CICD endpoints ---
 
     def test_http_admin_403_on_submit(self, db_path):
@@ -1303,18 +1242,16 @@ class TestPermissionsWave4:
             )
         assert resp.status_code == 403
 
-    def test_http_admin_403_on_abandon(self, db_path):
-        """HTTP: Admin → 403 on POST /api/cicd/tasks/abandon."""
+    def test_http_abandon_endpoint_removed(self, db_path):
+        """HTTP: POST /api/cicd/tasks/abandon is removed."""
         from fastapi.testclient import TestClient
-        app = _make_fastapi_app(db_path, role="Admin", username="admin")
+        app = _make_fastapi_app(db_path, role="RM", username="rm")
         with TestClient(app, raise_server_exceptions=False) as client:
             resp = client.post(
                 "/api/cicd/tasks/abandon",
                 json={"task_id": "CICD-9999"},
             )
-        assert resp.status_code == 403, (
-            f"Admin must get 403 on abandon, got {resp.status_code}"
-        )
+        assert resp.status_code == 405
 
     def test_http_spd_403_on_submit(self, db_path):
         """HTTP: SPD → 403 on POST /api/cicd/requests/submit."""
@@ -1388,17 +1325,6 @@ class TestTimezoneWave4:
         assert ts, "reviewed_at should be set after approval"
         assert "+" not in ts, f"reviewed_at must be naive Beijing, got: {ts!r}"
         assert "Z" not in ts
-
-    def test_abandoned_task_updated_at_naive_beijing(self, temp_db):
-        """abandoned task.updated_at is naive Beijing."""
-        task_id = _insert_linked_task(temp_db, app_id="tz_abandon_app", status="Stopped")
-        result = cicd_service.abandon_task(
-            temp_db, task_id, reviewer="rm", reviewer_role="RM"
-        )
-        ts = result["updated_at"]
-        assert "+" not in ts, f"updated_at must be naive Beijing, got: {ts!r}"
-        assert "Z" not in ts
-
 
 # ---------------------------------------------------------------------------
 # 9. Migrated DB snapshot — verify R3 chain with synthetic migrated data

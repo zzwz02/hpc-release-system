@@ -343,7 +343,8 @@ export interface CicdRequestPayload {
 export interface CicdRequest {
   id: number;
   task_id: string | null;
-  request_type: string;  // "create" | "modify" | "delete"
+  app_id?: string;
+  request_type: string;  // "create" | "modify" | "owner_transfer"
   payload: CicdRequestPayload;
   submitter: string;
   submitter_display: string;

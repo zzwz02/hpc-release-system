@@ -91,6 +91,8 @@ interface AppInfoFetchProgress {
 const STATE_KEY = (releaseId?: string) =>
   releaseId ? ["state", releaseId] : ["state"];
 
+const EMPTY_APPS: App[] = [];
+
 async function fetchState(releaseId?: string): Promise<StatePayload> {
   const qs = releaseId ? `?release_id=${encodeURIComponent(releaseId)}` : "";
   return apiGet<StatePayload>(`/api/state${qs}`);
@@ -121,6 +123,15 @@ function QaDot({ snap }: { snap: Snapshot }) {
       className={`app-dot ${qaDotClass(snap)}`}
       title={qaDotTitle(snap)}
     />
+  );
+}
+
+function CicdPendingPill({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <span className="pill warnp" title="此 App 有待审批或待交付的 CICD 流程" data-testid="app-cicd-pending-pill">
+      CICD 待处理 {count}
+    </span>
   );
 }
 
@@ -228,9 +239,25 @@ function cicdWorkflowState(req: CicdRequest): string {
 
 function requestMatchesApp(req: CicdRequest, app: App): boolean {
   const payload = (req.payload ?? {}) as Record<string, unknown>;
-  return req.task_id === app.id ||
-    payload.app_id === app.id ||
-    req.task_repo_name === app.git_url;
+  if (req.app_id) return req.app_id === app.id;
+  if (payload.app_id) return payload.app_id === app.id;
+  if (req.task_id === app.id) return true;
+
+  // Legacy requests may not carry app_id. In that case repo alone is not a
+  // stable App identity: multiple Apps can share one Gerrit URL with different
+  // branches. Fall back only when both repo and branch match.
+  const reqRepo = String(req.task_repo_name ?? "").trim();
+  const reqBranch = String(req.task_branch ?? "").trim();
+  return !!reqRepo &&
+    !!reqBranch &&
+    reqRepo === String(app.git_url ?? "").trim() &&
+    reqBranch === String(app.git_branch ?? "").trim();
+}
+
+function uniqueCicdRequestCount(requests: CicdRequest[]): number {
+  return new Set(
+    requests.map((req) => req.id ?? `${req.request_type}-${req.task_id}-${req.submitted_at}`),
+  ).size;
 }
 
 function AppInfoFetchProgressDialog({ progress }: { progress: AppInfoFetchProgress }) {
@@ -281,13 +308,14 @@ interface AppListProps {
   onOwnOnlyChange: (v: boolean) => void;
   showOwnOnly: boolean;
   displayNames: Record<string, string>;
+  cicdPendingCounts: Record<string, number>;
   canCreateApp: boolean;
   onNewApp: () => void;
 }
 
 function AppListPanel({
   rows, selectedAppId, onSelectApp, search, onSearchChange,
-  ownOnly, onOwnOnlyChange, showOwnOnly, displayNames, canCreateApp, onNewApp,
+  ownOnly, onOwnOnlyChange, showOwnOnly, displayNames, cicdPendingCounts, canCreateApp, onNewApp,
 }: AppListProps) {
   return (
     <div className="app-list-panel">
@@ -354,6 +382,7 @@ function AppListPanel({
                         : <span className="pill ok" title="文档信息齐全">文档 OK</span>
                     )}
                     {rel && <QaPill status={snap.qa_status} />}
+                    <CicdPendingPill count={cicdPendingCounts[app.id] ?? 0} />
                   </div>
                 </div>
               </div>
@@ -1352,6 +1381,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
         task_id: app.id,
         request_type: "modify",
         payload: diff,
+        source: "app_workbench",
       });
       setDirty(false);
       setEditMode(false);
@@ -1559,6 +1589,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
             <span className="pill">{(docTargetLabels as Record<string, string>)[snap.doc_target] ?? snap.doc_target}</span>
             {rel && (todo.length ? <span className="pill warnp">待补 {todo.length} 项</span> : <span className="pill ok">信息齐全</span>)}
             {rel && <QaPill status={snap.qa_status} />}
+            <CicdPendingPill count={uniqueCicdRequestCount(appOpenCicd)} />
           </div>
         </div>
         {userIsOwner && <div className="greet">你好 👋 完成清单后提交确认</div>}
@@ -2333,7 +2364,7 @@ export function AppWorkbenchPage() {
   const [bulkProgress, setBulkProgress] = useState<AppInfoFetchProgress | null>(null);
 
   const release = data?.release ?? null;
-  const apps = data?.apps ?? [];
+  const apps = data?.apps ?? EMPTY_APPS;
   const releases = data?.releases ?? [];
   const displayNames = data?.user_display_names ?? {};
   const locked = releaseLocked(release);
@@ -2349,6 +2380,35 @@ export function AppWorkbenchPage() {
 
   const selectedAppObj = apps.find((a) => a.id === selectedApp) ?? null;
   const selectedSnap = selectedAppObj ? releaseSnap(release, selectedAppObj.id) : null;
+
+  const { data: appWorkbenchOpenRequests } = useQuery({
+    queryKey: ["cicd", "requests", "app-workbench", "open-summary", selectedReleaseId ?? ""],
+    queryFn: async () => {
+      const [pending, deliveries] = await Promise.all([
+        fetchCicdRequests({ status: "pending" }),
+        fetchCicdDeliveries("pending_or_returned"),
+      ]);
+      return [...(pending.requests ?? []), ...(deliveries.deliveries ?? [])];
+    },
+    enabled: apps.length > 0,
+    staleTime: 0,
+    refetchOnMount: true,
+  });
+
+  const cicdPendingCounts = React.useMemo(() => {
+    const counts: Record<string, number> = {};
+    const open = appWorkbenchOpenRequests ?? [];
+    for (const app of apps) {
+      const seen = new Set<number | string>();
+      for (const req of open) {
+        if (requestMatchesApp(req, app)) {
+          seen.add(req.id ?? `${req.request_type}-${req.task_id}-${req.submitted_at}`);
+        }
+      }
+      if (seen.size > 0) counts[app.id] = seen.size;
+    }
+    return counts;
+  }, [appWorkbenchOpenRequests, apps]);
 
   const canCreateApp = !!(data?.release && !locked);
 
@@ -2509,6 +2569,7 @@ export function AppWorkbenchPage() {
             onOwnOnlyChange={setOwnOnly}
             showOwnOnly={userIsOwner}
             displayNames={displayNames}
+            cicdPendingCounts={cicdPendingCounts}
             canCreateApp={canCreateApp}
             onNewApp={() => setShowNewApp(true)}
           />

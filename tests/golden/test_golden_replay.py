@@ -112,8 +112,8 @@ def _goldens_with_metadata() -> list[tuple[str, dict]]:
         "post_cicd_request_submit_admin": 115,  # R3 Ruling C: Admin → 403 (no DB write)
         "post_cicd_request_approve_admin": 116, # R3 Ruling C: Admin → 403 (no DB write)
         "post_cicd_request_submit_rm": 117,     # R3 Ruling B: RM → pending, id=4
-        "post_cicd_abandon_admin": 118,         # R3 Ruling C: Admin → 403 (no DB write)
-        "post_cicd_abandon_rm_running": 119,    # R3 Ruling A: RM on Running → 400 (no DB write)
+        "post_cicd_abandon_admin": 118,         # CICD abandon endpoint removed → 405
+        "post_cicd_abandon_rm_running": 119,    # CICD abandon endpoint removed → 405
         # Phase 12 — Wave 3: CICD-first app creation (order matters — setup → approval → collision)
         "post_cicd_apps_new_admin_403": 120,    # R3 Wave 3: Admin → 403 (no DB write)
         "post_cicd_apps_new_rm_success": 121,   # R3 Wave 3: RM creates w3cicdfirst, req #5
@@ -281,9 +281,9 @@ class TestGoldenHttpStatuses:
         "post_cicd_request_submit_admin": 403,
         "post_cicd_request_approve_admin": 403,
         "post_cicd_request_submit_rm": 200,
-        # R3 Ruling A/C new goldens
-        "post_cicd_abandon_admin": 403,
-        "post_cicd_abandon_rm_running": 400,
+        # CICD retire/delete now happens through App operations; abandon endpoint removed
+        "post_cicd_abandon_admin": 405,
+        "post_cicd_abandon_rm_running": 405,
         # R3 Wave 3: CICD-first app creation goldens
         "post_cicd_apps_new_admin_403": 403,
         "post_cicd_apps_new_rm_success": 200,

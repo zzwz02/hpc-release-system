@@ -88,10 +88,9 @@ export const artifactKindLabels: Record<ArtifactKind, string> = {
 export const cicdTaskStatusLabels: Record<string, string> = {
   Running: "运行中",
   Stopped: "停止",
-  Abandoned: "已废弃",
 };
 
-export const cicdTaskStatusOptions = ["Running", "Stopped", "Abandoned"];
+export const cicdTaskStatusOptions = ["Running", "Stopped"];
 
 // ---------------------------------------------------------------------------
 // CICD request type

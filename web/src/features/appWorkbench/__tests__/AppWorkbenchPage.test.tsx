@@ -658,6 +658,132 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
     expect((screen.getByTestId("field-cicd-notes") as HTMLInputElement).value).toBe("nightly only");
   });
 
+  it("shows brief CICD pending hints in app list and detail header", async () => {
+    const payload = makePayload();
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.startsWith("/api/cicd/requests")) {
+        return Promise.resolve({
+          requests: [{
+            id: 5,
+            task_id: "app1",
+            app_id: "app1",
+            request_type: "modify",
+            payload: { notes: { old: "", new: "x" } },
+            submitter: "alice",
+            submitter_display: "Alice",
+            submitted_at: "2026-06-18 12:00:00",
+            status: "pending",
+            reviewer: "",
+            reviewed_at: "",
+            review_note: "",
+            is_self_approved: 0,
+            approval_mode: "dispatch_spd",
+            delivery_status: "pending",
+            jira_id: "SPD-1615",
+            jira_auto_created: 1,
+            delivered_by: "",
+            delivered_at: "",
+            returned_reason: "",
+            returned_at: "",
+            task_app_name: "AlphaApp",
+            task_app_version: "1.0",
+            task_repo_name: "repo/app1",
+            task_branch: "main",
+            task_status: "Running",
+            origin: "cicd_workbench",
+          }],
+        });
+      }
+      if (url.startsWith("/api/cicd/deliveries")) {
+        return Promise.resolve({ deliveries: [] });
+      }
+      return Promise.resolve(payload);
+    });
+
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+    await waitFor(() => {
+      expect(screen.getByTestId("app-row-app1").textContent).toContain("CICD 待处理 1");
+    });
+
+    fireEvent.click(screen.getByTestId("app-row-app1"));
+    await waitFor(() => {
+      expect(screen.getByTestId("detail-panel").textContent).toContain("CICD 待处理 1");
+    });
+  });
+
+  it("does not mix pending CICD hints between apps sharing Gerrit URL with different branches", async () => {
+    const payload = makePayload();
+    payload.apps[0] = {
+      ...payload.apps[0],
+      id: "app-main",
+      git_url: "hpc_abacus",
+      git_branch: "main",
+    };
+    payload.apps[1] = {
+      ...payload.apps[1],
+      id: "app-release",
+      git_url: "hpc_abacus",
+      git_branch: "release-3.8",
+    };
+    payload.release = makeRelease({
+      "app-main": makeSnap("app-main", { official_name: "ABACUS main", owners: ["alice"] }),
+      "app-release": makeSnap("app-release", { official_name: "ABACUS release", owners: ["alice"] }),
+    });
+
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.startsWith("/api/cicd/requests")) {
+        return Promise.resolve({
+          requests: [{
+            id: 12,
+            task_id: "legacy-cicd-12",
+            request_type: "modify",
+            payload: { notes: { old: "", new: "branch only" } },
+            submitter: "alice",
+            submitter_display: "Alice",
+            submitted_at: "2026-06-18 12:00:00",
+            status: "pending",
+            reviewer: "",
+            reviewed_at: "",
+            review_note: "",
+            is_self_approved: 0,
+            approval_mode: "dispatch_spd",
+            delivery_status: "",
+            jira_id: "",
+            jira_auto_created: 0,
+            delivered_by: "",
+            delivered_at: "",
+            returned_reason: "",
+            returned_at: "",
+            task_app_name: "ABACUS main",
+            task_app_version: "1.0",
+            task_repo_name: "hpc_abacus",
+            task_branch: "main",
+            task_status: "Running",
+          }],
+        });
+      }
+      if (url.startsWith("/api/cicd/deliveries")) {
+        return Promise.resolve({ deliveries: [] });
+      }
+      return Promise.resolve(payload);
+    });
+
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("app-row-app-main"));
+    await waitFor(() => {
+      expect(screen.getByTestId("app-row-app-main").textContent).toContain("CICD 待处理 1");
+    });
+    expect(screen.getByTestId("app-row-app-release").textContent).not.toContain("CICD 待处理");
+
+    fireEvent.click(screen.getByTestId("app-row-app-release"));
+    await waitFor(() => {
+      expect(screen.getByTestId("detail-panel").textContent).not.toContain("CICD 待处理 1");
+    });
+  });
+
   it("shows Stopped status when release decision is stopped", async () => {
     const payload = makePayload();
     payload.release!.snapshots.app1.release_decision = "stopped";
@@ -691,6 +817,7 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
     expect(apiPost).toHaveBeenCalledWith("/api/cicd/requests/submit", expect.objectContaining({
       task_id: "app1",
       request_type: "modify",
+      source: "app_workbench",
       payload: expect.objectContaining({
         repo_name: { old: "repo/app1", new: "repo/app1-renamed" },
         branch: { old: "main", new: "release/4.0" },
@@ -729,6 +856,7 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
       expect(apiPost).toHaveBeenCalledWith("/api/cicd/requests/submit", expect.objectContaining({
         task_id: "app1",
         request_type: "modify",
+        source: "app_workbench",
         payload: expect.objectContaining({
           repo_name: { old: "repo/app1", new: "repo/app1-cicd" },
           branch: { old: "main", new: "dev" },

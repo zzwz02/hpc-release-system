@@ -78,6 +78,7 @@ export interface SubmitPayload {
   task_id: string | null;
   request_type: string;
   payload: Record<string, unknown>;
+  source?: string;
 }
 
 export function submitCicdRequest(body: SubmitPayload): Promise<CicdSubmitResponse> {
@@ -143,18 +144,6 @@ export function transferCicdOwner(body: {
   new_owner: string;
 }): Promise<CicdTransferOwnerResponse> {
   return apiPost<CicdTransferOwnerResponse>("/api/cicd/tasks/transfer-owner", body);
-}
-
-export function deleteCicdTask(body: {
-  task_id: string;
-}): Promise<{ ok: boolean }> {
-  return apiPost<{ ok: boolean }>("/api/cicd/tasks/delete", body);
-}
-
-export function abandonCicdTask(body: {
-  task_id: string;
-}): Promise<{ ok: boolean }> {
-  return apiPost<{ ok: boolean }>("/api/cicd/tasks/abandon", body);
 }
 
 // ---------------------------------------------------------------------------

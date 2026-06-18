@@ -121,6 +121,7 @@ def test_cicd_modify_approval_updates_app_cicd_config_columns():
             },
             submitter="owner",
             submitter_role="Owner",
+            source="app_workbench",
         )
         cicd_service.approve_request(
             conn,
@@ -215,6 +216,7 @@ def test_cicd_modify_repo_identity_change_updates_app_after_approval():
             },
             submitter="owner",
             submitter_role="Owner",
+            source="app_workbench",
         )
         app_before = conn.execute(
             "SELECT git_url, git_branch FROM apps WHERE id='app1'"

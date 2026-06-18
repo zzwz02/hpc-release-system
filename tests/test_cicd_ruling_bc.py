@@ -194,6 +194,7 @@ class TestRulingBRMApproval:
             payload={"notes": {"old": "ruling-bc test", "new": "updated note"}},
             submitter="rm",
             submitter_role="RM",
+            source="app_workbench",
         )
         assert modify_req["status"] == "pending"
 
@@ -349,24 +350,9 @@ class TestRulingCAdminBlocked:
                 actor_role="Admin",
             )
 
-    def test_admin_cannot_delete_abandoned_task(self, temp_db):
-        """Ruling C: delete_task uses CICD_APPROVER_ROLES; Admin blocked."""
-        req = _submit(temp_db, "rm", "RM")
-        approved = _approve(temp_db, req["id"], reviewer="rm")
-        task_id = approved["task_id"]
-        # Force Abandoned status (abandon_task is Wave 2; use direct SQL for now)
-        temp_db.execute(
-            "UPDATE cicd_tasks SET status='Abandoned' WHERE id=?", (task_id,)
-        )
-        temp_db.commit()
-
-        with pytest.raises(PermissionError):
-            cicd_service.delete_task(
-                temp_db,
-                task_id,
-                actor="admin",
-                actor_role="Admin",
-            )
+    def test_delete_task_service_removed(self):
+        """CICD deletion now happens through App deletion, not CICD service APIs."""
+        assert not hasattr(cicd_service, "delete_task")
 
 
 # ---------------------------------------------------------------------------

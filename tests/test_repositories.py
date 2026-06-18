@@ -7,6 +7,8 @@ business logic.
 """
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from app.db.connection import connect, reset_init_state
@@ -422,6 +424,35 @@ class TestUsersRepo:
         user = users_repo.get_user(self.conn, "rm")
         assert user is not None
         assert user["role"] == "RM"
+        spd = users_repo.get_user(self.conn, "spd")
+        assert spd is not None
+        assert spd["role"] == "SPD"
+
+    def test_default_users_are_backfilled_for_existing_db(self, tmp_path):
+        """Missing built-in users are added even when users table is non-empty."""
+        db_path = tmp_path / "old.db"
+        raw = sqlite3.connect(db_path)
+        raw.execute(
+            "CREATE TABLE users ("
+            "username TEXT PRIMARY KEY, "
+            "password_hash TEXT NOT NULL DEFAULT '', "
+            "role TEXT NOT NULL"
+            ")"
+        )
+        raw.execute(
+            "INSERT INTO users(username, password_hash, role) VALUES ('rm', 'x', 'RM')"
+        )
+        raw.commit()
+        raw.close()
+
+        reset_init_state()
+        conn = connect(db_path)
+        try:
+            spd = users_repo.get_user(conn, "spd")
+            assert spd is not None
+            assert spd["role"] == "SPD"
+        finally:
+            conn.close()
 
     def test_insert_and_get(self):
         users_repo.insert_user(
@@ -801,18 +832,8 @@ class TestCicdRepo:
         task = cicd_repo.get_task(self.conn, "CICD-0001")
         assert task["status"] == "Stopped"
 
-    def test_delete_task(self):
-        self._create_task()
-        cicd_repo.insert_request(
-            self.conn, task_id="CICD-0001", request_type="create",
-            payload={}, submitter="rm", submitted_at=beijing_timestamp(),
-        )
-        self.conn.commit()
-        cicd_repo.delete_task(self.conn, "CICD-0001")
-        self.conn.commit()
-        assert cicd_repo.get_task(self.conn, "CICD-0001") is None
-        # requests also deleted
-        assert cicd_repo.list_requests(self.conn, task_id="CICD-0001") == []
+    def test_delete_task_helper_removed(self):
+        assert not hasattr(cicd_repo, "delete_task")
 
 
 # ---------------------------------------------------------------------------

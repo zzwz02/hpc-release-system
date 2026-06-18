@@ -4,16 +4,18 @@
  * Mirrors index.html:857-972 (HTML) and index.html:3886-4857 (JS).
  *
  * Sub-panes:
- *   - 任务总览  (OverviewPane)    — all tasks, status filter, search
- *   - 我的CICD任务 (MyPane)       — tasks owned by current user
+ *   - CICD 信息 (TaskInfoSection) — read-only task details, all statuses
+ *   - 近期申请 (RecentRequestsSection) — read-only recent request records
  *   - 待审批   (PendingPane)      — pending requests (RM/Admin can approve)
- *   - 最近申请  (RecentPane)      — recent requests with since_days + only_mine
  *   - 待交付   (DeliveryPane)     — delivery workflow (SPD/RM/Admin)
  *   - 已交付   (DeliveredPane)    — delivered history
  *
  * Role visibility (mirrors bindCicd index.html:4738-4754):
- *   SPD:  only 待交付 + 已交付 (delivery panes); no new task button
- *   Others: all panes visible; RM/Admin/Owner get delivery panes too
+ *   SPD:  only 待交付 + 已交付 (delivery panes)
+ *   RM: 待审批 + 待交付 + 已交付
+ *
+ * Build-config changes are submitted from App 工作台 → App-CICD only.
+ * CICD 工作台 shows read-only CICD/request information, plus approval + delivery actions.
  *
  * On mount: fetches tasks + notifications + marks visited.
  * R2: no polling.  Only explicit refetch on user action.
@@ -25,7 +27,6 @@ import { useAuth } from "../../api/AuthContext";
 import { RefreshBar } from "../../components/RefreshBar";
 import { formatServerTime } from "../../lib/time";
 import { formatGerritUrl } from "../../lib/git";
-import { useUiStore } from "../../store/uiStore";
 import {
   CICD_TASKS_KEY,
   CICD_NOTIFICATIONS_KEY,
@@ -34,7 +35,6 @@ import {
   fetchCicdRequests,
   fetchCicdNotifications,
   fetchCicdDeliveries,
-  submitCicdRequest,
   approveCicdRequest,
   rejectCicdRequest,
   cancelCicdRequest,
@@ -42,8 +42,6 @@ import {
   returnDeliveryCicdRequest,
   reDispatchCicdRequest,
   applyReturnedCicdRequest,
-  deleteCicdTask,
-  abandonCicdTask,
   markCicdVisited,
 } from "./cicdApi";
 import type { CicdTask, CicdRequest } from "../../types";
@@ -129,28 +127,8 @@ function userLabel(username: string, display?: string): string {
   return display && display !== username ? display : username;
 }
 
-const CICD_REPO_TYPE_OPTIONS = ["git", "repo"] as const;
-const CICD_COMMUNITY_ARTIFACT_OPTIONS = [
-  { value: "image", label: "镜像" },
-  { value: "pkg", label: "软件包" },
-] as const;
-
-function toggleCommunityArtifact(arr: string[], item: string): string[] {
-  return arr.includes(item) ? arr.filter((v) => v !== item) : [...arr, item];
-}
-
-function normalizeTimeoutNumber(value: string | number | null | undefined): number {
-  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 40;
-}
-
-// ---------------------------------------------------------------------------
-// StatusPill
-// ---------------------------------------------------------------------------
-
 function StatusPill({ status }: { status: string }) {
-  const cls =
-    status === "Running" ? "ok" : status === "Stopped" ? "warnp" : "";
+  const cls = status === "Running" ? "ok" : status === "Stopped" ? "warnp" : "";
   return <span className={`pill ${cls}`}>{status}</span>;
 }
 
@@ -262,180 +240,6 @@ function DiffTable({
         })}
       </tbody>
     </table>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Task form dialog (new + modify)
-// ---------------------------------------------------------------------------
-
-interface TaskFormValues {
-  repo_type: string;
-  community_artifact: string[];
-  build_image: string;
-  test_timeout: number;
-  notes: string;
-  [key: string]: unknown;
-}
-
-function taskToForm(t: CicdTask): TaskFormValues {
-  return {
-    repo_type: t.repo_type,
-    community_artifact: t.community_artifact ?? [],
-    build_image: t.build_image,
-    test_timeout: normalizeTimeoutNumber(t.test_timeout),
-    notes: t.notes,
-  };
-}
-
-interface TaskFormDialogProps {
-  task: CicdTask;
-  username: string;
-  onSubmitted: () => void;
-  onClose: () => void;
-}
-
-function TaskFormDialog({
-  task,
-  username,
-  onSubmitted,
-  onClose,
-}: TaskFormDialogProps) {
-  void username;
-  const [form, setForm] = useState<TaskFormValues>(() =>
-    taskToForm(task),
-  );
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  async function handleSubmit() {
-    setSaving(true);
-    setError("");
-    try {
-      const orig = taskToForm(task);
-      const diff: Record<string, { old: unknown; new: unknown }> = {};
-      for (const [key, newVal] of Object.entries(form)) {
-        const oldVal = (orig as Record<string, unknown>)[key];
-        const oldStr = Array.isArray(oldVal) ? oldVal.join(",") : String(oldVal ?? "");
-        const newStr = Array.isArray(newVal) ? (newVal as string[]).join(",") : String(newVal ?? "");
-        if (oldStr !== newStr) {
-          diff[key] = { old: oldVal, new: newVal };
-        }
-      }
-      if (!Object.keys(diff).length) {
-        setError("没有任何字段发生变化");
-        setSaving(false);
-        return;
-      }
-      if (task.has_pending) {
-        try {
-          const pend = await fetchCicdRequests({
-            taskId: task.id,
-            status: "pending",
-          });
-          for (const r of pend.requests ?? []) {
-            await cancelCicdRequest({ request_id: r.id }).catch(() => {});
-          }
-        } catch { /* cancelling stale pending requests is best-effort; ignore errors */ }
-      }
-      await submitCicdRequest({
-        task_id: task.id,
-        request_type: "modify",
-        payload: diff,
-      });
-      onSubmitted();
-      onClose();
-    } catch (e) {
-      setError("提交失败：" + (e instanceof Error ? e.message : String(e)));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="dialog-backdrop" role="dialog" aria-modal="true">
-      <div className="dialog-card" style={{ maxWidth: 560 }}>
-        <h2>修改 App CICD 配置 {task.id}</h2>
-        {task?.has_pending && (
-          <div className="lerr" style={{ marginBottom: 8 }}>
-            警告：该任务有待审批的申请，提交后将自动取消旧申请。
-          </div>
-        )}
-        <div className="dialog-body" style={{ display: "grid", gap: 8 }}>
-          <div className="small muted">
-            {task.app_name} {task.app_version} · {formatGerritUrl(task.repo_name)}@{task.branch}
-          </div>
-          <label>
-            仓库类型
-            <select
-              className="select"
-              value={form.repo_type}
-              onChange={(e) => setForm({ ...form, repo_type: e.target.value })}
-            >
-              {CICD_REPO_TYPE_OPTIONS.map((value) => (
-                <option key={value} value={value}>{value}</option>
-              ))}
-            </select>
-          </label>
-          <div>
-            <div className="field-label">开发者社区产物</div>
-            <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
-              {CICD_COMMUNITY_ARTIFACT_OPTIONS.map(({ value, label }) => (
-                <label key={value} className="check">
-                  <input
-                    type="checkbox"
-                    checked={form.community_artifact.includes(value)}
-                    onChange={() => setForm({
-                      ...form,
-                      community_artifact: toggleCommunityArtifact(form.community_artifact, value),
-                    })}
-                  />{" "}
-                  {label}
-                </label>
-              ))}
-            </div>
-          </div>
-          <label>
-            构建依赖镜像
-            <input
-              className="input"
-              value={form.build_image}
-              onChange={(e) => setForm({ ...form, build_image: e.target.value })}
-            />
-          </label>
-          <label>
-            超时(min)
-            <input
-              className="input"
-              type="number"
-              min={1}
-              step={1}
-              value={form.test_timeout}
-              onChange={(e) =>
-                setForm({ ...form, test_timeout: normalizeTimeoutNumber(e.target.value) })
-              }
-            />
-          </label>
-          <label>
-            备注
-            <input
-              className="input"
-              value={form.notes}
-              onChange={(e) => setForm({ ...form, notes: e.target.value })}
-            />
-          </label>
-          {error && <div className="lerr">{error}</div>}
-        </div>
-        <div className="row dialog-actions" style={{ justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
-          <button className="btn" onClick={onClose} disabled={saving}>
-            取消
-          </button>
-          <button className="btn primary" onClick={handleSubmit} disabled={saving}>
-            {saving ? "提交中…" : "提交申请"}
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -824,269 +628,282 @@ function DetailDialog({
 }
 
 // ---------------------------------------------------------------------------
-// OverviewPane — 任务总览
+// TaskInfoSection — CICD 信息（只读，展示全部状态）
 // ---------------------------------------------------------------------------
 
-interface OverviewPaneProps {
+interface TaskInfoSectionProps {
   tasks: CicdTask[];
-  canSubmit: boolean;
-  canApprove: boolean;
-  overviewFilter: string;
-  onFilterChange: (f: string) => void;
-  onEdit: (t: CicdTask) => void;
-  onHistory: (t: CicdTask) => void;
-  onDelete: (t: CicdTask) => void;
-  onAbandon: (t: CicdTask) => void;
+  isLoading: boolean;
+  error: unknown;
+  onHistory: (task: CicdTask) => void;
 }
 
-function OverviewPane({
+function TaskInfoSection({
   tasks,
-  canSubmit,
-  canApprove,
-  overviewFilter,
-  onFilterChange,
-  onEdit,
+  isLoading,
+  error,
   onHistory,
-  onDelete,
-  onAbandon,
-}: OverviewPaneProps) {
+}: TaskInfoSectionProps) {
   const [search, setSearch] = useState("");
   const q = search.toLowerCase();
-
-  let filtered = tasks;
-  if (overviewFilter) filtered = filtered.filter((t) => t.status === overviewFilter);
-  if (q)
-    filtered = filtered.filter(
-      (t) =>
-        t.app_name.toLowerCase().includes(q) ||
-        ownerLabel(t).toLowerCase().includes(q) ||
-        t.owner_username.toLowerCase().includes(q),
-    );
-
-  const STATUS_FILTERS = [
-    { label: "Running", value: "Running" },
-    { label: "全部", value: "" },
-    { label: "Abandoned", value: "Abandoned" },
-  ];
+  const filtered = q
+    ? tasks.filter(
+        (t) =>
+          t.id.toLowerCase().includes(q) ||
+          t.app_name.toLowerCase().includes(q) ||
+          t.app_version.toLowerCase().includes(q) ||
+          formatGerritUrl(t.repo_name).toLowerCase().includes(q) ||
+          ownerLabel(t).toLowerCase().includes(q) ||
+          t.owner_username.toLowerCase().includes(q) ||
+          t.status.toLowerCase().includes(q),
+      )
+    : tasks;
 
   return (
-    <div className="cicd-pane active">
+    <div className="cicd-pane active" data-testid="cicd-info-section">
+      <div className="panel-head">
+        <h2>CICD 信息</h2>
+      </div>
       <div className="cicd-toolbar">
-        <div className="cicd-filters" id="cicdStatusFilters">
-          {STATUS_FILTERS.map((f) => (
-            <button
-              key={f.value}
-              className={`cicd-filter-btn${overviewFilter === f.value ? " active" : ""}`}
-              onClick={() => onFilterChange(f.value)}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
         <input
           className="input sm cicd-search"
-          placeholder="搜索 app / 负责人"
+          placeholder="搜索 app / 负责人 / 状态"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <span style={{ flex: 1 }} />
+        <span className="small muted">共 {filtered.length} / {tasks.length} 项</span>
       </div>
       <div className="cicd-table-wrap">
-        <table className="cicd-table">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>项目名称</th>
-              <th>版本</th>
-              <th>仓库类型</th>
-              <th>仓库名</th>
-              <th>分支</th>
-              <th>构建产物</th>
-              <th>开发者社区产物</th>
-              <th>构建依赖镜像</th>
-              <th>超时(min)</th>
-              <th>负责人</th>
-              <th>状态</th>
-              <th>备注</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.length === 0 ? (
+        {isLoading && <div className="muted" style={{ padding: 14 }}>加载中…</div>}
+        {Boolean(error) && (
+          <div className="lerr" style={{ padding: 14 }}>
+            加载失败：{error instanceof Error ? error.message : String(error)}
+          </div>
+        )}
+        {!isLoading && !error && (
+          <table className="cicd-table">
+            <thead>
               <tr>
-                <td
-                  colSpan={14}
-                  className="empty"
-                  style={{ textAlign: "center", color: "var(--muted)", padding: 30 }}
-                >
-                  暂无任务
-                </td>
+                <th>ID</th>
+                <th>项目名称</th>
+                <th>版本</th>
+                <th>仓库类型</th>
+                <th>仓库名</th>
+                <th>分支</th>
+                <th>构建产物</th>
+                <th>开发者社区产物</th>
+                <th>构建依赖镜像</th>
+                <th>超时(min)</th>
+                <th>负责人</th>
+                <th>状态</th>
+                <th>备注</th>
+                <th>历史</th>
               </tr>
-            ) : (
-              filtered.map((t) => (
-                <tr key={t.id}>
-                  <td className="cicd-id">{t.id}</td>
-                  <td>
-                    <b>{t.app_name}</b>
-                    {t.has_pending && (
-                      <span className="cicd-pending-icon" title="有待审批的修改申请">
-                        {" "}✏️
-                      </span>
-                    )}
-                    {t.has_pending_delivery && (
-                      <span title="待 SPD 交付中"> ⏳</span>
-                    )}
-                  </td>
-                  <td>{t.app_version}</td>
-                  <td>{t.repo_type}</td>
-                  <td style={{ maxWidth: 160, wordBreak: "break-all" }}>
-                    {formatGerritUrl(t.repo_name)}
-                  </td>
-                  <td>{t.branch}</td>
-                  <td>{buildProductStr(t.build_product)}</td>
-                  <td>{communityArtifactStr(t.community_artifact)}</td>
-                  <td style={{ maxWidth: 160, wordBreak: "break-all" }}>
-                    {t.build_image}
-                  </td>
-                  <td style={{ textAlign: "center" }}>{t.test_timeout}</td>
-                  <td>{ownerLabel(t)}</td>
-                  <td>
-                    <StatusPill status={t.status} />
-                  </td>
-                  <td style={{ maxWidth: 160 }}>{t.notes}</td>
-                  <td style={{ whiteSpace: "nowrap" }}>
-                    {canSubmit && t.status !== "Abandoned" && (
-                      <button className="btn sm" onClick={() => onEdit(t)}>
-                        修改
-                      </button>
-                    )}{" "}
-                    <button className="btn sm" onClick={() => onHistory(t)}>
-                      历史
-                    </button>{" "}
-                    {canApprove && t.status === "Stopped" && (
-                      <button
-                        className="btn sm warn"
-                        onClick={() => onAbandon(t)}
-                        data-testid={`abandon-btn-${t.id}`}
-                      >
-                        废弃/退役
-                      </button>
-                    )}{" "}
-                    {canApprove && t.status === "Abandoned" && (
-                      <button
-                        className="btn sm danger"
-                        onClick={() => onDelete(t)}
-                      >
-                        删除
-                      </button>
-                    )}
+            </thead>
+            <tbody>
+              {filtered.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={14}
+                    className="empty"
+                    style={{ textAlign: "center", color: "var(--muted)", padding: 30 }}
+                  >
+                    暂无 CICD 信息
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+              ) : (
+                filtered.map((t) => (
+                  <tr key={t.id}>
+                    <td className="cicd-id">{t.id}</td>
+                    <td>
+                      <b>{t.app_name}</b>
+                      {t.has_pending && (
+                        <span className="pill accent" style={{ fontSize: 11, marginLeft: 4 }}>
+                          待审批
+                        </span>
+                      )}
+                      {t.has_pending_delivery && (
+                        <span className="pill" style={{ fontSize: 11, marginLeft: 4 }}>
+                          待交付
+                        </span>
+                      )}
+                    </td>
+                    <td>{t.app_version}</td>
+                    <td>{t.repo_type}</td>
+                    <td style={{ maxWidth: 160, wordBreak: "break-all" }}>
+                      {formatGerritUrl(t.repo_name)}
+                    </td>
+                    <td>{t.branch}</td>
+                    <td>{buildProductStr(t.build_product)}</td>
+                    <td>{communityArtifactStr(t.community_artifact)}</td>
+                    <td style={{ maxWidth: 160, wordBreak: "break-all" }}>
+                      {t.build_image || "—"}
+                    </td>
+                    <td style={{ textAlign: "center" }}>{t.test_timeout}</td>
+                    <td>{ownerLabel(t)}</td>
+                    <td><StatusPill status={t.status} /></td>
+                    <td style={{ maxWidth: 160 }}>{t.notes || "—"}</td>
+                    <td>
+                      <button className="btn sm" onClick={() => onHistory(t)}>
+                        历史
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// MyPane — 我的CICD任务
+// RecentRequestsSection — 近期申请（只读）
 // ---------------------------------------------------------------------------
 
-interface MyPaneProps {
-  tasks: CicdTask[];
-  username: string;
-  canSubmit: boolean;
-  onEdit: (t: CicdTask) => void;
-  onHistory: (t: CicdTask) => void;
+interface RecentRequestsSectionProps {
+  sinceDays: number;
+  onSinceDaysChange: (days: number) => void;
+  onDetail: (req: CicdRequest) => void;
 }
 
-function MyPane({ tasks, username, canSubmit, onEdit, onHistory }: MyPaneProps) {
+function RecentRequestsSection({
+  sinceDays,
+  onSinceDaysChange,
+  onDetail,
+}: RecentRequestsSectionProps) {
   const [search, setSearch] = useState("");
+  const [onlyMine, setOnlyMine] = useState(false);
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["cicd", "requests", "recent", sinceDays, onlyMine],
+    queryFn: () => fetchCicdRequests({ sinceDays, onlyMine }),
+    staleTime: 0,
+    refetchOnMount: true,
+  });
+
+  const reqs = data?.requests ?? [];
   const q = search.toLowerCase();
-  let myTasks = tasks.filter((t) => t.owner_username === username);
-  if (q) myTasks = myTasks.filter((t) => t.app_name.toLowerCase().includes(q));
+  const filtered = reqs.filter(
+    (r) =>
+      !q ||
+      ((r.payload as Record<string, unknown>)?.app_name as string || "")
+        .toLowerCase()
+        .includes(q) ||
+      (r.task_app_name ?? "").toLowerCase().includes(q) ||
+      r.submitter.toLowerCase().includes(q) ||
+      userLabel(r.submitter, r.submitter_display).toLowerCase().includes(q) ||
+      (r.task_id ?? "").toLowerCase().includes(q),
+  );
+
+  const TIME_FILTERS = [
+    { label: "近1个月", days: 30 },
+    { label: "近3个月", days: 90 },
+    { label: "近半年", days: 180 },
+    { label: "全部", days: 0 },
+  ];
 
   return (
-    <div className="cicd-pane">
+    <div className="cicd-pane" data-testid="cicd-recent-section">
+      <div className="panel-head">
+        <h2>近期申请</h2>
+      </div>
       <div className="cicd-toolbar">
+        <div className="cicd-filters">
+          {TIME_FILTERS.map((f) => (
+            <button
+              key={f.days}
+              className={`cicd-filter-btn${sinceDays === f.days ? " active" : ""}`}
+              onClick={() => onSinceDaysChange(f.days)}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+        <label className="check" style={{ marginLeft: 10 }}>
+          <input
+            type="checkbox"
+            checked={onlyMine}
+            onChange={(e) => setOnlyMine(e.target.checked)}
+          />{" "}
+          只看我的
+        </label>
         <input
           className="input sm cicd-search"
-          placeholder="搜索 app"
+          placeholder="搜索 app / 提交人"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+          style={{ marginLeft: 8 }}
         />
-        <span style={{ flex: 1 }} />
       </div>
       <div className="cicd-table-wrap">
-        <table className="cicd-table">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>项目名称</th>
-              <th>版本</th>
-              <th>仓库类型</th>
-              <th>仓库名</th>
-              <th>分支</th>
-              <th>构建产物</th>
-              <th>开发者社区产物</th>
-              <th>状态</th>
-              <th>备注</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {myTasks.length === 0 ? (
+        {isLoading && <div className="muted" style={{ padding: 14 }}>加载中…</div>}
+        {error && (
+          <div className="lerr" style={{ padding: 14 }}>
+            加载失败：{error instanceof Error ? error.message : String(error)}
+          </div>
+        )}
+        {!isLoading && (
+          <table className="cicd-table">
+            <thead>
               <tr>
-                <td
-                  colSpan={11}
-                  className="empty"
-                  style={{ textAlign: "center", color: "var(--muted)", padding: 30 }}
-                >
-                  暂无我负责的 CICD 任务
-                </td>
+                <th>申请ID</th>
+                <th>类型</th>
+                <th>任务ID</th>
+                <th>App</th>
+                <th>提交人</th>
+                <th>提交时间</th>
+                <th>状态</th>
+                <th>审批人</th>
+                <th>审批备注</th>
+                <th>操作</th>
               </tr>
-            ) : (
-              myTasks.map((t) => (
-                <tr key={t.id}>
-                  <td className="cicd-id">{t.id}</td>
-                  <td>
-                    <b>{t.app_name}</b>
-                    {t.has_pending && (
-                      <span className="pill accent" style={{ fontSize: 11, marginLeft: 4 }}>
-                        待审批
-                      </span>
-                    )}
-                  </td>
-                  <td>{t.app_version}</td>
-                  <td>{t.repo_type}</td>
-                  <td style={{ maxWidth: 140, wordBreak: "break-all" }}>
-                    {formatGerritUrl(t.repo_name)}
-                  </td>
-                  <td>{t.branch}</td>
-                  <td>{buildProductStr(t.build_product)}</td>
-                  <td>{communityArtifactStr(t.community_artifact)}</td>
-                  <td>
-                    <StatusPill status={t.status} />
-                  </td>
-                  <td style={{ maxWidth: 120 }}>{t.notes}</td>
-                  <td style={{ whiteSpace: "nowrap" }}>
-                    {canSubmit && t.status !== "Abandoned" && (
-                      <button className="btn sm" onClick={() => onEdit(t)}>
-                        修改
-                      </button>
-                    )}{" "}
-                    <button className="btn sm" onClick={() => onHistory(t)}>
-                      历史
-                    </button>
+            </thead>
+            <tbody>
+              {filtered.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={10}
+                    className="empty"
+                    style={{ textAlign: "center", color: "var(--muted)", padding: 30 }}
+                  >
+                    暂无申请记录
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+              ) : (
+                filtered.map((r) => (
+                  <tr key={r.id}>
+                    <td className="cicd-id">#{r.id}</td>
+                    <td>
+                      {REQ_TYPE_LABEL[r.request_type] ?? r.request_type}
+                      <OriginBadge origin={r.origin} />
+                    </td>
+                    <td className="cicd-id">{r.task_id ?? "(新建)"}</td>
+                    <td>{r.task_app_name || "—"}</td>
+                    <td>{userLabel(r.submitter, r.submitter_display)}</td>
+                    <td className="small muted">
+                      {formatServerTime(r.submitted_at ?? "")}
+                    </td>
+                    <td><ReqStatusSpan status={r.status} /></td>
+                    <td className="small muted">
+                      {r.reviewer ? userLabel(r.reviewer) : "—"}
+                    </td>
+                    <td style={{ maxWidth: 160, fontSize: 12 }}>
+                      {r.review_note || "—"}
+                    </td>
+                    <td>
+                      <button className="btn sm" onClick={() => onDetail(r)}>
+                        详情
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );
@@ -1233,172 +1050,6 @@ function PendingPane({
                             onClick={() => handleCancel(r)}
                           >
                             取消
-                          </button>
-                        )}{" "}
-                        <button
-                          className="btn sm"
-                          onClick={() => onDetail(r)}
-                        >
-                          详情
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// RecentPane — 最近申请
-// ---------------------------------------------------------------------------
-
-interface RecentPaneProps {
-  username: string;
-  sinceDays: number;
-  onSinceDaysChange: (d: number) => void;
-  tasks: CicdTask[];
-  onReEdit: (req: CicdRequest) => void;
-  onDetail: (req: CicdRequest) => void;
-}
-
-function RecentPane({
-  username,
-  sinceDays,
-  onSinceDaysChange,
-  onDetail,
-  onReEdit,
-}: RecentPaneProps) {
-  const [search, setSearch] = useState("");
-  const [onlyMine, setOnlyMine] = useState(false);
-
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["cicd", "requests", "recent", sinceDays, onlyMine],
-    queryFn: () => fetchCicdRequests({ sinceDays, onlyMine }),
-    staleTime: 0,
-    refetchOnMount: true,
-  });
-
-  const reqs = data?.requests ?? [];
-  const q = search.toLowerCase();
-  const filtered = reqs.filter(
-    (r) =>
-      !q ||
-      ((r.payload as Record<string, unknown>)?.app_name as string || "")
-        .toLowerCase()
-        .includes(q) ||
-      r.submitter.toLowerCase().includes(q) ||
-      userLabel(r.submitter, r.submitter_display).toLowerCase().includes(q) ||
-      (r.task_id ?? "").toLowerCase().includes(q),
-  );
-
-  const TIME_FILTERS = [
-    { label: "近1个月", days: 30 },
-    { label: "近3个月", days: 90 },
-    { label: "近半年", days: 180 },
-    { label: "全部", days: 0 },
-  ];
-
-  return (
-    <div className="cicd-pane">
-      <div className="cicd-toolbar">
-        <div className="cicd-filters">
-          {TIME_FILTERS.map((f) => (
-            <button
-              key={f.days}
-              className={`cicd-filter-btn${sinceDays === f.days ? " active" : ""}`}
-              onClick={() => onSinceDaysChange(f.days)}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
-        <label className="check" style={{ marginLeft: 10 }}>
-          <input
-            type="checkbox"
-            checked={onlyMine}
-            onChange={(e) => setOnlyMine(e.target.checked)}
-          />{" "}
-          只看我的
-        </label>
-        <input
-          className="input sm cicd-search"
-          placeholder="搜索 app / 提交人"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{ marginLeft: 8 }}
-        />
-      </div>
-      <div className="cicd-table-wrap">
-        {isLoading && <div className="muted" style={{ padding: 14 }}>加载中…</div>}
-        {error && (
-          <div className="lerr" style={{ padding: 14 }}>
-            加载失败：{error instanceof Error ? error.message : String(error)}
-          </div>
-        )}
-        {!isLoading && (
-          <table className="cicd-table">
-            <thead>
-              <tr>
-                <th>申请ID</th>
-                <th>类型</th>
-                <th>任务ID</th>
-                <th>提交人</th>
-                <th>提交时间</th>
-                <th>状态</th>
-                <th>审批人</th>
-                <th>审批备注</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={9}
-                    className="empty"
-                    style={{ textAlign: "center", color: "var(--muted)", padding: 30 }}
-                  >
-                    暂无申请记录
-                  </td>
-                </tr>
-              ) : (
-                filtered.map((r) => {
-                  const canReEdit =
-                    r.status === "rejected" && r.submitter === username;
-                  return (
-                    <tr key={r.id}>
-                      <td className="cicd-id">#{r.id}</td>
-                      <td>
-                        {REQ_TYPE_LABEL[r.request_type] ?? r.request_type}
-                        <OriginBadge origin={r.origin} />
-                      </td>
-                      <td className="cicd-id">{r.task_id ?? "(新建)"}</td>
-                      <td>{userLabel(r.submitter, r.submitter_display)}</td>
-                      <td className="small muted">
-                        {formatServerTime(r.submitted_at ?? "")}
-                      </td>
-                      <td>
-                        <ReqStatusSpan status={r.status} />
-                      </td>
-                      <td className="small muted">
-                        {r.reviewer ? userLabel(r.reviewer) : "—"}
-                      </td>
-                      <td style={{ maxWidth: 160, fontSize: 12 }}>
-                        {r.review_note || "—"}
-                      </td>
-                      <td style={{ whiteSpace: "nowrap" }}>
-                        {canReEdit && (
-                          <button
-                            className="btn sm"
-                            onClick={() => onReEdit(r)}
-                          >
-                            重新编辑
                           </button>
                         )}{" "}
                         <button
@@ -1700,52 +1351,50 @@ function DeliveryPane({
 // ---------------------------------------------------------------------------
 
 type SubPane =
-  | "overview"
-  | "my"
-  | "pending"
+  | "info"
   | "recent"
+  | "pending"
   | "delivery"
   | "delivered";
 
 export function CicdPage() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const { cicdOverviewFilter, setCicdOverviewFilter, cicdRecentDays, setCicdRecentDays } =
-    useUiStore();
 
   const role = user?.role ?? "";
   const username = user?.username ?? "";
 
   // Ruling C: Admin has NO CICD create/approve/deliver affordances.
-  const canSubmit = ["Owner", "RM"].includes(role);
   const canApprove = ["RM"].includes(role);
-  const canDelivery = ["SPD", "RM", "Owner"].includes(role);
+  const canDelivery = ["SPD", "RM"].includes(role);
 
   // Pane visibility by role (mirrors bindCicd:4738-4754)
   const isSPD = role === "SPD";
   const availablePanes: SubPane[] = isSPD
     ? ["delivery", "delivered"]
     : canDelivery
-    ? ["overview", "my", "pending", "recent", "delivery", "delivered"]
-    : ["overview", "my", "pending", "recent"];
+    ? ["info", "recent", "pending", "delivery", "delivered"]
+    : ["info", "recent", "pending"];
 
-  const defaultPane: SubPane = isSPD ? "delivery" : "overview";
+  const defaultPane: SubPane = isSPD ? "delivery" : "info";
   const [activePane, setActivePane] = useState<SubPane>(defaultPane);
 
   // Dialog state
-  const [taskFormTarget, setTaskFormTarget] = useState<CicdTask | null>(null);
   const [approveReq, setApproveReq] = useState<CicdRequest | null>(null);
   const [historyTaskId, setHistoryTaskId] = useState<string | null>(null);
   const [detailReq, setDetailReq] = useState<CicdRequest | null>(null);
+  const [recentSinceDays, setRecentSinceDays] = useState(30);
 
   // Badge / sub-tab counts
   const [pendingBadge, setPendingBadge] = useState(0);
   const [deliveryBadge, setDeliveryBadge] = useState(0);
 
-  // Tasks query (primary data for overview + my panes)
+  // Tasks query provides task identity details for approval/delivery rows.
   const {
     data: tasksData,
+    isLoading: tasksLoading,
     isFetching,
+    error: tasksError,
     dataUpdatedAt,
     refetch: refetchTasks,
   } = useQuery({
@@ -1817,18 +1466,10 @@ export function CicdPage() {
     void queryClient.invalidateQueries({ queryKey: ["cicd", "deliveries"] });
   }
 
-  // Re-edit after rejection (mirrors openCicdReEdit)
-  async function handleReEdit(req: CicdRequest) {
-    // Find the task to prefill (we already have tasks loaded)
-    const task = req.task_id ? tasks.find((t) => t.id === req.task_id) ?? null : null;
-    setTaskFormTarget(task);
-  }
-
   const PANE_LABELS: Record<SubPane, string> = {
-    overview: "任务总览",
-    my: "我的 CICD 任务",
+    info: "CICD 信息",
+    recent: "近期申请",
     pending: "待审批",
-    recent: "最近申请",
     delivery: "待交付",
     delivered: "已交付",
   };
@@ -1836,14 +1477,6 @@ export function CicdPage() {
   return (
     <section className="view active">
       {/* Dialogs */}
-      {(taskFormTarget !== null) && (
-        <TaskFormDialog
-          task={taskFormTarget}
-          username={username}
-          onSubmitted={handleMutated}
-          onClose={() => setTaskFormTarget(null)}
-        />
-      )}
       {approveReq && (
         <ApproveDialog
           req={approveReq}
@@ -1901,42 +1534,19 @@ export function CicdPage() {
       </div>
 
       {/* Pane content */}
-      {activePane === "overview" && (
-        <OverviewPane
+      {activePane === "info" && (
+        <TaskInfoSection
           tasks={tasks}
-          canSubmit={canSubmit}
-          canApprove={canApprove}
-          overviewFilter={cicdOverviewFilter}
-          onFilterChange={setCicdOverviewFilter}
-          onEdit={(t) => setTaskFormTarget(t)}
+          isLoading={tasksLoading}
+          error={tasksError}
           onHistory={(t) => setHistoryTaskId(t.id)}
-          onAbandon={async (t) => {
-            if (!confirm(`确认废弃/退役 Stopped 任务 ${t.id} (${t.app_name})？任务将变为 Abandoned 状态。`)) return;
-            try {
-              await abandonCicdTask({ task_id: t.id });
-              handleMutated();
-            } catch (e) {
-              alert("操作失败：" + (e instanceof Error ? e.message : String(e)));
-            }
-          }}
-          onDelete={async (t) => {
-            if (!confirm(`确认删除 Abandoned 任务 ${t.id}？此操作不可恢复。`)) return;
-            try {
-              await deleteCicdTask({ task_id: t.id });
-              handleMutated();
-            } catch (e) {
-              alert("删除失败：" + (e instanceof Error ? e.message : String(e)));
-            }
-          }}
         />
       )}
-      {activePane === "my" && (
-        <MyPane
-          tasks={tasks}
-          username={username}
-          canSubmit={canSubmit}
-          onEdit={(t) => setTaskFormTarget(t)}
-          onHistory={(t) => setHistoryTaskId(t.id)}
+      {activePane === "recent" && (
+        <RecentRequestsSection
+          sinceDays={recentSinceDays}
+          onSinceDaysChange={setRecentSinceDays}
+          onDetail={(r) => setDetailReq(r)}
         />
       )}
       {activePane === "pending" && (
@@ -1948,16 +1558,6 @@ export function CicdPage() {
           onDetail={(r) => setDetailReq(r)}
           onCancelled={handleMutated}
           pendingCount={setPendingBadge}
-        />
-      )}
-      {activePane === "recent" && (
-        <RecentPane
-          username={username}
-          sinceDays={cicdRecentDays}
-          onSinceDaysChange={setCicdRecentDays}
-          tasks={tasks}
-          onReEdit={handleReEdit}
-          onDetail={(r) => setDetailReq(r)}
         />
       )}
       {activePane === "delivery" && (

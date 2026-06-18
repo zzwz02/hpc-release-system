@@ -1,6 +1,6 @@
 {
   "_golden_name": "post_cicd_abandon_admin",
-  "_note": "R3 Ruling C: Admin gets 403 on POST /api/cicd/tasks/abandon (CICD_APPROVER_ROLES={RM}; Admin excluded)",
+  "_note": "CICD abandon endpoint removed; retire/delete now happens through App operations",
   "_method": "POST",
   "_path": "/api/cicd/tasks/abandon",
   "_params": "",
@@ -8,9 +8,8 @@
   "_body": {
     "task_id": "CICD-0001"
   },
-  "status": 403,
+  "status": 405,
   "body": {
-    "ok": false,
-    "error": "只有 RM 可以废弃 CICD 任务"
+    "detail": "Method Not Allowed"
   }
 }

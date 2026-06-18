@@ -3,6 +3,7 @@
 Schema includes all Phase 0 additions from the plan §4.1:
   - cicd_tasks.app_id TEXT REFERENCES apps(id) ON DELETE SET NULL
   - UNIQUE partial index on cicd_tasks(app_id) WHERE app_id IS NOT NULL
+  - cicd_task_requests.app_id TEXT REFERENCES apps(id) ON DELETE CASCADE
   - cicd_task_requests.origin TEXT column
   - Online-ALTER columns folded into base DDL (ALTER loop kept for idempotency)
   - Additional indexes per §4.1
@@ -256,6 +257,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS cicd_task_requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             task_id TEXT,
+            app_id TEXT REFERENCES apps(id) ON DELETE CASCADE,
             request_type TEXT NOT NULL DEFAULT 'create',
             payload TEXT NOT NULL DEFAULT '{}',
             submitter TEXT NOT NULL,
@@ -361,6 +363,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         ("cicd_task_requests", "delivered_at",     "TEXT NOT NULL DEFAULT ''"),
         ("cicd_task_requests", "returned_reason",  "TEXT NOT NULL DEFAULT ''"),
         ("cicd_task_requests", "returned_at",      "TEXT NOT NULL DEFAULT ''"),
+        ("cicd_task_requests", "app_id",           "TEXT REFERENCES apps(id) ON DELETE CASCADE"),
         ("cicd_tasks",         "community_artifact", "TEXT NOT NULL DEFAULT '[]'"),
         # Phase 0 new columns — tolerate older DBs
         ("cicd_tasks",         "app_id",            "TEXT REFERENCES apps(id) ON DELETE SET NULL"),
@@ -391,19 +394,16 @@ _DEFAULT_USERS: tuple[tuple[str, str, str], ...] = (
     ("rm", "rm", "RM"),
     ("owner_test", "owner_test", "Owner"),
     ("qa", "qa", "QA"),
+    ("spd", "spd", "SPD"),
     ("spd_test", "spd_test", "SPD"),
     ("guest", "guest", "Guest"),
 )
 
 
 def _ensure_default_user(conn: sqlite3.Connection) -> None:
-    """Seed default dev users if the users table is empty."""
+    """Ensure built-in dev users exist without overwriting existing accounts."""
     import hashlib
     import secrets as _secrets
-
-    existing = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    if existing:
-        return
 
     def _hash(pw: str) -> str:
         salt = _secrets.token_hex(16)
