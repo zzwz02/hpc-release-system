@@ -1384,7 +1384,20 @@ def preview_cicd_app_info_for_create(
     if not (branch or "").strip():
         raise ValueError("branch 不能为空，请检查 repo_name / branch")
 
-    git_url, git_branch = repo_to_git_identity(repo_type, repo_name, branch)
+    raw_repo_name = repo_name.strip()
+    raw_branch = branch.strip()
+
+    # First reject exact/raw identities.  Repo-type apps may store the manifest
+    # path itself (for example APP/lammps/...xml @ master); checking this before
+    # manifest resolution avoids waiting on Gerrit only to discover a duplicate.
+    existing_app = _find_app_by_identity(conn, raw_repo_name, raw_branch)
+    if existing_app:
+        raise RuntimeError(
+            f"该 Gerrit URL + branch 已存在 app（{existing_app['id']}），"
+            "请直接修改已有 app，不能重复创建"
+        )
+
+    git_url, git_branch = repo_to_git_identity(repo_type, raw_repo_name, raw_branch)
     if git_url and git_branch:
         existing_app = _find_app_by_identity(conn, git_url, git_branch)
         if existing_app:

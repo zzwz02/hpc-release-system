@@ -1037,9 +1037,9 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     await waitFor(() => screen.getByTestId("new-app-dialog"));
     // Step 1: fill identity fields
     fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "MyApp" } });
-    const repoInput = screen.getByPlaceholderText("例：sw-metax-open/amber");
+    const repoInput = screen.getByLabelText(/仓库名 /);
     fireEvent.change(repoInput, { target: { value: "myrepo" } });
-    const branchInput = screen.getByPlaceholderText("例：master");
+    const branchInput = screen.getByLabelText(/分支 /);
     fireEvent.change(branchInput, { target: { value: "main" } });
     // Click fetch
     fireEvent.click(screen.getByTestId("new-app-fetch"));
@@ -1074,8 +1074,8 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     fireEvent.click(screen.getByTestId("new-app-btn"));
     await waitFor(() => screen.getByTestId("new-app-dialog"));
     fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "ErrApp" } });
-    fireEvent.change(screen.getByPlaceholderText("例：sw-metax-open/amber"), { target: { value: "errrepo" } });
-    fireEvent.change(screen.getByPlaceholderText("例：master"), { target: { value: "dev" } });
+    fireEvent.change(screen.getByLabelText(/仓库名 /), { target: { value: "errrepo" } });
+    fireEvent.change(screen.getByLabelText(/分支 /), { target: { value: "dev" } });
     fireEvent.click(screen.getByTestId("new-app-fetch"));
     // Error state: skip button should appear
     await waitFor(() => screen.getByTestId("new-app-submit"));
@@ -1123,10 +1123,10 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
 
     // Fill git-type repo (default)
     fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "TestApp" } });
-    fireEvent.change(screen.getByPlaceholderText("例：sw-metax-open/amber"), {
+    fireEvent.change(screen.getByLabelText(/仓库名 /), {
       target: { value: "sw-metax-open/myapp" },
     });
-    fireEvent.change(screen.getByPlaceholderText("例：master"), { target: { value: "main" } });
+    fireEvent.change(screen.getByLabelText(/分支 /), { target: { value: "main" } });
 
     fireEvent.click(screen.getByTestId("new-app-fetch"));
 
@@ -1150,7 +1150,7 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
     fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "RepoApp" } });
     // Switch to repo type
     fireEvent.change(screen.getByDisplayValue("git"), { target: { value: "repo" } });
-    fireEvent.change(screen.getByPlaceholderText("例：sw-metax-open/amber"), {
+    fireEvent.change(screen.getByLabelText(/仓库名 /), {
       target: { value: "manifests/releases/maca-4.0.xml" },
     });
 
@@ -1188,10 +1188,10 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
     await openWizard();
 
     fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "PreviewApp" } });
-    fireEvent.change(screen.getByPlaceholderText("例：sw-metax-open/amber"), {
+    fireEvent.change(screen.getByLabelText(/仓库名 /), {
       target: { value: "sw-metax-open/previewapp" },
     });
-    fireEvent.change(screen.getByPlaceholderText("例：master"), { target: { value: "release/4.0" } });
+    fireEvent.change(screen.getByLabelText(/分支 /), { target: { value: "release/4.0" } });
     fireEvent.click(screen.getByTestId("new-app-fetch"));
 
     // Preview step: identity box should appear with server-provided URL
@@ -1220,10 +1220,10 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
     await openWizard();
 
     fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "PartialApp" } });
-    fireEvent.change(screen.getByPlaceholderText("例：sw-metax-open/amber"), {
+    fireEvent.change(screen.getByLabelText(/仓库名 /), {
       target: { value: "sw-metax-open/partialapp" },
     });
-    fireEvent.change(screen.getByPlaceholderText("例：master"), { target: { value: "main" } });
+    fireEvent.change(screen.getByLabelText(/分支 /), { target: { value: "main" } });
     fireEvent.click(screen.getByTestId("new-app-fetch"));
 
     // Goes to fetch-error step (not preview) since app_info_unavailable=true

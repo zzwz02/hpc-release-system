@@ -426,6 +426,46 @@ class TestFetchPreviewHttp:
         assert "已存在 app" in resp.json()["error"]
         fetch_mock.assert_not_called()
 
+    def test_repo_manifest_duplicate_gives_400_before_identity_resolution(
+        self,
+        db_path,
+        tmp_dir,
+    ):
+        """Repo manifest path duplicates are rejected before Gerrit manifest lookup."""
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        from app.db.connection import connect as app_connect
+
+        manifest_path = "APP/lammps/master/hpc_patch_4May2022.xml"
+        conn = app_connect(db_path)
+        release_id = seed_release(conn, tmp_path=tmp_dir)
+        seed_app(
+            conn,
+            release_id,
+            official_name="ExistingRepoManifest",
+            git_url=manifest_path,
+            git_branch="master",
+        )
+        conn.close()
+
+        app = _make_app(db_path)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            with patch("app.identity.repo_to_git_identity") as identity_mock:
+                with patch("app.integrations.gerrit.fetch_app_info") as fetch_mock:
+                    resp = client.post(
+                        _PREVIEW_PATH,
+                        json={
+                            "repo_type": "repo",
+                            "repo_name": manifest_path,
+                            "branch": "master",
+                        },
+                    )
+
+        assert resp.status_code == 400, resp.text
+        assert "已存在 app" in resp.json()["error"]
+        identity_mock.assert_not_called()
+        fetch_mock.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Fetch-preview HTTP — Gerrit content fetch failure (Wave-4 new behavior)

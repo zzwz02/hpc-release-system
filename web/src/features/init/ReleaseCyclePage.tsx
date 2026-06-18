@@ -39,9 +39,11 @@ async function fetchState(releaseId?: string): Promise<StatePayload> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Extract YYYY-MM-DD substring for a date input value (mirrors toDateValue). */
+/** Normalize deadline input/display to YYYY-MM-DD. */
 function toDateValue(s: string | null | undefined): string {
-  return s ? String(s).substring(0, 10) : "";
+  const normalized = String(s ?? "").trim().replace(/[/.]/g, "-");
+  const formatted = formatServerTime(normalized);
+  return formatted ? formatted.substring(0, 10) : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -81,8 +83,8 @@ function ReleasesTable({ releases }: ReleasesTableProps) {
             <tr key={r.id}>
               <td>{r.name}</td>
               <td>{phaseLabels[r.phase] ?? r.phase}</td>
-              <td>{r.app_freeze_deadline || "—"}</td>
-              <td>{r.doc_deadline || "—"}</td>
+              <td>{toDateValue(r.app_freeze_deadline) || "—"}</td>
+              <td>{toDateValue(r.doc_deadline) || "—"}</td>
               <td>
                 {r.released_locked
                   ? `已锁 (${formatServerTime(r.released_locked_at) || ""})`
@@ -228,9 +230,13 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
               App 冻结 deadline（北京时间）
               <input
                 className="input"
-                type="date"
+                type="text"
+                inputMode="numeric"
+                pattern="\d{4}-\d{2}-\d{2}"
+                placeholder="YYYY-MM-DD"
                 value={newAppFreeze}
                 onChange={(e) => setNewAppFreeze(e.target.value)}
+                onBlur={() => setNewAppFreeze(toDateValue(newAppFreeze))}
                 data-testid="new-app-freeze"
               />
             </label>
@@ -238,9 +244,13 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
               Doc deadline（北京时间）
               <input
                 className="input"
-                type="date"
+                type="text"
+                inputMode="numeric"
+                pattern="\d{4}-\d{2}-\d{2}"
+                placeholder="YYYY-MM-DD"
                 value={newDocDeadline}
                 onChange={(e) => setNewDocDeadline(e.target.value)}
+                onBlur={() => setNewDocDeadline(toDateValue(newDocDeadline))}
                 data-testid="new-doc-deadline"
               />
             </label>
@@ -286,9 +296,13 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
                   App 冻结 deadline
                   <input
                     className="input"
-                    type="date"
+                    type="text"
+                    inputMode="numeric"
+                    pattern="\d{4}-\d{2}-\d{2}"
+                    placeholder="YYYY-MM-DD"
                     value={editAppFreeze}
                     onChange={(e) => setEditAppFreeze(e.target.value)}
+                    onBlur={() => setEditAppFreeze(toDateValue(editAppFreeze))}
                     data-testid="edit-app-freeze"
                   />
                 </label>
@@ -296,9 +310,13 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
                   Doc deadline
                   <input
                     className="input"
-                    type="date"
+                    type="text"
+                    inputMode="numeric"
+                    pattern="\d{4}-\d{2}-\d{2}"
+                    placeholder="YYYY-MM-DD"
                     value={editDocDeadline}
                     onChange={(e) => setEditDocDeadline(e.target.value)}
+                    onBlur={() => setEditDocDeadline(toDateValue(editDocDeadline))}
                     data-testid="edit-doc-deadline"
                   />
                 </label>

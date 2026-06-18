@@ -776,15 +776,19 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
 
   // ── Step 1: identity form (default / fetching) ───────────────────────────
   const isFetching = step === "fetching";
+  const repoPlaceholder = isRepo ? "例：APP/lammps/master/hpc_22Jul2025.xml" : "例：sw-metax-open/amber";
   return (
     <div className="dialog-backdrop" data-testid="new-app-dialog">
       <div className="dialog-box" style={{ maxWidth: 520 }}>
-        <div className="dialog-head"><h3>新增 App（CICD-first）</h3></div>
-        <div className="dialog-body">
-          <div className="banner" style={{ marginBottom: 8, fontSize: 12 }}>
-            📋 CICD-first 流程：创建后生成待审批请求，RM 审批通过后 CICD 任务正式生效。<br />
-            版本、芯片等信息从 Gerrit 拉取后确认；App 初始决策为 <b>cicd_only</b>。
+        <div className="dialog-head">
+          <div>
+            <h3>新增 App（CICD-first）</h3>
+            <p className="muted small" style={{ margin: "4px 0 0" }}>
+              创建后进入 RM 审批；版本和芯片信息将从 Gerrit app_info 拉取。
+            </p>
           </div>
+        </div>
+        <div className="dialog-body">
           <div className="form">
             <label>官方名称 <span className="required">*</span>
               <input className="input" value={officialName} onChange={(e) => setOfficialName(e.target.value)}
@@ -802,7 +806,10 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
             </label>
             <label>仓库名 / Gerrit URL <span className="required">*</span>
               <input className="input" value={repoName} onChange={(e) => setRepoName(e.target.value)}
-                placeholder="例：sw-metax-open/amber" disabled={isFetching} />
+                placeholder={repoPlaceholder} disabled={isFetching} />
+              <span className="hint">
+                {isRepo ? "repo 类型填写 manifest XML 路径；分支固定为 master。" : "git 类型可填写短路径或完整 Gerrit URL。"}
+              </span>
             </label>
             <label>分支 <span className="required">*</span>
               <input className="input" value={isRepo ? "master" : branch} disabled={isRepo || isFetching}

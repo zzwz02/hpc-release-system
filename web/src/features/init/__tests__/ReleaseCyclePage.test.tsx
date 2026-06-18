@@ -139,6 +139,31 @@ describe("ReleaseCyclePage", () => {
     });
   });
 
+  it("renders release deadlines as yyyy-mm-dd in the table", async () => {
+    const release = makeReleaseSummary({
+      app_freeze_deadline: "2026-6-1 09:30:00",
+      doc_deadline: "2026/7/2",
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makePayload({
+        releases: [release],
+        release: {
+          ...makeReleaseDetail(),
+          app_freeze_deadline: "2026-6-1 09:30:00",
+          doc_deadline: "2026/7/2",
+        },
+      }),
+    );
+    renderPage(makeQueryClient());
+    await waitFor(() => {
+      const text = screen.getByTestId("releases-table").textContent ?? "";
+      expect(text).toContain("2026-06-01");
+      expect(text).toContain("2026-07-02");
+      expect(text).not.toContain("09:30:00");
+      expect(text).not.toContain("2026/7/2");
+    });
+  });
+
   it("shows 未锁 for unlocked release", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
     renderPage(makeQueryClient());
@@ -342,5 +367,19 @@ describe("ReleaseCyclePage", () => {
     expect((screen.getByTestId("edit-release-name") as HTMLInputElement).value).toBe("3.8.0");
     expect((screen.getByTestId("edit-app-freeze") as HTMLInputElement).value).toBe("2026-06-01");
     expect((screen.getByTestId("edit-doc-deadline") as HTMLInputElement).value).toBe("2026-07-01");
+  });
+
+  it("deadline inputs use yyyy-mm-dd text display instead of native date locale", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    renderPage(makeQueryClient());
+    await waitFor(() => screen.getByTestId("edit-app-freeze"));
+
+    const editAppFreeze = screen.getByTestId("edit-app-freeze") as HTMLInputElement;
+    expect(editAppFreeze.type).toBe("text");
+    expect(editAppFreeze.placeholder).toBe("YYYY-MM-DD");
+
+    fireEvent.change(editAppFreeze, { target: { value: "2026/6/1" } });
+    fireEvent.blur(editAppFreeze);
+    expect(editAppFreeze.value).toBe("2026-06-01");
   });
 });
