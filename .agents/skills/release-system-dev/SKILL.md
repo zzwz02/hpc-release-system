@@ -57,12 +57,17 @@ implementers in parallel + 1 opus reviewer** (the user's standard team shape). K
 - **Timezone**: stored + displayed times are **naive Beijing** `"%Y-%m-%d %H:%M:%S"`, zero offset. No `+8`
   math, no UTC `+00:00` in the (migrated) DB. (One documented exception historically: wiki — keep columns
   uniform if you touch them.)
-- **R3 rulings** (CICD↔App): App↔CICD is **1:1** (`UNIQUE(app_id) WHERE app_id IS NOT NULL`); **B** all CICD
-  requests are pending→RM approval (no auto-approve; RM may self-approve, `is_self_approved`); **C** Admin is
-  out of all CICD/release business (only user/role mgmt, clear-db, global delete-app, audit-read; CICD tab is
-  RM/SPD-only); **D** App `release_decision` drives CICD task status (release/cicd_only→Running, stopped→
-  Stopped) via a pending modify request (`origin="release_decision_sync"`); **A** stop/abandon only via App
-  decision (status-locked: user modify requests may NOT set `status`; abandon is RM-only on a Stopped task).
+- **R3 rulings** (CICD↔App): CICD is now **app-backed**. `cicd_task_requests.app_id` links directly to
+  `apps.id`; `task_id` is only a compatibility alias and should resolve to the app id.  Prefer app id for
+  identity, and only fall back to `(git_url, git_branch)` for legacy matching — never match by Gerrit URL
+  alone because different branches may share one URL. **B** all CICD requests are pending→RM approval (no
+  auto-approve; RM may self-approve, `is_self_approved`); **C** Admin is out of all CICD/release business
+  (only user/role mgmt, clear-db, global delete-app, audit-read; CICD tab is RM/SPD-only); **D** App
+  `release_decision` drives CICD task status (release/cicd_only→Running, stopped→Stopped) via a pending
+  modify request (`origin="release_decision_sync"`); **A** status-lock: user modify requests may NOT set
+  `status`. CICD has no `Abandoned` state and no CICD-side abandon/delete/retire operation; retire/delete is
+  handled through App lifecycle. CICD 工作台 is for read-only CICD info, recent requests, approval, and delivery;
+  CICD config changes enter from App 工作台 → CICD tab.
 
 ## 6. Golden / test discipline
 - `tests/golden/` replays captured responses against the new app (`test_fastapi_parity`). The parity seed uses

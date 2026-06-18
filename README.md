@@ -117,8 +117,8 @@ NO_PROXY=localhost,127.0.0.1 npm run dev   # http://localhost:5173
 
 ## 角色
 
-- **RM**：管理 release、deadline、Gerrit 信息、测试范围导出、发布文档与 Manager Review CSV、最终锁定/解锁；**唯一的 CICD 申请审批人**，也是 CICD 任务的创建者（Ruling B/C）。
-- **Owner**：维护自己负责的 app，提交 release 决策、文档、测试说明、`app_info.json`；可提交 CICD 申请。
+- **RM**：管理 release、deadline、Gerrit 信息、测试范围导出、发布文档与 Manager Review CSV、最终锁定/解锁；**唯一的 CICD 申请审批人**，可在 App 工作台的 CICD tab 提交配置变更（Ruling B/C）。
+- **Owner**：维护自己负责的 app，提交 release 决策、文档、测试说明、`app_info.json`；可在 App 工作台的 CICD tab 提交 CICD 配置申请。
 - **QA**：上传 QA log、标注 QA 状态、使用 AI 分析建议。
 - **SPD**：处理被下发的 CICD 交付申请，可标记交付或退回。
 - **Admin**：仅负责访问控制——用户/角色管理、清空业务数据、全局删除 app、审计只读；**完全不参与 CICD/release 业务**（Ruling C），看不到 CICD 任务处理页签。
@@ -168,23 +168,22 @@ stateDiagram-v2
 
 ## R3 — CICD ↔ App 联动
 
-CICD 任务与 App 是 **1:1** 关系（`UNIQUE(app_id) WHERE app_id IS NOT NULL`）。所有写状态的动作都经由「待审批申请」队列，由 **RM** 唯一审批（Ruling B）。App 的发布决策驱动 CICD 运行状态（Ruling D）；停止/废弃只能经 App 决策与 RM 操作（Ruling A）。
+CICD 任务由 App 直接承载：`cicd_task_requests.app_id` 关联 `apps.id`，`task_id` 仅作为兼容别名返回。所有写状态的动作都经由「待审批申请」队列，由 **RM** 唯一审批（Ruling B）。App 的发布决策驱动 CICD 运行状态（Ruling D）；CICD 工作台只负责只读信息、近期申请、审批和交付，配置调整统一从 App 工作台的 CICD tab 提交。
 
 ```mermaid
 flowchart TD
   %% top-level nodes declared first so they are not captured into a subgraph
   RQ["pending 申请 (create / modify)<br/>origin = cicd_workbench | release_decision_sync"]
   RMrev{"RM 审批<br/>(Ruling C: Admin 不参与)"}
-  APPLY["应用变更 → cicd_tasks"]
+  APPLY["应用变更 → apps 的 CICD 字段"]
   REJ["驳回"]
   ST(("任务状态<br/>Running / Stopped"))
   DISP{"立即生效<br/>或下发 SPD?"}
   SPD["SPD 交付 / 退回（可选 Jira 建单）"]
-  ABN["RM 对 Stopped 任务 → 废弃/退役<br/>(Ruling A: Stopped→Abandoned 终态)"]
 
-  subgraph Create["任务创建（两条入口）"]
-    A1["RM 在 CICD 工作台新建任务"]
-    A2["Owner/RM 提交 CICD 申请"]
+  subgraph AppCicd["App 工作台 · CICD tab"]
+    A1["新增 App / CICD-first"]
+    A2["Owner/RM 提交 CICD 配置变更"]
   end
 
   subgraph Sync["Ruling D — App 决策联动"]
@@ -204,7 +203,6 @@ flowchart TD
   APPLY --> ST
   ST --> DISP
   DISP -- 下发 --> SPD
-  ST --> ABN
 
   classDef sync fill:#dbeafe,stroke:#2563eb;
   class D1,D2,TRun,TStop sync;
@@ -215,7 +213,7 @@ flowchart TD
 - **B — 无自动通过**：所有提交一律 `pending`，交给 RM；RM 可对自己提交的申请自审（`is_self_approved`）。
 - **C — Admin 出局**：Admin 不能提交/审批 CICD，也看不到 CICD 处理页签（仅 RM/SPD 可见）。
 - **D — 决策→状态**：决策联动产生一条 `origin="release_decision_sync"` 的 pending modify 申请；前端在申请列表上以「**同步联动**」徽标与普通构建配置申请（`cicd_workbench`）区分。
-- **A — 状态锁**：用户的 modify 申请**不允许**直接改 `status`；运行/停止只能由 App 决策驱动；废弃仅 RM 可对 `Stopped` 任务执行。
+- **A — 状态锁**：用户的 modify 申请**不允许**直接改 `status`；运行/停止只能由 App 决策驱动。CICD 不再有 `Abandoned` 状态，也不提供废弃/退役/删除入口；退役或删除通过 App 业务流程处理。
 
 ---
 
@@ -223,7 +221,7 @@ flowchart TD
 
 `apps` 表只保存全局身份（`id`、`git_url`、`git_branch`、别名、创建信息）。官方名称、类型、官方 URL、描述、文档目标、Owner、release 决策、文档字段、测试说明、`app_info`、QA 状态等都保存在**每个 release 的 snapshot** 中。因此同一个 app 在不同 release 中可以有不同版本、Owner、文档与 QA 状态。新建 release 会从上一版克隆 snapshot 并重置 QA 状态。
 
-CICD↔App 的统一身份键是 `(git_url, git_branch)`：`apps.git_url` 存裸仓库名，`repo_type='cicd'` 的行存 manifest 路径；身份解析见 `app/identity.py`（`repo_to_git_identity`）。
+CICD↔App 的首选身份键是 `app_id`；兼容旧数据时才回退到 `(git_url, git_branch)`。注意同一个 Gerrit URL 可以有多个 branch，不能只用 URL 匹配。身份解析见 `app/identity.py`（`repo_to_git_identity`）。
 
 ---
 
@@ -234,7 +232,7 @@ CICD↔App 的统一身份键是 `(git_url, git_branch)`：`apps.git_url` 存裸
 3. RM 导出测试范围 CSV；QA 上传 log，必要时用 AI 分析建议，核对后保存 QA 状态。
 4. RM 刷新发布文档与 Manager Review CSV。
 5. Manager review / Gerrit merge 完成后，RM 执行最终 Lock Release。
-6. 需要跟踪构建交付时，Owner/RM 在「CICD 工作台」提交或审批任务（受 R3 规则约束）。
+6. 需要跟踪构建交付时，Owner/RM 在「App 工作台 → CICD」提交配置申请；RM/SPD 在「CICD 工作台」审批、交付或查看近期申请。
 
 ---
 
@@ -247,7 +245,7 @@ CICD↔App 的统一身份键是 `(git_url, git_branch)`：`apps.git_url` 存裸
 - QA：`POST /api/qa/status-batch`、`POST /api/qa/upload-log`、`POST /api/qa/analyze-log/start`、`GET /api/qa/analyze-log/status`、`GET /api/qa-reports`
 - 产物：`POST /api/artifacts/generate`、`POST /api/artifacts/manager-review`、`GET /api/artifacts/<kind>`、`GET /api/test-scope.csv`
 - WIKI：`GET /api/wiki/articles`、`POST /api/wiki/articles/save`、`POST /api/wiki/articles/pin`、`POST /api/wiki/articles/delete`、`POST /api/wiki/images/upload`
-- CICD：`GET /api/cicd/tasks`、`GET /api/cicd/requests`（含 `origin` 字段）、`POST /api/cicd/requests/submit`、`POST /api/cicd/requests/approve`、`POST /api/cicd/requests/reject`、`POST /api/cicd/tasks/abandon`
+- CICD：`GET /api/cicd/tasks`、`GET /api/cicd/requests`（含 `origin` 字段）、`GET /api/cicd/deliveries`、`POST /api/cicd/requests/submit`、`POST /api/cicd/requests/approve`、`POST /api/cicd/requests/reject`、`POST /api/cicd/requests/deliver`、`POST /api/cicd/requests/return-delivery`
 - 管理：`GET /api/admin/users`、`POST /api/admin/users/set-role`、`POST /api/admin/clear-db`、`POST /api/admin/apps/delete`
 
 常见返回码：`401` 未登录，`403` 无权限，`400/500` 业务或服务端错误。
@@ -306,7 +304,7 @@ npm run test:e2e       # Playwright e2e
 
 ## 数据迁移与切换
 
-`tools/migrate_db.py` 把旧 DB 迁移到新 schema：回填 `cicd_tasks.app_id`（关联→派生→冲突覆盖三遍），并按列把历史 UTC 时间转换为北京时间（含 `wiki_articles` 时间列）。**迁移始终在 DB 副本上进行**，产出候选 DB + 报告，绝不改动线上 `release_system.db`。完整切换步骤见 [CUTOVER.md](./CUTOVER.md)。
+`tools/migrate_db.py` 把旧 DB 迁移到新 schema：回填 `cicd_tasks.app_id`（关联→派生→冲突覆盖三遍），并按列把历史 UTC 时间转换为北京时间（含 `wiki_articles` 时间列）。CICD app-backed 改造后的二次切换使用 `tools/migrate_cicd_requests_to_apps.py`：把历史 `cicd_task_requests` 关联到 `apps.id`，并清空旧 `cicd_tasks` 业务数据。**迁移始终在 DB 副本上进行**，产出候选 DB + 报告，绝不改动线上 `release_system.db`。完整步骤见 [CUTOVER.md](./CUTOVER.md) 和 [CUTOVER_CICD_APP_REQUESTS.md](./CUTOVER_CICD_APP_REQUESTS.md)。
 
 ---
 
