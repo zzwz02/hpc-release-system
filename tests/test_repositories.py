@@ -424,7 +424,7 @@ class TestUsersRepo:
         user = users_repo.get_user(self.conn, "rm")
         assert user is not None
         assert user["role"] == "RM"
-        spd = users_repo.get_user(self.conn, "spd")
+        spd = users_repo.get_user(self.conn, "spd_test")
         assert spd is not None
         assert spd["role"] == "SPD"
 
@@ -448,7 +448,7 @@ class TestUsersRepo:
         reset_init_state()
         conn = connect(db_path)
         try:
-            spd = users_repo.get_user(conn, "spd")
+            spd = users_repo.get_user(conn, "spd_test")
             assert spd is not None
             assert spd["role"] == "SPD"
         finally:

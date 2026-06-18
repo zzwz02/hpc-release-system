@@ -394,7 +394,6 @@ _DEFAULT_USERS: tuple[tuple[str, str, str], ...] = (
     ("rm", "rm", "RM"),
     ("owner_test", "owner_test", "Owner"),
     ("qa", "qa", "QA"),
-    ("spd", "spd", "SPD"),
     ("spd_test", "spd_test", "SPD"),
     ("guest", "guest", "Guest"),
 )

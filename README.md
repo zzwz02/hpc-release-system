@@ -106,7 +106,6 @@ NO_PROXY=localhost,127.0.0.1 npm run dev   # http://localhost:5173
 | `rm` | `rm` | RM |
 | `owner_test` | `owner_test` | Owner |
 | `qa` | `qa` | QA |
-| `spd` | `spd` | SPD |
 | `spd_test` | `spd_test` | SPD |
 | `guest` | `guest` | Guest |
 | `admin` | 见 `admin_password.local` | Admin |

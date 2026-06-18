@@ -40,12 +40,6 @@
         "display_name": ""
       },
       {
-        "username": "spd",
-        "role": "SPD",
-        "auth_source": "local",
-        "display_name": ""
-      },
-      {
         "username": "spd_test",
         "role": "SPD",
         "auth_source": "local",

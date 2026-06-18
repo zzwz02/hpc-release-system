@@ -16,7 +16,6 @@
  *   rm        / rm         → role RM  (create+approve, all tabs)
  *   qa        / qa         → role QA
  *   owner_test/ owner_test → role Owner
- *   spd       / spd        → role SPD
  *   spd_test  / spd_test   → role SPD
  *   guest     / guest      → role Guest
  *
