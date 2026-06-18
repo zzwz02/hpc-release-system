@@ -15,6 +15,7 @@ import sqlite3
 import release_system.core as core
 from app.api.errors import AuthzError
 from app.domain import decision_sync as decision_sync_domain
+from app.repositories import apps_repo
 from app.repositories.audit_repo import app_audit_log as repo_app_audit_log
 from app.services.authz import (
     require_app_audit_access as authz_require_app_audit_access,
@@ -26,6 +27,45 @@ from app.services.authz import (
 # ---------------------------------------------------------------------------
 # State / list helpers (for GET /api/state)
 # ---------------------------------------------------------------------------
+
+CICD_APP_CONFIG_FIELDS = {
+    "cicd_repo_type",
+    "cicd_community_artifact",
+    "cicd_build_image",
+    "cicd_test_timeout",
+    "cicd_notes",
+}
+APP_REPO_IDENTITY_FIELDS = {"git_url", "git_branch"}
+
+CICD_APP_CONFIG_LABELS = {
+    "cicd_repo_type": "仓库类型",
+    "cicd_community_artifact": "开发者社区产物",
+    "cicd_build_image": "构建依赖镜像",
+    "cicd_test_timeout": "超时",
+    "cicd_notes": "备注",
+}
+
+
+def _community_required(app: dict) -> bool:
+    return bool((app.get("cicd_community_artifact") or "").strip())
+
+
+def _missing_items_for(app: dict, snapshot: dict) -> list[dict[str, str]]:
+    items = list(core.missing_items_for(app, snapshot))
+    if core.normalize_release_decision(snapshot.get("release_decision")) != "release":
+        return items
+    if not _community_required(app):
+        return items
+    community = snapshot.get("community") or {}
+    required = {
+        "release_status": "社区发布情况",
+        "python_version": "社区包 Python 版本",
+        "framework_version": "社区包框架及版本",
+    }
+    for key, label in required.items():
+        if not (community.get(key) or "").strip():
+            items.append({"kind": "doc", "text": f"缺少{label}"})
+    return items
 
 def _serialize_release(release: dict) -> dict:
     """Mirror server.py:_serialize_release — add phase, coerce released_locked."""
@@ -86,6 +126,11 @@ def get_state(
         payload["qa_log"] = core.get_qa_log(conn, release_id)
         if user["role"] in {"QA", "RM", "Owner", "Guest"}:
             payload["qa_audit_logs"] = core.release_qa_audit_logs(conn, release_id)
+        apps_by_id = {app["id"]: app for app in apps}
+        for aid, snap in (payload["release"] or {}).get("snapshots", {}).items():
+            app = apps_by_id.get(aid)
+            if app:
+                snap["missing_items"] = _missing_items_for(app, snap)
     return payload
 
 
@@ -134,6 +179,12 @@ def add_new_app(
         owner=user,
         doc_target=payload.get("doc_target", "manual"),
     )
+    apps_repo.update_cicd_config(
+        conn,
+        app_id,
+        {key: payload.get(key, "") for key in CICD_APP_CONFIG_FIELDS},
+    )
+    conn.commit()
     return {"app_id": app_id}
 
 
@@ -178,10 +229,18 @@ def update_snapshot(
 
     snap_update = body.get("snapshot", {})
 
+    app_update = body.get("app", {}) if isinstance(body.get("app", {}), dict) else {}
+    app_update_keys = set(app_update)
+    app_cicd_keys = app_update_keys & CICD_APP_CONFIG_FIELDS
+    app_owner_allowed_keys = CICD_APP_CONFIG_FIELDS | APP_REPO_IDENTITY_FIELDS
+    app_owner_forbidden_keys = app_update_keys - app_owner_allowed_keys
+
     if role == "Owner":
         owner_content_keys = set(snap_update) - {"release_decision", "owner_confirmed"}
-        if ("app" in body or owner_content_keys) and snap_update.get("owner_confirmed") is not True:
+        if (app_update_keys or owner_content_keys) and snap_update.get("owner_confirmed") is not True:
             raise AuthzError("Owner edits must be saved with Owner confirmation")
+        if app_owner_forbidden_keys:
+            raise AuthzError("Owner 只能修改 App CICD 配置和 Gerrit URL / Branch")
         if "owner_confirmed" in snap_update and snap_update["owner_confirmed"] is not True:
             raise AuthzError("Owner confirmation can only be submitted, not cleared")
 
@@ -216,44 +275,70 @@ def update_snapshot(
     rid = release_id
     actor = user
 
-    def update_repo_if_needed() -> None:
-        if "app" not in body or role != "RM":
+    def update_app_if_needed() -> None:
+        if not app_update_keys:
             return
-        app_update = body["app"]
+        repo_changed = False
         repo_before = {
             "git_url": app.get("git_url", ""),
             "git_branch": app.get("git_branch", ""),
         }
-        repo_changed = False
         for key in ("git_url", "git_branch"):
             if key in app_update and app.get(key) != app_update[key]:
-                app[key] = app_update[key]
+                app[key] = str(app_update[key] or "").strip()
                 repo_changed = True
-        if not repo_changed:
-            return
-        collision = conn_ref.execute(
-            "SELECT id FROM apps WHERE git_url = ? AND git_branch = ? AND id != ?",
-            (app.get("git_url", ""), app.get("git_branch", ""), aid),
-        ).fetchone()
-        if collision:
-            raise RuntimeError(
-                f"该 Gerrit URL + branch 已被 app {collision['id']} 占用，不能改成相同值"
+        if repo_changed:
+            collision = conn_ref.execute(
+                "SELECT id FROM apps WHERE git_url = ? AND git_branch = ? AND id != ?",
+                (app.get("git_url", ""), app.get("git_branch", ""), aid),
+            ).fetchone()
+            if collision:
+                raise RuntimeError(
+                    f"该 Gerrit URL + branch 已被 app {collision['id']} 占用，不能改成相同值"
+                )
+            core.save_app(conn_ref, app)
+            core.audit(
+                conn_ref,
+                "修改 Gerrit 信息",
+                user=actor,
+                role=role,
+                app_id=aid,
+                release_id=rid,
+                event="update_app_repo",
+                detail=core.field_diff(
+                    repo_before,
+                    app,
+                    {"git_url": "Gerrit URL", "git_branch": "Branch"},
+                ),
             )
-        core.save_app(conn_ref, app)
-        core.audit(
-            conn_ref,
-            "修改 Gerrit 信息",
-            user=actor,
-            role=role,
-            app_id=aid,
-            release_id=rid,
-            event="update_app_repo",
-            detail=core.field_diff(
-                repo_before,
-                app,
-                {"git_url": "Gerrit URL", "git_branch": "Branch"},
-            ),
-        )
+
+        cicd_update = {key: app_update.get(key, "") for key in app_cicd_keys}
+        if cicd_update:
+            cicd_before = {key: app.get(key, "") for key in CICD_APP_CONFIG_FIELDS}
+            apps_repo.update_cicd_config(conn_ref, aid, cicd_update)
+            app.update({key: str(value or "").strip() for key, value in cicd_update.items()})
+            cicd_after = {key: app.get(key, "") for key in CICD_APP_CONFIG_FIELDS}
+            changes = core.field_diff(cicd_before, cicd_after, CICD_APP_CONFIG_LABELS)
+            if changes:
+                core.audit(
+                    conn_ref,
+                    "修改 App CICD 配置",
+                    user=actor,
+                    role=role,
+                    app_id=aid,
+                    release_id=rid,
+                    event="update_app_cicd_config",
+                    detail=changes,
+                )
+
+    def normalize_community_update(snapshot: dict) -> None:
+        if _community_required(app):
+            return
+        snap_update["community"] = {
+            "release_status": "",
+            "python_version": "",
+            "framework_version": "",
+        }
 
     def mutate(snapshot: dict) -> None:
         name_for_msg = snapshot.get("official_name") or aid
@@ -436,9 +521,10 @@ def update_snapshot(
     # Execute inside a single transaction (mirrors server.py:929-939)
     response: dict = {}
     with core.transaction(conn):
-        update_repo_if_needed()
+        update_app_if_needed()
+        normalize_community_update(snap_now)
         updated = core.update_snapshot(conn, rid, aid, mutate, skip_doc_deadline=past_doc_deadline)
-        updated["missing_items"] = core.missing_items_for(core.get_app(conn, aid), updated)
+        updated["missing_items"] = _missing_items_for(app, updated)
         core.save_snapshot(conn, rid, aid, updated)
         response = {
             "snapshot": updated,
@@ -456,6 +542,9 @@ def update_snapshot(
                 aid,
                 new_decision,
                 submitter=actor,
+                current_status_override=_cicd_svc._DECISION_TO_CICD_STATUS.get(
+                    current_decision, ""
+                ),
             )
             response["cicd_sync"] = {
                 "created": cicd_req is not None,
@@ -520,7 +609,7 @@ def sync_decision_to_later_releases(
             resulting = decision_sync_domain.resolve_synced_decision(decision, phase)
             if snapshot.get("release_decision") != resulting:
                 snapshot["release_decision"] = resulting
-                snapshot["missing_items"] = core.missing_items_for(
+                snapshot["missing_items"] = _missing_items_for(
                     core.get_app(conn, app_id), snapshot
                 )
                 core.save_snapshot(conn, rid, app_id, snapshot)
@@ -637,6 +726,44 @@ def apply_app_info(
     return {"snapshot": snapshot}
 
 
+def _app_info_fetch_target(app: dict) -> tuple[str, str, str]:
+    """Return (fetch_url, fetch_branch, source_label) for Gerrit app_info fetch.
+
+    App Workbench stores normal git apps as a repo URL/branch, but repo-style
+    apps may store an APP/.../*.xml manifest path.  Manifest paths must be
+    resolved through the same identity seam used by CICD/cutover before
+    fetching app_info.json from the real underlying Gerrit project.
+    """
+    original_url = str(app.get("git_url") or "").strip()
+    original_branch = str(app.get("git_branch") or "").strip()
+    if not original_url or not original_branch:
+        raise RuntimeError("Gerrit URL 和 branch 不能为空")
+
+    fetch_url = original_url
+    fetch_branch = original_branch
+    source = f"{original_url} {original_branch}:app_info.json"
+
+    if original_url.endswith(".xml"):
+        from app.identity import repo_to_git_identity
+
+        resolved_url, resolved_branch = repo_to_git_identity(
+            "repo", original_url, original_branch
+        )
+        if not resolved_url or not resolved_branch:
+            raise RuntimeError(
+                "无法解析 repo manifest，不能拉取 app_info.json："
+                f"{original_url} @ {original_branch}"
+            )
+        fetch_url = resolved_url
+        fetch_branch = resolved_branch
+        source = (
+            f"{original_url} {original_branch}:app_info.json"
+            f" -> {fetch_url} {fetch_branch}:app_info.json"
+        )
+
+    return fetch_url, fetch_branch, source
+
+
 def fetch_app_info(
     conn: sqlite3.Connection,
     *,
@@ -654,11 +781,12 @@ def fetch_app_info(
     from app.integrations.gerrit import fetch_app_info as gerrit_fetch
 
     app = core.get_app(conn, app_id)
+    fetch_url, fetch_branch, source = _app_info_fetch_target(app)
     # project_root = cwd for git subprocess (mirrors server.py ROOT)
     _project_root = settings.db_path.parent
     raw, commit_id = gerrit_fetch(
-        app["git_url"],
-        app["git_branch"],
+        fetch_url,
+        fetch_branch,
         project_root=_project_root,
         hpc_gerrit_prefix=settings.hpc_gerrit_prefix,
         hpc_gerrit_root=settings.hpc_gerrit_root,
@@ -668,7 +796,7 @@ def fetch_app_info(
         release_id,
         app_id,
         raw,
-        source=f"{app['git_url']} {app['git_branch']}:app_info.json",
+        source=source,
         source_type="gerrit_fetch",
         commit_id=commit_id,
         uploaded_by=uploaded_by,
@@ -678,6 +806,8 @@ def fetch_app_info(
         "snapshot": snapshot,
         "commit_id": commit_id,
         "source": snapshot.get("app_info", {}).get("source", ""),
+        "fetch_git_url": fetch_url,
+        "fetch_git_branch": fetch_branch,
     }
 
 
@@ -701,9 +831,10 @@ def fetch_all_app_infos(
     for app_id in sorted(release.get("snapshots", {})):
         try:
             app = core.get_app(conn, app_id)
+            fetch_url, fetch_branch, source = _app_info_fetch_target(app)
             raw, commit_id = gerrit_fetch(
-                app["git_url"],
-                app["git_branch"],
+                fetch_url,
+                fetch_branch,
                 project_root=_project_root,
                 hpc_gerrit_prefix=settings.hpc_gerrit_prefix,
                 hpc_gerrit_root=settings.hpc_gerrit_root,
@@ -713,7 +844,7 @@ def fetch_all_app_infos(
                 release_id,
                 app_id,
                 raw,
-                source=f"{app['git_url']} {app['git_branch']}:app_info.json",
+                source=source,
                 source_type="gerrit_fetch",
                 commit_id=commit_id,
                 uploaded_by=uploaded_by,
@@ -724,6 +855,8 @@ def fetch_all_app_infos(
                 "ok": True,
                 "commit_id": commit_id,
                 "source": snapshot.get("app_info", {}).get("source", ""),
+                "fetch_git_url": fetch_url,
+                "fetch_git_branch": fetch_branch,
             })
         except Exception as exc:
             results.append({"app_id": app_id, "ok": False, "error": str(exc)})
@@ -763,5 +896,3 @@ def transfer_owner(
     # TODO Phase 2 — implement when admin/transfer-owner router is built.
     """
     raise NotImplementedError
-
-

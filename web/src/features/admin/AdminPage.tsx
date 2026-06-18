@@ -21,6 +21,7 @@ import { RefreshBar } from "../../components/RefreshBar";
 import { apiGet, apiPost } from "../../api/http";
 import { useUiStore } from "../../store/uiStore";
 import { displayName } from "../../lib/identity";
+import { formatGerritUrl } from "../../lib/git";
 import type {
   StatePayload,
   AdminUser,
@@ -219,7 +220,7 @@ function DbPanel({ payload, onStateRefresh }: DbPanelProps) {
                         </td>
                         <td>{owners.join(", ")}</td>
                         <td>
-                          {app.git_url || ""}
+                          {formatGerritUrl(app.git_url)}
                           <div className="small muted">
                             {app.git_branch || ""}
                           </div>

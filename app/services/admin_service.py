@@ -79,6 +79,17 @@ def update_user_role(
     conn.commit()
 
 
+def _clear_cicd_business_data(conn: sqlite3.Connection) -> None:
+    """Clear CICD business tables added by the FastAPI rewrite.
+
+    release_system.core.clear_business_data predates the App↔CICD rewrite and
+    preserves these tables, so the new admin service clears them explicitly.
+    """
+    conn.execute("DELETE FROM cicd_task_requests")
+    conn.execute("DELETE FROM cicd_notifications")
+    conn.execute("DELETE FROM cicd_tasks")
+
+
 def delete_user(conn: sqlite3.Connection, username: str, *, actor: str) -> None:
     """Delete a user.
 
@@ -122,6 +133,7 @@ def clear_business_data(
     fresh_conn = connect(settings.db_path)
     try:
         _core.clear_business_data(fresh_conn, user=actor, role="Admin")
+        _clear_cicd_business_data(fresh_conn)
         fresh_conn.commit()
     finally:
         fresh_conn.close()

@@ -13,9 +13,8 @@
  * No polling.
  */
 import React, { useState } from "react";
-import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchCicdTasks, fetchCicdRequests, fetchCicdTaskHistory, cicdFirstNewApp, fetchCicdPreview, CICD_TASKS_KEY } from "../cicd/cicdApi";
+import { cicdFirstNewApp, fetchCicdDeliveries, fetchCicdPreview, fetchCicdRequests, submitCicdRequest } from "../cicd/cicdApi";
 import type { FetchPreviewResponse } from "../cicd/cicdApi";
 import { RefreshBar } from "../../components/RefreshBar";
 import { Markdown } from "../../components/Markdown";
@@ -26,6 +25,7 @@ import { useUiStore } from "../../store/uiStore";
 import { isRM, isOwner, canEdit } from "../../lib/roles";
 import { beforeAppFreeze, beforeDocDeadline, releaseLocked, newAppDecisionOptions } from "../../lib/phase";
 import { displayName } from "../../lib/identity";
+import { formatGerritUrl } from "../../lib/git";
 import {
   releaseDecisionLabels,
   releaseDecisionOptions,
@@ -33,7 +33,7 @@ import {
   docTargetOptions,
   qaStatusLabels,
 } from "../../lib/labels";
-import type { StatePayload, App, Snapshot, ReleaseSummary, AppAuditEntry, SnapshotTestDoc, CicdTask } from "../../types";
+import type { StatePayload, App, Snapshot, ReleaseSummary, AppAuditEntry, SnapshotTestDoc, CicdRequest } from "../../types";
 import {
   releaseSnap,
   isReleaseSnap,
@@ -71,6 +71,17 @@ interface DecisionSyncPreviewRow {
 interface DecisionSyncPreview {
   decision: string;
   releases: DecisionSyncPreviewRow[];
+}
+
+interface AppInfoFetchProgress {
+  title: string;
+  currentApp?: string;
+  currentIdentity?: string;
+  total: number;
+  completed: number;
+  ok: number;
+  failed: number;
+  failures: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +137,132 @@ function ReadField({ value, code = false }: { value?: string | null; code?: bool
   return (
     <div className="readfield">
       <Markdown value={value} className="md-view" />
+    </div>
+  );
+}
+
+const CICD_REPO_TYPE_OPTIONS = ["git", "repo"] as const;
+const CICD_COMMUNITY_ARTIFACT_OPTIONS = [
+  { value: "image", label: "镜像" },
+  { value: "pkg", label: "软件包" },
+] as const;
+
+function communityArtifactList(value: string): string[] {
+  return (value || "")
+    .split(/[，,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function toggleCommunityArtifact(value: string, item: string): string {
+  const current = communityArtifactList(value);
+  const next = current.includes(item)
+    ? current.filter((v) => v !== item)
+    : [...current, item];
+  return next.join(", ");
+}
+
+function normalizeTimeoutText(value: string | number | null | undefined): string {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : "40";
+}
+
+const CICD_REQ_TYPE_LABEL: Record<string, string> = {
+  create: "新建",
+  modify: "修改",
+  owner_transfer: "负责人变更",
+};
+
+const CICD_REQ_STATUS_LABEL: Record<string, string> = {
+  pending: "待审批",
+  approved: "已审批",
+  rejected: "已拒绝",
+  cancelled: "已取消",
+};
+
+const CICD_DELIVERY_STATUS_LABEL: Record<string, string> = {
+  pending: "待交付",
+  delivered: "已交付",
+  returned: "已退回",
+};
+
+const CICD_FIELD_LABEL: Record<string, string> = {
+  repo_type: "仓库类型",
+  repo_name: "Gerrit URL",
+  branch: "Branch",
+  community_artifact: "开发者社区产物",
+  build_image: "构建依赖镜像",
+  test_timeout: "超时(min)",
+  notes: "备注",
+  status: "状态",
+};
+
+function sameScalarValue(a: unknown, b: unknown): boolean {
+  return String(a ?? "").trim() === String(b ?? "").trim();
+}
+
+function sameListValue(a: string[], b: string[]): boolean {
+  return a.join(",") === b.join(",");
+}
+
+function cicdValueText(value: unknown): string {
+  if (Array.isArray(value)) return value.join(", ") || "(空)";
+  return String(value ?? "").trim() || "(空)";
+}
+
+function cicdRequestSummary(req: CicdRequest): string {
+  const payload = (req.payload ?? {}) as Record<string, { old?: unknown; new?: unknown }>;
+  if (!Object.keys(payload).length) return "无字段变更";
+  return Object.entries(payload).map(([field, change]) => {
+    const label = CICD_FIELD_LABEL[field] ?? field;
+    return `${label}: ${cicdValueText(change?.old)} -> ${cicdValueText(change?.new)}`;
+  }).join("；");
+}
+
+function cicdWorkflowState(req: CicdRequest): string {
+  if (req.delivery_status) {
+    return CICD_DELIVERY_STATUS_LABEL[req.delivery_status] ?? req.delivery_status;
+  }
+  return CICD_REQ_STATUS_LABEL[req.status] ?? req.status;
+}
+
+function requestMatchesApp(req: CicdRequest, app: App): boolean {
+  const payload = (req.payload ?? {}) as Record<string, unknown>;
+  return req.task_id === app.id ||
+    payload.app_id === app.id ||
+    req.task_repo_name === app.git_url;
+}
+
+function AppInfoFetchProgressDialog({ progress }: { progress: AppInfoFetchProgress }) {
+  const pct = progress.total ? Math.round((progress.completed / progress.total) * 100) : 0;
+  return (
+    <div className="dialog-backdrop" role="dialog" aria-modal="true" data-testid="app-info-fetch-progress">
+      <div className="dialog-box" style={{ maxWidth: 520 }}>
+        <div className="dialog-head"><h3>{progress.title}</h3></div>
+        <div className="dialog-body">
+          <div className="row" style={{ justifyContent: "space-between", gap: 12 }}>
+            <span className="small muted">进度 {progress.completed}/{progress.total}</span>
+            <span className="small">成功 {progress.ok} · 失败 {progress.failed}</span>
+          </div>
+          <div className="bar" style={{ height: 9 }}>
+            <span style={{ width: `${pct}%` }} />
+          </div>
+          <div className="banner" style={{ margin: 0 }}>
+            <div><b>当前：</b>{progress.currentApp ?? "准备中..."}</div>
+            {progress.currentIdentity && (
+              <div className="small muted" style={{ marginTop: 4 }}>{progress.currentIdentity}</div>
+            )}
+          </div>
+          {progress.failures.length > 0 && (
+            <div className="small warnp" style={{ whiteSpace: "pre-wrap" }}>
+              {progress.failures.slice(-4).join("\n")}
+            </div>
+          )}
+          <p className="small muted" style={{ margin: 0 }}>
+            Gerrit 拉取可能耗时较久。窗口关闭前请不要刷新页面。
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
@@ -243,16 +380,6 @@ function normalizeGitUrl(url: string): string {
   return `${RESOLVED_REPO_BASE}/${v.replace(/^\//, "")}`;
 }
 
-/**
- * Return true if (repoName, taskBranch) matches (gitUrl, appBranch) after
- * normalising both sides — mirrors identity.same_identity().
- * Handles legacy bare-name apps AND cicd-first full-SSH-URL apps.
- */
-function sameGitIdentity(repoName: string, taskBranch: string, gitUrl: string, appBranch: string): boolean {
-  if (!repoName || !gitUrl) return false;
-  return normalizeGitUrl(repoName) === normalizeGitUrl(gitUrl) && taskBranch === appBranch;
-}
-
 // ---------------------------------------------------------------------------
 // IdentityBox — W4: prominent display of derived Gerrit identity in the wizard
 // ---------------------------------------------------------------------------
@@ -286,7 +413,7 @@ function IdentityBox({ gitUrl, gitBranch }: { gitUrl: string | null; gitBranch: 
         <span style={{ color: "var(--muted, #666)", minWidth: 80, display: "inline-block" }}>git_url:</span>
         {isUnresolved
           ? <span style={{ background: "var(--warn-bg, #fff3cd)", color: "var(--warn-fg, #856404)", padding: "1px 6px", borderRadius: 3 }}>需联网解析</span>
-          : <span style={{ color: "var(--fg, #111)", fontWeight: 500 }}>{gitUrl}</span>
+          : <span style={{ color: "var(--fg, #111)", fontWeight: 500 }} title={gitUrl}>{formatGerritUrl(gitUrl)}</span>
         }
       </div>
       <div style={{ fontFamily: "monospace", lineHeight: 1.8 }}>
@@ -339,6 +466,10 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
   const [docTarget, setDocTarget] = useState<"manual" | "ai4sci">("manual");
   const decisionOpts = newAppDecisionOptions(release);
   const [decision, setDecision] = useState<string>(decisionOpts[0] ?? "release");
+  const [newCicdCommunityArtifact, setNewCicdCommunityArtifact] = useState("");
+  const [newCicdBuildImage, setNewCicdBuildImage] = useState("");
+  const [newCicdTimeout, setNewCicdTimeout] = useState("40");
+  const [newCicdNotes, setNewCicdNotes] = useState("");
   const [directSaving, setDirectSaving] = useState(false);
   const [directErr, setDirectErr] = useState("");
 
@@ -402,6 +533,11 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
         repo_type: repoType,
         repo_name: repoName.trim(),
         branch: effectiveBranch,
+        cicd_repo_type: repoType,
+        cicd_community_artifact: newCicdCommunityArtifact,
+        cicd_build_image: newCicdBuildImage,
+        cicd_test_timeout: newCicdTimeout,
+        cicd_notes: newCicdNotes,
       });
       onCreated(r.app_id);
     } catch (e) {
@@ -423,6 +559,11 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
         repo_type: repoType,
         repo_name: repoName.trim(),
         branch: effectiveBranch,
+        cicd_repo_type: repoType,
+        cicd_community_artifact: newCicdCommunityArtifact,
+        cicd_build_image: newCicdBuildImage,
+        cicd_test_timeout: newCicdTimeout,
+        cicd_notes: newCicdNotes,
         app_info_parsed: preview?.parsed ?? undefined,
         app_info_commit_id: preview?.commit_id ?? undefined,
       });
@@ -447,6 +588,11 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
         git_branch: gitBranch.trim(),
         release_decision: decision,
         doc_target: docTarget,
+        cicd_repo_type: repoType,
+        cicd_community_artifact: newCicdCommunityArtifact,
+        cicd_build_image: newCicdBuildImage,
+        cicd_test_timeout: newCicdTimeout,
+        cicd_notes: newCicdNotes,
       });
       onCreated(r.app_id);
     } catch (e) {
@@ -475,6 +621,37 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
               </label>
               <label>Branch
                 <input className="input" value={gitBranch} onChange={(e) => setGitBranch(e.target.value)} />
+              </label>
+              <label>仓库类型
+                <select className="select" value={repoType} onChange={(e) => setRepoType(e.target.value)}>
+                  {CICD_REPO_TYPE_OPTIONS.map((value) => (
+                    <option key={value} value={value}>{value}</option>
+                  ))}
+                </select>
+              </label>
+              <div>
+                <div className="field-label">开发者社区产物</div>
+                <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+                  {CICD_COMMUNITY_ARTIFACT_OPTIONS.map(({ value, label }) => (
+                    <label key={value} className="check">
+                      <input
+                        type="checkbox"
+                        checked={communityArtifactList(newCicdCommunityArtifact).includes(value)}
+                        onChange={() => setNewCicdCommunityArtifact(toggleCommunityArtifact(newCicdCommunityArtifact, value))}
+                      />{" "}
+                      {label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <label>构建依赖镜像
+                <input className="input" value={newCicdBuildImage} onChange={(e) => setNewCicdBuildImage(e.target.value)} />
+              </label>
+              <label>超时(min)
+                <input className="input" type="number" min={1} step={1} value={newCicdTimeout} onChange={(e) => setNewCicdTimeout(normalizeTimeoutText(e.target.value))} />
+              </label>
+              <label>备注
+                <input className="input" value={newCicdNotes} onChange={(e) => setNewCicdNotes(e.target.value)} />
               </label>
               <label>类型
                 <select className="select" value={docTarget} onChange={(e) => setDocTarget(e.target.value as "manual" | "ai4sci")}>
@@ -631,6 +808,37 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
               <input className="input" value={isRepo ? "master" : branch} disabled={isRepo || isFetching}
                 onChange={(e) => setBranch(e.target.value)} placeholder="例：master" />
             </label>
+            <div>
+              <div className="field-label">开发者社区产物</div>
+              <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+                {CICD_COMMUNITY_ARTIFACT_OPTIONS.map(({ value, label }) => (
+                  <label key={value} className="check">
+                    <input
+                      type="checkbox"
+                      checked={communityArtifactList(newCicdCommunityArtifact).includes(value)}
+                      onChange={() => setNewCicdCommunityArtifact(toggleCommunityArtifact(newCicdCommunityArtifact, value))}
+                      disabled={isFetching}
+                    />{" "}
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <label>构建依赖镜像
+              <input className="input" value={newCicdBuildImage}
+                onChange={(e) => setNewCicdBuildImage(e.target.value)}
+                disabled={isFetching} />
+            </label>
+            <label>超时(min)
+              <input className="input" type="number" min={1} step={1} value={newCicdTimeout}
+                onChange={(e) => setNewCicdTimeout(normalizeTimeoutText(e.target.value))}
+                disabled={isFetching} />
+            </label>
+            <label>备注
+              <input className="input" value={newCicdNotes}
+                onChange={(e) => setNewCicdNotes(e.target.value)}
+                disabled={isFetching} />
+            </label>
           </div>
           {fetchErrMsg && <p className="lerr">{fetchErrMsg}</p>}
         </div>
@@ -656,216 +864,144 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
 // AppCicdPane — CICD sub-tab inside the App detail panel
 // ---------------------------------------------------------------------------
 
-const REQ_TYPE_LABEL_APP: Record<string, string> = {
-  create: "新建",
-  modify: "修改",
-  owner_transfer: "负责人变更",
-};
-const REQ_STATUS_LABEL_APP: Record<string, string> = {
-  pending: "等待 RM 审批",
-  approved: "已通过",
-  rejected: "已拒绝",
-  cancelled: "已取消",
-};
-const FIELD_LABEL_APP: Record<string, string> = {
-  app_name: "项目名称",
-  app_version: "项目版本",
-  repo_type: "仓库类型",
-  repo_name: "仓库名",
-  branch: "分支",
-  build_product: "构建产物",
-  community_artifact: "开发者社区产物",
-  build_image: "构建依赖镜像",
-  test_timeout: "超时(min)",
-  owner_username: "负责人",
-  status: "状态",
-  notes: "备注",
-};
-
-function buildProductStr(arr: string[] | null | undefined): string {
-  return (Array.isArray(arr) ? arr : []).join(", ") || "—";
-}
-
-function communityArtifactStr(arr: string[] | null | undefined): string {
-  const items = Array.isArray(arr) ? arr : [];
-  if (!items.length) return "—";
-  return items.map((v) => (v === "image" ? "镜像" : v === "pkg" ? "软件包" : v)).join("、");
+function appCicdStatus(decision: string): "Running" | "Stopped" {
+  return decision === "stopped" ? "Stopped" : "Running";
 }
 
 interface AppCicdPaneProps {
-  task: CicdTask | null;
   app: App;
-  /** Used to conditionally show the CICD workbench link (RM/SPD only). */
-  userRole?: string;
+  releaseDecision: string;
+  displayedStatus: "Running" | "Stopped";
+  editMode: boolean;
+  canEdit: boolean;
+  form: FormState;
+  pendingRequests: CicdRequest[];
+  historyRequests: CicdRequest[];
+  onPatch: <K extends keyof FormState>(key: K, value: FormState[K]) => void;
 }
 
-function AppCicdPane({ task, app, userRole }: AppCicdPaneProps) {
-  const canAccessWorkbench = userRole === "RM" || userRole === "SPD";
-  const [showHistory, setShowHistory] = useState(false);
-
-  const { data: pendingData, isLoading: pendingLoading } = useQuery({
-    queryKey: ["cicd", "requests", "pending", task?.id ?? null],
-    queryFn: () => task ? fetchCicdRequests({ taskId: task.id, status: "pending" }) : Promise.resolve({ requests: [] }),
-    staleTime: 0,
-    refetchOnMount: true,
-    enabled: !!task,
-  });
-
-  const { data: historyData, isLoading: historyLoading } = useQuery({
-    queryKey: ["cicd", "history", task?.id ?? null],
-    queryFn: () => task ? fetchCicdTaskHistory(task.id) : Promise.resolve({ history: [] }),
-    staleTime: 0,
-    refetchOnMount: true,
-    enabled: !!task && showHistory,
-  });
-
-  if (!task) {
-    return (
-      <div style={{ padding: "1.5rem", color: "var(--muted, #888)" }}>
-        <div style={{ textAlign: "center", marginBottom: 12, fontSize: "1.2em" }}>⚙️</div>
-        <p>此 App 暂无关联 CICD 任务。</p>
-        <p className="small muted" style={{ marginTop: 8 }}>
-          CICD 任务通过 CICD-first 创建流程建立（新增 App 时自动提交，RM 审批后生效）。<br />
-          已有 CICD 任务的 App 通过 <b>仓库名 + 分支</b> 自动关联，当前 App 仓库信息：<br />
-          <code style={{ background: "var(--surface2, #f0f0f0)", padding: "2px 4px", borderRadius: 3 }}>
-            {app.git_url}@{app.git_branch}
-          </code>
-        </p>
-      </div>
-    );
-  }
-
-  const pendingReqs = pendingData?.requests ?? [];
-  const history = historyData?.history ?? [];
-
-  const statusCls = task.status === "Running" ? "ok" : task.status === "Stopped" ? "warnp" : "";
+function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit, form, pendingRequests, historyRequests, onPatch }: AppCicdPaneProps) {
+  const status = displayedStatus;
+  const statusCls = status === "Running" ? "ok" : "warnp";
+  const disabled = !editMode || !canEdit;
 
   return (
     <div data-testid="cicd-link-card" style={{ display: "flex", flexDirection: "column", gap: 12, padding: "4px 0" }}>
-      {/* Identity + status row */}
       <div className="banner" style={{ background: "var(--surface2, #f5f5f5)", borderLeft: "3px solid var(--accent, #1976d2)" }}>
         <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <b style={{ fontSize: 12 }}>CICD 任务</b>
-          <span className={`pill ${statusCls}`}>{task.status}</span>
-          <span className="small muted">{app.git_url}@{app.git_branch}</span>
-          {canAccessWorkbench && (
-            <Link to="/cicd" className="small" data-testid="cicd-task-link">
-              查看 CICD 工作台任务 #{task.id}
-            </Link>
-          )}
+          <b style={{ fontSize: 12 }}>App CICD 配置</b>
+          <span className={`pill ${statusCls}`}>{status}</span>
+          <span className="small muted" title={`${app.git_url}@${app.git_branch}`}>{formatGerritUrl(app.git_url)}@{app.git_branch}</span>
         </div>
-        {task.has_pending && (
-          <div className="small warnp" style={{ marginTop: 4 }}>
-            ⏳ 有待审批的 CICD 修改申请
-          </div>
-        )}
         <div className="small muted" style={{ marginTop: 2, fontSize: 11 }}>
-          运行/停止由本 app 决策决定
-          {canAccessWorkbench && "；构建配置在 CICD 工作台改"}
+          运行/停止由本 app 决策决定：{releaseDecisionLabels[releaseDecision as keyof typeof releaseDecisionLabels] ?? releaseDecision}
         </div>
       </div>
 
-      {/* Config section */}
+      {pendingRequests.length > 0 && (
+        <div className="banner" data-testid="app-cicd-pending-banner" style={{ margin: 0 }}>
+          <b>有待处理 CICD 流程</b>
+          <div className="table" style={{ marginTop: 8 }}>
+            <table className="cicd-diff-table">
+              <thead><tr><th>申请</th><th>状态</th><th>Jira</th><th>内容</th></tr></thead>
+              <tbody>
+                {pendingRequests.map((req) => (
+                  <tr key={req.id}>
+                    <td>#{req.id} {CICD_REQ_TYPE_LABEL[req.request_type] ?? req.request_type}</td>
+                    <td>{cicdWorkflowState(req)}</td>
+                    <td>{req.jira_id || "—"}</td>
+                    <td>{cicdRequestSummary(req)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       <details className="section" open>
-        <summary><span className="chev">▶</span> 构建配置（只读）</summary>
+        <summary><span className="chev">▶</span> App CICD 配置</summary>
         <div className="section-body">
-          <div className="form" style={{ pointerEvents: "none", opacity: 0.85 }}>
-            <label>仓库类型<input className="input" value={task.repo_type} disabled /></label>
-            <label>仓库名<input className="input" value={task.repo_name} disabled /></label>
-            <label>分支<input className="input" value={task.branch} disabled /></label>
-            <label>负责人<input className="input" value={task.owner_display || task.owner_username} disabled /></label>
-            <label>构建产物<input className="input" value={buildProductStr(task.build_product)} disabled /></label>
-            <label>开发者社区产物<input className="input" value={communityArtifactStr(task.community_artifact)} disabled /></label>
-            <label>构建依赖镜像<input className="input" value={task.build_image || "—"} disabled /></label>
-            <label>超时(min)<input className="input" value={task.test_timeout ?? 40} disabled /></label>
-            {task.notes && <label>备注<input className="input" value={task.notes} disabled /></label>}
+          <div className="form">
+            <label>仓库类型
+              <select className="select" value={form.cicd_repo_type || "git"}
+                onChange={(e) => onPatch("cicd_repo_type", e.target.value)}
+                disabled={disabled}
+                data-testid="field-cicd-repo-type">
+                {CICD_REPO_TYPE_OPTIONS.map((value) => (
+                  <option key={value} value={value}>{value}</option>
+                ))}
+              </select>
+            </label>
+            <label>Gerrit URL
+              <input className="input" value={form.git_url}
+                onChange={(e) => onPatch("git_url", e.target.value)}
+                disabled={disabled}
+                data-testid="field-cicd-git-url" />
+              <span className="field-help">实际保存完整 URL；列表展示会自动缩短为 PDE/HPC 后的路径。</span>
+            </label>
+            <label>Branch
+              <input className="input" value={form.git_branch}
+                onChange={(e) => onPatch("git_branch", e.target.value)}
+                disabled={disabled}
+                data-testid="field-cicd-git-branch" />
+            </label>
+            <div>
+              <div className="field-label">开发者社区产物</div>
+              <div className="row" style={{ gap: 12, flexWrap: "wrap" }} data-testid="field-cicd-community-artifact">
+                {CICD_COMMUNITY_ARTIFACT_OPTIONS.map(({ value, label }) => (
+                  <label key={value} className="check">
+                    <input
+                      type="checkbox"
+                      checked={communityArtifactList(form.cicd_community_artifact).includes(value)}
+                      onChange={() => onPatch("cicd_community_artifact", toggleCommunityArtifact(form.cicd_community_artifact, value))}
+                      disabled={disabled}
+                    />{" "}
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <label>构建依赖镜像
+              <input className="input" value={form.cicd_build_image}
+                onChange={(e) => onPatch("cicd_build_image", e.target.value)}
+                disabled={disabled}
+                data-testid="field-cicd-build-image" />
+            </label>
+            <label>超时(min)
+              <input className="input" type="number" min={1} step={1} value={normalizeTimeoutText(form.cicd_test_timeout)}
+                onChange={(e) => onPatch("cicd_test_timeout", normalizeTimeoutText(e.target.value))}
+                disabled={disabled}
+                data-testid="field-cicd-timeout" />
+            </label>
+            <label style={{ gridColumn: "1 / -1" }}>备注
+              <input className="input" value={form.cicd_notes}
+                onChange={(e) => onPatch("cicd_notes", e.target.value)}
+                disabled={disabled}
+                data-testid="field-cicd-notes" />
+            </label>
           </div>
         </div>
       </details>
 
-      {/* Pending requests */}
       <details className="section" open>
-        <summary>
-          <span className="chev">▶</span> 待审批申请
-          {pendingReqs.length > 0 && (
-            <span className="badge warnp" style={{ marginLeft: 6 }}>{pendingReqs.length}</span>
-          )}
-        </summary>
+        <summary><span className="chev">▶</span> CICD 变更历史</summary>
         <div className="section-body">
-          {pendingLoading ? (
-            <p className="muted small">加载中…</p>
-          ) : pendingReqs.length === 0 ? (
-            <p className="muted small">无待审批申请</p>
+          {!historyRequests.length ? (
+            <p className="muted small">暂无 CICD 变更历史。</p>
           ) : (
-            <div className="cicd-table-wrap">
-              <table className="cicd-table">
-                <thead>
-                  <tr>
-                    <th>申请ID</th>
-                    <th>类型</th>
-                    <th>提交人</th>
-                    <th>提交时间</th>
-                    <th>变更内容</th>
-                  </tr>
-                </thead>
+            <div className="table">
+              <table className="cicd-diff-table">
+                <thead><tr><th>申请</th><th>提交人</th><th>时间</th><th>状态</th><th>Jira</th><th>内容</th></tr></thead>
                 <tbody>
-                  {pendingReqs.map((r) => {
-                    const payload = (r.payload ?? {}) as Record<string, unknown>;
-                    const summary = Object.keys(payload)
-                      .filter((k) => FIELD_LABEL_APP[k])
-                      .map((k) => FIELD_LABEL_APP[k])
-                      .join(", ") || (r.request_type === "create" ? "新建任务" : "—");
-                    return (
-                      <tr key={r.id}>
-                        <td className="cicd-id">#{r.id}</td>
-                        <td>{REQ_TYPE_LABEL_APP[r.request_type] ?? r.request_type}</td>
-                        <td>{r.submitter_display || r.submitter}</td>
-                        <td className="small muted">{formatServerTime(r.submitted_at ?? "")}</td>
-                        <td style={{ maxWidth: 200, fontSize: 12 }}>{summary}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      </details>
-
-      {/* History — lazy loaded */}
-      <details className="section" onToggle={(e) => setShowHistory((e.target as HTMLDetailsElement).open)}>
-        <summary><span className="chev">▶</span> 变更历史</summary>
-        <div className="section-body">
-          {!showHistory ? (
-            <p className="muted small">展开后加载</p>
-          ) : historyLoading ? (
-            <p className="muted small">加载中…</p>
-          ) : history.length === 0 ? (
-            <p className="muted small">暂无历史记录</p>
-          ) : (
-            <div className="cicd-table-wrap">
-              <table className="cicd-table">
-                <thead>
-                  <tr>
-                    <th>申请ID</th>
-                    <th>类型</th>
-                    <th>提交人</th>
-                    <th>审批时间</th>
-                    <th>状态</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[...history].reverse().map((h) => (
-                    <tr key={h.id}>
-                      <td className="cicd-id">#{h.id}</td>
-                      <td>{REQ_TYPE_LABEL_APP[h.request_type] ?? h.request_type}</td>
-                      <td>{h.submitter_display || h.submitter}</td>
-                      <td className="small muted">{formatServerTime(h.reviewed_at || h.submitted_at || "")}</td>
-                      <td>
-                        <span className={`cicd-req-status-${h.status}`}>
-                          {REQ_STATUS_LABEL_APP[h.status] ?? h.status}
-                        </span>
-                      </td>
+                  {historyRequests.map((req) => (
+                    <tr key={req.id}>
+                      <td>#{req.id} {CICD_REQ_TYPE_LABEL[req.request_type] ?? req.request_type}</td>
+                      <td>{req.submitter_display || req.submitter}</td>
+                      <td>{formatServerTime(req.reviewed_at || req.submitted_at || "")}</td>
+                      <td>{cicdWorkflowState(req)}</td>
+                      <td>{req.jira_id || "—"}</td>
+                      <td>{cicdRequestSummary(req)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -892,6 +1028,11 @@ interface FormState {
   release_decision: string;
   git_url: string;
   git_branch: string;
+  cicd_repo_type: string;
+  cicd_community_artifact: string;
+  cicd_build_image: string;
+  cicd_test_timeout: string;
+  cicd_notes: string;
   intro: string;
   image_usage: string;
   binary_usage: string;
@@ -916,6 +1057,7 @@ interface DetailPanelProps {
 }
 
 function DetailPanel({ app, snap, release, releases, user, displayNames: _displayNames, onSaved }: DetailPanelProps) {
+  const queryClient = useQueryClient();
   const userIsRM = isRM(user);
   const userIsOwner = isOwner(user);
   const locked = releaseLocked(release);
@@ -936,6 +1078,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [auditEntries, setAuditEntries] = useState<AppAuditEntry[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [fetchProgress, setFetchProgress] = useState<AppInfoFetchProgress | null>(null);
   // F1: pending decision-sync owner-choice dialog (null = closed)
   const [syncDialog, setSyncDialog] = useState<{
     preview: DecisionSyncPreview;
@@ -946,15 +1089,25 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
   // F2: copy-from-version picker (null = closed)
   const [showCopyDialog, setShowCopyDialog] = useState(false);
 
-  // CICD tasks — fetched once and cached; used for CicdLinkCard.
-  // staleTime:Infinity so this never re-fetches in the background (R2 rule).
-  const { data: cicdTasksData } = useQuery({
-    queryKey: CICD_TASKS_KEY,
-    queryFn: () => fetchCicdTasks(),
-    staleTime: Infinity,
-    refetchInterval: false,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
+  const { data: appCicdOpenRequests } = useQuery({
+    queryKey: ["cicd", "requests", "app-workbench", "open", app?.id ?? ""],
+    queryFn: async () => {
+      const [pending, deliveries] = await Promise.all([
+        fetchCicdRequests({ status: "pending" }),
+        fetchCicdDeliveries("pending_or_returned"),
+      ]);
+      return [...(pending.requests ?? []), ...(deliveries.deliveries ?? [])];
+    },
+    enabled: !!app,
+    staleTime: 0,
+    refetchOnMount: true,
+  });
+  const { data: appCicdHistoryRequests } = useQuery({
+    queryKey: ["cicd", "requests", "app-workbench", "history", app?.id ?? ""],
+    queryFn: () => fetchCicdRequests({ sinceDays: 3650 }),
+    enabled: !!app && detailTab === "cicd",
+    staleTime: 0,
+    refetchOnMount: true,
   });
 
   // F3: keep the shared store in sync so the page-level app-switch guard and
@@ -978,20 +1131,29 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     return () => window.removeEventListener("beforeunload", handler);
   }, [dirty]);
 
-  // Sync form when app selection changes
+  const previousAppIdRef = React.useRef<string | null>(null);
+
+  // Sync form when the selected app changes, or when fresh data arrives for
+  // the same app and the local form has no unsaved edits.
   React.useEffect(() => {
-    if (snap && app) {
+    if (!snap || !app) return;
+    const appChanged = previousAppIdRef.current !== app.id;
+    previousAppIdRef.current = app.id;
+    if (appChanged || !dirty) {
       setForm(snapshotToForm(snap, app));
+    }
+    if (appChanged) {
       setEditMode(false);
       setDirty(false);
       setSaveErr("");
       setPendingFile(null);
       setAuditEntries(null);
+      setFetchProgress(null);
       setSyncDialog(null);
       setShowCopyDialog(false);
       setDetailTab("docs");
     }
-  }, [app?.id, snap?.app_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [app, snap, dirty]);
 
   function snapshotToForm(s: Snapshot, a: App): FormState {
     return {
@@ -1004,6 +1166,11 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       release_decision: s.release_decision ?? "release",
       git_url: a.git_url ?? "",
       git_branch: a.git_branch ?? "",
+      cicd_repo_type: a.cicd_repo_type || "git",
+      cicd_community_artifact: a.cicd_community_artifact ?? "",
+      cicd_build_image: a.cicd_build_image ?? "",
+      cicd_test_timeout: normalizeTimeoutText(a.cicd_test_timeout),
+      cicd_notes: a.cicd_notes ?? "",
       // doc fields
       intro: s.doc?.intro ?? "",
       image_usage: s.doc?.image_usage ?? "",
@@ -1027,6 +1194,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       official_name: "", type: "", official_url: "", description: "",
       doc_target: "manual", owners: "", release_decision: "release",
       git_url: "", git_branch: "",
+      cicd_repo_type: "git", cicd_community_artifact: "", cicd_build_image: "", cicd_test_timeout: "40", cicd_notes: "",
       intro: "", image_usage: "", binary_usage: "", env_setup: "", limitations: "",
       community_release: "", community_python: "", community_framework: "",
       sanity_arm: false, sanity_ubuntu: false,
@@ -1040,7 +1208,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
   }
 
   async function loadAudit() {
-    if (!app || !release) return;
+    if (!app || !snap || !release) return;
     setAuditLoading(true);
     try {
       const data = await apiGet<{ entries: AppAuditEntry[] }>(
@@ -1071,9 +1239,9 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
         limitations: form.limitations,
       },
       community: {
-        release_status: form.community_release,
-        python_version: form.community_python,
-        framework_version: form.community_framework,
+        release_status: form.cicd_community_artifact.trim() ? form.community_release : "",
+        python_version: form.cicd_community_artifact.trim() ? form.community_python : "",
+        framework_version: form.cicd_community_artifact.trim() ? form.community_framework : "",
       },
       sanity: {
         arm_kylin: form.sanity_arm,
@@ -1087,6 +1255,10 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
 
   async function handleSave(confirmOwner: boolean) {
     if (!app || !snap || !release) return;
+    if (detailTab === "cicd") {
+      await submitAppCicdChange();
+      return;
+    }
     const descCount = appDescriptionCount(form.description);
     if (descCount > APP_DESCRIPTION_LIMIT) {
       setSaveErr(`描述不能超过${APP_DESCRIPTION_LIMIT}字（当前 ${descCount}/${APP_DESCRIPTION_LIMIT}）`);
@@ -1126,6 +1298,68 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     await doSave(confirmOwner, snapshotUpdate, false);
   }
 
+  function buildAppCicdDiff(): Record<string, { old: unknown; new: unknown }> {
+    if (!app) return {};
+    const diff: Record<string, { old: unknown; new: unknown }> = {};
+    const originalRepoType = app.cicd_repo_type || "git";
+    const nextRepoType = form.cicd_repo_type || "git";
+    if (!sameScalarValue(originalRepoType, nextRepoType)) {
+      diff.repo_type = { old: originalRepoType, new: nextRepoType };
+    }
+    if (!sameScalarValue(app.git_url, form.git_url)) {
+      diff.repo_name = { old: app.git_url || "", new: form.git_url.trim() };
+    }
+    if (!sameScalarValue(app.git_branch, form.git_branch)) {
+      diff.branch = { old: app.git_branch || "", new: form.git_branch.trim() };
+    }
+    const originalCommunity = communityArtifactList(app.cicd_community_artifact || "");
+    const nextCommunity = communityArtifactList(form.cicd_community_artifact);
+    if (!sameListValue(originalCommunity, nextCommunity)) {
+      diff.community_artifact = { old: originalCommunity, new: nextCommunity };
+    }
+    if (!sameScalarValue(app.cicd_build_image || "", form.cicd_build_image)) {
+      diff.build_image = { old: app.cicd_build_image || "", new: form.cicd_build_image.trim() };
+    }
+    const originalTimeout = normalizeTimeoutText(app.cicd_test_timeout || "40");
+    const nextTimeout = normalizeTimeoutText(form.cicd_test_timeout);
+    if (originalTimeout !== nextTimeout) {
+      diff.test_timeout = { old: Number(originalTimeout), new: Number(nextTimeout) };
+    }
+    if (!sameScalarValue(app.cicd_notes || "", form.cicd_notes)) {
+      diff.notes = { old: app.cicd_notes || "", new: form.cicd_notes.trim() };
+    }
+    return diff;
+  }
+
+  async function submitAppCicdChange() {
+    if (!app) return;
+    setSaving(true);
+    setSaveErr("");
+    try {
+      const diff = buildAppCicdDiff();
+      if (!Object.keys(diff).length) {
+        setSaveErr("CICD 配置没有任何字段发生变化。");
+        return;
+      }
+      await submitCicdRequest({
+        task_id: app.id,
+        request_type: "modify",
+        payload: diff,
+      });
+      setDirty(false);
+      setEditMode(false);
+      snap && setForm(snapshotToForm(snap, app));
+      void queryClient.invalidateQueries({ queryKey: ["cicd", "requests"] });
+      void queryClient.invalidateQueries({ queryKey: ["cicd", "tasks"] });
+      void queryClient.invalidateQueries({ queryKey: ["cicd", "requests", "app-workbench"] });
+      alert("CICD 变更申请已提交，等待 RM 审批。");
+    } catch (e) {
+      setSaveErr("提交 CICD 变更申请失败：" + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function doSave(
     confirmOwner: boolean,
     snapshotUpdate: Record<string, unknown>,
@@ -1138,7 +1372,15 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       const result = await apiPost<{ snapshot?: Snapshot; missing_items?: unknown[] }>("/api/apps/update", {
         release_id: release.id,
         app_id: app.id,
-        app: { git_url: form.git_url, git_branch: form.git_branch },
+        app: {
+          git_url: form.git_url,
+          git_branch: form.git_branch,
+          cicd_repo_type: form.cicd_repo_type,
+          cicd_community_artifact: form.cicd_community_artifact,
+          cicd_build_image: form.cicd_build_image,
+          cicd_test_timeout: form.cicd_test_timeout,
+          cicd_notes: form.cicd_notes,
+        },
         snapshot: snapshotUpdate,
         sync_decision: syncDecision,
       });
@@ -1146,6 +1388,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       setSyncDialog(null);
       setDirty(false);
       setEditMode(false);
+      void queryClient.invalidateQueries({ queryKey: ["cicd", "requests"] });
       onSaved();
 
       if (confirmOwner) {
@@ -1213,19 +1456,38 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
   }
 
   async function handleFetchAppInfo() {
-    if (!app || !release) return;
-    if (!window.confirm(`从 Gerrit 拉取 ${app.git_url} ${app.git_branch} 的 app_info.json？`)) return;
+    if (!app || !snap || !release) return;
+    if (!window.confirm(`从 Gerrit 拉取 ${formatGerritUrl(app.git_url)} ${app.git_branch} 的 app_info.json？`)) return;
     if (dirty && !window.confirm("拉取 app_info 会用服务端最新内容刷新表单，未保存的表单修改会丢失。是否继续？")) return;
+    setFetchProgress({
+      title: "正在从 Gerrit 拉取 app_info",
+      currentApp: displayName(snap),
+      currentIdentity: `${formatGerritUrl(app.git_url)} @ ${app.git_branch}`,
+      total: 1,
+      completed: 0,
+      ok: 0,
+      failed: 0,
+      failures: [],
+    });
     try {
       const result = await apiPost<{ commit_id?: string; source?: string }>("/api/app-info/fetch", {
         release_id: release.id,
         app_id: app.id,
       });
+      setFetchProgress((p) => p && { ...p, completed: 1, ok: 1 });
       setDirty(false);
       onSaved();
       alert(`Gerrit app_info.json 拉取成功，已停留在编辑状态，可继续编辑。\n\ncommit: ${result.commit_id ?? "未知"}\nsource: ${result.source ?? ""}`);
     } catch (e) {
+      setFetchProgress((p) => p && {
+        ...p,
+        completed: 1,
+        failed: 1,
+        failures: [`${app.id}: ${e instanceof Error ? e.message : String(e)}`],
+      });
       alert(`Gerrit app_info.json 拉取失败：\n\n${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setFetchProgress(null);
     }
   }
 
@@ -1238,18 +1500,30 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     );
   }
 
-  // Find the CICD task linked to this app via normalized (repo_name, branch) identity key.
-  // sameGitIdentity mirrors Python identity.same_identity() so both legacy bare-name apps
-  // (app.git_url = "hpc_abacus") and cicd-first full-SSH-URL apps match task.repo_name.
-  const cicdTask: CicdTask | null =
-    (cicdTasksData?.tasks ?? []).find(
-      (t) => sameGitIdentity(t.repo_name, t.branch, app.git_url ?? "", app.git_branch ?? ""),
-    ) ?? null;
-
   const rel = isReleaseSnap(snap);
   const prog = ownerProgress(snap);
   const todo = docsItems(snap);
   const descCount = appDescriptionCount(form.description);
+  const communityRequired = form.cicd_community_artifact.trim().length > 0;
+  const appOpenCicd = app
+    ? (appCicdOpenRequests ?? []).filter((req) => requestMatchesApp(req, app))
+    : [];
+  const appCicdHistory = app
+    ? (appCicdHistoryRequests?.requests ?? [])
+      .filter((req) => requestMatchesApp(req, app))
+      .sort((a, b) => String(b.submitted_at || "").localeCompare(String(a.submitted_at || "")))
+    : [];
+  const decisionSyncReq = appOpenCicd.find((req) => {
+    const payload = (req.payload ?? {}) as Record<string, unknown>;
+    return req.origin === "release_decision_sync" && !!payload.status;
+  });
+  const displayedCicdStatus = (() => {
+    const payload = (decisionSyncReq?.payload ?? {}) as Record<string, { old?: unknown }>;
+    const oldStatus = String(payload.status?.old ?? "").trim();
+    return oldStatus === "Running" || oldStatus === "Stopped"
+      ? oldStatus
+      : appCicdStatus(snap.release_decision);
+  })();
 
   const footNote = editMode
     ? "编辑中 · 刷新前请先保存或取消"
@@ -1299,15 +1573,23 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
           style={{ position: "relative" }}
         >
           CICD
-          {cicdTask?.has_pending && (
-            <span className="cicd-badge" style={{ marginLeft: 4, fontSize: 10 }}>!</span>
-          )}
         </button>
       </div>
 
       {detailTab === "cicd" ? (
         <div className="detail-body" data-testid="detail-cicd-pane">
-          <AppCicdPane task={cicdTask} app={app} userRole={user?.role ?? ""} />
+          <AppCicdPane
+            app={app}
+            releaseDecision={snap.release_decision}
+            displayedStatus={displayedCicdStatus}
+            editMode={editMode}
+            canEdit={canEditDetail}
+            form={form}
+            pendingRequests={appOpenCicd}
+            historyRequests={appCicdHistory}
+            onPatch={patch}
+          />
+          {saveErr && <p className="lerr" style={{ padding: "0 0 1rem" }}>{saveErr}</p>}
         </div>
       ) : (
       <div className="detail-body">
@@ -1397,14 +1679,16 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
                   disabled={!editMode} />
               </label>
               <label>Gerrit URL
-                <input className="input" value={form.git_url}
-                  onChange={(e) => patch("git_url", e.target.value)}
-                  disabled={!editMode || !userIsRM} />
+                <input className="input" value={formatGerritUrl(form.git_url)}
+                  disabled
+                  data-testid="field-git-url" />
+                <span className="field-help">Gerrit 身份属于 CICD 配置，请在本 App 的 CICD tab 中修改。</span>
               </label>
               <label>Branch
                 <input className="input" value={form.git_branch}
-                  onChange={(e) => patch("git_branch", e.target.value)}
-                  disabled={!editMode || !userIsRM} />
+                  disabled
+                  data-testid="field-git-branch" />
+                <span className="field-help">Gerrit 分支属于 CICD 配置，请在本 App 的 CICD tab 中修改。</span>
               </label>
               <label>官方 URL
                 <input className="input" value={form.official_url}
@@ -1420,12 +1704,20 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
                     <option key={v} value={v}>{releaseDecisionLabels[v]}</option>
                   ))}
                 </select>
+                {decisionSyncReq && (
+                  <span className="field-help">
+                    CICD 状态变更正在{cicdWorkflowState(decisionSyncReq)}
+                    （申请 #{decisionSyncReq.id}
+                    {decisionSyncReq.jira_id ? `，Jira ${decisionSyncReq.jira_id}` : ""}）：
+                    {cicdRequestSummary(decisionSyncReq)}
+                  </span>
+                )}
               </label>
               {/* Inline preview: show expected CICD status change when decision differs */}
-              {editMode && cicdTask && form.release_decision !== snap.release_decision && (
+              {editMode && form.release_decision !== snap.release_decision && (
                 <div style={{ gridColumn: "1 / -1", marginTop: -4, marginBottom: 4 }} data-testid="cicd-decision-preview">
                   <span className="small warnp">
-                    ⟳ 待审批：CICD 任务将变为{" "}
+                    ⟳ App CICD 状态将显示为{" "}
                     <b>{form.release_decision === "stopped" ? "Stopped" : "Running"}</b>
                   </span>
                 </div>
@@ -1433,23 +1725,29 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
               <label>版本（来自 app_info）
                 <input className="input" value={snap.version ?? ""} disabled />
               </label>
-              <label>X86 芯片
+              <label>X86 芯片（来自 app_info）
                 <input className="input" value={orderChips(snap.x86_chips)} disabled />
+                <span className="field-help">由 app_info.json 解析生成，不能在文档信息中手动修改。</span>
               </label>
-              <label>ARM 芯片
+              <label>ARM 芯片（来自 app_info）
                 <input className="input" value={orderChips(snap.arm_chips)} disabled />
+                <span className="field-help">由 app_info.json 解析生成，不能在文档信息中手动修改。</span>
               </label>
               <label>Python label（来自 app_info）
                 <input className="input" value={snap.python_labels ?? ""} disabled />
+                <span className="field-help">由 app_info.json 解析生成，不能在文档信息中手动修改。</span>
               </label>
               <label>PyTorch label（来自 app_info）
                 <input className="input" value={snap.pytorch_labels ?? ""} disabled />
+                <span className="field-help">由 app_info.json 解析生成，不能在文档信息中手动修改。</span>
               </label>
               <label>OS（来自 app_info）
                 <input className="input" value={snap.build_os ?? ""} disabled />
+                <span className="field-help">由 app_info.json 解析生成，不能在文档信息中手动修改。</span>
               </label>
               <label>Arch（来自 app_info）
                 <input className="input" value={snap.build_arches ?? ""} disabled />
+                <span className="field-help">由 app_info.json 解析生成，不能在文档信息中手动修改。</span>
               </label>
             </div>
             {/* Description with char counter */}
@@ -1532,21 +1830,29 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
         <details className="section" open>
           <summary><span className="chev">▶</span> 社区发布与 Sanity</summary>
           <div className="section-body">
+            {!communityRequired && (
+              <div className="banner" style={{ marginTop: 0 }}>
+                CICD 中没有选择开发者社区产物，社区发布情况、Python 版本和框架版本暂不可填写。
+              </div>
+            )}
             <div className="form">
               <label>开发者社区发布情况
-                <input className="input" value={form.community_release}
+                <input className="input" aria-label="开发者社区发布情况" value={form.community_release}
                   onChange={(e) => patch("community_release", e.target.value)}
-                  disabled={!editMode} />
+                  disabled={!editMode || !communityRequired} />
+                {!communityRequired && <span className="field-help">不可填写：CICD 中没有选择开发者社区产物。</span>}
               </label>
               <label>社区包支持 Python 版本
-                <input className="input" value={form.community_python}
+                <input className="input" aria-label="社区包支持 Python 版本" value={form.community_python}
                   onChange={(e) => patch("community_python", e.target.value)}
-                  disabled={!editMode} />
+                  disabled={!editMode || !communityRequired} />
+                {!communityRequired && <span className="field-help">不可填写：CICD 中没有选择开发者社区产物。</span>}
               </label>
               <label>社区包支持框架及版本
-                <input className="input" value={form.community_framework}
+                <input className="input" aria-label="社区包支持框架及版本" value={form.community_framework}
                   onChange={(e) => patch("community_framework", e.target.value)}
-                  disabled={!editMode} />
+                  disabled={!editMode || !communityRequired} />
+                {!communityRequired && <span className="field-help">不可填写：CICD 中没有选择开发者社区产物。</span>}
               </label>
             </div>
             {!userIsOwner && (
@@ -1631,11 +1937,10 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       </div>
       )}
 
-      {/* Footer actions — only shown on docs tab */}
-      {detailTab === "docs" && (
+      {/* Footer actions */}
       <div className="detail-foot">
         <span className="foot-note">{footNote}</span>
-        {canEditDetail && editMode && (
+        {detailTab === "docs" && canEditDetail && editMode && (
           <button
             className="btn ghost sm"
             onClick={() => setShowCopyDialog(true)}
@@ -1652,19 +1957,20 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
         {canEditDetail && editMode && userIsRM && (
           <>
             <button className="btn" onClick={() => { setEditMode(false); setDirty(false); snap && app && setForm(snapshotToForm(snap, app)); }}>取消</button>
-            <button className="btn primary" onClick={() => void handleSave(false)} disabled={saving}>保存</button>
+            <button className="btn primary" onClick={() => void handleSave(false)} disabled={saving}>
+              {detailTab === "cicd" ? "提交 CICD 变更申请" : "保存"}
+            </button>
           </>
         )}
         {canEditDetail && editMode && userIsOwner && (
           <>
             <button className="btn" onClick={() => { setEditMode(false); setDirty(false); snap && app && setForm(snapshotToForm(snap, app)); }}>取消</button>
-            <button className="btn good" onClick={() => void handleSave(true)} disabled={saving} title="保存当前内容，并确认本 app 的发布信息已补齐">
-              ✓ 保存并提交 Owner 确认
+            <button className="btn good" onClick={() => void handleSave(true)} disabled={saving} title={detailTab === "cicd" ? "提交 CICD 变更申请，等待 RM 审批" : "保存当前内容，并确认本 app 的发布信息已补齐"}>
+              {detailTab === "cicd" ? "提交 CICD 变更申请" : "✓ 保存并提交 Owner 确认"}
             </button>
           </>
         )}
       </div>
-      )}
 
       {/* F1 — decision-sync owner-choice dialog */}
       {syncDialog && (
@@ -1687,6 +1993,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
           onPick={(rid) => void handleCopyFromVersion(rid)}
         />
       )}
+      {fetchProgress && <AppInfoFetchProgressDialog progress={fetchProgress} />}
     </div>
   );
 }
@@ -1918,6 +2225,7 @@ interface ChangeLogTableProps {
 }
 
 function ChangeLogTable({ entries, loading }: ChangeLogTableProps) {
+  const [openRows, setOpenRows] = useState<Record<number, boolean>>({});
   if (loading) return <p className="muted small">加载中…</p>;
   if (!entries) return <p className="muted small">展开后自动加载</p>;
   if (!entries.length) return <p className="muted small">暂无变更记录</p>;
@@ -1928,14 +2236,42 @@ function ChangeLogTable({ entries, loading }: ChangeLogTableProps) {
           <tr><th>时间</th><th>操作人</th><th>角色</th><th>事件</th></tr>
         </thead>
         <tbody>
-          {entries.map((e, i) => (
-            <tr key={i}>
-              <td>{formatServerTime(e.ts)}</td>
-              <td>{e.user}</td>
-              <td>{e.role}</td>
-              <td>{e.message}</td>
-            </tr>
-          ))}
+          {entries.map((e, i) => {
+            const detail = e.detail ?? [];
+            const hasDetail = detail.length > 0;
+            return (
+              <React.Fragment key={i}>
+                <tr
+                  className={hasDetail ? "cl-clickable" : ""}
+                  onClick={() => hasDetail && setOpenRows((rows) => ({ ...rows, [i]: !rows[i] }))}
+                  style={hasDetail ? { cursor: "pointer" } : undefined}
+                >
+                  <td>{formatServerTime(e.ts)}</td>
+                  <td>{e.user}</td>
+                  <td>{e.role}</td>
+                  <td>{e.message}{hasDetail ? <span className="small muted"> ▸ 详情</span> : null}</td>
+                </tr>
+                {hasDetail && openRows[i] && (
+                  <tr className="cl-detail">
+                    <td colSpan={4}>
+                      <table className="cl-detail-table">
+                        <thead><tr><th>字段</th><th>原值</th><th>新值</th></tr></thead>
+                        <tbody>
+                          {detail.map((d, j) => (
+                            <tr key={j}>
+                              <td>{d.label || d.field}</td>
+                              <td>{cicdValueText(d.old)}</td>
+                              <td>{cicdValueText(d.new)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -1950,6 +2286,7 @@ export function AppWorkbenchPage() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const userIsOwner = isOwner(user);
+  const userIsRM = isRM(user);
 
   const {
     selectedApp, setSelectedApp,
@@ -1985,12 +2322,15 @@ export function AppWorkbenchPage() {
   const [search, setSearch] = useState("");
   const [ownOnly, setOwnOnly] = useState(false);
   const [showNewApp, setShowNewApp] = useState(false);
+  const [bulkFetching, setBulkFetching] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<AppInfoFetchProgress | null>(null);
 
   const release = data?.release ?? null;
   const apps = data?.apps ?? [];
   const releases = data?.releases ?? [];
   const displayNames = data?.user_display_names ?? {};
   const locked = releaseLocked(release);
+  const docDeadline = beforeDocDeadline(release);
 
   // Build filtered + sorted app rows
   const allRows = apps
@@ -2015,6 +2355,77 @@ export function AppWorkbenchPage() {
 
   function handleSaved() {
     void refetch();
+  }
+
+  function handleRefresh() {
+    void queryClient.invalidateQueries({ queryKey: ["cicd", "requests"] });
+    void queryClient.invalidateQueries({ queryKey: ["cicd", "deliveries"] });
+    void queryClient.invalidateQueries({ queryKey: ["cicd", "tasks"] });
+    void refetch();
+  }
+
+  async function handleFetchAllAppInfos() {
+    if (!release || bulkFetching) return;
+    if (appDetailDirty && !window.confirm("当前表单已有未保存修改，批量拉取后页面会刷新。是否继续？")) return;
+    if (!window.confirm(`从 Gerrit 批量拉取「${release.name}」中 ${allRows.length} 个 App 的 app_info.json？`)) return;
+
+    setBulkFetching(true);
+    setBulkProgress({
+      title: "正在批量拉取 Gerrit app_info",
+      total: allRows.length,
+      completed: 0,
+      ok: 0,
+      failed: 0,
+      failures: [],
+    });
+    const results: { app_id: string; ok: boolean; error?: string }[] = [];
+    try {
+      for (const { app, snap } of allRows) {
+        setBulkProgress((p) => p && {
+          ...p,
+          currentApp: displayName(snap),
+          currentIdentity: `${formatGerritUrl(app.git_url)} @ ${app.git_branch}`,
+        });
+        try {
+          await apiPost<{ commit_id?: string; source?: string }>("/api/app-info/fetch", {
+            release_id: release.id,
+            app_id: app.id,
+          });
+          results.push({ app_id: app.id, ok: true });
+          setBulkProgress((p) => p && {
+            ...p,
+            completed: p.completed + 1,
+            ok: p.ok + 1,
+          });
+        } catch (e) {
+          const errorMsg = e instanceof Error ? e.message : String(e);
+          results.push({ app_id: app.id, ok: false, error: errorMsg });
+          setBulkProgress((p) => p && {
+            ...p,
+            completed: p.completed + 1,
+            failed: p.failed + 1,
+            failures: [...p.failures, `${app.id}: ${errorMsg}`],
+          });
+        }
+      }
+      await refetch();
+
+      const ok = results.filter((r) => r.ok).length;
+      const failed = results.filter((r) => !r.ok);
+      const failurePreview = failed
+        .slice(0, 8)
+        .map((r) => `- ${r.app_id}: ${r.error ?? "未知错误"}`)
+        .join("\n");
+      alert([
+        `Gerrit app_info.json 批量拉取完成：成功 ${ok}，失败 ${failed.length}。`,
+        failurePreview ? `\n失败项：\n${failurePreview}${failed.length > 8 ? "\n- ..." : ""}` : "",
+      ].join(""));
+    } catch (e) {
+      alert(`Gerrit app_info.json 批量拉取失败：\n\n${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBulkProgress(null);
+      setBulkFetching(false);
+    }
   }
 
   function handleNewAppCreated(appId: string) {
@@ -2052,11 +2463,28 @@ export function AppWorkbenchPage() {
             ))}
           </select>
         )}
+        {userIsRM && release && (
+          <button
+            className="btn sm"
+            onClick={() => void handleFetchAllAppInfos()}
+            disabled={bulkFetching || locked || !docDeadline}
+            title={
+              locked
+                ? "Release 已锁定，不能拉取 app_info"
+                : !docDeadline
+                  ? "Doc deadline 已过，app_info 已冻结"
+                  : "从 Gerrit 批量拉取当前 release 的 app_info.json"
+            }
+            data-testid="fetch-all-app-info-btn"
+          >
+            {bulkFetching ? "批量拉取中..." : "批量拉取 Gerrit app_info"}
+          </button>
+        )}
         <span className="spacer" />
         <RefreshBar
           dataUpdatedAt={dataUpdatedAt}
           isFetching={isFetching}
-          onRefresh={() => void refetch()}
+          onRefresh={handleRefresh}
         />
       </div>
 
@@ -2099,6 +2527,7 @@ export function AppWorkbenchPage() {
           onCreated={handleNewAppCreated}
         />
       )}
+      {bulkProgress && <AppInfoFetchProgressDialog progress={bulkProgress} />}
     </section>
   );
 }

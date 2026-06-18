@@ -399,7 +399,8 @@ async def post_cicd_apps_fetch_preview(
     if role not in cicd_service.CICD_CREATE_ROLES:
         raise AuthzError("只有 Owner、RM 可以预览 Gerrit app_info")
 
-    result = cicd_service.preview_cicd_app_info(
+    result = cicd_service.preview_cicd_app_info_for_create(
+        conn,
         repo_type=body.get("repo_type", "git"),
         repo_name=body.get("repo_name", ""),
         branch=body.get("branch", ""),
@@ -474,6 +475,11 @@ async def post_cicd_apps_new(
             "build_image": body.get("build_image", ""),
             "test_timeout": body.get("test_timeout", 40),
             "notes": body.get("notes", ""),
+            "cicd_repo_type": body.get("cicd_repo_type", ""),
+            "cicd_community_artifact": body.get("cicd_community_artifact", ""),
+            "cicd_build_image": body.get("cicd_build_image", ""),
+            "cicd_test_timeout": body.get("cicd_test_timeout", ""),
+            "cicd_notes": body.get("cicd_notes", ""),
         },
         app_info_parsed=body.get("app_info_parsed") or None,
         app_info_commit_id=body.get("app_info_commit_id", ""),

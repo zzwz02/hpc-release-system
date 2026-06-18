@@ -79,6 +79,11 @@ def api_apps_new(
         git_branch=body["git_branch"],
         release_decision=body["release_decision"],
         doc_target=body.get("doc_target", "manual"),
+        cicd_repo_type=body.get("cicd_repo_type", ""),
+        cicd_community_artifact=body.get("cicd_community_artifact", ""),
+        cicd_build_image=body.get("cicd_build_image", ""),
+        cicd_test_timeout=body.get("cicd_test_timeout", ""),
+        cicd_notes=body.get("cicd_notes", ""),
     )
     return result
 

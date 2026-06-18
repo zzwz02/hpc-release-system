@@ -13,7 +13,8 @@ from __future__ import annotations
 import sqlite3
 
 from app.db.connection import transaction
-from app.repositories import cicd_repo
+from app.identity import same_identity
+from app.repositories import apps_repo, cicd_repo, releases_repo, snapshots_repo
 from app.timeutil import beijing_timestamp
 
 # ---------------------------------------------------------------------------
@@ -32,6 +33,23 @@ _DECISION_TO_CICD_STATUS: dict[str, str] = {
     "cicd_only": "Running",
     "stopped": "Stopped",
 }
+
+_APP_CICD_FIELD_TO_PAYLOAD_FIELD: dict[str, str] = {
+    "cicd_repo_type": "repo_type",
+    "cicd_community_artifact": "community_artifact",
+    "cicd_build_image": "build_image",
+    "cicd_test_timeout": "test_timeout",
+    "cicd_notes": "notes",
+}
+
+_PAYLOAD_FIELD_TO_APP_CICD_FIELD: dict[str, str] = {
+    value: key for key, value in _APP_CICD_FIELD_TO_PAYLOAD_FIELD.items()
+}
+
+_APP_CICD_MUTABLE_FIELDS: frozenset[str] = frozenset(_PAYLOAD_FIELD_TO_APP_CICD_FIELD)
+_APP_BACKED_MUTABLE_FIELDS: frozenset[str] = _APP_CICD_MUTABLE_FIELDS | frozenset(
+    {"repo_name", "branch"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -67,18 +85,211 @@ def _validate_payload_fields(payload: dict) -> None:
             raise RuntimeError(f"不支持的 CICD 字段：{field}")
 
 
+def _latest_release_id(conn: sqlite3.Connection) -> str | None:
+    releases = releases_repo.list_release_rows(conn)
+    return releases[-1]["id"] if releases else None
+
+
+def _snapshot_for_app_latest(conn: sqlite3.Connection, app_id: str) -> dict:
+    release_id = _latest_release_id(conn)
+    if not release_id:
+        return {}
+    return snapshots_repo.get_snapshot(conn, release_id, app_id) or {}
+
+
+def _status_from_snapshot(snapshot: dict) -> str:
+    return _DECISION_TO_CICD_STATUS.get(
+        (snapshot.get("release_decision") or "release").strip(),
+        "Running",
+    )
+
+
+def _community_payload_from_app(value: str | None) -> list[str]:
+    raw = (value or "").strip()
+    if not raw:
+        return []
+    aliases = {"image": "image", "镜像": "image", "pkg": "pkg", "package": "pkg", "软件包": "pkg"}
+    items: list[str] = []
+    for part in raw.replace("，", ",").split(","):
+        mapped = aliases.get(part.strip())
+        if mapped and mapped not in items:
+            items.append(mapped)
+    return items
+
+
+def _community_app_value(value: object) -> str:
+    aliases = {"image": "image", "镜像": "image", "pkg": "pkg", "package": "pkg", "软件包": "pkg"}
+    if isinstance(value, list):
+        raw_items = [str(item).strip() for item in value]
+    else:
+        raw_items = str(value or "").replace("，", ",").split(",")
+    items: list[str] = []
+    for item in raw_items:
+        mapped = aliases.get(item.strip())
+        if mapped and mapped not in items:
+            items.append(mapped)
+    return ", ".join(items)
+
+
+def _test_timeout_value(value: object) -> int:
+    try:
+        parsed = int(str(value or "").strip() or "40")
+    except ValueError:
+        parsed = 40
+    return parsed if parsed > 0 else 40
+
+
+def _linked_task_by_app_id(conn: sqlite3.Connection) -> dict[str, dict]:
+    rows = conn.execute("SELECT * FROM cicd_tasks WHERE app_id IS NOT NULL").fetchall()
+    result: dict[str, dict] = {}
+    for row in rows:
+        task = cicd_repo._task_row(row)  # repository row shaper; keeps API compatibility
+        result.setdefault(task["app_id"], task)
+    return result
+
+
+def _task_id_to_app_id(conn: sqlite3.Connection, task_id: str | None) -> str | None:
+    if not task_id:
+        return None
+    if apps_repo.get_app(conn, task_id):
+        return task_id
+    task = cicd_repo.get_task(conn, task_id)
+    if task and task.get("app_id"):
+        return task["app_id"]
+    return None
+
+
+def _update_app_git_identity(
+    conn: sqlite3.Connection,
+    app_id: str,
+    *,
+    git_url: str | None = None,
+    git_branch: str | None = None,
+) -> None:
+    app = apps_repo.get_app(conn, app_id)
+    if not app:
+        return
+    next_url = str(git_url if git_url is not None else app.get("git_url", "")).strip()
+    next_branch = str(git_branch if git_branch is not None else app.get("git_branch", "")).strip()
+    if next_url == app.get("git_url", "") and next_branch == app.get("git_branch", ""):
+        return
+    collision = conn.execute(
+        "SELECT id FROM apps WHERE git_url = ? AND git_branch = ? AND id != ?",
+        (next_url, next_branch, app_id),
+    ).fetchone()
+    if collision:
+        raise RuntimeError(
+            f"该 Gerrit URL + branch 已被 app {collision['id']} 占用，不能改成相同值"
+        )
+    app["git_url"] = next_url
+    app["git_branch"] = next_branch
+    apps_repo.save_app(conn, app)
+
+
+def _app_to_cicd_task(
+    app: dict,
+    snapshot: dict,
+    linked_task: dict | None,
+) -> dict:
+    owners = snapshot.get("owners") or []
+    owner_username = owners[0] if owners else (linked_task or {}).get("owner_username", "")
+    aliases = app.get("aliases") or []
+    fallback_name = aliases[0] if aliases else app["id"]
+    return {
+        "id": (linked_task or {}).get("id") or app["id"],
+        "app_id": app["id"],
+        "app_name": snapshot.get("official_name") or fallback_name,
+        "app_version": snapshot.get("version", ""),
+        "repo_type": app.get("cicd_repo_type") or "git",
+        "repo_name": app.get("git_url", ""),
+        "branch": app.get("git_branch", ""),
+        "build_product": [],
+        "community_artifact": _community_payload_from_app(app.get("cicd_community_artifact")),
+        "build_image": app.get("cicd_build_image", ""),
+        "test_timeout": _test_timeout_value(app.get("cicd_test_timeout")),
+        "owner_username": owner_username,
+        "status": _status_from_snapshot(snapshot),
+        "notes": app.get("cicd_notes", ""),
+        "created_at": app.get("created_at", ""),
+        "updated_at": (linked_task or {}).get("updated_at") or app.get("created_at", ""),
+        "has_pending": False,
+        "has_pending_delivery": False,
+        "owner_display": owner_username,
+    }
+
+
+def _app_cicd_tasks(conn: sqlite3.Connection) -> list[dict]:
+    linked_by_app = _linked_task_by_app_id(conn)
+    tasks = [
+        _app_to_cicd_task(
+            app,
+            _snapshot_for_app_latest(conn, app["id"]),
+            linked_by_app.get(app["id"]),
+        )
+        for app in apps_repo.list_apps(conn)
+    ]
+    task_to_app = {task["id"]: task["app_id"] for task in tasks}
+    pending_task_ids = cicd_repo.pending_task_ids(conn)
+    delivery_task_ids = cicd_repo.delivery_pending_task_ids(conn)
+    pending_app_ids = {
+        task_to_app.get(task_id, task_id)
+        for task_id in pending_task_ids
+    }
+    delivery_app_ids = {
+        task_to_app.get(task_id, task_id)
+        for task_id in delivery_task_ids
+    }
+    for task in tasks:
+        task["has_pending"] = task["app_id"] in pending_app_ids or task["id"] in pending_task_ids
+        task["has_pending_delivery"] = task["app_id"] in delivery_app_ids or task["id"] in delivery_task_ids
+    _apply_open_decision_status_overrides(conn, tasks)
+    _attach_owner_display(conn, tasks)
+    return tasks
+
+
+def _apply_open_decision_status_overrides(
+    conn: sqlite3.Connection,
+    tasks: list[dict],
+) -> None:
+    """Keep displayed CICD status at the old value while decision-sync is open."""
+    task_to_row = {task["id"]: task for task in tasks}
+    app_to_row = {task["app_id"]: task for task in tasks if task.get("app_id")}
+    rows = conn.execute(
+        """
+        SELECT task_id, payload
+        FROM cicd_task_requests
+        WHERE origin = 'release_decision_sync'
+          AND request_type = 'modify'
+          AND (
+            status = 'pending'
+            OR delivery_status IN ('pending', 'returned')
+          )
+        ORDER BY submitted_at DESC, id DESC
+        """
+    ).fetchall()
+    for row in rows:
+        payload = cicd_repo._load_payload(row["payload"])
+        change = payload.get("status") if isinstance(payload, dict) else None
+        if not isinstance(change, dict):
+            continue
+        old_status = str(change.get("old") or "").strip()
+        if not old_status:
+            continue
+        task_id = row["task_id"] or ""
+        task = task_to_row.get(task_id) or app_to_row.get(task_id)
+        if task:
+            task["status"] = old_status
+
+
 def _attach_task_info(
     conn: sqlite3.Connection,
     items: list[dict],
 ) -> None:
-    """Attach task display fields to a list of request dicts.
-
-    Mirrors core.py:_attach_cicd_request_task_info.
-    """
-    task_ids = list({d["task_id"] for d in items if d.get("task_id")})
-    task_map = cicd_repo.task_mini_info(conn, task_ids)
+    """Attach App-backed task display fields to a list of request dicts."""
+    task_map = {task["id"]: task for task in _app_cicd_tasks(conn)}
+    app_map = {task["app_id"]: task for task in task_map.values()}
     for d in items:
-        t = task_map.get(d.get("task_id") or "", {})
+        t = task_map.get(d.get("task_id") or "", {}) or app_map.get(d.get("task_id") or "", {})
         if not t and d.get("request_type") == "create":
             p = d.get("payload") or {}
             d["task_app_name"] = p.get("app_name", "")
@@ -118,13 +329,82 @@ def _attach_owner_display(
         t["owner_display"] = dn if dn else u
 
 
+def _apply_app_identity(conn: sqlite3.Connection, tasks: list[dict]) -> None:
+    """Use apps.git_url/git_branch as canonical identity for linked tasks."""
+    app_ids = sorted({t.get("app_id") for t in tasks if t.get("app_id")})
+    if not app_ids:
+        return
+    rows = conn.execute(
+        "SELECT id, git_url, git_branch FROM apps WHERE id IN ({})".format(
+            ",".join("?" * len(app_ids))
+        ),
+        app_ids,
+    ).fetchall()
+    app_map = {r["id"]: r for r in rows}
+    for task in tasks:
+        app_id = task.get("app_id")
+        app = app_map.get(app_id)
+        if not app:
+            continue
+        task["repo_name"] = app["git_url"]
+        task["branch"] = app["git_branch"]
+
+
+def _reject_linked_repo_mutation(conn: sqlite3.Connection, task_id: str | None, payload: dict) -> None:
+    """Linked CICD tasks inherit repo identity from apps; block CICD-side edits."""
+    repo_fields = {"repo_name", "branch"}
+    touched = repo_fields & set(payload or {})
+    if not touched or not task_id:
+        return
+    task = cicd_repo.get_task(conn, task_id)
+    if task and task.get("app_id"):
+        fields = "、".join(sorted(touched))
+        raise RuntimeError(
+            f"已关联 App 的 CICD 任务不能在 CICD 工作台修改 {fields}；"
+            "请在 App 工作台修改 Gerrit URL / Branch"
+        )
+
+
+def _link_unique_orphan_task_by_app_identity(
+    conn: sqlite3.Connection,
+    app_id: str,
+    *,
+    updated_at: str,
+) -> list[dict]:
+    """Attach the one orphan CICD task matching an app's repo identity, if any.
+
+    Migrated/legacy CICD rows may have app_id=NULL while still sharing the same
+    repo identity as an App.  Decision sync is app_id-driven, so it can safely
+    repair exactly one unlinked match before creating the status sync request.
+    """
+    app = apps_repo.get_app(conn, app_id)
+    if not app:
+        return []
+    matches = [
+        task for task in cicd_repo.unlinked_tasks(conn)
+        if same_identity(
+            task.get("repo_name", ""),
+            task.get("branch", ""),
+            app.get("git_url", ""),
+            app.get("git_branch", ""),
+        )
+    ]
+    if len(matches) != 1:
+        return []
+    task = matches[0]
+    cicd_repo.update_task_app_id(conn, task["id"], app_id, updated_at=updated_at)
+    task["app_id"] = app_id
+    task["updated_at"] = updated_at
+    return [task]
+
+
 # ---------------------------------------------------------------------------
 # Response-shape helpers — strip columns the old server never exposed
 # ---------------------------------------------------------------------------
 
-# app_id was added in Phase 0 as a new column; core.py never selected it in
-# list_cicd_tasks / get_cicd_task so it never appeared in golden responses.
-_TASK_STRIP: frozenset[str] = frozenset({"app_id"})
+# app_id is exposed so the App Workbench can link CICD tasks by the relational
+# association instead of guessing from mutable repo identity fields.
+_TASK_STRIP: frozenset[str] = frozenset()
 
 # origin was added in Phase 0 as an internal audit column; core.py never
 # selected it so it never appeared in any golden request responses.
@@ -170,6 +450,20 @@ def _apply_cicd_request(
     linked_app_id: str | None = payload.pop("app_id", None) or None
     _validate_payload_fields(payload)
     if request_type == "create":
+        app_id = linked_app_id or payload.get("app_id")
+        if app_id and apps_repo.get_app(conn, app_id):
+            apps_repo.update_cicd_config(
+                conn,
+                app_id,
+                {
+                    "cicd_repo_type": payload.get("repo_type", ""),
+                    "cicd_community_artifact": _community_app_value(payload.get("community_artifact")),
+                    "cicd_build_image": payload.get("build_image", ""),
+                    "cicd_test_timeout": payload.get("test_timeout", ""),
+                    "cicd_notes": payload.get("notes", ""),
+                },
+            )
+            return app_id
         new_id = cicd_repo.next_cicd_id(conn)
         cicd_repo.create_task(
             conn,
@@ -183,7 +477,7 @@ def _apply_cicd_request(
             build_product=payload.get("build_product", []),
             community_artifact=payload.get("community_artifact", []),
             build_image=payload.get("build_image", ""),
-            test_timeout=int(payload.get("test_timeout", 40)),
+            test_timeout=_test_timeout_value(payload.get("test_timeout", 40)),
             owner_username=payload.get("owner_username", ""),
             status=payload.get("status", "Running"),
             notes=payload.get("notes", ""),
@@ -196,6 +490,35 @@ def _apply_cicd_request(
         # modify: apply diff — payload is {field: {old, new}}
         if not task_id:
             raise RuntimeError("修改请求缺少 task_id")
+        app_id = _task_id_to_app_id(conn, task_id)
+        if app_id:
+            app_updates = {}
+            git_url_update: str | None = None
+            git_branch_update: str | None = None
+            for field, change in payload.items():
+                if field == "repo_name":
+                    git_url_update = str(change.get("new") or "").strip()
+                    continue
+                if field == "branch":
+                    git_branch_update = str(change.get("new") or "").strip()
+                    continue
+                app_field = _PAYLOAD_FIELD_TO_APP_CICD_FIELD.get(field)
+                if not app_field:
+                    continue
+                new_value = change.get("new")
+                if field == "community_artifact":
+                    new_value = _community_app_value(new_value)
+                app_updates[app_field] = new_value
+            if git_url_update is not None or git_branch_update is not None:
+                _update_app_git_identity(
+                    conn,
+                    app_id,
+                    git_url=git_url_update,
+                    git_branch=git_branch_update,
+                )
+            apps_repo.update_cicd_config(conn, app_id, app_updates)
+            return task_id
+        _reject_linked_repo_mutation(conn, task_id, payload)
         fields: dict = {}
         for field, change in payload.items():
             fields[field] = change.get("new")
@@ -213,22 +536,10 @@ def list_tasks(
     *,
     status_filter: str | None = None,
 ) -> list[dict]:
-    """Return all cicd_tasks with pending/delivery flags and owner display.
-
-    Mirrors core.py:list_cicd_tasks.
-    """
+    """Return App-backed CICD rows with pending/delivery flags."""
+    tasks = _app_cicd_tasks(conn)
     if status_filter and status_filter in CICD_STATUSES:
-        tasks = cicd_repo.list_tasks(conn, status_filter=status_filter)
-    else:
-        tasks = cicd_repo.list_tasks(conn)
-
-    pending_ids = cicd_repo.pending_task_ids(conn)
-    delivery_ids = cicd_repo.delivery_pending_task_ids(conn)
-    for t in tasks:
-        t["has_pending"] = t["id"] in pending_ids
-        t["has_pending_delivery"] = t["id"] in delivery_ids
-
-    _attach_owner_display(conn, tasks)
+        tasks = [task for task in tasks if task["status"] == status_filter]
     return [_strip_task(t) for t in tasks]
 
 
@@ -352,6 +663,17 @@ def submit_request(
         raise RuntimeError(
             "CICD 修改申请不允许直接修改运行状态；运行/停止由 App 决策驱动（Ruling A/D）"
         )
+    if request_type == "modify":
+        app_id = _task_id_to_app_id(conn, task_id)
+        if app_id:
+            unsupported = set(payload or {}) - _APP_BACKED_MUTABLE_FIELDS
+            if unsupported:
+                fields = "、".join(sorted(unsupported))
+                raise RuntimeError(
+                    f"CICD 工作台只能修改 App 表中的 CICD 配置字段；不支持：{fields}"
+                )
+        else:
+            _reject_linked_repo_mutation(conn, task_id, payload)
     ts = beijing_timestamp()
     with transaction(conn):
         req_id = cicd_repo.insert_request(
@@ -757,6 +1079,7 @@ def sync_decision_to_cicd(
     *,
     submitter: str,
     origin: str = "release_decision_sync",
+    current_status_override: str | None = None,
 ) -> dict | None:
     """Create a pending modify request to sync the CICD task's running/stopped state.
 
@@ -772,25 +1095,27 @@ def sync_decision_to_cicd(
     if not target_status:
         return None  # unknown decision value — defensive no-op
 
+    ts = beijing_timestamp()
     tasks = cicd_repo.tasks_for_app(conn, app_id)
     if not tasks:
-        return None  # app not yet linked to any CICD task
+        tasks = _link_unique_orphan_task_by_app_identity(conn, app_id, updated_at=ts)
+    task_id = tasks[0]["id"] if tasks else app_id
+    current_status = tasks[0].get("status", "") if tasks else (current_status_override or "")
 
-    task = tasks[0]  # 1:1 cardinality: at most one linked task per app
-    current_status = task.get("status", "")
-
-    if current_status == target_status:
-        return None  # already at target — no-op (idempotent)
-
-    # Idempotent guard: skip if there is already a pending modify touching status
-    if cicd_repo.has_open_modify_on_field(conn, task["id"], "status"):
+    if tasks and current_status == target_status:
         return None
 
-    ts = beijing_timestamp()
+    # Idempotent guard: skip if there is already a pending modify touching status.
+    if (
+        cicd_repo.has_open_modify_on_field(conn, task_id, "status")
+        or (task_id != app_id and cicd_repo.has_open_modify_on_field(conn, app_id, "status"))
+    ):
+        return None
+
     payload = {"status": {"old": current_status, "new": target_status}}
     req_id = cicd_repo.insert_request(
         conn,
-        task_id=task["id"],
+        task_id=task_id,
         request_type="modify",
         payload=payload,
         submitter=submitter,
@@ -1033,6 +1358,48 @@ def preview_cicd_app_info(
         "commit_id": commit_id,
         "parsed": parsed,  # full blob — pass to cicd_first_new_app as app_info_parsed
     }
+
+
+def preview_cicd_app_info_for_create(
+    conn: sqlite3.Connection,
+    *,
+    repo_type: str,
+    repo_name: str,
+    branch: str,
+    submitter_role: str,
+    _fetch_fn=None,
+) -> dict:
+    """DB-aware fetch-preview for the new-app wizard.
+
+    This keeps the read-only preview behavior, but rejects an already-known
+    app identity before contacting Gerrit.  Users get the duplicate error when
+    they click "拉取" instead of waiting for Gerrit and only failing at create.
+    """
+    from app.identity import repo_to_git_identity
+
+    if submitter_role not in CICD_CREATE_ROLES:
+        raise PermissionError("只有 Owner、RM 可以预览 Gerrit app_info")
+    if not (repo_name or "").strip():
+        raise ValueError("repo_name 不能为空，请检查 repo_name / branch")
+    if not (branch or "").strip():
+        raise ValueError("branch 不能为空，请检查 repo_name / branch")
+
+    git_url, git_branch = repo_to_git_identity(repo_type, repo_name, branch)
+    if git_url and git_branch:
+        existing_app = _find_app_by_identity(conn, git_url, git_branch)
+        if existing_app:
+            raise RuntimeError(
+                f"该 Gerrit URL + branch 已存在 app（{existing_app['id']}），"
+                "请直接修改已有 app，不能重复创建"
+            )
+
+    return preview_cicd_app_info(
+        repo_type=repo_type,
+        repo_name=repo_name,
+        branch=branch,
+        submitter_role=submitter_role,
+        _fetch_fn=_fetch_fn,
+    )
 
 
 def make_fake_app_info_fetch(
@@ -1296,6 +1663,18 @@ def cicd_first_new_app(
                 )
                 core.save_snapshot(conn, rel["id"], app_id, snap)
 
+        apps_repo.update_cicd_config(
+            conn,
+            app_id,
+            {
+                "cicd_repo_type": payload.get("cicd_repo_type", ""),
+                "cicd_community_artifact": payload.get("cicd_community_artifact", ""),
+                "cicd_build_image": payload.get("cicd_build_image", ""),
+                "cicd_test_timeout": payload.get("cicd_test_timeout", ""),
+                "cicd_notes": payload.get("cicd_notes", ""),
+            },
+        )
+
         # ---- Create pending CICD 'create' request (Ruling B: always pending) ----
         # Embed app_id in payload: when RM approves, _apply_cicd_request will
         # pop it and pass it to cicd_repo.create_task so the new task is linked.
@@ -1309,7 +1688,7 @@ def cicd_first_new_app(
             "build_product": payload.get("build_product", []),
             "community_artifact": payload.get("community_artifact", []),
             "build_image": payload.get("build_image", ""),
-            "test_timeout": int(payload.get("test_timeout") or 40),
+            "test_timeout": _test_timeout_value(payload.get("test_timeout")),
             "owner_username": submitter,
             "status": "Running",  # initial task status — aligned with cicd_only decision
             "notes": payload.get("notes", ""),

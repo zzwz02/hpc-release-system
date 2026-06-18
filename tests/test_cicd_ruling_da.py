@@ -320,14 +320,15 @@ class TestRulingDIdempotency:
         reqs = _pending_modify_requests(temp_db, task_id)
         assert len(reqs) == 1
 
-    def test_noop_no_linked_task(self, temp_db):
-        """No-op: app_id has no linked cicd_task → return None."""
+    def test_app_id_request_when_no_linked_task(self, temp_db):
+        """App-backed CICD: no linked legacy task still creates an app-id request."""
         result = _sync(temp_db, _APP_NONE, "stopped")
-        assert result is None
-        # No requests were created
+        assert result is not None
+        assert result["task_id"] == _APP_NONE
         assert temp_db.execute(
-            "SELECT COUNT(*) FROM cicd_task_requests"
-        ).fetchone()[0] == 0
+            "SELECT COUNT(*) FROM cicd_task_requests WHERE task_id=?",
+            (_APP_NONE,),
+        ).fetchone()[0] == 1
 
     def test_task_status_unchanged_after_sync(self, temp_db):
         """Sync creates PENDING request — task status not yet changed (awaits approval)."""
@@ -593,8 +594,8 @@ class TestDecisionSyncIntegration:
         )
         assert "cicd_sync" in response
 
-    def test_no_linked_task_created_false(self, temp_db, tmp_dir):
-        """Decision change with no linked CICD task → cicd_sync.created = False."""
+    def test_no_linked_task_created_app_id_request(self, temp_db, tmp_dir):
+        """Decision change with no linked legacy task creates an App-backed request."""
         from app.services import app_service
 
         release_id, app_id = self._setup_release_app(temp_db, tmp_dir)
@@ -603,8 +604,51 @@ class TestDecisionSyncIntegration:
             user="rm", role="RM",
             fields={"snapshot": {"release_decision": "stopped"}},
         )
-        assert response["cicd_sync"]["created"] is False
-        assert response["cicd_sync"]["request"] is None
+        assert response["cicd_sync"]["created"] is True
+        assert response["cicd_sync"]["request"]["task_id"] == app_id
+
+    def test_orphan_task_matching_app_identity_is_linked_and_synced(self, temp_db, tmp_dir):
+        """Decision sync repairs one orphan CICD task with the same repo identity."""
+        from app.services import app_service
+
+        release_id, app_id = self._setup_release_app(temp_db, tmp_dir)
+        ts = beijing_timestamp()
+        with transaction(temp_db):
+            cicd_repo.create_task(
+                temp_db,
+                task_id="CICD-ORPHAN",
+                app_id=None,
+                app_name="TestApp",
+                app_version="1.0",
+                repo_type="git",
+                repo_name="hpc_testapp",
+                branch="maca",
+                build_product=["maca"],
+                community_artifact=[],
+                build_image="",
+                test_timeout=40,
+                owner_username="rm",
+                status="Running",
+                notes="orphan from migration",
+                created_at=ts,
+                updated_at=ts,
+            )
+
+        response = app_service.update_snapshot(
+            temp_db, release_id, app_id,
+            user="rm", role="RM",
+            fields={"snapshot": {"release_decision": "stopped"}},
+        )
+
+        assert response["cicd_sync"]["created"] is True
+        task = cicd_repo.get_task(temp_db, "CICD-ORPHAN")
+        assert task["app_id"] == app_id
+        req = response["cicd_sync"]["request"]
+        raw_payload = req.get("payload", {})
+        payload = (
+            json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+        )
+        assert payload["status"]["new"] == "Stopped"
 
     def test_linked_task_created_true(self, temp_db, tmp_dir):
         """Decision change WITH linked task → cicd_sync.created = True."""

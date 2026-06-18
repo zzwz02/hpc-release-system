@@ -30,6 +30,7 @@ import xml.etree.ElementTree as ET
 RESOLVED_REPO_BASE = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC"
 MANIFEST_REPO_URL = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/manifest"
 MANIFEST_BRANCH = "master"
+MANIFEST_FETCH_TIMEOUT_SECONDS = 10
 
 # In-process resolution cache.
 # Key:   xml_path (stripped leading '/')
@@ -57,7 +58,11 @@ def _git_archive_extract(remote: str, branch: str, path: str, dest_dir: str) -> 
         f"tar -x -C {shlex.quote(dest_dir)}"
     )
     result = subprocess.run(
-        cmd, shell=True, capture_output=True, text=True, timeout=60
+        cmd,
+        shell=True,
+        capture_output=True,
+        text=True,
+        timeout=MANIFEST_FETCH_TIMEOUT_SECONDS,
     )
     if result.returncode != 0:
         print(f"  [warn] git archive failed: {result.stderr.strip()}")

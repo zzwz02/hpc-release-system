@@ -124,6 +124,14 @@ def tasks_for_app(conn: sqlite3.Connection, app_id: str) -> list[dict[str, Any]]
     return [_task_row(r) for r in rows]
 
 
+def unlinked_tasks(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return cicd_tasks not linked to any app."""
+    rows = conn.execute(
+        "SELECT * FROM cicd_tasks WHERE app_id IS NULL ORDER BY id"
+    ).fetchall()
+    return [_task_row(r) for r in rows]
+
+
 def find_tasks_by_identity(
     conn: sqlite3.Connection,
     repo_name: str,
@@ -195,8 +203,15 @@ def task_mini_info(
     if not task_ids:
         return {}
     rows = conn.execute(
-        "SELECT id, app_name, app_version, repo_name, branch, status "
-        "FROM cicd_tasks WHERE id IN ({})".format(",".join("?" * len(task_ids))),
+        """
+        SELECT t.id, t.app_name, t.app_version,
+               COALESCE(a.git_url, t.repo_name) AS repo_name,
+               COALESCE(a.git_branch, t.branch) AS branch,
+               t.status
+        FROM cicd_tasks t
+        LEFT JOIN apps a ON a.id = t.app_id
+        WHERE t.id IN ({})
+        """.format(",".join("?" * len(task_ids))),
         task_ids,
     ).fetchall()
     return {r["id"]: row_to_dict(r) for r in rows}

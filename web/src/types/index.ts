@@ -49,6 +49,11 @@ export interface App {
   id: string;
   git_url: string;
   git_branch: string;
+  cicd_repo_type?: string;
+  cicd_community_artifact?: string;
+  cicd_build_image?: string;
+  cicd_test_timeout?: string;
+  cicd_notes?: string;
   created_by: string;
   created_at: string;
   aliases: string[];
@@ -299,6 +304,7 @@ export interface StatePayload {
 
 export interface CicdTask {
   id: string;
+  app_id?: string;
   app_name: string;
   app_version: string;
   repo_type: string;

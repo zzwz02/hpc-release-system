@@ -39,7 +39,7 @@ import json
 import pytest
 
 from app.services import cicd_service
-from tests.conftest import seed_release
+from tests.conftest import seed_app, seed_release
 
 # ---------------------------------------------------------------------------
 # Shared constants
@@ -399,6 +399,32 @@ class TestFetchPreviewHttp:
         conn.close()
         assert after_apps == before_apps
         assert after_reqs == before_reqs
+
+    def test_duplicate_identity_gives_400_before_gerrit_fetch(self, db_path, tmp_dir):
+        """Existing app identity is rejected before contacting Gerrit."""
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        from app.db.connection import connect as app_connect
+
+        conn = app_connect(db_path)
+        release_id = seed_release(conn, tmp_path=tmp_dir)
+        seed_app(
+            conn,
+            release_id,
+            official_name="ExistingW3Cicd",
+            git_url=_RESOLVED_URL,
+            git_branch=_BRANCH,
+        )
+        conn.close()
+
+        app = _make_app(db_path)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            with patch("app.integrations.gerrit.fetch_app_info") as fetch_mock:
+                resp = client.post(_PREVIEW_PATH, json=_PREVIEW_BODY)
+
+        assert resp.status_code == 400, resp.text
+        assert "已存在 app" in resp.json()["error"]
+        fetch_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

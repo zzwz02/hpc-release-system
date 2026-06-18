@@ -232,14 +232,14 @@ describe("CicdPage", () => {
     expect(screen.queryByText("最近申请")).not.toBeInTheDocument();
   });
 
-  // ── New task button ────────────────────────────────────────────────────────
+  // ── App-backed CICD config ────────────────────────────────────────────────
 
-  it("shows new-task button for RM", async () => {
+  it("does not show legacy new-task button for RM", async () => {
     renderCicd("RM");
     await waitFor(() => {
       expect(screen.getByText("任务总览")).toBeInTheDocument();
     });
-    expect(screen.getByText(/新建 CICD 任务/)).toBeInTheDocument();
+    expect(screen.queryByText(/新建 CICD 任务/)).not.toBeInTheDocument();
   });
 
   it("hides new-task button for SPD", async () => {
@@ -495,18 +495,20 @@ describe("CicdPage", () => {
     });
   });
 
-  // ── W2: Status field read-only in TaskFormDialog ──────────────────────────
+  // ── W2: App CICD config form ──────────────────────────────────────────────
 
-  it("TaskFormDialog: status field is read-only (no editable select for status)", async () => {
+  it("TaskFormDialog: edits App CICD config fields and has no editable status field", async () => {
     renderCicd("RM");
-    await waitFor(() => expect(screen.getByText(/新建 CICD 任务/)).toBeInTheDocument());
-    await userEvent.click(screen.getByText(/新建 CICD 任务/));
+    await waitFor(() => expect(screen.getByText("TestApp")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("修改"));
     // Dialog opens
     await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
-    // Status should be shown as disabled input, not as a select
-    const statusInput = screen.getByDisplayValue("Running");
-    expect(statusInput.tagName).toBe("INPUT");
-    expect(statusInput).toBeDisabled();
+    const dialog = screen.getByRole("dialog");
+    expect(screen.getByText(/修改 App CICD 配置/)).toBeInTheDocument();
+    expect(dialog.textContent).toContain("开发者社区产物");
+    expect(screen.getByLabelText("构建依赖镜像")).toBeInTheDocument();
+    expect(screen.getByLabelText("镜像")).toBeInTheDocument();
+    expect(screen.getByLabelText("软件包")).toBeInTheDocument();
     // Should NOT have a <select> for status with Running/Stopped/Abandoned options
     const selects = document.querySelectorAll("dialog select, .dialog-card select");
     const hasStatusSelect = Array.from(selects).some((s) =>

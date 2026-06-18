@@ -9,6 +9,34 @@ from typing import Any
 
 from app.repositories.base import dumps_json, loads_json, row_to_dict
 
+_COMMUNITY_ARTIFACT_ALIASES = {
+    "image": "image",
+    "镜像": "image",
+    "pkg": "pkg",
+    "package": "pkg",
+    "软件包": "pkg",
+}
+
+
+def _normalize_cicd_value(key: str, value: Any) -> str:
+    raw = str(value or "").strip()
+    if key == "cicd_repo_type":
+        return raw if raw in {"git", "repo"} else "git"
+    if key == "cicd_test_timeout":
+        try:
+            parsed = int(raw or "40")
+        except ValueError:
+            parsed = 40
+        return str(parsed if parsed > 0 else 40)
+    if key == "cicd_community_artifact":
+        items: list[str] = []
+        for part in raw.replace("，", ",").split(","):
+            mapped = _COMMUNITY_ARTIFACT_ALIASES.get(part.strip())
+            if mapped and mapped not in items:
+                items.append(mapped)
+        return ", ".join(items)
+    return raw
+
 # ---------------------------------------------------------------------------
 # Row shaping — mirror core.py:row_to_app
 # ---------------------------------------------------------------------------
@@ -111,6 +139,33 @@ def save_app(conn: sqlite3.Connection, app: dict[str, Any]) -> None:
 def delete_app(conn: sqlite3.Connection, app_id: str) -> None:
     """Delete an app row (business preconditions enforced by caller)."""
     conn.execute("DELETE FROM apps WHERE id = ?", (app_id,))
+
+
+def update_cicd_config(
+    conn: sqlite3.Connection,
+    app_id: str,
+    fields: dict[str, Any],
+) -> None:
+    """Update CICD config columns stored directly on apps."""
+    allowed = {
+        "cicd_repo_type",
+        "cicd_community_artifact",
+        "cicd_build_image",
+        "cicd_test_timeout",
+        "cicd_notes",
+    }
+    updates = {
+        key: _normalize_cicd_value(key, value)
+        for key, value in (fields or {}).items()
+        if key in allowed
+    }
+    if not updates:
+        return
+    assignments = ", ".join(f"{key} = ?" for key in updates)
+    conn.execute(
+        f"UPDATE apps SET {assignments} WHERE id = ?",
+        [*updates.values(), app_id],
+    )
 
 
 def delete_draft_artifacts_for_releases(

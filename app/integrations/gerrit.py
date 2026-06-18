@@ -15,6 +15,7 @@ from pathlib import Path
 # Mirrors server.py:1428-1429
 HPC_GERRIT_PREFIX = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/"
 HPC_GERRIT_ROOT = "ssh://sw-gerrit-devops.metax-internal.com:29418/"
+GERRIT_FETCH_TIMEOUT_SECONDS = 10
 
 
 def gerrit_remote_url(
@@ -40,7 +41,7 @@ def _run_git(
     args: list[str],
     *,
     cwd: str | Path,
-    timeout: int = 60,
+    timeout: int = GERRIT_FETCH_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         args,
@@ -80,7 +81,7 @@ def fetch_app_info(
         archive = _run_git(
             ["git", "archive", f"--remote={remote_url}", commit_id, "app_info.json"],
             cwd=project_root,
-            timeout=120,
+            timeout=GERRIT_FETCH_TIMEOUT_SECONDS,
         )
         with tarfile.open(fileobj=io.BytesIO(archive.stdout), mode="r:*") as tar:
             member = tar.getmember("app_info.json")

@@ -89,6 +89,10 @@ class TestAppsRepo:
         assert result["id"] == "test-app"
         assert result["git_url"] == "ssh://gerrit/repo"
         assert result["aliases"] == ["Test App"]  # aliases_json deserialized
+        assert result["cicd_repo_type"] == ""
+        assert result["cicd_community_artifact"] == ""
+        assert result["cicd_build_image"] == ""
+        assert result["cicd_test_timeout"] == ""
 
     def test_get_app_missing(self):
         assert apps_repo.get_app(self.conn, "nonexistent") is None

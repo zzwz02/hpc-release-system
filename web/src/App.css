@@ -215,8 +215,17 @@ textarea { line-height: 1.5; resize: vertical; min-height: 64px; }
   outline: 0; border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
+.input:disabled, .select:disabled, select:disabled, textarea:disabled,
+input:disabled {
+  background: var(--surface-3);
+  color: var(--muted);
+  border-color: var(--border);
+  cursor: not-allowed;
+  opacity: 1;
+}
 .input.sm, input.sm { padding: 5px 8px; font-size: 12.5px; }
 .field-label, .field-label > span, .lfield-lbl, .prog-label { display: block; font-size: 12px; font-weight: 600; color: var(--ink-2); margin-bottom: 5px; }
+.field-help { display: block; margin-top: 4px; font-size: 11.5px; line-height: 1.35; color: var(--muted); font-weight: 400; }
 .field-label.required::after, .required::after { content: " *"; color: var(--bad-fg); }
 .form { display: grid; gap: 11px; }
 .form label { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }

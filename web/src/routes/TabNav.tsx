@@ -9,8 +9,8 @@
  * Mirrors legacy cicdBadge logic (index.html:3940).
  * Badge clears when CicdPage mounts (markCicdVisited + invalidateQueries).
  */
-import { NavLink, useLocation } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { NavLink } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../api/AuthContext";
 import { useUiStore } from "../store/uiStore";
 import { ROUTES, type Role } from "./routeConfig";
@@ -21,8 +21,8 @@ import {
 
 export function TabNav() {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const role = user?.role as Role | undefined;
-  const { pathname } = useLocation();
 
   // R2: staleTime:Infinity, no focus-refetch.  Badge refreshes via
   // invalidateQueries called by CicdPage on mount (after mark-visited).
@@ -34,7 +34,7 @@ export function TabNav() {
     refetchOnWindowFocus: false,
     refetchOnMount: true,
     refetchOnReconnect: false,
-    refetchInterval: false,
+    refetchInterval: 1000,
   });
 
   // Backend /api/cicd/notifications returns {count, last_visited_at}
@@ -48,13 +48,30 @@ export function TabNav() {
   // F3: when the App 工作台 detail form has unsaved edits, confirm before
   // navigating to another tab. Reads the shared store at click time so it
   // never interferes with navigation when the form is clean.
-  function handleNavClick(e: React.MouseEvent<HTMLAnchorElement>, isActive: boolean) {
-    if (isActive) return; // re-clicking the current tab does nothing
+  function refreshRoute(view: string) {
+    if (view === "artifacts") return;
+    if (["dashboard", "init", "apps", "qa", "admin"].includes(view)) {
+      void queryClient.invalidateQueries({ queryKey: ["state"] });
+    }
+    if (view === "qa") {
+      void queryClient.invalidateQueries({ queryKey: ["qa-reports"] });
+    }
+    if (view === "cicd") {
+      void queryClient.invalidateQueries({ queryKey: ["cicd"] });
+    }
+    if (view === "wiki") {
+      void queryClient.invalidateQueries({ queryKey: ["wiki"] });
+    }
+  }
+
+  function handleNavClick(e: React.MouseEvent<HTMLAnchorElement>, view: string) {
     if (useUiStore.getState().appDetailDirty) {
       if (!window.confirm("有未保存的修改，确认放弃并离开?")) {
         e.preventDefault();
+        return;
       }
     }
+    refreshRoute(view);
   }
 
   return (
@@ -71,8 +88,7 @@ export function TabNav() {
             }
             end={route.path === "/"}
             onClick={(e) => {
-              const active = route.path === "/" ? pathname === "/" : pathname === route.path;
-              handleNavClick(e, active);
+              handleNavClick(e, route.view);
             }}
           >
             {route.view === "cicd" && cicdBadge ? (

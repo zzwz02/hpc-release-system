@@ -24,6 +24,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../../api/AuthContext";
 import { RefreshBar } from "../../components/RefreshBar";
 import { formatServerTime } from "../../lib/time";
+import { formatGerritUrl } from "../../lib/git";
 import { useUiStore } from "../../store/uiStore";
 import {
   CICD_TASKS_KEY,
@@ -126,6 +127,21 @@ function ownerLabel(task: CicdTask): string {
 
 function userLabel(username: string, display?: string): string {
   return display && display !== username ? display : username;
+}
+
+const CICD_REPO_TYPE_OPTIONS = ["git", "repo"] as const;
+const CICD_COMMUNITY_ARTIFACT_OPTIONS = [
+  { value: "image", label: "镜像" },
+  { value: "pkg", label: "软件包" },
+] as const;
+
+function toggleCommunityArtifact(arr: string[], item: string): string[] {
+  return arr.includes(item) ? arr.filter((v) => v !== item) : [...arr, item];
+}
+
+function normalizeTimeoutNumber(value: string | number | null | undefined): number {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 40;
 }
 
 // ---------------------------------------------------------------------------
@@ -254,63 +270,26 @@ function DiffTable({
 // ---------------------------------------------------------------------------
 
 interface TaskFormValues {
-  app_name: string;
-  app_version: string;
-  owner_username: string;
   repo_type: string;
-  repo_name: string;
-  branch: string;
-  build_product: string[];
   community_artifact: string[];
   build_image: string;
   test_timeout: number;
-  status: string;
   notes: string;
   [key: string]: unknown;
 }
 
-function emptyTaskForm(username: string): TaskFormValues {
-  return {
-    app_name: "",
-    app_version: "",
-    owner_username: username,
-    repo_type: "git",
-    repo_name: "",
-    branch: "",
-    build_product: [],
-    community_artifact: [],
-    build_image: "",
-    test_timeout: 40,
-    status: "Running",
-    notes: "",
-  };
-}
-
 function taskToForm(t: CicdTask): TaskFormValues {
   return {
-    app_name: t.app_name,
-    app_version: t.app_version,
-    owner_username: t.owner_username,
     repo_type: t.repo_type,
-    repo_name: t.repo_name,
-    branch: t.branch,
-    build_product: t.build_product ?? [],
     community_artifact: t.community_artifact ?? [],
     build_image: t.build_image,
-    test_timeout: t.test_timeout ?? 40,
-    status: t.status,
+    test_timeout: normalizeTimeoutNumber(t.test_timeout),
     notes: t.notes,
   };
 }
 
-const BUILD_PRODUCT_OPTIONS = ["maca", "x86", "arm"];
-const COMMUNITY_ARTIFACT_OPTIONS = [
-  { value: "image", label: "镜像" },
-  { value: "pkg", label: "软件包" },
-];
-
 interface TaskFormDialogProps {
-  task: CicdTask | null;     // null = new task
+  task: CicdTask;
   username: string;
   onSubmitted: () => void;
   onClose: () => void;
@@ -322,69 +301,48 @@ function TaskFormDialog({
   onSubmitted,
   onClose,
 }: TaskFormDialogProps) {
+  void username;
   const [form, setForm] = useState<TaskFormValues>(() =>
-    task ? taskToForm(task) : emptyTaskForm(username),
+    taskToForm(task),
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const isRepo = form.repo_type === "repo";
-
-  function toggleArr(arr: string[], val: string): string[] {
-    return arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val];
-  }
-
   async function handleSubmit() {
-    if (!form.app_name.trim()) {
-      setError("请填写项目名称");
-      return;
-    }
     setSaving(true);
     setError("");
     try {
-      if (!task) {
-        // New task
-        const payload = { ...form };
-        await submitCicdRequest({
-          task_id: null,
-          request_type: "create",
-          payload: payload,
-        });
-      } else {
-        // Modify: build diff
-        const orig = taskToForm(task);
-        const diff: Record<string, { old: unknown; new: unknown }> = {};
-        for (const [key, newVal] of Object.entries(form)) {
-          const oldVal = (orig as Record<string, unknown>)[key];
-          const oldStr = Array.isArray(oldVal) ? oldVal.join(",") : String(oldVal ?? "");
-          const newStr = Array.isArray(newVal) ? (newVal as string[]).join(",") : String(newVal ?? "");
-          if (oldStr !== newStr) {
-            diff[key] = { old: oldVal, new: newVal };
-          }
+      const orig = taskToForm(task);
+      const diff: Record<string, { old: unknown; new: unknown }> = {};
+      for (const [key, newVal] of Object.entries(form)) {
+        const oldVal = (orig as Record<string, unknown>)[key];
+        const oldStr = Array.isArray(oldVal) ? oldVal.join(",") : String(oldVal ?? "");
+        const newStr = Array.isArray(newVal) ? (newVal as string[]).join(",") : String(newVal ?? "");
+        if (oldStr !== newStr) {
+          diff[key] = { old: oldVal, new: newVal };
         }
-        if (!Object.keys(diff).length) {
-          setError("没有任何字段发生变化");
-          setSaving(false);
-          return;
-        }
-        // Cancel existing pending if any (mirrors index.html:4357-4363)
-        if (task.has_pending) {
-          try {
-            const pend = await fetchCicdRequests({
-              taskId: task.id,
-              status: "pending",
-            });
-            for (const r of pend.requests ?? []) {
-              await cancelCicdRequest({ request_id: r.id }).catch(() => {});
-            }
-          } catch { /* cancelling stale pending requests is best-effort; ignore errors */ }
-        }
-        await submitCicdRequest({
-          task_id: task.id,
-          request_type: "modify",
-          payload: diff,
-        });
       }
+      if (!Object.keys(diff).length) {
+        setError("没有任何字段发生变化");
+        setSaving(false);
+        return;
+      }
+      if (task.has_pending) {
+        try {
+          const pend = await fetchCicdRequests({
+            taskId: task.id,
+            status: "pending",
+          });
+          for (const r of pend.requests ?? []) {
+            await cancelCicdRequest({ request_id: r.id }).catch(() => {});
+          }
+        } catch { /* cancelling stale pending requests is best-effort; ignore errors */ }
+      }
+      await submitCicdRequest({
+        task_id: task.id,
+        request_type: "modify",
+        payload: diff,
+      });
       onSubmitted();
       onClose();
     } catch (e) {
@@ -397,107 +355,40 @@ function TaskFormDialog({
   return (
     <div className="dialog-backdrop" role="dialog" aria-modal="true">
       <div className="dialog-card" style={{ maxWidth: 560 }}>
-        <h2>{task ? `修改 CICD 任务 ${task.id}` : "新建 CICD 任务"}</h2>
+        <h2>修改 App CICD 配置 {task.id}</h2>
         {task?.has_pending && (
           <div className="lerr" style={{ marginBottom: 8 }}>
             警告：该任务有待审批的申请，提交后将自动取消旧申请。
           </div>
         )}
         <div className="dialog-body" style={{ display: "grid", gap: 8 }}>
-          <label>
-            项目名称 <span className="required">*</span>
-            <input
-              className="input"
-              value={form.app_name}
-              onChange={(e) => setForm({ ...form, app_name: e.target.value })}
-              placeholder="例：amber"
-            />
-          </label>
-          <label>
-            项目版本
-            <input
-              className="input"
-              value={form.app_version}
-              onChange={(e) => setForm({ ...form, app_version: e.target.value })}
-            />
-          </label>
-          <label>
-            负责人
-            <input
-              className="input"
-              value={form.owner_username}
-              onChange={(e) => setForm({ ...form, owner_username: e.target.value })}
-            />
-          </label>
+          <div className="small muted">
+            {task.app_name} {task.app_version} · {formatGerritUrl(task.repo_name)}@{task.branch}
+          </div>
           <label>
             仓库类型
             <select
-              className="input"
+              className="select"
               value={form.repo_type}
-              onChange={(e) => {
-                const v = e.target.value;
-                setForm({
-                  ...form,
-                  repo_type: v,
-                  branch: v === "repo" ? "master" : form.branch,
-                });
-              }}
+              onChange={(e) => setForm({ ...form, repo_type: e.target.value })}
             >
-              <option value="git">git</option>
-              <option value="repo">repo</option>
+              {CICD_REPO_TYPE_OPTIONS.map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
             </select>
           </label>
-          <label>
-            仓库名
-            <input
-              className="input"
-              value={form.repo_name}
-              onChange={(e) => setForm({ ...form, repo_name: e.target.value })}
-            />
-          </label>
-          <label>
-            分支
-            <input
-              className="input"
-              value={isRepo ? "master" : form.branch}
-              disabled={isRepo}
-              onChange={(e) => setForm({ ...form, branch: e.target.value })}
-            />
-          </label>
-          <div>
-            <div className="field-label">构建产物</div>
-            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-              {BUILD_PRODUCT_OPTIONS.map((v) => (
-                <label key={v} className="check">
-                  <input
-                    type="checkbox"
-                    checked={form.build_product.includes(v)}
-                    onChange={() =>
-                      setForm({
-                        ...form,
-                        build_product: toggleArr(form.build_product, v),
-                      })
-                    }
-                  />{" "}
-                  {v}
-                </label>
-              ))}
-            </div>
-          </div>
           <div>
             <div className="field-label">开发者社区产物</div>
-            <div className="row" style={{ gap: 8 }}>
-              {COMMUNITY_ARTIFACT_OPTIONS.map(({ value, label }) => (
+            <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+              {CICD_COMMUNITY_ARTIFACT_OPTIONS.map(({ value, label }) => (
                 <label key={value} className="check">
                   <input
                     type="checkbox"
                     checked={form.community_artifact.includes(value)}
-                    onChange={() =>
-                      setForm({
-                        ...form,
-                        community_artifact: toggleArr(form.community_artifact, value),
-                      })
-                    }
+                    onChange={() => setForm({
+                      ...form,
+                      community_artifact: toggleCommunityArtifact(form.community_artifact, value),
+                    })}
                   />{" "}
                   {label}
                 </label>
@@ -518,16 +409,12 @@ function TaskFormDialog({
               className="input"
               type="number"
               min={1}
+              step={1}
               value={form.test_timeout}
               onChange={(e) =>
-                setForm({ ...form, test_timeout: parseInt(e.target.value) || 40 })
+                setForm({ ...form, test_timeout: normalizeTimeoutNumber(e.target.value) })
               }
             />
-          </label>
-          {/* Status is read-only — changed only via decision-sync or RM abandon action */}
-          <label>
-            状态
-            <input className="input" value={form.status} disabled readOnly />
           </label>
           <label>
             备注
@@ -907,7 +794,7 @@ function DetailDialog({
             const items: [string, string][] = [
               ["项目名称", task?.app_name || ctx.app_name || "—"],
               ["版本", task?.app_version || ctx.app_version || "—"],
-              ["仓库名", task?.repo_name || ctx.repo_name || "—"],
+              ["仓库名", formatGerritUrl(task?.repo_name || ctx.repo_name) || "—"],
               ["分支", task?.branch || ctx.branch || "—"],
             ];
             return (
@@ -946,7 +833,6 @@ interface OverviewPaneProps {
   canApprove: boolean;
   overviewFilter: string;
   onFilterChange: (f: string) => void;
-  onNewTask: () => void;
   onEdit: (t: CicdTask) => void;
   onHistory: (t: CicdTask) => void;
   onDelete: (t: CicdTask) => void;
@@ -959,7 +845,6 @@ function OverviewPane({
   canApprove,
   overviewFilter,
   onFilterChange,
-  onNewTask,
   onEdit,
   onHistory,
   onDelete,
@@ -1005,11 +890,6 @@ function OverviewPane({
           onChange={(e) => setSearch(e.target.value)}
         />
         <span style={{ flex: 1 }} />
-        {canSubmit && (
-          <button className="btn sm primary" onClick={onNewTask}>
-            + 新建 CICD 任务
-          </button>
-        )}
       </div>
       <div className="cicd-table-wrap">
         <table className="cicd-table">
@@ -1060,7 +940,7 @@ function OverviewPane({
                   <td>{t.app_version}</td>
                   <td>{t.repo_type}</td>
                   <td style={{ maxWidth: 160, wordBreak: "break-all" }}>
-                    {t.repo_name}
+                    {formatGerritUrl(t.repo_name)}
                   </td>
                   <td>{t.branch}</td>
                   <td>{buildProductStr(t.build_product)}</td>
@@ -1119,12 +999,11 @@ interface MyPaneProps {
   tasks: CicdTask[];
   username: string;
   canSubmit: boolean;
-  onNewTask: () => void;
   onEdit: (t: CicdTask) => void;
   onHistory: (t: CicdTask) => void;
 }
 
-function MyPane({ tasks, username, canSubmit, onNewTask, onEdit, onHistory }: MyPaneProps) {
+function MyPane({ tasks, username, canSubmit, onEdit, onHistory }: MyPaneProps) {
   const [search, setSearch] = useState("");
   const q = search.toLowerCase();
   let myTasks = tasks.filter((t) => t.owner_username === username);
@@ -1140,11 +1019,6 @@ function MyPane({ tasks, username, canSubmit, onNewTask, onEdit, onHistory }: My
           onChange={(e) => setSearch(e.target.value)}
         />
         <span style={{ flex: 1 }} />
-        {canSubmit && (
-          <button className="btn sm primary" onClick={onNewTask}>
-            + 新建 CICD 任务
-          </button>
-        )}
       </div>
       <div className="cicd-table-wrap">
         <table className="cicd-table">
@@ -1189,7 +1063,7 @@ function MyPane({ tasks, username, canSubmit, onNewTask, onEdit, onHistory }: My
                   <td>{t.app_version}</td>
                   <td>{t.repo_type}</td>
                   <td style={{ maxWidth: 140, wordBreak: "break-all" }}>
-                    {t.repo_name}
+                    {formatGerritUrl(t.repo_name)}
                   </td>
                   <td>{t.branch}</td>
                   <td>{buildProductStr(t.build_product)}</td>
@@ -1246,6 +1120,7 @@ function PendingPane({
     queryKey: ["cicd", "requests", "pending"],
     queryFn: () => fetchCicdRequests({ status: "pending" }),
     staleTime: 0,
+    refetchInterval: 1000,
     refetchOnMount: true,
   });
 
@@ -1578,6 +1453,7 @@ function DeliveryPane({
     queryKey: ["cicd", "deliveries", status],
     queryFn: () => fetchCicdDeliveries(status),
     staleTime: 0,
+    refetchInterval: delivered ? false : 1000,
     refetchOnMount: true,
   });
 
@@ -1857,7 +1733,7 @@ export function CicdPage() {
   const [activePane, setActivePane] = useState<SubPane>(defaultPane);
 
   // Dialog state
-  const [taskFormTarget, setTaskFormTarget] = useState<CicdTask | null | "new">(null);
+  const [taskFormTarget, setTaskFormTarget] = useState<CicdTask | null>(null);
   const [approveReq, setApproveReq] = useState<CicdRequest | null>(null);
   const [historyTaskId, setHistoryTaskId] = useState<string | null>(null);
   const [detailReq, setDetailReq] = useState<CicdRequest | null>(null);
@@ -1887,9 +1763,25 @@ export function CicdPage() {
     queryKey: CICD_NOTIFICATIONS_KEY,
     queryFn: fetchCicdNotifications,
     staleTime: Infinity,
-    refetchInterval: false,
+    refetchInterval: 1000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
+    refetchOnMount: true,
+  });
+
+  const { data: pendingCountData } = useQuery({
+    queryKey: ["cicd", "requests", "pending", "count"],
+    queryFn: () => fetchCicdRequests({ status: "pending" }),
+    staleTime: 0,
+    refetchInterval: 1000,
+    refetchOnMount: true,
+  });
+
+  const { data: deliveryCountData } = useQuery({
+    queryKey: ["cicd", "deliveries", "pending-count", role],
+    queryFn: () => fetchCicdDeliveries(role === "SPD" ? "pending" : "pending_or_returned"),
+    staleTime: 0,
+    refetchInterval: 1000,
     refetchOnMount: true,
   });
 
@@ -1902,6 +1794,15 @@ export function CicdPage() {
 
   const tasks = tasksData?.tasks ?? [];
   const notifCount = notifData?.count ?? 0;
+
+  useEffect(() => {
+    const pending = pendingCountData?.requests ?? [];
+    setPendingBadge(canApprove ? pending.length : pending.filter((r) => r.submitter === username).length);
+  }, [pendingCountData, canApprove, username]);
+
+  useEffect(() => {
+    setDeliveryBadge((deliveryCountData?.deliveries ?? []).length);
+  }, [deliveryCountData]);
 
   const handleRefresh = useCallback(() => {
     void refetchTasks();
@@ -1920,38 +1821,6 @@ export function CicdPage() {
   async function handleReEdit(req: CicdRequest) {
     // Find the task to prefill (we already have tasks loaded)
     const task = req.task_id ? tasks.find((t) => t.id === req.task_id) ?? null : null;
-    // For "create" rejected requests, show new-task form with payload prefilled
-    if (req.request_type === "create") {
-      // Build a synthetic task from the payload to prefill the form
-      const p = (req.payload ?? {}) as Record<string, unknown>;
-      const syntheticTask: CicdTask = {
-        id: "",
-        app_name: (p.app_name as string) ?? "",
-        app_version: (p.app_version as string) ?? "",
-        owner_username: (p.owner_username as string) ?? username,
-        repo_type: (p.repo_type as string) ?? "git",
-        repo_name: (p.repo_name as string) ?? "",
-        branch: (p.branch as string) ?? "",
-        build_product: (p.build_product as string[]) ?? [],
-        community_artifact: (p.community_artifact as string[]) ?? [],
-        build_image: (p.build_image as string) ?? "",
-        test_timeout: (p.test_timeout as number) ?? 40,
-        status: (p.status as string) ?? "Running",
-        notes: (p.notes as string) ?? "",
-        has_pending: false,
-        has_pending_delivery: false,
-        owner_display: "",
-        created_at: "",
-        updated_at: "",
-      };
-      // If the task already exists, re-edit as modify; otherwise re-use payload as create
-      if (task) {
-        setTaskFormTarget(task);
-      } else {
-        setTaskFormTarget(syntheticTask);
-      }
-      return;
-    }
     setTaskFormTarget(task);
   }
 
@@ -1969,7 +1838,7 @@ export function CicdPage() {
       {/* Dialogs */}
       {(taskFormTarget !== null) && (
         <TaskFormDialog
-          task={taskFormTarget === "new" ? null : taskFormTarget}
+          task={taskFormTarget}
           username={username}
           onSubmitted={handleMutated}
           onClose={() => setTaskFormTarget(null)}
@@ -2039,7 +1908,6 @@ export function CicdPage() {
           canApprove={canApprove}
           overviewFilter={cicdOverviewFilter}
           onFilterChange={setCicdOverviewFilter}
-          onNewTask={() => setTaskFormTarget("new")}
           onEdit={(t) => setTaskFormTarget(t)}
           onHistory={(t) => setHistoryTaskId(t.id)}
           onAbandon={async (t) => {
@@ -2067,7 +1935,6 @@ export function CicdPage() {
           tasks={tasks}
           username={username}
           canSubmit={canSubmit}
-          onNewTask={() => setTaskFormTarget("new")}
           onEdit={(t) => setTaskFormTarget(t)}
           onHistory={(t) => setHistoryTaskId(t.id)}
         />

@@ -25,6 +25,7 @@ import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
 import { isRM, isOwner, canEditQa } from "../../lib/roles";
 import { displayName } from "../../lib/identity";
+import { formatGerritUrl } from "../../lib/git";
 import { formatServerTime } from "../../lib/time";
 import { downloadCsv } from "../../lib/csv";
 import { qaStatusLabels, qaStatusOptions } from "../../lib/labels";
@@ -598,7 +599,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
                     />
                   </label>
                   <p className="small muted">
-                    Gerrit: {app.git_url || ""} {app.git_branch || ""}
+                    Gerrit: {formatGerritUrl(app.git_url)} {app.git_branch || ""}
                   </p>
                   {testResults.length > 0 && (
                     <details className="qa-test-results" style={{ marginTop: 6 }}>
@@ -1248,7 +1249,7 @@ function ReportTable({
                         if (["git_url", "git_branch"].includes(c))
                           return (
                             <td key={i} className="col-git">
-                              <div className="cell-wrap">{v}</div>
+                              <div className="cell-wrap">{c === "git_url" ? formatGerritUrl(v) : v}</div>
                             </td>
                           );
                         if (c === "对比")

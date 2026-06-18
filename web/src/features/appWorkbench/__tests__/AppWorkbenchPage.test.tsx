@@ -34,7 +34,7 @@ vi.mock("../../../api/AuthContext", () => ({
   useAuth: vi.fn(),
 }));
 
-import { apiGet } from "../../../api/http";
+import { apiGet, apiPost } from "../../../api/http";
 import { useAuth } from "../../../api/AuthContext";
 
 // ---------------------------------------------------------------------------
@@ -317,13 +317,79 @@ describe("AppWorkbenchPage", () => {
     const row2 = screen.getByTestId("app-row-app2");
     expect(row2.textContent).toContain("cicd_only");
   });
+
+  it("RM can bulk fetch app_info from Gerrit for the selected release", async () => {
+    vi.stubGlobal("alert", vi.fn());
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation((_url: string, body?: { app_id?: string }) => {
+      if (body?.app_id === "app2") return Promise.reject(new Error("Gerrit unreachable"));
+      return Promise.resolve({ commit_id: "abc", source: "repo/app1 main:app_info.json" });
+    });
+
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("fetch-all-app-info-btn"));
+    fireEvent.click(screen.getByTestId("fetch-all-app-info-btn"));
+
+    await waitFor(() => {
+      expect(apiPost).toHaveBeenCalledWith("/api/app-info/fetch", { release_id: "rel-1", app_id: "app1" });
+      expect(apiPost).toHaveBeenCalledWith("/api/app-info/fetch", { release_id: "rel-1", app_id: "app2" });
+    });
+    expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("成功 1，失败 1"));
+  });
+
+  it("shows an in-progress dialog while fetching one app_info from Gerrit", async () => {
+    vi.stubGlobal("alert", vi.fn());
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    let resolveFetch: ((value: { commit_id: string; source: string }) => void) | undefined;
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === "/api/app-info/fetch") {
+        return new Promise((resolve) => {
+          resolveFetch = resolve as (value: { commit_id: string; source: string }) => void;
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    fireEvent.click(screen.getByText("从 Gerrit 拉取"));
+
+    await waitFor(() => screen.getByTestId("app-info-fetch-progress"));
+    expect(screen.getByTestId("app-info-fetch-progress").textContent).toContain("正在从 Gerrit 拉取 app_info");
+
+    resolveFetch?.({ commit_id: "abc", source: "repo/app1 main:app_info.json" });
+    await waitFor(() => {
+      expect(screen.queryByTestId("app-info-fetch-progress")).toBeNull();
+    });
+  });
+
+  it("Owner cannot see the bulk Gerrit app_info fetch button", async () => {
+    (useAuth as ReturnType<typeof vi.fn>).mockReturnValue({
+      user: { username: "alice", role: "Owner", display_name: "Alice" },
+      ldapStatus: { enabled: false, uri: "" },
+      login: vi.fn(),
+      logout: vi.fn(),
+      clearUser: vi.fn(),
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makePayload({ user: { username: "alice", role: "Owner", display_name: "Alice" } }),
+    );
+
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("app-table"));
+    expect(screen.queryByTestId("fetch-all-app-info-btn")).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
 // F1 / F2 / F3 — decision-sync dialog, copy-from-version, unsaved guard
 // ---------------------------------------------------------------------------
 
-import { apiPost } from "../../../api/http";
 import { useUiStore } from "../../../store/uiStore";
 
 function twoReleaseSummaries(): ReleaseSummary[] {
@@ -543,42 +609,11 @@ describe("AppWorkbenchPage F2 copy-from-version", () => {
 });
 
 // ---------------------------------------------------------------------------
-// W2 — CicdLinkCard + decision-change preview
+// W2 — App CICD config pane + decision-change preview
 // ---------------------------------------------------------------------------
 
-import type { CicdTask } from "../../../types";
-
-function makeCicdTask(overrides: Partial<CicdTask> = {}): CicdTask {
-  return {
-    id: "task-99",
-    app_name: "AlphaApp",
-    app_version: "1.0",
-    owner_username: "alice",
-    owner_display: "Alice",
-    repo_type: "git",
-    repo_name: "repo/app1",   // matches makeApp("app1").git_url
-    branch: "main",            // matches makeApp("app1").git_branch
-    build_product: ["maca"],
-    community_artifact: [],
-    build_image: "gcc:12",
-    test_timeout: 40,
-    status: "Running",
-    notes: "",
-    has_pending: false,
-    has_pending_delivery: false,
-    created_at: "2026-01-01 00:00:00",
-    updated_at: "2026-01-01 00:00:00",
-    ...overrides,
-  };
-}
-
-function mockApiGetWithCicd(cicdTasks: CicdTask[] = [makeCicdTask()]) {
-  (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
-    if (url.includes("/api/cicd/tasks")) {
-      return Promise.resolve({ tasks: cicdTasks });
-    }
-    return Promise.resolve(makePayload());
-  });
+function mockApiGetForAppCicd(payload: StatePayload = makePayload()) {
+  (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
 }
 
 // Helper: click the CICD sub-tab in detail panel
@@ -588,7 +623,7 @@ async function clickCicdTab() {
   await waitFor(() => screen.getByTestId("detail-cicd-pane"));
 }
 
-describe("AppWorkbenchPage W2 CicdLinkCard", () => {
+describe("AppWorkbenchPage W2 App CICD config pane", () => {
   beforeEach(() => {
     vi.stubGlobal("alert", vi.fn());
     vi.stubGlobal("confirm", vi.fn(() => true));
@@ -596,8 +631,14 @@ describe("AppWorkbenchPage W2 CicdLinkCard", () => {
     useUiStore.getState().setAppDetailDirty(false);
   });
 
-  it("shows CicdLinkCard with status pill when task matches app identity", async () => {
-    mockApiGetWithCicd([makeCicdTask({ status: "Running" })]);
+  it("shows App CICD config with status derived from release decision", async () => {
+    const payload = makePayload({
+      apps: [
+        { ...makeApp("app1"), cicd_repo_type: "git", cicd_community_artifact: "image", cicd_build_image: "gcc:12", cicd_test_timeout: "40", cicd_notes: "nightly only" },
+        makeApp("app2"),
+      ],
+    });
+    mockApiGetForAppCicd(payload);
     const qc = makeQueryClient();
     renderPage(qc);
     await waitFor(() => screen.getByTestId("app-row-app1"));
@@ -607,12 +648,20 @@ describe("AppWorkbenchPage W2 CicdLinkCard", () => {
     await waitFor(() => {
       expect(screen.getByTestId("cicd-link-card")).toBeInTheDocument();
     });
-    expect(screen.getByTestId("cicd-task-link").textContent).toContain("task-99");
-    expect(screen.getByTestId("cicd-link-card").textContent).toContain("Running");
+    const pane = screen.getByTestId("cicd-link-card");
+    expect(pane.textContent).toContain("App CICD 配置");
+    expect(pane.textContent).toContain("Running");
+    expect((screen.getByTestId("field-cicd-repo-type") as HTMLSelectElement).value).toBe("git");
+    expect(screen.getByLabelText("镜像")).toBeChecked();
+    expect((screen.getByTestId("field-cicd-build-image") as HTMLInputElement).value).toBe("gcc:12");
+    expect((screen.getByTestId("field-cicd-timeout") as HTMLInputElement).value).toBe("40");
+    expect((screen.getByTestId("field-cicd-notes") as HTMLInputElement).value).toBe("nightly only");
   });
 
-  it("shows pending-approval banner in CicdLinkCard when task has_pending", async () => {
-    mockApiGetWithCicd([makeCicdTask({ has_pending: true })]);
+  it("shows Stopped status when release decision is stopped", async () => {
+    const payload = makePayload();
+    payload.release!.snapshots.app1.release_decision = "stopped";
+    mockApiGetForAppCicd(payload);
     const qc = makeQueryClient();
     renderPage(qc);
     await waitFor(() => screen.getByTestId("app-row-app1"));
@@ -620,23 +669,80 @@ describe("AppWorkbenchPage W2 CicdLinkCard", () => {
     await waitFor(() => screen.getByTestId("detail-panel"));
     await clickCicdTab();
     await waitFor(() => screen.getByTestId("cicd-link-card"));
-    expect(screen.getByTestId("cicd-link-card").textContent).toContain("待审批");
+    expect(screen.getByTestId("cicd-link-card").textContent).toContain("Stopped");
   });
 
-  it("does NOT show CicdLinkCard when no task matches app identity", async () => {
-    mockApiGetWithCicd([makeCicdTask({ repo_name: "other-repo", branch: "other-branch" })]);
+  it("submits Gerrit identity changes as a pending CICD request", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
+    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, request: { id: 1 } });
+    const qc = makeQueryClient();
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+    renderPage(qc);
+    await enterEditOnApp1();
+    expect(screen.getByTestId("field-git-url")).toBeDisabled();
+    expect(screen.getByText("Gerrit 身份属于 CICD 配置，请在本 App 的 CICD tab 中修改。")).toBeInTheDocument();
+    await clickCicdTab();
+    fireEvent.change(screen.getByTestId("field-cicd-git-url"), { target: { value: "repo/app1-renamed" } });
+    fireEvent.change(screen.getByTestId("field-cicd-git-branch"), { target: { value: "release/4.0" } });
+    fireEvent.click(screen.getByText("提交 CICD 变更申请"));
+    await waitFor(() => {
+      expect(apiPost).toHaveBeenCalledWith("/api/cicd/requests/submit", expect.anything());
+    });
+    expect(apiPost).toHaveBeenCalledWith("/api/cicd/requests/submit", expect.objectContaining({
+      task_id: "app1",
+      request_type: "modify",
+      payload: expect.objectContaining({
+        repo_name: { old: "repo/app1", new: "repo/app1-renamed" },
+        branch: { old: "main", new: "release/4.0" },
+      }),
+    }));
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["cicd", "tasks"] });
+  });
+
+  it("shows App CICD config even without any legacy CICD task", async () => {
+    mockApiGetForAppCicd();
     const qc = makeQueryClient();
     renderPage(qc);
     await waitFor(() => screen.getByTestId("app-row-app1"));
     fireEvent.click(screen.getByTestId("app-row-app1"));
     await waitFor(() => screen.getByTestId("detail-panel"));
     await clickCicdTab();
-    // Give the cicd query time to resolve — no matching task → no cicd-link-card
-    await waitFor(() => expect(screen.queryByTestId("cicd-link-card")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("cicd-link-card")).toBeInTheDocument());
+    expect(screen.getByTestId("detail-cicd-pane").textContent).not.toContain("暂无关联 CICD 任务");
   });
 
-  it("shows 'running/停止由本 app 决策决定' note in CicdLinkCard", async () => {
-    mockApiGetWithCicd();
+  it("submits owner-editable App CICD config fields as a pending request", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
+    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, request: { id: 2 } });
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    await clickCicdTab();
+    fireEvent.change(screen.getByTestId("field-cicd-git-url"), { target: { value: "repo/app1-cicd" } });
+    fireEvent.change(screen.getByTestId("field-cicd-git-branch"), { target: { value: "dev" } });
+    fireEvent.click(screen.getByLabelText("镜像"));
+    fireEvent.change(screen.getByTestId("field-cicd-build-image"), { target: { value: "gcc:12" } });
+    fireEvent.change(screen.getByTestId("field-cicd-timeout"), { target: { value: "60" } });
+    fireEvent.change(screen.getByTestId("field-cicd-notes"), { target: { value: "manual fill" } });
+    fireEvent.click(screen.getByText("提交 CICD 变更申请"));
+    await waitFor(() => {
+      expect(apiPost).toHaveBeenCalledWith("/api/cicd/requests/submit", expect.objectContaining({
+        task_id: "app1",
+        request_type: "modify",
+        payload: expect.objectContaining({
+          repo_name: { old: "repo/app1", new: "repo/app1-cicd" },
+          branch: { old: "main", new: "dev" },
+          community_artifact: { old: [], new: ["image"] },
+          build_image: { old: "", new: "gcc:12" },
+          test_timeout: { old: 40, new: 60 },
+          notes: { old: "", new: "manual fill" },
+        }),
+      }));
+    });
+  });
+
+  it("shows 'running/停止由本 app 决策决定' note in App CICD config", async () => {
+    mockApiGetForAppCicd();
     const qc = makeQueryClient();
     renderPage(qc);
     await waitFor(() => screen.getByTestId("app-row-app1"));
@@ -646,9 +752,36 @@ describe("AppWorkbenchPage W2 CicdLinkCard", () => {
     await waitFor(() => screen.getByTestId("cicd-link-card"));
     expect(screen.getByTestId("cicd-link-card").textContent).toContain("运行/停止由本 app 决策决定");
   });
+
+  it("disables community fields when developer community artifact is empty", async () => {
+    mockApiGetForAppCicd();
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    expect(screen.getByLabelText("开发者社区发布情况")).toBeDisabled();
+    expect(screen.getByLabelText("社区包支持 Python 版本")).toBeDisabled();
+    expect(screen.getByLabelText("社区包支持框架及版本")).toBeDisabled();
+    expect(screen.getByText("CICD 中没有选择开发者社区产物，社区发布情况、Python 版本和框架版本暂不可填写。")).toBeInTheDocument();
+    expect(screen.getAllByText("不可填写：CICD 中没有选择开发者社区产物。")).toHaveLength(3);
+  });
+
+  it("enables community fields after developer community artifact is filled", async () => {
+    mockApiGetForAppCicd();
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    await clickCicdTab();
+    fireEvent.click(screen.getByLabelText("镜像"));
+    fireEvent.click(screen.getByTestId("detail-tab-docs"));
+    await waitFor(() => {
+      expect(screen.getByLabelText("开发者社区发布情况")).not.toBeDisabled();
+    });
+    expect(screen.getByLabelText("社区包支持 Python 版本")).not.toBeDisabled();
+    expect(screen.getByLabelText("社区包支持框架及版本")).not.toBeDisabled();
+  });
 });
 
-describe("AppWorkbenchPage W2 decision-change CICD preview", () => {
+describe("AppWorkbenchPage W2 decision-change App CICD preview", () => {
   beforeEach(() => {
     vi.stubGlobal("alert", vi.fn());
     vi.stubGlobal("confirm", vi.fn(() => true));
@@ -664,9 +797,9 @@ describe("AppWorkbenchPage W2 decision-change CICD preview", () => {
     await waitFor(() => screen.getByTestId("field-decision"));
   }
 
-  it("shows '待审批：CICD 任务将变为 Stopped' when decision changes to stopped", async () => {
+  it("shows 'App CICD 状态将显示为 Stopped' when decision changes to stopped", async () => {
     // app1 starts with release_decision "release" — changing to "stopped" → preview shows Stopped
-    mockApiGetWithCicd();
+    mockApiGetForAppCicd();
     const qc = makeQueryClient();
     renderPage(qc);
     await enterEditOnApp1WithCicd();
@@ -678,16 +811,11 @@ describe("AppWorkbenchPage W2 decision-change CICD preview", () => {
     expect(screen.getByTestId("cicd-decision-preview").textContent).toContain("Stopped");
   });
 
-  it("shows '待审批：CICD 任务将变为 Running' when decision changes from stopped to release", async () => {
+  it("shows 'App CICD 状态将显示为 Running' when decision changes from stopped to release", async () => {
     // Override app1 to start at "stopped"
     const stoppedPayload = makePayload();
     stoppedPayload.release!.snapshots.app1.release_decision = "stopped";
-    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
-      if (url.includes("/api/cicd/tasks")) {
-        return Promise.resolve({ tasks: [makeCicdTask({ status: "Stopped" })] });
-      }
-      return Promise.resolve(stoppedPayload);
-    });
+    mockApiGetForAppCicd(stoppedPayload);
     const qc = makeQueryClient();
     renderPage(qc);
     await enterEditOnApp1WithCicd();
@@ -699,24 +827,20 @@ describe("AppWorkbenchPage W2 decision-change CICD preview", () => {
     expect(screen.getByTestId("cicd-decision-preview").textContent).toContain("Running");
   });
 
-  it("does NOT show decision preview when no CICD task is linked", async () => {
-    // No tasks returned → cicdTask is null → preview not shown
-    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
-      if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [] });
-      return Promise.resolve(makePayload());
-    });
+  it("shows decision preview without any legacy CICD task", async () => {
+    mockApiGetForAppCicd();
     const qc = makeQueryClient();
     renderPage(qc);
     await enterEditOnApp1WithCicd();
     fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "stopped" } });
     await waitFor(() => {
-      expect(screen.queryByTestId("cicd-decision-preview")).not.toBeInTheDocument();
+      expect(screen.getByTestId("cicd-decision-preview")).toBeInTheDocument();
     });
   });
 
   it("does NOT show decision preview when decision hasn't changed from original", async () => {
     // app1 starts "release" and user doesn't change it
-    mockApiGetWithCicd();
+    mockApiGetForAppCicd();
     const qc = makeQueryClient();
     renderPage(qc);
     await enterEditOnApp1WithCicd();
@@ -822,7 +946,7 @@ describe("AppWorkbenchPage W3 detail sub-tabs", () => {
     expect(screen.getByTestId("detail-cicd-pane")).toBeInTheDocument();
   });
 
-  it("CICD pane shows 无关联 message when no task matches", async () => {
+  it("CICD pane shows App CICD config from the app table", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
     const qc = makeQueryClient();
     renderPage(qc);
@@ -831,7 +955,10 @@ describe("AppWorkbenchPage W3 detail sub-tabs", () => {
     await waitFor(() => screen.getByTestId("detail-panel"));
     fireEvent.click(screen.getByTestId("detail-tab-cicd"));
     await waitFor(() => screen.getByTestId("detail-cicd-pane"));
-    expect(screen.getByTestId("detail-cicd-pane").textContent).toContain("暂无关联 CICD 任务");
+    await waitFor(() => {
+      expect(screen.getByTestId("detail-cicd-pane").textContent).toContain("App CICD 配置");
+      expect(screen.getByTestId("detail-cicd-pane").textContent).not.toContain("暂无关联 CICD 任务");
+    });
   });
 
   it("switching to a different app resets to docs tab", async () => {
@@ -1007,8 +1134,7 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
     await waitFor(() => screen.getByTestId("derived-identity-box"));
     const box = screen.getByTestId("derived-identity-box");
 
-    // The full SSH URL must be derived offline from the short name
-    expect(box.textContent).toContain(`${GERRIT_BASE}/sw-metax-open/myapp`);
+    expect(box.textContent).toContain("sw-metax-open/myapp");
     expect(box.textContent).toContain("main");
     // Labeling
     expect(box.textContent).toContain("Gerrit 身份");
@@ -1072,7 +1198,7 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
     await waitFor(() => screen.getByTestId("new-app-preview"));
     await waitFor(() => screen.getByTestId("derived-identity-box"));
     const box = screen.getByTestId("derived-identity-box");
-    expect(box.textContent).toContain(`${GERRIT_BASE}/sw-metax-open/previewapp`);
+    expect(box.textContent).toContain("sw-metax-open/previewapp");
     expect(box.textContent).toContain("release/4.0");
   });
 
@@ -1105,7 +1231,7 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
     // Identity box present with server-provided URL
     await waitFor(() => screen.getByTestId("derived-identity-box"));
     const box = screen.getByTestId("derived-identity-box");
-    expect(box.textContent).toContain(`${GERRIT_BASE}/sw-metax-open/partialapp`);
+    expect(box.textContent).toContain("sw-metax-open/partialapp");
     expect(box.textContent).toContain("main");
     // Should NOT have shown the preview form (content unavailable)
     expect(screen.queryByTestId("new-app-preview")).not.toBeInTheDocument();

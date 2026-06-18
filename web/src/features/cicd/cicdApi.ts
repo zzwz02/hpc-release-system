@@ -246,6 +246,11 @@ export interface CicdFirstNewAppPayload {
   build_image?: string;
   test_timeout?: number;
   notes?: string;
+  cicd_repo_type?: string;
+  cicd_community_artifact?: string;
+  cicd_build_image?: string;
+  cicd_test_timeout?: string;
+  cicd_notes?: string;
   /** Parsed app_info blob from fetch-preview; backend persists it directly. */
   app_info_parsed?: Record<string, unknown> | null;
   /** Gerrit commit ID accompanying the parsed blob. */

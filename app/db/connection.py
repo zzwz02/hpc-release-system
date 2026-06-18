@@ -141,7 +141,12 @@ def init_db(conn: sqlite3.Connection) -> None:
             git_branch TEXT NOT NULL DEFAULT '',
             aliases_json TEXT NOT NULL DEFAULT '[]',
             created_by TEXT NOT NULL DEFAULT 'import',
-            created_at TEXT NOT NULL DEFAULT ''
+            created_at TEXT NOT NULL DEFAULT '',
+            cicd_repo_type TEXT NOT NULL DEFAULT '',
+            cicd_community_artifact TEXT NOT NULL DEFAULT '',
+            cicd_build_image TEXT NOT NULL DEFAULT '',
+            cicd_test_timeout TEXT NOT NULL DEFAULT '',
+            cicd_notes TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS releases (
@@ -343,6 +348,11 @@ def init_db(conn: sqlite3.Connection) -> None:
             pass  # column already exists
 
     for _tbl, _col, _col_def in [
+        ("apps", "cicd_repo_type", "TEXT NOT NULL DEFAULT ''"),
+        ("apps", "cicd_community_artifact", "TEXT NOT NULL DEFAULT ''"),
+        ("apps", "cicd_build_image", "TEXT NOT NULL DEFAULT ''"),
+        ("apps", "cicd_test_timeout", "TEXT NOT NULL DEFAULT ''"),
+        ("apps", "cicd_notes", "TEXT NOT NULL DEFAULT ''"),
         ("cicd_task_requests", "approval_mode",    "TEXT NOT NULL DEFAULT 'immediate'"),
         ("cicd_task_requests", "delivery_status",  "TEXT NOT NULL DEFAULT ''"),
         ("cicd_task_requests", "jira_id",           "TEXT NOT NULL DEFAULT ''"),
