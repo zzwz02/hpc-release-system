@@ -62,6 +62,13 @@ export function formatServerTime(s: string | null | undefined): string {
   return `${date} ${time}`;
 }
 
+/** Normalize date-only input/display to YYYY-MM-DD. */
+export function formatDateValue(value: string | null | undefined): string {
+  const normalized = String(value ?? "").trim().replace(/[/.]/g, "-");
+  const formatted = formatServerTime(normalized);
+  return formatted ? formatted.substring(0, 10) : "";
+}
+
 /**
  * Format a client-side epoch millisecond value (e.g. from Date.now() or
  * queryState.dataUpdatedAt) into a local "YYYY-MM-DD HH:MM:SS" string.

@@ -235,6 +235,65 @@ input:disabled {
    flow into capped columns that fill the panel instead of stretching to ~1500px */
 .form.form-compact { grid-template-columns: repeat(auto-fit, minmax(220px, 300px)); justify-content: start; gap: 14px; align-items: end; }
 @media (max-width: 520px) { .form.form-compact { grid-template-columns: 1fr; } }
+.form label .date-input-wrap { margin-top: 4px; }
+.form label .date-input-wrap input { margin-top: 0; }
+.date-input-wrap { position: relative; display: block; width: 100%; }
+.date-input-text { padding-right: 42px; }
+.date-input-wrap.sm .date-input-text { padding-right: 34px; }
+.date-picker-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background .13s, color .13s;
+}
+.date-input-wrap.sm .date-picker-btn {
+  right: 4px;
+  width: 24px;
+  height: 24px;
+}
+.date-picker-btn:hover {
+  background: var(--surface-2);
+  color: var(--accent);
+}
+.date-picker-btn:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.date-picker-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.date-input-wrap.sm .date-picker-btn svg {
+  width: 14px;
+  height: 14px;
+}
+.date-picker-native {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
 .row { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; }
 .row2 { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .check { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; cursor: pointer; }

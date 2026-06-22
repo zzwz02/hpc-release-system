@@ -18,13 +18,14 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { DateInput } from "../../components/DateInput";
 import { RefreshBar } from "../../components/RefreshBar";
 import { apiGet, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
 import { isRM, isOwner } from "../../lib/roles";
 import { displayName } from "../../lib/identity";
-import { formatServerTime } from "../../lib/time";
+import { formatDateValue, formatServerTime } from "../../lib/time";
 import { qaStatusLabels } from "../../lib/labels";
 import type {
   StatePayload,
@@ -258,8 +259,8 @@ const emptyForm = (): ScheduleForm => ({
 function entryToForm(e: ReleaseScheduleEntry): ScheduleForm {
   return {
     version: e.version ?? "",
-    branch_cut_at: e.branch_cut_at ?? "",
-    release_at: e.release_at ?? "",
+    branch_cut_at: formatDateValue(e.branch_cut_at),
+    release_at: formatDateValue(e.release_at),
     note: e.note ?? "",
   };
 }
@@ -307,8 +308,8 @@ function SchedulePanel({ entries, userIsRM, onMutated }: SchedulePanelProps) {
       await apiPost("/api/release-schedule/upsert", {
         id: editId === "__new__" ? "" : editId,
         version: form.version.trim(),
-        branch_cut_at: form.branch_cut_at,
-        release_at: form.release_at,
+        branch_cut_at: formatDateValue(form.branch_cut_at),
+        release_at: formatDateValue(form.release_at),
         note: form.note.trim(),
       });
       setEditId(null);
@@ -462,19 +463,21 @@ function ScheduleEditRow({ form, onChange, onSave, onCancel, saving }: ScheduleE
         />
       </td>
       <td>
-        <input
-          className="input sm"
-          type="date"
+        <DateInput
           value={form.branch_cut_at}
-          onChange={(e) => onChange({ ...form, branch_cut_at: e.target.value })}
+          onChange={(value) => onChange({ ...form, branch_cut_at: value })}
+          testId="schedule-branch-cut"
+          ariaLabel="拉 branch 时间"
+          size="sm"
         />
       </td>
       <td>
-        <input
-          className="input sm"
-          type="date"
+        <DateInput
           value={form.release_at}
-          onChange={(e) => onChange({ ...form, release_at: e.target.value })}
+          onChange={(value) => onChange({ ...form, release_at: value })}
+          testId="schedule-release-at"
+          ariaLabel="Release 发布时间"
+          size="sm"
         />
       </td>
       <td>

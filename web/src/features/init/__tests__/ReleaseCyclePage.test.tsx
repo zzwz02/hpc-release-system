@@ -239,6 +239,46 @@ describe("ReleaseCyclePage", () => {
     alertSpy.mockRestore();
   });
 
+  it("deadline inputs expose calendar picker buttons", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    renderPage(makeQueryClient());
+    await waitFor(() => screen.getByTestId("new-app-freeze"));
+
+    expect(screen.getByTestId("new-app-freeze-calendar")).toBeTruthy();
+    expect(screen.getByTestId("new-doc-deadline-calendar")).toBeTruthy();
+    expect(screen.getByTestId("edit-app-freeze-calendar")).toBeTruthy();
+    expect(screen.getByTestId("edit-doc-deadline-calendar")).toBeTruthy();
+    expect((screen.getByTestId("new-app-freeze-native") as HTMLInputElement).type).toBe("date");
+  });
+
+  it("create release: accepts deadlines selected from calendar picker", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ release_id: "rel-2" });
+    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
+
+    renderPage(makeQueryClient());
+    await waitFor(() => screen.getByTestId("new-release-name"));
+
+    fireEvent.change(screen.getByTestId("new-release-name"), { target: { value: "3.9.0" } });
+    fireEvent.change(screen.getByTestId("new-app-freeze-native"), { target: { value: "2026-09-01" } });
+    fireEvent.change(screen.getByTestId("new-doc-deadline-native"), { target: { value: "2026-10-01" } });
+
+    expect((screen.getByTestId("new-app-freeze") as HTMLInputElement).value).toBe("2026-09-01");
+    expect((screen.getByTestId("new-doc-deadline") as HTMLInputElement).value).toBe("2026-10-01");
+
+    fireEvent.click(screen.getByTestId("create-release-btn"));
+
+    await waitFor(() => {
+      expect(apiPost).toHaveBeenCalledWith("/api/releases/create", {
+        name: "3.9.0",
+        app_freeze_deadline: "2026-09-01",
+        doc_deadline: "2026-10-01",
+      });
+    });
+
+    alertSpy.mockRestore();
+  });
+
   it("save deadlines: validates empty name", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
     renderPage(makeQueryClient());

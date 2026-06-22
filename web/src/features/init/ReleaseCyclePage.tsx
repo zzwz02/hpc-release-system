@@ -17,10 +17,11 @@
  */
 import { useState, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { DateInput } from "../../components/DateInput";
 import { RefreshBar } from "../../components/RefreshBar";
 import { apiGet, apiPost } from "../../api/http";
 import { useUiStore } from "../../store/uiStore";
-import { formatServerTime } from "../../lib/time";
+import { formatDateValue, formatServerTime } from "../../lib/time";
 import type { StatePayload, ReleaseSummary } from "../../types";
 
 // ---------------------------------------------------------------------------
@@ -38,13 +39,6 @@ async function fetchState(releaseId?: string): Promise<StatePayload> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Normalize deadline input/display to YYYY-MM-DD. */
-function toDateValue(s: string | null | undefined): string {
-  const normalized = String(s ?? "").trim().replace(/[/.]/g, "-");
-  const formatted = formatServerTime(normalized);
-  return formatted ? formatted.substring(0, 10) : "";
-}
 
 // ---------------------------------------------------------------------------
 // Releases table (mirrors index.html:1983-1994)
@@ -83,8 +77,8 @@ function ReleasesTable({ releases }: ReleasesTableProps) {
             <tr key={r.id}>
               <td>{r.name}</td>
               <td>{phaseLabels[r.phase] ?? r.phase}</td>
-              <td>{toDateValue(r.app_freeze_deadline) || "—"}</td>
-              <td>{toDateValue(r.doc_deadline) || "—"}</td>
+              <td>{formatDateValue(r.app_freeze_deadline) || "—"}</td>
+              <td>{formatDateValue(r.doc_deadline) || "—"}</td>
               <td>
                 {r.released_locked
                   ? `已锁 (${formatServerTime(r.released_locked_at) || ""})`
@@ -120,10 +114,10 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
   // Edit-current form — syncs from currentRelease
   const [editName, setEditName] = useState(currentRelease?.name ?? "");
   const [editAppFreeze, setEditAppFreeze] = useState(
-    toDateValue(currentRelease?.app_freeze_deadline),
+    formatDateValue(currentRelease?.app_freeze_deadline),
   );
   const [editDocDeadline, setEditDocDeadline] = useState(
-    toDateValue(currentRelease?.doc_deadline),
+    formatDateValue(currentRelease?.doc_deadline),
   );
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState("");
@@ -131,8 +125,8 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
   // Keep edit form in sync when the selected release changes
   useEffect(() => {
     setEditName(currentRelease?.name ?? "");
-    setEditAppFreeze(toDateValue(currentRelease?.app_freeze_deadline));
-    setEditDocDeadline(toDateValue(currentRelease?.doc_deadline));
+    setEditAppFreeze(formatDateValue(currentRelease?.app_freeze_deadline));
+    setEditDocDeadline(formatDateValue(currentRelease?.doc_deadline));
     setSaveErr("");
   }, [currentRelease?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -228,30 +222,20 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
             </label>
             <label>
               App 冻结 deadline（北京时间）
-              <input
-                className="input"
-                type="text"
-                inputMode="numeric"
-                pattern="\d{4}-\d{2}-\d{2}"
-                placeholder="YYYY-MM-DD"
+              <DateInput
                 value={newAppFreeze}
-                onChange={(e) => setNewAppFreeze(e.target.value)}
-                onBlur={() => setNewAppFreeze(toDateValue(newAppFreeze))}
-                data-testid="new-app-freeze"
+                onChange={setNewAppFreeze}
+                testId="new-app-freeze"
+                ariaLabel="新 Release App 冻结 deadline"
               />
             </label>
             <label>
               Doc deadline（北京时间）
-              <input
-                className="input"
-                type="text"
-                inputMode="numeric"
-                pattern="\d{4}-\d{2}-\d{2}"
-                placeholder="YYYY-MM-DD"
+              <DateInput
                 value={newDocDeadline}
-                onChange={(e) => setNewDocDeadline(e.target.value)}
-                onBlur={() => setNewDocDeadline(toDateValue(newDocDeadline))}
-                data-testid="new-doc-deadline"
+                onChange={setNewDocDeadline}
+                testId="new-doc-deadline"
+                ariaLabel="新 Release Doc deadline"
               />
             </label>
           </div>
@@ -294,30 +278,20 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
                 </label>
                 <label>
                   App 冻结 deadline
-                  <input
-                    className="input"
-                    type="text"
-                    inputMode="numeric"
-                    pattern="\d{4}-\d{2}-\d{2}"
-                    placeholder="YYYY-MM-DD"
+                  <DateInput
                     value={editAppFreeze}
-                    onChange={(e) => setEditAppFreeze(e.target.value)}
-                    onBlur={() => setEditAppFreeze(toDateValue(editAppFreeze))}
-                    data-testid="edit-app-freeze"
+                    onChange={setEditAppFreeze}
+                    testId="edit-app-freeze"
+                    ariaLabel="当前 Release App 冻结 deadline"
                   />
                 </label>
                 <label>
                   Doc deadline
-                  <input
-                    className="input"
-                    type="text"
-                    inputMode="numeric"
-                    pattern="\d{4}-\d{2}-\d{2}"
-                    placeholder="YYYY-MM-DD"
+                  <DateInput
                     value={editDocDeadline}
-                    onChange={(e) => setEditDocDeadline(e.target.value)}
-                    onBlur={() => setEditDocDeadline(toDateValue(editDocDeadline))}
-                    data-testid="edit-doc-deadline"
+                    onChange={setEditDocDeadline}
+                    testId="edit-doc-deadline"
+                    ariaLabel="当前 Release Doc deadline"
                   />
                 </label>
               </div>

@@ -12,7 +12,7 @@
  *  - Error state shows error message
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
@@ -51,7 +51,7 @@ vi.mock("../../../store/uiStore", () => {
   };
 });
 
-import { apiGet } from "../../../api/http";
+import { apiGet, apiPost } from "../../../api/http";
 import { useAuth } from "../../../api/AuthContext";
 
 // Top-level import to access the __resetReleaseId helper from the mock
@@ -308,6 +308,60 @@ describe("DashboardPage schedule panel", () => {
 
     await waitFor(() => {
       expect(screen.getByText("+ 新增")).toBeDefined();
+    });
+  });
+
+  it("uses shared yyyy-mm-dd date inputs when adding schedule entries", async () => {
+    const payload = makePayload();
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    const qc = makeQueryClient();
+    renderDashboard(qc);
+
+    await waitFor(() => {
+      expect(screen.getByText("+ 新增")).toBeDefined();
+    });
+    fireEvent.click(screen.getByText("+ 新增"));
+
+    const branchCut = screen.getByTestId("schedule-branch-cut") as HTMLInputElement;
+    const releaseAt = screen.getByTestId("schedule-release-at") as HTMLInputElement;
+    expect(branchCut.type).toBe("text");
+    expect(releaseAt.type).toBe("text");
+    expect(branchCut.placeholder).toBe("YYYY-MM-DD");
+    expect(releaseAt.placeholder).toBe("YYYY-MM-DD");
+    expect((screen.getByTestId("schedule-branch-cut-native") as HTMLInputElement).type).toBe("date");
+    expect(screen.getByTestId("schedule-branch-cut-calendar")).toBeDefined();
+    expect(screen.getByTestId("schedule-release-at-calendar")).toBeDefined();
+  });
+
+  it("submits schedule dates selected from calendar picker as yyyy-mm-dd", async () => {
+    const payload = makePayload();
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
+    const qc = makeQueryClient();
+    renderDashboard(qc);
+
+    await waitFor(() => {
+      expect(screen.getByText("+ 新增")).toBeDefined();
+    });
+    fireEvent.click(screen.getByText("+ 新增"));
+    fireEvent.change(screen.getByPlaceholderText("例：3.0.0"), { target: { value: "3.9.0" } });
+    fireEvent.change(screen.getByTestId("schedule-branch-cut-native"), { target: { value: "2026-07-16" } });
+    fireEvent.change(screen.getByTestId("schedule-release-at-native"), { target: { value: "2026-08-27" } });
+    fireEvent.change(screen.getByPlaceholderText("选填"), { target: { value: "direct_dispatch=1" } });
+
+    expect((screen.getByTestId("schedule-branch-cut") as HTMLInputElement).value).toBe("2026-07-16");
+    expect((screen.getByTestId("schedule-release-at") as HTMLInputElement).value).toBe("2026-08-27");
+
+    fireEvent.click(screen.getByText("保存"));
+
+    await waitFor(() => {
+      expect(apiPost).toHaveBeenCalledWith("/api/release-schedule/upsert", {
+        id: "",
+        version: "3.9.0",
+        branch_cut_at: "2026-07-16",
+        release_at: "2026-08-27",
+        note: "direct_dispatch=1",
+      });
     });
   });
 
