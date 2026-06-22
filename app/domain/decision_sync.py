@@ -5,9 +5,11 @@ Pure derivation lives here (``phase_label`` + ``resolve_synced_decision``); the
 transactional apply and the dry-run preview live in
 ``app.services.app_service`` and consume these helpers. We mirror core's phase
 machine via ``core.current_phase`` rather than re-deriving deadline checks.
+Running/Stopped grouping is kept here too because CICD status is global while
+release decisions are per release.
 
 Changed rule vs. ``core.sync_decision_to_later_releases``:
-  For each later, unlocked release that has the app —
+  For each target, unlocked release that has the app —
     * target == ``release`` AND the later release is past app-freeze OR past
       doc-deadline  →  apply ``cicd_only`` (NOT skip, NOT release): never add
       QA/test scope to a frozen release; ``cicd_only`` keeps it running without
@@ -28,6 +30,7 @@ PHASE_LABELS: dict[str, str] = {
 # Phases where a release can no longer take on new QA/test scope, so an
 # upgrade *to* release is downgraded to cicd_only instead of applied verbatim.
 FROZEN_PHASES: frozenset[str] = frozenset({"after_app_freeze", "after_doc_deadline"})
+RUNNING_DECISIONS: frozenset[str] = frozenset({"release", "cicd_only"})
 
 
 def phase_label(phase: str) -> str:
@@ -44,3 +47,13 @@ def resolve_synced_decision(target_decision: str, phase: str) -> str:
     if target_decision == "release" and phase in FROZEN_PHASES:
         return "cicd_only"
     return target_decision
+
+
+def runtime_group(decision: str) -> str:
+    """Decision group that drives the global CICD running/stopped status."""
+    return "running" if decision in RUNNING_DECISIONS else "stopped"
+
+
+def crosses_runtime_boundary(old_decision: str, new_decision: str) -> bool:
+    """Whether a decision change flips CICD between Running and Stopped."""
+    return runtime_group(old_decision) != runtime_group(new_decision)

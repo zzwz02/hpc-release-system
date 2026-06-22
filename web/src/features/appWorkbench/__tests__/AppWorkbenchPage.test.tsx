@@ -419,12 +419,14 @@ describe("AppWorkbenchPage F1 decision-sync dialog", () => {
     useUiStore.getState().setAppDetailDirty(false);
   });
 
-  it("opens the owner-choice dialog with a gated cicd_only row when decision changes", async () => {
+  it("opens a forced sync dialog when decision crosses Running/Stopped", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
     (apiPost as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
       if (url.includes("decision-sync/preview")) {
         return Promise.resolve({
           decision: "stopped",
+          forced: true,
+          scope: "all_unlocked",
           releases: [
             { release_id: "rel-2", release_name: "3.1", phase_label: "App 冻结后",
               resulting_decision: "stopped", skipped: false },
@@ -439,7 +441,8 @@ describe("AppWorkbenchPage F1 decision-sync dialog", () => {
     fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "stopped" } });
     fireEvent.click(screen.getByText("保存"));
     await waitFor(() => screen.getByTestId("decision-sync-dialog"));
-    expect(screen.getByTestId("decision-sync-dialog").textContent).toContain("同步 release 决策到后续 release");
+    expect(screen.getByTestId("decision-sync-dialog").textContent).toContain("必须同步 release 决策");
+    expect(screen.queryByTestId("sync-local-only")).toBeNull();
     expect(screen.getByTestId("sync-row-rel-2").textContent).toContain("调整为 stopped");
   });
 
@@ -476,6 +479,8 @@ describe("AppWorkbenchPage F1 decision-sync dialog", () => {
       if (url.includes("decision-sync/preview")) {
         return Promise.resolve({
           decision: "stopped",
+          forced: true,
+          scope: "all_unlocked",
           releases: [{ release_id: "rel-2", release_name: "3.1", phase_label: "App 冻结前",
             resulting_decision: "stopped", skipped: false }],
         });
@@ -502,9 +507,11 @@ describe("AppWorkbenchPage F1 decision-sync dialog", () => {
     const postMock = vi.fn((url: string, _body?: unknown) => {
       if (url.includes("decision-sync/preview")) {
         return Promise.resolve({
-          decision: "stopped",
+          decision: "cicd_only",
+          forced: false,
+          scope: "later",
           releases: [{ release_id: "rel-2", release_name: "3.1", phase_label: "App 冻结前",
-            resulting_decision: "stopped", skipped: false }],
+            resulting_decision: "cicd_only", skipped: false }],
         });
       }
       return Promise.resolve({ snapshot: {}, missing_items: [] });
@@ -513,7 +520,7 @@ describe("AppWorkbenchPage F1 decision-sync dialog", () => {
     const qc = makeQueryClient();
     renderPage(qc);
     await enterEditOnApp1();
-    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "stopped" } });
+    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "cicd_only" } });
     fireEvent.click(screen.getByText("保存"));
     await waitFor(() => screen.getByTestId("sync-local-only"));
     fireEvent.click(screen.getByTestId("sync-local-only"));

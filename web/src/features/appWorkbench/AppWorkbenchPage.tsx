@@ -71,6 +71,8 @@ interface DecisionSyncPreviewRow {
 interface DecisionSyncPreview {
   decision: string;
   releases: DecisionSyncPreviewRow[];
+  forced?: boolean;
+  scope?: "later" | "all_unlocked";
 }
 
 interface AppInfoFetchProgress {
@@ -176,6 +178,14 @@ function toggleCommunityArtifact(value: string, item: string): string {
 function normalizeTimeoutText(value: string | number | null | undefined): string {
   const parsed = Number.parseInt(String(value ?? "").trim(), 10);
   return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : "40";
+}
+
+function decisionRuntimeGroup(decision: string): "running" | "stopped" {
+  return decision === "stopped" ? "stopped" : "running";
+}
+
+function crossesDecisionRuntimeBoundary(oldDecision: string, newDecision: string): boolean {
+  return decisionRuntimeGroup(oldDecision) !== decisionRuntimeGroup(newDecision);
 }
 
 const CICD_REQ_TYPE_LABEL: Record<string, string> = {
@@ -1119,6 +1129,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
   const [syncDialog, setSyncDialog] = useState<{
     preview: DecisionSyncPreview;
     newDecision: string;
+    forced: boolean;
     confirmOwner: boolean;
     snapshotUpdate: Record<string, unknown>;
   } | null>(null);
@@ -1307,13 +1318,14 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     const snapshotUpdate = buildSnapshotUpdate(confirmOwner);
     const newDecision = form.release_decision;
 
-    // F1: when the release_decision changed AND there are later unlocked
-    // releases containing this app, show the owner-choice dialog (image.png)
-    // instead of saving straight away. The dialog decides sync_decision.
+    // F1: when the release_decision changed AND there are related unlocked
+    // releases containing this app, show the decision-sync dialog instead of
+    // saving straight away. Running/Stopped boundary changes are mandatory.
     if (newDecision !== snap.release_decision) {
       const idx = releases.findIndex((r) => r.id === release.id);
       const hasLater = idx >= 0 && idx < releases.length - 1;
-      if (hasLater) {
+      const forcedSync = crossesDecisionRuntimeBoundary(snap.release_decision, newDecision);
+      if (hasLater || forcedSync) {
         try {
           const preview = await apiPost<DecisionSyncPreview>("/api/apps/decision-sync/preview", {
             release_id: release.id,
@@ -1322,8 +1334,14 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
           });
           const applicable = (preview.releases ?? []).filter((r) => !r.skipped);
           if (applicable.length > 0) {
-            setSyncDialog({ preview, newDecision, confirmOwner, snapshotUpdate });
-            return; // wait for the user's choice (取消 / 仅本 release / 同步到后续)
+            setSyncDialog({
+              preview,
+              newDecision,
+              forced: preview.forced ?? forcedSync,
+              confirmOwner,
+              snapshotUpdate,
+            });
+            return; // wait for the user's choice
           }
         } catch {
           // Preview failed → fall through to a plain save (no sync).
@@ -2015,6 +2033,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
         <DecisionSyncDialog
           preview={syncDialog.preview}
           newDecision={syncDialog.newDecision}
+          forced={syncDialog.forced}
           saving={saving}
           onCancel={() => setSyncDialog(null)}
           onLocalOnly={() => void doSave(syncDialog.confirmOwner, syncDialog.snapshotUpdate, false)}
@@ -2043,6 +2062,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
 interface DecisionSyncDialogProps {
   preview: DecisionSyncPreview;
   newDecision: string;
+  forced: boolean;
   saving: boolean;
   onCancel: () => void;
   onLocalOnly: () => void;
@@ -2050,17 +2070,20 @@ interface DecisionSyncDialogProps {
 }
 
 function DecisionSyncDialog({
-  preview, newDecision, saving, onCancel, onLocalOnly, onSyncAll,
+  preview, newDecision, forced, saving, onCancel, onLocalOnly, onSyncAll,
 }: DecisionSyncDialogProps) {
   const rows = preview.releases ?? [];
   const applicable = rows.filter((r) => !r.skipped);
+  const targetLabel = forced ? "其它未锁定 release" : "后续 release";
   return (
     <div className="dialog-backdrop" data-testid="decision-sync-dialog">
       <div className="dialog-box" style={{ minWidth: 560, maxWidth: 720 }}>
-        <div className="dialog-head"><h3>同步 release 决策到后续 release?</h3></div>
+        <div className="dialog-head"><h3>{forced ? "必须同步 release 决策" : "同步 release 决策到后续 release?"}</h3></div>
         <div className="dialog-body">
           <p className="muted">
-            你把 release 决策改为「{newDecision}」。是否把该决策同步到下列 {applicable.length} 个后续 release?
+            {forced
+              ? `你把 release 决策改为「${newDecision}」，这会改变全局 CICD 运行/停止状态。必须同步到下列 ${applicable.length} 个${targetLabel}，避免不同 release 对同一个 CICD task 给出矛盾状态。`
+              : `你把 release 决策改为「${newDecision}」。是否把该决策同步到下列 ${applicable.length} 个${targetLabel}?`}
           </p>
           <div className="table">
             <table>
@@ -2099,11 +2122,13 @@ function DecisionSyncDialog({
         </div>
         <div className="dialog-actions">
           <button className="btn" onClick={onCancel} disabled={saving} data-testid="sync-cancel">取消</button>
-          <button className="btn" onClick={onLocalOnly} disabled={saving} data-testid="sync-local-only">
-            不同步，仅本 release
-          </button>
+          {!forced && (
+            <button className="btn" onClick={onLocalOnly} disabled={saving} data-testid="sync-local-only">
+              不同步，仅本 release
+            </button>
+          )}
           <button className="btn primary" onClick={onSyncAll} disabled={saving} data-testid="sync-all">
-            同步到后续 release
+            {forced ? "确认并同步" : "同步到后续 release"}
           </button>
         </div>
       </div>

@@ -201,15 +201,16 @@ def update_snapshot(
     role: str,
     fields: dict,
 ) -> dict:
-    """Save snapshot fields; optionally sync decision to later releases.
+    """Save snapshot fields; optionally sync decision to other releases.
 
     Mirrors server.py:775-939 (the /api/apps/update handler) exactly.
 
     *fields* is the full parsed POST body (keys: snapshot, app, sync_decision).
 
     Returns the response dict: {snapshot, missing_items, qa_status} and
-    optionally decision_sync when body.sync_decision is truthy and the
-    release_decision actually changed.
+    optionally decision_sync when release_decision actually changed and either
+    body.sync_decision is truthy or the change crosses the CICD Running/Stopped
+    boundary.
 
     Ruling D: when release_decision changes, cicd_service.sync_decision_to_cicd
     is called INSIDE the same transaction to produce a pending CICD status-modify
@@ -251,7 +252,9 @@ def update_snapshot(
                 "已过 doc deadline，只能下调 release 决策，不能再修改文档/表单/app_info"
             )
 
-    current_decision = snap_now.get("release_decision", "release")
+    current_decision = core.normalize_release_decision(
+        snap_now.get("release_decision", "release")
+    )
     new_decision = snap_update.get("release_decision")
     if new_decision is not None:
         new_decision_norm = core.normalize_release_decision(new_decision)
@@ -550,16 +553,27 @@ def update_snapshot(
                 "created": cicd_req is not None,
                 "request": cicd_req,
             }
-        if body.get("sync_decision") and new_decision != current_decision:
+        forced_decision_sync = (
+            new_decision != current_decision
+            and decision_sync_domain.crosses_runtime_boundary(current_decision, new_decision)
+        )
+        if (body.get("sync_decision") or forced_decision_sync) and new_decision != current_decision:
             # R3: use the new app-layer gating rule (NOT core's). core stays frozen.
             response["decision_sync"] = sync_decision_to_later_releases(
-                conn, rid, aid, new_decision, user=actor, role=role
+                conn,
+                rid,
+                aid,
+                new_decision,
+                user=actor,
+                role=role,
+                scope="all_unlocked" if forced_decision_sync else "later",
             )
+            response["decision_sync"]["forced"] = forced_decision_sync
     return response
 
 
 # ---------------------------------------------------------------------------
-# Decision sync to later releases (R3 gating rule + dry-run preview)
+# Decision sync to related releases (R3 gating rule + dry-run preview)
 # ---------------------------------------------------------------------------
 
 def sync_decision_to_later_releases(
@@ -570,8 +584,9 @@ def sync_decision_to_later_releases(
     *,
     user: str = "system",
     role: str = "system",
+    scope: str = "later",
 ) -> dict:
-    """Apply a release_decision to every later (by created_at) release.
+    """Apply a release_decision to related releases.
 
     R3 reimplementation of ``core.sync_decision_to_later_releases`` with the
     changed gating rule (see ``app.domain.decision_sync``):
@@ -580,6 +595,9 @@ def sync_decision_to_later_releases(
       - otherwise apply ``resolve_synced_decision(decision, phase)``: an upgrade
         to ``release`` on a release past app-freeze OR doc-deadline becomes
         ``cicd_only`` rather than being skipped.
+      - ``scope="later"`` keeps the legacy optional behavior.
+      - ``scope="all_unlocked"`` is for Running/Stopped boundary changes and
+        visits every other release, including earlier ones.
 
     Response shape mirrors core ({"applied": [...], "skipped": [...]}) but each
     applied entry is extended with its ``resulting_decision``.
@@ -590,8 +608,15 @@ def sync_decision_to_later_releases(
     idx = next((i for i, r in enumerate(releases) if r["id"] == from_release_id), None)
     if idx is None:
         return result
+    if scope not in {"later", "all_unlocked"}:
+        raise ValueError(f"Invalid decision sync scope: {scope}")
+    target_releases = (
+        [r for r in releases if r["id"] != from_release_id]
+        if scope == "all_unlocked"
+        else releases[idx + 1:]
+    )
     with core.transaction(conn):
-        for r in releases[idx + 1:]:
+        for r in target_releases:
             rid = r["id"]
             if r.get("released_locked"):
                 result["skipped"].append(
@@ -621,9 +646,10 @@ def sync_decision_to_later_releases(
                 }
             )
         if result["applied"]:
+            target_label = "其它未锁定 release" if scope == "all_unlocked" else "后续 release"
             core.audit(
                 conn,
-                f"同步 release 决策（{decision}）到 {len(result['applied'])} 个后续 release",
+                f"同步 release 决策（{decision}）到 {len(result['applied'])} 个{target_label}",
                 user=user,
                 role=role,
                 app_id=app_id,
@@ -642,18 +668,31 @@ def preview_decision_sync(
 ) -> dict:
     """Dry-run of ``sync_decision_to_later_releases`` — NO writes.
 
-    Returns ``{"decision": <normalized>, "releases": [row, ...]}`` where each row
-    is one later release: ``{release_id, release_name, phase_label,
-    resulting_decision, skipped, reason?}``. ``resulting_decision`` is ``None``
-    for skipped rows. Drives the owner-choice dialog table before applying.
+    Returns ``{"decision": <normalized>, "releases": [row, ...], "forced": bool,
+    "scope": "later"|"all_unlocked"}`` where each row is one target release:
+    ``{release_id, release_name, phase_label, resulting_decision, skipped,
+    reason?}``. ``resulting_decision`` is ``None`` for skipped rows. Drives the
+    owner-choice dialog table before applying.
     """
     decision = core.normalize_release_decision(decision)
     releases = core.list_releases(conn)
     idx = next((i for i, r in enumerate(releases) if r["id"] == release_id), None)
     rows: list[dict] = []
     if idx is None:
-        return {"decision": decision, "releases": rows}
-    for r in releases[idx + 1:]:
+        return {"decision": decision, "releases": rows, "forced": False, "scope": "later"}
+    current_release = core.get_release(conn, release_id)
+    current_snapshot = current_release.get("snapshots", {}).get(app_id, {})
+    current_decision = core.normalize_release_decision(
+        current_snapshot.get("release_decision", "release")
+    )
+    forced = decision_sync_domain.crosses_runtime_boundary(current_decision, decision)
+    scope = "all_unlocked" if forced else "later"
+    target_releases = (
+        [r for r in releases if r["id"] != release_id]
+        if scope == "all_unlocked"
+        else releases[idx + 1:]
+    )
+    for r in target_releases:
         rid = r["id"]
         if r.get("released_locked"):
             rows.append(
@@ -691,7 +730,7 @@ def preview_decision_sync(
                 "skipped": False,
             }
         )
-    return {"decision": decision, "releases": rows}
+    return {"decision": decision, "releases": rows, "forced": forced, "scope": scope}
 
 
 # ---------------------------------------------------------------------------

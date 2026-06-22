@@ -3,7 +3,8 @@
 Covers:
   * app.domain.decision_sync pure helpers (phase_label, resolve_synced_decision)
   * app.services.app_service.sync_decision_to_later_releases (the changed rule:
-    upgrade-to-release on a frozen later release → cicd_only, not skip)
+    upgrade-to-release on a frozen target release → cicd_only, not skip;
+    Running/Stopped boundary changes can target all other unlocked releases)
   * app.services.app_service.preview_decision_sync (dry-run, no writes)
   * app.services.app_service.update_snapshot wiring (sync_decision=True uses the
     new rule and returns resulting_decision per applied release)
@@ -48,6 +49,16 @@ def test_resolve_synced_decision_non_release_always_verbatim():
     for phase in ("before_app_freeze", "after_app_freeze", "after_doc_deadline"):
         assert decision_sync.resolve_synced_decision("stopped", phase) == "stopped"
         assert decision_sync.resolve_synced_decision("cicd_only", phase) == "cicd_only"
+
+
+def test_crosses_runtime_boundary_only_for_running_stopped_edges():
+    assert decision_sync.crosses_runtime_boundary("release", "stopped") is True
+    assert decision_sync.crosses_runtime_boundary("cicd_only", "stopped") is True
+    assert decision_sync.crosses_runtime_boundary("stopped", "release") is True
+    assert decision_sync.crosses_runtime_boundary("stopped", "cicd_only") is True
+    assert decision_sync.crosses_runtime_boundary("release", "cicd_only") is False
+    assert decision_sync.crosses_runtime_boundary("cicd_only", "release") is False
+    assert decision_sync.crosses_runtime_boundary("stopped", "stopped") is False
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +148,31 @@ def test_sync_skips_locked_and_absent(temp_db):
     assert applied == {rels["before"]: "stopped"}
 
 
+def test_sync_all_unlocked_scope_updates_earlier_and_later(temp_db):
+    conn = temp_db
+    base_id, app_id, rels = _seed_chain(conn)
+    with mock.patch("release_system.core.beijing_now", return_value=NOW):
+        result = app_service.sync_decision_to_later_releases(
+            conn,
+            rels["frozen"],
+            app_id,
+            "stopped",
+            user="rm",
+            role="RM",
+            scope="all_unlocked",
+        )
+    applied = {a["release_id"]: a["resulting_decision"] for a in result["applied"]}
+    assert applied == {
+        base_id: "stopped",
+        rels["before"]: "stopped",
+        rels["pastdoc"]: "stopped",
+    }
+    assert core.get_release(conn, rels["frozen"])["snapshots"][app_id]["release_decision"] == "release"
+    for rid in (base_id, rels["before"], rels["pastdoc"]):
+        snap = core.get_release(conn, rid)["snapshots"][app_id]
+        assert snap["release_decision"] == "stopped"
+
+
 def test_preview_matches_apply_and_writes_nothing(temp_db):
     conn = temp_db
     base_id, app_id, rels = _seed_chain(conn)
@@ -147,6 +183,8 @@ def test_preview_matches_apply_and_writes_nothing(temp_db):
         )
     by_id = {r["release_id"]: r for r in preview["releases"]}
     assert preview["decision"] == "release"
+    assert preview["forced"] is False
+    assert preview["scope"] == "later"
     # before: applied verbatim, App 冻结前
     assert by_id[rels["before"]]["resulting_decision"] == "release"
     assert by_id[rels["before"]]["phase_label"] == "App 冻结前"
@@ -163,6 +201,19 @@ def test_preview_matches_apply_and_writes_nothing(temp_db):
     for rid in (rels["before"], rels["pastdoc"]):
         snap = core.get_release(conn, rid)["snapshots"][app_id]
         assert snap["release_decision"] == "release"
+
+
+def test_preview_running_boundary_uses_all_other_releases(temp_db):
+    conn = temp_db
+    base_id, app_id, rels = _seed_chain(conn)
+    with mock.patch("release_system.core.beijing_now", return_value=NOW):
+        preview = app_service.preview_decision_sync(
+            conn, release_id=rels["frozen"], app_id=app_id, decision="stopped"
+        )
+    assert preview["forced"] is True
+    assert preview["scope"] == "all_unlocked"
+    ids = {r["release_id"] for r in preview["releases"]}
+    assert ids == {base_id, rels["before"], rels["pastdoc"]}
 
 
 def test_update_snapshot_uses_new_rule_when_sync_decision_set(temp_db):
@@ -184,7 +235,7 @@ def test_update_snapshot_uses_new_rule_when_sync_decision_set(temp_db):
     assert all(v == "cicd_only" for v in applied.values())
 
 
-def test_update_snapshot_no_sync_key_skips_decision_sync(temp_db):
+def test_update_snapshot_no_sync_key_skips_non_boundary_decision_sync(temp_db):
     conn = temp_db
     base_id, app_id, rels = _seed_chain(conn)
     with mock.patch("release_system.core.beijing_now", return_value=NOW):
@@ -193,7 +244,7 @@ def test_update_snapshot_no_sync_key_skips_decision_sync(temp_db):
             fields={
                 "release_id": base_id,
                 "app_id": app_id,
-                "snapshot": {"release_decision": "stopped"},
+                "snapshot": {"release_decision": "cicd_only"},
                 # no sync_decision
             },
         )
@@ -202,3 +253,33 @@ def test_update_snapshot_no_sync_key_skips_decision_sync(temp_db):
     for rid in rels.values():
         snap = core.get_release(conn, rid)["snapshots"][app_id]
         assert snap["release_decision"] == "release"
+
+
+def test_update_snapshot_forces_all_release_sync_across_running_boundary(temp_db):
+    conn = temp_db
+    base_id, app_id, rels = _seed_chain(conn)
+    with mock.patch("release_system.core.beijing_now", return_value=NOW):
+        resp = app_service.update_snapshot(
+            conn,
+            rels["frozen"],
+            app_id,
+            user="rm",
+            role="RM",
+            fields={
+                "release_id": rels["frozen"],
+                "app_id": app_id,
+                "snapshot": {"release_decision": "stopped"},
+                "sync_decision": False,
+            },
+        )
+    assert resp["snapshot"]["release_decision"] == "stopped"
+    assert resp["decision_sync"]["forced"] is True
+    applied = {a["release_id"]: a["resulting_decision"] for a in resp["decision_sync"]["applied"]}
+    assert applied == {
+        base_id: "stopped",
+        rels["before"]: "stopped",
+        rels["pastdoc"]: "stopped",
+    }
+    for rid in (base_id, rels["before"], rels["frozen"], rels["pastdoc"]):
+        snap = core.get_release(conn, rid)["snapshots"][app_id]
+        assert snap["release_decision"] == "stopped"
