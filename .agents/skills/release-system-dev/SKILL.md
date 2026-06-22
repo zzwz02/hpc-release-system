@@ -20,8 +20,8 @@ conventions for every change unless the user explicitly overrides them.
   (incl. `RefreshBar`, `DataTable`, and `Markdown` — THE single sanitized-HTML sink), `features/` (8 tabs),
   `routes/` (routeConfig + RequireRole + AppRouter).
 - **DB** = single `release_system.db` (SQLite WAL). Backup = stop server + copy, or `sqlite3 … ".backup"`.
-- **Migration tool** = `tools/migrate_db.py`. Identity mapping = `app/identity.py` (`repo_to_git_identity`,
-  short repo name → full ssh URL; `.xml` manifest → networked resolve).
+- **Identity mapping** = `app/identity.py` (`repo_to_git_identity`, short repo name → full ssh URL;
+  `.xml` manifest → networked resolve).
 - **Deploy** = single process: `python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1`
   (serves both API and the built SPA). `--workers 1` is REQUIRED (in-process QA job registry + LDAP state).
 
@@ -60,14 +60,16 @@ work directly.
 - **Date inputs**: app-facing date-only fields (deadlines, release schedule dates, etc.) display and submit
   `YYYY-MM-DD`. Use shared `DateInput` + `formatDateValue`; never expose a visible raw browser
   `input[type=date]`.
-- **CICD/App lifecycle rules**: CICD is **app-backed**. `cicd_task_requests.app_id` links directly to
-  `apps.id`; `task_id` is compatibility-only. Prefer app id for identity, and only fall back to
-  `(git_url, git_branch)` for legacy matching — never match by Gerrit URL alone because branches may share one
-  URL. All CICD requests require pending→RM approval (RM may self-approve, `is_self_approved`); user modify
-  requests may NOT set `status`. Admin is out of CICD/release business. App `release_decision` drives CICD
-  Running/Stopped via pending modify requests (`origin="release_decision_sync"`). CICD has no Abandoned/delete
-  flow; retire/delete is handled through App lifecycle. CICD 工作台 is read-only; CICD config changes enter from
-  App 工作台 → CICD tab.
+- **CICD/App lifecycle rules**: CICD cutover is complete and **app-backed**. `cicd_task_requests.app_id`
+  links directly to `apps.id`; `task_id` stores the same app id for the existing API field. Do not generate
+  `CICD-xxxx` ids. FastAPI runtime must not read/write `cicd_tasks`; that legacy table may exist only so old
+  DBs and frozen reference tests open cleanly. New code must use app id for identity; `(git_url, git_branch)`
+  is only for historical display/compatibility matching, and never match by Gerrit URL alone because branches
+  may share one URL. All CICD requests require pending→RM approval (RM may self-approve,
+  `is_self_approved`); user modify requests may NOT set `status`. Admin is out of CICD/release business. App
+  `release_decision` drives CICD Running/Stopped via pending modify requests
+  (`origin="release_decision_sync"`). CICD has no Abandoned/delete flow; retire/delete is handled through App
+  lifecycle. CICD 工作台 is read-only; CICD config changes enter from App 工作台 → CICD tab.
 
 ## 6. Regression fixtures / golden responses
 - `tests/golden/` contains captured expected API responses replayed by `test_fastapi_parity`. Behavior-preserving
@@ -92,14 +94,11 @@ contract across the API boundary:
 - **No Gerrit network** (`sw-gerrit-devops:29418` unreachable): mock app_info for tests
   (`make_fake_app_info_fetch`); the `.xml` manifest resolution + new-app Gerrit fetch only work on a networked
   deploy (surface the derived identity in the UI for debugging).
-- **Migrations run on a COPY** — never mutate the live `release_system.db`; produce a candidate DB + report;
-  the real cutover is the user's action (see `CUTOVER.md`).
-
 ## 9. Commits
 Branch `rewrite/fastapi-react`. Conventional, descriptive (Chinese summaries are fine, matching the repo).
 End commit messages with:
 `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`
 
 ## 10. Key files to read first
-Practical run/deploy docs: `README.md`, `web/README-web.md`, `CUTOVER.md`. Historical design reference:
+Practical run/deploy docs: `README.md`, `web/README-web.md`. Historical design reference:
 `/remote_home/zhawu/.claude/plans/clever-swimming-quiche.md`.

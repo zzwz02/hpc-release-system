@@ -1,12 +1,15 @@
-"""SQLite connection management — ported verbatim from release_system/core.py:26-87.
+"""SQLite connection management for the FastAPI service.
 
-Schema includes all Phase 0 additions from the plan §4.1:
-  - cicd_tasks.app_id TEXT REFERENCES apps(id) ON DELETE SET NULL
-  - UNIQUE partial index on cicd_tasks(app_id) WHERE app_id IS NOT NULL
+The legacy ``cicd_tasks`` table is still created so old DB files and frozen
+reference tests can open cleanly. Cutover runtime code derives CICD task-shaped
+API rows from ``apps`` plus snapshots, and persists workflow state in
+``cicd_task_requests``.
+
+Schema additions kept for current runtime:
   - cicd_task_requests.app_id TEXT REFERENCES apps(id) ON DELETE CASCADE
   - cicd_task_requests.origin TEXT column
   - Online-ALTER columns folded into base DDL (ALTER loop kept for idempotency)
-  - Additional indexes per §4.1
+  - Additional indexes
 """
 from __future__ import annotations
 
@@ -128,9 +131,10 @@ def init_db(conn: sqlite3.Connection) -> None:
     DDL here; the tolerant ALTER loop below keeps things idempotent when
     running against an older DB that pre-dates this rewrite.
 
-    Phase 0 additions vs. the original schema (plan §4.1):
-      - cicd_tasks.app_id  — FK to apps(id) ON DELETE SET NULL
-      - UNIQUE partial index on cicd_tasks(app_id) WHERE app_id IS NOT NULL
+    Legacy cicd_tasks columns/indexes are kept only for old DB compatibility
+    and frozen reference tests. Current CICD runtime is app-backed.
+
+    Current runtime additions:
       - cicd_task_requests.origin  — 'cicd_workbench' | 'release_decision_sync'
       - Additional performance indexes
     """
@@ -246,7 +250,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         );
 
-        -- Lookup index for repo identity matching (plan §4.1)
+        -- Legacy lookup index; current runtime derives task-shaped rows from apps.
         CREATE INDEX IF NOT EXISTS idx_cicd_tasks_repo
             ON cicd_tasks(repo_name, branch);
         -- NOTE: the partial UNIQUE index on cicd_tasks(app_id) is created AFTER the
@@ -365,7 +369,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         ("cicd_task_requests", "returned_at",      "TEXT NOT NULL DEFAULT ''"),
         ("cicd_task_requests", "app_id",           "TEXT REFERENCES apps(id) ON DELETE CASCADE"),
         ("cicd_tasks",         "community_artifact", "TEXT NOT NULL DEFAULT '[]'"),
-        # Phase 0 new columns — tolerate older DBs
+        # Legacy table columns — tolerate older DBs
         ("cicd_tasks",         "app_id",            "TEXT REFERENCES apps(id) ON DELETE SET NULL"),
         ("cicd_task_requests", "origin",             "TEXT NOT NULL DEFAULT 'cicd_workbench'"),
     ]:
@@ -374,11 +378,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             pass  # column already exists
 
-    # Canonical creation of the partial UNIQUE index on cicd_tasks(app_id),
-    # done HERE (after the ALTER loop guarantees app_id exists) so init_db works
-    # on BOTH a fresh DB and an old-schema DB whose cicd_tasks predates app_id.
-    # 1:1 cardinality ruling: each app has at most one non-null linked task;
-    # multiple orphan tasks (app_id IS NULL) are still allowed.
+    # Legacy index retained so old DBs remain openable; app-backed CICD runtime
+    # does not write cicd_tasks.
     try:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_cicd_tasks_app_id_unique "

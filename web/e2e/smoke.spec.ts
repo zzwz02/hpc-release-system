@@ -22,6 +22,9 @@
  * http_proxy trap: bypassed via playwright.config.ts proxy.bypass.
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { test, expect, type Page } from "@playwright/test";
 
 // ---------------------------------------------------------------------------
@@ -29,6 +32,17 @@ import { test, expect, type Page } from "@playwright/test";
 // ---------------------------------------------------------------------------
 
 const BASE = "http://127.0.0.1:5176";
+
+function localAdminPassword(): string {
+  if (process.env.HPC_ADMIN_PASSWORD) return process.env.HPC_ADMIN_PASSWORD;
+  const passwordFile = resolve(process.cwd(), "../admin_password.local");
+  if (!existsSync(passwordFile)) return "admin";
+  const raw = readFileSync(passwordFile, "utf8");
+  const line = raw.split(/\r?\n/).find((item) => item.startsWith("password="));
+  return line ? line.slice("password=".length).trim() : "admin";
+}
+
+const ADMIN_PASSWORD = localAdminPassword();
 
 async function login(page: Page, username: string, password = username) {
   await page.goto(BASE);
@@ -330,7 +344,7 @@ test.describe("Role-gating", () => {
 
 test.describe("Admin role-gating (ruling C)", () => {
   test("Admin login is redirected to /admin", async ({ page }) => {
-    await login(page, "admin");
+    await login(page, "admin", ADMIN_PASSWORD);
     // After login, AppRouter should redirect Admin from / to /admin
     await page.waitForURL(`${BASE}/admin`, { timeout: 8_000 });
     const url = page.url();
@@ -338,7 +352,7 @@ test.describe("Admin role-gating (ruling C)", () => {
   });
 
   test("Admin sees ONLY 系统管理 tab — no other tabs visible", async ({ page }) => {
-    await login(page, "admin");
+    await login(page, "admin", ADMIN_PASSWORD);
     await page.waitForURL(`${BASE}/admin`, { timeout: 8_000 });
     await page.waitForLoadState("networkidle", { timeout: 10_000 });
 
@@ -352,7 +366,7 @@ test.describe("Admin role-gating (ruling C)", () => {
   });
 
   test("Admin navigating to /cicd is redirected to /admin", async ({ page }) => {
-    await login(page, "admin");
+    await login(page, "admin", ADMIN_PASSWORD);
     await page.waitForURL(`${BASE}/admin`, { timeout: 8_000 });
     // Try to navigate to CICD directly
     await page.goto(`${BASE}/cicd`);
@@ -556,8 +570,7 @@ test.describe("W4 wizard derived-identity display", () => {
     await page.waitForSelector('[data-testid="derived-identity-box"]', { timeout: 5_000 });
 
     const boxText = await page.textContent('[data-testid="derived-identity-box"]');
-    // Full SSH URL derived offline from the short name
-    expect(boxText).toContain("sw-gerrit-devops");
+    // The UI displays the shortened Gerrit identity for readability.
     expect(boxText).toContain(`sw-metax-open/e2e-app-${uniq}`);
     expect(boxText).toContain("main");
     expect(boxText).toContain("Gerrit 身份");
@@ -583,8 +596,9 @@ test.describe("W4 wizard derived-identity display", () => {
 
     await page.fill('[data-testid="new-app-name"]', `e2e-w4-repo-${Date.now()}`);
     // Switch to repo type — scope to dialog to avoid hitting the release picker
-    await page.locator('[data-testid="new-app-dialog"] select').selectOption("repo");
-    await page.fill('input[placeholder*="sw-metax-open"]', "manifests/releases/maca-4.0.xml");
+    const dialog = page.locator('[data-testid="new-app-dialog"]');
+    await dialog.locator("select").selectOption("repo");
+    await dialog.locator("label", { hasText: "仓库名 / Gerrit URL" }).locator("input").fill("manifests/releases/maca-4.0.xml");
 
     // Trigger fetch — immediately 502 via route mock
     await page.click('[data-testid="new-app-fetch"]');

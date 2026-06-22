@@ -42,9 +42,9 @@ def tmp_dir():
 def temp_db(tmp_dir):
     """A fresh, schema-initialised SQLite connection backed by a temp file.
 
-    Uses app.db.connection.connect so the new schema (including app_id on
-    cicd_tasks, origin on cicd_task_requests, and the new indexes) is
-    applied.  Compatible with all release_system.core helper functions.
+    Uses app.db.connection.connect so the FastAPI schema is applied. Compatible
+    with all release_system.core helper functions used by legacy reference
+    tests.
     """
     db_path = tmp_dir / "test.db"
     conn = _app_connect(db_path)
@@ -85,8 +85,8 @@ _INIT_CSV = (
 # ---------------------------------------------------------------------------
 # Seed / factory helpers
 #
-# These are plain functions (not fixtures) so capture.py and other scripts
-# can import and call them directly: from tests.conftest import seed_release
+# These are plain functions (not fixtures) so tests and scripts can import and
+# call them directly: from tests.conftest import seed_release
 # ---------------------------------------------------------------------------
 
 def seed_release(conn, *, csv_text: str = _INIT_CSV, tmp_path: Path | None = None) -> str:
@@ -187,44 +187,6 @@ def seed_snapshot(
     return core.get_release(conn, release_id)["snapshots"][app_id]
 
 
-def seed_cicd_task(
-    conn,
-    *,
-    app_name: str = "hpc-cicd-test",
-    app_version: str = "1.0",
-    repo_type: str = "git",
-    repo_name: str = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_cicd_test",
-    branch: str = "maca",
-    status: str = "Running",
-    submitter: str = "rm",
-    submitter_role: str = "RM",
-    submitter_display: str = "RM",
-) -> dict:
-    """Submit a CICD create request and return the pending request dict."""
-    return core.submit_cicd_request(
-        conn,
-        task_id=None,
-        request_type="create",
-        payload={
-            "app_name": app_name,
-            "app_version": app_version,
-            "repo_type": repo_type,
-            "repo_name": repo_name,
-            "branch": branch,
-            "build_product": ["maca"],
-            "community_artifact": ["image"],
-            "build_image": "hpc/base:latest",
-            "test_timeout": 40,
-            "owner_username": submitter,
-            "status": status,
-            "notes": "",
-        },
-        submitter=submitter,
-        submitter_role=submitter_role,
-        submitter_display=submitter_display,
-    )
-
-
 def seed_cicd_request(
     conn,
     task_id: str,
@@ -234,7 +196,7 @@ def seed_cicd_request(
     submitter_role: str = "Owner",
     submitter_display: str = "Owner",
 ) -> dict:
-    """Submit a CICD modify request against *task_id* and return the request dict."""
+    """Submit a CICD modify request against app-backed *task_id*."""
     if payload is None:
         payload = {"notes": {"old": "", "new": "conftest note"}}
     return core.submit_cicd_request(
@@ -342,10 +304,14 @@ def _seed_parity_db(db_path: Path) -> dict:
     release = core.get_release(conn, release_id)
     app_ids = list(release["snapshots"].keys())
 
-    # 5. Seed a CICD task via RM auto-approve path
-    cicd_req = core.submit_cicd_request(
+    # 5. Seed app-backed CICD requests.  After cutover, task_id stores the same
+    # app id for the existing API field; no cicd_tasks row is created.
+    from app.services import cicd_service
+
+    cicd_task_id = "goldenamber"
+    cicd_req = cicd_service.submit_request(
         conn,
-        task_id=None,
+        task_id=cicd_task_id,
         request_type="create",
         payload={
             "app_name": "GoldenAmber",
@@ -365,10 +331,10 @@ def _seed_parity_db(db_path: Path) -> dict:
         submitter_role="RM",
         submitter_display="RM User",
     )
-    cicd_task_id = cicd_req["task_id"]
+    cicd_service.approve_request(conn, cicd_req["id"], reviewer="rm", reviewer_role="RM")
 
-    # 6. Leave a pending Owner modify request
-    core.submit_cicd_request(
+    # 6. Leave a pending Owner modify request.
+    cicd_service.submit_request(
         conn,
         task_id=cicd_task_id,
         request_type="modify",
@@ -376,6 +342,7 @@ def _seed_parity_db(db_path: Path) -> dict:
         submitter="owner_test",
         submitter_role="Owner",
         submitter_display="Owner Test",
+        source="app_workbench",
     )
 
     # 7. Seed a wiki article

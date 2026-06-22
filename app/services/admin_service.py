@@ -80,14 +80,13 @@ def update_user_role(
 
 
 def _clear_cicd_business_data(conn: sqlite3.Connection) -> None:
-    """Clear CICD business tables added by the FastAPI rewrite.
+    """Clear CICD business tables owned by the current app-backed CICD flow.
 
-    release_system.core.clear_business_data predates the App↔CICD rewrite and
-    preserves these tables, so the new admin service clears them explicitly.
+    release_system.core.clear_business_data predates the App-backed CICD flow
+    and preserves these tables, so the new admin service clears them explicitly.
     """
     conn.execute("DELETE FROM cicd_task_requests")
     conn.execute("DELETE FROM cicd_notifications")
-    conn.execute("DELETE FROM cicd_tasks")
 
 
 def delete_user(conn: sqlite3.Connection, username: str, *, actor: str) -> None:
@@ -169,7 +168,6 @@ def delete_app(
             "DELETE FROM cicd_task_requests WHERE app_id = ? OR task_id = ?",
             (app_id, app_id),
         )
-        fresh_conn.execute("DELETE FROM cicd_tasks WHERE app_id = ?", (app_id,))
         deleted = _core.delete_app(fresh_conn, app_id, user=actor, role="Admin")
         fresh_conn.commit()
     finally:

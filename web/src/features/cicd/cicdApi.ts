@@ -27,7 +27,6 @@ import type {
   CicdReturnDeliveryResponse,
   CicdReDispatchResponse,
   CicdApplyReturnedResponse,
-  CicdTransferOwnerResponse,
   CicdMarkVisitedResponse,
 } from "../../types";
 
@@ -133,17 +132,6 @@ export function applyReturnedCicdRequest(body: {
   request_id: number;
 }): Promise<CicdApplyReturnedResponse> {
   return apiPost<CicdApplyReturnedResponse>("/api/cicd/requests/apply-returned", body);
-}
-
-// ---------------------------------------------------------------------------
-// POST — tasks
-// ---------------------------------------------------------------------------
-
-export function transferCicdOwner(body: {
-  task_id: string;
-  new_owner: string;
-}): Promise<CicdTransferOwnerResponse> {
-  return apiPost<CicdTransferOwnerResponse>("/api/cicd/tasks/transfer-owner", body);
 }
 
 // ---------------------------------------------------------------------------

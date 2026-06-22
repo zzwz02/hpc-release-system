@@ -911,7 +911,7 @@ def fetch_all_app_infos(
 
 
 # ---------------------------------------------------------------------------
-# Admin-only app deletion and snapshot transfer (for Wave 2 impl-3 / admin)
+# Admin-only app deletion
 # ---------------------------------------------------------------------------
 
 def delete_app(conn: sqlite3.Connection, app_id: str, *, user: str, role: str) -> None:
@@ -920,18 +920,3 @@ def delete_app(conn: sqlite3.Connection, app_id: str, *, user: str, role: str) -
     Mirrors core.py:delete_app. Called by admin router.
     """
     core.delete_app(conn, app_id, user=user, role=role)
-
-
-def transfer_owner(
-    conn: sqlite3.Connection,
-    app_id: str,
-    release_id: str,
-    *,
-    new_owner: str,
-    user: str,
-) -> None:
-    """Transfer app ownership within a release snapshot.
-
-    # TODO Phase 2 — implement when admin/transfer-owner router is built.
-    """
-    raise NotImplementedError

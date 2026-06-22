@@ -15,10 +15,10 @@ The script is fully self-contained: it does NOT depend on pytest or conftest.py.
 Re-running it overwrites the golden files in place.
 
 Alignment with tests/conftest.py (impl-testbase):
-    tests/conftest.py exposes seed_release / seed_cicd_task / seed_wiki_article /
-    seed_snapshot / seed_cicd_request as plain module-level helpers that are
-    importable here.  This script uses its own slightly richer seed (3 apps vs. 1,
-    plus artifacts + release schedule) so the goldens cover more response shapes.
+    tests/conftest.py exposes seed_release / seed_wiki_article / seed_snapshot /
+    seed_cicd_request as plain module-level helpers that are importable here.
+    This script uses its own slightly richer seed (3 apps vs. 1, plus artifacts
+    + release schedule) so the goldens cover more response shapes.
     Phase 2 replay uses the conftest fixtures for the authoritative minimal DB;
     this seed is only for the golden recording session.  The user roster is shared
     — both call core.ensure_default_user which core.connect invokes automatically.

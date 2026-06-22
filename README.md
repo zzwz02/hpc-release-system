@@ -2,14 +2,13 @@
 
 面向 HPC App 发布周期的内部协作工具，把发布范围、Owner 文档、`app_info.json`、QA 结果、Manager Review、最终文档产物和 CICD 交付申请集中到同一个 Web 界面中管理。
 
-本仓库当前是一次 **FastAPI + React/Vite/TypeScript 全量重写**（分支 `rewrite/fastapi-react`），在保持旧系统业务行为的前提下，将原来的单文件 `http.server` + `index.html` 拆分为分层后端（`app/`）与单页前端（`web/`）。重写遵循以下命名变更：
+本仓库当前是一次 **FastAPI + React/Vite/TypeScript 全量重写**（分支 `rewrite/fastapi-react`），在保持旧系统业务行为的前提下，将原来的单文件 `http.server` + `index.html` 拆分为分层后端（`app/`）与单页前端（`web/`）。当前实现遵循以下约束：
 
-- **R1**：一次性数据迁移工具（`tools/migrate_db.py`），把旧 DB 迁移到新 schema 并统一时区。
-- **R2**：前端去除轮询，数据只在显式刷新 / 进入页面 / 写操作后失效时更新。
-- **R3**：CICD 任务与 App 建立 1:1 关联，App 发布决策驱动 CICD 运行状态（Ruling A/B/C/D）。
+- **刷新策略**：前端去除轮询，数据只在显式刷新 / 进入页面 / 写操作后失效时更新。
+- **CICD app-backed**：CICD 由 App 直接承载，App 发布决策驱动 CICD 运行状态（Ruling A/B/C/D）。
 - **时区统一**：除历史遗留外，存储与展示的时间均为**北京时间 naive 字符串**（`YYYY-MM-DD HH:MM:SS`，零偏移）。
 
-> 旧版单文件系统（`server.py` + `index.html` + `release_system/core.py`）仍保留在仓库中，**作为冻结的行为参照与 golden 回放基准，不再修改**。线上切换步骤见 [CUTOVER.md](./CUTOVER.md)。
+> 旧版单文件系统（`server.py` + `index.html` + `release_system/core.py`）仍保留在仓库中，**作为冻结的行为参照与 golden 回放基准，不再修改**。
 
 ---
 
@@ -165,9 +164,9 @@ stateDiagram-v2
 
 ---
 
-## R3 — CICD ↔ App 联动
+## CICD ↔ App 联动
 
-CICD 任务由 App 直接承载：`cicd_task_requests.app_id` 关联 `apps.id`，`task_id` 仅作为兼容别名返回。所有写状态的动作都经由「待审批申请」队列，由 **RM** 唯一审批（Ruling B）。App 的发布决策驱动 CICD 运行状态（Ruling D）；CICD 工作台只负责只读信息、近期申请、审批和交付，配置调整统一从 App 工作台的 CICD tab 提交。
+CICD 由 App 直接承载：`cicd_task_requests.app_id` 关联 `apps.id`，`task_id` 存同一个 app id，用于现有 API 字段；系统不再生成 `CICD-xxxx` id。FastAPI 运行路径不读写旧 `cicd_tasks` 表；该表即使存在，也只用于旧 DB / 冻结参考测试可打开。所有写状态的动作都经由「待审批申请」队列，由 **RM** 唯一审批（Ruling B）。App 的发布决策驱动 CICD 运行状态（Ruling D）；CICD 工作台只负责只读信息、近期申请、审批和交付，配置调整统一从 App 工作台的 CICD tab 提交。
 
 ```mermaid
 flowchart TD
@@ -220,7 +219,7 @@ flowchart TD
 
 `apps` 表只保存全局身份（`id`、`git_url`、`git_branch`、别名、创建信息）。官方名称、类型、官方 URL、描述、文档目标、Owner、release 决策、文档字段、测试说明、`app_info`、QA 状态等都保存在**每个 release 的 snapshot** 中。因此同一个 app 在不同 release 中可以有不同版本、Owner、文档与 QA 状态。新建 release 会从上一版克隆 snapshot 并重置 QA 状态。
 
-CICD↔App 的首选身份键是 `app_id`；兼容旧数据时才回退到 `(git_url, git_branch)`。注意同一个 Gerrit URL 可以有多个 branch，不能只用 URL 匹配。身份解析见 `app/identity.py`（`repo_to_git_identity`）。
+CICD↔App 的身份键是 `app_id`。`(git_url, git_branch)` 只用于历史展示 / 兼容匹配，新写入路径必须使用 app id。注意同一个 Gerrit URL 可以有多个 branch，不能只用 URL 匹配。身份解析见 `app/identity.py`（`repo_to_git_identity`）。
 
 ---
 
@@ -267,14 +266,13 @@ release-system/
 ├── web/                         # React/Vite/TS 前端（新）
 │   ├── src/{api,types,lib,store,components,features,routes}/
 │   └── README-web.md            # 前端开发说明
-├── tools/migrate_db.py          # R1 一次性迁移工具（在副本上运行）
+├── tools/                       # 辅助工具（如身份解析）
 ├── tests/                       # pytest（含 tests/golden/ 回放）
 ├── release_system/              # 旧系统（冻结，golden 基准，勿改）
 │   ├── core.py
 │   └── wiki/core.py
 ├── server.py                    # 旧单文件服务（冻结，勿改）
 ├── index.html                   # 旧单页前端（冻结，勿改）
-├── CUTOVER.md                   # 生产切换手册
 └── release_system_state_machine.svg  # 旧状态机图（已被上文 mermaid 取代）
 ```
 
@@ -298,12 +296,6 @@ npm run test:e2e       # Playwright e2e
 ```
 
 > golden 文件位于 `tests/golden/responses/`，由 `tests/golden/capture.py` 基于**冻结的旧 core** 采集；时间戳被擦洗为 `SCRUBBED_TIMESTAMP`。行为不变的改动应保持 golden 不变；有意行为变更需把受影响 golden **重新基线为新的、已核对正确的响应体**，绝不删除或跳过来掩盖回归。
-
----
-
-## 数据迁移与切换
-
-`tools/migrate_db.py` 把旧 DB 迁移到新 schema：回填 `cicd_tasks.app_id`（关联→派生→冲突覆盖三遍），并按列把历史 UTC 时间转换为北京时间（含 `wiki_articles` 时间列）。CICD app-backed 改造后的二次切换使用 `tools/migrate_cicd_requests_to_apps.py`：把历史 `cicd_task_requests` 关联到 `apps.id`，并清空旧 `cicd_tasks` 业务数据。**迁移始终在 DB 副本上进行**，产出候选 DB + 报告，绝不改动线上 `release_system.db`。完整步骤见 [CUTOVER.md](./CUTOVER.md) 和 [CUTOVER_CICD_APP_REQUESTS.md](./CUTOVER_CICD_APP_REQUESTS.md)。
 
 ---
 

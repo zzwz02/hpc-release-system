@@ -627,103 +627,11 @@ class TestCicdRepo:
     def teardown_method(self):
         self.conn.close()
 
-    def _create_task(self, task_id="CICD-0001", app_id=None):
-        ts = beijing_timestamp()
-        cicd_repo.create_task(
-            self.conn,
-            task_id=task_id,
-            app_name="test-app",
-            app_id=app_id,
-            repo_type="git",
-            repo_name="ssh://gerrit/hpc_test",
-            branch="maca",
-            build_product=["maca"],
-            community_artifact=["image"],
-            build_image="base:latest",
-            test_timeout=40,
-            owner_username="rm",
-            status="Running",
-            notes="",
-            created_at=ts,
-            updated_at=ts,
-        )
-        self.conn.commit()
-
-    def test_next_cicd_id_empty(self):
-        assert cicd_repo.next_cicd_id(self.conn) == "CICD-0001"
-
-    def test_next_cicd_id_increments(self):
-        self._create_task("CICD-0042")
-        assert cicd_repo.next_cicd_id(self.conn) == "CICD-0043"
-
-    def test_create_and_get_task(self):
-        self._create_task(app_id="app1")
-        task = cicd_repo.get_task(self.conn, "CICD-0001")
-        assert task is not None
-        assert task["app_id"] == "app1"
-        assert isinstance(task["build_product"], list)
-
-    def test_tasks_for_app(self):
-        self._create_task("CICD-0001", app_id="app1")
-        tasks = cicd_repo.tasks_for_app(self.conn, "app1")
-        assert len(tasks) == 1
-        assert tasks[0]["id"] == "CICD-0001"
-
-    def test_tasks_for_app_empty(self):
-        self._create_task("CICD-0001", app_id=None)
-        assert cicd_repo.tasks_for_app(self.conn, "app1") == []
-
-    def test_find_tasks_by_identity(self):
-        self._create_task()
-        found = cicd_repo.find_tasks_by_identity(self.conn, "ssh://gerrit/hpc_test", "maca")
-        assert len(found) == 1
-
-    def test_find_tasks_by_identity_no_match(self):
-        self._create_task()
-        assert cicd_repo.find_tasks_by_identity(self.conn, "other", "maca") == []
-
-    def test_partial_unique_index_multiple_nulls_allowed(self):
-        """Multiple tasks with app_id=NULL are allowed (orphan tasks)."""
-        self._create_task("CICD-0001", app_id=None)
-        ts = beijing_timestamp()
-        cicd_repo.create_task(
-            self.conn, task_id="CICD-0002", app_name="other",
-            app_id=None, owner_username="rm",
-            created_at=ts, updated_at=ts,
-        )
-        self.conn.commit()
-        assert len(cicd_repo.list_tasks(self.conn)) == 2
-
-    def test_partial_unique_index_duplicate_app_id_rejected(self):
-        """Two tasks with the same non-null app_id must be rejected."""
-        import sqlite3
-        self._create_task("CICD-0001", app_id="app1")
-        ts = beijing_timestamp()
-        with pytest.raises(sqlite3.IntegrityError):
-            cicd_repo.create_task(
-                self.conn, task_id="CICD-0002", app_name="dup",
-                app_id="app1", owner_username="rm",
-                created_at=ts, updated_at=ts,
-            )
-
-    def test_list_tasks_with_status_filter(self):
-        self._create_task("CICD-0001", app_id=None)
-        ts = beijing_timestamp()
-        cicd_repo.create_task(
-            self.conn, task_id="CICD-0002", app_name="stopped",
-            app_id=None, owner_username="rm", status="Stopped",
-            created_at=ts, updated_at=ts,
-        )
-        self.conn.commit()
-        running = cicd_repo.list_tasks(self.conn, status_filter="Running")
-        assert len(running) == 1
-        assert running[0]["id"] == "CICD-0001"
-
     def test_insert_request_and_get(self):
-        self._create_task()
         req_id = cicd_repo.insert_request(
             self.conn,
-            task_id="CICD-0001",
+            task_id="app1",
+            app_id="app1",
             request_type="modify",
             payload={"notes": {"old": "", "new": "test"}},
             submitter="rm",
@@ -735,12 +643,13 @@ class TestCicdRepo:
         assert req is not None
         assert req["request_type"] == "modify"
         assert req["payload"] == {"notes": {"old": "", "new": "test"}}
+        assert req["app_id"] == "app1"
 
     def test_has_open_modify_on_field_true(self):
-        self._create_task()
         cicd_repo.insert_request(
             self.conn,
-            task_id="CICD-0001",
+            task_id="app1",
+            app_id="app1",
             request_type="modify",
             payload={"status": {"old": "Running", "new": "Stopped"}},
             submitter="rm",
@@ -749,14 +658,14 @@ class TestCicdRepo:
             origin="release_decision_sync",
         )
         self.conn.commit()
-        assert cicd_repo.has_open_modify_on_field(self.conn, "CICD-0001", "status") is True
-        assert cicd_repo.has_open_modify_on_field(self.conn, "CICD-0001", "notes") is False
+        assert cicd_repo.has_open_modify_on_field(self.conn, "app1", "status") is True
+        assert cicd_repo.has_open_modify_on_field(self.conn, "app1", "notes") is False
 
     def test_has_open_modify_on_field_false_after_approval(self):
-        self._create_task()
         req_id = cicd_repo.insert_request(
             self.conn,
-            task_id="CICD-0001",
+            task_id="app1",
+            app_id="app1",
             request_type="modify",
             payload={"status": {"old": "Running", "new": "Stopped"}},
             submitter="rm",
@@ -766,23 +675,21 @@ class TestCicdRepo:
         self.conn.commit()
         cicd_repo.update_request(self.conn, req_id, status="approved")
         self.conn.commit()
-        assert cicd_repo.has_open_modify_on_field(self.conn, "CICD-0001", "status") is False
+        assert cicd_repo.has_open_modify_on_field(self.conn, "app1", "status") is False
 
     def test_pending_task_ids(self):
-        self._create_task()
         cicd_repo.insert_request(
-            self.conn, task_id="CICD-0001", request_type="modify",
+            self.conn, task_id="app1", app_id="app1", request_type="modify",
             payload={}, submitter="rm", submitted_at=beijing_timestamp(),
             status="pending",
         )
         self.conn.commit()
         ids = cicd_repo.pending_task_ids(self.conn)
-        assert "CICD-0001" in ids
+        assert "app1" in ids
 
     def test_origin_column_defaults(self):
-        self._create_task()
         req_id = cicd_repo.insert_request(
-            self.conn, task_id="CICD-0001", request_type="create",
+            self.conn, task_id="app1", app_id="app1", request_type="create",
             payload={}, submitter="rm", submitted_at=beijing_timestamp(),
         )
         self.conn.commit()
@@ -790,9 +697,8 @@ class TestCicdRepo:
         assert req["origin"] == "cicd_workbench"
 
     def test_origin_column_release_decision_sync(self):
-        self._create_task()
         req_id = cicd_repo.insert_request(
-            self.conn, task_id="CICD-0001", request_type="modify",
+            self.conn, task_id="app1", app_id="app1", request_type="modify",
             payload={"status": {"old": "Running", "new": "Stopped"}},
             submitter="rm", submitted_at=beijing_timestamp(),
             origin="release_decision_sync",
@@ -803,9 +709,8 @@ class TestCicdRepo:
 
     def test_list_requests_since_cutoff(self):
         """since_cutoff uses pre-computed Beijing timestamp (DA C5 fix)."""
-        self._create_task()
         cicd_repo.insert_request(
-            self.conn, task_id="CICD-0001", request_type="modify",
+            self.conn, task_id="app1", app_id="app1", request_type="modify",
             payload={}, submitter="rm",
             submitted_at="2026-01-01 00:00:00",
         )
@@ -823,17 +728,19 @@ class TestCicdRepo:
         counts = cicd_repo.notification_counts(self.conn, "rm", "Owner")
         assert counts["last_visited_at"] == "2026-01-01 00:00:00"
 
-    def test_apply_modify_fields_status(self):
-        """apply_modify_fields can write 'status' for decision-sync callers."""
-        self._create_task(app_id=None)
-        ts = beijing_timestamp()
-        cicd_repo.apply_modify_fields(self.conn, "CICD-0001", {"status": "Stopped"}, updated_at=ts)
-        self.conn.commit()
-        task = cicd_repo.get_task(self.conn, "CICD-0001")
-        assert task["status"] == "Stopped"
-
-    def test_delete_task_helper_removed(self):
-        assert not hasattr(cicd_repo, "delete_task")
+    def test_legacy_task_crud_helpers_removed(self):
+        for name in [
+            "next_cicd_id",
+            "get_task",
+            "list_tasks",
+            "tasks_for_app",
+            "find_tasks_by_identity",
+            "create_task",
+            "apply_modify_fields",
+            "update_task_app_id",
+            "task_history",
+        ]:
+            assert not hasattr(cicd_repo, name)
 
 
 # ---------------------------------------------------------------------------

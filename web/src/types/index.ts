@@ -441,11 +441,6 @@ export interface CicdApplyReturnedResponse {
   request: CicdRequest;
 }
 
-export interface CicdTransferOwnerResponse {
-  ok: boolean;
-  task: CicdTask;
-}
-
 export interface CicdMarkVisitedResponse {
   ok: boolean;
 }

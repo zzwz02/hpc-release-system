@@ -15,6 +15,11 @@
         "git_branch": "maca",
         "created_by": "import",
         "created_at": "SCRUBBED_TIMESTAMP",
+        "cicd_repo_type": "git",
+        "cicd_community_artifact": "",
+        "cicd_build_image": "hpc/amber-builder:latest",
+        "cicd_test_timeout": "40",
+        "cicd_notes": "golden capture seed task",
         "aliases": [
           "GoldenAmber"
         ]
@@ -25,6 +30,11 @@
         "git_branch": "maca",
         "created_by": "import",
         "created_at": "SCRUBBED_TIMESTAMP",
+        "cicd_repo_type": "",
+        "cicd_community_artifact": "",
+        "cicd_build_image": "",
+        "cicd_test_timeout": "",
+        "cicd_notes": "",
         "aliases": [
           "GoldenHpl"
         ]
@@ -35,6 +45,11 @@
         "git_branch": "main",
         "created_by": "import",
         "created_at": "SCRUBBED_TIMESTAMP",
+        "cicd_repo_type": "",
+        "cicd_community_artifact": "",
+        "cicd_build_image": "",
+        "cicd_test_timeout": "",
+        "cicd_notes": "",
         "aliases": [
           "GoldenLammps"
         ]

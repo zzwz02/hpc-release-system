@@ -1,6 +1,6 @@
 {
   "_golden_name": "post_cicd_apps_new_rm_approve",
-  "_note": "R3 Wave 3: RM approves CICD-first create request #5 (immediate mode). Task CICD-0002 created with app_id=w3cicdfirst. RM self-approves own request → is_self_approved=1.",
+  "_note": "R3 Wave 3: RM approves CICD-first create request #5 (immediate mode). task_id is the app id w3cicdfirst. RM self-approves own request → is_self_approved=1.",
   "_method": "POST",
   "_path": "/api/cicd/requests/approve",
   "_params": "",
@@ -14,7 +14,8 @@
     "ok": true,
     "request": {
       "id": 5,
-      "task_id": "CICD-0002",
+      "task_id": "w3cicdfirst",
+      "app_id": "w3cicdfirst",
       "request_type": "create",
       "payload": "{\"app_name\": \"W3CicdFirst\", \"app_id\": \"w3cicdfirst\", \"repo_type\": \"git\", \"repo_name\": \"hpc_w3cicd\", \"branch\": \"wave3\", \"app_version\": \"\", \"build_product\": [\"maca\"], \"community_artifact\": [], \"build_image\": \"hpc/w3cicd:latest\", \"test_timeout\": 40, \"owner_username\": \"rm\", \"status\": \"Running\", \"notes\": \"wave3 cicd-first golden\"}",
       "submitter": "rm",

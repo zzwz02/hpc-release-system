@@ -487,29 +487,6 @@ async def post_cicd_apps_new(
     return result
 
 
-@router.post("/tasks/transfer-owner")
-async def post_transfer_owner(
-    request: Request,
-    user: dict = Depends(require_login),
-    conn: sqlite3.Connection = Depends(get_db),
-) -> dict:
-    """POST /api/cicd/tasks/transfer-owner — direct owner transfer (RM only; Ruling C).
-
-    Mirrors server.py:do_POST:1115-1128.
-    """
-    body: dict = await request.json()
-    if user["role"] not in cicd_service.CICD_APPROVER_ROLES:
-        raise AuthzError("只有 RM 可以直接修改负责人")
-    task = cicd_service.transfer_owner(
-        conn,
-        body["task_id"],
-        body["new_owner"],
-        actor=user["username"],
-        actor_role=user["role"],
-    )
-    return {"ok": True, "task": task}
-
-
 # ---------------------------------------------------------------------------
 # POST endpoints — notifications
 # ---------------------------------------------------------------------------

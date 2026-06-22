@@ -6,7 +6,7 @@
   "_params": "",
   "_role": "rm",
   "_body": {
-    "task_id": null,
+    "task_id": "goldenhpl",
     "request_type": "create",
     "payload": {
       "app_name": "GoldenRmPending",
@@ -30,7 +30,8 @@
     "ok": true,
     "request": {
       "id": 4,
-      "task_id": null,
+      "task_id": "goldenhpl",
+      "app_id": "goldenhpl",
       "request_type": "create",
       "payload": "{\"app_name\": \"GoldenRmPending\", \"app_version\": \"1.0\", \"repo_type\": \"git\", \"repo_name\": \"ssh://gerrit/PDE/HPC/hpc_rm_pending\", \"branch\": \"main\", \"build_product\": [\"maca\"], \"community_artifact\": [], \"build_image\": \"hpc/rm-pending:latest\", \"test_timeout\": 40, \"owner_username\": \"rm\", \"status\": \"Running\", \"notes\": \"ruling-b rm pending golden\"}",
       "submitter": "rm",

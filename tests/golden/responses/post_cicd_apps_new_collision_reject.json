@@ -1,6 +1,6 @@
 {
   "_golden_name": "post_cicd_apps_new_collision_reject",
-  "_note": "R3 Wave 3: RM attempts second CICD-first create for same identity (w3cicdfirst/CICD-0002 already linked) → 400 '该 app 已有 CICD 任务'. Collision reject per plan §3.5 a 1:1 cardinality ruling.",
+  "_note": "R3 Wave 3: RM attempts second CICD-first create for same identity (w3cicdfirst already has an active create request) → 400. Collision reject per app-backed 1:1 cardinality rule.",
   "_method": "POST",
   "_path": "/api/cicd/apps/new",
   "_params": "",
@@ -10,7 +10,9 @@
     "repo_type": "git",
     "repo_name": "hpc_w3cicd",
     "branch": "wave3",
-    "build_product": ["maca"],
+    "build_product": [
+      "maca"
+    ],
     "community_artifact": [],
     "build_image": "hpc/w3cicd:latest",
     "test_timeout": 40,
@@ -19,6 +21,6 @@
   "status": 400,
   "body": {
     "ok": false,
-    "error": "该 app（w3cicdfirst）已有 CICD 任务（CICD-0002），无法重复创建"
+    "error": "该 app（w3cicdfirst）已有 CICD 创建记录，无法重复创建"
   }
 }

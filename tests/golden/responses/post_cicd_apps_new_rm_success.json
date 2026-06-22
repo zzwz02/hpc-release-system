@@ -27,7 +27,8 @@
     "git_branch": "wave3",
     "request": {
       "id": 5,
-      "task_id": null,
+      "task_id": "w3cicdfirst",
+      "app_id": "w3cicdfirst",
       "request_type": "create",
       "payload": "{\"app_name\": \"W3CicdFirst\", \"app_id\": \"w3cicdfirst\", \"repo_type\": \"git\", \"repo_name\": \"hpc_w3cicd\", \"branch\": \"wave3\", \"app_version\": \"\", \"build_product\": [\"maca\"], \"community_artifact\": [], \"build_image\": \"hpc/w3cicd:latest\", \"test_timeout\": 40, \"owner_username\": \"rm\", \"status\": \"Running\", \"notes\": \"wave3 cicd-first golden\"}",
       "submitter": "rm",
