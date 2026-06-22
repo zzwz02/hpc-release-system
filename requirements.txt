@@ -1,3 +1,7 @@
 ldap3
 openpyxl
 openai
+fastapi
+uvicorn[standard]
+pydantic>=2
+pydantic-settings

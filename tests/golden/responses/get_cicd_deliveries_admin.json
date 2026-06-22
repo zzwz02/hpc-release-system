@@ -1,0 +1,14 @@
+{
+  "_golden_name": "get_cicd_deliveries_admin",
+  "_note": "R3 Ruling C: Admin gets 403 on GET /api/cicd/deliveries (removed from deliver-read set {SPD,RM,Owner})",
+  "_method": "GET",
+  "_path": "/api/cicd/deliveries",
+  "_params": "",
+  "_role": "admin",
+  "_body": null,
+  "status": 403,
+  "body": {
+    "ok": false,
+    "error": "无权访问交付列表"
+  }
+}

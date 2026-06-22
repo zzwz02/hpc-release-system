@@ -1,0 +1,14 @@
+{
+  "_golden_name": "get_cicd_notifications_owner",
+  "_note": "CICD notification counts for Owner",
+  "_method": "GET",
+  "_path": "/api/cicd/notifications",
+  "_params": "",
+  "_role": "owner",
+  "_body": null,
+  "status": 200,
+  "body": {
+    "count": 0,
+    "last_visited_at": "SCRUBBED_TIMESTAMP"
+  }
+}

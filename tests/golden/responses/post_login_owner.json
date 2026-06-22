@@ -1,0 +1,16 @@
+{
+  "_golden_name": "post_login_owner",
+  "_note": "Owner login response body",
+  "_method": "POST",
+  "_path": "/api/login",
+  "_params": "",
+  "_role": "owner",
+  "_body": {
+    "username": "owner_test",
+    "password": "owner_test"
+  },
+  "status": 200,
+  "body": {
+    "ok": true
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "_golden_name": "post_login_rm",
+  "_note": "RM login response body",
+  "_method": "POST",
+  "_path": "/api/login",
+  "_params": "",
+  "_role": "rm",
+  "_body": {
+    "username": "rm",
+    "password": "rm"
+  },
+  "status": 200,
+  "body": {
+    "ok": true
+  }
+}

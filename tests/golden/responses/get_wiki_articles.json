@@ -1,0 +1,25 @@
+{
+  "_golden_name": "get_wiki_articles",
+  "_note": "list wiki articles (RM)",
+  "_method": "GET",
+  "_path": "/api/wiki/articles",
+  "_params": "",
+  "_role": "rm",
+  "_body": null,
+  "status": 200,
+  "body": {
+    "articles": [
+      {
+        "id": "wiki_cbd5c625e992",
+        "title": "Golden Test Article",
+        "pinned": false,
+        "created_by": "rm",
+        "created_at": "SCRUBBED_TIMESTAMP",
+        "updated_by": "rm",
+        "updated_at": "SCRUBBED_TIMESTAMP",
+        "deleted": false,
+        "excerpt": "Golden This is a golden capture test article."
+      }
+    ]
+  }
+}

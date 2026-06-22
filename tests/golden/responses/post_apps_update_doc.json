@@ -1,0 +1,67 @@
+{
+  "_golden_name": "post_apps_update_doc",
+  "_note": "RM updates doc field on first app",
+  "_method": "POST",
+  "_path": "/api/apps/update",
+  "_params": "",
+  "_role": "rm",
+  "_body": {
+    "app_id": "goldenamber",
+    "release_id": "rel_d13b4cc2e9b4",
+    "snapshot": {
+      "doc": {
+        "intro": "Golden intro text for parity test."
+      }
+    }
+  },
+  "status": 200,
+  "body": {
+    "snapshot": {
+      "app_id": "goldenamber",
+      "app_info": null,
+      "app_info_diffs": [],
+      "arch": "x86",
+      "arm_chips": "",
+      "build_arches": "",
+      "build_os": "",
+      "community": {
+        "framework_version": "",
+        "python_version": "",
+        "release_status": ""
+      },
+      "description": "",
+      "doc": {
+        "binary_usage": "",
+        "env_setup": "",
+        "image_usage": "",
+        "intro": "Golden intro text for parity test.",
+        "limitations": ""
+      },
+      "doc_target": "manual",
+      "hpcc_chip": "x201",
+      "maca_version": "20260511",
+      "missing_items": [],
+      "official_name": "GoldenAmber",
+      "official_url": "",
+      "owner_confirmed": false,
+      "owners": [
+        "owner_test"
+      ],
+      "python_labels": "",
+      "pytorch_labels": "",
+      "qa_issue_note": "",
+      "qa_status": "qa_passed",
+      "release_decision": "cicd_only",
+      "sanity": {
+        "arm_kylin": false,
+        "ubuntu": false
+      },
+      "test_docs": [],
+      "type": "分子动力学",
+      "version": "22",
+      "x86_chips": "c500,x301"
+    },
+    "missing_items": [],
+    "qa_status": "qa_passed"
+  }
+}

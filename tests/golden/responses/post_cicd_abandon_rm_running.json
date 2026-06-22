@@ -1,0 +1,15 @@
+{
+  "_golden_name": "post_cicd_abandon_rm_running",
+  "_note": "CICD abandon endpoint removed; retire/delete now happens through App operations",
+  "_method": "POST",
+  "_path": "/api/cicd/tasks/abandon",
+  "_params": "",
+  "_role": "rm",
+  "_body": {
+    "task_id": "CICD-0001"
+  },
+  "status": 405,
+  "body": {
+    "detail": "Method Not Allowed"
+  }
+}

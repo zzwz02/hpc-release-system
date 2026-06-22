@@ -1,0 +1,11 @@
+{
+  "_golden_name": "get_artifact_release_note",
+  "_note": "artifact kind=release_note for seeded release",
+  "_method": "GET",
+  "_path": "/api/artifacts/release_note",
+  "_params": "release_id=rel_d13b4cc2e9b4",
+  "_role": "rm",
+  "_body": null,
+  "status": 200,
+  "body": "# MACA HPC 发布列表 - Golden-Release-1\n\n| 名称 | 类型 | 描述 | 对应官方版本 | X86支持芯片系列 | ARM支持芯片类型 |\n| --- | --- | --- | --- | --- | --- |\n\n"
+}

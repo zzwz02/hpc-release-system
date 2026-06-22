@@ -1,0 +1,50 @@
+{
+  "_golden_name": "get_admin_users",
+  "_note": "user list (Admin only)",
+  "_method": "GET",
+  "_path": "/api/admin/users",
+  "_params": "",
+  "_role": "admin",
+  "_body": null,
+  "status": 200,
+  "body": {
+    "users": [
+      {
+        "username": "admin",
+        "role": "Admin",
+        "auth_source": "local",
+        "display_name": ""
+      },
+      {
+        "username": "guest",
+        "role": "Guest",
+        "auth_source": "local",
+        "display_name": ""
+      },
+      {
+        "username": "owner_test",
+        "role": "Owner",
+        "auth_source": "local",
+        "display_name": ""
+      },
+      {
+        "username": "qa",
+        "role": "QA",
+        "auth_source": "local",
+        "display_name": ""
+      },
+      {
+        "username": "rm",
+        "role": "RM",
+        "auth_source": "local",
+        "display_name": ""
+      },
+      {
+        "username": "spd_test",
+        "role": "SPD",
+        "auth_source": "local",
+        "display_name": ""
+      }
+    ]
+  }
+}

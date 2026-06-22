@@ -1,0 +1,16 @@
+{
+  "_golden_name": "post_login_qa",
+  "_note": "QA login response body",
+  "_method": "POST",
+  "_path": "/api/login",
+  "_params": "",
+  "_role": "qa",
+  "_body": {
+    "username": "qa",
+    "password": "qa"
+  },
+  "status": 200,
+  "body": {
+    "ok": true
+  }
+}

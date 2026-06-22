@@ -1,0 +1,135 @@
+{
+  "_golden_name": "get_qa_reports",
+  "_note": "QA reports for seeded release",
+  "_method": "GET",
+  "_path": "/api/qa-reports",
+  "_params": "release_id=rel_d13b4cc2e9b4",
+  "_role": "rm",
+  "_body": null,
+  "status": 200,
+  "body": {
+    "release_name": "Golden-Release-1",
+    "maca_version": "20260511",
+    "compare_release_id": "",
+    "compare_release_name": "",
+    "release_report": {
+      "columns": [
+        "类别",
+        "名称",
+        "Owner",
+        "类型",
+        "描述",
+        "官方URL",
+        "git_url",
+        "git_branch",
+        "对应官方版本",
+        "OS",
+        "Python version",
+        "PyTorch version",
+        "X86支持芯片系列",
+        "ARM支持芯片类型",
+        "对比",
+        "开发者社区发布情况",
+        "开发者社区发布包支持python版本",
+        "开发者社区发布包支持的底层框架及版本",
+        "ARM / Kylin sanity",
+        "Ubuntu / 兼容性 sanity"
+      ],
+      "rows": [
+        [
+          "HPC",
+          "GoldenAmber",
+          "owner_test",
+          "分子动力学",
+          "",
+          "",
+          "ssh://gerrit/PDE/HPC/hpc_amber",
+          "maca",
+          "22",
+          "",
+          "",
+          "",
+          "c500,x301",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "HPC",
+          "GoldenHpl",
+          "owner_test",
+          "高性能计算",
+          "",
+          "",
+          "ssh://gerrit/PDE/HPC/hpc_hpl",
+          "maca",
+          "2.3",
+          "",
+          "",
+          "",
+          "c500",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "AI4Sci",
+          "GoldenLammps",
+          "owner_test",
+          "分子动力学",
+          "",
+          "",
+          "ssh://gerrit/PDE/HPC/hpc_lammps",
+          "main",
+          "stable",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          ""
+        ]
+      ],
+      "rows_meta": [
+        {
+          "release_decision": "release",
+          "is_release": true
+        },
+        {
+          "release_decision": "release",
+          "is_release": true
+        },
+        {
+          "release_decision": "release",
+          "is_release": true
+        }
+      ]
+    },
+    "test_cmd": {
+      "columns": [
+        "app_name",
+        "git_branch",
+        "app_version",
+        "arch",
+        "maca_version",
+        "test_name",
+        "docker_cmd"
+      ],
+      "rows": []
+    },
+    "generated_at": "SCRUBBED_TIMESTAMP"
+  }
+}

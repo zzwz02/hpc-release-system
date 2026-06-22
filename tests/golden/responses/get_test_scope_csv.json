@@ -1,0 +1,11 @@
+{
+  "_golden_name": "get_test_scope_csv",
+  "_note": "test-scope CSV for RM",
+  "_method": "GET",
+  "_path": "/api/test-scope.csv",
+  "_params": "release_id=rel_d13b4cc2e9b4",
+  "_role": "rm",
+  "_body": null,
+  "status": 200,
+  "body": "app_name,version,gerrit_url,branch,owners\r\nGoldenAmber 22,22,ssh://gerrit/PDE/HPC/hpc_amber,maca,owner_test\r\nGoldenHpl 2.3,2.3,ssh://gerrit/PDE/HPC/hpc_hpl,maca,owner_test\r\nGoldenLammps stable,stable,ssh://gerrit/PDE/HPC/hpc_lammps,main,owner_test\r\n"
+}

@@ -1,0 +1,55 @@
+{
+  "_golden_name": "post_cicd_request_submit_owner",
+  "_note": "Owner submits CICD create request (enters pending queue)",
+  "_method": "POST",
+  "_path": "/api/cicd/requests/submit",
+  "_params": "",
+  "_role": "owner",
+  "_body": {
+    "task_id": null,
+    "request_type": "create",
+    "payload": {
+      "app_name": "GoldenLammps",
+      "app_version": "stable",
+      "repo_type": "git",
+      "repo_name": "ssh://gerrit/PDE/HPC/hpc_lammps",
+      "branch": "main",
+      "build_product": [
+        "maca"
+      ],
+      "community_artifact": [],
+      "build_image": "hpc/lammps:latest",
+      "test_timeout": 60,
+      "owner_username": "owner_test",
+      "status": "Running",
+      "notes": "owner golden submission"
+    }
+  },
+  "status": 200,
+  "body": {
+    "ok": true,
+    "request": {
+      "id": 3,
+      "task_id": null,
+      "request_type": "create",
+      "payload": "{\"app_name\": \"GoldenLammps\", \"app_version\": \"stable\", \"repo_type\": \"git\", \"repo_name\": \"ssh://gerrit/PDE/HPC/hpc_lammps\", \"branch\": \"main\", \"build_product\": [\"maca\"], \"community_artifact\": [], \"build_image\": \"hpc/lammps:latest\", \"test_timeout\": 60, \"owner_username\": \"owner_test\", \"status\": \"Running\", \"notes\": \"owner golden submission\"}",
+      "submitter": "owner_test",
+      "submitter_display": "",
+      "submitted_at": "SCRUBBED_TIMESTAMP",
+      "status": "pending",
+      "reviewer": "",
+      "reviewed_at": "SCRUBBED_TIMESTAMP",
+      "review_note": "",
+      "is_self_approved": 0,
+      "approval_mode": "immediate",
+      "delivery_status": "",
+      "jira_id": "",
+      "jira_auto_created": 0,
+      "delivered_by": "",
+      "delivered_at": "SCRUBBED_TIMESTAMP",
+      "returned_reason": "",
+      "returned_at": "SCRUBBED_TIMESTAMP",
+      "origin": "cicd_workbench"
+    }
+  }
+}

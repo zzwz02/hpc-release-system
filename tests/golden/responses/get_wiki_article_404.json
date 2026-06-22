@@ -1,0 +1,13 @@
+{
+  "_golden_name": "get_wiki_article_404",
+  "_note": "nonexistent wiki article returns 404",
+  "_method": "GET",
+  "_path": "/api/wiki/articles/wiki_doesnotexist",
+  "_params": "",
+  "_role": "rm",
+  "_body": null,
+  "status": 404,
+  "body": {
+    "error": "文章不存在"
+  }
+}
