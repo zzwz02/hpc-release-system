@@ -137,8 +137,8 @@ stateDiagram-v2
   released_locked --> before_app_freeze: RM 解锁后按 deadline 重新派生
 
   before_app_freeze: before_app_freeze —— 可新增 app · 调整决策(含升回 release) · 编辑文档 · 上传 app_info
-  after_app_freeze: after_app_freeze —— 不能新增/升回 release · 可下调决策 · 编辑文档 · 上传不扩大 QA 范围的 app_info
-  after_doc_deadline: after_doc_deadline —— 文档/表单/app_info 冻结 · 仍可下调决策 · QA 继续
+  after_app_freeze: after_app_freeze —— 不能新增/升回 release · 决策最多 cicd_only/stop · 编辑文档 · 上传不扩大 QA 范围的 app_info
+  after_doc_deadline: after_doc_deadline —— 文档/表单/app_info 冻结 · 仍可改 CICD 配置和 cicd_only/stop 决策 · QA 继续
   released_locked: released_locked —— 全部冻结 · 仅 RM 可解锁
 ```
 
@@ -152,11 +152,13 @@ stateDiagram-v2
 
 ### 决策跨版本同步（§5b）
 
-当 Owner/RM 改一个 app 的 `release_decision` 时，变更会传播到**所有未锁定的后续 release**（`app/domain/decision_sync.py`：`resolve_synced_decision`）：
+当 Owner/RM 改一个 app 的 `release_decision` 时，前端会询问是否同步到后续 release；如果变更跨越 CICD Running/Stopped 边界，则必须同步到**所有未锁定 release**（当前 release 除外），避免同一个 CICD task 在不同 release 中出现矛盾运行状态（`app/domain/decision_sync.py`：`resolve_synced_decision`）：
 
 - 目标为 `release`，但后续 release 已过 app freeze 或 doc deadline → 自动降级为 `cicd_only`（绝不向已冻结的 release 增加 QA/测试范围）。
 - 其他情况 → 原样套用目标决策。
 - 已锁定的 release、不含该 app 的 release：跳过。
+- `stopped -> release/cicd_only` 是升运行：release 决策在当前 release 中等 CICD 交付完成后才真正生效；如果审批被拒绝或取消，所有被同步的未锁定 release 决策会回滚。
+- `release/cicd_only -> stopped` 是降停止：release 决策立即生效；CICD 审批/交付只是把实际运行状态最终停下来，该同步申请不允许拒绝或取消。
 
 ### 可发布条件
 
@@ -210,8 +212,9 @@ flowchart TD
 
 - **B — 无自动通过**：所有提交一律 `pending`，交给 RM；RM 可对自己提交的申请自审（`is_self_approved`）。
 - **C — Admin 出局**：Admin 不能提交/审批 CICD，也看不到 CICD 处理页签（仅 RM/SPD 可见）。
-- **D — 决策→状态**：决策联动产生一条 `origin="release_decision_sync"` 的 pending modify 申请；前端在申请列表上以「**同步联动**」徽标与普通构建配置申请（`cicd_workbench`）区分。
+- **D — 决策→状态**：决策联动产生一条 `origin="release_decision_sync"` 的 pending modify 申请；前端在申请列表上以「**同步联动**」徽标与普通构建配置申请（`cicd_workbench`）区分。升运行必须等 CICD 交付后生效；降停止由 App owner/RM 的 release 决策立即生效，RM 审批不能拒绝或取消。
 - **A — 状态锁**：用户的 modify 申请**不允许**直接改 `status`；运行/停止只能由 App 决策驱动。CICD 不再有 `Abandoned` 状态，也不提供废弃/退役/删除入口；退役或删除通过 App 业务流程处理。
+- **CICD-first 新建 App**：新建申请待审批/交付期间 app 会保留在 App 工作台；被拒绝或取消后继续保留并显示原因。同一 `(Gerrit URL, branch)` 不能用新名称重复创建；只有使用原 app 名称才能重新提交“新建”CICD 申请。
 
 ---
 
@@ -305,5 +308,5 @@ npm run test:e2e       # Playwright e2e
 - 时间统一用 `app.timeutil.beijing_timestamp()`，存与显示都是北京时间 naive 字符串，无 `+8` 计算、无 UTC 偏移。
 - 前端遵守 R2：无后台轮询（仅 QA AI 任务 1s 轮询，卸载/切版本即取消）；Markdown 只经 `Markdown.tsx` 渲染。
 - 旧系统三件套 `server.py` / `release_system/` / `index.html` 冻结，所有新行为写在 `app/` + `web/` + `tools/`。
-- 仓库内已有开发规范 skill：`.claude/skills/release-system-dev/`。
+- 仓库内已有开发规范 skill：`.agents/skills/release-system-dev/`。
 </content>

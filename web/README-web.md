@@ -1,6 +1,8 @@
 # web/ — React/Vite/TypeScript frontend
 
-Phase 3 frontend rewrite.  Talks to the frozen Phase-2 FastAPI backend.
+React/Vite/TypeScript frontend for the FastAPI rewrite. In production-style
+runs, FastAPI serves the built SPA from the repository-level `web_dist/`
+directory. In development, Vite proxies `/api` to the backend.
 
 ---
 
@@ -44,7 +46,8 @@ cd web
 npm run build
 ```
 
-Output lands in `web/web_dist/` (configured via `vite.config.ts` `build.outDir`).
+Output lands in repository root `web_dist/` (configured via `vite.config.ts`
+`build.outDir: "../web_dist"`), which `app/main.py` serves when present.
 
 To verify the build is clean (TypeScript + lint + tests):
 
@@ -52,28 +55,22 @@ To verify the build is clean (TypeScript + lint + tests):
 npm run build   # tsc strict + vite bundle
 npm run lint    # eslint
 npx vitest run  # unit tests
+npm run test:e2e # Playwright e2e, requires backend + Vite dev server
 ```
 
 ---
 
-## Phase-4 cutover — FastAPI StaticFiles
+## Production-style serving
 
-In Phase 4 the app will be deployed as a **single process**: FastAPI will serve
-the compiled React app via `StaticFiles` (already stubbed in `app/main.py`):
+Build the frontend, then boot a single uvicorn process from the repo root:
 
-```python
-# app/main.py (Phase-4 activation)
-app.mount("/", StaticFiles(directory="web/web_dist", html=True), name="static")
+```sh
+cd web && npm run build && cd ..
+python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-Until then (`rewrite/fastapi-react` branch), run the Vite dev server separately
-and rely on its `/api` proxy to the backend.  The legacy `index.html` continues
-to work unchanged.
-
-Steps for Phase-4 cutover:
-1. `cd web && npm run build` → produces `web/web_dist/`
-2. Remove the `StaticFiles` guard in `app/main.py` (or ensure `web_dist/` exists)
-3. Boot a single uvicorn process; both the API and the React app are served from it
+`--workers 1` is required because QA analysis jobs and LDAP state are held in
+process-local registries.
 
 ---
 
