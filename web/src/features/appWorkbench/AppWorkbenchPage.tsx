@@ -33,7 +33,7 @@ import {
   docTargetOptions,
   qaStatusLabels,
 } from "../../lib/labels";
-import type { StatePayload, App, Snapshot, ReleaseSummary, AppAuditEntry, SnapshotTestDoc, CicdRequest } from "../../types";
+import type { StatePayload, App, Snapshot, ReleaseSummary, ReleaseDetail, AppAuditEntry, SnapshotTestDoc, CicdRequest } from "../../types";
 import {
   releaseSnap,
   isReleaseSnap,
@@ -208,15 +208,40 @@ const CICD_DELIVERY_STATUS_LABEL: Record<string, string> = {
 };
 
 const CICD_FIELD_LABEL: Record<string, string> = {
+  app_name: "App",
+  app_version: "版本",
   repo_type: "仓库类型",
   repo_name: "Gerrit URL",
   branch: "Branch",
+  build_product: "构建产物",
   community_artifact: "开发者社区产物",
   build_image: "构建依赖镜像",
   test_timeout: "超时(min)",
+  owner_username: "负责人",
   notes: "备注",
   status: "状态",
 };
+
+const CICD_ONBOARDING_LABEL: Record<string, string> = {
+  pending_create: "CICD 创建待处理",
+  rejected_create: "CICD 创建被拒绝",
+  cancelled_create: "CICD 创建已取消",
+};
+
+function cicdOnboardingLabel(app: App): string {
+  const status = app.cicd_onboarding_status ?? "";
+  return CICD_ONBOARDING_LABEL[status] ?? "";
+}
+
+function cicdOnboardingClass(app: App): string {
+  if (app.cicd_onboarding_status === "pending_create") return "warnp";
+  if (app.cicd_onboarding_status === "rejected_create") return "bad";
+  return "";
+}
+
+function cicdOnboardingInactive(app: App): boolean {
+  return !!app.cicd_onboarding_status;
+}
 
 function sameScalarValue(a: unknown, b: unknown): boolean {
   return String(a ?? "").trim() === String(b ?? "").trim();
@@ -232,11 +257,21 @@ function cicdValueText(value: unknown): string {
 }
 
 function cicdRequestSummary(req: CicdRequest): string {
-  const payload = (req.payload ?? {}) as Record<string, { old?: unknown; new?: unknown }>;
-  if (!Object.keys(payload).length) return "无字段变更";
-  return Object.entries(payload).map(([field, change]) => {
+  const payload = (req.payload ?? {}) as Record<string, unknown>;
+  const entries = Object.entries(payload).filter(([field]) => field !== "app_id" && !field.startsWith("_"));
+  if (!entries.length) return "无字段变更";
+  return entries.map(([field, raw]) => {
     const label = CICD_FIELD_LABEL[field] ?? field;
-    return `${label}: ${cicdValueText(change?.old)} -> ${cicdValueText(change?.new)}`;
+    const change = raw as { old?: unknown; new?: unknown };
+    if (
+      raw &&
+      typeof raw === "object" &&
+      !Array.isArray(raw) &&
+      ("old" in change || "new" in change)
+    ) {
+      return `${label}: ${cicdValueText(change.old)} -> ${cicdValueText(change.new)}`;
+    }
+    return `${label}: ${cicdValueText(raw)}`;
   }).join("；");
 }
 
@@ -392,6 +427,14 @@ function AppListPanel({
                         : <span className="pill ok" title="文档信息齐全">文档 OK</span>
                     )}
                     {rel && <QaPill status={snap.qa_status} />}
+                    {app.cicd_onboarding_status && (
+                      <span
+                        className={`pill ${cicdOnboardingClass(app)}`}
+                        title={app.cicd_onboarding_review_note || cicdOnboardingLabel(app)}
+                      >
+                        {cicdOnboardingLabel(app)}
+                      </span>
+                    )}
                     <CicdPendingPill count={cicdPendingCounts[app.id] ?? 0} />
                   </div>
                 </div>
@@ -463,12 +506,23 @@ function IdentityBox({ gitUrl, gitBranch }: { gitUrl: string | null; gitBranch: 
   );
 }
 
+function isDuplicateIdentityError(message: string): boolean {
+  return message.includes("Gerrit URL + branch") && message.includes("已存在 app");
+}
+
+function duplicateAppIdFromError(message: string): string {
+  const match = message.match(/已存在 app[（(]([^）)]+)[）)]/);
+  return match?.[1] ?? "";
+}
+
 // ---------------------------------------------------------------------------
 // New-app dialog (CICD-first wizard, Wave 3 / 3.1)
 // ---------------------------------------------------------------------------
 
 interface NewAppDialogProps {
-  releases: ReleaseSummary[];
+  apps: App[];
+  release: ReleaseDetail | null;
+  initialValues?: NewAppInitialValues | null;
   currentReleaseId: string;
   currentUsername: string;
   userRole: string;
@@ -476,19 +530,33 @@ interface NewAppDialogProps {
   onCreated: (appId: string) => void;
 }
 
-function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, onClose, onCreated }: NewAppDialogProps) {
-  const release = releases.find((r) => r.id === currentReleaseId) ?? null;
+interface NewAppInitialValues {
+  officialName: string;
+  repoType: string;
+  repoName: string;
+  branch: string;
+}
 
+interface RetryCreateInfo {
+  appId: string;
+  appName: string;
+  status: "rejected_create" | "cancelled_create";
+  reviewNote: string;
+}
+
+function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentUsername, userRole, onClose, onCreated }: NewAppDialogProps) {
   // ── Wizard state (CICD-first, step 1 → fetch → step 2 confirm) ──────────
-  const [officialName, setOfficialName] = useState("");
-  const [repoType, setRepoType] = useState("git");
-  const [repoName, setRepoName] = useState("");
-  const [branch, setBranch] = useState("");
+  const [officialName, setOfficialName] = useState(initialValues?.officialName ?? "");
+  const [repoType, setRepoType] = useState(initialValues?.repoType ?? "git");
+  const [repoName, setRepoName] = useState(initialValues?.repoName ?? "");
+  const [branch, setBranch] = useState(initialValues?.branch ?? "");
 
   type WizardStep = "form" | "fetching" | "preview" | "fetch-error" | "creating";
   const [step, setStep] = useState<WizardStep>("form");
   const [preview, setPreview] = useState<FetchPreviewResponse | null>(null);
+  const [retryCreateInfo, setRetryCreateInfo] = useState<RetryCreateInfo | null>(null);
   const [fetchErrMsg, setFetchErrMsg] = useState("");
+  const [fetchErrBlocking, setFetchErrBlocking] = useState(false);
   const [createErrMsg, setCreateErrMsg] = useState("");
 
   // W4: derived identity — pre-computed from user inputs (or from server when
@@ -516,6 +584,36 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
   const isRepo = repoType === "repo";
   const effectiveBranch = isRepo ? "master" : branch.trim();
 
+  function retryInfoForDuplicate(message: string): RetryCreateInfo | null {
+    const duplicateAppId = duplicateAppIdFromError(message);
+    const app = apps.find((item) => item.id === duplicateAppId);
+    const status = app?.cicd_onboarding_status;
+    if (!app || (status !== "rejected_create" && status !== "cancelled_create")) {
+      return null;
+    }
+    const snap = releaseSnap(release, app.id);
+    const existingName = (snap?.official_name ?? app.aliases?.[0] ?? app.id).trim();
+    if (existingName !== officialName.trim()) return null;
+    return {
+      appId: app.id,
+      appName: existingName,
+      status,
+      reviewNote: app.cicd_onboarding_review_note ?? "",
+    };
+  }
+
+  function retryInfoFromPreview(data: FetchPreviewResponse): RetryCreateInfo | null {
+    if (!data.retry_existing_app_id || !data.retry_existing_app_name || !data.retry_onboarding_status) {
+      return null;
+    }
+    return {
+      appId: data.retry_existing_app_id,
+      appName: data.retry_existing_app_name,
+      status: data.retry_onboarding_status,
+      reviewNote: data.retry_review_note ?? "",
+    };
+  }
+
   // ── Wizard handlers ──────────────────────────────────────────────────────
 
   async function handleFetch() {
@@ -532,9 +630,18 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
     setDerivedGitBranch(effectiveBranch);
 
     setFetchErrMsg("");
+    setFetchErrBlocking(false);
+    setRetryCreateInfo(null);
     setStep("fetching");
     try {
-      const data = await fetchCicdPreview({ repo_type: repoType, repo_name: repoName.trim(), branch: effectiveBranch });
+      const data = await fetchCicdPreview({
+        official_name: officialName.trim(),
+        repo_type: repoType,
+        repo_name: repoName.trim(),
+        branch: effectiveBranch,
+      });
+      const retryInfo = retryInfoFromPreview(data);
+      setRetryCreateInfo(retryInfo);
 
       // W4: impl-1 backend always returns identity fields (git_url / git_branch)
       // even when the Gerrit content fetch fails (app_info_unavailable=true, HTTP 200).
@@ -546,6 +653,7 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
       if (data.app_info_unavailable) {
         // Gerrit content fetch failed (soft 200); identity already updated above.
         setFetchErrMsg(data.app_info_error ?? "Gerrit app_info 不可用");
+        setFetchErrBlocking(false);
         setStep("fetch-error");
         return;
       }
@@ -554,7 +662,11 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
       setStep("preview");
     } catch (e) {
       // Only 400 / 403 / network errors reach here under the new impl-1 contract.
-      setFetchErrMsg(e instanceof Error ? e.message : "Gerrit 信息拉取失败");
+      const message = e instanceof Error ? e.message : "Gerrit 信息拉取失败";
+      const retryInfo = isDuplicateIdentityError(message) ? retryInfoForDuplicate(message) : null;
+      setFetchErrMsg(message);
+      setRetryCreateInfo(retryInfo);
+      setFetchErrBlocking(isDuplicateIdentityError(message) && !retryInfo);
       setStep("fetch-error");
     }
   }
@@ -729,6 +841,7 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
   // ── Step 2: preview confirmation ─────────────────────────────────────────
   if (step === "preview" || (step === "creating" && preview !== null)) {
     const isCreating = step === "creating";
+    const isRetryCreate = retryCreateInfo !== null;
     // W4: Use server-returned identity (most authoritative); fall back to client-computed.
     const identityUrl = (preview?.git_url) || derivedGitUrl;
     const identityBranch = (preview?.git_branch) || derivedGitBranch || effectiveBranch;
@@ -738,8 +851,15 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
           <div className="dialog-head"><h3>确认 App 信息（CICD-first）</h3></div>
           <div className="dialog-body">
             <div className="banner" style={{ marginBottom: 8, fontSize: 12, background: "var(--surface2,#f0f7ff)", borderLeft: "3px solid var(--accent,#1976d2)" }}>
-              ✅ Gerrit 信息已拉取。请确认以下字段后提交创建请求（RM 审批后生效）。
+              ✅ Gerrit 信息已拉取。请确认以下字段后{isRetryCreate ? "重新提交新建申请" : "提交创建请求"}（RM 审批后生效）。
             </div>
+            {retryCreateInfo && (
+              <div className="banner warnp" data-testid="new-app-retry-banner" style={{ marginBottom: 8 }}>
+                曾提交新建 App 申请，但已{retryCreateInfo.status === "rejected_create" ? "被拒绝" : "取消"}。
+                {retryCreateInfo.reviewNote ? ` 原因：${retryCreateInfo.reviewNote}` : ""}
+                确认后将为 {retryCreateInfo.appName} 重新提交“新建”CICD 申请。
+              </div>
+            )}
             {/* W4: Derived Gerrit identity — always shown so the repo→Gerrit mapping
                 is debuggable at real deployment (helps verify normalization is correct). */}
             <IdentityBox gitUrl={identityUrl} gitBranch={identityBranch} />
@@ -762,7 +882,7 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
             <button className="btn ghost sm" onClick={() => setStep("form")} style={{ marginRight: "auto" }} disabled={isCreating}>← 重新填写</button>
             <button className="btn" onClick={onClose} disabled={isCreating}>取消</button>
             <button className="btn primary" onClick={() => void handleConfirmCreate()} disabled={isCreating} data-testid="new-app-submit">
-              {isCreating ? "提交中…" : "确认并创建"}
+              {isCreating ? "提交中…" : isRetryCreate ? "重新申请" : "确认并创建"}
             </button>
           </div>
         </div>
@@ -784,12 +904,23 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
           <div className="dialog-head"><h3>新增 App（CICD-first）</h3></div>
           <div className="dialog-body">
             <div className="banner bad" style={{ marginBottom: 8 }}>
-              ⚠️ Gerrit 信息拉取失败：{fetchErrMsg || "网络不可达"}
-              <br />
-              <span className="small muted" style={{ marginTop: 4, display: "block" }}>
-                注：本环境 Gerrit 不可达，芯片/版本信息可在创建后于文档信息页手动完善。
-              </span>
+              {fetchErrBlocking ? "无法继续创建" : "⚠️ Gerrit 信息拉取失败"}：{fetchErrMsg || "网络不可达"}
+              {!fetchErrBlocking && (
+                <>
+                  <br />
+                  <span className="small muted" style={{ marginTop: 4, display: "block" }}>
+                    注：本环境 Gerrit 不可达，芯片/版本信息可在创建后于文档信息页手动完善。
+                  </span>
+                </>
+              )}
             </div>
+            {retryCreateInfo && (
+              <div className="banner warnp" data-testid="new-app-retry-banner" style={{ marginBottom: 8 }}>
+                曾提交新建 App 申请，但已{retryCreateInfo.status === "rejected_create" ? "被拒绝" : "取消"}。
+                {retryCreateInfo.reviewNote ? ` 原因：${retryCreateInfo.reviewNote}` : ""}
+                可为 {retryCreateInfo.appName} 重新提交“新建”CICD 申请。
+              </div>
+            )}
             {/* W4: Derived identity — always shown so the repo→Gerrit URL mapping
                 is debuggable at real deployment even when Gerrit content is unreachable.
                 For git-type repos, the full SSH URL is derived offline. */}
@@ -801,12 +932,16 @@ function NewAppDialog({ releases, currentReleaseId, currentUsername, userRole, o
             {createErrMsg && <p className="lerr">{createErrMsg}</p>}
           </div>
           <div className="dialog-actions">
-            <button className="btn ghost sm" onClick={() => { setFetchErrMsg(""); setStep("form"); }} style={{ marginRight: "auto" }} disabled={isCreating}>← 返回修改</button>
+            <button className="btn ghost sm" onClick={() => { setFetchErrMsg(""); setFetchErrBlocking(false); setRetryCreateInfo(null); setStep("form"); }} style={{ marginRight: "auto" }} disabled={isCreating}>← 返回修改</button>
             <button className="btn" onClick={onClose} disabled={isCreating}>取消</button>
-            <button className="btn warn" onClick={() => void handleFetch()} disabled={isCreating}>重试拉取</button>
-            <button className="btn primary" onClick={() => void handleSkipAndCreate()} disabled={isCreating} data-testid="new-app-submit">
-              {isCreating ? "提交中…" : "跳过，直接创建"}
-            </button>
+            {!fetchErrBlocking && (
+              <>
+                <button className="btn warn" onClick={() => void handleFetch()} disabled={isCreating}>重试拉取</button>
+                <button className="btn primary" onClick={() => void handleSkipAndCreate()} disabled={isCreating} data-testid="new-app-submit">
+                  {isCreating ? "提交中…" : retryCreateInfo ? "重新申请" : "跳过，直接创建"}
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -927,9 +1062,10 @@ interface AppCicdPaneProps {
 }
 
 function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit, form, pendingRequests, historyRequests, onPatch }: AppCicdPaneProps) {
-  const status = displayedStatus;
+  const status = cicdOnboardingInactive(app) ? "Stopped" : displayedStatus;
   const statusCls = status === "Running" ? "ok" : "warnp";
   const disabled = !editMode || !canEdit;
+  const onboardingLabel = cicdOnboardingLabel(app);
 
   return (
     <div data-testid="cicd-link-card" style={{ display: "flex", flexDirection: "column", gap: 12, padding: "4px 0" }}>
@@ -937,12 +1073,30 @@ function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit,
         <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <b style={{ fontSize: 12 }}>App CICD 配置</b>
           <span className={`pill ${statusCls}`}>{status}</span>
+          {onboardingLabel && (
+            <span className={`pill ${cicdOnboardingClass(app)}`}>{onboardingLabel}</span>
+          )}
           <span className="small muted" title={`${app.git_url}@${app.git_branch}`}>{formatGerritUrl(app.git_url)}@{app.git_branch}</span>
         </div>
         <div className="small muted" style={{ marginTop: 2, fontSize: 11 }}>
           运行/停止由本 app 决策决定：{releaseDecisionLabels[releaseDecision as keyof typeof releaseDecisionLabels] ?? releaseDecision}
         </div>
       </div>
+
+      {app.cicd_onboarding_status === "rejected_create" && (
+        <div className="banner bad" data-testid="app-cicd-rejected-banner" style={{ margin: 0 }}>
+          <b>CICD 创建申请已被拒绝</b>
+          <div className="small" style={{ marginTop: 4 }}>
+            拒绝原因：{app.cicd_onboarding_review_note?.trim() || "未填写"}
+          </div>
+        </div>
+      )}
+
+      {app.cicd_onboarding_status === "cancelled_create" && (
+        <div className="banner warnp" data-testid="app-cicd-cancelled-banner" style={{ margin: 0 }}>
+          <b>CICD 创建申请已取消</b>
+        </div>
+      )}
 
       {pendingRequests.length > 0 && (
         <div className="banner" data-testid="app-cicd-pending-banner" style={{ margin: 0 }}>
@@ -1038,7 +1192,7 @@ function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit,
           ) : (
             <div className="table">
               <table className="cicd-diff-table">
-                <thead><tr><th>申请</th><th>提交人</th><th>时间</th><th>状态</th><th>Jira</th><th>内容</th></tr></thead>
+                <thead><tr><th>申请</th><th>提交人</th><th>时间</th><th>状态</th><th>Jira</th><th>审批备注</th><th>内容</th></tr></thead>
                 <tbody>
                   {historyRequests.map((req) => (
                     <tr key={req.id}>
@@ -1047,6 +1201,7 @@ function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit,
                       <td>{formatServerTime(req.reviewed_at || req.submitted_at || "")}</td>
                       <td>{cicdWorkflowState(req)}</td>
                       <td>{req.jira_id || "—"}</td>
+                      <td>{req.review_note || "—"}</td>
                       <td>{cicdRequestSummary(req)}</td>
                     </tr>
                   ))}
@@ -1100,21 +1255,23 @@ interface DetailPanelProps {
   user: import("../../types").User | null | undefined;
   displayNames: Record<string, string>;
   onSaved: () => void;
+  onRetryCreate: (app: App, snap: Snapshot) => void;
 }
 
-function DetailPanel({ app, snap, release, releases, user, displayNames: _displayNames, onSaved }: DetailPanelProps) {
+function DetailPanel({ app, snap, release, releases, user, displayNames: _displayNames, onSaved, onRetryCreate }: DetailPanelProps) {
   const queryClient = useQueryClient();
   const userIsRM = isRM(user);
   const userIsOwner = isOwner(user);
   const locked = releaseLocked(release);
   const docDeadline = beforeDocDeadline(release);
-  const appFreeze = beforeAppFreeze(release);
-  const canEditDetail = !!(app && snap && canEdit(user, snap) && !locked && docDeadline);
+  const beforeAppFreezeDeadline = beforeAppFreeze(release);
+  const canEditDetail = !!(app && snap && canEdit(user, snap) && !locked);
 
   // W3: two sub-tabs in the detail panel
   const [detailTab, setDetailTab] = useState<"docs" | "cicd">("docs");
 
   const [editMode, setEditMode] = useState(false);
+  const canEditDocFields = editMode && docDeadline;
   const [dirty, setDirty] = useState(false);
 
   // Form state (mirrors snapshot fields editable in legacy)
@@ -1270,6 +1427,9 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
   }
 
   function buildSnapshotUpdate(confirmOwner: boolean): Record<string, unknown> {
+    if (!docDeadline) {
+      return { release_decision: form.release_decision };
+    }
     const snapshotUpdate: Record<string, unknown> = {
       release_decision: form.release_decision,
       official_name: form.official_name,
@@ -1325,7 +1485,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       const idx = releases.findIndex((r) => r.id === release.id);
       const hasLater = idx >= 0 && idx < releases.length - 1;
       const forcedSync = crossesDecisionRuntimeBoundary(snap.release_decision, newDecision);
-      if (hasLater || forcedSync) {
+      if (hasLater) {
         try {
           const preview = await apiPost<DecisionSyncPreview>("/api/apps/decision-sync/preview", {
             release_id: release.id,
@@ -1573,26 +1733,33 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     return req.origin === "release_decision_sync" && !!payload.status;
   });
   const displayedCicdStatus = (() => {
+    if (app && cicdOnboardingInactive(app)) return "Stopped";
     const payload = (decisionSyncReq?.payload ?? {}) as Record<string, { old?: unknown }>;
     const oldStatus = String(payload.status?.old ?? "").trim();
     return oldStatus === "Running" || oldStatus === "Stopped"
       ? oldStatus
       : appCicdStatus(snap.release_decision);
   })();
+  const onboardingLabel = app ? cicdOnboardingLabel(app) : "";
+  const canRetryCreate = !!(
+    app &&
+    snap &&
+    canEditDetail &&
+    ["rejected_create", "cancelled_create"].includes(app.cicd_onboarding_status ?? "")
+  );
 
   const footNote = editMode
     ? "编辑中 · 刷新前请先保存或取消"
     : locked ? "Release 已锁定，只读"
-    : !docDeadline ? "Doc deadline 已过，表单只读"
+    : !docDeadline ? "Doc deadline 已过，文档/app_info 只读；release 决策只能改为 CICD only 或 Stop"
     : canEditDetail ? "点击「修改」开始编辑"
     : "你没有此 app 的编辑权限";
 
-  // Allowed decisions in edit mode
-  const allowedDecisions = appFreeze
+  // After app freeze/doc deadline, existing apps may still lower or stop their
+  // release decision, but cannot be raised back to release.
+  const allowedDecisions = beforeAppFreezeDeadline || snap.release_decision === "release"
     ? releaseDecisionOptions
-    : snap.release_decision === "release"
-      ? ["release", "cicd_only", "stopped"] as const
-      : ["cicd_only", "stopped"] as const;
+    : releaseDecisionOptions.filter((value) => value !== "release");
 
   return (
     <div className="detail-panel" data-testid="detail-panel">
@@ -1603,6 +1770,14 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
           <h2>{displayName(snap)}</h2>
           <div className="row2">
             <DecisionPill decision={snap.release_decision} />
+            {onboardingLabel && (
+              <span
+                className={`pill ${cicdOnboardingClass(app)}`}
+                title={app.cicd_onboarding_review_note || onboardingLabel}
+              >
+                {onboardingLabel}
+              </span>
+            )}
             {snap.version && <span className="pill">版本 {snap.version}</span>}
             <span className="pill">{(docTargetLabels as Record<string, string>)[snap.doc_target] ?? snap.doc_target}</span>
             {rel && (todo.length ? <span className="pill warnp">待补 {todo.length} 项</span> : <span className="pill ok">信息齐全</span>)}
@@ -1654,10 +1829,23 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
           <div className="banner bad">🔒 Release 已最终锁定，所有信息冻结。</div>
         )}
         {!locked && !docDeadline && (
-          <div className="banner warnp">⏰ 已过 Doc deadline：表单、文档和 app_info 已冻结，仅 QA 可继续标注状态。</div>
+          <div className="banner warnp">⏰ 已过 Doc deadline：文档、表单内容和 app_info 已冻结；release 决策只能改为 CICD only 或 Stop，CICD 配置仍可修改。</div>
         )}
-        {!locked && docDeadline && !appFreeze && (
-          <div className="banner warnp">❄️ 已过 App 冻结 deadline：本 release 不可再新增或切换为 release 决策。</div>
+        {!locked && docDeadline && !beforeAppFreezeDeadline && (
+          <div className="banner warnp">❄️ 已过 App 冻结 deadline：本 release 不可再新增或切换为 release；已有 app 只能改为 CICD only 或 Stop。</div>
+        )}
+        {app.cicd_onboarding_status === "rejected_create" && (
+          <div className="banner bad" data-testid="app-detail-rejected-banner">
+            <b>CICD 创建申请已被拒绝</b>
+            <div className="small" style={{ marginTop: 4 }}>
+              拒绝原因：{app.cicd_onboarding_review_note?.trim() || "未填写"}
+            </div>
+          </div>
+        )}
+        {app.cicd_onboarding_status === "cancelled_create" && (
+          <div className="banner warnp" data-testid="app-detail-cancelled-banner">
+            CICD 创建申请已取消。
+          </div>
         )}
 
         {/* Dirty banner */}
@@ -1713,17 +1901,17 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
               <label>官方名称
                 <input className="input" value={form.official_name}
                   onChange={(e) => patch("official_name", e.target.value)}
-                  disabled={!editMode || !userIsRM} data-testid="field-official-name" />
+                  disabled={!canEditDocFields || !userIsRM} data-testid="field-official-name" />
               </label>
               <label>Owner
                 <input className="input" value={form.owners}
                   onChange={(e) => patch("owners", e.target.value)}
-                  disabled={!editMode || !userIsRM} />
+                  disabled={!canEditDocFields || !userIsRM} />
               </label>
               <label>类型
                 <select className="select" value={form.doc_target}
                   onChange={(e) => patch("doc_target", e.target.value as "manual" | "ai4sci")}
-                  disabled={!editMode || !userIsRM}>
+                  disabled={!canEditDocFields || !userIsRM}>
                   {docTargetOptions.map((v) => (
                     <option key={v} value={v}>{docTargetLabels[v]}</option>
                   ))}
@@ -1732,7 +1920,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
               <label>App 类型
                 <input className="input" value={form.type}
                   onChange={(e) => patch("type", e.target.value)}
-                  disabled={!editMode} />
+                  disabled={!canEditDocFields} />
               </label>
               <label>Gerrit URL
                 <input className="input" value={formatGerritUrl(form.git_url)}
@@ -1749,7 +1937,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
               <label>官方 URL
                 <input className="input" value={form.official_url}
                   onChange={(e) => patch("official_url", e.target.value)}
-                  disabled={!editMode} />
+                  disabled={!canEditDocFields} />
               </label>
               <label>Release 决策
                 <select className="select" value={form.release_decision}
@@ -1757,9 +1945,20 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
                   disabled={!editMode}
                   data-testid="field-decision">
                   {allowedDecisions.map((v) => (
-                    <option key={v} value={v}>{releaseDecisionLabels[v]}</option>
+                    <option
+                      key={v}
+                      value={v}
+                      disabled={v === "release" && !beforeAppFreezeDeadline}
+                    >
+                      {releaseDecisionLabels[v]}
+                    </option>
                   ))}
                 </select>
+                {!beforeAppFreezeDeadline && (
+                  <span className="field-help">
+                    已过 App freeze / Doc deadline 后，不能再切换为 release，只能选择 CICD only 或 Stop。
+                  </span>
+                )}
                 {decisionSyncReq && (
                   <span className="field-help">
                     CICD 状态变更正在{cicdWorkflowState(decisionSyncReq)}
@@ -1815,6 +2014,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
                     value={form.description}
                     onChange={(e) => patch("description", e.target.value)}
                     data-testid="field-description"
+                    disabled={!canEditDocFields}
                   />
                   <span className={`desc-counter ${descCount > APP_DESCRIPTION_LIMIT ? "over" : ""}`}>
                     {descCount}/{APP_DESCRIPTION_LIMIT}
@@ -1841,7 +2041,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
           </summary>
           <div className="section-body">
             <div className="src-line">app_info 来源：{appInfoSource(snap)}</div>
-            {editMode && (
+            {canEditDocFields && (
               <div className="row" style={{ marginBottom: 12 }}>
                 <label className="btn ghost sm" style={{ cursor: "pointer" }}>
                   选择 app_info.json
@@ -1895,19 +2095,19 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
               <label>开发者社区发布情况
                 <input className="input" aria-label="开发者社区发布情况" value={form.community_release}
                   onChange={(e) => patch("community_release", e.target.value)}
-                  disabled={!editMode || !communityRequired} />
+                  disabled={!canEditDocFields || !communityRequired} />
                 {!communityRequired && <span className="field-help">不可填写：CICD 中没有选择开发者社区产物。</span>}
               </label>
               <label>社区包支持 Python 版本
                 <input className="input" aria-label="社区包支持 Python 版本" value={form.community_python}
                   onChange={(e) => patch("community_python", e.target.value)}
-                  disabled={!editMode || !communityRequired} />
+                  disabled={!canEditDocFields || !communityRequired} />
                 {!communityRequired && <span className="field-help">不可填写：CICD 中没有选择开发者社区产物。</span>}
               </label>
               <label>社区包支持框架及版本
                 <input className="input" aria-label="社区包支持框架及版本" value={form.community_framework}
                   onChange={(e) => patch("community_framework", e.target.value)}
-                  disabled={!editMode || !communityRequired} />
+                  disabled={!canEditDocFields || !communityRequired} />
                 {!communityRequired && <span className="field-help">不可填写：CICD 中没有选择开发者社区产物。</span>}
               </label>
             </div>
@@ -1916,13 +2116,13 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
                 <label className="check">
                   <input type="checkbox" checked={form.sanity_arm}
                     onChange={(e) => patch("sanity_arm", e.target.checked)}
-                    disabled={!editMode || !userIsRM} />
+                    disabled={!canEditDocFields || !userIsRM} />
                   ARM / Kylin Sanity <span className="small muted">（RM 填写）</span>
                 </label>
                 <label className="check">
                   <input type="checkbox" checked={form.sanity_ubuntu}
                     onChange={(e) => patch("sanity_ubuntu", e.target.checked)}
-                    disabled={!editMode || !userIsRM} />
+                    disabled={!canEditDocFields || !userIsRM} />
                   Ubuntu / 兼容性 Sanity <span className="small muted">（RM 填写）</span>
                 </label>
               </div>
@@ -1954,6 +2154,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
                       value={form[key]}
                       onChange={(e) => patch(key, e.target.value)}
                       data-testid={`field-doc-${key}`}
+                      disabled={!canEditDocFields}
                     />
                   ) : (
                     <ReadField value={form[key]} />
@@ -1970,7 +2171,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
           <div className="section-body">
             <TestDocsEditor
               testDocs={form.test_docs}
-              editMode={editMode}
+              editMode={canEditDocFields}
               userIsOwner={userIsOwner}
               onChange={(docs) => { setForm((f) => ({ ...f, test_docs: docs })); setDirty(true); }}
             />
@@ -2007,7 +2208,10 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
           </button>
         )}
         <div className="spacer" />
-        {canEditDetail && !editMode && (
+        {canRetryCreate && !editMode && app && snap && (
+          <button className="btn primary" onClick={() => onRetryCreate(app, snap)} data-testid="retry-create-btn">重新申请</button>
+        )}
+        {canEditDetail && !canRetryCreate && !editMode && (
           <button className="btn primary" onClick={() => setEditMode(true)}>✎ 修改</button>
         )}
         {canEditDetail && editMode && userIsRM && (
@@ -2074,7 +2278,7 @@ function DecisionSyncDialog({
 }: DecisionSyncDialogProps) {
   const rows = preview.releases ?? [];
   const applicable = rows.filter((r) => !r.skipped);
-  const targetLabel = forced ? "其它未锁定 release" : "后续 release";
+  const targetLabel = forced ? "所有未锁定 release" : "后续 release";
   return (
     <div className="dialog-backdrop" data-testid="decision-sync-dialog">
       <div className="dialog-box" style={{ minWidth: 560, maxWidth: 720 }}>
@@ -2385,6 +2589,7 @@ export function AppWorkbenchPage() {
   const [search, setSearch] = useState("");
   const [ownOnly, setOwnOnly] = useState(false);
   const [showNewApp, setShowNewApp] = useState(false);
+  const [newAppInitialValues, setNewAppInitialValues] = useState<NewAppInitialValues | null>(null);
   const [bulkFetching, setBulkFetching] = useState(false);
   const [bulkProgress, setBulkProgress] = useState<AppInfoFetchProgress | null>(null);
 
@@ -2456,6 +2661,21 @@ export function AppWorkbenchPage() {
     void refetch();
   }
 
+  function handleOpenNewApp() {
+    setNewAppInitialValues(null);
+    setShowNewApp(true);
+  }
+
+  function handleRetryCreate(app: App, snap: Snapshot) {
+    setNewAppInitialValues({
+      officialName: snap.official_name || app.aliases?.[0] || app.id,
+      repoType: app.cicd_repo_type || (app.git_url.endsWith(".xml") ? "repo" : "git"),
+      repoName: app.git_url,
+      branch: app.git_branch,
+    });
+    setShowNewApp(true);
+  }
+
   async function handleFetchAllAppInfos() {
     if (!release || bulkFetching) return;
     if (appDetailDirty && !window.confirm("当前表单已有未保存修改，批量拉取后页面会刷新。是否继续？")) return;
@@ -2522,6 +2742,7 @@ export function AppWorkbenchPage() {
 
   function handleNewAppCreated(appId: string) {
     setShowNewApp(false);
+    setNewAppInitialValues(null);
     void refetch().then(() => setSelectedApp(appId));
     alert("新增 app 已创建");
   }
@@ -2596,7 +2817,7 @@ export function AppWorkbenchPage() {
             displayNames={displayNames}
             cicdPendingCounts={cicdPendingCounts}
             canCreateApp={canCreateApp}
-            onNewApp={() => setShowNewApp(true)}
+            onNewApp={handleOpenNewApp}
           />
           <DetailPanel
             app={selectedAppObj}
@@ -2606,17 +2827,20 @@ export function AppWorkbenchPage() {
             user={user}
             displayNames={displayNames}
             onSaved={handleSaved}
+            onRetryCreate={handleRetryCreate}
           />
         </div>
       )}
 
       {showNewApp && release && (
         <NewAppDialog
-          releases={releases}
+          apps={apps}
+          release={release}
+          initialValues={newAppInitialValues}
           currentReleaseId={release.id}
           currentUsername={user?.username ?? ""}
           userRole={user?.role ?? ""}
-          onClose={() => setShowNewApp(false)}
+          onClose={() => { setShowNewApp(false); setNewAppInitialValues(null); }}
           onCreated={handleNewAppCreated}
         />
       )}

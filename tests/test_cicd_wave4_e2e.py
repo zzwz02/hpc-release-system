@@ -158,6 +158,8 @@ class TestCicdFirstHttpLifecycle:
             assert create_resp.status_code == 200
             created = create_resp.json()
             req_id = created["request"]["id"]
+            state_before_approve = client.get("/api/state")
+            assert state_before_approve.status_code == 200
 
             approve_resp = client.post(
                 "/api/cicd/requests/approve",
@@ -172,6 +174,10 @@ class TestCicdFirstHttpLifecycle:
         assert _payload(created["request"])["app_id"] == _APP_ID
         assert approved["app_id"] == _APP_ID
         assert approved["task_id"] == _APP_ID
+        app_before_approve = next(
+            app for app in state_before_approve.json()["apps"] if app["id"] == _APP_ID
+        )
+        assert app_before_approve["cicd_onboarding_status"] == "pending_create"
 
         conn = app_connect(db_path)
         try:
@@ -180,6 +186,8 @@ class TestCicdFirstHttpLifecycle:
             assert app["git_url"] == _RESOLVED_URL
             assert app["git_branch"] == _BRANCH
             assert app["cicd_build_image"] == "hpc/w4e2e:latest"
+            snap = core.get_release(conn, core.list_releases(conn)[0]["id"])["snapshots"][_APP_ID]
+            assert snap["release_decision"] == "cicd_only"
             assert _task_table_count(conn) == 0
         finally:
             conn.close()
@@ -210,11 +218,20 @@ class TestCicdFirstHttpLifecycle:
 
         assert result["request"]["app_id"] == _APP_ID
         snap = core.get_release(temp_db, release_id)["snapshots"][_APP_ID]
-        assert snap["release_decision"] == "cicd_only"
+        assert snap["release_decision"] == "stopped"
         assert snap["owner_confirmed"] is True
         assert snap["version"] == "4.4"
         assert snap["app_info"]["source_type"] == "cicd_workbench"
         assert _task_table_count(temp_db) == 0
+
+        cicd_service.approve_request(
+            temp_db,
+            result["request"]["id"],
+            reviewer="rm",
+            reviewer_role="RM",
+        )
+        snap = core.get_release(temp_db, release_id)["snapshots"][_APP_ID]
+        assert snap["release_decision"] == "cicd_only"
 
     def test_http_duplicate_create_rejects_after_pending_request(self, db_path, tmp_dir):
         _seed_db(db_path, tmp_dir)
@@ -226,6 +243,46 @@ class TestCicdFirstHttpLifecycle:
         assert first.status_code == 200
         assert second.status_code == 400
         assert "待审批" in second.text
+
+    def test_http_rejected_create_stays_visible_with_reason_and_retries(self, db_path, tmp_dir):
+        _seed_db(db_path, tmp_dir)
+
+        with _make_client(db_path, role="RM", username="rm") as client:
+            create_resp = client.post("/api/cicd/apps/new", json=_CREATE_BODY)
+            assert create_resp.status_code == 200
+            created = create_resp.json()
+
+            reject_resp = client.post(
+                "/api/cicd/requests/reject",
+                json={"request_id": created["request"]["id"], "review_note": "镜像配置不符合要求"},
+            )
+            assert reject_resp.status_code == 200
+
+            state_resp = client.get("/api/state")
+            assert state_resp.status_code == 200
+            app = next(app for app in state_resp.json()["apps"] if app["id"] == created["app_id"])
+            assert app["cicd_onboarding_status"] == "rejected_create"
+            assert app["cicd_onboarding_review_note"] == "镜像配置不符合要求"
+
+            retry_resp = client.post(
+                "/api/cicd/apps/new",
+                json={**_CREATE_BODY, "notes": "retry after rejection"},
+            )
+            assert retry_resp.status_code == 200
+            retry = retry_resp.json()
+
+        assert retry["action"] == "associated"
+        assert retry["app_id"] == created["app_id"]
+        conn = app_connect(db_path)
+        try:
+            app_count = conn.execute("SELECT COUNT(*) FROM apps WHERE id = ?", (_APP_ID,)).fetchone()[0]
+            assert app_count == 1
+            pending_count = conn.execute(
+                "SELECT COUNT(*) FROM cicd_task_requests WHERE status='pending' AND request_type='create'"
+            ).fetchone()[0]
+            assert pending_count == 1
+        finally:
+            conn.close()
 
 
 class TestCicdPermissions:

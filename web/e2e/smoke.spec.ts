@@ -44,18 +44,69 @@ function localAdminPassword(): string {
 
 const ADMIN_PASSWORD = localAdminPassword();
 
-async function login(page: Page, username: string, password = username) {
-  await page.goto(BASE);
-  // Wait for login form (unauthenticated state)
-  await page.waitForSelector('[data-testid="login-form"], input[name="username"], .login-form, form', { timeout: 10_000 });
-  // Fill credentials — try both possible selectors
+async function isLoggedInAs(page: Page, username: string): Promise<boolean> {
+  return page.evaluate(async (expected) => {
+    const res = await fetch("/api/me", { credentials: "include" }).catch(() => null);
+    if (!res?.ok) return false;
+    const me = await res.json().catch(() => null);
+    return me?.username === expected;
+  }, username);
+}
+
+async function submitLoginForm(page: Page, username: string, password: string): Promise<void> {
+  await page.waitForSelector('#loginPage, input[placeholder*="用户名"], input[placeholder*="username"]', { timeout: 10_000 });
+
+  const localLogin = page.locator('button[data-ltype="local"]');
+  if (await localLogin.isVisible({ timeout: 500 }).catch(() => false)) {
+    await localLogin.click();
+  }
+
   const userInput = page.locator('input[name="username"], input[placeholder*="用户名"], input[placeholder*="username"]').first();
   const passInput = page.locator('input[name="password"], input[type="password"]').first();
   await userInput.fill(username);
   await passInput.fill(password);
+
+  const responsePromise = page.waitForResponse(
+    (res) => res.url().includes("/api/login") && res.request().method() === "POST",
+    { timeout: 10_000 },
+  ).catch(() => null);
   await page.locator('button[type="submit"], button:has-text("登录"), button:has-text("Login")').first().click();
-  // Wait for shell to appear (tab nav visible)
-  await page.waitForSelector('[data-testid="tab-nav"], nav.tabs, .tabs', { timeout: 10_000 });
+  const response = await responsePromise;
+  if (response && !response.ok()) {
+    throw new Error(`Login failed: HTTP ${response.status()}`);
+  }
+}
+
+async function login(page: Page, username: string, password = username) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await page.goto(BASE);
+    await page.waitForSelector('#loginPage, #sessionBox', { timeout: 10_000 });
+    if (await isLoggedInAs(page, username)) return;
+
+    if (await page.locator("#sessionBox").isVisible({ timeout: 500 }).catch(() => false)) {
+      await page.evaluate(() => fetch("/api/logout", { method: "POST", credentials: "include" }).catch(() => {}));
+      continue;
+    }
+
+    await submitLoginForm(page, username, password);
+    try {
+      await expect(page.locator("#sessionBox")).toBeVisible({ timeout: 10_000 });
+      await page.waitForFunction(
+        async (expected) => {
+          const res = await fetch("/api/me", { credentials: "include" }).catch(() => null);
+          if (!res?.ok) return false;
+          const me = await res.json().catch(() => null);
+          return me?.username === expected;
+        },
+        username,
+        { timeout: 10_000 },
+      );
+      return;
+    } catch (err) {
+      if (attempt === 1) throw err;
+      await page.evaluate(() => fetch("/api/logout", { method: "POST", credentials: "include" }).catch(() => {}));
+    }
+  }
 }
 
 async function logout(page: Page): Promise<void> {
@@ -78,6 +129,49 @@ async function navigateTab(page: Page, href: string, waitForSelector?: string): 
   }
 }
 export { navigateTab };
+
+async function ensureWritableAppsRelease(page: Page): Promise<void> {
+  await page.goto(`${BASE}/apps`);
+  await page.waitForSelector('[data-testid="appworkbench-page"]', { timeout: 15_000 });
+  await page.waitForSelector('[data-testid="app-table"]', { timeout: 15_000 });
+
+  const newAppButton = page.locator('[data-testid="new-app-btn"]');
+  if (await newAppButton.isVisible({ timeout: 2_000 }).catch(() => false)) return;
+
+  const releaseSelect = page.locator('select[aria-label="选择 release"]');
+  const options = await releaseSelect.locator("option").evaluateAll((items) =>
+    items.map((item) => (item as HTMLOptionElement).value),
+  );
+  for (const releaseId of options) {
+    await releaseSelect.selectOption(releaseId);
+    await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
+    if (await newAppButton.isVisible({ timeout: 2_000 }).catch(() => false)) return;
+  }
+
+  const created = await page.evaluate(async (name) => {
+    const res = await fetch("/api/releases/create", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name,
+        maca_version: "",
+        app_freeze_deadline: "2099-12-31",
+        doc_deadline: "2099-12-31",
+      }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body.error) {
+      throw new Error(body.error || res.statusText);
+    }
+    return body as { release_id: string };
+  }, `e2e-open-${Date.now()}`);
+
+  await page.goto(`${BASE}/apps`);
+  await page.waitForSelector('select[aria-label="选择 release"]', { timeout: 15_000 });
+  await page.locator('select[aria-label="选择 release"]').selectOption(created.release_id);
+  await expect(newAppButton).toBeVisible({ timeout: 10_000 });
+}
 
 // ---------------------------------------------------------------------------
 // Suite 1: Authentication
@@ -205,7 +299,7 @@ test.describe("App 工作台 decision save", () => {
     expect(panel!.length).toBeGreaterThan(20);
   });
 
-  test("edit mode: open edit, change description, save", async ({ page }) => {
+  test("edit mode: release decision remains editable when doc fields are frozen", async ({ page }) => {
     await login(page, "rm");
     await page.goto(`${BASE}/apps`);
     await page.waitForSelector('[data-testid="app-table"]', { timeout: 15_000 });
@@ -224,19 +318,31 @@ test.describe("App 工作台 decision save", () => {
     }
     await editBtn.click();
 
-    // The description field should now be editable
+    // Doc fields may be frozen after doc deadline, but release decision remains editable.
     const descField = page.locator('[data-testid="field-description"]');
     await descField.waitFor({ timeout: 5_000 });
+    await expect(descField).toBeDisabled();
 
-    // Clear and type a short description (≤30 chars)
-    const currentDesc = await descField.inputValue();
-    const newDesc = currentDesc.substring(0, 10) || "e2e test";
-    await descField.fill(newDesc);
+    const decisionField = page.locator('[data-testid="field-decision"]');
+    await expect(decisionField).toBeEnabled();
+    const currentDecision = await decisionField.inputValue();
+    const newDecision = currentDecision === "stopped" ? "cicd_only" : "stopped";
+    await decisionField.selectOption(newDecision);
 
     // Click save — handle alert
     page.on("dialog", (d) => d.accept());
     const saveBtn = page.locator('button:has-text("保存")').first();
     await saveBtn.click();
+
+    const syncLocalOnly = page.locator('[data-testid="sync-local-only"]');
+    if (await syncLocalOnly.isVisible({ timeout: 3_000 }).catch(() => false)) {
+      await syncLocalOnly.click();
+    } else {
+      const syncAll = page.locator('[data-testid="sync-all"]');
+      if (await syncAll.isVisible({ timeout: 3_000 }).catch(() => false)) {
+        await syncAll.click();
+      }
+    }
 
     // Wait for the "保存成功" alert or confirm saved state (no dirty banner)
     await page.waitForTimeout(2_000);
@@ -442,8 +548,7 @@ test.describe("W3 App 工作台 sub-tabs", () => {
 
   test("W3 new-app dialog shows CICD-first wizard form", async ({ page }) => {
     await login(page, "rm");
-    await page.goto(`${BASE}/apps`);
-    await page.waitForSelector('[data-testid="new-app-btn"]', { timeout: 15_000 });
+    await ensureWritableAppsRelease(page);
     await page.click('[data-testid="new-app-btn"]');
     await page.waitForSelector('[data-testid="new-app-dialog"]', { timeout: 5_000 });
 
@@ -471,8 +576,7 @@ test.describe("W3 App 工作台 sub-tabs", () => {
     });
 
     await login(page, "rm");
-    await page.goto(`${BASE}/apps`);
-    await page.waitForSelector('[data-testid="new-app-btn"]', { timeout: 15_000 });
+    await ensureWritableAppsRelease(page);
     await page.click('[data-testid="new-app-btn"]');
     await page.waitForSelector('[data-testid="new-app-dialog"]', { timeout: 5_000 });
 
@@ -552,8 +656,7 @@ test.describe("W4 wizard derived-identity display", () => {
     });
 
     await freshLogin(page, "rm");
-    await page.goto(`${BASE}/apps`);
-    await page.waitForSelector('[data-testid="new-app-btn"]', { timeout: 15_000 });
+    await ensureWritableAppsRelease(page);
     await page.click('[data-testid="new-app-btn"]');
     await page.waitForSelector('[data-testid="new-app-dialog"]', { timeout: 5_000 });
 
@@ -589,8 +692,7 @@ test.describe("W4 wizard derived-identity display", () => {
     });
 
     await freshLogin(page, "rm");
-    await page.goto(`${BASE}/apps`);
-    await page.waitForSelector('[data-testid="new-app-btn"]', { timeout: 15_000 });
+    await ensureWritableAppsRelease(page);
     await page.click('[data-testid="new-app-btn"]');
     await page.waitForSelector('[data-testid="new-app-dialog"]', { timeout: 5_000 });
 

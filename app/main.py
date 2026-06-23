@@ -19,6 +19,7 @@ from app.api.routers import admin, apps, artifacts, auth, cicd, qa, releases, st
 from app.config import settings
 from app.db.connection import connect
 from app.integrations.ldap import load_ldap_config
+from app.services import auth_service
 
 
 @asynccontextmanager
@@ -31,6 +32,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Initialise the DB (creates schema if it doesn't exist; idempotent).
     conn = connect(settings.db_path)
+    auth_service.ensure_admin_user(
+        conn,
+        password_file=settings.admin_password_file,
+    )
     conn.close()
 
     yield

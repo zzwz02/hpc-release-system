@@ -538,6 +538,32 @@ describe("CicdPage", () => {
     });
   });
 
+  it("ApproveDialog: hides reject for release decision stop sync request", async () => {
+    const syncStopReq = makeRequest({
+      submitter: "owner1",
+      submitter_display: "Owner One",
+      request_type: "modify",
+      status: "pending",
+      origin: "release_decision_sync",
+      payload: { status: { old: "Running", new: "Stopped" } },
+    });
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [makeTask()] });
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      if (url.includes("/api/cicd/requests")) return Promise.resolve({ requests: [syncStopReq] });
+      return Promise.resolve({ deliveries: [] });
+    });
+    renderCicd("RM");
+    await waitFor(() => expect(screen.getByText("待审批")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("待审批"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "审批" })).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "取消" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "审批" }));
+    expect(screen.getByText(/CICD 审批不能拒绝/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "拒绝" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "通过" })).toBeInTheDocument();
+  });
+
   it("PendingPane: no 同步联动 badge for ordinary cicd_workbench request", async () => {
     const wbReq = makeRequest({
       submitter: "bob",

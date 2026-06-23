@@ -9,8 +9,10 @@ transaction boundaries.
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 import sqlite3
+from pathlib import Path
 
 from app.repositories import sessions_repo, users_repo
 from app.timeutil import beijing_timestamp
@@ -32,6 +34,48 @@ def _verify_password(password: str, encoded: str) -> bool:
     return secrets.compare_digest(
         _hash_password(password, salt).split("$", 1)[1], expected
     )
+
+
+def ensure_admin_user(
+    conn: sqlite3.Connection,
+    *,
+    password_file: Path,
+) -> str:
+    """Ensure the local admin account exists.
+
+    Mirrors the legacy startup behavior without touching ``server.py``:
+    HPC_ADMIN_PASSWORD > admin_password.local > generated password file.
+    Returns the source used, or ``"existing"`` when admin already exists.
+    """
+    if users_repo.get_user(conn, "admin"):
+        return "existing"
+    password = os.environ.get("HPC_ADMIN_PASSWORD", "")
+    source = "HPC_ADMIN_PASSWORD"
+    if not password:
+        if password_file.exists():
+            raw = password_file.read_text(encoding="utf-8")
+            for line in raw.splitlines():
+                if line.startswith("password="):
+                    password = line.split("=", 1)[1].strip()
+                    break
+            source = "admin_password.local"
+        else:
+            password = secrets.token_urlsafe(24)
+            password_file.write_text(
+                f"username=admin\npassword={password}\n",
+                encoding="utf-8",
+            )
+            source = "generated"
+    users_repo.insert_user(
+        conn,
+        username="admin",
+        password_hash=_hash_password(password),
+        role="Admin",
+        auth_source="local",
+        display_name="Admin",
+    )
+    conn.commit()
+    return source
 
 
 # ---------------------------------------------------------------------------

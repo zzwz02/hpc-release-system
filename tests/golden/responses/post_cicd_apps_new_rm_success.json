@@ -1,6 +1,6 @@
 {
   "_golden_name": "post_cicd_apps_new_rm_success",
-  "_note": "R3 Wave 3: RM creates new CICD-first app; action=created, pending create request #5; NO task yet (Ruling B). App w3cicdfirst with snapshot(cicd_only) created.",
+  "_note": "R3 Wave 3: RM creates new CICD-first app; action=created, pending create request #5. App w3cicdfirst is kept as a stopped placeholder until CICD create approval.",
   "_method": "POST",
   "_path": "/api/cicd/apps/new",
   "_params": "",

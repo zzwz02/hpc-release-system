@@ -198,7 +198,7 @@ class TestCicdFirstAppBackedLifecycle:
         assert _task_table_count(temp_db) == 0
 
         snap = core.get_release(temp_db, release_id)["snapshots"][_APP_ID]
-        assert snap["release_decision"] == "cicd_only"
+        assert snap["release_decision"] == "stopped"
         assert snap["owners"] == ["rm"]
 
     def test_approval_keeps_task_id_as_app_id_and_creates_no_task_row(self, temp_db, tmp_dir):
@@ -217,6 +217,8 @@ class TestCicdFirstAppBackedLifecycle:
         assert approved["task_id"] == _APP_ID
         assert approved["is_self_approved"] == 1
         assert _task_table_count(temp_db) == 0
+        snap = core.get_release(temp_db, core.list_releases(temp_db)[0]["id"])["snapshots"][_APP_ID]
+        assert snap["release_decision"] == "cicd_only"
 
     def test_dispatch_approval_applies_only_after_delivery(self, temp_db, tmp_dir):
         result = _create_app(temp_db, tmp_dir)
@@ -234,6 +236,8 @@ class TestCicdFirstAppBackedLifecycle:
         assert approved["status"] == "approved"
         assert approved["delivery_status"] == "pending"
         assert _task_table_count(temp_db) == 0
+        snap = core.get_release(temp_db, core.list_releases(temp_db)[0]["id"])["snapshots"][_APP_ID]
+        assert snap["release_decision"] == "stopped"
 
         delivered = cicd_service.deliver_request(
             temp_db,
@@ -244,6 +248,8 @@ class TestCicdFirstAppBackedLifecycle:
         assert delivered["delivery_status"] == "delivered"
         assert delivered["task_id"] == _APP_ID
         assert _task_table_count(temp_db) == 0
+        snap = core.get_release(temp_db, core.list_releases(temp_db)[0]["id"])["snapshots"][_APP_ID]
+        assert snap["release_decision"] == "cicd_only"
 
     def test_duplicate_pending_create_is_rejected(self, temp_db, tmp_dir):
         _create_app(temp_db, tmp_dir)
@@ -265,7 +271,7 @@ class TestCicdFirstAppBackedLifecycle:
         result = _create_app(temp_db, tmp_dir)
         cicd_service.approve_request(temp_db, result["request"]["id"], reviewer="rm", reviewer_role="RM")
 
-        with pytest.raises(RuntimeError, match="已有 CICD 创建记录"):
+        with pytest.raises(RuntimeError, match="已有 CICD 创建"):
             cicd_service.cicd_first_new_app(
                 temp_db,
                 official_name=_OFFICIAL_NAME,
@@ -310,3 +316,87 @@ class TestCicdFirstAppBackedLifecycle:
         assert result["request"]["app_id"] == "existing-app"
         assert result["request"]["task_id"] == "existing-app"
         assert _task_table_count(temp_db) == 0
+
+
+class TestCicdFirstRejectedLifecycle:
+    def _submit_and_reject(self, temp_db, tmp_dir) -> tuple[dict, dict]:
+        result = _create_app(temp_db, tmp_dir)
+        rejected = cicd_service.reject_request(
+            temp_db,
+            result["request"]["id"],
+            reviewer="rm",
+            reviewer_role="RM",
+            review_note="镜像配置不符合要求",
+        )
+        return result, rejected
+
+    def test_reject_keeps_app_row_and_stopped_snapshot(self, temp_db, tmp_dir):
+        result, rejected = self._submit_and_reject(temp_db, tmp_dir)
+
+        assert rejected["status"] == "rejected"
+        assert apps_repo.get_app(temp_db, result["app_id"]) is not None
+        snap = core.get_release(temp_db, core.list_releases(temp_db)[0]["id"])["snapshots"][result["app_id"]]
+        assert snap["release_decision"] == "stopped"
+        assert _task_table_count(temp_db) == 0
+
+    def test_reject_exposes_onboarding_review_note(self, temp_db, tmp_dir):
+        result, _ = self._submit_and_reject(temp_db, tmp_dir)
+
+        state = cicd_service.cicd_first_onboarding_by_app(temp_db)[result["app_id"]]
+        assert state["cicd_onboarding_status"] == "rejected_create"
+        assert state["cicd_onboarding_review_note"] == "镜像配置不符合要求"
+
+    def test_state_apps_include_rejected_reason(self, temp_db, tmp_dir):
+        result, _ = self._submit_and_reject(temp_db, tmp_dir)
+        from app.services import app_service
+
+        state = app_service.get_state(
+            temp_db,
+            user={"username": "alice", "role": "RM", "display_name": "Alice"},
+        )
+        app = next(a for a in state["apps"] if a["id"] == result["app_id"])
+        assert app["cicd_onboarding_status"] == "rejected_create"
+        assert app["cicd_onboarding_review_note"] == "镜像配置不符合要求"
+
+    def test_rejected_identity_retry_reuses_app(self, temp_db, tmp_dir):
+        result, _ = self._submit_and_reject(temp_db, tmp_dir)
+        before_count = temp_db.execute("SELECT COUNT(*) FROM apps").fetchone()[0]
+
+        retry = cicd_service.cicd_first_new_app(
+            temp_db,
+            official_name=_OFFICIAL_NAME,
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter="owner2",
+            submitter_role="Owner",
+            payload=_BUILD_PAYLOAD,
+        )
+
+        after_count = temp_db.execute("SELECT COUNT(*) FROM apps").fetchone()[0]
+        assert after_count == before_count
+        assert retry["action"] == "associated"
+        assert retry["app_id"] == result["app_id"]
+        assert _payload(retry["request"])["app_name"] == _OFFICIAL_NAME
+        pending = temp_db.execute(
+            "SELECT COUNT(*) FROM cicd_task_requests WHERE status='pending' AND request_type='create'"
+        ).fetchone()[0]
+        assert pending == 1
+
+    def test_rejected_identity_retry_with_different_name_is_rejected(self, temp_db, tmp_dir):
+        result, _ = self._submit_and_reject(temp_db, tmp_dir)
+
+        with pytest.raises(RuntimeError, match="不能用新名称重复创建"):
+            cicd_service.cicd_first_new_app(
+                temp_db,
+                official_name="DifferentRetryName",
+                repo_type="git",
+                repo_name=_REPO_SHORT,
+                branch=_BRANCH,
+                submitter="owner2",
+                submitter_role="Owner",
+                payload={**_BUILD_PAYLOAD, "app_name": "DifferentRetryName"},
+            )
+
+        assert _request_count(temp_db) == 1
+        assert apps_repo.get_app(temp_db, result["app_id"]) is not None

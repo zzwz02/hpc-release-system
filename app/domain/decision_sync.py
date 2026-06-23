@@ -1,5 +1,5 @@
-"""Decision-sync gating — R3 reimplementation of the "sync release_decision
-to later releases" rule, kept out of the frozen ``release_system.core``.
+"""Decision-sync gating — R3 reimplementation of the release_decision sync
+rule, kept out of the frozen ``release_system.core``.
 
 Pure derivation lives here (``phase_label`` + ``resolve_synced_decision``); the
 transactional apply and the dry-run preview live in
@@ -16,6 +16,8 @@ Changed rule vs. ``core.sync_decision_to_later_releases``:
       expanding scope.
     * otherwise  →  apply the target decision verbatim.
   Locked releases and releases without the app are skipped.
+  Optional owner-selected sync still targets later releases. Running/Stopped
+  boundary changes force sync to every other unlocked release.
 """
 from __future__ import annotations
 
@@ -57,3 +59,13 @@ def runtime_group(decision: str) -> str:
 def crosses_runtime_boundary(old_decision: str, new_decision: str) -> bool:
     """Whether a decision change flips CICD between Running and Stopped."""
     return runtime_group(old_decision) != runtime_group(new_decision)
+
+
+def is_running_upgrade(old_decision: str, new_decision: str) -> bool:
+    """Stopped -> Running transition."""
+    return runtime_group(old_decision) == "stopped" and runtime_group(new_decision) == "running"
+
+
+def is_running_downgrade(old_decision: str, new_decision: str) -> bool:
+    """Running -> Stopped transition."""
+    return runtime_group(old_decision) == "running" and runtime_group(new_decision) == "stopped"

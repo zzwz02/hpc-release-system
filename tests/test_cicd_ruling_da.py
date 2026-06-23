@@ -164,6 +164,118 @@ class TestUpdateSnapshotIntegration:
         payload = req["payload"] if isinstance(req["payload"], dict) else json.loads(req["payload"])
         assert payload["status"]["new"] == "Stopped"
 
+    def test_stopped_to_running_defers_release_decision_until_cicd_apply(self, temp_db, tmp_dir):
+        release_id = seed_release(temp_db, tmp_path=tmp_dir)
+        import release_system.core as core
+
+        app_id = core.add_new_app_request(
+            temp_db,
+            release_id,
+            official_name="DeferredRun",
+            git_url="ssh://gerrit/deferred-run",
+            git_branch="main",
+            release_decision="stopped",
+            owner="rm",
+        )
+        response = app_service.update_snapshot(
+            temp_db,
+            release_id,
+            app_id,
+            user="rm",
+            role="RM",
+            fields={"snapshot": {"release_decision": "cicd_only"}},
+        )
+
+        assert response["snapshot"]["release_decision"] == "stopped"
+        req = response["cicd_sync"]["request"]
+        assert req is not None
+        payload = req["payload"] if isinstance(req["payload"], dict) else json.loads(req["payload"])
+        assert payload["status"] == {"old": "Stopped", "new": "Running"}
+        assert core.get_release(temp_db, release_id)["snapshots"][app_id]["release_decision"] == "stopped"
+
+        cicd_service.approve_request(
+            temp_db,
+            req["id"],
+            reviewer="rm",
+            reviewer_role="RM",
+        )
+
+        assert core.get_release(temp_db, release_id)["snapshots"][app_id]["release_decision"] == "cicd_only"
+
+    def test_doc_deadline_allows_release_decision_and_cicd_config(self, temp_db, tmp_dir):
+        release_id = seed_release(temp_db, tmp_path=tmp_dir)
+        import release_system.core as core
+
+        rel = core.get_release(temp_db, release_id)
+        app_id = next(iter(rel["snapshots"]))
+        temp_db.execute(
+            "UPDATE releases SET doc_deadline = '2000-01-01 00:00:00' WHERE id = ?",
+            (release_id,),
+        )
+        temp_db.commit()
+
+        response = app_service.update_snapshot(
+            temp_db,
+            release_id,
+            app_id,
+            user="rm",
+            role="RM",
+            fields={
+                "snapshot": {"release_decision": "stopped"},
+                "app": {"cicd_build_image": "hpc/new-image:latest"},
+            },
+        )
+
+        assert response["snapshot"]["release_decision"] == "stopped"
+        app = core.get_app(temp_db, app_id)
+        assert app["cicd_build_image"] == "hpc/new-image:latest"
+
+    @pytest.mark.parametrize(
+        "app_freeze_deadline,doc_deadline",
+        [
+            ("2000-01-01 00:00:00", "2999-01-01 00:00:00"),
+            ("2000-01-01 00:00:00", "2000-01-01 00:00:00"),
+        ],
+    )
+    def test_after_freeze_or_doc_deadline_blocks_raise_to_release(
+        self,
+        temp_db,
+        tmp_dir,
+        app_freeze_deadline,
+        doc_deadline,
+    ):
+        release_id = seed_release(temp_db, tmp_path=tmp_dir)
+        import release_system.core as core
+
+        rel = core.get_release(temp_db, release_id)
+        app_id = next(iter(rel["snapshots"]))
+        core.update_snapshot(
+            temp_db,
+            release_id,
+            app_id,
+            lambda snap: snap.update({"release_decision": "cicd_only"}),
+            skip_doc_deadline=True,
+        )
+        temp_db.execute(
+            """
+            UPDATE releases
+            SET app_freeze_deadline = ?, doc_deadline = ?
+            WHERE id = ?
+            """,
+            (app_freeze_deadline, doc_deadline, release_id),
+        )
+        temp_db.commit()
+
+        with pytest.raises(RuntimeError, match="不可.*release"):
+            app_service.update_snapshot(
+                temp_db,
+                release_id,
+                app_id,
+                user="rm",
+                role="RM",
+                fields={"snapshot": {"release_decision": "release"}},
+            )
+
     def test_same_decision_does_not_add_cicd_sync(self, temp_db, tmp_dir):
         release_id = seed_release(temp_db, tmp_path=tmp_dir)
         import release_system.core as core

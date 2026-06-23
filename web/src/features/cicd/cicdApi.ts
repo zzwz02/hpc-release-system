@@ -143,6 +143,7 @@ export function applyReturnedCicdRequest(body: {
 // ---------------------------------------------------------------------------
 
 export interface FetchPreviewPayload {
+  official_name?: string;
   repo_type: string;
   repo_name: string;
   branch: string;
@@ -193,6 +194,13 @@ export interface FetchPreviewResponse {
   commit_id?: string;
   /** Full parsed blob — pass as app_info_parsed to POST /api/cicd/apps/new. */
   parsed?: Record<string, unknown>;
+
+  // ── Re-apply metadata for rejected/cancelled CICD-first app creates ──────
+  retry_existing_app_id?: string;
+  retry_existing_app_name?: string;
+  retry_onboarding_status?: "rejected_create" | "cancelled_create";
+  retry_review_note?: string;
+  retry_reviewed_at?: string;
 
   // ── Legacy / backward-compat ─────────────────────────────────────────────
   /** Present in older responses; unused by new wizard logic. */

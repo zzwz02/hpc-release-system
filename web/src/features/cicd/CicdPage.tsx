@@ -75,6 +75,22 @@ function OriginBadge({ origin }: { origin?: string }) {
   );
 }
 
+function statusChange(payload: Record<string, unknown>): { oldStatus: string; newStatus: string } {
+  const status = payload.status;
+  if (!status || typeof status !== "object") return { oldStatus: "", newStatus: "" };
+  const change = status as { old?: unknown; new?: unknown };
+  return {
+    oldStatus: String(change.old ?? "").trim(),
+    newStatus: String(change.new ?? "").trim(),
+  };
+}
+
+function isDecisionSyncStopRequest(req: CicdRequest): boolean {
+  if (req.origin !== "release_decision_sync" || req.request_type !== "modify") return false;
+  const { oldStatus, newStatus } = statusChange((req.payload ?? {}) as Record<string, unknown>);
+  return oldStatus === "Running" && newStatus === "Stopped";
+}
+
 const REQ_STATUS_LABEL: Record<string, string> = {
   pending: "等待 RM 审批",
   approved: "已通过",
@@ -266,6 +282,7 @@ function ApproveDialog({ req, tasks, onDone, onClose }: ApproveDialogProps) {
   const [error, setError] = useState("");
 
   const payload = (req.payload ?? {}) as Record<string, unknown>;
+  const rejectDisabledByDecisionSync = isDecisionSyncStopRequest(req);
   const taskName =
     (payload.app_name as string) ||
     tasks.find((t) => t.id === req.task_id)?.app_name ||
@@ -348,6 +365,11 @@ function ApproveDialog({ req, tasks, onDone, onClose }: ApproveDialogProps) {
             payload={payload}
             reqType={req.request_type}
           />
+          {rejectDisabledByDecisionSync && (
+            <div className="small muted" style={{ marginTop: 8 }}>
+              该申请来自 release/cicd_only → stopped 的 release 决策，停止是 App owner 的决定，CICD 审批不能拒绝或取消。
+            </div>
+          )}
           <div style={{ marginTop: 12 }}>
             <div className="field-label">审批意见（拒绝时必填）</div>
             <textarea
@@ -451,9 +473,11 @@ function ApproveDialog({ req, tasks, onDone, onClose }: ApproveDialogProps) {
           <button className="btn" onClick={onClose} disabled={saving}>
             取消
           </button>
-          <button className="btn danger" onClick={handleReject} disabled={saving}>
-            拒绝
-          </button>
+          {!rejectDisabledByDecisionSync && (
+            <button className="btn danger" onClick={handleReject} disabled={saving}>
+              拒绝
+            </button>
+          )}
           <button className="btn primary" onClick={handleApprove} disabled={saving}>
             {saving ? "…" : "通过"}
           </button>
@@ -1020,6 +1044,7 @@ function PendingPane({
                 filtered.map((r) => {
                   const isMyReq = r.submitter === username;
                   const payload = (r.payload ?? {}) as Record<string, unknown>;
+                  const canCancelRequest = (isMyReq || canApprove) && !isDecisionSyncStopRequest(r);
                   return (
                     <tr key={r.id}>
                       <td className="cicd-id">#{r.id}</td>
@@ -1044,7 +1069,7 @@ function PendingPane({
                             审批
                           </button>
                         )}{" "}
-                        {(isMyReq || canApprove) && (
+                        {canCancelRequest && (
                           <button
                             className="btn sm warn"
                             onClick={() => handleCancel(r)}

@@ -21,7 +21,7 @@ New features (task 7 / impl-1 — now implemented):
    - When provided: all unlocked release snapshots receive the parsed fields
      (version, x86_chips, arm_chips, python_labels, pytorch_labels, build_os,
      build_arches, app_info blob) and owner_confirmed=True
-   - When absent: snapshot stays at cicd_only defaults
+   - When absent: snapshot stays stopped until the create request is approved
 
    Mockable: preview_cicd_app_info has _fetch_fn kwarg for direct injection.
    For HTTP tests: patch app.integrations.gerrit.fetch_app_info at module level.
@@ -437,6 +437,91 @@ class TestFetchPreviewHttp:
 
         assert resp.status_code == 400, resp.text
         assert "已存在 app" in resp.json()["error"]
+        fetch_mock.assert_not_called()
+
+    def test_rejected_duplicate_same_name_fetches_and_returns_retry_metadata(self, db_path, tmp_dir):
+        """A rejected CICD-first app can be re-applied with the same name after preview."""
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        from app.db.connection import connect as app_connect
+
+        conn = app_connect(db_path)
+        seed_release(conn, tmp_path=tmp_dir)
+        created = cicd_service.cicd_first_new_app(
+            conn,
+            official_name=_OFFICIAL_NAME,
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter="owner",
+            submitter_role="Owner",
+            payload={},
+        )
+        cicd_service.reject_request(
+            conn,
+            created["request"]["id"],
+            reviewer="rm",
+            reviewer_role="RM",
+            review_note="镜像配置不符合要求",
+        )
+        conn.close()
+
+        app = _make_app(db_path)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            with patch(
+                "app.integrations.gerrit.fetch_app_info",
+                return_value=(_MOCK_APP_INFO_RAW, _MOCK_COMMIT_ID),
+            ) as fetch_mock:
+                resp = client.post(
+                    _PREVIEW_PATH,
+                    json={**_PREVIEW_BODY, "official_name": _OFFICIAL_NAME},
+                )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["retry_existing_app_id"] == created["app_id"]
+        assert body["retry_existing_app_name"] == _OFFICIAL_NAME
+        assert body["retry_onboarding_status"] == "rejected_create"
+        assert body["retry_review_note"] == "镜像配置不符合要求"
+        fetch_mock.assert_called_once()
+
+    def test_rejected_duplicate_different_name_points_to_existing_name(self, db_path, tmp_dir):
+        """A rejected retained app cannot be recreated under another display name."""
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        from app.db.connection import connect as app_connect
+
+        conn = app_connect(db_path)
+        seed_release(conn, tmp_path=tmp_dir)
+        created = cicd_service.cicd_first_new_app(
+            conn,
+            official_name=_OFFICIAL_NAME,
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter="owner",
+            submitter_role="Owner",
+            payload={},
+        )
+        cicd_service.reject_request(
+            conn,
+            created["request"]["id"],
+            reviewer="rm",
+            reviewer_role="RM",
+            review_note="镜像配置不符合要求",
+        )
+        conn.close()
+
+        app = _make_app(db_path)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            with patch("app.integrations.gerrit.fetch_app_info") as fetch_mock:
+                resp = client.post(
+                    _PREVIEW_PATH,
+                    json={**_PREVIEW_BODY, "official_name": "DifferentName"},
+                )
+
+        assert resp.status_code == 400, resp.text
+        assert f"请使用 {_OFFICIAL_NAME} 名称重新申请" in resp.json()["error"]
         fetch_mock.assert_not_called()
 
     def test_repo_manifest_duplicate_gives_400_before_identity_resolution(

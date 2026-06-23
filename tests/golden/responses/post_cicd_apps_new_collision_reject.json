@@ -21,6 +21,6 @@
   "status": 400,
   "body": {
     "ok": false,
-    "error": "该 app（w3cicdfirst）已有 CICD 创建记录，无法重复创建"
+    "error": "该 app（w3cicdfirst）已有 CICD 创建申请生效，无法重复创建"
   }
 }

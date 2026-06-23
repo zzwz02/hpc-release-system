@@ -54,6 +54,11 @@ export interface App {
   cicd_build_image?: string;
   cicd_test_timeout?: string;
   cicd_notes?: string;
+  cicd_onboarding_status?: "pending_create" | "rejected_create" | "cancelled_create";
+  cicd_onboarding_request_id?: number;
+  cicd_onboarding_review_note?: string;
+  cicd_onboarding_reviewed_at?: string;
+  cicd_onboarding_delivery_status?: string;
   created_by: string;
   created_at: string;
   aliases: string[];

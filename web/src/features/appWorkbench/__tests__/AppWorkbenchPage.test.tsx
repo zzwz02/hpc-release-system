@@ -442,8 +442,39 @@ describe("AppWorkbenchPage F1 decision-sync dialog", () => {
     fireEvent.click(screen.getByText("保存"));
     await waitFor(() => screen.getByTestId("decision-sync-dialog"));
     expect(screen.getByTestId("decision-sync-dialog").textContent).toContain("必须同步 release 决策");
+    expect(screen.getByTestId("decision-sync-dialog").textContent).toContain("所有未锁定 release");
     expect(screen.queryByTestId("sync-local-only")).toBeNull();
     expect(screen.getByTestId("sync-row-rel-2").textContent).toContain("调整为 stopped");
+  });
+
+  it("opens a forced sync dialog when stopped is raised to Running", async () => {
+    const payload = payloadTwoReleases();
+    (payload.release as ReleaseDetail).snapshots.app1.release_decision = "stopped";
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.includes("decision-sync/preview")) {
+        return Promise.resolve({
+          decision: "cicd_only",
+          forced: true,
+          scope: "all_unlocked",
+          releases: [
+            { release_id: "rel-2", release_name: "3.1", phase_label: "App 冻结前",
+              resulting_decision: "cicd_only", skipped: false },
+          ],
+        });
+      }
+      return Promise.resolve({ snapshot: {}, missing_items: [] });
+    });
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "cicd_only" } });
+    fireEvent.click(screen.getByText("保存"));
+    await waitFor(() => screen.getByTestId("decision-sync-dialog"));
+    expect(screen.getByTestId("decision-sync-dialog").textContent).toContain("必须同步 release 决策");
+    expect(screen.getByTestId("decision-sync-dialog").textContent).toContain("所有未锁定 release");
+    expect(screen.queryByTestId("sync-local-only")).toBeNull();
+    expect(screen.getByTestId("sync-row-rel-2").textContent).toContain("调整为 cicd_only");
   });
 
   it("shows the gated cicd_only downgrade row distinctly", async () => {
@@ -805,6 +836,81 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
     expect(screen.getByTestId("cicd-link-card").textContent).toContain("Stopped");
   });
 
+  it("shows rejected CICD-first status and reason in the app workbench", async () => {
+    const payload = makePayload();
+    payload.apps[0] = {
+      ...payload.apps[0],
+      cicd_onboarding_status: "rejected_create",
+      cicd_onboarding_request_id: 42,
+      cicd_onboarding_review_note: "镜像配置不符合要求",
+      cicd_onboarding_reviewed_at: "2026-06-18 12:00:00",
+    };
+    payload.release!.snapshots.app1.release_decision = "stopped";
+    mockApiGetForAppCicd(payload);
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+
+    expect(screen.getByTestId("app-row-app1").textContent).toContain("CICD 创建被拒绝");
+    fireEvent.click(screen.getByTestId("app-row-app1"));
+    await waitFor(() => screen.getByTestId("app-detail-rejected-banner"));
+    expect(screen.getByTestId("app-detail-rejected-banner").textContent).toContain("镜像配置不符合要求");
+
+    await clickCicdTab();
+    expect(screen.getByTestId("app-cicd-rejected-banner").textContent).toContain("镜像配置不符合要求");
+    expect(screen.getByTestId("cicd-link-card").textContent).toContain("Stopped");
+  });
+
+  it("shows rejected CICD request review notes in App CICD history", async () => {
+    const payload = makePayload();
+    const rejectedReq = {
+      id: 77,
+      task_id: "app1",
+      app_id: "app1",
+      request_type: "modify",
+      payload: { notes: { old: "", new: "bad config" } },
+      submitter: "alice",
+      submitter_display: "Alice",
+      submitted_at: "2026-06-18 11:00:00",
+      status: "rejected",
+      reviewer: "rm",
+      reviewed_at: "2026-06-18 12:00:00",
+      review_note: "构建镜像不存在",
+      is_self_approved: 0,
+      approval_mode: "immediate",
+      delivery_status: "",
+      jira_id: "",
+      jira_auto_created: 0,
+      delivered_by: "",
+      delivered_at: "",
+      returned_reason: "",
+      returned_at: "",
+      task_app_name: "AlphaApp",
+      task_app_version: "1.0",
+      task_repo_name: "repo/app1",
+      task_branch: "main",
+      task_status: "Running",
+      origin: "cicd_workbench",
+    };
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.startsWith("/api/cicd/requests?status=pending")) return Promise.resolve({ requests: [] });
+      if (url.startsWith("/api/cicd/deliveries")) return Promise.resolve({ deliveries: [] });
+      if (url.startsWith("/api/cicd/requests?since_days=")) {
+        return Promise.resolve({ requests: [rejectedReq] });
+      }
+      return Promise.resolve(payload);
+    });
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+    fireEvent.click(screen.getByTestId("app-row-app1"));
+    await clickCicdTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("detail-cicd-pane").textContent).toContain("构建镜像不存在");
+    });
+  });
+
   it("submits Gerrit identity changes as a pending CICD request", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
     (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, request: { id: 1 } });
@@ -1115,6 +1221,64 @@ describe("AppWorkbenchPage W3 detail sub-tabs", () => {
   });
 });
 
+describe("AppWorkbenchPage lifecycle actions", () => {
+  beforeEach(() => {
+    vi.stubGlobal("alert", vi.fn());
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    useUiStore.getState().setSelectedApp("");
+    useUiStore.getState().setAppDetailDirty(false);
+  });
+
+  it("rejected CICD-first app shows re-apply button and opens prefilled wizard", async () => {
+    const payload = makePayload();
+    payload.apps[0] = {
+      ...payload.apps[0],
+      cicd_onboarding_status: "rejected_create",
+      cicd_onboarding_review_note: "镜像配置不符合要求",
+    };
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    const qc = makeQueryClient();
+    renderPage(qc);
+
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+    fireEvent.click(screen.getByTestId("app-row-app1"));
+    await waitFor(() => screen.getByTestId("retry-create-btn"));
+    expect(screen.queryByText("✎ 修改")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("retry-create-btn"));
+    await waitFor(() => screen.getByTestId("new-app-dialog"));
+    expect(screen.getByTestId("new-app-name")).toHaveValue("AlphaApp");
+    expect(screen.getByLabelText(/仓库名 /)).toHaveValue("repo/app1");
+    expect(screen.getByLabelText(/分支 /)).toHaveValue("main");
+  });
+
+  it("doc deadline freezes document fields and only allows cicd_only or stopped decisions", async () => {
+    const payload = makePayload();
+    const release = payload.release!;
+    payload.release = {
+      ...release,
+      doc_deadline: "2000-01-01",
+      phase: "released",
+      released_locked: false,
+    };
+    payload.releases = [{ ...payload.releases[0], doc_deadline: "2000-01-01", phase: "released", released_locked: false }];
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    const qc = makeQueryClient();
+    renderPage(qc);
+
+    await waitFor(() => screen.getByTestId("app-row-app2"));
+    fireEvent.click(screen.getByTestId("app-row-app2"));
+    await waitFor(() => screen.getByText("✎ 修改"));
+    fireEvent.click(screen.getByText("✎ 修改"));
+
+    await waitFor(() => screen.getByTestId("field-decision"));
+    const decision = screen.getByTestId("field-decision") as HTMLSelectElement;
+    expect(decision).not.toBeDisabled();
+    expect(Array.from(decision.options).map((option) => option.value)).toEqual(["cicd_only", "stopped"]);
+    expect(screen.getByTestId("field-description")).toBeDisabled();
+  });
+});
+
 describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
   beforeEach(() => {
     vi.stubGlobal("alert", vi.fn());
@@ -1221,6 +1385,90 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
       const call = postMock.mock.calls.find((c) => c[0] === "/api/cicd/apps/new");
       expect(call).toBeTruthy();
       expect((call![1] as Record<string, string>).official_name).toBe("ErrApp");
+    });
+  });
+
+  it("duplicate Gerrit identity blocks skip creation", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    const postMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("fetch-preview")) {
+        throw new Error("该 Gerrit URL + branch 已存在 app（aaa），请使用 aaa 名称重新申请，不能重复创建");
+      }
+      return { ok: true, app_id: "new-app-3", request_id: 3 };
+    });
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(postMock);
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("new-app-btn"));
+    fireEvent.click(screen.getByTestId("new-app-btn"));
+    await waitFor(() => screen.getByTestId("new-app-dialog"));
+
+    fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "bbb" } });
+    fireEvent.change(screen.getByLabelText(/仓库名 /), { target: { value: "hpc_aa" } });
+    fireEvent.change(screen.getByLabelText(/分支 /), { target: { value: "main" } });
+    fireEvent.click(screen.getByTestId("new-app-fetch"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("new-app-dialog").textContent).toContain("无法继续创建");
+    });
+    expect(screen.getByTestId("new-app-dialog").textContent).toContain("已存在 app（aaa）");
+    expect(screen.queryByTestId("new-app-submit")).not.toBeInTheDocument();
+    expect(postMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("duplicate rejected app with same name fetches preview before re-apply", async () => {
+    const payload = makePayload();
+    payload.apps[0] = {
+      ...payload.apps[0],
+      cicd_onboarding_status: "rejected_create",
+      cicd_onboarding_review_note: "上次被拒绝",
+    };
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    const postMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("fetch-preview")) {
+        return {
+          git_url: "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_aa",
+          git_branch: "main",
+          needs_network: false,
+          app_info_unavailable: false,
+          app_info_error: null,
+          app_version: "1.0",
+          x86_chips: "C500",
+          arm_chips: "",
+          python_label: "3.10",
+          pytorch_label: "",
+          os: "ubuntu20.04",
+          arch: "amd64",
+          commit_id: "abc123",
+          parsed: { app_version: "1.0" },
+          retry_existing_app_id: "app1",
+          retry_existing_app_name: "AlphaApp",
+          retry_onboarding_status: "rejected_create",
+          retry_review_note: "上次被拒绝",
+        };
+      }
+      return { ok: true, app_id: "app1", request_id: 3 };
+    });
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(postMock);
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("new-app-btn"));
+    fireEvent.click(screen.getByTestId("new-app-btn"));
+    await waitFor(() => screen.getByTestId("new-app-dialog"));
+
+    fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "AlphaApp" } });
+    fireEvent.change(screen.getByLabelText(/仓库名 /), { target: { value: "hpc_aa" } });
+    fireEvent.change(screen.getByLabelText(/分支 /), { target: { value: "main" } });
+    fireEvent.click(screen.getByTestId("new-app-fetch"));
+
+    await waitFor(() => screen.getByTestId("new-app-submit"));
+    expect(screen.getByTestId("new-app-dialog").textContent).toContain("曾提交新建 App 申请");
+    expect(screen.getByTestId("new-app-dialog").textContent).toContain("重新申请");
+    fireEvent.click(screen.getByTestId("new-app-submit"));
+    await waitFor(() => {
+      const createCall = postMock.mock.calls.find((call) => call[0] === "/api/cicd/apps/new");
+      expect(createCall).toBeTruthy();
+      expect((createCall![1] as Record<string, unknown>).app_info_commit_id).toBe("abc123");
     });
   });
 });

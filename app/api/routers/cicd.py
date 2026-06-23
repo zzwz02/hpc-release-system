@@ -405,6 +405,7 @@ async def post_cicd_apps_fetch_preview(
         repo_name=body.get("repo_name", ""),
         branch=body.get("branch", ""),
         submitter_role=role,
+        official_name=body.get("official_name", ""),
     )
     return result
 
