@@ -625,23 +625,23 @@ def update_snapshot(
                     user=actor,
                     role=role,
                     scope="all_unlocked" if forced_decision_sync else "later",
+                    defer_apply=defer_decision_until_cicd_delivery,
                 )
                 response["decision_sync"]["forced"] = forced_decision_sync
                 if defer_decision_until_cicd_delivery and cicd_req is not None:
                     from app.services import cicd_service as _cicd_svc
-                    rollback_entries = [
+                    deferred_entries = [
                         {
                             "release_id": item["release_id"],
-                            "previous_decision": item["previous_decision"],
-                            "applied_decision": item["resulting_decision"],
+                            "target_decision": item["resulting_decision"],
                         }
                         for item in response["decision_sync"].get("applied", [])
                         if item.get("changed")
                     ]
-                    cicd_req = _cicd_svc.attach_decision_sync_rollback(
+                    cicd_req = _cicd_svc.attach_deferred_release_decisions(
                         conn,
                         cicd_req["id"],
-                        rollback_entries,
+                        deferred_entries,
                     )
                     response["cicd_sync"]["request"] = cicd_req
     return response
@@ -660,6 +660,7 @@ def sync_decision_to_later_releases(
     user: str = "system",
     role: str = "system",
     scope: str = "later",
+    defer_apply: bool = False,
 ) -> dict:
     """Apply a release_decision to related releases.
 
@@ -673,6 +674,9 @@ def sync_decision_to_later_releases(
       - ``scope="later"`` keeps the legacy optional behavior.
       - ``scope="all_unlocked"`` is for Running/Stopped boundary changes and
         visits every other release, including earlier ones.
+
+    When ``defer_apply`` is true, the same target list is returned but snapshots
+    are left unchanged so CICD delivery can apply every release at once.
 
     Response shape mirrors core ({"applied": [...], "skipped": [...]}) but each
     applied entry is extended with its ``resulting_decision``.
@@ -712,7 +716,7 @@ def sync_decision_to_later_releases(
                     snapshot.get("release_decision", "release")
                 )
                 changed = previous != resulting
-                if changed:
+                if changed and not defer_apply:
                     snapshot["release_decision"] = resulting
                     snapshot["missing_items"] = _missing_items_for(
                         core.get_app(conn, app_id), snapshot
@@ -727,7 +731,7 @@ def sync_decision_to_later_releases(
                         "changed": changed,
                     }
                 )
-            if result["applied"]:
+            if result["applied"] and not defer_apply:
                 target_label = "所有未锁定 release" if scope == "all_unlocked" else "后续 release"
                 core.audit(
                     conn,

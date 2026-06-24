@@ -320,7 +320,7 @@ def test_update_snapshot_forces_all_release_sync_across_running_boundary(temp_db
 
 
 @pytest.mark.parametrize("finish", ["reject", "cancel"])
-def test_rejected_or_cancelled_running_upgrade_rolls_back_synced_releases(temp_db, finish):
+def test_rejected_or_cancelled_running_upgrade_leaves_deferred_releases_unchanged(temp_db, finish):
     conn = temp_db
     base_id, app_id, rels = _seed_chain(conn)
     for rid in (base_id, *rels.values()):
@@ -348,10 +348,15 @@ def test_rejected_or_cancelled_running_upgrade_rolls_back_synced_releases(temp_d
         )
 
     req_id = resp["cicd_sync"]["request"]["id"]
-    assert core.get_release(conn, base_id)["snapshots"][app_id]["release_decision"] == "stopped"
-    assert core.get_release(conn, rels["before"])["snapshots"][app_id]["release_decision"] == "release"
-    assert core.get_release(conn, rels["frozen"])["snapshots"][app_id]["release_decision"] == "cicd_only"
-    assert core.get_release(conn, rels["pastdoc"])["snapshots"][app_id]["release_decision"] == "cicd_only"
+    applied = {a["release_id"]: a["resulting_decision"] for a in resp["decision_sync"]["applied"]}
+    assert applied == {
+        rels["before"]: "release",
+        rels["frozen"]: "cicd_only",
+        rels["pastdoc"]: "cicd_only",
+    }
+    for rid in (base_id, *rels.values()):
+        snap = core.get_release(conn, rid)["snapshots"][app_id]
+        assert snap["release_decision"] == "stopped"
 
     if finish == "reject":
         cicd_service.reject_request(
@@ -367,6 +372,98 @@ def test_rejected_or_cancelled_running_upgrade_rolls_back_synced_releases(temp_d
     for rid in (base_id, *rels.values()):
         snap = core.get_release(conn, rid)["snapshots"][app_id]
         assert snap["release_decision"] == "stopped"
+
+
+def test_running_upgrade_applies_all_releases_on_immediate_approval(temp_db):
+    conn = temp_db
+    base_id, app_id, rels = _seed_chain(conn)
+    for rid in (base_id, *rels.values()):
+        core.update_snapshot(
+            conn,
+            rid,
+            app_id,
+            lambda snap: snap.update({"release_decision": "stopped"}),
+            skip_doc_deadline=True,
+        )
+
+    with mock.patch("release_system.core.beijing_now", return_value=NOW):
+        resp = app_service.update_snapshot(
+            conn,
+            base_id,
+            app_id,
+            user="rm",
+            role="RM",
+            fields={
+                "release_id": base_id,
+                "app_id": app_id,
+                "snapshot": {"release_decision": "release"},
+                "sync_decision": False,
+            },
+        )
+
+    cicd_service.approve_request(
+        conn,
+        resp["cicd_sync"]["request"]["id"],
+        reviewer="rm",
+        reviewer_role="RM",
+    )
+
+    assert core.get_release(conn, base_id)["snapshots"][app_id]["release_decision"] == "release"
+    assert core.get_release(conn, rels["before"])["snapshots"][app_id]["release_decision"] == "release"
+    assert core.get_release(conn, rels["frozen"])["snapshots"][app_id]["release_decision"] == "cicd_only"
+    assert core.get_release(conn, rels["pastdoc"])["snapshots"][app_id]["release_decision"] == "cicd_only"
+
+
+def test_running_upgrade_applies_all_releases_on_spd_delivery(temp_db):
+    conn = temp_db
+    base_id, app_id, rels = _seed_chain(conn)
+    for rid in (base_id, *rels.values()):
+        core.update_snapshot(
+            conn,
+            rid,
+            app_id,
+            lambda snap: snap.update({"release_decision": "stopped"}),
+            skip_doc_deadline=True,
+        )
+
+    with mock.patch("release_system.core.beijing_now", return_value=NOW):
+        resp = app_service.update_snapshot(
+            conn,
+            base_id,
+            app_id,
+            user="rm",
+            role="RM",
+            fields={
+                "release_id": base_id,
+                "app_id": app_id,
+                "snapshot": {"release_decision": "release"},
+                "sync_decision": False,
+            },
+        )
+
+    req_id = resp["cicd_sync"]["request"]["id"]
+    cicd_service.approve_request(
+        conn,
+        req_id,
+        reviewer="rm",
+        reviewer_role="RM",
+        approval_mode="dispatch_spd",
+    )
+    for rid in (base_id, *rels.values()):
+        snap = core.get_release(conn, rid)["snapshots"][app_id]
+        assert snap["release_decision"] == "stopped"
+
+    cicd_service.deliver_request(
+        conn,
+        req_id,
+        deliverer="spd",
+        deliverer_role="SPD",
+    )
+
+    assert core.get_release(conn, base_id)["snapshots"][app_id]["release_decision"] == "release"
+    assert core.get_release(conn, rels["before"])["snapshots"][app_id]["release_decision"] == "release"
+    assert core.get_release(conn, rels["frozen"])["snapshots"][app_id]["release_decision"] == "cicd_only"
+    assert core.get_release(conn, rels["pastdoc"])["snapshots"][app_id]["release_decision"] == "cicd_only"
 
 
 def test_running_downgrade_decision_sync_request_cannot_be_rejected(temp_db):

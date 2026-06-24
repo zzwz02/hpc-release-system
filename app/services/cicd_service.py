@@ -54,6 +54,7 @@ _CICD_FIRST_ACTION_FIELD = "_cicd_first_action"
 _CICD_FIRST_TARGET_DECISION_FIELD = "_cicd_first_target_decision"
 _DECISION_SYNC_RELEASE_ID_FIELD = "_decision_sync_release_id"
 _DECISION_SYNC_TARGET_DECISION_FIELD = "_decision_sync_target_decision"
+_DECISION_SYNC_DEFERRED_RELEASES_FIELD = "_decision_sync_deferred_releases"
 _DECISION_SYNC_ROLLBACK_FIELD = "_decision_sync_rollback"
 _CICD_FIRST_ACTION_CREATED = "created"
 _CICD_FIRST_ACTION_ASSOCIATED = "associated"
@@ -63,6 +64,7 @@ _INTERNAL_PAYLOAD_FIELDS: frozenset[str] = frozenset(
         _CICD_FIRST_TARGET_DECISION_FIELD,
         _DECISION_SYNC_RELEASE_ID_FIELD,
         _DECISION_SYNC_TARGET_DECISION_FIELD,
+        _DECISION_SYNC_DEFERRED_RELEASES_FIELD,
         _DECISION_SYNC_ROLLBACK_FIELD,
     }
 )
@@ -487,7 +489,36 @@ def _apply_deferred_release_decision(
     if not snap or snap.get("release_decision") == decision:
         return
     snap["release_decision"] = decision
+    from app.services import app_service as _app_service
+
+    snap["missing_items"] = _app_service._missing_items_for(
+        apps_repo.get_app(conn, app_id) or {},
+        snap,
+    )
     snapshots_repo.save_snapshot(conn, release_id, app_id, snap)
+
+
+def _apply_deferred_release_decisions(
+    conn: sqlite3.Connection,
+    app_id: str,
+    entries: object,
+) -> None:
+    """Apply release decisions that were deferred behind one CICD request."""
+    if not isinstance(entries, list):
+        return
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        release_id = str(item.get("release_id") or "").strip()
+        target_decision = str(
+            item.get("target_decision")
+            or item.get("resulting_decision")
+            or item.get("applied_decision")
+            or ""
+        ).strip()
+        if not release_id or not target_decision:
+            continue
+        _apply_deferred_release_decision(conn, app_id, release_id, target_decision)
 
 
 def _status_change(payload: dict) -> tuple[str, str]:
@@ -582,6 +613,10 @@ def _apply_cicd_request(
     decision_sync_target_decision = str(
         payload.pop(_DECISION_SYNC_TARGET_DECISION_FIELD, "") or ""
     )
+    decision_sync_deferred_releases = payload.pop(
+        _DECISION_SYNC_DEFERRED_RELEASES_FIELD,
+        [],
+    )
     payload.pop(_DECISION_SYNC_ROLLBACK_FIELD, None)
     _validate_payload_fields(payload)
     if request_type == "create":
@@ -667,6 +702,11 @@ def _apply_cicd_request(
                     decision_sync_release_id,
                     decision_sync_target_decision,
                 )
+            _apply_deferred_release_decisions(
+                conn,
+                app_id,
+                decision_sync_deferred_releases,
+            )
             cicd_repo.set_request_task_id(conn, req_id, app_id)
             return app_id
         raise RuntimeError("CICD 修改申请缺少有效 app_id")
@@ -1434,6 +1474,53 @@ def attach_decision_sync_rollback(
     req = dict(row)
     payload = _json.loads(req["payload"] or "{}")
     payload[_DECISION_SYNC_ROLLBACK_FIELD] = rollback_entries
+    conn.execute(
+        "UPDATE cicd_task_requests SET payload=? WHERE id=?",
+        (_json.dumps(payload, ensure_ascii=False), req_id),
+    )
+    row = conn.execute(
+        "SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)
+    ).fetchone()
+    return _strip_request(dict(row))
+
+
+def attach_deferred_release_decisions(
+    conn: sqlite3.Connection,
+    req_id: int,
+    entries: list[dict],
+) -> dict:
+    """Attach deferred fan-out release decisions to an internal request payload."""
+    import json as _json
+
+    row = conn.execute(
+        "SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)
+    ).fetchone()
+    if not row:
+        raise RuntimeError("申请不存在")
+    req = dict(row)
+    payload = _json.loads(req["payload"] or "{}")
+    existing = payload.get(_DECISION_SYNC_DEFERRED_RELEASES_FIELD)
+    if not isinstance(existing, list):
+        existing = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        release_id = str(entry.get("release_id") or "").strip()
+        target_decision = str(
+            entry.get("target_decision")
+            or entry.get("resulting_decision")
+            or entry.get("applied_decision")
+            or ""
+        ).strip()
+        if not release_id or not target_decision:
+            continue
+        existing.append(
+            {
+                "release_id": release_id,
+                "target_decision": target_decision,
+            }
+        )
+    payload[_DECISION_SYNC_DEFERRED_RELEASES_FIELD] = existing
     conn.execute(
         "UPDATE cicd_task_requests SET payload=? WHERE id=?",
         (_json.dumps(payload, ensure_ascii=False), req_id),

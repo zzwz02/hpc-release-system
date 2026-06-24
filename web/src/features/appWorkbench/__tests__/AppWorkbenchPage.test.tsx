@@ -477,6 +477,59 @@ describe("AppWorkbenchPage F1 decision-sync dialog", () => {
     expect(screen.getByTestId("sync-row-rel-2").textContent).toContain("调整为 cicd_only");
   });
 
+  it("opens a forced sync dialog on the latest release when stopped is raised to Running", async () => {
+    const older = makeReleaseSummary();
+    const latest: ReleaseSummary = {
+      ...makeReleaseSummary(),
+      id: "rel-2",
+      name: "3.1",
+      created_at: "2026-02-01",
+    };
+    const currentRelease: ReleaseDetail = {
+      ...makeRelease({ app1: makeSnap("app1", { release_decision: "stopped" }) }),
+      id: latest.id,
+      name: latest.name,
+      created_at: latest.created_at,
+    };
+    const payload = makePayload({
+      releases: [older, latest],
+      release: currentRelease,
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    const postMock = vi.fn((url: string) => {
+      if (url.includes("decision-sync/preview")) {
+        return Promise.resolve({
+          decision: "release",
+          forced: true,
+          scope: "all_unlocked",
+          releases: [
+            { release_id: "rel-1", release_name: "3.0", phase_label: "App 冻结前",
+              resulting_decision: "release", skipped: false },
+          ],
+        });
+      }
+      return Promise.resolve({ snapshot: {}, missing_items: [] });
+    });
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(postMock);
+
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "release" } });
+    fireEvent.click(screen.getByText("保存"));
+
+    await waitFor(() => screen.getByTestId("decision-sync-dialog"));
+    expect(postMock).toHaveBeenCalledWith("/api/apps/decision-sync/preview", {
+      release_id: "rel-2",
+      app_id: "app1",
+      decision: "release",
+    });
+    expect(screen.getByTestId("decision-sync-dialog").textContent).toContain("必须同步 release 决策");
+    expect(screen.getByTestId("sync-row-rel-1").textContent).toContain("调整为 release");
+    expect(screen.queryByTestId("sync-local-only")).toBeNull();
+    expect(postMock.mock.calls.find((c) => c[0] === "/api/apps/update")).toBeFalsy();
+  });
+
   it("shows the gated cicd_only downgrade row distinctly", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
     (apiPost as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {

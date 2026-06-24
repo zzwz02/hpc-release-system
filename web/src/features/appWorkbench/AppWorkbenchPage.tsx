@@ -1619,14 +1619,14 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     const snapshotUpdate = buildSnapshotUpdate(confirmOwner);
     const newDecision = form.release_decision;
 
-    // F1: when the release_decision changed AND there are related unlocked
-    // releases containing this app, show the decision-sync dialog instead of
-    // saving straight away. Running/Stopped boundary changes are mandatory.
+    // F1: optional sync only matters when there are later releases. Running/
+    // Stopped boundary changes are mandatory and may target earlier releases too,
+    // so they must always ask the backend preview.
     if (newDecision !== snap.release_decision) {
       const idx = releases.findIndex((r) => r.id === release.id);
       const hasLater = idx >= 0 && idx < releases.length - 1;
       const forcedSync = crossesDecisionRuntimeBoundary(snap.release_decision, newDecision);
-      if (hasLater) {
+      if (hasLater || forcedSync) {
         try {
           const preview = await apiPost<DecisionSyncPreview>("/api/apps/decision-sync/preview", {
             release_id: release.id,
