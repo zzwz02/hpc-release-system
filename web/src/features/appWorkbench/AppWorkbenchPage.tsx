@@ -310,6 +310,28 @@ function requestMatchesApp(req: CicdRequest, app: App): boolean {
     reqBranch === String(app.git_branch ?? "").trim();
 }
 
+function isOpenCreateRequest(req: CicdRequest): boolean {
+  return req.request_type === "create" &&
+    (req.status === "pending" || ["pending", "returned"].includes(req.delivery_status ?? ""));
+}
+
+function isOpenJiraModifyRequest(req: CicdRequest): boolean {
+  return req.request_type === "modify" &&
+    !!req.jira_id &&
+    (req.status === "pending" || ["pending", "returned"].includes(req.delivery_status ?? ""));
+}
+
+function isReplaceablePendingModifyRequest(req: CicdRequest): boolean {
+  return req.request_type === "modify" &&
+    req.origin === "cicd_workbench" &&
+    req.status === "pending" &&
+    !req.jira_id;
+}
+
+function jiraModifyBlockMessage(req: CicdRequest): string {
+  return `已有 Jira 申请 #${req.id} / ${req.jira_id} 正在交付，不能提交新的 CICD 修改。请先让 SPD 退回需求，再由 RM 在待交付页拒绝旧申请。`;
+}
+
 function uniqueCicdRequestCount(requests: CicdRequest[]): number {
   return new Set(
     requests.map((req) => req.id ?? `${req.request_type}-${req.task_id}-${req.submitted_at}`),
@@ -1149,6 +1171,8 @@ function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit,
   const statusCls = status === "Running" ? "ok" : "warnp";
   const disabled = !editMode || !canEdit;
   const onboardingLabel = cicdOnboardingLabel(app);
+  const openCreate = pendingRequests.find(isOpenCreateRequest);
+  const openJiraModify = pendingRequests.find(isOpenJiraModifyRequest);
 
   return (
     <div data-testid="cicd-link-card" style={{ display: "flex", flexDirection: "column", gap: 12, padding: "4px 0" }}>
@@ -1178,6 +1202,18 @@ function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit,
       {app.cicd_onboarding_status === "cancelled_create" && (
         <div className="banner warnp" data-testid="app-cicd-cancelled-banner" style={{ margin: 0 }}>
           <b>CICD 创建申请已取消</b>
+        </div>
+      )}
+
+      {openCreate && (
+        <div className="banner warnp" data-testid="app-cicd-create-block-banner" style={{ margin: 0 }}>
+          CICD 新建申请 #{openCreate.id} 未完成，不能提交新的 CICD 修改。
+        </div>
+      )}
+
+      {openJiraModify && (
+        <div className="banner warnp" data-testid="app-cicd-jira-block-banner" style={{ margin: 0 }}>
+          {jiraModifyBlockMessage(openJiraModify)}
         </div>
       )}
 
@@ -1567,6 +1603,10 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       await submitAppCicdChange();
       return;
     }
+    if (decisionSyncBlockedReason) {
+      setSaveErr(decisionSyncBlockedReason);
+      return;
+    }
     const descCount = appDescriptionCount(form.description);
     if (descCount > APP_DESCRIPTION_LIMIT) {
       setSaveErr(`描述不能超过${APP_DESCRIPTION_LIMIT}字（当前 ${descCount}/${APP_DESCRIPTION_LIMIT}）`);
@@ -1667,11 +1707,30 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
           return;
         }
       }
+      const openCreate = appOpenCicd.find(isOpenCreateRequest);
+      if (openCreate) {
+        setSaveErr(`该 app 已有 CICD 新建申请 #${openCreate.id} 未完成，不能提交新的 CICD 修改；请等待新建申请审批/交付完成后再修改。`);
+        return;
+      }
+      const openJiraModify = appOpenCicd.find(isOpenJiraModifyRequest);
+      if (openJiraModify) {
+        setSaveErr(jiraModifyBlockMessage(openJiraModify));
+        return;
+      }
+      const replaceable = appOpenCicd.filter(isReplaceablePendingModifyRequest);
+      const replaceOpen = replaceable.length > 0;
+      if (replaceOpen) {
+        const ids = replaceable.map((req) => `#${req.id}`).join("、");
+        if (!window.confirm(`已有待审批 CICD 修改申请 ${ids}。继续将取消旧申请，并只提交当前改动作为新申请。`)) {
+          return;
+        }
+      }
       await submitCicdRequest({
         task_id: app.id,
         request_type: "modify",
         payload: diff,
         source: "app_workbench",
+        replace_open: replaceOpen,
       });
       setDirty(false);
       setEditMode(false);
@@ -1850,6 +1909,20 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       .filter((req) => requestMatchesApp(req, app))
       .sort((a, b) => String(b.submitted_at || "").localeCompare(String(a.submitted_at || "")))
     : [];
+  const cicdOpenCreate = appOpenCicd.find(isOpenCreateRequest);
+  const cicdOpenJiraModify = appOpenCicd.find(isOpenJiraModifyRequest);
+  const cicdModifyBlockedReason = cicdOpenCreate
+    ? `该 app 已有 CICD 新建申请 #${cicdOpenCreate.id} 未完成，不能提交新的 CICD 修改；请等待新建申请审批/交付完成后再修改`
+    : cicdOpenJiraModify
+    ? jiraModifyBlockMessage(cicdOpenJiraModify)
+    : "";
+  const decisionChangeNeedsCicdSync = crossesDecisionRuntimeBoundary(snap.release_decision, form.release_decision);
+  const decisionSyncBlockedReason = decisionChangeNeedsCicdSync && cicdModifyBlockedReason
+    ? cicdModifyBlockedReason
+    : "";
+  const activeSaveBlockedReason = detailTab === "cicd"
+    ? cicdModifyBlockedReason
+    : decisionSyncBlockedReason;
   const decisionSyncReq = appOpenCicd.find((req) => {
     const payload = (req.payload ?? {}) as Record<string, unknown>;
     return req.origin === "release_decision_sync" && !!payload.status;
@@ -2337,10 +2410,20 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
         {canEditDetail && !canRetryCreate && !editMode && (
           <button className="btn primary" onClick={() => setEditMode(true)}>✎ 修改</button>
         )}
+        {editMode && activeSaveBlockedReason && (
+          <span className="foot-blocker" data-testid="app-save-blocked-reason">
+            {activeSaveBlockedReason}
+          </span>
+        )}
         {canEditDetail && editMode && userIsRM && (
           <>
             <button className="btn" onClick={() => { setEditMode(false); setDirty(false); snap && app && setForm(snapshotToForm(snap, app)); }}>取消</button>
-            <button className="btn primary" onClick={() => void handleSave(false)} disabled={saving}>
+            <button
+              className="btn primary"
+              onClick={() => void handleSave(false)}
+              disabled={saving || !!activeSaveBlockedReason}
+              title={activeSaveBlockedReason || undefined}
+            >
               {detailTab === "cicd" ? "提交 CICD 变更申请" : "保存"}
             </button>
           </>
@@ -2348,7 +2431,16 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
         {canEditDetail && editMode && userIsOwner && (
           <>
             <button className="btn" onClick={() => { setEditMode(false); setDirty(false); snap && app && setForm(snapshotToForm(snap, app)); }}>取消</button>
-            <button className="btn good" onClick={() => void handleSave(true)} disabled={saving} title={detailTab === "cicd" ? "提交 CICD 变更申请，等待 RM 审批" : "保存当前内容，并确认本 app 的发布信息已补齐"}>
+            <button
+              className="btn good"
+              onClick={() => void handleSave(true)}
+              disabled={saving || !!activeSaveBlockedReason}
+              title={detailTab === "cicd"
+                ? (activeSaveBlockedReason || "提交 CICD 变更申请，等待 RM 审批")
+                : activeSaveBlockedReason
+                ? activeSaveBlockedReason
+                : "保存当前内容，并确认本 app 的发布信息已补齐"}
+            >
               {detailTab === "cicd" ? "提交 CICD 变更申请" : "✓ 保存并提交 Owner 确认"}
             </button>
           </>

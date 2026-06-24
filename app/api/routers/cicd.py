@@ -152,6 +152,7 @@ async def post_submit(
         submitter_role=role,
         submitter_display=user.get("display_name", ""),
         source=body.get("source", "cicd_workbench"),
+        replace_open=bool(body.get("replace_open")),
     )
     return {"ok": True, "request": req}
 
@@ -308,6 +309,26 @@ async def post_return_delivery(
         returner=user["username"],
         returner_role=user["role"],
         reason=body.get("reason", ""),
+    )
+    return {"ok": True, "request": req}
+
+
+@router.post("/requests/reject-returned")
+async def post_reject_returned(
+    request: Request,
+    user: dict = Depends(require_login),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    """POST /api/cicd/requests/reject-returned — RM rejects a returned delivery."""
+    body: dict = await request.json()
+    if user["role"] not in cicd_service.CICD_APPROVER_ROLES:
+        raise AuthzError("只有 RM 可以拒绝")
+    req = cicd_service.reject_returned_request(
+        conn,
+        int(body["request_id"]),
+        reviewer=user["username"],
+        reviewer_role=user["role"],
+        review_note=body.get("review_note", ""),
     )
     return {"ok": True, "request": req}
 

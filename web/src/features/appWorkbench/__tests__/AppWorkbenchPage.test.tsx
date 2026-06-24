@@ -18,7 +18,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { AppWorkbenchPage } from "../AppWorkbenchPage";
-import type { StatePayload, App, Snapshot, ReleaseDetail, ReleaseSummary } from "../../../types";
+import type { StatePayload, App, Snapshot, ReleaseDetail, ReleaseSummary, CicdRequest } from "../../../types";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -654,6 +654,39 @@ function mockApiGetForAppCicd(payload: StatePayload = makePayload()) {
   (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
 }
 
+function makeCicdRequest(overrides: Partial<CicdRequest> = {}): CicdRequest {
+  return {
+    id: 5,
+    task_id: "app1",
+    app_id: "app1",
+    request_type: "modify",
+    payload: { notes: { old: "", new: "x" } },
+    submitter: "alice",
+    submitter_display: "Alice",
+    submitted_at: "2026-06-18 12:00:00",
+    status: "pending",
+    reviewer: "",
+    reviewed_at: "",
+    review_note: "",
+    is_self_approved: 0,
+    approval_mode: "dispatch_spd",
+    delivery_status: "",
+    jira_id: "",
+    jira_auto_created: 0,
+    delivered_by: "",
+    delivered_at: "",
+    returned_reason: "",
+    returned_at: "",
+    task_app_name: "AlphaApp",
+    task_app_version: "1.0",
+    task_repo_name: "repo/app1",
+    task_branch: "main",
+    task_status: "Running",
+    origin: "cicd_workbench",
+    ...overrides,
+  };
+}
+
 // Helper: click the CICD sub-tab in detail panel
 async function clickCicdTab() {
   await waitFor(() => screen.getByTestId("detail-tab-cicd"));
@@ -1005,6 +1038,64 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
     });
   });
 
+  it("blocks App CICD submit when an open Jira delivery exists", async () => {
+    const payload = payloadTwoReleases();
+    const jiraReq = makeCicdRequest({
+      id: 12,
+      status: "approved",
+      delivery_status: "returned",
+      jira_id: "SPD-1615",
+      returned_reason: "AA",
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.startsWith("/api/cicd/requests?status=pending")) return Promise.resolve({ requests: [] });
+      if (url.startsWith("/api/cicd/deliveries")) return Promise.resolve({ deliveries: [jiraReq] });
+      if (url.startsWith("/api/cicd/requests?since_days=")) return Promise.resolve({ requests: [jiraReq] });
+      return Promise.resolve(payload);
+    });
+    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, request: { id: 3 } });
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    await clickCicdTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("app-cicd-jira-block-banner").textContent).toContain("SPD-1615");
+    });
+    const button = screen.getByRole("button", { name: "提交 CICD 变更申请" }) as HTMLButtonElement;
+    expect(button).toBeDisabled();
+  });
+
+  it("confirms replacement of no-Jira pending modify and sends replace_open", async () => {
+    const confirmSpy = vi.fn(() => true);
+    vi.stubGlobal("confirm", confirmSpy);
+    const payload = payloadTwoReleases();
+    const pendingReq = makeCicdRequest({ id: 13, status: "pending", jira_id: "", delivery_status: "" });
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.startsWith("/api/cicd/requests?status=pending")) return Promise.resolve({ requests: [pendingReq] });
+      if (url.startsWith("/api/cicd/deliveries")) return Promise.resolve({ deliveries: [] });
+      if (url.startsWith("/api/cicd/requests?since_days=")) return Promise.resolve({ requests: [pendingReq] });
+      return Promise.resolve(payload);
+    });
+    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, request: { id: 14 } });
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    await clickCicdTab();
+    fireEvent.change(screen.getByTestId("field-cicd-notes"), { target: { value: "replace me" } });
+    fireEvent.click(screen.getByText("提交 CICD 变更申请"));
+
+    await waitFor(() => {
+      expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("取消旧申请"));
+      expect(apiPost).toHaveBeenCalledWith("/api/cicd/requests/submit", expect.objectContaining({
+        task_id: "app1",
+        request_type: "modify",
+        source: "app_workbench",
+        replace_open: true,
+      }));
+    });
+  });
+
   it("shows short Gerrit path in App CICD tab without submitting a repo diff", async () => {
     const payload = payloadTwoReleases();
     payload.apps[0] = {
@@ -1115,6 +1206,98 @@ describe("AppWorkbenchPage W2 decision-change App CICD preview", () => {
       expect(screen.getByTestId("cicd-decision-preview")).toBeInTheDocument();
     });
     expect(screen.getByTestId("cicd-decision-preview").textContent).toContain("Running");
+  });
+
+  it("blocks stopped-to-running decision save when a CICD create request is open", async () => {
+    const stoppedPayload = makePayload();
+    stoppedPayload.release!.snapshots.app1.release_decision = "stopped";
+    const createReq = makeCicdRequest({
+      id: 59,
+      request_type: "create",
+      status: "pending",
+      delivery_status: "",
+      payload: { app_id: "app1" },
+      task_status: "Stopped",
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.startsWith("/api/cicd/requests?status=pending")) return Promise.resolve({ requests: [createReq] });
+      if (url.startsWith("/api/cicd/deliveries")) return Promise.resolve({ deliveries: [] });
+      if (url.startsWith("/api/cicd/requests?since_days=")) return Promise.resolve({ requests: [createReq] });
+      return Promise.resolve(stoppedPayload);
+    });
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1WithCicd();
+
+    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "cicd_only" } });
+
+    const footerReason = await screen.findByTestId("app-save-blocked-reason");
+    expect(footerReason).toHaveTextContent("CICD 新建申请 #59 未完成");
+    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  it("blocks stopped-to-running decision save when a Jira-backed sync delivery is open", async () => {
+    const stoppedPayload = makePayload();
+    stoppedPayload.release!.snapshots.app1.release_decision = "stopped";
+    const jiraReq = makeCicdRequest({
+      id: 62,
+      status: "approved",
+      delivery_status: "pending",
+      jira_id: "HPC-222",
+      origin: "release_decision_sync",
+      payload: { status: { old: "Stopped", new: "Running" } },
+      task_status: "Stopped",
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.startsWith("/api/cicd/requests?status=pending")) return Promise.resolve({ requests: [] });
+      if (url.startsWith("/api/cicd/deliveries")) return Promise.resolve({ deliveries: [jiraReq] });
+      if (url.startsWith("/api/cicd/requests?since_days=")) return Promise.resolve({ requests: [jiraReq] });
+      return Promise.resolve(stoppedPayload);
+    });
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1WithCicd();
+
+    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "release" } });
+
+    const footerReason = await screen.findByTestId("app-save-blocked-reason");
+    expect(footerReason).toHaveTextContent("HPC-222");
+    expect(footerReason).toHaveTextContent("待交付页拒绝旧申请");
+    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  it("blocks running-to-stopped decision save when a Jira-backed modify delivery is open", async () => {
+    const payload = makePayload();
+    const jiraReq = makeCicdRequest({
+      id: 60,
+      status: "approved",
+      delivery_status: "pending",
+      jira_id: "HPC-222",
+      origin: "cicd_workbench",
+      payload: {
+        repo_name: { old: "hpc_abacus2", new: "hpc_abacus" },
+        branch: { old: "maca2", new: "maca" },
+      },
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.startsWith("/api/cicd/requests?status=pending")) return Promise.resolve({ requests: [] });
+      if (url.startsWith("/api/cicd/deliveries")) return Promise.resolve({ deliveries: [jiraReq] });
+      if (url.startsWith("/api/cicd/requests?since_days=")) return Promise.resolve({ requests: [jiraReq] });
+      return Promise.resolve(payload);
+    });
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1WithCicd();
+
+    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "stopped" } });
+
+    const footerReason = await screen.findByTestId("app-save-blocked-reason");
+    expect(footerReason).toHaveTextContent("HPC-222");
+    expect(footerReason).toHaveTextContent("待交付页拒绝旧申请");
+    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+    expect(apiPost).not.toHaveBeenCalled();
   });
 
   it("shows decision preview without any legacy CICD task", async () => {

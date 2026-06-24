@@ -10,7 +10,9 @@ Pydantic field validation.
 """
 from __future__ import annotations
 
+import contextlib
 import sqlite3
+import threading
 
 import release_system.core as core
 from app.api.errors import AuthzError
@@ -23,6 +25,28 @@ from app.services.authz import (
 from app.services.authz import (
     require_owner_or_rm_with_owners,
 )
+
+_core_now_patch_lock = threading.RLock()
+
+
+@contextlib.contextmanager
+def _use_beijing_time():
+    """Make frozen core audit writes use naive Beijing timestamps.
+
+    ``release_system.core.audit`` calls the module-level ``core.now()``, which
+    still returns UTC ISO strings because core.py is a frozen legacy reference.
+    FastAPI runtime timestamps must be naive Beijing strings, so patch the
+    module global only while app-service writes execute.
+    """
+    from app.timeutil import beijing_timestamp
+
+    with _core_now_patch_lock:
+        original_now = core.now
+        core.now = beijing_timestamp
+        try:
+            yield
+        finally:
+            core.now = original_now
 
 # ---------------------------------------------------------------------------
 # State / list helpers (for GET /api/state)
@@ -278,6 +302,13 @@ def update_snapshot(
                 current_decision,
                 new_decision_norm,
             )
+    if (
+        requested_decision != current_decision
+        and decision_sync_domain.crosses_runtime_boundary(current_decision, requested_decision)
+    ):
+        from app.services import cicd_service as _cicd_svc
+
+        _cicd_svc.ensure_can_open_cicd_modify_request(conn, app_id)
 
     owner_meta = {"type", "official_url", "description"}
     doc_labels = {
@@ -540,78 +571,79 @@ def update_snapshot(
 
     # Execute inside a single transaction (mirrors server.py:929-939)
     response: dict = {}
-    with core.transaction(conn):
-        update_app_if_needed()
-        normalize_community_update(snap_now)
-        updated = core.update_snapshot(conn, rid, aid, mutate, skip_doc_deadline=past_doc_deadline)
-        updated["missing_items"] = _missing_items_for(app, updated)
-        core.save_snapshot(conn, rid, aid, updated)
-        response = {
-            "snapshot": updated,
-            "missing_items": updated.get("missing_items", []),
-            "qa_status": updated.get("qa_status"),
-        }
-        cicd_req: dict | None = None
-        if requested_decision != current_decision:
-            # Ruling D: unconditionally sync decision → CICD task status inside
-            # the same transaction, so the sync request and the snapshot save are
-            # atomic. Phase gate already ran above (raises before we get here).
-            from app.services import cicd_service as _cicd_svc
-            cicd_req = _cicd_svc.sync_decision_to_cicd(
-                conn,
-                aid,
-                requested_decision,
-                submitter=actor,
-                current_status_override=_cicd_svc._DECISION_TO_CICD_STATUS.get(
-                    current_decision, ""
-                ),
-                release_id=rid,
-                apply_release_decision_on_delivery=defer_decision_until_cicd_delivery,
-            )
-            response["cicd_sync"] = {
-                "created": cicd_req is not None,
-                "request": cicd_req,
+    with _use_beijing_time():
+        with core.transaction(conn):
+            update_app_if_needed()
+            normalize_community_update(snap_now)
+            updated = core.update_snapshot(conn, rid, aid, mutate, skip_doc_deadline=past_doc_deadline)
+            updated["missing_items"] = _missing_items_for(app, updated)
+            core.save_snapshot(conn, rid, aid, updated)
+            response = {
+                "snapshot": updated,
+                "missing_items": updated.get("missing_items", []),
+                "qa_status": updated.get("qa_status"),
             }
-        forced_decision_sync = (
-            requested_decision != current_decision
-            and decision_sync_domain.crosses_runtime_boundary(current_decision, requested_decision)
-        )
-        if (
-            (body.get("sync_decision") or forced_decision_sync)
-            and requested_decision != current_decision
-        ):
-            # R3: use the new app-layer gating rule (NOT core's). core stays frozen.
-            if defer_decision_until_cicd_delivery and cicd_req is None:
-                raise RuntimeError(
-                    "已有未完成 CICD 运行状态变更申请，不能继续同步 release 决策"
-                )
-            response["decision_sync"] = sync_decision_to_later_releases(
-                conn,
-                rid,
-                aid,
-                requested_decision,
-                user=actor,
-                role=role,
-                scope="all_unlocked" if forced_decision_sync else "later",
-            )
-            response["decision_sync"]["forced"] = forced_decision_sync
-            if defer_decision_until_cicd_delivery and cicd_req is not None:
+            cicd_req: dict | None = None
+            if requested_decision != current_decision:
+                # Ruling D: unconditionally sync decision → CICD task status inside
+                # the same transaction, so the sync request and the snapshot save are
+                # atomic. Phase gate already ran above (raises before we get here).
                 from app.services import cicd_service as _cicd_svc
-                rollback_entries = [
-                    {
-                        "release_id": item["release_id"],
-                        "previous_decision": item["previous_decision"],
-                        "applied_decision": item["resulting_decision"],
-                    }
-                    for item in response["decision_sync"].get("applied", [])
-                    if item.get("changed")
-                ]
-                cicd_req = _cicd_svc.attach_decision_sync_rollback(
+                cicd_req = _cicd_svc.sync_decision_to_cicd(
                     conn,
-                    cicd_req["id"],
-                    rollback_entries,
+                    aid,
+                    requested_decision,
+                    submitter=actor,
+                    current_status_override=_cicd_svc._DECISION_TO_CICD_STATUS.get(
+                        current_decision, ""
+                    ),
+                    release_id=rid,
+                    apply_release_decision_on_delivery=defer_decision_until_cicd_delivery,
                 )
-                response["cicd_sync"]["request"] = cicd_req
+                response["cicd_sync"] = {
+                    "created": cicd_req is not None,
+                    "request": cicd_req,
+                }
+            forced_decision_sync = (
+                requested_decision != current_decision
+                and decision_sync_domain.crosses_runtime_boundary(current_decision, requested_decision)
+            )
+            if (
+                (body.get("sync_decision") or forced_decision_sync)
+                and requested_decision != current_decision
+            ):
+                # R3: use the new app-layer gating rule (NOT core's). core stays frozen.
+                if defer_decision_until_cicd_delivery and cicd_req is None:
+                    raise RuntimeError(
+                        "已有未完成 CICD 运行状态变更申请，不能继续同步 release 决策"
+                    )
+                response["decision_sync"] = sync_decision_to_later_releases(
+                    conn,
+                    rid,
+                    aid,
+                    requested_decision,
+                    user=actor,
+                    role=role,
+                    scope="all_unlocked" if forced_decision_sync else "later",
+                )
+                response["decision_sync"]["forced"] = forced_decision_sync
+                if defer_decision_until_cicd_delivery and cicd_req is not None:
+                    from app.services import cicd_service as _cicd_svc
+                    rollback_entries = [
+                        {
+                            "release_id": item["release_id"],
+                            "previous_decision": item["previous_decision"],
+                            "applied_decision": item["resulting_decision"],
+                        }
+                        for item in response["decision_sync"].get("applied", [])
+                        if item.get("changed")
+                    ]
+                    cicd_req = _cicd_svc.attach_decision_sync_rollback(
+                        conn,
+                        cicd_req["id"],
+                        rollback_entries,
+                    )
+                    response["cicd_sync"]["request"] = cicd_req
     return response
 
 
@@ -658,53 +690,54 @@ def sync_decision_to_later_releases(
         if scope == "all_unlocked"
         else releases[idx + 1:]
     )
-    with core.transaction(conn):
-        for r in target_releases:
-            rid = r["id"]
-            if r.get("released_locked"):
-                result["skipped"].append(
-                    {"release_id": rid, "release_name": r["name"], "reason": "已最终锁定"}
+    with _use_beijing_time():
+        with core.transaction(conn):
+            for r in target_releases:
+                rid = r["id"]
+                if r.get("released_locked"):
+                    result["skipped"].append(
+                        {"release_id": rid, "release_name": r["name"], "reason": "已最终锁定"}
+                    )
+                    continue
+                release = core.get_release(conn, rid)
+                snapshot = release["snapshots"].get(app_id)
+                if snapshot is None:
+                    result["skipped"].append(
+                        {"release_id": rid, "release_name": r["name"], "reason": "本 release 无此 app"}
+                    )
+                    continue
+                phase = core.current_phase(release)
+                resulting = decision_sync_domain.resolve_synced_decision(decision, phase)
+                previous = core.normalize_release_decision(
+                    snapshot.get("release_decision", "release")
                 )
-                continue
-            release = core.get_release(conn, rid)
-            snapshot = release["snapshots"].get(app_id)
-            if snapshot is None:
-                result["skipped"].append(
-                    {"release_id": rid, "release_name": r["name"], "reason": "本 release 无此 app"}
+                changed = previous != resulting
+                if changed:
+                    snapshot["release_decision"] = resulting
+                    snapshot["missing_items"] = _missing_items_for(
+                        core.get_app(conn, app_id), snapshot
+                    )
+                    core.save_snapshot(conn, rid, app_id, snapshot)
+                result["applied"].append(
+                    {
+                        "release_id": rid,
+                        "release_name": r["name"],
+                        "previous_decision": previous,
+                        "resulting_decision": resulting,
+                        "changed": changed,
+                    }
                 )
-                continue
-            phase = core.current_phase(release)
-            resulting = decision_sync_domain.resolve_synced_decision(decision, phase)
-            previous = core.normalize_release_decision(
-                snapshot.get("release_decision", "release")
-            )
-            changed = previous != resulting
-            if changed:
-                snapshot["release_decision"] = resulting
-                snapshot["missing_items"] = _missing_items_for(
-                    core.get_app(conn, app_id), snapshot
+            if result["applied"]:
+                target_label = "所有未锁定 release" if scope == "all_unlocked" else "后续 release"
+                core.audit(
+                    conn,
+                    f"同步 release 决策（{decision}）到 {len(result['applied'])} 个{target_label}",
+                    user=user,
+                    role=role,
+                    app_id=app_id,
+                    release_id=from_release_id,
+                    event="sync_decision",
                 )
-                core.save_snapshot(conn, rid, app_id, snapshot)
-            result["applied"].append(
-                {
-                    "release_id": rid,
-                    "release_name": r["name"],
-                    "previous_decision": previous,
-                    "resulting_decision": resulting,
-                    "changed": changed,
-                }
-            )
-        if result["applied"]:
-            target_label = "所有未锁定 release" if scope == "all_unlocked" else "后续 release"
-            core.audit(
-                conn,
-                f"同步 release 决策（{decision}）到 {len(result['applied'])} 个{target_label}",
-                user=user,
-                role=role,
-                app_id=app_id,
-                release_id=from_release_id,
-                event="sync_decision",
-            )
     return result
 
 

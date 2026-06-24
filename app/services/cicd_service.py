@@ -779,6 +779,88 @@ def list_deliveries(
     return [_strip_request(r) for r in items]
 
 
+def _open_cicd_create_for_app(
+    conn: sqlite3.Connection,
+    app_id: str,
+) -> dict | None:
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM cicd_task_requests
+        WHERE request_type = 'create'
+          AND COALESCE(app_id, task_id) = ?
+          AND (
+            status = 'pending'
+            OR delivery_status IN ('pending', 'returned')
+          )
+        ORDER BY id
+        """,
+        (app_id,),
+    ).fetchall()
+    return dict(rows[0]) if rows else None
+
+
+def _open_jira_modify_for_app(
+    conn: sqlite3.Connection,
+    app_id: str,
+) -> dict | None:
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM cicd_task_requests
+        WHERE request_type = 'modify'
+          AND COALESCE(app_id, task_id) = ?
+          AND TRIM(COALESCE(jira_id, '')) <> ''
+          AND (
+            status = 'pending'
+            OR delivery_status IN ('pending', 'returned')
+          )
+        ORDER BY id
+        """,
+        (app_id,),
+    ).fetchall()
+    return dict(rows[0]) if rows else None
+
+
+def _replaceable_pending_modifies_for_app(
+    conn: sqlite3.Connection,
+    app_id: str,
+) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM cicd_task_requests
+        WHERE request_type = 'modify'
+          AND origin = 'cicd_workbench'
+          AND COALESCE(app_id, task_id) = ?
+          AND status = 'pending'
+          AND TRIM(COALESCE(jira_id, '')) = ''
+        ORDER BY id
+        """,
+        (app_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def ensure_can_open_cicd_modify_request(
+    conn: sqlite3.Connection,
+    app_id: str,
+) -> None:
+    """Reject new CICD modify requests while create/Jira workflows are open."""
+    create_req = _open_cicd_create_for_app(conn, app_id)
+    if create_req:
+        raise RuntimeError(
+            f"该 app 已有 CICD 新建申请 #{create_req['id']} 未完成，"
+            "不能提交新的 CICD 修改；请等待新建申请审批/交付完成后再修改"
+        )
+    jira_req = _open_jira_modify_for_app(conn, app_id)
+    if jira_req:
+        raise RuntimeError(
+            f"已有 Jira 申请 #{jira_req['id']} / {jira_req['jira_id']} 正在交付，"
+            "不能提交新的 CICD 修改。请先让 SPD 退回需求，再由 RM 在待交付页拒绝旧申请。"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Write functions
 # ---------------------------------------------------------------------------
@@ -794,6 +876,7 @@ def submit_request(
     submitter_role: str,
     submitter_display: str = "",
     source: str = "cicd_workbench",
+    replace_open: bool = False,
 ) -> dict:
     """Submit a CICD task create/modify request.
 
@@ -833,6 +916,18 @@ def submit_request(
     if request_type == "create" and not request_app_id:
         raise RuntimeError("CICD 创建申请必须关联有效 App")
     with transaction(conn):
+        replaced_request_ids: list[int] = []
+        if request_type == "modify":
+            if not request_app_id:
+                raise RuntimeError("CICD 修改申请必须关联有效 App")
+            ensure_can_open_cicd_modify_request(conn, str(request_app_id))
+            replaceable = _replaceable_pending_modifies_for_app(conn, str(request_app_id))
+            if replaceable and not replace_open:
+                ids = "、".join(f"#{row['id']}" for row in replaceable)
+                raise RuntimeError(
+                    f"该 app 已有待审批 CICD 修改申请 {ids}；"
+                    "继续提交将取消旧申请并只保留当前改动，请确认后重试"
+                )
         req_id = cicd_repo.insert_request(
             conn,
             task_id=request_app_id or task_id,
@@ -848,11 +943,31 @@ def submit_request(
             review_note="",
             is_self_approved=0,
         )
+        if request_type == "modify" and replace_open:
+            replaceable = _replaceable_pending_modifies_for_app(conn, str(request_app_id))
+            for old in replaceable:
+                if int(old["id"]) == int(req_id):
+                    continue
+                replaced_request_ids.append(int(old["id"]))
+                conn.execute(
+                    """UPDATE cicd_task_requests
+                       SET status='cancelled', reviewer=?, reviewed_at=?, review_note=?
+                       WHERE id=?""",
+                    (
+                        submitter,
+                        ts,
+                        f"被新的 CICD 修改申请 #{req_id} 替代",
+                        old["id"],
+                    ),
+                )
         row = conn.execute(
             "SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)
         ).fetchone()
     # Return raw row dict (payload as JSON string) — mirrors core.py:submit_cicd_request
-    return _strip_request(dict(row))
+    result = _strip_request(dict(row))
+    if replaced_request_ids:
+        result["cancelled_request_ids"] = replaced_request_ids
+    return result
 
 
 def approve_request(
@@ -1104,6 +1219,53 @@ def return_delivery(
     return _strip_request(dict(row))
 
 
+def reject_returned_request(
+    conn: sqlite3.Connection,
+    req_id: int,
+    *,
+    reviewer: str,
+    reviewer_role: str,
+    review_note: str,
+) -> dict:
+    """RM rejects an approved request after SPD returned it."""
+    if reviewer_role not in CICD_APPROVER_ROLES:
+        raise PermissionError("只有 RM 可以拒绝已退回的交付申请")
+    if not review_note or not review_note.strip():
+        raise ValueError("拒绝必须填写理由")
+    row = conn.execute(
+        "SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)
+    ).fetchone()
+    if not row:
+        raise RuntimeError("申请不存在")
+    req = dict(row)
+    if req.get("status") != "approved" or req.get("delivery_status") != "returned":
+        raise RuntimeError("只有已退回的待交付申请可以拒绝")
+    import json as _json
+
+    payload = _json.loads(req["payload"] or "{}")
+    if _is_release_decision_sync_stop_request(req, payload):
+        raise RuntimeError("降停止由 App release 决策决定，CICD 审批不能拒绝")
+    ts = beijing_timestamp()
+    with transaction(conn):
+        if _is_release_decision_sync_start_request(req, payload):
+            _rollback_deferred_decision_sync(
+                conn,
+                str(req.get("app_id") or req.get("task_id") or ""),
+                payload,
+            )
+        conn.execute(
+            """UPDATE cicd_task_requests
+               SET status='rejected', reviewer=?, reviewed_at=?, review_note=?,
+                   delivery_status=''
+               WHERE id=?""",
+            (reviewer, ts, review_note.strip(), req_id),
+        )
+        row = conn.execute(
+            "SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)
+        ).fetchone()
+    return _strip_request(dict(row))
+
+
 def re_dispatch_request(
     conn: sqlite3.Connection,
     req_id: int,
@@ -1222,6 +1384,7 @@ def sync_decision_to_cicd(
 
     if current_status == target_status:
         return None
+    ensure_can_open_cicd_modify_request(conn, app_id)
 
     # Idempotent guard: skip if there is already a pending modify touching status.
     if (

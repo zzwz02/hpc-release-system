@@ -78,6 +78,7 @@ export interface SubmitPayload {
   request_type: string;
   payload: Record<string, unknown>;
   source?: string;
+  replace_open?: boolean;
 }
 
 export function submitCicdRequest(body: SubmitPayload): Promise<CicdSubmitResponse> {
@@ -101,6 +102,13 @@ export function rejectCicdRequest(body: {
   review_note: string;
 }): Promise<CicdRejectResponse> {
   return apiPost<CicdRejectResponse>("/api/cicd/requests/reject", body);
+}
+
+export function rejectReturnedCicdRequest(body: {
+  request_id: number;
+  review_note: string;
+}): Promise<CicdRejectResponse> {
+  return apiPost<CicdRejectResponse>("/api/cicd/requests/reject-returned", body);
 }
 
 export function cancelCicdRequest(body: {

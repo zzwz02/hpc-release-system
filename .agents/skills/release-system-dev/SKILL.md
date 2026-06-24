@@ -8,6 +8,14 @@ description: Development standards for the HPC App 发布信息协作系统 (Fas
 This repo is a **FastAPI + React/Vite/TS rewrite** of a legacy single-file system. Follow these project
 conventions for every change unless the user explicitly overrides them.
 
+## 0. Read the repo docs first
+- Before changing code in this repo, read `README.md` for the current architecture, roles, release lifecycle,
+  CICD/App business rules, API map, test commands, and frozen-file policy. Treat `README.md` as the compact
+  product/system orientation and keep this skill focused on execution discipline.
+- For frontend work, also read `web/README-web.md`. For golden/parity work, also read `tests/golden/README.md`.
+- If a behavior change modifies a rule documented in `README.md`, update the README in the same change so future
+  agents load the correct context through this skill.
+
 ## 1. Architecture & where code goes
 - **Backend** = `app/`: thin routers (`app/api/routers/`) → services (`app/services/`, module-level functions
   taking `conn` first, owning orchestration + transaction boundaries + a single `ts` per op via
@@ -74,8 +82,14 @@ work directly.
   `release/cicd_only -> stopped` is a stop downgrade: the release decision takes effect immediately and the
   CICD request cannot be rejected or cancelled. CICD-first create starts snapshots as `stopped`; rejected or
   cancelled create requests leave the app visible with the reason, block duplicate `(git_url, branch)` creates,
-  and only allow same-name retry. CICD has no Abandoned/delete flow; retire/delete is handled through App
-  lifecycle. CICD 工作台 is read-only; CICD config changes enter from App 工作台 → CICD tab.
+  and only allow same-name retry. New CICD modify requests are blocked while the same app has an unfinished
+  CICD-first create request, or an unfinished Jira-backed modify delivery (`delivery_status` pending/returned);
+  no Jira issue is auto-cancelled. No-Jira pending modify requests may be replaced only with explicit
+  `replace_open=true` after the UI warns that old requests will be cancelled. Any Running/Stopped boundary
+  sync uses the same blockers and must not create `release_decision_sync` or change the snapshot when blocked.
+  RM can reject a returned delivery through the `reject-returned` endpoint only with a reason, preserving Jira
+  and return history and without applying the payload. CICD has no Abandoned/delete flow; retire/delete is
+  handled through App lifecycle. CICD 工作台 is read-only; CICD config changes enter from App 工作台 → CICD tab.
 
 ## 6. Regression fixtures / golden responses
 - `tests/golden/` contains captured expected API responses replayed by `test_fastapi_parity`. Behavior-preserving
@@ -106,5 +120,6 @@ End commit messages with:
 `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`
 
 ## 10. Key files to read first
-Practical run/deploy docs: `README.md`, `web/README-web.md`. Historical design reference:
+Start with `README.md`. For frontend work read `web/README-web.md`; for golden response work read
+`tests/golden/README.md`. Historical design reference:
 `/remote_home/zhawu/.claude/plans/clever-swimming-quiche.md`.

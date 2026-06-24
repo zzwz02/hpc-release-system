@@ -159,6 +159,7 @@ stateDiagram-v2
 - 已锁定的 release、不含该 app 的 release：跳过。
 - `stopped -> release/cicd_only` 是升运行：release 决策在当前 release 中等 CICD 交付完成后才真正生效；如果审批被拒绝或取消，所有被同步的未锁定 release 决策会回滚。
 - `release/cicd_only -> stopped` 是降停止：release 决策立即生效；CICD 审批/交付只是把实际运行状态最终停下来，该同步申请不允许拒绝或取消。
+- 任何跨 Running/Stopped 边界的决策变更都会创建 `origin="release_decision_sync"` 的 CICD modify 申请，因此也受 CICD 修改阻塞规则约束；如果同 app 还有未完成的新建申请或带 Jira 的未完成修改申请，则不创建 sync 申请，当前 release snapshot 保持原决策。
 
 ### 可发布条件
 
@@ -216,6 +217,28 @@ flowchart TD
 - **A — 状态锁**：用户的 modify 申请**不允许**直接改 `status`；运行/停止只能由 App 决策驱动。CICD 不再有 `Abandoned` 状态，也不提供废弃/退役/删除入口；退役或删除通过 App 业务流程处理。
 - **CICD-first 新建 App**：新建申请待审批/交付期间 app 会保留在 App 工作台；被拒绝或取消后继续保留并显示原因。同一 `(Gerrit URL, branch)` 不能用新名称重复创建；只有使用原 app 名称才能重新提交“新建”CICD 申请。
 
+### CICD 修改阻塞与替换
+
+同一个 app 的 CICD 修改不能越过未完成的上游申请，否则会出现 release 决策已变更但 CICD 实际状态仍停留在旧值的问题。提交 App 工作台 CICD 配置修改、以及任何跨 Running/Stopped 边界的 release 决策同步时，都必须先检查同 app 的未完成 CICD 申请：
+
+- 有未完成的 CICD-first `create` 申请：直接拒绝新的 CICD modify，并提示等待新建申请审批/交付完成后再修改。
+- 有未完成的 `modify` 且已绑定 Jira（`jira_id` 非空，交付状态为 `pending` 或 `returned`）：直接拒绝新的 CICD modify；系统不自动取消 Jira，也不调用 Jira API 关闭 issue。正确流程是 SPD 先退回需求，再由 RM 在待交付页拒绝旧申请。
+- 只有无 Jira 的 pending `modify`：允许用户确认替换。前端必须明确提示旧申请会被取消，后端收到 `replace_open=true` 后才会取消旧 pending modify 并提交当前新申请。
+- `release_decision_sync` 的 Running/Stopped 状态同步申请走同一套阻塞规则；被阻塞时不创建 sync 请求，也不应用新的 release 决策。
+
+### 交付退回后的 RM 拒绝
+
+SPD 退回交付申请后，RM 可以在「CICD 工作台 → 待交付」对 returned 行执行「拒绝」。拒绝必须满足：
+
+- 当前用户是 RM；
+- 申请为 `status="approved"` 且 `delivery_status="returned"`；
+- 必须填写拒绝理由；
+- 拒绝后设置 `status="rejected"`，写入 `reviewer/reviewed_at/review_note`，清空交付待办状态使其不再出现在待交付列表；
+- 保留 `jira_id`、`returned_reason`、`returned_at` 作为历史记录；
+- 不应用 CICD payload。
+
+对应接口为 `POST /api/cicd/requests/reject-returned`。普通 pending 审批拒绝仍使用 `POST /api/cicd/requests/reject`。
+
 ---
 
 ## 数据模型：Release Snapshot
@@ -246,7 +269,7 @@ CICD↔App 的身份键是 `app_id`。`(git_url, git_branch)` 只用于历史展
 - QA：`POST /api/qa/status-batch`、`POST /api/qa/upload-log`、`POST /api/qa/analyze-log/start`、`GET /api/qa/analyze-log/status`、`GET /api/qa-reports`
 - 产物：`POST /api/artifacts/generate`、`POST /api/artifacts/manager-review`、`GET /api/artifacts/<kind>`、`GET /api/test-scope.csv`
 - WIKI：`GET /api/wiki/articles`、`POST /api/wiki/articles/save`、`POST /api/wiki/articles/pin`、`POST /api/wiki/articles/delete`、`POST /api/wiki/images/upload`
-- CICD：`GET /api/cicd/tasks`、`GET /api/cicd/requests`（含 `origin` 字段）、`GET /api/cicd/deliveries`、`POST /api/cicd/requests/submit`、`POST /api/cicd/requests/approve`、`POST /api/cicd/requests/reject`、`POST /api/cicd/requests/deliver`、`POST /api/cicd/requests/return-delivery`
+- CICD：`GET /api/cicd/tasks`、`GET /api/cicd/requests`（含 `origin` 字段）、`GET /api/cicd/deliveries`、`POST /api/cicd/requests/submit`（无 Jira pending modify 替换需 `replace_open=true`）、`POST /api/cicd/requests/approve`、`POST /api/cicd/requests/reject`、`POST /api/cicd/requests/deliver`、`POST /api/cicd/requests/return-delivery`、`POST /api/cicd/requests/reject-returned`
 - 管理：`GET /api/admin/users`、`POST /api/admin/users/set-role`、`POST /api/admin/clear-db`、`POST /api/admin/apps/delete`
 
 常见返回码：`401` 未登录，`403` 无权限，`400/500` 业务或服务端错误。

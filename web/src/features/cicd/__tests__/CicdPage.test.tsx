@@ -305,6 +305,57 @@ describe("CicdPage", () => {
     });
   });
 
+  it("DeliveryPane: RM can reject a returned delivery", async () => {
+    vi.stubGlobal("prompt", vi.fn(() => "obsolete"));
+    const returned = makeRequest({
+      id: 7,
+      status: "approved",
+      delivery_status: "returned",
+      jira_id: "SPD-7",
+      returned_reason: "AA",
+    });
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [makeTask()] });
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      if (url.includes("/api/cicd/requests")) return Promise.resolve({ requests: [] });
+      if (url.includes("/api/cicd/deliveries")) return Promise.resolve({ deliveries: [returned] });
+      return Promise.resolve({});
+    });
+
+    renderCicd("RM");
+    await waitFor(() => expect(screen.getByText("待交付")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("待交付"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "拒绝" })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "拒绝" }));
+
+    await waitFor(() => {
+      expect(vi.mocked(apiPost)).toHaveBeenCalledWith(
+        "/api/cicd/requests/reject-returned",
+        { request_id: 7, review_note: "obsolete" },
+      );
+    });
+  });
+
+  it("DeliveryPane: SPD cannot reject a returned delivery", async () => {
+    const returned = makeRequest({
+      id: 8,
+      status: "approved",
+      delivery_status: "returned",
+      jira_id: "SPD-8",
+    });
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [makeTask()] });
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      if (url.includes("/api/cicd/requests")) return Promise.resolve({ requests: [] });
+      if (url.includes("/api/cicd/deliveries")) return Promise.resolve({ deliveries: [returned] });
+      return Promise.resolve({});
+    });
+
+    renderCicd("SPD");
+    await waitFor(() => expect(screen.getByText("待交付")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "拒绝" })).not.toBeInTheDocument();
+  });
+
   // ── markCicdVisited on mount ───────────────────────────────────────────────
 
   it("calls markCicdVisited (POST /api/cicd/notifications/mark-visited) on mount", async () => {

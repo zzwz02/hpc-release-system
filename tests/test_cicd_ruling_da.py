@@ -141,6 +141,195 @@ class TestStatusLock:
         assert req["request_type"] == "create"
         assert req["task_id"] == APP_ID
 
+    def test_pending_create_blocks_modify(self, temp_db):
+        seed_app(temp_db)
+        cicd_service.submit_request(
+            temp_db,
+            task_id=APP_ID,
+            request_type="create",
+            payload={
+                "app_name": "DecisionApp",
+                "repo_type": "git",
+                "repo_name": "ssh://gerrit/PDE/HPC/hpc_da",
+                "branch": "main",
+                "owner_username": "owner",
+                "status": "Running",
+            },
+            submitter="owner",
+            submitter_role="Owner",
+        )
+
+        with pytest.raises(RuntimeError, match="CICD 新建申请"):
+            cicd_service.submit_request(
+                temp_db,
+                task_id=APP_ID,
+                request_type="modify",
+                payload={"notes": {"old": "", "new": "blocked"}},
+                submitter="owner",
+                submitter_role="Owner",
+                source="app_workbench",
+            )
+
+    def test_jira_delivery_modify_blocks_new_modify(self, temp_db):
+        seed_app(temp_db)
+        req = cicd_service.submit_request(
+            temp_db,
+            task_id=APP_ID,
+            request_type="modify",
+            payload={"notes": {"old": "", "new": "jira flow"}},
+            submitter="owner",
+            submitter_role="Owner",
+            source="app_workbench",
+        )
+        cicd_service.approve_request(
+            temp_db,
+            req["id"],
+            reviewer="rm",
+            reviewer_role="RM",
+            approval_mode="dispatch_spd",
+            jira_id="SPD-1",
+        )
+
+        with pytest.raises(RuntimeError, match="SPD-1"):
+            cicd_service.submit_request(
+                temp_db,
+                task_id=APP_ID,
+                request_type="modify",
+                payload={"notes": {"old": "", "new": "new change"}},
+                submitter="owner",
+                submitter_role="Owner",
+                source="app_workbench",
+            )
+
+    def test_pending_modify_requires_replace_confirmation(self, temp_db):
+        seed_app(temp_db)
+        first = cicd_service.submit_request(
+            temp_db,
+            task_id=APP_ID,
+            request_type="modify",
+            payload={"notes": {"old": "", "new": "first"}},
+            submitter="owner",
+            submitter_role="Owner",
+            source="app_workbench",
+        )
+
+        with pytest.raises(RuntimeError, match="请确认后重试"):
+            cicd_service.submit_request(
+                temp_db,
+                task_id=APP_ID,
+                request_type="modify",
+                payload={"notes": {"old": "", "new": "second"}},
+                submitter="owner",
+                submitter_role="Owner",
+                source="app_workbench",
+            )
+
+        second = cicd_service.submit_request(
+            temp_db,
+            task_id=APP_ID,
+            request_type="modify",
+            payload={"notes": {"old": "", "new": "second"}},
+            submitter="owner",
+            submitter_role="Owner",
+            source="app_workbench",
+            replace_open=True,
+        )
+        assert second["status"] == "pending"
+        assert second["cancelled_request_ids"] == [first["id"]]
+        old = temp_db.execute(
+            "SELECT status, review_note FROM cicd_task_requests WHERE id = ?",
+            (first["id"],),
+        ).fetchone()
+        assert old["status"] == "cancelled"
+        assert f"#{second['id']}" in old["review_note"]
+        pending = temp_db.execute(
+            """
+            SELECT COUNT(*)
+            FROM cicd_task_requests
+            WHERE app_id = ? AND request_type = 'modify' AND status = 'pending'
+            """,
+            (APP_ID,),
+        ).fetchone()[0]
+        assert pending == 1
+
+    def test_rm_rejects_returned_delivery_without_applying_payload(self, temp_db):
+        seed_app(temp_db)
+        req = cicd_service.submit_request(
+            temp_db,
+            task_id=APP_ID,
+            request_type="modify",
+            payload={"notes": {"old": "", "new": "do not apply"}},
+            submitter="owner",
+            submitter_role="Owner",
+            source="app_workbench",
+        )
+        cicd_service.approve_request(
+            temp_db,
+            req["id"],
+            reviewer="rm",
+            reviewer_role="RM",
+            approval_mode="dispatch_spd",
+            jira_id="SPD-2",
+        )
+        cicd_service.return_delivery(
+            temp_db,
+            req["id"],
+            returner="spd",
+            returner_role="SPD",
+            reason="needs change",
+        )
+
+        rejected = cicd_service.reject_returned_request(
+            temp_db,
+            req["id"],
+            reviewer="rm",
+            reviewer_role="RM",
+            review_note="obsolete",
+        )
+
+        assert rejected["status"] == "rejected"
+        assert rejected["delivery_status"] == ""
+        assert rejected["jira_id"] == "SPD-2"
+        assert rejected["returned_reason"] == "needs change"
+        assert cicd_service.list_deliveries(temp_db, status_filter="pending_or_returned") == []
+        assert apps_repo.get_app(temp_db, APP_ID)["cicd_notes"] == ""
+
+    def test_reject_returned_validation(self, temp_db):
+        seed_app(temp_db)
+        req = cicd_service.submit_request(
+            temp_db,
+            task_id=APP_ID,
+            request_type="modify",
+            payload={"notes": {"old": "", "new": "flow"}},
+            submitter="owner",
+            submitter_role="Owner",
+            source="app_workbench",
+        )
+        with pytest.raises(PermissionError):
+            cicd_service.reject_returned_request(
+                temp_db,
+                req["id"],
+                reviewer="owner",
+                reviewer_role="Owner",
+                review_note="no",
+            )
+        with pytest.raises(ValueError):
+            cicd_service.reject_returned_request(
+                temp_db,
+                req["id"],
+                reviewer="rm",
+                reviewer_role="RM",
+                review_note="",
+            )
+        with pytest.raises(RuntimeError, match="已退回"):
+            cicd_service.reject_returned_request(
+                temp_db,
+                req["id"],
+                reviewer="rm",
+                reviewer_role="RM",
+                review_note="no",
+            )
+
 
 class TestUpdateSnapshotIntegration:
     def test_decision_change_adds_app_backed_cicd_sync(self, temp_db, tmp_dir):
@@ -201,6 +390,150 @@ class TestUpdateSnapshotIntegration:
         )
 
         assert core.get_release(temp_db, release_id)["snapshots"][app_id]["release_decision"] == "cicd_only"
+
+    def test_pending_create_blocks_stopped_to_running_decision(self, temp_db, tmp_dir):
+        release_id = seed_release(temp_db, tmp_path=tmp_dir)
+        import release_system.core as core
+
+        result = cicd_service.cicd_first_new_app(
+            temp_db,
+            official_name="CreateBlockedDecision",
+            repo_type="git",
+            repo_name="hpc_create_blocked",
+            branch="main",
+            submitter="owner",
+            submitter_role="Owner",
+            payload={
+                "cicd_repo_type": "git",
+                "cicd_community_artifact": "",
+                "cicd_build_image": "",
+                "cicd_test_timeout": "40",
+                "cicd_notes": "",
+            },
+        )
+
+        with pytest.raises(RuntimeError, match="CICD 新建申请"):
+            app_service.update_snapshot(
+                temp_db,
+                release_id,
+                result["app_id"],
+                user="rm",
+                role="RM",
+                fields={"snapshot": {"release_decision": "release"}},
+            )
+
+        snap = core.get_release(temp_db, release_id)["snapshots"][result["app_id"]]
+        assert snap["release_decision"] == "stopped"
+
+    def test_jira_backed_sync_delivery_blocks_new_running_decision(self, temp_db, tmp_dir):
+        release_id = seed_release(temp_db, tmp_path=tmp_dir)
+        import release_system.core as core
+
+        rel = core.get_release(temp_db, release_id)
+        app_id = next(iter(rel["snapshots"]))
+        snap = rel["snapshots"][app_id]
+        snap["release_decision"] = "stopped"
+        core.save_snapshot(temp_db, release_id, app_id, snap)
+
+        old_req = cicd_service.sync_decision_to_cicd(
+            temp_db,
+            app_id,
+            "release",
+            submitter="rm",
+            current_status_override="Stopped",
+            release_id=release_id,
+            apply_release_decision_on_delivery=True,
+        )
+        assert old_req is not None
+        assert old_req["origin"] == "release_decision_sync"
+        cicd_service.approve_request(
+            temp_db,
+            old_req["id"],
+            reviewer="rm",
+            reviewer_role="RM",
+            approval_mode="dispatch_spd",
+            jira_id="HPC-222",
+        )
+
+        with pytest.raises(RuntimeError, match="HPC-222"):
+            app_service.update_snapshot(
+                temp_db,
+                release_id,
+                app_id,
+                user="rm",
+                role="RM",
+                fields={"snapshot": {"release_decision": "release"}},
+            )
+
+        requests = temp_db.execute(
+            """
+            SELECT id, status, delivery_status, jira_id, origin
+            FROM cicd_task_requests
+            WHERE app_id = ? AND request_type = 'modify'
+            ORDER BY id
+            """,
+            (app_id,),
+        ).fetchall()
+        assert len(requests) == 1
+        assert requests[0]["id"] == old_req["id"]
+        assert requests[0]["delivery_status"] == "pending"
+        assert requests[0]["jira_id"] == "HPC-222"
+        snap = core.get_release(temp_db, release_id)["snapshots"][app_id]
+        assert snap["release_decision"] == "stopped"
+
+    def test_jira_delivery_modify_blocks_stopped_decision(self, temp_db, tmp_dir):
+        release_id = seed_release(temp_db, tmp_path=tmp_dir)
+        import release_system.core as core
+
+        rel = core.get_release(temp_db, release_id)
+        app_id = next(iter(rel["snapshots"]))
+
+        old_req = cicd_service.submit_request(
+            temp_db,
+            task_id=app_id,
+            request_type="modify",
+            payload={
+                "repo_name": {"old": "hpc_abacus2", "new": "hpc_abacus"},
+                "branch": {"old": "maca2", "new": "maca"},
+            },
+            submitter="owner",
+            submitter_role="Owner",
+            source="app_workbench",
+        )
+        cicd_service.approve_request(
+            temp_db,
+            old_req["id"],
+            reviewer="rm",
+            reviewer_role="RM",
+            approval_mode="dispatch_spd",
+            jira_id="HPC-222",
+        )
+
+        with pytest.raises(RuntimeError, match="HPC-222"):
+            app_service.update_snapshot(
+                temp_db,
+                release_id,
+                app_id,
+                user="rm",
+                role="RM",
+                fields={"snapshot": {"release_decision": "stopped"}},
+            )
+
+        requests = temp_db.execute(
+            """
+            SELECT id, status, delivery_status, jira_id, origin
+            FROM cicd_task_requests
+            WHERE app_id = ? AND request_type = 'modify'
+            ORDER BY id
+            """,
+            (app_id,),
+        ).fetchall()
+        assert len(requests) == 1
+        assert requests[0]["id"] == old_req["id"]
+        assert requests[0]["delivery_status"] == "pending"
+        assert requests[0]["jira_id"] == "HPC-222"
+        snap = core.get_release(temp_db, release_id)["snapshots"][app_id]
+        assert snap["release_decision"] == "release"
 
     def test_doc_deadline_allows_release_decision_and_cicd_config(self, temp_db, tmp_dir):
         release_id = seed_release(temp_db, tmp_path=tmp_dir)

@@ -37,6 +37,7 @@ import {
   fetchCicdDeliveries,
   approveCicdRequest,
   rejectCicdRequest,
+  rejectReturnedCicdRequest,
   cancelCicdRequest,
   deliverCicdRequest,
   returnDeliveryCicdRequest,
@@ -1199,6 +1200,22 @@ function DeliveryPane({
     }
   }
 
+  async function handleRejectReturned(id: number) {
+    const reason = prompt(`请填写拒绝申请 #${id} 的理由（必填）：`);
+    if (reason === null) return;
+    if (!reason.trim()) {
+      alert("拒绝理由不能为空");
+      return;
+    }
+    try {
+      await rejectReturnedCicdRequest({ request_id: id, review_note: reason.trim() });
+      void refetch();
+      onRefreshed();
+    } catch (e) {
+      alert("拒绝失败：" + (e instanceof Error ? e.message : String(e)));
+    }
+  }
+
   const jiraBase = "http://jira.metax-tech.com/browse/";
 
   return (
@@ -1355,6 +1372,12 @@ function DeliveryPane({
                               onClick={() => handleApplyReturned(d.id)}
                             >
                               直接生效
+                            </button>{" "}
+                            <button
+                              className="btn sm danger"
+                              onClick={() => handleRejectReturned(d.id)}
+                            >
+                              拒绝
                             </button>{" "}
                           </>
                         )}

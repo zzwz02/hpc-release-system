@@ -144,6 +144,39 @@ def test_rm_app_git_identity_update_changes_app_table_only():
         conn.close()
 
 
+def test_app_workbench_audit_uses_naive_beijing_timestamp(monkeypatch):
+    conn = fresh_conn()
+    try:
+        seed_app_release(conn)
+        monkeypatch.setattr(
+            "app.timeutil.beijing_timestamp",
+            lambda: "2026-06-24 15:30:00",
+        )
+        monkeypatch.setattr(
+            app_service.core,
+            "now",
+            lambda: "2026-06-24T07:30:00+00:00",
+        )
+
+        app_service.update_snapshot(
+            conn,
+            "rel-1",
+            "app1",
+            user="rm",
+            role="RM",
+            fields={"snapshot": {"official_url": "https://example.com/abacus"}},
+        )
+
+        row = conn.execute(
+            "SELECT ts, event FROM audit WHERE app_id = ? ORDER BY id DESC LIMIT 1",
+            ("app1",),
+        ).fetchone()
+        assert row["event"] == "update_app_meta"
+        assert row["ts"] == "2026-06-24 15:30:00"
+    finally:
+        conn.close()
+
+
 def test_cicd_modify_repo_identity_change_updates_app_after_approval():
     conn = fresh_conn()
     try:
