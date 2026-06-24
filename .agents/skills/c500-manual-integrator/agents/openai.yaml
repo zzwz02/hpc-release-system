@@ -1,0 +1,4 @@
+interface:
+  display_name: "C500 Docs Integrator"
+  short_description: "Merge release DB manuals and release notes into RST docs"
+  default_prompt: "Use $c500-manual-integrator to merge release_system.db documentation data into the C500/X201 manuals and release notes."
