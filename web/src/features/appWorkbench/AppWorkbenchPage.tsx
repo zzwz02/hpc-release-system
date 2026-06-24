@@ -25,7 +25,15 @@ import { useUiStore } from "../../store/uiStore";
 import { isRM, isOwner, canEdit } from "../../lib/roles";
 import { beforeAppFreeze, beforeDocDeadline, releaseLocked, newAppDecisionOptions } from "../../lib/phase";
 import { displayName } from "../../lib/identity";
-import { formatGerritUrl } from "../../lib/git";
+import {
+  GERRIT_HPC_BASE,
+  GERRIT_MANIFEST_REPO_URL,
+  formatCicdRepoPath,
+  formatGerritUrl,
+  isFullGitRemote,
+  normalizeCicdRepoInput,
+  normalizeGitUrl,
+} from "../../lib/git";
 import {
   releaseDecisionLabels,
   releaseDecisionOptions,
@@ -211,7 +219,7 @@ const CICD_FIELD_LABEL: Record<string, string> = {
   app_name: "App",
   app_version: "版本",
   repo_type: "仓库类型",
-  repo_name: "Gerrit URL",
+  repo_name: "Gerrit 路径",
   branch: "Branch",
   build_product: "构建产物",
   community_artifact: "开发者社区产物",
@@ -251,8 +259,11 @@ function sameListValue(a: string[], b: string[]): boolean {
   return a.join(",") === b.join(",");
 }
 
-function cicdValueText(value: unknown): string {
+function cicdValueText(value: unknown, field?: string): string {
   if (Array.isArray(value)) return value.join(", ") || "(空)";
+  if (field === "repo_name") {
+    return formatCicdRepoPath(String(value ?? "")) || "(空)";
+  }
   return String(value ?? "").trim() || "(空)";
 }
 
@@ -269,9 +280,9 @@ function cicdRequestSummary(req: CicdRequest): string {
       !Array.isArray(raw) &&
       ("old" in change || "new" in change)
     ) {
-      return `${label}: ${cicdValueText(change.old)} -> ${cicdValueText(change.new)}`;
+      return `${label}: ${cicdValueText(change.old, field)} -> ${cicdValueText(change.new, field)}`;
     }
-    return `${label}: ${cicdValueText(raw)}`;
+    return `${label}: ${cicdValueText(raw, field)}`;
   }).join("；");
 }
 
@@ -448,18 +459,79 @@ function AppListPanel({
 }
 
 // ---------------------------------------------------------------------------
-// Git identity normalization (mirrors app/identity.py normalize_git_url)
+// CICD repo-path input helpers
 // ---------------------------------------------------------------------------
 
-const RESOLVED_REPO_BASE = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC";
+function newAppRepoValidationError(repoType: string, repoName: string): string {
+  const value = normalizeCicdRepoInput(repoType, repoName);
+  if (!value) return "请填写仓库路径";
+  if (repoType === "repo") {
+    if (isFullGitRemote(value) || /^PDE\/HPC\/manifest(?:\/|$)/i.test(value) || /^manifest(?:\/|$)/i.test(value)) {
+      return "repo 类型只填写 manifest 内 XML 路径，例如 APP/openfoam/hpc_v2206_v0.xml";
+    }
+    if (!value.endsWith(".xml")) {
+      return "repo 类型必须填写 XML 路径，例如 APP/openfoam/hpc_v2206_v0.xml";
+    }
+    return "";
+  }
+  if (isFullGitRemote(value) || /^PDE\/HPC\//i.test(value)) {
+    return "git 类型只填写 PDE/HPC 后的短路径，例如 hpc_amber";
+  }
+  if (value.endsWith(".xml")) {
+    return "manifest XML 请切换为 repo 类型填写";
+  }
+  return "";
+}
 
-/** Expand a short repo name to the full Gerrit SSH URL — mirrors Python normalize_git_url(). */
-function normalizeGitUrl(url: string): string {
-  const v = (url ?? "").trim();
-  if (!v) return v;
-  // Already absolute (has ://, is git@ remote, or is a .xml manifest path) → pass through
-  if (v.includes("://") || v.startsWith("git@") || v.endsWith(".xml")) return v;
-  return `${RESOLVED_REPO_BASE}/${v.replace(/^\//, "")}`;
+function sameCicdRepoName(
+  oldRepoType: string,
+  newRepoType: string,
+  oldValue: string,
+  newValue: string,
+): boolean {
+  const oldPath = normalizeCicdRepoInput(oldRepoType, formatCicdRepoPath(oldValue, oldRepoType));
+  const newPath = normalizeCicdRepoInput(newRepoType, formatCicdRepoPath(newValue, newRepoType));
+  if (oldRepoType === "git" && newRepoType === "git") {
+    return normalizeGitUrl(oldPath) === normalizeGitUrl(newPath);
+  }
+  return oldPath === newPath;
+}
+
+function cicdRepoPathForPayload(repoType: string, value: string): string {
+  return normalizeCicdRepoInput(repoType, formatCicdRepoPath(value, repoType));
+}
+
+function RepoPathInput({
+  repoType,
+  value,
+  disabled,
+  onChange,
+  testId,
+}: {
+  repoType: string;
+  value: string;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+  testId?: string;
+}) {
+  const isRepoType = repoType === "repo";
+  const prefix = isRepoType ? GERRIT_MANIFEST_REPO_URL : `${GERRIT_HPC_BASE}/`;
+  const placeholder = isRepoType
+    ? "xml地址，例如APP/openfoam/hpc_v2206_v0.xml"
+    : "例如hpc_amber";
+  return (
+    <div className="repo-input-group">
+      <span className="repo-input-prefix">{prefix}</span>
+      <input
+        className="input"
+        value={normalizeCicdRepoInput(repoType, value)}
+        onChange={(e) => onChange(normalizeCicdRepoInput(repoType, e.target.value))}
+        placeholder={placeholder}
+        disabled={disabled}
+        data-testid={testId}
+      />
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -618,14 +690,17 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
 
   async function handleFetch() {
     if (!officialName.trim()) { setFetchErrMsg("请填写官方名称"); return; }
-    if (!repoName.trim()) { setFetchErrMsg("请填写仓库名"); return; }
+    const normalizedRepoName = normalizeCicdRepoInput(repoType, repoName);
+    setRepoName(normalizedRepoName);
+    const repoErr = newAppRepoValidationError(repoType, normalizedRepoName);
+    if (repoErr) { setFetchErrMsg(repoErr); return; }
     if (!effectiveBranch) { setFetchErrMsg("请填写分支"); return; }
 
     // W4: Pre-compute client-side derived identity BEFORE the network call so
     // it is always displayable even if the Gerrit content fetch 502s.
     // git-type: normalize short name → full SSH URL (offline, always derivable).
     // repo-type (.xml manifest): needs Gerrit network to resolve → null = "需联网解析".
-    const clientUrl = isRepo ? null : normalizeGitUrl(repoName.trim());
+    const clientUrl = isRepo ? null : normalizeGitUrl(normalizedRepoName);
     setDerivedGitUrl(clientUrl);
     setDerivedGitBranch(effectiveBranch);
 
@@ -637,7 +712,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
       const data = await fetchCicdPreview({
         official_name: officialName.trim(),
         repo_type: repoType,
-        repo_name: repoName.trim(),
+        repo_name: normalizedRepoName,
         branch: effectiveBranch,
       });
       const retryInfo = retryInfoFromPreview(data);
@@ -675,6 +750,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
   async function handleSkipAndCreate() {
     setStep("creating");
     setCreateErrMsg("");
+    const normalizedRepoName = normalizeCicdRepoInput(repoType, repoName);
     try {
       const r = await cicdFirstNewApp({
         release_id: currentReleaseId,
@@ -682,7 +758,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
         app_name: officialName.trim(),
         owner_username: currentUsername,
         repo_type: repoType,
-        repo_name: repoName.trim(),
+        repo_name: normalizedRepoName,
         branch: effectiveBranch,
         cicd_repo_type: repoType,
         cicd_community_artifact: newCicdCommunityArtifact,
@@ -701,6 +777,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
   async function handleConfirmCreate() {
     setStep("creating");
     setCreateErrMsg("");
+    const normalizedRepoName = normalizeCicdRepoInput(repoType, repoName);
     try {
       const r = await cicdFirstNewApp({
         release_id: currentReleaseId,
@@ -708,7 +785,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
         app_name: officialName.trim(),
         owner_username: currentUsername,
         repo_type: repoType,
-        repo_name: repoName.trim(),
+        repo_name: normalizedRepoName,
         branch: effectiveBranch,
         cicd_repo_type: repoType,
         cicd_community_artifact: newCicdCommunityArtifact,
@@ -865,7 +942,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
             <IdentityBox gitUrl={identityUrl} gitBranch={identityBranch} />
             <div className="form" style={{ pointerEvents: "none", opacity: 0.9 }} data-testid="new-app-preview">
               <label>官方名称<input className="input" value={officialName.trim()} disabled /></label>
-              <label>仓库<input className="input" value={`${repoName.trim()} @ ${effectiveBranch}`} disabled /></label>
+              <label>仓库<input className="input" value={`${normalizeCicdRepoInput(repoType, repoName)} @ ${effectiveBranch}`} disabled /></label>
               {preview && (<>
                 <label>版本<input className="input" value={preview.app_version || "—"} disabled /></label>
                 <label>x86 芯片<input className="input" value={preview.x86_chips || "—"} disabled /></label>
@@ -927,7 +1004,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
             <IdentityBox gitUrl={derivedGitUrl} gitBranch={errIdentityBranch} />
             <p className="small muted">
               <b>官方名称：</b>{officialName.trim()}<br />
-              <b>仓库：</b>{repoName.trim()} @ {effectiveBranch}
+              <b>仓库：</b>{normalizeCicdRepoInput(repoType, repoName)} @ {effectiveBranch}
             </p>
             {createErrMsg && <p className="lerr">{createErrMsg}</p>}
           </div>
@@ -950,7 +1027,6 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
 
   // ── Step 1: identity form (default / fetching) ───────────────────────────
   const isFetching = step === "fetching";
-  const repoPlaceholder = isRepo ? "例：APP/lammps/master/hpc_22Jul2025.xml" : "例：sw-metax-open/amber";
   return (
     <div className="dialog-backdrop" data-testid="new-app-dialog">
       <div className="dialog-box" style={{ maxWidth: 520 }}>
@@ -972,17 +1048,23 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
               <select className="select" value={repoType} disabled={isFetching} onChange={(e) => {
                 const v = e.target.value;
                 setRepoType(v);
+                setRepoName((name) => normalizeCicdRepoInput(v, name));
                 if (v === "repo") setBranch("master");
               }}>
                 <option value="git">git</option>
                 <option value="repo">repo</option>
               </select>
             </label>
-            <label>仓库名 / Gerrit URL <span className="required">*</span>
-              <input className="input" value={repoName} onChange={(e) => setRepoName(e.target.value)}
-                placeholder={repoPlaceholder} disabled={isFetching} />
+            <label>仓库名 / Gerrit 路径 <span className="required">*</span>
+              <RepoPathInput
+                repoType={repoType}
+                value={repoName}
+                onChange={setRepoName}
+                disabled={isFetching}
+                testId="new-app-repo-name"
+              />
               <span className="hint">
-                {isRepo ? "repo 类型填写 manifest XML 路径；分支固定为 master。" : "git 类型可填写短路径或完整 Gerrit URL。"}
+                {isRepo ? "repo 类型只填写 manifest 仓库内的 XML 路径；分支固定为 master。" : "git 类型只填写 PDE/HPC 后的短路径。"}
               </span>
             </label>
             <label>分支 <span className="required">*</span>
@@ -1058,10 +1140,11 @@ interface AppCicdPaneProps {
   form: FormState;
   pendingRequests: CicdRequest[];
   historyRequests: CicdRequest[];
+  repoError?: string;
   onPatch: <K extends keyof FormState>(key: K, value: FormState[K]) => void;
 }
 
-function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit, form, pendingRequests, historyRequests, onPatch }: AppCicdPaneProps) {
+function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit, form, pendingRequests, historyRequests, repoError, onPatch }: AppCicdPaneProps) {
   const status = cicdOnboardingInactive(app) ? "Stopped" : displayedStatus;
   const statusCls = status === "Running" ? "ok" : "warnp";
   const disabled = !editMode || !canEdit;
@@ -1076,7 +1159,7 @@ function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit,
           {onboardingLabel && (
             <span className={`pill ${cicdOnboardingClass(app)}`}>{onboardingLabel}</span>
           )}
-          <span className="small muted" title={`${app.git_url}@${app.git_branch}`}>{formatGerritUrl(app.git_url)}@{app.git_branch}</span>
+          <span className="small muted" title={`${app.git_url}@${app.git_branch}`}>{formatCicdRepoPath(app.git_url, app.cicd_repo_type || "git")}@{app.git_branch}</span>
         </div>
         <div className="small muted" style={{ marginTop: 2, fontSize: 11 }}>
           运行/停止由本 app 决策决定：{releaseDecisionLabels[releaseDecision as keyof typeof releaseDecisionLabels] ?? releaseDecision}
@@ -1125,7 +1208,12 @@ function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit,
           <div className="form">
             <label>仓库类型
               <select className="select" value={form.cicd_repo_type || "git"}
-                onChange={(e) => onPatch("cicd_repo_type", e.target.value)}
+                onChange={(e) => {
+                  const nextRepoType = e.target.value;
+                  onPatch("cicd_repo_type", nextRepoType);
+                  onPatch("git_url", normalizeCicdRepoInput(nextRepoType, form.git_url));
+                  if (nextRepoType === "repo") onPatch("git_branch", "master");
+                }}
                 disabled={disabled}
                 data-testid="field-cicd-repo-type">
                 {CICD_REPO_TYPE_OPTIONS.map((value) => (
@@ -1133,12 +1221,20 @@ function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit,
                 ))}
               </select>
             </label>
-            <label>Gerrit URL
-              <input className="input" value={form.git_url}
-                onChange={(e) => onPatch("git_url", e.target.value)}
+            <label>Gerrit 路径
+              <RepoPathInput
+                repoType={form.cicd_repo_type || "git"}
+                value={formatCicdRepoPath(form.git_url, form.cicd_repo_type || "git")}
+                onChange={(value) => onPatch("git_url", value)}
                 disabled={disabled}
-                data-testid="field-cicd-git-url" />
-              <span className="field-help">实际保存完整 URL；列表展示会自动缩短为 PDE/HPC 后的路径。</span>
+                testId="field-cicd-git-url"
+              />
+              <span className="field-help">git 类型只填 PDE/HPC 后路径；repo 类型只填 manifest 内 XML 路径。</span>
+              {repoError && (
+                <span className="field-error" data-testid="field-cicd-git-url-error" aria-live="polite">
+                  {repoError}
+                </span>
+              )}
             </label>
             <label>Branch
               <input className="input" value={form.git_branch}
@@ -1278,6 +1374,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
   const [form, setForm] = useState<FormState>(() => snap ? snapshotToForm(snap, app!) : emptyForm());
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState("");
+  const [cicdRepoErr, setCicdRepoErr] = useState("");
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [auditEntries, setAuditEntries] = useState<AppAuditEntry[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
@@ -1350,6 +1447,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       setEditMode(false);
       setDirty(false);
       setSaveErr("");
+      setCicdRepoErr("");
       setPendingFile(null);
       setAuditEntries(null);
       setFetchProgress(null);
@@ -1408,6 +1506,9 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
 
   function patch<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((f) => ({ ...f, [key]: value }));
+    if (key === "git_url" || key === "cicd_repo_type") {
+      setCicdRepoErr("");
+    }
     setDirty(true);
   }
 
@@ -1520,8 +1621,11 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     if (!sameScalarValue(originalRepoType, nextRepoType)) {
       diff.repo_type = { old: originalRepoType, new: nextRepoType };
     }
-    if (!sameScalarValue(app.git_url, form.git_url)) {
-      diff.repo_name = { old: app.git_url || "", new: form.git_url.trim() };
+    if (!sameCicdRepoName(originalRepoType, nextRepoType, app.git_url || "", form.git_url)) {
+      diff.repo_name = {
+        old: cicdRepoPathForPayload(originalRepoType, app.git_url || ""),
+        new: cicdRepoPathForPayload(nextRepoType, form.git_url),
+      };
     }
     if (!sameScalarValue(app.git_branch, form.git_branch)) {
       diff.branch = { old: app.git_branch || "", new: form.git_branch.trim() };
@@ -1549,11 +1653,19 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     if (!app) return;
     setSaving(true);
     setSaveErr("");
+    setCicdRepoErr("");
     try {
       const diff = buildAppCicdDiff();
       if (!Object.keys(diff).length) {
         setSaveErr("CICD 配置没有任何字段发生变化。");
         return;
+      }
+      if (diff.repo_name || diff.repo_type) {
+        const repoErr = newAppRepoValidationError(form.cicd_repo_type || "git", form.git_url);
+        if (repoErr) {
+          setCicdRepoErr(`Gerrit 路径校验失败：${repoErr}`);
+          return;
+        }
       }
       await submitCicdRequest({
         task_id: app.id,
@@ -1569,7 +1681,17 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       void queryClient.invalidateQueries({ queryKey: ["cicd", "requests", "app-workbench"] });
       alert("CICD 变更申请已提交，等待 RM 审批。");
     } catch (e) {
-      setSaveErr("提交 CICD 变更申请失败：" + (e instanceof Error ? e.message : String(e)));
+      const message = e instanceof Error ? e.message : String(e);
+      if (
+        message.includes("git 类型只填写")
+        || message.includes("repo 类型只填写")
+        || message.includes("repo 类型必须填写")
+        || message.includes("manifest XML")
+      ) {
+        setCicdRepoErr(`Gerrit 路径校验失败：${message}`);
+      } else {
+        setSaveErr("提交 CICD 变更申请失败：" + message);
+      }
     } finally {
       setSaving(false);
     }
@@ -1672,12 +1794,12 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
 
   async function handleFetchAppInfo() {
     if (!app || !snap || !release) return;
-    if (!window.confirm(`从 Gerrit 拉取 ${formatGerritUrl(app.git_url)} ${app.git_branch} 的 app_info.json？`)) return;
+    if (!window.confirm(`从 Gerrit 拉取 ${formatCicdRepoPath(app.git_url, app.cicd_repo_type || "git")} ${app.git_branch} 的 app_info.json？`)) return;
     if (dirty && !window.confirm("拉取 app_info 会用服务端最新内容刷新表单，未保存的表单修改会丢失。是否继续？")) return;
     setFetchProgress({
       title: "正在从 Gerrit 拉取 app_info",
       currentApp: displayName(snap),
-      currentIdentity: `${formatGerritUrl(app.git_url)} @ ${app.git_branch}`,
+      currentIdentity: `${formatCicdRepoPath(app.git_url, app.cicd_repo_type || "git")} @ ${app.git_branch}`,
       total: 1,
       completed: 0,
       ok: 0,
@@ -1818,6 +1940,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
             form={form}
             pendingRequests={appOpenCicd}
             historyRequests={appCicdHistory}
+            repoError={cicdRepoErr}
             onPatch={patch}
           />
           {saveErr && <p className="lerr" style={{ padding: "0 0 1rem" }}>{saveErr}</p>}
@@ -1922,8 +2045,8 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
                   onChange={(e) => patch("type", e.target.value)}
                   disabled={!canEditDocFields} />
               </label>
-              <label>Gerrit URL
-                <input className="input" value={formatGerritUrl(form.git_url)}
+              <label>Gerrit 路径
+                <input className="input" value={formatCicdRepoPath(form.git_url, form.cicd_repo_type || "git")}
                   disabled
                   data-testid="field-git-url" />
                 <span className="field-help">Gerrit 身份属于 CICD 配置，请在本 App 的 CICD tab 中修改。</span>
@@ -2527,8 +2650,8 @@ function ChangeLogTable({ entries, loading }: ChangeLogTableProps) {
                           {detail.map((d, j) => (
                             <tr key={j}>
                               <td>{d.label || d.field}</td>
-                              <td>{cicdValueText(d.old)}</td>
-                              <td>{cicdValueText(d.new)}</td>
+                              <td>{cicdValueText(d.old, d.field)}</td>
+                              <td>{cicdValueText(d.new, d.field)}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -2696,7 +2819,7 @@ export function AppWorkbenchPage() {
         setBulkProgress((p) => p && {
           ...p,
           currentApp: displayName(snap),
-          currentIdentity: `${formatGerritUrl(app.git_url)} @ ${app.git_branch}`,
+          currentIdentity: `${formatCicdRepoPath(app.git_url, app.cicd_repo_type || "git")} @ ${app.git_branch}`,
         });
         try {
           await apiPost<{ commit_id?: string; source?: string }>("/api/app-info/fetch", {

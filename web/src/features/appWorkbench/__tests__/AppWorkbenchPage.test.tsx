@@ -939,6 +939,29 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["cicd", "tasks"] });
   });
 
+  it("blocks invalid Gerrit path changes in the App CICD tab", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
+    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, request: { id: 1 } });
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    await clickCicdTab();
+
+    fireEvent.change(screen.getByTestId("field-cicd-git-url"), {
+      target: { value: "ssh://gerrit.example.com/PDE/HPC/hpc_app1" },
+    });
+    fireEvent.click(screen.getByText("提交 CICD 变更申请"));
+
+    const error = await screen.findByTestId("field-cicd-git-url-error");
+    expect(error).toHaveTextContent(
+      "git 类型只填写 PDE/HPC 后的短路径",
+    );
+    const gerritField = screen.getByTestId("field-cicd-git-url").closest("label");
+    expect(gerritField).not.toBeNull();
+    expect(gerritField!).toContainElement(error);
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
   it("shows App CICD config even without any legacy CICD task", async () => {
     mockApiGetForAppCicd();
     const qc = makeQueryClient();
@@ -979,6 +1002,32 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
           notes: { old: "", new: "manual fill" },
         }),
       }));
+    });
+  });
+
+  it("shows short Gerrit path in App CICD tab without submitting a repo diff", async () => {
+    const payload = payloadTwoReleases();
+    payload.apps[0] = {
+      ...payload.apps[0],
+      git_url: "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_amber",
+      git_branch: "main",
+    };
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, request: { id: 3 } });
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    await clickCicdTab();
+
+    expect(screen.getByTestId("field-cicd-git-url")).toHaveValue("hpc_amber");
+    fireEvent.change(screen.getByTestId("field-cicd-build-image"), { target: { value: "gcc:13" } });
+    fireEvent.click(screen.getByText("提交 CICD 变更申请"));
+
+    await waitFor(() => {
+      const call = (apiPost as ReturnType<typeof vi.fn>).mock.calls.find((c) => c[0] === "/api/cicd/requests/submit");
+      expect(call).toBeTruthy();
+      expect((call![1] as { payload: Record<string, unknown> }).payload).not.toHaveProperty("repo_name");
+      expect((call![1] as { payload: Record<string, unknown> }).payload).toHaveProperty("build_image");
     });
   });
 
@@ -1280,6 +1329,8 @@ describe("AppWorkbenchPage lifecycle actions", () => {
 });
 
 describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
+  const GERRIT_BASE = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC";
+
   beforeEach(() => {
     vi.stubGlobal("alert", vi.fn());
     vi.stubGlobal("confirm", vi.fn(() => true));
@@ -1297,6 +1348,22 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     expect(screen.getByTestId("new-app-dialog").textContent).toContain("CICD-first");
   });
 
+  it("shows fixed Gerrit and manifest prefixes in the new-app repo field", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("new-app-btn"));
+    fireEvent.click(screen.getByTestId("new-app-btn"));
+    await waitFor(() => screen.getByTestId("new-app-dialog"));
+
+    expect(screen.getByTestId("new-app-dialog").textContent).toContain(`${GERRIT_BASE}/`);
+    expect(screen.getByPlaceholderText("例如hpc_amber")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByDisplayValue("git"), { target: { value: "repo" } });
+    expect(screen.getByTestId("new-app-dialog").textContent).toContain(`${GERRIT_BASE}/manifest`);
+    expect(screen.getByPlaceholderText("xml地址，例如APP/openfoam/hpc_v2206_v0.xml")).toBeInTheDocument();
+  });
+
   it("RM sees direct-create escape-hatch button", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
     const qc = makeQueryClient();
@@ -1312,7 +1379,7 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     // Real backend keys from POST /api/cicd/apps/fetch-preview
     const mockPreview = {
       ok: true,
-      git_url: "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/myrepo",
+      git_url: `${GERRIT_BASE}/myrepo`,
       git_branch: "main",
       app_version: "3.7.0",
       x86_chips: "C500",

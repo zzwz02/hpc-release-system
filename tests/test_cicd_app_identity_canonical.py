@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from app.db.connection import connect, reset_init_state
 from app.repositories import apps_repo
 from app.services import app_service, cicd_service
+
+_GERRIT_BASE = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC"
 
 
 def fresh_conn():
@@ -158,8 +162,55 @@ def test_cicd_modify_repo_identity_change_updates_app_after_approval():
         )
         cicd_service.approve_request(conn, req["id"], reviewer="rm", reviewer_role="RM")
         app = apps_repo.get_app(conn, "app1")
-        assert app["git_url"] == "hpc_app_latest"
+        assert app["git_url"] == f"{_GERRIT_BASE}/hpc_app_latest"
         assert app["git_branch"] == "maca_latest"
         assert not conn.execute("SELECT 1 FROM cicd_tasks").fetchone()
+    finally:
+        conn.close()
+
+
+def test_cicd_modify_rejects_full_git_url_on_submit():
+    conn = fresh_conn()
+    try:
+        seed_app_release(conn)
+        with pytest.raises(ValueError, match="git 类型只填写 PDE/HPC 后的短路径"):
+            cicd_service.submit_request(
+                conn,
+                task_id="app1",
+                request_type="modify",
+                payload={
+                    "repo_name": {
+                        "old": "hpc_app_new",
+                        "new": f"{_GERRIT_BASE}/hpc_app_latest",
+                    },
+                },
+                submitter="owner",
+                submitter_role="Owner",
+                source="app_workbench",
+            )
+    finally:
+        conn.close()
+
+
+def test_cicd_modify_rejects_full_manifest_url_on_submit():
+    conn = fresh_conn()
+    try:
+        seed_app_release(conn)
+        with pytest.raises(ValueError, match="repo 类型只填写 manifest 内 XML 路径"):
+            cicd_service.submit_request(
+                conn,
+                task_id="app1",
+                request_type="modify",
+                payload={
+                    "repo_type": {"old": "git", "new": "repo"},
+                    "repo_name": {
+                        "old": "hpc_app_new",
+                        "new": f"{_GERRIT_BASE}/manifest/APP/openfoam/hpc_v2206_v0.xml",
+                    },
+                },
+                submitter="owner",
+                submitter_role="Owner",
+                source="app_workbench",
+            )
     finally:
         conn.close()

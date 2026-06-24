@@ -162,6 +162,38 @@ class TestCicdFirstValidation:
         assert _request_count(temp_db) == 0
         assert _task_table_count(temp_db) == 0
 
+    def test_git_create_requires_short_hpc_path(self, temp_db, tmp_dir):
+        seed_release(temp_db, tmp_path=tmp_dir)
+        with pytest.raises(ValueError, match="短路径"):
+            cicd_service.cicd_first_new_app(
+                temp_db,
+                official_name="FullUrlApp",
+                repo_type="git",
+                repo_name=_RESOLVED_URL,
+                branch="main",
+                submitter="rm",
+                submitter_role="RM",
+                payload=_BUILD_PAYLOAD,
+            )
+        assert _request_count(temp_db) == 0
+        assert _task_table_count(temp_db) == 0
+
+    def test_repo_create_requires_xml_path(self, temp_db, tmp_dir):
+        seed_release(temp_db, tmp_path=tmp_dir)
+        with pytest.raises(ValueError, match="XML 路径"):
+            cicd_service.cicd_first_new_app(
+                temp_db,
+                official_name="ManifestApp",
+                repo_type="repo",
+                repo_name="APP/openfoam",
+                branch="master",
+                submitter="rm",
+                submitter_role="RM",
+                payload={**_BUILD_PAYLOAD, "cicd_repo_type": "repo"},
+            )
+        assert _request_count(temp_db) == 0
+        assert _task_table_count(temp_db) == 0
+
 
 class TestCicdFirstAppBackedLifecycle:
     def test_create_writes_app_and_app_backed_request(self, temp_db, tmp_dir):

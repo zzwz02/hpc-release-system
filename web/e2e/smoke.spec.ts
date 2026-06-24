@@ -583,7 +583,7 @@ test.describe("W3 App 工作台 sub-tabs", () => {
     // Step 1: fill identity (unique name per run)
     const uniq = Date.now();
     await page.fill('[data-testid="new-app-name"]', `e2e-w3-${uniq}`);
-    await page.fill('input[placeholder*="sw-metax-open"]', `test/e2e-w3-${uniq}`);
+    await page.fill('[data-testid="new-app-repo-name"]', `test/e2e-w3-${uniq}`);
     await page.fill('input[placeholder*="master"]', "main");
 
     // Click "拉取 Gerrit 信息" — immediately returns 502 via route mock
@@ -663,7 +663,7 @@ test.describe("W4 wizard derived-identity display", () => {
     // Fill a git-type short repo name — identity is always derivable offline
     const uniq = Date.now();
     await page.fill('[data-testid="new-app-name"]', `e2e-w4-identity-${uniq}`);
-    await page.fill('input[placeholder*="sw-metax-open"]', `sw-metax-open/e2e-app-${uniq}`);
+    await page.fill('[data-testid="new-app-repo-name"]', `sw-metax-open/e2e-app-${uniq}`);
     await page.fill('input[placeholder*="master"]', "main");
 
     // Trigger fetch — immediately 502 via our route mock
@@ -700,7 +700,7 @@ test.describe("W4 wizard derived-identity display", () => {
     // Switch to repo type — scope to dialog to avoid hitting the release picker
     const dialog = page.locator('[data-testid="new-app-dialog"]');
     await dialog.locator("select").selectOption("repo");
-    await dialog.locator("label", { hasText: "仓库名 / Gerrit URL" }).locator("input").fill("manifests/releases/maca-4.0.xml");
+    await dialog.locator('[data-testid="new-app-repo-name"]').fill("manifests/releases/maca-4.0.xml");
 
     // Trigger fetch — immediately 502 via route mock
     await page.click('[data-testid="new-app-fetch"]');

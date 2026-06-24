@@ -364,6 +364,26 @@ describe("CicdPage", () => {
     expect(within(section).getByText("Stopped")).toBeInTheDocument();
   });
 
+  it("shows only the PDE/HPC suffix for Gerrit repo names", async () => {
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) {
+        return Promise.resolve({
+          tasks: [makeTask({
+            repo_name: "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_amber",
+          })],
+        });
+      }
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      if (url.includes("/api/cicd/requests")) return Promise.resolve({ requests: [] });
+      return Promise.resolve({ deliveries: [] });
+    });
+
+    renderCicd("RM");
+    const section = await screen.findByTestId("cicd-info-section");
+    expect(await within(section).findByText("hpc_amber")).toBeInTheDocument();
+    expect(section.textContent).not.toContain("sw-gerrit-devops.metax-internal.com");
+  });
+
   it("renders recent request records as a read-only section", async () => {
     const recentReq = makeRequest({
       id: 77,
@@ -480,6 +500,33 @@ describe("CicdPage", () => {
     await waitFor(() => {
       expect(screen.getByText("本人提交")).toBeInTheDocument();
     });
+  });
+
+  it("ApproveDialog: formats repo_name diff as a short path", async () => {
+    const req = makeRequest({
+      submitter: "bob",
+      submitter_display: "Bob",
+      payload: {
+        repo_name: {
+          old: "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_old",
+          new: "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_new",
+        },
+      },
+    });
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [makeTask()] });
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      if (url.includes("/api/cicd/requests")) return Promise.resolve({ requests: [req] });
+      return Promise.resolve({ deliveries: [] });
+    });
+
+    renderCicd("RM");
+    await waitFor(() => expect(screen.getByText("待审批")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("待审批"));
+    await userEvent.click(await screen.findByRole("button", { name: "审批" }));
+    expect(screen.getByText("hpc_old")).toBeInTheDocument();
+    expect(screen.getByText("hpc_new")).toBeInTheDocument();
+    expect(screen.getByRole("dialog").textContent).not.toContain("sw-gerrit-devops.metax-internal.com");
   });
 
   // ── CICD workbench is approval / delivery only ────────────────────────────

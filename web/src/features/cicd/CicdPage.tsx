@@ -26,7 +26,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../../api/AuthContext";
 import { RefreshBar } from "../../components/RefreshBar";
 import { formatServerTime } from "../../lib/time";
-import { formatGerritUrl } from "../../lib/git";
+import { formatCicdRepoPath } from "../../lib/git";
 import {
   CICD_TASKS_KEY,
   CICD_NOTIFICATIONS_KEY,
@@ -135,6 +135,12 @@ function communityArtifactStr(arr: string[] | null | undefined): string {
     .join("、");
 }
 
+function cicdFieldValue(field: string, value: unknown): string {
+  if (Array.isArray(value)) return value.join(", ");
+  if (field === "repo_name") return formatCicdRepoPath(String(value ?? ""));
+  return String(value ?? "");
+}
+
 function ownerLabel(task: CicdTask): string {
   return task.owner_display || task.owner_username || "";
 }
@@ -214,7 +220,7 @@ function DiffTable({
         </thead>
         <tbody>
           {rows.map(([k, v]) => {
-            const val = Array.isArray(v) ? v.join(", ") : String(v ?? "");
+            const val = cicdFieldValue(k, v);
             return (
               <tr key={k}>
                 <td>{FIELD_LABEL[k] ?? k}</td>
@@ -240,12 +246,8 @@ function DiffTable({
       <tbody>
         {Object.entries(payload ?? {}).map(([field, ch]) => {
           const entry = ch as DiffEntry;
-          const oldV = Array.isArray(entry?.old)
-            ? entry.old.join(", ")
-            : String(entry?.old ?? "");
-          const newV = Array.isArray(entry?.new)
-            ? entry.new.join(", ")
-            : String(entry?.new ?? "");
+          const oldV = cicdFieldValue(field, entry?.old);
+          const newV = cicdFieldValue(field, entry?.new);
           return (
             <tr key={field}>
               <td>{FIELD_LABEL[field] ?? field}</td>
@@ -622,7 +624,7 @@ function DetailDialog({
             const items: [string, string][] = [
               ["项目名称", task?.app_name || ctx.app_name || "—"],
               ["版本", task?.app_version || ctx.app_version || "—"],
-              ["仓库名", formatGerritUrl(task?.repo_name || ctx.repo_name) || "—"],
+              ["仓库名", formatCicdRepoPath(task?.repo_name || ctx.repo_name, task?.repo_type) || "—"],
               ["分支", task?.branch || ctx.branch || "—"],
             ];
             return (
@@ -676,7 +678,7 @@ function TaskInfoSection({
           t.id.toLowerCase().includes(q) ||
           t.app_name.toLowerCase().includes(q) ||
           t.app_version.toLowerCase().includes(q) ||
-          formatGerritUrl(t.repo_name).toLowerCase().includes(q) ||
+          formatCicdRepoPath(t.repo_name, t.repo_type).toLowerCase().includes(q) ||
           ownerLabel(t).toLowerCase().includes(q) ||
           t.owner_username.toLowerCase().includes(q) ||
           t.status.toLowerCase().includes(q),
@@ -755,7 +757,7 @@ function TaskInfoSection({
                     <td>{t.app_version}</td>
                     <td>{t.repo_type}</td>
                     <td style={{ maxWidth: 160, wordBreak: "break-all" }}>
-                      {formatGerritUrl(t.repo_name)}
+                      {formatCicdRepoPath(t.repo_name, t.repo_type)}
                     </td>
                     <td>{t.branch}</td>
                     <td>{buildProductStr(t.build_product)}</td>

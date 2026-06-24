@@ -166,6 +166,62 @@ def _test_timeout_value(value: object) -> int:
     return parsed if parsed > 0 else 40
 
 
+def _is_full_git_remote(value: str) -> bool:
+    return "://" in value or value.startswith("git@")
+
+
+def _validate_cicd_first_repo_input(repo_type: str, repo_name: str) -> None:
+    raw = (repo_name or "").strip().lstrip("/")
+    if not raw:
+        return
+    normalized_type = (repo_type or "git").strip()
+    if normalized_type == "repo":
+        if (
+            _is_full_git_remote(raw)
+            or raw.startswith("manifest/")
+            or raw.startswith("PDE/HPC/manifest/")
+        ):
+            raise ValueError(
+                "repo 类型只填写 manifest 内 XML 路径，"
+                "例如 APP/openfoam/hpc_v2206_v0.xml"
+            )
+        if not raw.endswith(".xml"):
+            raise ValueError(
+                "repo 类型必须填写 XML 路径，"
+                "例如 APP/openfoam/hpc_v2206_v0.xml"
+            )
+        return
+    if _is_full_git_remote(raw) or raw.startswith("PDE/HPC/"):
+        raise ValueError("git 类型只填写 PDE/HPC 后的短路径，例如 hpc_amber")
+    if raw.endswith(".xml"):
+        raise ValueError("manifest XML 请使用 repo 类型填写")
+
+
+def _validate_app_workbench_modify_repo_input(
+    conn: sqlite3.Connection,
+    app_id: str,
+    payload: dict,
+) -> None:
+    if "repo_name" not in (payload or {}) and "repo_type" not in (payload or {}):
+        return
+    app = apps_repo.get_app(conn, app_id) or {}
+    repo_type_change = (payload or {}).get("repo_type")
+    repo_name_change = (payload or {}).get("repo_name")
+    next_repo_type = str(
+        repo_type_change.get("new")
+        if isinstance(repo_type_change, dict) and "new" in repo_type_change
+        else app.get("cicd_repo_type") or "git"
+    ).strip() or "git"
+    next_repo_name = str(
+        repo_name_change.get("new")
+        if isinstance(repo_name_change, dict) and "new" in repo_name_change
+        else app.get("git_url") or ""
+    ).strip()
+    if not next_repo_name:
+        raise ValueError("repo_name 不能为空，请检查 repo_name / branch")
+    _validate_cicd_first_repo_input(next_repo_type, next_repo_name)
+
+
 def _task_id_to_app_id(conn: sqlite3.Connection, task_id: str | None) -> str | None:
     if not task_id:
         return None
@@ -553,6 +609,7 @@ def _apply_cicd_request(
             raise RuntimeError("修改请求缺少 task_id")
         app_id = _task_id_to_app_id(conn, task_id)
         if app_id:
+            app = apps_repo.get_app(conn, app_id) or {}
             app_updates = {}
             git_url_update: str | None = None
             git_branch_update: str | None = None
@@ -571,6 +628,31 @@ def _apply_cicd_request(
                     new_value = _community_app_value(new_value)
                 app_updates[app_field] = new_value
             if git_url_update is not None or git_branch_update is not None:
+                if git_url_update is not None:
+                    from app.identity import repo_to_git_identity
+
+                    next_repo_type = str(
+                        app_updates.get("cicd_repo_type")
+                        or app.get("cicd_repo_type")
+                        or "git"
+                    ).strip()
+                    next_branch = str(
+                        git_branch_update
+                        if git_branch_update is not None
+                        else app.get("git_branch", "")
+                    ).strip()
+                    resolved_url, resolved_branch = repo_to_git_identity(
+                        next_repo_type,
+                        git_url_update,
+                        next_branch,
+                    )
+                    if not resolved_url or not resolved_branch:
+                        raise ValueError(
+                            "无法解析 repo 身份（repo_name 为空或 .xml manifest 解析失败），"
+                            "请检查 repo_name / branch"
+                        )
+                    git_url_update = resolved_url
+                    git_branch_update = resolved_branch
                 _update_app_git_identity(
                     conn,
                     app_id,
@@ -741,6 +823,7 @@ def submit_request(
                 raise RuntimeError(
                     f"App 工作台 CICD tab 只能修改 App 表中的 CICD 配置字段；不支持：{fields}"
                 )
+            _validate_app_workbench_modify_repo_input(conn, app_id, payload)
         else:
             raise RuntimeError("CICD 修改申请必须关联有效 App")
     ts = beijing_timestamp()
@@ -1457,6 +1540,7 @@ def preview_cicd_app_info(
         raise ValueError("repo_name 不能为空，请检查 repo_name / branch")
     if not (branch or "").strip():
         raise ValueError("branch 不能为空，请检查 repo_name / branch")
+    _validate_cicd_first_repo_input(repo_type, repo_name)
 
     # Determine if this is a manifest repo (identity needs network).
     is_manifest = (repo_name or "").strip().endswith(".xml")
@@ -1548,6 +1632,7 @@ def preview_cicd_app_info_for_create(
         raise ValueError("repo_name 不能为空，请检查 repo_name / branch")
     if not (branch or "").strip():
         raise ValueError("branch 不能为空，请检查 repo_name / branch")
+    _validate_cicd_first_repo_input(repo_type, repo_name)
 
     raw_repo_name = repo_name.strip()
     raw_branch = branch.strip()
@@ -1757,6 +1842,7 @@ def cicd_first_new_app(
     official_name = (official_name or "").strip()
     if not official_name:
         raise ValueError("必须提供 app 名称（official_name）")
+    _validate_cicd_first_repo_input(repo_type, repo_name)
 
     # ------------------------------------------------------------------
     # Step 1 — Derive identity OUTSIDE the write transaction

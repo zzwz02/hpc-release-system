@@ -226,11 +226,35 @@ input:disabled {
 .input.sm, input.sm { padding: 5px 8px; font-size: 12.5px; }
 .field-label, .field-label > span, .lfield-lbl, .prog-label { display: block; font-size: 12px; font-weight: 600; color: var(--ink-2); margin-bottom: 5px; }
 .field-help { display: block; margin-top: 4px; font-size: 11.5px; line-height: 1.35; color: var(--muted); font-weight: 400; }
+.field-error { display: block; margin-top: 4px; font-size: 11.5px; line-height: 1.35; color: var(--bad-fg); font-weight: 500; }
 .field-label.required::after, .required::after { content: " *"; color: var(--bad-fg); }
 .form { display: grid; gap: 11px; }
 .form label { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
 .form label .input, .form label .select, .form label select, .form label textarea,
 .form label input { margin-top: 4px; font-weight: 400; }
+.repo-input-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  width: 100%;
+  margin-top: 4px;
+}
+.repo-input-prefix {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+.repo-input-group .input {
+  flex: 1 1 190px;
+  min-width: 180px;
+  margin-top: 0 !important;
+}
 /* compact form: cap field width so a lone date input isn't full-bleed; fields
    flow into capped columns that fill the panel instead of stretching to ~1500px */
 .form.form-compact { grid-template-columns: repeat(auto-fit, minmax(220px, 300px)); justify-content: start; gap: 14px; align-items: end; }
