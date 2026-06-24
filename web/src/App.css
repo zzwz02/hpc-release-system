@@ -844,11 +844,15 @@ textarea.artifact {
 .wiki-card-title.pinned::before { content: "📌 "; }
 .wiki-card-excerpt { color: var(--ink-2); font-size: 12.5px; margin-top: 5px; line-height: 1.55; }
 .wiki-card-meta, .wiki-meta { color: var(--muted); font-size: 11.5px; margin-top: 8px; }
-.wiki-outline, .wiki-outline-tree {
+.wiki-outline {
   position: sticky; top: 0; align-self: start;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
   padding: 12px 14px; box-shadow: var(--shadow-sm); font-size: 12.5px;
+  max-height: calc(100vh - var(--topbar-h) - 92px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
+.wiki-outline-tree { min-width: 0; }
 .wiki-outline-head { font-weight: 700; font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 7px; }
 .wiki-outline-list { list-style: none; padding: 0; margin: 0; }
 .wiki-outline-row { display: block; padding: 3px 0; color: var(--ink-2); cursor: pointer; }
