@@ -64,6 +64,11 @@ export function canGenerateMarkdown(user: User | null | undefined): boolean {
   return ["RM", "Owner"].includes(user?.role ?? "");
 }
 
+/** True when the user can create app entries from App 工作台. */
+export function canCreateApp(user: User | null | undefined): boolean {
+  return ["RM", "Owner"].includes(user?.role ?? "");
+}
+
 /**
  * True when the user can edit wiki articles.
  * Mirrors index.html:1664.

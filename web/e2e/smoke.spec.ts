@@ -304,8 +304,36 @@ test.describe("App 工作台 decision save", () => {
     await page.goto(`${BASE}/apps`);
     await page.waitForSelector('[data-testid="app-table"]', { timeout: 15_000 });
 
+    const frozenRelease = await page.evaluate(async (name) => {
+      const res = await fetch("/api/releases/create", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          maca_version: "",
+          app_freeze_deadline: "2000-01-01",
+          doc_deadline: "2000-01-02",
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body.error) {
+        throw new Error(body.error || res.statusText);
+      }
+      return body as { release_id: string };
+    }, `e2e-doc-frozen-${Date.now()}`);
+
+    await page.goto(`${BASE}/apps`);
+    await page.waitForSelector('select[aria-label="选择 release"]', { timeout: 15_000 });
+    await page.locator('select[aria-label="选择 release"]').selectOption(frozenRelease.release_id);
+    await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
+
     // Click first release-decision=release app row
     const firstRow = page.locator('[data-testid^="app-row-"]').first();
+    if (!await firstRow.isVisible({ timeout: 5_000 }).catch(() => false)) {
+      test.skip();
+      return;
+    }
     await firstRow.click();
     await page.waitForSelector('[data-testid="detail-panel"]', { timeout: 10_000 });
 

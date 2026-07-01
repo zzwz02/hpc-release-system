@@ -1,8 +1,8 @@
 """Release lifecycle service — import, create, lock, deadlines, schedule.
 
-Faithful 1:1 port of the release-related handlers in server.py (lines 669-722,
-995-1018) and the schedule handlers.  All business logic delegates to
-release_system.core — this layer owns the HTTP boundary mapping only.
+Port of the release-related handlers in server.py (lines 669-722, 995-1018)
+and the schedule handlers.  Most business logic delegates to release_system.core;
+final lock goes through artifact_service so current FastAPI artifact rules apply.
 
 Services take conn: sqlite3.Connection first, pure (no HTTP), own transactions.
 """
@@ -128,9 +128,16 @@ def final_lock(
     """Final-lock a release and generate final artifacts.
 
     Returns {"artifacts": [...]}.
-    Mirrors server.py:710-715.
+    Mirrors server.py:710-715 except for current FastAPI artifact rules.
     """
-    artifacts = _core.final_lock_release(conn, release_id, user=user, role=role)
+    from app.services import artifact_service
+
+    artifacts = artifact_service.final_lock_release(
+        conn,
+        release_id,
+        user=user,
+        role=role,
+    )
     return {"artifacts": list(artifacts)}
 
 

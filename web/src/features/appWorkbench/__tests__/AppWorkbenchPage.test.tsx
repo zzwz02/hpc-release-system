@@ -232,6 +232,29 @@ describe("AppWorkbenchPage", () => {
     });
   });
 
+  it("shows QA cannot_release issue banner in detail panel", async () => {
+    const payload = makePayload({
+      release: makeRelease({
+        app1: makeSnap("app1", {
+          official_name: "AlphaApp",
+          qa_status: "cannot_release",
+          qa_issue_note: "C500 阻塞发布",
+        }),
+      }),
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+    fireEvent.click(screen.getByTestId("app-row-app1"));
+    await waitFor(() => {
+      const detail = screen.getByTestId("detail-panel").textContent ?? "";
+      expect(detail).toContain("QA 标注「不可发布」");
+      expect(detail).toContain("C500 阻塞发布");
+      expect(detail).toContain("Release Note");
+    });
+  });
+
   it("search box filters app list", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
     const qc = makeQueryClient();
@@ -291,6 +314,23 @@ describe("AppWorkbenchPage", () => {
     await waitFor(() => {
       expect(screen.getByTestId("new-app-btn")).toBeTruthy();
     });
+  });
+
+  it("Guest does not see + 新增 button", async () => {
+    (useAuth as ReturnType<typeof vi.fn>).mockReturnValue({
+      user: { username: "guest", role: "Guest", display_name: "Guest" },
+      ldapStatus: { enabled: false, uri: "" },
+      login: vi.fn(),
+      logout: vi.fn(),
+      clearUser: vi.fn(),
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makePayload({ user: { username: "guest", role: "Guest", display_name: "Guest" } }),
+    );
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("app-table"));
+    expect(screen.queryByTestId("new-app-btn")).toBeNull();
   });
 
   it("no + 新增 button when release is locked", async () => {

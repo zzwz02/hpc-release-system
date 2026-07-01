@@ -9,6 +9,7 @@ import {
   canViewQa,
   canEditQa,
   canGenerateMarkdown,
+  canCreateApp,
   canEditWiki,
   canEdit,
   isOwnApp,
@@ -98,6 +99,19 @@ describe("canGenerateMarkdown", () => {
   it("denies QA, Guest, Admin", () => {
     for (const role of ["QA", "Guest", "Admin"]) {
       expect(canGenerateMarkdown(makeUser(role))).toBe(false);
+    }
+  });
+});
+
+describe("canCreateApp", () => {
+  it("allows RM and Owner", () => {
+    expect(canCreateApp(makeUser("RM"))).toBe(true);
+    expect(canCreateApp(makeUser("Owner"))).toBe(true);
+  });
+
+  it("denies QA, Guest, Admin, and SPD", () => {
+    for (const role of ["QA", "Guest", "Admin", "SPD"]) {
+      expect(canCreateApp(makeUser(role))).toBe(false);
     }
   });
 });

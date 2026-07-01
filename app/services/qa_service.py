@@ -1,16 +1,27 @@
 """QA service — status batch updates, log upload/download, and LLM analysis.
 
-Faithful 1:1 port of server.py QA handlers + core.py QA functions.
-All orchestration delegates to release_system.core; this layer just wires
-auth context (user/role/db_path) to the right core call.
+Most orchestration delegates to release_system.core.  QA status updates live
+here because FastAPI has runtime-only release-note rules that intentionally
+differ from the frozen legacy reference.
 """
 from __future__ import annotations
 
 import base64
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import release_system.core as core
+from app.db.connection import transaction
+from app.repositories.audit_repo import log_audit
+from app.repositories.snapshots_repo import save_snapshot
+from app.timeutil import beijing_timestamp
+
+_ISSUE_NOTE_REQUIRED_STATUSES = {"has_issues", "cannot_release"}
+_QA_STATUS_LABELS = {
+    "has_issues": "存在问题",
+    "cannot_release": "不可发布",
+}
 
 # ---------------------------------------------------------------------------
 # QA status batch update — POST /api/qa/status-batch
@@ -26,9 +37,74 @@ def set_qa_status_batch(
 ) -> dict:
     """Apply several QA-status updates atomically.
 
-    Mirrors server.py:941-952.  Returns {"ok": True, "updated": n}.
+    ``cannot_release`` follows the same note requirement as ``has_issues``.
+    Returns {"ok": True, "updated": n}.
     """
-    updated = core.qa_set_status_batch(conn, release_id, items, user=user, role=role)
+    release = core.get_release(conn, release_id)
+    if release.get("released_locked"):
+        raise RuntimeError("Release 已最终锁定，不可修改 QA 状态")
+
+    # (app_id, snapshot, status, issue_note, old_status, old_note)
+    prepared: list[tuple[str, dict[str, Any], str, str, str, str]] = []
+    errors: list[str] = []
+    for item in items:
+        app_id = item.get("app_id", "")
+        status = item.get("status", "")
+        issue_note = (item.get("issue_note") or "").strip()
+        if status not in core.QA_STATUSES:
+            errors.append(f"{app_id}：无效的 QA 状态 {status!r}")
+            continue
+        snapshot = release["snapshots"].get(app_id)
+        if not snapshot:
+            errors.append(f"{app_id}：不在本 release 中")
+            continue
+        if snapshot.get("release_decision") != "release":
+            errors.append(f"{app_id}：仅 release 决策的 app 可标注 QA 状态")
+            continue
+        if status in _ISSUE_NOTE_REQUIRED_STATUSES and not issue_note:
+            label = _QA_STATUS_LABELS.get(status, status)
+            errors.append(f"{app_id}：标注「{label}」时必须填写问题说明")
+            continue
+        prepared.append((
+            app_id,
+            snapshot,
+            status,
+            issue_note,
+            snapshot.get("qa_status", "not_checked"),
+            snapshot.get("qa_issue_note", ""),
+        ))
+
+    if errors:
+        raise ValueError("；".join(errors))
+
+    ts = beijing_timestamp()
+    with transaction(conn):
+        for app_id, snapshot, status, issue_note, old_status, old_note in prepared:
+            snapshot["qa_status"] = status
+            snapshot["qa_issue_note"] = (
+                issue_note if status in _ISSUE_NOTE_REQUIRED_STATUSES else ""
+            )
+            save_snapshot(conn, release_id, app_id, snapshot)
+            detail = [{"field": "qa_status", "label": "QA 状态", "old": old_status, "new": status}]
+            if old_note or snapshot["qa_issue_note"]:
+                detail.append({
+                    "field": "qa_issue_note",
+                    "label": "问题说明",
+                    "old": old_note,
+                    "new": snapshot["qa_issue_note"],
+                })
+            log_audit(
+                conn,
+                f"QA 标注 {app_id} 为 {status}" + (f"：{issue_note}" if issue_note else ""),
+                ts=ts,
+                user=user,
+                role=role,
+                app_id=app_id,
+                release_id=release_id,
+                event="qa_set_status",
+                detail=detail,
+            )
+    updated = {app_id: snapshot for app_id, snapshot, *_ in prepared}
     return {"ok": True, "updated": len(updated)}
 
 

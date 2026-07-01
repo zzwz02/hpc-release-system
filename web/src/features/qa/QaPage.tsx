@@ -49,6 +49,11 @@ const QA_RELEASE_REPORT_DEFAULT_HIDDEN = new Set([
 
 const CHIP_LEGEND =
   "x201系列芯片包括x201, x203 · x301系列芯片 · x302系列芯片 · C500系列芯片包括C500, C550 · C600系列芯片包括C600 · N300系列芯片包括N300";
+const QA_NOTE_REQUIRED_STATUSES = new Set<QaStatus>(["has_issues", "cannot_release"]);
+
+function qaIssueNoteRequired(status: string): boolean {
+  return QA_NOTE_REQUIRED_STATUSES.has(status as QaStatus);
+}
 
 // ---------------------------------------------------------------------------
 // Query key + fetchers
@@ -379,6 +384,15 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
       uiStore.setQaAiJob(null);
       return;
     }
+    const missingNote = items.find(
+      (item) => qaIssueNoteRequired(item.status) && !item.issue_note.trim(),
+    );
+    if (missingNote) {
+      alert(
+        `标注「${qaStatusLabels[missingNote.status as QaStatus] ?? missingNote.status}」时必须填写问题说明`,
+      );
+      return;
+    }
     try {
       await apiPost("/api/qa/status-batch", { release_id: releaseId, items });
       uiStore.setQaEditMode(false);
@@ -581,14 +595,14 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
                   </label>
                   <label>
                     问题说明{" "}
-                    {status === "has_issues" ? (
+                    {qaIssueNoteRequired(status) ? (
                       <span className="req">必填</span>
                     ) : (
                       "(可选)"
                     )}
                     <textarea
                       disabled={!qaFieldsWritable}
-                      placeholder="标注「存在问题」时必填；保存后会附加到已知限制段"
+                      placeholder={qaFieldsWritable ? "标注「存在问题」或「不可发布」时必填；保存后会写入 Release Note" : ""}
                       value={f?.note ?? note}
                       onChange={(e) =>
                         setFormState((prev) => ({

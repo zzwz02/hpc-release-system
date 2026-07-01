@@ -22,7 +22,7 @@ import { formatServerTime } from "../../lib/time";
 import { apiGet, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
-import { isRM, isOwner, canEdit } from "../../lib/roles";
+import { isRM, isOwner, canCreateApp, canEdit } from "../../lib/roles";
 import { beforeAppFreeze, beforeDocDeadline, releaseLocked, newAppDecisionOptions } from "../../lib/phase";
 import { displayName } from "../../lib/identity";
 import {
@@ -2085,8 +2085,11 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
         )}
 
         {/* QA issue note */}
-        {snap.qa_status === "has_issues" && snap.qa_issue_note && (
-          <div className="banner warnp">QA 标注「存在问题」：{snap.qa_issue_note}（会附加到已知限制段）</div>
+        {(snap.qa_status === "has_issues" || snap.qa_status === "cannot_release") && snap.qa_issue_note && (
+          <div className={snap.qa_status === "cannot_release" ? "banner bad" : "banner warnp"}>
+            QA 标注「{qaStatusLabels[snap.qa_status] ?? snap.qa_status}」：{snap.qa_issue_note}
+            （会写入 Release Note，并附加到已知限制段）
+          </div>
         )}
 
         {/* Basic info section */}
@@ -2855,7 +2858,7 @@ export function AppWorkbenchPage() {
     return counts;
   }, [appWorkbenchOpenRequests, apps]);
 
-  const canCreateApp = !!(data?.release && !locked);
+  const canCreateAppForUser = !!(data?.release && !locked && canCreateApp(user));
 
   function handleSelectApp(id: string) {
     if (selectedApp === id) return;
@@ -2877,11 +2880,13 @@ export function AppWorkbenchPage() {
   }
 
   function handleOpenNewApp() {
+    if (!canCreateAppForUser) return;
     setNewAppInitialValues(null);
     setShowNewApp(true);
   }
 
   function handleRetryCreate(app: App, snap: Snapshot) {
+    if (!canCreateAppForUser) return;
     setNewAppInitialValues({
       officialName: snap.official_name || app.aliases?.[0] || app.id,
       repoType: app.cicd_repo_type || (app.git_url.endsWith(".xml") ? "repo" : "git"),
@@ -3031,7 +3036,7 @@ export function AppWorkbenchPage() {
             showOwnOnly={userIsOwner}
             displayNames={displayNames}
             cicdPendingCounts={cicdPendingCounts}
-            canCreateApp={canCreateApp}
+            canCreateApp={canCreateAppForUser}
             onNewApp={handleOpenNewApp}
           />
           <DetailPanel

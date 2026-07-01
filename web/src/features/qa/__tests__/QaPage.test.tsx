@@ -411,6 +411,48 @@ describe("QaPage mark pane", () => {
       expect(screen.getByText(/test\.log/)).toBeDefined();
     });
   });
+
+  it("hides the issue-note placeholder in browse mode", async () => {
+    const payload = makePayload({
+      release: makeRelease({
+        app1: makeSnap("app1", { qa_status: "cannot_release" }),
+      }),
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
+      if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
+      return Promise.resolve(payload);
+    });
+    const qc = makeQClient();
+    renderQaPage(qc);
+    await waitFor(() => {
+      expect(screen.getByText("必填")).toBeDefined();
+      expect(screen.queryByPlaceholderText(/存在问题.*不可发布/)).toBeNull();
+    });
+  });
+
+  it("shows issue-note placeholder in edit mode", async () => {
+    uiStoreMod.__setState({
+      selectedReleaseId: "rel-1",
+      qaEditMode: true,
+      qaEditReleaseId: "rel-1",
+      qaAiJob: null,
+      qaAiSuggestions: {},
+    });
+    const payload = makePayload({
+      release: makeRelease({
+        app1: makeSnap("app1", { qa_status: "cannot_release" }),
+      }),
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
+      if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
+      return Promise.resolve(payload);
+    });
+    const qc = makeQClient();
+    renderQaPage(qc);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/存在问题.*不可发布/)).toBeDefined();
+    });
+  });
 });
 
 describe("QaPage AI job poll", () => {
