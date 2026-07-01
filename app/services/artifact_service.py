@@ -252,6 +252,9 @@ def final_lock_release(
     role: str,
 ) -> dict[str, str]:
     """Final-lock a release using the FastAPI artifact rules."""
+    from app.services import cicd_service
+
+    cicd_service.ensure_no_open_deferred_release_decision_for_release(conn, release_id)
     with _runtime_artifact_rules():
         return _core.final_lock_release(conn, release_id, user=user, role=role)
 

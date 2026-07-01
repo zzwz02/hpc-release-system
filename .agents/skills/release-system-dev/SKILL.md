@@ -83,10 +83,12 @@ work directly.
   CICD request cannot be rejected or cancelled. CICD-first create starts snapshots as `stopped`; rejected or
   cancelled create requests leave the app visible with the reason, block duplicate `(git_url, branch)` creates,
   and only allow same-name retry. New CICD modify requests are blocked while the same app has an unfinished
-  CICD-first create request, or an unfinished Jira-backed modify delivery (`delivery_status` pending/returned);
-  no Jira issue is auto-cancelled. No-Jira pending modify requests may be replaced only with explicit
-  `replace_open=true` after the UI warns that old requests will be cancelled. Any Running/Stopped boundary
-  sync uses the same blockers and must not create `release_decision_sync` or change the snapshot when blocked.
+  CICD-first create request, an unfinished Jira-backed modify delivery (`delivery_status` pending/returned),
+  or an unfinished `release_decision_sync` Running/Stopped status modify request (`payload.status`, whether
+  pending approval, delivery pending, or returned). No-Jira pending workbench modifies may be replaced only with
+  explicit `replace_open=true` after the UI warns that old requests will be cancelled; status-sync modifies are
+  never replaceable by config edits. Any Running/Stopped boundary sync uses the same blockers and must not create
+  `release_decision_sync` or change the snapshot when blocked.
   RM can reject a returned delivery through the `reject-returned` endpoint only with a reason, preserving Jira
   and return history and without applying the payload. CICD has no Abandoned/delete flow; retire/delete is
   handled through App lifecycle. CICD 工作台 is read-only; CICD config changes enter from App 工作台 → CICD tab.

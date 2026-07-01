@@ -677,6 +677,46 @@ class TestCicdRepo:
         self.conn.commit()
         assert cicd_repo.has_open_modify_on_field(self.conn, "app1", "status") is False
 
+    def test_has_open_modify_on_field_true_during_delivery(self):
+        req_id = cicd_repo.insert_request(
+            self.conn,
+            task_id="app1",
+            app_id="app1",
+            request_type="modify",
+            payload={"status": {"old": "Stopped", "new": "Running"}},
+            submitter="rm",
+            submitted_at=beijing_timestamp(),
+            status="pending",
+        )
+        cicd_repo.update_request(
+            self.conn,
+            req_id,
+            status="approved",
+            delivery_status="pending",
+        )
+        self.conn.commit()
+        assert cicd_repo.has_open_modify_on_field(self.conn, "app1", "status") is True
+
+    def test_has_open_modify_on_field_true_after_delivery_returned(self):
+        req_id = cicd_repo.insert_request(
+            self.conn,
+            task_id="app1",
+            app_id="app1",
+            request_type="modify",
+            payload={"status": {"old": "Stopped", "new": "Running"}},
+            submitter="rm",
+            submitted_at=beijing_timestamp(),
+            status="pending",
+        )
+        cicd_repo.update_request(
+            self.conn,
+            req_id,
+            status="approved",
+            delivery_status="returned",
+        )
+        self.conn.commit()
+        assert cicd_repo.has_open_modify_on_field(self.conn, "app1", "status") is True
+
     def test_pending_task_ids(self):
         cicd_repo.insert_request(
             self.conn, task_id="app1", app_id="app1", request_type="modify",

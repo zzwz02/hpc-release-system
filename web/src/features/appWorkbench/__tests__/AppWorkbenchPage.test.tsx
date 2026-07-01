@@ -1159,6 +1159,36 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
     expect(button).toBeDisabled();
   });
 
+  it("blocks App CICD submit when a release-decision status sync is pending", async () => {
+    const payload = payloadTwoReleases();
+    const statusReq = makeCicdRequest({
+      id: 12,
+      status: "pending",
+      delivery_status: "",
+      jira_id: "",
+      origin: "release_decision_sync",
+      payload: JSON.stringify({ status: { old: "Running", new: "Stopped" } }) as unknown as CicdRequest["payload"],
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.startsWith("/api/cicd/requests?status=pending")) return Promise.resolve({ requests: [statusReq] });
+      if (url.startsWith("/api/cicd/deliveries")) return Promise.resolve({ deliveries: [] });
+      if (url.startsWith("/api/cicd/requests?since_days=")) return Promise.resolve({ requests: [statusReq] });
+      return Promise.resolve(payload);
+    });
+    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, request: { id: 3 } });
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    await clickCicdTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("app-cicd-status-block-banner").textContent).toContain("#12");
+    });
+    const button = screen.getByRole("button", { name: "提交 CICD 变更申请" }) as HTMLButtonElement;
+    expect(button).toBeDisabled();
+    expect(apiPost).not.toHaveBeenCalledWith("/api/cicd/requests/submit", expect.anything());
+  });
+
   it("confirms replacement of no-Jira pending modify and sends replace_open", async () => {
     const confirmSpy = vi.fn(() => true);
     vi.stubGlobal("confirm", confirmSpy);

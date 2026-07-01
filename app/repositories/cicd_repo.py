@@ -57,22 +57,33 @@ def has_open_modify_on_field(
     task_id: str,
     field: str,
 ) -> bool:
-    """True if there is already an open (pending/dispatched) modify request touching *field*.
+    """True if an open pending/dispatched/returned modify request touches *field*.
 
     Used as an idempotent guard: if a decision-sync already produced a pending
     modify request for 'status', a second call with the same intent is a no-op.
     """
+    return bool(open_modifies_on_field(conn, task_id, field))
+
+
+def open_modifies_on_field(
+    conn: sqlite3.Connection,
+    task_id: str,
+    field: str,
+) -> list[dict[str, Any]]:
+    """Open pending/dispatched/returned modify requests touching *field*."""
     rows = conn.execute(
-        "SELECT payload FROM cicd_task_requests "
+        "SELECT * FROM cicd_task_requests "
         "WHERE COALESCE(app_id, task_id) = ? "
-        "AND request_type = 'modify' AND status = 'pending'",
+        "AND request_type = 'modify' "
+        "AND (status = 'pending' OR delivery_status IN ('pending', 'returned'))",
         (task_id,),
     ).fetchall()
+    result: list[dict[str, Any]] = []
     for row in rows:
         p = _load_payload(row["payload"])
         if field in p:
-            return True
-    return False
+            result.append(_request_row(row))
+    return result
 
 
 # ---------------------------------------------------------------------------

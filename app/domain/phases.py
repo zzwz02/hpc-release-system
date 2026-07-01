@@ -1,4 +1,4 @@
-"""Release lifecycle phase logic — ported VERBATIM from core.py:161-217.
+"""Release lifecycle phase logic for the FastAPI runtime.
 
 Pure functions: no HTTP, no DB, unit-testable in isolation.
 """
@@ -18,18 +18,30 @@ _PHASE_POLICY: dict[str, set[str]] = {
     "before_app_freeze": {
         "new_app_release", "new_app_non_release",
         "raise_to_release", "lower_decision",
-        "edit_app_info", "expand_qa_scope",
+        "edit_release_decision",
+        "edit_cicd_config", "edit_gerrit_identity",
+        "edit_release_doc_fields", "edit_app_info", "edit_owner_confirmation",
+        "expand_qa_scope",
+        "edit_qa_status", "upload_qa_log",
+        # Legacy aliases retained for older call sites. New code should prefer
+        # the granular actions above so phase policy remains explicit.
         "edit_snapshot", "qa_set_status", "qa_upload_log",
     },
     "after_app_freeze": {
         "new_app_non_release",
         "lower_decision",
-        "edit_app_info",
+        "edit_release_decision",
+        "edit_cicd_config", "edit_gerrit_identity",
+        "edit_release_doc_fields", "edit_app_info", "edit_owner_confirmation",
+        "edit_qa_status", "upload_qa_log",
         "edit_snapshot", "qa_set_status", "qa_upload_log",
     },
     "after_doc_deadline": {
         "new_app_non_release",
         "lower_decision",
+        "edit_release_decision",
+        "edit_cicd_config", "edit_gerrit_identity",
+        "edit_qa_status", "upload_qa_log",
         "qa_set_status", "qa_upload_log",
     },
     "released_locked": set(),

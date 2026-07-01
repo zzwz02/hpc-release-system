@@ -222,6 +222,7 @@ flowchart TD
 同一个 app 的 CICD 修改不能越过未完成的上游申请，否则会出现 release 决策已变更但 CICD 实际状态仍停留在旧值的问题。提交 App 工作台 CICD 配置修改、以及任何跨 Running/Stopped 边界的 release 决策同步时，都必须先检查同 app 的未完成 CICD 申请：
 
 - 有未完成的 CICD-first `create` 申请：直接拒绝新的 CICD modify，并提示等待新建申请审批/交付完成后再修改。
+- 有未完成的 Running/Stopped 状态同步 `modify` 申请（`origin="release_decision_sync"`，payload 含 `status`）：直接拒绝新的 CICD modify；必须先等待该状态同步审批/交付完成，避免构建配置修改越过运行态切换。
 - 有未完成的 `modify` 且已绑定 Jira（`jira_id` 非空，交付状态为 `pending` 或 `returned`）：直接拒绝新的 CICD modify；系统不自动取消 Jira，也不调用 Jira API 关闭 issue。正确流程是 SPD 先退回需求，再由 RM 在待交付页拒绝旧申请。
 - 只有无 Jira 的 pending `modify`：允许用户确认替换。前端必须明确提示旧申请会被取消，后端收到 `replace_open=true` 后才会取消旧 pending modify 并提交当前新申请。
 - `release_decision_sync` 的 Running/Stopped 状态同步申请走同一套阻塞规则；被阻塞时不创建 sync 请求，也不应用新的 release 决策。

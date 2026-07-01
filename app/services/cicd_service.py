@@ -14,6 +14,7 @@ import sqlite3
 
 from app.db.connection import transaction
 from app.repositories import apps_repo, cicd_repo, releases_repo, snapshots_repo
+from app.repositories.audit_repo import log_audit
 from app.timeutil import beijing_timestamp
 
 # ---------------------------------------------------------------------------
@@ -478,6 +479,11 @@ def _apply_deferred_release_decision(
     app_id: str,
     release_id: str,
     target_decision: str,
+    *,
+    request_id: int,
+    applied_by: str,
+    applied_role: str,
+    ts: str,
 ) -> None:
     """Apply a release decision that was waiting for CICD delivery."""
     import release_system.core as core
@@ -488,6 +494,8 @@ def _apply_deferred_release_decision(
     snap = snapshots_repo.get_snapshot(conn, release_id, app_id)
     if not snap or snap.get("release_decision") == decision:
         return
+    old_decision = snap.get("release_decision")
+    app_name = snap.get("official_name") or app_id
     snap["release_decision"] = decision
     from app.services import app_service as _app_service
 
@@ -496,12 +504,47 @@ def _apply_deferred_release_decision(
         snap,
     )
     snapshots_repo.save_snapshot(conn, release_id, app_id, snap)
+    log_audit(
+        conn,
+        f"CICD 生效完成，应用 release 决策：{app_name} {old_decision} -> {decision}",
+        ts=ts,
+        user=applied_by or "system",
+        role=applied_role or "system",
+        app_id=app_id,
+        release_id=release_id,
+        event="apply_deferred_release_decision",
+        detail=[
+            {
+                "field": "request_id",
+                "label": "CICD request",
+                "old": "",
+                "new": request_id,
+            },
+            {
+                "field": "release_decision",
+                "label": "release 决策",
+                "old": old_decision,
+                "new": decision,
+            },
+            {
+                "field": "applied_by",
+                "label": "交付/生效人",
+                "old": "",
+                "new": applied_by or "",
+            },
+        ],
+    )
 
 
 def _apply_deferred_release_decisions(
     conn: sqlite3.Connection,
     app_id: str,
     entries: object,
+    *,
+    request_id: int,
+    applied_by: str,
+    applied_role: str,
+    ts: str,
 ) -> None:
     """Apply release decisions that were deferred behind one CICD request."""
     if not isinstance(entries, list):
@@ -518,7 +561,16 @@ def _apply_deferred_release_decisions(
         ).strip()
         if not release_id or not target_decision:
             continue
-        _apply_deferred_release_decision(conn, app_id, release_id, target_decision)
+        _apply_deferred_release_decision(
+            conn,
+            app_id,
+            release_id,
+            target_decision,
+            request_id=request_id,
+            applied_by=applied_by,
+            applied_role=applied_role,
+            ts=ts,
+        )
 
 
 def _status_change(payload: dict) -> tuple[str, str]:
@@ -549,6 +601,66 @@ def _is_release_decision_sync_start_request(req: dict, payload: dict) -> bool:
         return False
     old_status, new_status = _status_change(payload)
     return old_status == "Stopped" and new_status == "Running"
+
+
+def _deferred_release_decision_targets(payload: dict) -> set[str]:
+    """Release ids whose release_decision is deferred behind this request."""
+    targets: set[str] = set()
+    release_id = str(payload.get(_DECISION_SYNC_RELEASE_ID_FIELD) or "").strip()
+    if release_id:
+        targets.add(release_id)
+    entries = payload.get(_DECISION_SYNC_DEFERRED_RELEASES_FIELD)
+    if isinstance(entries, list):
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            release_id = str(item.get("release_id") or "").strip()
+            if release_id:
+                targets.add(release_id)
+    return targets
+
+
+def open_deferred_release_decision_requests_for_release(
+    conn: sqlite3.Connection,
+    release_id: str,
+) -> list[dict]:
+    """Open release_decision_sync requests that will mutate *release_id* on delivery."""
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM cicd_task_requests
+        WHERE request_type = 'modify'
+          AND origin = 'release_decision_sync'
+          AND (
+            status = 'pending'
+            OR delivery_status IN ('pending', 'returned')
+          )
+        ORDER BY id
+        """
+    ).fetchall()
+    result: list[dict] = []
+    for row in rows:
+        req = dict(row)
+        payload = cicd_repo._load_payload(req.get("payload") or "{}")
+        if release_id in _deferred_release_decision_targets(payload):
+            req["payload"] = payload
+            result.append(req)
+    return result
+
+
+def ensure_no_open_deferred_release_decision_for_release(
+    conn: sqlite3.Connection,
+    release_id: str,
+) -> None:
+    """Block final lock while a deferred CICD decision can still edit this release."""
+    open_requests = open_deferred_release_decision_requests_for_release(conn, release_id)
+    if not open_requests:
+        return
+    ids = "、".join(f"#{req['id']}" for req in open_requests)
+    raise RuntimeError(
+        f"该 release 仍有未完成的 CICD 升运行 release 决策同步申请 {ids}，"
+        "请先完成、拒绝或取消后再 final lock"
+    )
 
 
 def _rollback_deferred_decision_sync(
@@ -596,6 +708,9 @@ def _apply_cicd_request(
     task_id: str | None,
     request_type: str,
     ts: str,
+    *,
+    applied_by: str = "",
+    applied_role: str = "",
 ) -> str:
     """Apply a CICD request to the app-backed CICD fields. Returns app/task id."""
     # Work on a local copy so we can extract internal-only fields without
@@ -701,11 +816,19 @@ def _apply_cicd_request(
                     app_id,
                     decision_sync_release_id,
                     decision_sync_target_decision,
+                    request_id=req_id,
+                    applied_by=applied_by,
+                    applied_role=applied_role,
+                    ts=ts,
                 )
             _apply_deferred_release_decisions(
                 conn,
                 app_id,
                 decision_sync_deferred_releases,
+                request_id=req_id,
+                applied_by=applied_by,
+                applied_role=applied_role,
+                ts=ts,
             )
             cicd_repo.set_request_task_id(conn, req_id, app_id)
             return app_id
@@ -882,11 +1005,21 @@ def _replaceable_pending_modifies_for_app(
     return [dict(row) for row in rows]
 
 
+def _open_status_modify_for_app(
+    conn: sqlite3.Connection,
+    app_id: str,
+) -> dict | None:
+    rows = cicd_repo.open_modifies_on_field(conn, app_id, "status")
+    return rows[0] if rows else None
+
+
 def ensure_can_open_cicd_modify_request(
     conn: sqlite3.Connection,
     app_id: str,
+    *,
+    allow_open_status_request: bool = False,
 ) -> None:
-    """Reject new CICD modify requests while create/Jira workflows are open."""
+    """Reject new CICD modify requests while upstream workflows are open."""
     create_req = _open_cicd_create_for_app(conn, app_id)
     if create_req:
         raise RuntimeError(
@@ -899,6 +1032,13 @@ def ensure_can_open_cicd_modify_request(
             f"已有 Jira 申请 #{jira_req['id']} / {jira_req['jira_id']} 正在交付，"
             "不能提交新的 CICD 修改。请先让 SPD 退回需求，再由 RM 在待交付页拒绝旧申请。"
         )
+    if not allow_open_status_request:
+        status_req = _open_status_modify_for_app(conn, app_id)
+        if status_req:
+            raise RuntimeError(
+                f"该 app 已有运行/停止状态同步申请 #{status_req['id']} 未完成，"
+                "不能提交新的 CICD 修改；请先等待该申请审批/交付完成"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1064,7 +1204,14 @@ def approve_request(
                 (reviewer, ts, review_note, is_self_approved, req_id),
             )
             _apply_cicd_request(
-                conn, req_id, payload, req.get("app_id") or req["task_id"], req["request_type"], ts
+                conn,
+                req_id,
+                payload,
+                req.get("app_id") or req["task_id"],
+                req["request_type"],
+                ts,
+                applied_by=reviewer,
+                applied_role=reviewer_role,
             )
         row = conn.execute(
             "SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)
@@ -1205,7 +1352,14 @@ def deliver_request(
     payload = _json.loads(req["payload"] or "{}")
     with transaction(conn):
         _apply_cicd_request(
-            conn, req_id, payload, req.get("app_id") or req["task_id"], req["request_type"], ts
+            conn,
+            req_id,
+            payload,
+            req.get("app_id") or req["task_id"],
+            req["request_type"],
+            ts,
+            applied_by=deliverer,
+            applied_role=deliverer_role,
         )
         conn.execute(
             """UPDATE cicd_task_requests
@@ -1369,7 +1523,14 @@ def apply_returned_request(
     payload = _json.loads(req["payload"] or "{}")
     with transaction(conn):
         _apply_cicd_request(
-            conn, req_id, payload, req.get("app_id") or req["task_id"], req["request_type"], ts
+            conn,
+            req_id,
+            payload,
+            req.get("app_id") or req["task_id"],
+            req["request_type"],
+            ts,
+            applied_by=actor,
+            applied_role=actor_role,
         )
         conn.execute(
             """UPDATE cicd_task_requests
@@ -1424,7 +1585,7 @@ def sync_decision_to_cicd(
 
     if current_status == target_status:
         return None
-    ensure_can_open_cicd_modify_request(conn, app_id)
+    ensure_can_open_cicd_modify_request(conn, app_id, allow_open_status_request=True)
 
     # Idempotent guard: skip if there is already a pending modify touching status.
     if (

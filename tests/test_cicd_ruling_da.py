@@ -6,7 +6,7 @@ import json
 import pytest
 
 from app.db.connection import transaction
-from app.repositories import apps_repo
+from app.repositories import apps_repo, audit_repo
 from app.services import app_service, cicd_service
 from app.timeutil import beijing_timestamp
 from tests.conftest import seed_release
@@ -92,6 +92,34 @@ class TestDecisionMapping:
         assert second is None
         assert len(pending_status_requests(temp_db)) == 1
 
+    def test_dispatched_status_request_blocks_duplicates_without_jira(self, temp_db):
+        seed_app(temp_db)
+        first = sync(temp_db, "release", old_status="Stopped")
+        assert first is not None
+        cicd_service.approve_request(
+            temp_db,
+            first["id"],
+            reviewer="rm",
+            reviewer_role="RM",
+            approval_mode="dispatch_spd",
+        )
+
+        second = sync(temp_db, "release", old_status="Stopped")
+
+        assert second is None
+        rows = temp_db.execute(
+            """
+            SELECT status, delivery_status, jira_id
+            FROM cicd_task_requests
+            WHERE app_id = ? AND request_type = 'modify'
+            """,
+            (APP_ID,),
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["status"] == "approved"
+        assert rows[0]["delivery_status"] == "pending"
+        assert rows[0]["jira_id"] == ""
+
 
 class TestStatusLock:
     def test_user_modify_cannot_set_status(self, temp_db):
@@ -120,6 +148,49 @@ class TestStatusLock:
         )
         assert req["status"] == "pending"
         assert req["task_id"] == APP_ID
+
+    def test_pending_status_sync_blocks_app_cicd_config_modify(self, temp_db):
+        seed_app(temp_db)
+        status_req = sync(temp_db, "stopped", old_status="Running")
+
+        with pytest.raises(RuntimeError, match=rf"#{status_req['id']}"):
+            cicd_service.submit_request(
+                temp_db,
+                task_id=APP_ID,
+                request_type="modify",
+                payload={"notes": {"old": "", "new": "new config"}},
+                submitter="owner",
+                submitter_role="Owner",
+                source="app_workbench",
+            )
+
+        rows = temp_db.execute(
+            "SELECT id, status FROM cicd_task_requests WHERE app_id = ? ORDER BY id",
+            (APP_ID,),
+        ).fetchall()
+        assert [(row["id"], row["status"]) for row in rows] == [(status_req["id"], "pending")]
+
+    def test_status_sync_cannot_be_replaced_by_app_cicd_config_modify(self, temp_db):
+        seed_app(temp_db)
+        status_req = sync(temp_db, "stopped", old_status="Running")
+
+        with pytest.raises(RuntimeError, match="运行/停止状态同步申请"):
+            cicd_service.submit_request(
+                temp_db,
+                task_id=APP_ID,
+                request_type="modify",
+                payload={"notes": {"old": "", "new": "new config"}},
+                submitter="owner",
+                submitter_role="Owner",
+                source="app_workbench",
+                replace_open=True,
+            )
+
+        old = temp_db.execute(
+            "SELECT status FROM cicd_task_requests WHERE id = ?",
+            (status_req["id"],),
+        ).fetchone()
+        assert old["status"] == "pending"
 
     def test_create_with_initial_status_is_allowed_for_valid_app(self, temp_db):
         seed_app(temp_db)
@@ -390,6 +461,55 @@ class TestUpdateSnapshotIntegration:
         )
 
         assert core.get_release(temp_db, release_id)["snapshots"][app_id]["release_decision"] == "cicd_only"
+
+    def test_deferred_release_decision_apply_writes_app_audit(self, temp_db, tmp_dir):
+        release_id = seed_release(temp_db, tmp_path=tmp_dir)
+        import release_system.core as core
+
+        app_id = core.add_new_app_request(
+            temp_db,
+            release_id,
+            official_name="DeferredAudit",
+            git_url="ssh://gerrit/deferred-audit",
+            git_branch="main",
+            release_decision="stopped",
+            owner="rm",
+        )
+        response = app_service.update_snapshot(
+            temp_db,
+            release_id,
+            app_id,
+            user="rm",
+            role="RM",
+            fields={"snapshot": {"release_decision": "cicd_only"}},
+        )
+        req_id = response["cicd_sync"]["request"]["id"]
+
+        assert not [
+            row
+            for row in audit_repo.app_audit_log(temp_db, app_id, release_id)
+            if row["event"] == "apply_deferred_release_decision"
+        ]
+
+        cicd_service.approve_request(
+            temp_db,
+            req_id,
+            reviewer="rm",
+            reviewer_role="RM",
+        )
+
+        entries = [
+            row
+            for row in audit_repo.app_audit_log(temp_db, app_id, release_id)
+            if row["event"] == "apply_deferred_release_decision"
+        ]
+        assert len(entries) == 1
+        assert "stopped -> cicd_only" in entries[0]["message"]
+        detail = {item["field"]: item for item in entries[0]["detail"]}
+        assert detail["request_id"]["new"] == req_id
+        assert detail["release_decision"]["old"] == "stopped"
+        assert detail["release_decision"]["new"] == "cicd_only"
+        assert detail["applied_by"]["new"] == "rm"
 
     def test_pending_create_blocks_stopped_to_running_decision(self, temp_db, tmp_dir):
         release_id = seed_release(temp_db, tmp_path=tmp_dir)

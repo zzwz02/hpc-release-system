@@ -17,6 +17,7 @@ import threading
 import release_system.core as core
 from app.api.errors import AuthzError
 from app.domain import decision_sync as decision_sync_domain
+from app.domain import phases as phase_policy
 from app.repositories import apps_repo
 from app.repositories.audit_repo import app_audit_log as repo_app_audit_log
 from app.services.authz import (
@@ -68,6 +69,37 @@ CICD_APP_CONFIG_LABELS = {
     "cicd_test_timeout": "超时",
     "cicd_notes": "备注",
 }
+
+_AFTER_DOC_EDIT_MESSAGE = (
+    "已过 doc deadline，只能修改 release 决策和 CICD 配置，不能再修改文档/表单/app_info"
+)
+
+
+def _require_phase_action(release: dict, action: str, message: str) -> None:
+    if not phase_policy.can(release, action):
+        raise RuntimeError(message)
+
+
+def _require_app_update_phase_permissions(
+    release: dict,
+    *,
+    snap_update_keys: set[str],
+    app_cicd_keys: set[str],
+    app_repo_identity_keys: set[str],
+    app_other_keys: set[str],
+) -> None:
+    if "release_decision" in snap_update_keys:
+        _require_phase_action(release, "edit_release_decision", _AFTER_DOC_EDIT_MESSAGE)
+    if "owner_confirmed" in snap_update_keys:
+        _require_phase_action(release, "edit_owner_confirmation", _AFTER_DOC_EDIT_MESSAGE)
+    if snap_update_keys - {"release_decision", "owner_confirmed"}:
+        _require_phase_action(release, "edit_release_doc_fields", _AFTER_DOC_EDIT_MESSAGE)
+    if app_cicd_keys:
+        _require_phase_action(release, "edit_cicd_config", _AFTER_DOC_EDIT_MESSAGE)
+    if app_repo_identity_keys:
+        _require_phase_action(release, "edit_gerrit_identity", _AFTER_DOC_EDIT_MESSAGE)
+    if app_other_keys:
+        _require_phase_action(release, "edit_release_doc_fields", _AFTER_DOC_EDIT_MESSAGE)
 
 
 def _community_required(app: dict) -> bool:
@@ -260,6 +292,7 @@ def update_snapshot(
     app_update = body.get("app", {}) if isinstance(body.get("app", {}), dict) else {}
     app_update_keys = set(app_update)
     app_cicd_keys = app_update_keys & CICD_APP_CONFIG_FIELDS
+    app_repo_identity_keys = app_update_keys & APP_REPO_IDENTITY_FIELDS
     app_owner_allowed_keys = CICD_APP_CONFIG_FIELDS | APP_REPO_IDENTITY_FIELDS
     app_owner_forbidden_keys = app_update_keys - app_owner_allowed_keys
 
@@ -272,16 +305,16 @@ def update_snapshot(
         if "owner_confirmed" in snap_update and snap_update["owner_confirmed"] is not True:
             raise AuthzError("Owner confirmation can only be submitted, not cleared")
 
-    past_app_freeze = not core.is_before(release.get("app_freeze_deadline", ""))
-    past_doc_deadline = not core.is_before(release.get("doc_deadline", ""))
-    if past_doc_deadline:
-        allowed_app_after_doc = CICD_APP_CONFIG_FIELDS | APP_REPO_IDENTITY_FIELDS
-        app_keys_allowed = app_update_keys <= allowed_app_after_doc
-        snapshot_keys_allowed = all(key == "release_decision" for key in snap_update)
-        if not app_keys_allowed or not snapshot_keys_allowed:
-            raise RuntimeError(
-                "已过 doc deadline，只能修改 release 决策和 CICD 配置，不能再修改文档/表单/app_info"
-            )
+    _require_app_update_phase_permissions(
+        release,
+        snap_update_keys=set(snap_update),
+        app_cicd_keys=app_cicd_keys,
+        app_repo_identity_keys=app_repo_identity_keys,
+        app_other_keys=app_update_keys - CICD_APP_CONFIG_FIELDS - APP_REPO_IDENTITY_FIELDS,
+    )
+    phase = phase_policy.current_phase(release)
+    past_app_freeze = phase in {"after_app_freeze", "after_doc_deadline", "released_locked"}
+    past_doc_deadline = phase in {"after_doc_deadline", "released_locked"}
 
     current_decision = core.normalize_release_decision(
         snap_now.get("release_decision", "release")
@@ -838,6 +871,10 @@ def apply_app_info(
 
     Mirrors server.py:1200-1216. Returns {"snapshot": snapshot}.
     """
+    release = core.get_release(conn, release_id)
+    if release.get("released_locked"):
+        raise RuntimeError("Release 已最终锁定，不可上传 app_info")
+    phase_policy.require_can(release, "edit_app_info", "已过 doc deadline，不可再上传 app_info")
     snapshot = core.apply_app_info(
         conn,
         release_id,
@@ -906,6 +943,10 @@ def fetch_app_info(
     from app.integrations.gerrit import fetch_app_info as gerrit_fetch
 
     app = core.get_app(conn, app_id)
+    release = core.get_release(conn, release_id)
+    if release.get("released_locked"):
+        raise RuntimeError("Release 已最终锁定，不可上传 app_info")
+    phase_policy.require_can(release, "edit_app_info", "已过 doc deadline，不可再上传 app_info")
     fetch_url, fetch_branch, source = _app_info_fetch_target(app)
     # project_root = cwd for git subprocess (mirrors server.py ROOT)
     _project_root = settings.db_path.parent
@@ -952,6 +993,9 @@ def fetch_all_app_infos(
 
     _project_root = settings.db_path.parent
     release = core.get_release(conn, release_id)
+    if release.get("released_locked"):
+        raise RuntimeError("Release 已最终锁定，不可上传 app_info")
+    phase_policy.require_can(release, "edit_app_info", "已过 doc deadline，不可再上传 app_info")
     results = []
     for app_id in sorted(release.get("snapshots", {})):
         try:

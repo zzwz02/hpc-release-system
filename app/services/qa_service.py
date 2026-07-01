@@ -13,6 +13,7 @@ from typing import Any
 
 import release_system.core as core
 from app.db.connection import transaction
+from app.domain import phases as phase_policy
 from app.repositories.audit_repo import log_audit
 from app.repositories.snapshots_repo import save_snapshot
 from app.timeutil import beijing_timestamp
@@ -41,8 +42,7 @@ def set_qa_status_batch(
     Returns {"ok": True, "updated": n}.
     """
     release = core.get_release(conn, release_id)
-    if release.get("released_locked"):
-        raise RuntimeError("Release 已最终锁定，不可修改 QA 状态")
+    phase_policy.require_can(release, "edit_qa_status", "Release 已最终锁定，不可修改 QA 状态")
 
     # (app_id, snapshot, status, issue_note, old_status, old_note)
     prepared: list[tuple[str, dict[str, Any], str, str, str, str]] = []
@@ -128,6 +128,8 @@ def upload_qa_log(
     """
     if not content_b64:
         raise ValueError("content_base64 required")
+    release = core.get_release(conn, release_id)
+    phase_policy.require_can(release, "upload_qa_log", "Release 已最终锁定，不可上传 QA log")
     content = base64.b64decode(content_b64)
     meta = core.qa_upload_log(
         conn,

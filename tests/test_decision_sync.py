@@ -20,7 +20,7 @@ import pytest
 
 import release_system.core as core
 from app.domain import decision_sync
-from app.services import app_service, cicd_service
+from app.services import app_service, cicd_service, release_service
 from tests.conftest import seed_release
 
 
@@ -372,6 +372,50 @@ def test_rejected_or_cancelled_running_upgrade_leaves_deferred_releases_unchange
     for rid in (base_id, *rels.values()):
         snap = core.get_release(conn, rid)["snapshots"][app_id]
         assert snap["release_decision"] == "stopped"
+
+
+def test_final_lock_blocks_open_deferred_release_decision_for_fanout_release(temp_db):
+    conn = temp_db
+    base_id, app_id, rels = _seed_chain(conn)
+    for rid in (base_id, *rels.values()):
+        core.update_snapshot(
+            conn,
+            rid,
+            app_id,
+            lambda snap: snap.update({"release_decision": "stopped"}),
+            skip_doc_deadline=True,
+        )
+
+    with mock.patch("release_system.core.beijing_now", return_value=NOW):
+        resp = app_service.update_snapshot(
+            conn,
+            base_id,
+            app_id,
+            user="rm",
+            role="RM",
+            fields={
+                "release_id": base_id,
+                "app_id": app_id,
+                "snapshot": {"release_decision": "release"},
+                "sync_decision": False,
+            },
+        )
+
+    req_id = resp["cicd_sync"]["request"]["id"]
+    assert any(
+        item["release_id"] == rels["before"]
+        for item in resp["decision_sync"]["applied"]
+    )
+
+    with pytest.raises(RuntimeError, match=rf"#{req_id}"):
+        release_service.final_lock(
+            conn,
+            release_id=rels["before"],
+            user="rm",
+            role="RM",
+        )
+
+    assert not core.get_release(conn, rels["before"]).get("released_locked")
 
 
 def test_running_upgrade_applies_all_releases_on_immediate_approval(temp_db):

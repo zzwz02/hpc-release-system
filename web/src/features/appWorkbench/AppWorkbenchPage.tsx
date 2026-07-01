@@ -321,6 +321,28 @@ function isOpenJiraModifyRequest(req: CicdRequest): boolean {
     (req.status === "pending" || ["pending", "returned"].includes(req.delivery_status ?? ""));
 }
 
+function cicdPayloadObject(req: CicdRequest): Record<string, unknown> {
+  const raw = req.payload as unknown;
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  return (req.payload ?? {}) as Record<string, unknown>;
+}
+
+function isOpenStatusModifyRequest(req: CicdRequest): boolean {
+  const payload = cicdPayloadObject(req);
+  return req.request_type === "modify" &&
+    (req.origin === "release_decision_sync" || !!payload.status) &&
+    (req.status === "pending" || ["pending", "returned"].includes(req.delivery_status ?? ""));
+}
+
 function isReplaceablePendingModifyRequest(req: CicdRequest): boolean {
   return req.request_type === "modify" &&
     req.origin === "cicd_workbench" &&
@@ -330,6 +352,10 @@ function isReplaceablePendingModifyRequest(req: CicdRequest): boolean {
 
 function jiraModifyBlockMessage(req: CicdRequest): string {
   return `已有 Jira 申请 #${req.id} / ${req.jira_id} 正在交付，不能提交新的 CICD 修改。请先让 SPD 退回需求，再由 RM 在待交付页拒绝旧申请。`;
+}
+
+function statusModifyBlockMessage(req: CicdRequest): string {
+  return `该 app 已有运行/停止状态同步申请 #${req.id} 未完成，不能提交新的 CICD 修改；请先等待该申请审批/交付完成。`;
 }
 
 function uniqueCicdRequestCount(requests: CicdRequest[]): number {
@@ -1172,6 +1198,7 @@ function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit,
   const disabled = !editMode || !canEdit;
   const onboardingLabel = cicdOnboardingLabel(app);
   const openCreate = pendingRequests.find(isOpenCreateRequest);
+  const openStatusModify = pendingRequests.find(isOpenStatusModifyRequest);
   const openJiraModify = pendingRequests.find(isOpenJiraModifyRequest);
 
   return (
@@ -1214,6 +1241,12 @@ function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit,
       {openJiraModify && (
         <div className="banner warnp" data-testid="app-cicd-jira-block-banner" style={{ margin: 0 }}>
           {jiraModifyBlockMessage(openJiraModify)}
+        </div>
+      )}
+
+      {openStatusModify && (
+        <div className="banner warnp" data-testid="app-cicd-status-block-banner" style={{ margin: 0 }}>
+          {statusModifyBlockMessage(openStatusModify)}
         </div>
       )}
 
@@ -1426,7 +1459,10 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
   // F2: copy-from-version picker (null = closed)
   const [showCopyDialog, setShowCopyDialog] = useState(false);
 
-  const { data: appCicdOpenRequests } = useQuery({
+  const {
+    data: appCicdOpenRequests,
+    isLoading: appCicdOpenLoading,
+  } = useQuery({
     queryKey: ["cicd", "requests", "app-workbench", "open", app?.id ?? ""],
     queryFn: async () => {
       const [pending, deliveries] = await Promise.all([
@@ -1712,9 +1748,14 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
         setSaveErr(`该 app 已有 CICD 新建申请 #${openCreate.id} 未完成，不能提交新的 CICD 修改；请等待新建申请审批/交付完成后再修改。`);
         return;
       }
+      const openStatusModify = appOpenCicd.find(isOpenStatusModifyRequest);
       const openJiraModify = appOpenCicd.find(isOpenJiraModifyRequest);
       if (openJiraModify) {
         setSaveErr(jiraModifyBlockMessage(openJiraModify));
+        return;
+      }
+      if (openStatusModify) {
+        setSaveErr(statusModifyBlockMessage(openStatusModify));
         return;
       }
       const replaceable = appOpenCicd.filter(isReplaceablePendingModifyRequest);
@@ -1910,11 +1951,16 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       .sort((a, b) => String(b.submitted_at || "").localeCompare(String(a.submitted_at || "")))
     : [];
   const cicdOpenCreate = appOpenCicd.find(isOpenCreateRequest);
+  const cicdOpenStatusModify = appOpenCicd.find(isOpenStatusModifyRequest);
   const cicdOpenJiraModify = appOpenCicd.find(isOpenJiraModifyRequest);
-  const cicdModifyBlockedReason = cicdOpenCreate
+  const cicdModifyBlockedReason = appCicdOpenLoading
+    ? "正在检查 CICD 待处理流程，请稍候"
+    : cicdOpenCreate
     ? `该 app 已有 CICD 新建申请 #${cicdOpenCreate.id} 未完成，不能提交新的 CICD 修改；请等待新建申请审批/交付完成后再修改`
     : cicdOpenJiraModify
     ? jiraModifyBlockMessage(cicdOpenJiraModify)
+    : cicdOpenStatusModify
+    ? statusModifyBlockMessage(cicdOpenStatusModify)
     : "";
   const decisionChangeNeedsCicdSync = crossesDecisionRuntimeBoundary(snap.release_decision, form.release_decision);
   const decisionSyncBlockedReason = decisionChangeNeedsCicdSync && cicdModifyBlockedReason
@@ -1924,12 +1970,14 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     ? cicdModifyBlockedReason
     : decisionSyncBlockedReason;
   const decisionSyncReq = appOpenCicd.find((req) => {
-    const payload = (req.payload ?? {}) as Record<string, unknown>;
+    const payload = cicdPayloadObject(req);
     return req.origin === "release_decision_sync" && !!payload.status;
   });
   const displayedCicdStatus = (() => {
     if (app && cicdOnboardingInactive(app)) return "Stopped";
-    const payload = (decisionSyncReq?.payload ?? {}) as Record<string, { old?: unknown }>;
+    const payload = decisionSyncReq
+      ? cicdPayloadObject(decisionSyncReq) as Record<string, { old?: unknown }>
+      : {};
     const oldStatus = String(payload.status?.old ?? "").trim();
     return oldStatus === "Running" || oldStatus === "Stopped"
       ? oldStatus
