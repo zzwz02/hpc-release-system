@@ -29,7 +29,7 @@ import { Markdown } from "../../components/Markdown";
 import type { MarkdownOutlineItem } from "../../lib/markdown";
 import { formatServerTime } from "../../lib/time";
 import { isRM, canGenerateMarkdown } from "../../lib/roles";
-import { parseCsvRows } from "../../lib/csv";
+import { downloadCsvText, parseCsvRows } from "../../lib/csv";
 import type { ArtifactKind, StatePayload } from "../../types";
 import {
   ARTIFACT_KEY,
@@ -443,15 +443,7 @@ export function ArtifactsPage() {
     try {
       const res = await refetchTestScope();
       const text = res.data ?? "";
-      const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `test-scope-${releaseId}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      downloadCsvText(`test-scope-${releaseId}.csv`, text);
     } catch (e) {
       alert("下载失败：" + (e instanceof Error ? e.message : String(e)));
     }
@@ -460,15 +452,7 @@ export function ArtifactsPage() {
   // Download the currently displayed manager_review CSV text
   function handleDownloadManagerCsv() {
     if (!artifactResult?.text) return;
-    const blob = new Blob([artifactResult.text], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = artifactResult.name || "manager_review.csv";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    downloadCsvText(artifactResult.name || "manager_review.csv", artifactResult.text);
   }
 
   const isFetching = artifactFetching || refreshing;

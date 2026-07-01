@@ -9,7 +9,8 @@
  */
 
 /** UTF-8 BOM character */
-const BOM = "﻿";
+const BOM = "\uFEFF";
+const CSV_MIME_TYPE = "text/csv;charset=utf-8";
 
 /**
  * Escape a single cell value for RFC-4180 CSV.
@@ -48,9 +49,31 @@ export function reportToCsv(columns: string[], rows: string[][]): string {
  * Mirrors index.html:2730: `new Blob(["﻿" + reportToCsv(...)])`.
  */
 export function reportToCsvBlob(columns: string[], rows: string[][]): Blob {
-  return new Blob([BOM + reportToCsv(columns, rows)], {
-    type: "text/csv;charset=utf-8",
+  return csvTextToBlob(reportToCsv(columns, rows));
+}
+
+/**
+ * Create a Blob for existing CSV text, ensuring Excel sees it as UTF-8.
+ *
+ * Browser `Response.text()` may drop the server-sent BOM, so downloads created
+ * from fetched CSV text should re-add it here.
+ */
+export function csvTextToBlob(text: string): Blob {
+  const csvText = String(text ?? "");
+  return new Blob([csvText.startsWith(BOM) ? csvText : BOM + csvText], {
+    type: CSV_MIME_TYPE,
   });
+}
+
+function triggerBlobDownload(filename: string, blob: Blob): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 /**
@@ -63,15 +86,12 @@ export function downloadCsv(
   columns: string[],
   rows: string[][],
 ): void {
-  const blob = reportToCsvBlob(columns, rows);
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  triggerBlobDownload(filename, reportToCsvBlob(columns, rows));
+}
+
+/** Trigger a browser download for existing CSV text with a UTF-8 BOM. */
+export function downloadCsvText(filename: string, text: string): void {
+  triggerBlobDownload(filename, csvTextToBlob(text));
 }
 
 /**
@@ -85,7 +105,7 @@ export function downloadCsv(
  *   - Handles CRLF and bare LF line endings
  */
 export function parseCsvRows(text: string): string[][] {
-  const input = String(text ?? "").replace(/^﻿/, "");
+  const input = String(text ?? "").replace(/^\uFEFF/, "");
   const rows: string[][] = [];
   let row: string[] = [];
   let cell = "";

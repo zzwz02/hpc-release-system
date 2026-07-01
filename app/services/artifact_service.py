@@ -50,7 +50,7 @@ def _qualifies_for_release_note(snapshot: dict[str, Any]) -> bool:
         return False
     if _core._docs_gate_items(snapshot):  # noqa: SLF001 - service overlays frozen core rules.
         return False
-    return snapshot.get("qa_status") in {"qa_passed", "has_issues", "cannot_release"}
+    return True
 
 
 def _merged_limitations_with_qa_note(snapshot: dict[str, Any]) -> str:

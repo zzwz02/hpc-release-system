@@ -1,5 +1,20 @@
 import { describe, it, expect } from "vitest";
-import { reportToCsv, reportToCsvBlob, parseCsvRows } from "../csv";
+import { csvTextToBlob, reportToCsv, reportToCsvBlob, parseCsvRows } from "../csv";
+
+function readBlobBytes(blob: Blob): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (!(reader.result instanceof ArrayBuffer)) {
+        reject(new TypeError("Expected Blob to read as ArrayBuffer"));
+        return;
+      }
+      resolve(new Uint8Array(reader.result));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("Failed to read Blob"));
+    reader.readAsArrayBuffer(blob);
+  });
+}
 
 describe("reportToCsv", () => {
   it("generates a header + row CSV", () => {
@@ -59,6 +74,24 @@ describe("reportToCsvBlob", () => {
     const bomBytes = new TextEncoder().encode("﻿").length;
     const csvBytes = new TextEncoder().encode(plainCsv).length;
     expect(blob.size).toBe(bomBytes + csvBytes);
+  });
+});
+
+describe("csvTextToBlob", () => {
+  it("prefixes existing CSV text with a UTF-8 BOM", async () => {
+    const csv = "应用,版本\r\nfoo,1";
+    const blob = csvTextToBlob(csv);
+    const bytes = await readBlobBytes(blob);
+    expect(Array.from(bytes.slice(0, 3))).toEqual([0xef, 0xbb, 0xbf]);
+    expect(blob.size).toBe(new TextEncoder().encode("\uFEFF" + csv).length);
+  });
+
+  it("does not duplicate an existing BOM", async () => {
+    const csv = "\uFEFF应用,版本";
+    const blob = csvTextToBlob(csv);
+    const bytes = await readBlobBytes(blob);
+    expect(Array.from(bytes.slice(0, 6))).toEqual([0xef, 0xbb, 0xbf, 0xe5, 0xba, 0x94]);
+    expect(blob.size).toBe(new TextEncoder().encode(csv).length);
   });
 });
 

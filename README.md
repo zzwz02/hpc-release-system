@@ -163,7 +163,7 @@ stateDiagram-v2
 
 ### 可发布条件
 
-最终 Release Note 纳入的 app 必须满足：release 决策为 `release`、Owner 已确认、文档类待补项为空、QA 状态为 `qa_passed`、`has_issues` 或 `cannot_release`；Release Note 会写出 QA 状态与问题说明。Manual / AI4Sci 文档仍以 release 决策、Owner 已确认、文档类待补项为空为纳入条件，不由 QA 状态阻塞；`has_issues` 与 `cannot_release` 的问题说明会合并到已知限制。
+最终 Release Note 纳入的 app 必须满足：release 决策为 `release`、Owner 已确认、文档类待补项为空；QA 状态不再阻塞 Release Note 纳入，文档会写出 QA 状态与问题说明，用于体现未测试、存在问题或不可发布等结果。Manual / AI4Sci 文档仍以 release 决策、Owner 已确认、文档类待补项为空为纳入条件，不由 QA 状态阻塞；`has_issues` 与 `cannot_release` 的问题说明会合并到已知限制。
 
 ---
 
