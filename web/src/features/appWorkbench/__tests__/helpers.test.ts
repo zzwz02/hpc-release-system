@@ -13,6 +13,7 @@ import {
   docsItems,
   docsOk,
   qaOk,
+  needsAttention,
   qaDotClass,
   qaDotTitle,
   compareAppRows,
@@ -212,6 +213,46 @@ describe("qaOk", () => {
 
   it("false for cannot_release", () => {
     expect(qaOk(makeSnap({ qa_status: "cannot_release" }))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// needsAttention
+// ---------------------------------------------------------------------------
+
+describe("needsAttention", () => {
+  it("true when missing_items non-empty (待办不齐全)", () => {
+    const snap = makeSnap({ missing_items: [{ kind: "doc", text: "intro 段" }] });
+    expect(needsAttention(snap)).toBe(true);
+  });
+
+  it("true for qa_status has_issues", () => {
+    expect(needsAttention(makeSnap({ qa_status: "has_issues" }))).toBe(true);
+  });
+
+  it("true for qa_status cannot_release", () => {
+    expect(needsAttention(makeSnap({ qa_status: "cannot_release" }))).toBe(true);
+  });
+
+  it("false when todos complete and QA passed", () => {
+    expect(needsAttention(makeSnap({ qa_status: "qa_passed" }))).toBe(false);
+  });
+
+  it("false for not_checked with no missing items (待测试 ≠ 有问题)", () => {
+    expect(needsAttention(makeSnap({ qa_status: "not_checked" }))).toBe(false);
+  });
+
+  it("false for non-release decision even with issues", () => {
+    const snap = makeSnap({
+      release_decision: "cicd_only",
+      qa_status: "cannot_release",
+      missing_items: [{ kind: "doc", text: "intro 段" }],
+    });
+    expect(needsAttention(snap)).toBe(false);
+  });
+
+  it("false for null snapshot", () => {
+    expect(needsAttention(null)).toBe(false);
   });
 });
 

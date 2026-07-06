@@ -27,6 +27,7 @@ import { isRM, isOwner } from "../../lib/roles";
 import { displayName } from "../../lib/identity";
 import { formatDateValue, formatServerTime } from "../../lib/time";
 import { qaStatusLabels } from "../../lib/labels";
+import { needsAttention } from "../appWorkbench/helpers";
 import type {
   StatePayload,
   Snapshot,
@@ -514,6 +515,8 @@ interface OwnerGridProps {
 }
 
 function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridProps) {
+  const [issueOnly, setIssueOnly] = useState(false);
+
   const apps = payload.apps ?? [];
   const allRows = apps
     .map((app) => ({ app, snap: releaseSnap(payload, app.id) }))
@@ -522,7 +525,9 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
   const gridRows = (userIsOwner
     ? allRows.filter((x) => (x.snap.owners ?? []).includes(username))
     : allRows.slice()
-  ).sort((a, b) => compareAppRows(a, b, userIsOwner, username));
+  )
+    .filter((x) => !issueOnly || needsAttention(x.snap))
+    .sort((a, b) => compareAppRows(a, b, userIsOwner, username));
 
   const displayNames = payload.user_display_names ?? {};
   const title = userIsOwner ? "我的 App 状态概览" : "App 状态概览";
@@ -532,6 +537,19 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
       <div className="panel-head">
         <h2 id="dashboardOwnerTitle">{title}</h2>
         <span className="count" id="dashboardOwnerCount">共 {gridRows.length} 个</span>
+        <label
+          className="check"
+          style={{ whiteSpace: "nowrap" }}
+          title="仅显示待办不齐全或 QA 存在问题 / 不可发布的 app"
+        >
+          <input
+            type="checkbox"
+            checked={issueOnly}
+            onChange={(e) => setIssueOnly(e.target.checked)}
+            data-testid="dashboard-issue-only-checkbox"
+          />
+          只看待办/QA 异常
+        </label>
         <span style={{ flex: 1 }} />
         <span className="muted small">点击行 → App 工作台查看 / 编辑</span>
       </div>
@@ -539,9 +557,11 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
         <div id="dashboardOwnerGrid">
           {gridRows.length === 0 ? (
             <p className="muted small" style={{ padding: "14px" }}>
-              {userIsOwner
-                ? "本 release 没有归属于你的 app。"
-                : "本 release 暂无 app。"}
+              {issueOnly
+                ? "没有待办不齐全或 QA 有问题的 app。"
+                : userIsOwner
+                  ? "本 release 没有归属于你的 app。"
+                  : "本 release 暂无 app。"}
             </p>
           ) : (
             <table className="app-overview-table" data-testid="dashboard-app-table">
