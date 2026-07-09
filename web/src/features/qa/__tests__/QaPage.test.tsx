@@ -637,4 +637,39 @@ describe("QaPage subtab navigation", () => {
       expect(screen.getByText(/加载报告/)).toBeDefined();
     });
   });
+
+  it("does not include the current release in the compare selector", async () => {
+    const previousRelease = { ...makeReleaseSummary(), id: "rel-0", name: "2.9" };
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
+      if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
+      if (path.includes("/api/qa-reports")) {
+        return Promise.resolve({
+          release_name: "3.0",
+          maca_version: "3.0",
+          compare_release_id: "",
+          compare_release_name: "",
+          release_report: {
+            columns: ["名称", "对比"],
+            rows: [["ABACUS", ""]],
+            rows_meta: [{ release_decision: "release", is_release: true }],
+          },
+          test_cmd: { columns: [], rows: [] },
+          generated_at: "2026-01-01 00:00:00",
+        });
+      }
+      return Promise.resolve(makePayload({ releases: [makeReleaseSummary(), previousRelease] }));
+    });
+    const qc = makeQClient();
+    renderQaPage(qc);
+    await waitFor(() => expect(screen.getByText("Release Report")).toBeDefined());
+    fireEvent.click(screen.getByText("Release Report"));
+    fireEvent.click(await screen.findByText("加载报告"));
+
+    const compareSelect = await screen.findByDisplayValue("— 不对比 —");
+    const optionTexts = Array.from(compareSelect.querySelectorAll("option")).map(
+      (option) => option.textContent,
+    );
+    expect(optionTexts).toEqual(["— 不对比 —", "2.9"]);
+  });
+
 });

@@ -53,6 +53,106 @@ def test_qa_cannot_release_note_is_saved_and_rendered_in_draft_artifacts(release
     assert "QA 不可发布：C500 阻塞发布" in artifacts["manual"]
 
 
+def test_qa_report_blanks_legacy_community_fields_without_cicd_artifact(release_with_app):
+    conn, release_id, app_id = release_with_app
+    seed_snapshot(conn, release_id, app_id, owner_confirmed=True)
+
+    def _legacy_community(snapshot: dict) -> None:
+        snapshot["community"] = {
+            "release_status": "未发布",
+            "python_version": "无",
+            "framework_version": "无",
+        }
+
+    core.update_snapshot(conn, release_id, app_id, _legacy_community)
+
+    report = qa_service.get_qa_reports(conn, release_id)["release_report"]
+    row = dict(zip(report["columns"], report["rows"][0]))
+
+    assert row["开发者社区发布情况"] == ""
+    assert row["开发者社区发布包支持python版本"] == ""
+    assert row["开发者社区发布包支持的底层框架及版本"] == ""
+
+
+def test_qa_report_keeps_community_fields_when_cicd_artifact_is_selected(release_with_app):
+    conn, release_id, app_id = release_with_app
+    seed_snapshot(conn, release_id, app_id, owner_confirmed=True)
+    conn.execute("UPDATE apps SET cicd_community_artifact = 'image' WHERE id = ?", (app_id,))
+
+    def _community(snapshot: dict) -> None:
+        snapshot["community"] = {
+            "release_status": "已发布",
+            "python_version": "Python 3.10",
+            "framework_version": "PyTorch 2.1",
+        }
+
+    core.update_snapshot(conn, release_id, app_id, _community)
+
+    report = qa_service.get_qa_reports(conn, release_id)["release_report"]
+    row = dict(zip(report["columns"], report["rows"][0]))
+
+    assert row["开发者社区发布情况"] == "已发布"
+    assert row["开发者社区发布包支持python版本"] == "Python 3.10"
+    assert row["开发者社区发布包支持的底层框架及版本"] == "PyTorch 2.1"
+
+
+def test_qa_report_hides_non_release_apps_without_compare(release_with_app):
+    conn, release_id, app_id = release_with_app
+    seed_snapshot(conn, release_id, app_id, owner_confirmed=True)
+
+    def _stop_release(snapshot: dict) -> None:
+        snapshot["release_decision"] = "stopped"
+
+    core.update_snapshot(conn, release_id, app_id, _stop_release)
+
+    report = qa_service.get_qa_reports(conn, release_id)["release_report"]
+
+    assert report["rows"] == []
+    assert report["rows_meta"] == []
+
+
+def test_qa_report_keeps_changed_non_release_app_but_blanks_release_fields(release_with_app):
+    conn, base_release_id, app_id = release_with_app
+    seed_snapshot(conn, base_release_id, app_id, owner_confirmed=True)
+    current_release_id = core.create_release_from_previous(conn, "next")
+    conn.execute("UPDATE apps SET cicd_community_artifact = 'image' WHERE id = ?", (app_id,))
+
+    def _stop_with_release_fields(snapshot: dict) -> None:
+        snapshot["release_decision"] = "stopped"
+        snapshot["x86_chips"] = "c500,x301"
+        snapshot["arm_chips"] = "x201"
+        snapshot["community"] = {
+            "release_status": "已发布",
+            "python_version": "Python 3.10",
+            "framework_version": "PyTorch 2.1",
+        }
+        snapshot["sanity"] = {"arm_kylin": True, "ubuntu": True}
+
+    core.update_snapshot(conn, current_release_id, app_id, _stop_with_release_fields)
+
+    report = qa_service.get_qa_reports(
+        conn,
+        current_release_id,
+        compare_release_id=base_release_id,
+    )["release_report"]
+    row = dict(zip(report["columns"], report["rows"][0]))
+
+    assert len(report["rows"]) == 1
+    assert report["rows_meta"] == [{"release_decision": "stopped", "is_release": False}]
+    assert row["名称"] == "TestApp"
+    assert "停止发布" in row["对比"]
+    for column in [
+        "X86支持芯片系列",
+        "ARM支持芯片类型",
+        "开发者社区发布情况",
+        "开发者社区发布包支持python版本",
+        "开发者社区发布包支持的底层框架及版本",
+        "ARM / Kylin sanity",
+        "Ubuntu / 兼容性 sanity",
+    ]:
+        assert row[column] == ""
+
+
 def test_release_note_includes_release_app_even_when_qa_is_not_passed(release_with_app):
     conn, release_id, _app_id = release_with_app
     deepmd_id = seed_app(

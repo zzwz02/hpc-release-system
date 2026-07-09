@@ -969,6 +969,7 @@ function ReportPane({ releaseId, kind, title, hint, releases }: ReportPaneProps)
             filterState={filterState}
             onFilterChange={setFilterState}
             releases={releases}
+            releaseId={releaseId}
             generatedAt={data.generated_at}
             releaseName={data.release_name}
             onRefresh={() => void refetch()}
@@ -985,10 +986,18 @@ function ReportPane({ releaseId, kind, title, hint, releases }: ReportPaneProps)
 
 interface ReportTableProps {
   kind: ReportKind;
-  data: { columns: string[]; rows: string[][]; rows_meta?: Array<{ is_release: boolean; release_decision: string }> };
+  data: {
+    columns: string[];
+    rows: string[][];
+    rows_meta?: Array<{
+      is_release: boolean;
+      release_decision: string;
+    }>;
+  };
   filterState: ReportFilterState;
   onFilterChange: React.Dispatch<React.SetStateAction<ReportFilterState>>;
   releases: StatePayload["releases"];
+  releaseId: string;
   generatedAt: string;
   releaseName: string;
   onRefresh: () => void;
@@ -1000,6 +1009,7 @@ function ReportTable({
   filterState,
   onFilterChange,
   releases,
+  releaseId,
   generatedAt,
   releaseName,
   onRefresh,
@@ -1174,7 +1184,7 @@ function ReportTable({
             >
               <option value="">— 不对比 —</option>
               {releases
-                .filter((r) => r.id !== /* current */ "")
+                .filter((r) => r.id !== releaseId)
                 .map((r) => (
                   <option key={r.id} value={r.id}>
                     {r.name}
