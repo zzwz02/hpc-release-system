@@ -17,6 +17,8 @@ import type { StatePayload } from "./types";
 import { LoginPage } from "./features/auth/LoginPage";
 import { TabNav } from "./routes/TabNav";
 import { AppRouter } from "./routes/AppRouter";
+import { Toaster } from "./components/Toaster";
+import { ConfirmHost } from "./components/ConfirmHost";
 import "./App.css";
 
 /**
@@ -54,7 +56,7 @@ function AppShell() {
   // null = bootstrapping
   if (user === null) {
     return (
-      <div id="loadingPage" style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh" }}>
+      <div id="loadingPage" className="fullscreen-center">
         <span className="muted">加载中…</span>
       </div>
     );
@@ -107,6 +109,8 @@ export function App() {
   return (
     <BrowserRouter>
       <AppShell />
+      <Toaster />
+      <ConfirmHost />
     </BrowserRouter>
   );
 }

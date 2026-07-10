@@ -22,6 +22,8 @@ import { apiGet, apiPost } from "../../api/http";
 import { useUiStore } from "../../store/uiStore";
 import { displayName } from "../../lib/identity";
 import { formatGerritUrl } from "../../lib/git";
+import { toast } from "../../lib/toast";
+import { confirmDialog, promptDialog } from "../../lib/confirm";
 import type {
   StatePayload,
   AdminUser,
@@ -91,10 +93,15 @@ function DbPanel({ payload, onStateRefresh }: DbPanelProps) {
 
   async function handleClearDb() {
     if (!clearPassword) {
-      alert("请重新输入 admin 密码以确认");
+      toast.info("请重新输入 admin 密码以确认");
       return;
     }
-    if (!window.confirm("确认要备份并清空数据库？")) return;
+    if (!(await confirmDialog({
+      title: "清空数据库",
+      body: "确认要备份并清空数据库？",
+      danger: true,
+      confirmText: "备份并清空",
+    }))) return;
     setClearing(true);
     setLog("清空中...");
     try {
@@ -107,7 +114,7 @@ function DbPanel({ payload, onStateRefresh }: DbPanelProps) {
       setClearConfirm("");
       onStateRefresh();
     } catch (e) {
-      alert("清空失败：" + (e instanceof Error ? e.message : String(e)));
+      toast.error("清空失败：" + (e instanceof Error ? e.message : String(e)));
       setLog("");
     } finally {
       setClearing(false);
@@ -115,10 +122,18 @@ function DbPanel({ payload, onStateRefresh }: DbPanelProps) {
   }
 
   async function handleDeleteApp(appId: string) {
-    const confirmText = window.prompt(
-      `删除 app 会先备份数据库，并删除所有未锁定 release 中的相关 snapshot。\n\n请输入 app_id 确认删除：${appId}`,
-    );
-    if (confirmText !== appId) return;
+    const confirmText = await promptDialog({
+      title: "删除 App",
+      body: `删除 app 会先备份数据库，并删除所有未锁定 release 中的相关 snapshot。\n\n请输入 app_id 确认删除：${appId}`,
+      placeholder: appId,
+      danger: true,
+      confirmText: "删除",
+    });
+    if (confirmText === null) return;
+    if (confirmText !== appId) {
+      toast.info(`输入的 app_id 与 ${appId} 不一致，已取消删除`);
+      return;
+    }
     setDeletingId(appId);
     setLog("删除中...");
     try {
@@ -141,29 +156,27 @@ function DbPanel({ payload, onStateRefresh }: DbPanelProps) {
   return (
     <>
       {/* Clear database */}
-      <div className="panel" style={{ marginBottom: 18 }}>
+      <div className="panel mb-18">
         <div className="panel-head">
           <h2>清空数据库</h2>
         </div>
         <div className="panel-body">
-          <p className="hint" style={{ marginTop: 0 }}>
+          <p className="hint mt-0">
             清空数据库会先备份当前 SQLite 文件，然后删除 app、release、snapshot、artifact
             和审计数据；默认账号会保留。需重新输入 admin 密码确认。
           </p>
-          <div className="row" style={{ marginTop: 11, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <div className="row mt-11 flex-row gap-8 wrap">
             <input
-              className="input"
+              className="input minw-230"
               placeholder="输入：CLEAR_DATABASE"
-              style={{ minWidth: 230 }}
               value={clearConfirm}
               onChange={(e) => setClearConfirm(e.target.value)}
               data-testid="clear-confirm-input"
             />
             <input
-              className="input"
+              className="input minw-230"
               type="password"
               placeholder="再次输入 admin 密码"
-              style={{ minWidth: 230 }}
               autoComplete="current-password"
               value={clearPassword}
               onChange={(e) => setClearPassword(e.target.value)}
@@ -192,10 +205,10 @@ function DbPanel({ payload, onStateRefresh }: DbPanelProps) {
           <h2>删除单个 App</h2>
         </div>
         <div className="panel-body">
-          <p className="hint" style={{ marginTop: 0 }}>
+          <p className="hint mt-0">
             删除前会自动备份数据库；已最终锁定的 release 中的 app 不允许删除。
           </p>
-          <div className="table" style={{ marginTop: 12 }}>
+          <div className="table mt-12">
             <table data-testid="admin-app-table">
               <thead>
                 <tr>
@@ -296,7 +309,7 @@ function MemberPanel({
       });
       onRefresh();
     } catch (e) {
-      alert(
+      toast.error(
         "保存失败：" + (e instanceof Error ? e.message : String(e)),
       );
     } finally {
@@ -315,13 +328,13 @@ function MemberPanel({
         />
       </div>
       <div className="panel-body">
-        <p className="hint" style={{ marginTop: 0 }}>
+        <p className="hint mt-0">
           列出所有内建账号与已通过域账号登录过的用户，可在此调整角色。
           角色说明：<b>RM</b> — 发布管理；<b>Owner</b> — App 负责人；
           <b>QA</b> — 质量测试；<b>Admin</b> — 系统管理；
           <b>SPD</b> — 交付执行。
         </p>
-        <div className="table" style={{ marginTop: 12 }}>
+        <div className="table mt-12">
           <table data-testid="members-table">
             <thead>
               <tr>
@@ -358,8 +371,7 @@ function MemberPanel({
                       </td>
                       <td>
                         <select
-                          className="select sm"
-                          style={{ width: 88 }}
+                          className="select sm w-88"
                           value={currentRole}
                           onChange={(e) =>
                             setRoleOverrides((prev) => ({
@@ -387,8 +399,7 @@ function MemberPanel({
                         </button>
                         {saveLog[u.username] && (
                           <span
-                            className="small muted"
-                            style={{ marginLeft: 8 }}
+                            className="small muted ml-8"
                           >
                             {saveLog[u.username]}
                           </span>
@@ -498,12 +509,12 @@ export function AdminPage() {
 
       {/* Error banners */}
       {stateError && activePane === "db" && (
-        <div style={{ padding: "1rem", color: "var(--bad)" }}>
+        <div className="pane-error">
           加载失败：{stateError instanceof Error ? stateError.message : String(stateError)}
         </div>
       )}
       {usersError && activePane === "members" && (
-        <div style={{ padding: "1rem", color: "var(--bad)" }}>
+        <div className="pane-error">
           加载成员失败：{usersError instanceof Error ? usersError.message : String(usersError)}
         </div>
       )}

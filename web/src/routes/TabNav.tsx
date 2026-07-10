@@ -9,10 +9,11 @@
  * Mirrors legacy cicdBadge logic (index.html:3940).
  * Badge clears when CicdPage mounts (markCicdVisited + invalidateQueries).
  */
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../api/AuthContext";
 import { useUiStore } from "../store/uiStore";
+import { confirmDialog } from "../lib/confirm";
 import { ROUTES, type Role } from "./routeConfig";
 import {
   CICD_NOTIFICATIONS_KEY,
@@ -22,6 +23,7 @@ import {
 export function TabNav() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const role = user?.role as Role | undefined;
 
   // R2: staleTime:Infinity, no focus-refetch.  Badge refreshes via
@@ -64,12 +66,26 @@ export function TabNav() {
     }
   }
 
-  function handleNavClick(e: React.MouseEvent<HTMLAnchorElement>, view: string) {
+  function handleNavClick(
+    e: React.MouseEvent<HTMLAnchorElement>,
+    view: string,
+    path: string,
+  ) {
     if (useUiStore.getState().appDetailDirty) {
-      if (!window.confirm("有未保存的修改，确认放弃并离开?")) {
-        e.preventDefault();
-        return;
-      }
+      // Block navigation now; resume it programmatically if confirmed.
+      e.preventDefault();
+      void confirmDialog({
+        title: "未保存的修改",
+        body: "有未保存的修改，确认放弃并离开?",
+        confirmText: "放弃修改",
+        danger: true,
+      }).then((ok) => {
+        if (!ok) return;
+        useUiStore.getState().setAppDetailDirty(false);
+        navigate(path);
+        refreshRoute(view);
+      });
+      return;
     }
     refreshRoute(view);
   }
@@ -88,24 +104,13 @@ export function TabNav() {
             }
             end={route.path === "/"}
             onClick={(e) => {
-              handleNavClick(e, route.view);
+              handleNavClick(e, route.view, route.path);
             }}
           >
             {route.view === "cicd" && cicdBadge ? (
               <>
                 {route.label}
-                <span
-                  className="badge-dot"
-                  style={{
-                    display: "inline-block",
-                    width: 8,
-                    height: 8,
-                    borderRadius: "50%",
-                    background: "var(--danger, #e53e3e)",
-                    marginLeft: 4,
-                    verticalAlign: "middle",
-                  }}
-                />
+                <span className="badge-dot" />
               </>
             ) : (
               route.label
@@ -115,7 +120,7 @@ export function TabNav() {
       })}
       {/* Keep a hidden placeholder so the nav retains height when empty */}
       {visibleRoutes.length === 0 && (
-        <span className="tab" style={{ visibility: "hidden" }}>&nbsp;</span>
+        <span className="tab invisible">&nbsp;</span>
       )}
     </nav>
   );

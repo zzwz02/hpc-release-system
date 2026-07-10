@@ -13,7 +13,7 @@ import { ROUTES } from "./routeConfig";
 // Placeholder until each feature is implemented by its owner wave.
 function Placeholder({ label }: { label: string }) {
   return (
-    <section className="view active" style={{ padding: "2rem", color: "var(--muted, #888)" }}>
+    <section className="view active p-2r muted">
       <h2>{label}</h2>
       <p className="muted">（功能开发中）</p>
     </section>
@@ -65,7 +65,7 @@ export function AppRouter() {
             <RequireRole
               roles={route.roles}
               fallback={
-                <section className="view active" style={{ padding: "2rem" }}>
+                <section className="view active p-2r">
                   <p className="muted">无权限访问此页面。</p>
                 </section>
               }

@@ -135,6 +135,6 @@ describe("TabNav", () => {
       </QueryClientProvider>,
     );
     // No visible tabs when user is null
-    expect(document.querySelector(".tab:not([style*='hidden'])")?.textContent).toBeUndefined();
+    expect(document.querySelector(".tab:not(.invisible)")?.textContent).toBeUndefined();
   });
 });

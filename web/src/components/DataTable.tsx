@@ -56,7 +56,7 @@ export function DataTable<T>({
       <tbody>
         {rows.length === 0 ? (
           <tr className="empty-row">
-            <td colSpan={columns.length} className="muted" style={{ textAlign: "center", padding: "16px" }}>
+            <td colSpan={columns.length} className="muted ta-c p-16">
               {emptyText}
             </td>
           </tr>
@@ -65,7 +65,7 @@ export function DataTable<T>({
             <tr
               key={rowKey ? rowKey(row, i) : i}
               onClick={onRowClick ? () => onRowClick(row, i) : undefined}
-              style={onRowClick ? { cursor: "pointer" } : undefined}
+              className={onRowClick ? "pointer" : undefined}
             >
               {columns.map((col, j) => (
                 <td key={j} className={col.className} style={col.style}>

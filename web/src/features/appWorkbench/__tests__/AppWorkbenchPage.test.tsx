@@ -34,8 +34,19 @@ vi.mock("../../../api/AuthContext", () => ({
   useAuth: vi.fn(),
 }));
 
+vi.mock("../../../lib/toast", () => ({
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
+}));
+
+vi.mock("../../../lib/confirm", () => ({
+  confirmDialog: vi.fn(),
+  promptDialog: vi.fn(),
+}));
+
 import { apiGet, apiPost } from "../../../api/http";
 import { useAuth } from "../../../api/AuthContext";
+import { toast } from "../../../lib/toast";
+import { confirmDialog } from "../../../lib/confirm";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -156,6 +167,7 @@ function renderPage(queryClient: QueryClient) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(confirmDialog).mockResolvedValue(true);
   (useAuth as ReturnType<typeof vi.fn>).mockReturnValue({
     user: { username: "alice", role: "RM", display_name: "Alice" },
     ldapStatus: { enabled: false, uri: "" },
@@ -376,7 +388,7 @@ describe("AppWorkbenchPage", () => {
       expect(apiPost).toHaveBeenCalledWith("/api/app-info/fetch", { release_id: "rel-1", app_id: "app1" });
       expect(apiPost).toHaveBeenCalledWith("/api/app-info/fetch", { release_id: "rel-1", app_id: "app2" });
     });
-    expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("成功 1，失败 1"));
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("成功 1，失败 1"));
   });
 
   it("shows an in-progress dialog while fetching one app_info from Gerrit", async () => {
@@ -717,8 +729,6 @@ describe("AppWorkbenchPage F2 copy-from-version", () => {
   });
 
   it("shows a friendly message when the app is absent in the picked release", async () => {
-    const alertSpy = vi.fn();
-    vi.stubGlobal("alert", alertSpy);
     const base = payloadTwoReleases();
     const other = makePayload({ releases: twoReleaseSummaries() });
     const otherRelease = makeRelease({}); // no app1
@@ -734,7 +744,9 @@ describe("AppWorkbenchPage F2 copy-from-version", () => {
     await waitFor(() => screen.getByTestId("copy-confirm"));
     fireEvent.click(screen.getByTestId("copy-confirm"));
     await waitFor(() => {
-      expect(alertSpy.mock.calls.some((c) => String(c[0]).includes("没有此 app"))).toBe(true);
+      expect(
+        vi.mocked(toast.error).mock.calls.some((c) => String(c[0]).includes("没有此 app")),
+      ).toBe(true);
     });
   });
 });
@@ -1190,8 +1202,6 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
   });
 
   it("confirms replacement of no-Jira pending modify and sends replace_open", async () => {
-    const confirmSpy = vi.fn(() => true);
-    vi.stubGlobal("confirm", confirmSpy);
     const payload = payloadTwoReleases();
     const pendingReq = makeCicdRequest({ id: 13, status: "pending", jira_id: "", delivery_status: "" });
     (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
@@ -1209,7 +1219,9 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
     fireEvent.click(screen.getByText("提交 CICD 变更申请"));
 
     await waitFor(() => {
-      expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("取消旧申请"));
+      expect(confirmDialog).toHaveBeenCalledWith(
+        expect.objectContaining({ body: expect.stringContaining("取消旧申请") }),
+      );
       expect(apiPost).toHaveBeenCalledWith("/api/cicd/requests/submit", expect.objectContaining({
         task_id: "app1",
         request_type: "modify",
@@ -1478,8 +1490,7 @@ describe("AppWorkbenchPage F3 unsaved-changes guard", () => {
   });
 
   it("confirms before switching app when dirty", async () => {
-    const confirmSpy = vi.fn(() => false); // user cancels the switch
-    vi.stubGlobal("confirm", confirmSpy);
+    vi.mocked(confirmDialog).mockResolvedValue(false); // user cancels the switch
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
     const qc = makeQueryClient();
     renderPage(qc);
@@ -1487,7 +1498,7 @@ describe("AppWorkbenchPage F3 unsaved-changes guard", () => {
     fireEvent.change(screen.getByTestId("field-description"), { target: { value: "edited" } });
     await waitFor(() => expect(useUiStore.getState().appDetailDirty).toBe(true));
     fireEvent.click(screen.getByTestId("app-row-app2"));
-    expect(confirmSpy).toHaveBeenCalled();
+    await waitFor(() => expect(confirmDialog).toHaveBeenCalled());
     // cancelled → still on app1
     expect(useUiStore.getState().selectedApp).toBe("app1");
   });

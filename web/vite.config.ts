@@ -9,7 +9,7 @@ export default defineConfig({
       // Forward all /api/* calls to the FastAPI backend.
       // The system http_proxy hijacks localhost — bypass it here.
       "/api": {
-        target: "http://127.0.0.1:8000",
+        target: process.env.API_TARGET || "http://127.0.0.1:8000",
         changeOrigin: false,
         // Do NOT go through the system proxy; connect directly to 127.0.0.1.
         configure: (proxy) => {

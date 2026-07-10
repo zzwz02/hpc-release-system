@@ -46,6 +46,8 @@ import {
   markCicdVisited,
 } from "./cicdApi";
 import type { CicdTask, CicdRequest } from "../../types";
+import { toast } from "../../lib/toast";
+import { confirmDialog, promptDialog } from "../../lib/confirm";
 
 // Re-export so consumers (tests, TabNav) can import from either location.
 export { CICD_TASKS_KEY, CICD_NOTIFICATIONS_KEY };
@@ -67,8 +69,7 @@ function OriginBadge({ origin }: { origin?: string }) {
   if (origin !== "release_decision_sync") return null;
   return (
     <span
-      className="pill accent"
-      style={{ fontSize: 11, marginLeft: 4 }}
+      className="pill accent fs-11 ml-4"
       title="由 App 发布决策自动联动创建（Ruling D）"
     >
       同步联动
@@ -349,13 +350,13 @@ function ApproveDialog({ req, tasks, onDone, onClose }: ApproveDialogProps) {
 
   return (
     <div className="dialog-backdrop" role="dialog" aria-modal="true">
-      <div className="dialog-card" style={{ maxWidth: 580 }}>
+      <div className="dialog-card maxw-580">
         <h2>审批申请 #{req.id}</h2>
         <div className="dialog-body">
-          <div className="small muted" style={{ marginBottom: 8 }}>
+          <div className="small muted mb-8">
             提交人：{userLabel(req.submitter, req.submitter_display)}
             {isSelfApproval && (
-              <span className="pill accent" style={{ fontSize: 11, marginLeft: 4 }}>
+              <span className="pill accent fs-11 ml-4">
                 本人提交
               </span>
             )}{" "}
@@ -369,21 +370,20 @@ function ApproveDialog({ req, tasks, onDone, onClose }: ApproveDialogProps) {
             reqType={req.request_type}
           />
           {rejectDisabledByDecisionSync && (
-            <div className="small muted" style={{ marginTop: 8 }}>
+            <div className="small muted mt-8">
               该申请来自 release/cicd_only → stopped 的 release 决策，停止是 App owner 的决定，CICD 审批不能拒绝或取消。
             </div>
           )}
-          <div style={{ marginTop: 12 }}>
+          <div className="mt-12">
             <div className="field-label">审批意见（拒绝时必填）</div>
             <textarea
-              className="input"
+              className="input w-full resize-v"
               rows={2}
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              style={{ width: "100%", resize: "vertical" }}
             />
           </div>
-          <div style={{ marginTop: 8 }}>
+          <div className="mt-8">
             <div className="field-label">审批模式</div>
             <label className="check">
               <input
@@ -408,21 +408,20 @@ function ApproveDialog({ req, tasks, onDone, onClose }: ApproveDialogProps) {
             </label>
           </div>
           {approvalMode === "immediate" && (
-            <div style={{ marginTop: 8 }}>
+            <div className="mt-8">
               <label className="field-label">
                 Jira ID（选填）
                 <input
-                  className="input sm"
+                  className="input sm ml-8 w-160"
                   value={jiraIdImmediate}
                   placeholder="例：HPC-123"
                   onChange={(e) => setJiraIdImmediate(e.target.value)}
-                  style={{ marginLeft: 8, width: 160 }}
                 />
               </label>
             </div>
           )}
           {approvalMode === "dispatch_spd" && (
-            <div style={{ marginTop: 8 }}>
+            <div className="mt-8">
               <div className="field-label">Jira 处理方式</div>
               <label className="check">
                 <input
@@ -455,24 +454,23 @@ function ApproveDialog({ req, tasks, onDone, onClose }: ApproveDialogProps) {
                 手动填写
               </label>
               {jiraMode === "auto" && (
-                <div className="small muted" style={{ marginTop: 4 }}>
+                <div className="small muted mt-4">
                   将自动创建 Jira：{jiraTitle}
                 </div>
               )}
               {jiraMode === "manual" && (
                 <input
-                  className="input sm"
+                  className="input sm mt-4 w-160"
                   value={jiraIdManual}
                   placeholder="例：HPC-123"
                   onChange={(e) => setJiraIdManual(e.target.value)}
-                  style={{ marginTop: 4, width: 160 }}
                 />
               )}
             </div>
           )}
-          {error && <div className="lerr" style={{ marginTop: 8 }}>{error}</div>}
+          {error && <div className="lerr mt-8">{error}</div>}
         </div>
-        <div className="row dialog-actions" style={{ justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+        <div className="row dialog-actions justify-end gap-8 mt-12">
           <button className="btn" onClick={onClose} disabled={saving}>
             取消
           </button>
@@ -516,7 +514,7 @@ function HistoryDialog({
 
   return (
     <div className="dialog-backdrop" role="dialog" aria-modal="true">
-      <div className="dialog-card" style={{ maxWidth: 660, maxHeight: "80vh", overflow: "auto" }}>
+      <div className="dialog-card maxw-660 scroll-y-80vh">
         <h2>{title}</h2>
         <div className="dialog-body">
           {isLoading && <div className="muted">加载中…</div>}
@@ -536,7 +534,7 @@ function HistoryDialog({
                 &nbsp;·&nbsp; 提交人：{userLabel(h.submitter, h.submitter_display)}
                 &nbsp;·&nbsp; {formatServerTime(h.reviewed_at || h.submitted_at || "")}
                 {h.is_self_approved
-                  ? <>&nbsp;·&nbsp;<span className="pill accent" style={{ fontSize: 11 }}>RM 本人提交</span></>
+                  ? <>&nbsp;·&nbsp;<span className="pill accent fs-11">RM 本人提交</span></>
                   : h.reviewer
                   ? <>&nbsp;·&nbsp; 审批人：{h.reviewer}</>
                   : null}
@@ -551,7 +549,7 @@ function HistoryDialog({
             </div>
           ))}
         </div>
-        <div className="row dialog-actions" style={{ justifyContent: "flex-end", marginTop: 12 }}>
+        <div className="row dialog-actions justify-end mt-12">
           <button className="btn" onClick={onClose}>
             关闭
           </button>
@@ -581,10 +579,10 @@ function DetailDialog({
 
   return (
     <div className="dialog-backdrop" role="dialog" aria-modal="true">
-      <div className="dialog-card" style={{ maxWidth: 580 }}>
+      <div className="dialog-card maxw-580">
         <h2>申请详情 #{req.id}</h2>
         <div className="dialog-body">
-          <div className="small muted" style={{ marginBottom: 8 }}>
+          <div className="small muted mb-8">
             提交人：<b>{req.submitter_display || req.submitter}</b>
             &nbsp;|&nbsp; 类型：{REQ_TYPE_LABEL[req.request_type] ?? req.request_type}
             <OriginBadge origin={req.origin} />
@@ -606,7 +604,7 @@ function DetailDialog({
             )}
           </div>
           {req.reviewer && (
-            <div className="small muted" style={{ marginBottom: 8 }}>
+            <div className="small muted mb-8">
               审批人：{req.reviewer}
               &nbsp;|&nbsp; 审批时间：{formatServerTime(req.reviewed_at || "")}
               {req.review_note && (
@@ -629,7 +627,7 @@ function DetailDialog({
               ["分支", task?.branch || ctx.branch || "—"],
             ];
             return (
-              <div className="cicd-context" style={{ marginBottom: 8 }}>
+              <div className="cicd-context mb-8">
                 <div className="cicd-context-title">任务基础信息</div>
                 <div className="cicd-context-grid">
                   {items.map(([label, value]) => (
@@ -644,7 +642,7 @@ function DetailDialog({
           })()}
           <DiffTable payload={payload} reqType={req.request_type} />
         </div>
-        <div className="row dialog-actions" style={{ justifyContent: "flex-end", marginTop: 12 }}>
+        <div className="row dialog-actions justify-end mt-12">
           <button className="btn" onClick={onClose}>
             关闭
           </button>
@@ -700,10 +698,10 @@ function TaskInfoSection({
         />
         <span className="small muted">共 {filtered.length} / {tasks.length} 项</span>
       </div>
-      <div className="cicd-table-wrap">
-        {isLoading && <div className="muted" style={{ padding: 14 }}>加载中…</div>}
+      <div className="cicd-table-wrap sticky-first-col">
+        {isLoading && <div className="muted p-14">加载中…</div>}
         {Boolean(error) && (
-          <div className="lerr" style={{ padding: 14 }}>
+          <div className="lerr p-14">
             加载失败：{error instanceof Error ? error.message : String(error)}
           </div>
         )}
@@ -732,8 +730,7 @@ function TaskInfoSection({
                 <tr>
                   <td
                     colSpan={14}
-                    className="empty"
-                    style={{ textAlign: "center", color: "var(--muted)", padding: 30 }}
+                    className="empty pane-empty"
                   >
                     暂无 CICD 信息
                   </td>
@@ -745,31 +742,31 @@ function TaskInfoSection({
                     <td>
                       <b>{t.app_name}</b>
                       {t.has_pending && (
-                        <span className="pill accent" style={{ fontSize: 11, marginLeft: 4 }}>
+                        <span className="pill accent fs-11 ml-4">
                           待审批
                         </span>
                       )}
                       {t.has_pending_delivery && (
-                        <span className="pill" style={{ fontSize: 11, marginLeft: 4 }}>
+                        <span className="pill fs-11 ml-4">
                           待交付
                         </span>
                       )}
                     </td>
                     <td>{t.app_version}</td>
                     <td>{t.repo_type}</td>
-                    <td style={{ maxWidth: 160, wordBreak: "break-all" }}>
+                    <td className="maxw-160 break-all">
                       {formatCicdRepoPath(t.repo_name, t.repo_type)}
                     </td>
                     <td>{t.branch}</td>
                     <td>{buildProductStr(t.build_product)}</td>
                     <td>{communityArtifactStr(t.community_artifact)}</td>
-                    <td style={{ maxWidth: 160, wordBreak: "break-all" }}>
+                    <td className="maxw-160 break-all">
                       {t.build_image || "—"}
                     </td>
-                    <td style={{ textAlign: "center" }}>{t.test_timeout}</td>
+                    <td className="ta-c">{t.test_timeout}</td>
                     <td>{ownerLabel(t)}</td>
                     <td><StatusPill status={t.status} /></td>
-                    <td style={{ maxWidth: 160 }}>{t.notes || "—"}</td>
+                    <td className="maxw-160">{t.notes || "—"}</td>
                     <td>
                       <button className="btn sm" onClick={() => onHistory(t)}>
                         历史
@@ -849,7 +846,7 @@ function RecentRequestsSection({
             </button>
           ))}
         </div>
-        <label className="check" style={{ marginLeft: 10 }}>
+        <label className="check ml-10">
           <input
             type="checkbox"
             checked={onlyMine}
@@ -858,17 +855,16 @@ function RecentRequestsSection({
           只看我的
         </label>
         <input
-          className="input sm cicd-search"
+          className="input sm cicd-search ml-8"
           placeholder="搜索 app / 提交人"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          style={{ marginLeft: 8 }}
         />
       </div>
-      <div className="cicd-table-wrap">
-        {isLoading && <div className="muted" style={{ padding: 14 }}>加载中…</div>}
+      <div className="cicd-table-wrap sticky-first-col">
+        {isLoading && <div className="muted p-14">加载中…</div>}
         {error && (
-          <div className="lerr" style={{ padding: 14 }}>
+          <div className="lerr p-14">
             加载失败：{error instanceof Error ? error.message : String(error)}
           </div>
         )}
@@ -893,8 +889,7 @@ function RecentRequestsSection({
                 <tr>
                   <td
                     colSpan={10}
-                    className="empty"
-                    style={{ textAlign: "center", color: "var(--muted)", padding: 30 }}
+                    className="empty pane-empty"
                   >
                     暂无申请记录
                   </td>
@@ -917,7 +912,7 @@ function RecentRequestsSection({
                     <td className="small muted">
                       {r.reviewer ? userLabel(r.reviewer) : "—"}
                     </td>
-                    <td style={{ maxWidth: 160, fontSize: 12 }}>
+                    <td className="maxw-160 fs-12">
                       {r.review_note || "—"}
                     </td>
                     <td>
@@ -992,13 +987,14 @@ function PendingPane({
   }, [reqs, canApprove, username, pendingCount]);
 
   async function handleCancel(r: CicdRequest) {
-    if (!confirm("确认取消该申请？")) return;
+    if (!(await confirmDialog({ body: "确认取消该申请？", danger: true, confirmText: "取消申请", cancelText: "返回" }))) return;
     try {
       await cancelCicdRequest({ request_id: r.id });
       void refetch();
       onCancelled();
+      toast.success("申请已取消");
     } catch (e) {
-      alert("取消失败：" + (e instanceof Error ? e.message : String(e)));
+      toast.error("取消失败：" + (e instanceof Error ? e.message : String(e)));
     }
   }
 
@@ -1012,10 +1008,10 @@ function PendingPane({
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
-      <div className="cicd-table-wrap">
-        {isLoading && <div className="muted" style={{ padding: 14 }}>加载中…</div>}
+      <div className="cicd-table-wrap sticky-first-col">
+        {isLoading && <div className="muted p-14">加载中…</div>}
         {error && (
-          <div className="lerr" style={{ padding: 14 }}>
+          <div className="lerr p-14">
             加载失败：{error instanceof Error ? error.message : String(error)}
           </div>
         )}
@@ -1037,8 +1033,7 @@ function PendingPane({
                 <tr>
                   <td
                     colSpan={7}
-                    className="empty"
-                    style={{ textAlign: "center", color: "var(--muted)", padding: 30 }}
+                    className="empty pane-empty"
                   >
                     暂无待审批申请
                   </td>
@@ -1060,10 +1055,10 @@ function PendingPane({
                       <td className="small muted">
                         {formatServerTime(r.submitted_at ?? "")}
                       </td>
-                      <td style={{ maxWidth: 220, fontSize: 12 }}>
+                      <td className="maxw-220 fs-12">
                         {diffSummary(payload, r.request_type)}
                       </td>
-                      <td style={{ whiteSpace: "nowrap" }}>
+                      <td className="nowrap">
                         {canApprove && (
                           <button
                             className="btn sm primary"
@@ -1154,65 +1149,83 @@ function DeliveryPane({
   }, [deliveries.length, delivered, deliveryCount]);
 
   async function handleDeliver(id: number) {
-    if (!confirm(`确认交付申请 #${id}？此操作将实际执行 CICD 配置变更。`)) return;
+    if (!(await confirmDialog({
+      title: "交付申请",
+      body: `确认交付申请 #${id}？此操作将实际执行 CICD 配置变更。`,
+      confirmText: "交付",
+    }))) return;
     try {
       await deliverCicdRequest({ request_id: id });
       void refetch();
       onRefreshed();
+      toast.success(`申请 #${id} 已交付`);
     } catch (e) {
-      alert("交付失败：" + (e instanceof Error ? e.message : String(e)));
+      toast.error("交付失败：" + (e instanceof Error ? e.message : String(e)));
     }
   }
 
   async function handleReturn(id: number) {
-    const reason = prompt("请填写退回原因（必填）：");
+    const reason = await promptDialog({
+      title: "退回申请",
+      body: `请填写退回申请 #${id} 的原因（必填）：`,
+      placeholder: "退回原因",
+      confirmText: "退回",
+      danger: true,
+    });
     if (reason === null) return;
-    if (!reason.trim()) {
-      alert("退回原因不能为空");
-      return;
-    }
     try {
       await returnDeliveryCicdRequest({ request_id: id, reason: reason.trim() });
       void refetch();
+      toast.success(`申请 #${id} 已退回`);
     } catch (e) {
-      alert("退回失败：" + (e instanceof Error ? e.message : String(e)));
+      toast.error("退回失败：" + (e instanceof Error ? e.message : String(e)));
     }
   }
 
   async function handleReDispatch(id: number) {
-    if (!confirm(`重新下发申请 #${id} 给 SPD？`)) return;
+    if (!(await confirmDialog({ body: `重新下发申请 #${id} 给 SPD？`, confirmText: "重新下发" }))) return;
     try {
       await reDispatchCicdRequest({ request_id: id });
       void refetch();
+      toast.success(`申请 #${id} 已重新下发`);
     } catch (e) {
-      alert("操作失败：" + (e instanceof Error ? e.message : String(e)));
+      toast.error("操作失败：" + (e instanceof Error ? e.message : String(e)));
     }
   }
 
   async function handleApplyReturned(id: number) {
-    if (!confirm(`直接生效申请 #${id}？此操作绕过 SPD，由 RM 直接执行配置变更。`)) return;
+    if (!(await confirmDialog({
+      title: "直接生效",
+      body: `直接生效申请 #${id}？此操作绕过 SPD，由 RM 直接执行配置变更。`,
+      danger: true,
+      confirmText: "直接生效",
+    }))) return;
     try {
       await applyReturnedCicdRequest({ request_id: id });
       void refetch();
       onRefreshed();
+      toast.success(`申请 #${id} 已生效`);
     } catch (e) {
-      alert("操作失败：" + (e instanceof Error ? e.message : String(e)));
+      toast.error("操作失败：" + (e instanceof Error ? e.message : String(e)));
     }
   }
 
   async function handleRejectReturned(id: number) {
-    const reason = prompt(`请填写拒绝申请 #${id} 的理由（必填）：`);
+    const reason = await promptDialog({
+      title: "拒绝申请",
+      body: `请填写拒绝申请 #${id} 的理由（必填）：`,
+      placeholder: "拒绝理由",
+      confirmText: "拒绝",
+      danger: true,
+    });
     if (reason === null) return;
-    if (!reason.trim()) {
-      alert("拒绝理由不能为空");
-      return;
-    }
     try {
       await rejectReturnedCicdRequest({ request_id: id, review_note: reason.trim() });
       void refetch();
       onRefreshed();
+      toast.success(`申请 #${id} 已拒绝`);
     } catch (e) {
-      alert("拒绝失败：" + (e instanceof Error ? e.message : String(e)));
+      toast.error("拒绝失败：" + (e instanceof Error ? e.message : String(e)));
     }
   }
 
@@ -1228,10 +1241,10 @@ function DeliveryPane({
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
-      <div className="cicd-table-wrap">
-        {isLoading && <div className="muted" style={{ padding: 14 }}>加载中…</div>}
+      <div className="cicd-table-wrap sticky-first-col">
+        {isLoading && <div className="muted p-14">加载中…</div>}
         {error && (
-          <div className="lerr" style={{ padding: 14 }}>
+          <div className="lerr p-14">
             {error instanceof Error ? error.message : String(error)}
           </div>
         )}
@@ -1269,8 +1282,7 @@ function DeliveryPane({
                 <tr>
                   <td
                     colSpan={9}
-                    className="empty"
-                    style={{ textAlign: "center", color: "var(--muted)", padding: 30 }}
+                    className="empty pane-empty"
                   >
                     {delivered ? "暂无已交付记录" : "暂无待交付申请"}
                   </td>
@@ -1300,7 +1312,7 @@ function DeliveryPane({
                         "—"
                       )}
                     </td>
-                    <td style={{ whiteSpace: "nowrap" }}>
+                    <td className="nowrap">
                       <button className="btn sm" onClick={() => onDetail(d)}>
                         详情
                       </button>
@@ -1336,12 +1348,12 @@ function DeliveryPane({
                         {DELIVERY_STATUS_LABEL[d.delivery_status ?? ""] ?? d.delivery_status}
                       </span>
                       {d.returned_reason && (
-                        <div className="small muted" style={{ marginTop: 2 }}>
+                        <div className="small muted mt-2">
                           {d.returned_reason}
                         </div>
                       )}
                     </td>
-                    <td style={{ whiteSpace: "nowrap" }}>
+                    <td className="nowrap">
                       {["SPD", "RM"].includes(role) && (
                         <button
                           className="btn sm primary"
@@ -1553,7 +1565,7 @@ export function CicdPage() {
       <div className="page-toolbar">
         <h2>CICD 工作台</h2>
         {notifCount > 0 && (
-          <span className="cicd-badge" style={{ marginLeft: 6 }}>
+          <span className="cicd-badge ml-6">
             {notifCount > 99 ? "99+" : notifCount}
           </span>
         )}

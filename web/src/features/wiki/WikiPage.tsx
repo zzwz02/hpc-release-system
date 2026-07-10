@@ -31,6 +31,7 @@ import { useAuth } from "../../api/AuthContext";
 import { canEditWiki } from "../../lib/roles";
 import { formatServerTime } from "../../lib/time";
 import type { MarkdownOutlineItem } from "../../lib/markdown";
+import { confirmDialog } from "../../lib/confirm";
 import type {
   WikiArticleSummary,
   WikiArticle,
@@ -90,9 +91,8 @@ interface ArticleCardProps {
 function ArticleCard({ article, onClick }: ArticleCardProps) {
   return (
     <article
-      className="wiki-card"
+      className="wiki-card pointer"
       onClick={onClick}
-      style={{ cursor: "pointer" }}
       data-testid={`wiki-card-${article.id}`}
     >
       <div className={`wiki-card-title${article.pinned ? " pinned" : ""}`}>
@@ -166,8 +166,7 @@ function ArticleListPane({
           ))
         ) : (
           <div
-            className="empty"
-            style={{ padding: "44px 12px", gridColumn: "1/-1" }}
+            className="empty p-44-12 grid-span-all"
           >
             暂无文章
           </div>
@@ -197,7 +196,7 @@ function OutlineSidebar({ outline }: OutlineSidebarProps) {
       <div className="wiki-outline">
         <div className="wiki-outline-head">目录</div>
         <div className="wiki-outline-list">
-          <div className="small muted" style={{ padding: "6px 8px" }}>
+          <div className="small muted p-6-8">
             这篇文章还没有标题。
           </div>
         </div>
@@ -274,7 +273,7 @@ function ArticleDetailPane({
               {wikiTime(article.updated_at || article.created_at)}
             </div>
           </div>
-          <div className="wiki-detail-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <div className="wiki-detail-actions flex-row gap-8 wrap">
             <button className="btn sm" onClick={onBack}>
               ← 列表
             </button>
@@ -419,29 +418,21 @@ function EditorPane({ article, onSaved, onCancel }: EditorPaneProps) {
   }
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100%",
-        minHeight: 0,
-      }}
-    >
+    <div className="flex-col-fill">
       {/* Editor toolbar */}
       <div className="wiki-editor-top">
-        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flex: 1 }}>
-          <label style={{ flex: 1 }}>
+        <div className="wiki-editor-titlebar">
+          <label className="flex-1">
             <span className="small muted">标题</span>
             <input
-              className="input"
-              style={{ width: "100%", marginTop: 4 }}
+              className="input w-full mt-4"
               placeholder="文章标题"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               data-testid="wiki-title-input"
             />
           </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+          <label className="flex-row items-center gap-6 mb-3">
             <input
               type="checkbox"
               checked={pinned}
@@ -451,7 +442,7 @@ function EditorPane({ article, onSaved, onCancel }: EditorPaneProps) {
             置顶
           </label>
         </div>
-        <div style={{ display: "flex", gap: 8, marginBottom: 3 }}>
+        <div className="flex-row gap-8 mb-3">
           <button
             className="btn primary"
             onClick={handleSave}
@@ -465,28 +456,18 @@ function EditorPane({ article, onSaved, onCancel }: EditorPaneProps) {
           </button>
         </div>
       </div>
-      <div className="small muted" style={{ minHeight: 18, marginBottom: 6 }}>
+      <div className="small muted minh-18 mb-6">
         {log}
       </div>
-      <div
-        className="wiki-editor-grid"
-        style={{
-          flex: 1,
-          minHeight: 0,
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: 14,
-        }}
-      >
+      <div className="wiki-editor-grid wiki-editor-grid2">
         {/* Left: editor */}
-        <label style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-          <span className="small muted" style={{ marginBottom: 4 }}>
+        <label className="flex-col-min0">
+          <span className="small muted mb-4">
             Markdown 编辑（支持粘贴图片）
           </span>
           <textarea
             ref={bodyRef}
-            className="input"
-            style={{ flex: 1, minHeight: 0, resize: "none", fontFamily: "monospace", fontSize: 13 }}
+            className="input wiki-editor-body"
             placeholder="用 Markdown 写文章……"
             value={body}
             onChange={(e) => setBody(e.target.value)}
@@ -495,8 +476,8 @@ function EditorPane({ article, onSaved, onCancel }: EditorPaneProps) {
           />
         </label>
         {/* Right: live preview */}
-        <div style={{ display: "flex", flexDirection: "column", minHeight: 0, overflow: "auto" }}>
-          <span className="small muted" style={{ marginBottom: 4 }}>
+        <div className="wiki-editor-preview">
+          <span className="small muted mb-4">
             预览
           </span>
           {/* <Markdown> is the sole sanitized-HTML sink. */}
@@ -506,7 +487,7 @@ function EditorPane({ article, onSaved, onCancel }: EditorPaneProps) {
         </div>
       </div>
       {!isNew && (
-        <div className="small muted" style={{ marginTop: 6 }}>
+        <div className="small muted mt-6">
           提示：在正文编辑框中粘贴图片可自动上传并插入 Markdown 链接。
         </div>
       )}
@@ -614,9 +595,13 @@ export function WikiPage() {
     pinMutation.mutate({ id: article.id, pinned: !article.pinned });
   }
 
-  function handleDelete() {
+  async function handleDelete() {
     if (!article) return;
-    if (!window.confirm(`确认删除 WIKI 文章「${article.title}」？`)) return;
+    if (!(await confirmDialog({
+      body: `确认删除 WIKI 文章「${article.title}」？`,
+      danger: true,
+      confirmText: "删除",
+    }))) return;
     deleteMutation.mutate(article.id);
   }
 
@@ -662,12 +647,12 @@ export function WikiPage() {
 
       {/* Error banner */}
       {listError && (
-        <div className="error-banner" style={{ padding: "1rem", color: "var(--bad)" }}>
+        <div className="error-banner pane-error">
           加载失败：{listError instanceof Error ? listError.message : String(listError)}
         </div>
       )}
       {articleError && mode === "view" && (
-        <div className="error-banner" style={{ padding: "1rem", color: "var(--bad)" }}>
+        <div className="error-banner pane-error">
           文章加载失败：{articleError instanceof Error ? articleError.message : String(articleError)}
         </div>
       )}
@@ -688,7 +673,7 @@ export function WikiPage() {
           {mode === "view" && (
             <>
               {articleFetching && !article && (
-                <div className="muted" style={{ padding: "2rem" }}>
+                <div className="muted p-2r">
                   加载中…
                 </div>
               )}

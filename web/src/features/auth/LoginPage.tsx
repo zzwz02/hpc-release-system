@@ -61,13 +61,13 @@ export function LoginPage() {
   return (
     <div id="loginPage">
       <div className="login-box">
-        <div className="brand" style={{ marginBottom: "1.5rem", textAlign: "center" }}>
+        <div className="brand mb-15r ta-c">
           <span className="logo">HPC</span>
           <span>发布信息协作系统</span>
         </div>
 
         {ldapStatus.enabled && (
-          <div id="loginTypeBar" className="ltype-bar" style={{ marginBottom: "1rem" }}>
+          <div id="loginTypeBar" className="ltype-bar mb-1r">
             <button
               type="button"
               className={loginType === "ldap" ? "active" : ""}
@@ -88,7 +88,7 @@ export function LoginPage() {
         )}
 
         <form onSubmit={handleSubmit} noValidate>
-          <div style={{ marginBottom: "0.75rem" }}>
+          <div className="mb-075r">
             <input
               id="lp-user"
               ref={userRef}
@@ -100,7 +100,7 @@ export function LoginPage() {
               onKeyDown={handleUserKeyDown}
             />
           </div>
-          <div style={{ marginBottom: "0.75rem" }}>
+          <div className="mb-075r">
             <input
               id="lp-pass"
               className="input"
@@ -123,7 +123,7 @@ export function LoginPage() {
           </button>
 
           {error && (
-            <div id="lpError" className="lerr" style={{ marginTop: "0.5rem" }}>
+            <div id="lpError" className="lerr mt-05r">
               {error}
             </div>
           )}

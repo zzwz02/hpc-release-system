@@ -28,6 +28,15 @@ vi.mock("../../../api/http", () => ({
   apiPost: vi.fn(),
 }));
 
+vi.mock("../../../lib/toast", () => ({
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
+}));
+
+vi.mock("../../../lib/confirm", () => ({
+  confirmDialog: vi.fn(),
+  promptDialog: vi.fn(),
+}));
+
 vi.mock("../../../store/uiStore", () => {
   const useUiStore = (selector?: (s: { selectedReleaseId: string }) => unknown) => {
     const state = { selectedReleaseId: "" };
@@ -38,6 +47,8 @@ vi.mock("../../../store/uiStore", () => {
 });
 
 import { apiGet, apiPost } from "../../../api/http";
+import { toast } from "../../../lib/toast";
+import { confirmDialog, promptDialog } from "../../../lib/confirm";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -229,7 +240,7 @@ describe("AdminPage structure", () => {
 
 describe("AdminPage DB pane", () => {
   it("clear-db button calls POST /api/admin/clear-db", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(confirmDialog).mockResolvedValue(true);
     (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok: true,
       backup: "backup_2026.db",
@@ -261,8 +272,7 @@ describe("AdminPage DB pane", () => {
     );
   });
 
-  it("clear-db shows alert when password is empty", async () => {
-    const alertMock = vi.spyOn(window, "alert").mockImplementation(() => {});
+  it("clear-db shows a toast when password is empty", async () => {
     const qc = makeQClient();
     renderAdminPage(qc);
     await waitFor(() =>
@@ -271,14 +281,14 @@ describe("AdminPage DB pane", () => {
 
     fireEvent.click(screen.getByTestId("clear-db-btn"));
 
-    expect(alertMock).toHaveBeenCalledWith(
+    expect(toast.info).toHaveBeenCalledWith(
       expect.stringContaining("admin 密码"),
     );
     expect(apiPost).not.toHaveBeenCalled();
   });
 
   it("delete-app button calls POST /api/admin/apps/delete after prompt", async () => {
-    vi.spyOn(window, "prompt").mockReturnValue("app1");
+    vi.mocked(promptDialog).mockResolvedValue("app1");
     (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
 
     const qc = makeQClient();
@@ -298,14 +308,16 @@ describe("AdminPage DB pane", () => {
   });
 
   it("delete-app does NOT call API when prompt is cancelled", async () => {
-    vi.spyOn(window, "prompt").mockReturnValue(null);
+    vi.mocked(promptDialog).mockResolvedValue(null);
     const qc = makeQClient();
     renderAdminPage(qc);
     await waitFor(() =>
       expect(screen.getByTestId("delete-app-app1")).toBeDefined(),
     );
 
-    fireEvent.click(screen.getByTestId("delete-app-app1"));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("delete-app-app1"));
+    });
     expect(apiPost).not.toHaveBeenCalled();
   });
 });

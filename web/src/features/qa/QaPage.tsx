@@ -29,6 +29,7 @@ import { formatGerritUrl } from "../../lib/git";
 import { formatServerTime } from "../../lib/time";
 import { downloadCsv } from "../../lib/csv";
 import { qaStatusLabels, qaStatusOptions } from "../../lib/labels";
+import { toast } from "../../lib/toast";
 import type {
   StatePayload,
   Snapshot,
@@ -112,7 +113,7 @@ function AiProgress({ job }: AiProgressProps) {
         <b>{message}</b>
         <span className="stage">{stage}</span>
       </div>
-      <div className="small muted" style={{ marginTop: 4 }}>
+      <div className="small muted mt-4">
         已运行 {elapsed}s{tokenText}；进度会在当前提示中更新。
       </div>
     </div>
@@ -266,7 +267,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
             const truncNote = (res as Record<string, unknown> | undefined)?.["log_truncated"]
               ? "\n注意：log 过长已截断中段送给 LLM。"
               : "";
-            alert(
+            toast.success(
               `AI 分析完成：已为 ${n} 个 app 预填 QA 状态，请核对后点「保存 QA 状态」${truncNote}`,
             );
           } else {
@@ -274,7 +275,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
               (job as unknown as Record<string, string>)["error"] ||
               (job as unknown as Record<string, string>)["message"] ||
               "未知错误";
-            alert("AI 分析失败：" + errMsg);
+            toast.error("AI 分析失败：" + errMsg);
           }
         } catch (e) {
           stopPoll();
@@ -301,7 +302,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
     const form = e.currentTarget;
     const fileInput = form.elements.namedItem("qaLogFile") as HTMLInputElement;
     const file = fileInput?.files?.[0];
-    if (!file) { alert("请选择 log 文件"); return; }
+    if (!file) { toast.info("请选择 log 文件"); return; }
     const bytes = new Uint8Array(await file.arrayBuffer());
     let bin = "";
     const CHUNK = 0x8000;
@@ -318,14 +319,14 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
       uiStore.setQaAiJob(null);
       uiStore.clearQaAiSuggestions();
       onStateRefresh();
-      alert("QA log 上传成功");
+      toast.success("QA log 上传成功");
     } catch (ex) {
-      alert("上传失败：" + (ex instanceof Error ? ex.message : String(ex)));
+      toast.error("上传失败：" + (ex instanceof Error ? ex.message : String(ex)));
     }
   }
 
   async function handleAnalyze() {
-    if (!payload.qa_log) { alert("请先上传 QA log"); return; }
+    if (!payload.qa_log) { toast.info("请先上传 QA log"); return; }
     if (aiJob?.status === "running") return;
     try {
       const job = await apiPost<QaAnalysisJob>(
@@ -345,7 +346,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
         error: ex instanceof Error ? ex.message : String(ex),
         progress: null,
       });
-      alert("AI 分析失败：" + (ex instanceof Error ? ex.message : String(ex)));
+      toast.error("AI 分析失败：" + (ex instanceof Error ? ex.message : String(ex)));
     }
   }
 
@@ -388,7 +389,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
       (item) => qaIssueNoteRequired(item.status) && !item.issue_note.trim(),
     );
     if (missingNote) {
-      alert(
+      toast.info(
         `标注「${qaStatusLabels[missingNote.status as QaStatus] ?? missingNote.status}」时必须填写问题说明`,
       );
       return;
@@ -399,9 +400,9 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
       uiStore.clearQaAiSuggestions();
       uiStore.setQaAiJob(null);
       onStateRefresh();
-      alert("QA 状态已保存");
+      toast.success("QA 状态已保存");
     } catch (ex) {
-      alert(
+      toast.error(
         "保存失败，未保存任何改动，请修正后重试：\n\n" +
           (ex instanceof Error ? ex.message : String(ex)),
       );
@@ -473,7 +474,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
           )}
 
           {editMode && (
-            <form onSubmit={handleUpload} style={{ marginTop: 9 }}>
+            <form onSubmit={handleUpload} className="mt-9">
               <div className="row">
                 <input id="qaLogFile" name="qaLogFile" type="file" className="input" />
                 <button
@@ -508,14 +509,14 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
       </div>
 
       {editMode && (
-        <div className="banner warnp" style={{ marginTop: 14 }}>
+        <div className="banner warnp mt-14">
           编辑中 · 刷新前请先保存或取消。上传 log、AI 分析、改 QA 状态都在保存后才会生效。
         </div>
       )}
 
       {/* App QA cards */}
       {rows.length === 0 ? (
-        <div className="banner" style={{ marginTop: 14 }}>
+        <div className="banner mt-14">
           本 release 暂无 release 决策为 release 的 app。
         </div>
       ) : (
@@ -555,12 +556,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
                     <div className="name">
                       {displayName(snap)}{" "}
                       {useSuggestion && (
-                        <span
-                          className="pill"
-                          style={{ background: "#eef", border: "1px solid #99c", color: "#225" }}
-                        >
-                          AI 建议
-                        </span>
+                        <span className="pill ai">AI 建议</span>
                       )}
                     </div>
                     <div className="sub">
@@ -616,39 +612,31 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
                     Gerrit: {formatGerritUrl(app.git_url)} {app.git_branch || ""}
                   </p>
                   {testResults.length > 0 && (
-                    <details className="qa-test-results" style={{ marginTop: 6 }}>
+                    <details className="qa-test-results mt-6">
                       <summary className="small muted">
                         测试结果（{testResults.length}）{useSuggestion ? " · 来自 AI 分析" : ""}
                       </summary>
-                      <table
-                        className="qa-test-results-tbl"
-                        style={{
-                          width: "100%",
-                          borderCollapse: "collapse",
-                          marginTop: 4,
-                          fontSize: 12,
-                        }}
-                      >
+                      <table className="qa-test-results-tbl">
                         <thead>
                           <tr>
-                            <th style={{ textAlign: "left" }}>测试</th>
+                            <th className="ta-l">测试</th>
                             <th>arch</th>
                             <th>状态</th>
                             <th>性能</th>
-                            <th style={{ textAlign: "left" }}>说明</th>
+                            <th className="ta-l">说明</th>
                           </tr>
                         </thead>
                         <tbody>
                           {testResults.map((r, i) => (
                             <tr key={i}>
                               <td>{r.test || ""}</td>
-                              <td style={{ textAlign: "center" }}>{r.arch || ""}</td>
-                              <td style={{ textAlign: "center" }}>
+                              <td className="ta-c">{r.arch || ""}</td>
+                              <td className="ta-c">
                                 <span className={qaTestResultPillClass(r.status)}>
                                   {qaTestResultLabel(r.status)}
                                 </span>
                               </td>
-                              <td style={{ textAlign: "center" }}>{r.perf || ""}</td>
+                              <td className="ta-c">{r.perf || ""}</td>
                               <td>{r.note || ""}</td>
                             </tr>
                           ))}
@@ -758,7 +746,7 @@ function QaChangeLogPanel({ payload, rows, releaseId }: QaChangeLogPanelProps) {
       </summary>
       <div className="section-body">
         {errorApps.length > 0 && (
-          <div className="banner bad" style={{ marginBottom: 12 }}>
+          <div className="banner bad mb-12">
             部分变更记录加载失败：
             {errorApps
               .map(({ app, snap }) => `${displayName(snap)}: ${errors[app.id]}`)
@@ -813,9 +801,8 @@ function ChangeLogRow({ entry }: ChangeLogRowProps) {
   return (
     <>
       <tr
-        className={`cl-row ${hasDetail ? "cl-clickable" : ""}`}
+        className={`cl-row ${hasDetail ? "cl-clickable pointer" : ""}`}
         onClick={hasDetail ? () => setOpen((v) => !v) : undefined}
-        style={hasDetail ? { cursor: "pointer" } : undefined}
       >
         <td>{formatServerTime(entry.ts)}</td>
         <td>{entry.app_label}</td>
@@ -943,14 +930,14 @@ function ReportPane({ releaseId, kind, title, hint, releases }: ReportPaneProps)
       </div>
       <div className="panel-body">
         {error && (
-          <div className="lerr" style={{ marginBottom: 8 }}>
+          <div className="lerr mb-8">
             加载失败：{error instanceof Error ? error.message : String(error)}
           </div>
         )}
         {!rawData && !isFetching && (
           <>
             <p className="muted small">{hint}</p>
-            <div className="row" style={{ marginTop: 9 }}>
+            <div className="row mt-9">
               <button
                 className="btn primary"
                 onClick={() => void refetch()}
@@ -1172,7 +1159,7 @@ function ReportTable({
 
         {kind === "release" && (
           <span className="qa-report-compare">
-            <span className="muted small" style={{ fontSize: 12 }}>
+            <span className="muted small fs-12">
               对比版本
             </span>
             <select
@@ -1199,27 +1186,25 @@ function ReportTable({
         <p className="qa-chip-legend">芯片系列说明：{CHIP_LEGEND}</p>
       )}
 
-      <div className="table report-table" data-testid={`qa-report-table-${kind}`}>
+      <div className="table report-table sticky-first-col" data-testid={`qa-report-table-${kind}`}>
         <table>
           <thead>
             <tr>
               {visibleIndexes.map((i) => {
                 const c = columns[i];
-                const ind =
-                  filterState.sort.col === i
-                    ? filterState.sort.dir > 0
-                      ? " ▲"
-                      : " ▼"
-                    : "";
-                const cls =
-                  kind === "release" && String(c).startsWith("开发者社区")
-                    ? "sortable col-comm"
-                    : "sortable";
+                const sorted = filterState.sort.col === i;
+                const cls = [
+                  "sortable",
+                  sorted ? "sorted" : "",
+                  kind === "release" && String(c).startsWith("开发者社区") ? "col-comm" : "",
+                ].filter(Boolean).join(" ");
                 return (
                   <th key={i} className={cls} onClick={() => handleSortClick(i)}>
                     <span className="th-text">
                       {c}
-                      {ind}
+                      <span className="sort-ind" aria-hidden="true">
+                        {sorted ? (filterState.sort.dir > 0 ? "▲" : "▼") : "▲"}
+                      </span>
                     </span>
                   </th>
                 );
@@ -1384,7 +1369,7 @@ export function QaPage() {
         <div className="page-toolbar">
           <h2>QA</h2>
         </div>
-        <p className="muted" style={{ padding: "1rem" }}>
+        <p className="muted p-1r">
           无权限访问此页面。
         </p>
       </section>
@@ -1415,13 +1400,13 @@ export function QaPage() {
       </div>
 
       {error && (
-        <div className="lerr" style={{ padding: "12px 16px" }}>
+        <div className="lerr p-12-16">
           加载失败：{error instanceof Error ? error.message : String(error)}
         </div>
       )}
 
       {!data && isFetching && (
-        <div className="muted" style={{ padding: "1rem" }}>
+        <div className="muted p-1r">
           加载中…
         </div>
       )}
@@ -1502,8 +1487,7 @@ function ReleaseSelector({
   if (!releases.length) return <span className="muted small">暂无 release</span>;
   return (
     <select
-      className="input"
-      style={{ width: "auto", minWidth: 160 }}
+      className="input select-inline"
       value={selectedId ?? ""}
       onChange={(e) => onChange(e.target.value)}
       aria-label="选择 release"

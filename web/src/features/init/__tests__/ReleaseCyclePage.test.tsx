@@ -34,8 +34,18 @@ vi.mock("../../../api/AuthContext", () => ({
   useAuth: vi.fn(),
 }));
 
+vi.mock("../../../lib/toast", () => ({
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
+}));
+
+vi.mock("../../../lib/confirm", () => ({
+  confirmDialog: vi.fn(),
+  promptDialog: vi.fn(),
+}));
+
 import { apiGet, apiPost } from "../../../api/http";
 import { useAuth } from "../../../api/AuthContext";
+import { confirmDialog } from "../../../lib/confirm";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -321,25 +331,21 @@ describe("ReleaseCyclePage", () => {
   it("final lock: shows confirm dialog, calls /api/releases/final-lock", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
     (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ artifacts: [] });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
-    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
+    vi.mocked(confirmDialog).mockResolvedValue(true);
 
     renderPage(makeQueryClient());
     await waitFor(() => screen.getByTestId("final-lock-btn"));
     fireEvent.click(screen.getByTestId("final-lock-btn"));
 
     await waitFor(() => {
-      expect(confirmSpy).toHaveBeenCalled();
+      expect(confirmDialog).toHaveBeenCalled();
       expect(apiPost).toHaveBeenCalledWith("/api/releases/final-lock", { release_id: "rel-1" });
     });
-
-    confirmSpy.mockRestore();
-    alertSpy.mockRestore();
   });
 
   it("final lock: aborts if confirm cancelled", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    vi.mocked(confirmDialog).mockResolvedValue(false);
 
     renderPage(makeQueryClient());
     await waitFor(() => screen.getByTestId("final-lock-btn"));
@@ -348,25 +354,21 @@ describe("ReleaseCyclePage", () => {
     await waitFor(() => {
       expect(apiPost).not.toHaveBeenCalled();
     });
-
-    confirmSpy.mockRestore();
   });
 
   it("final unlock: shows confirm dialog, calls /api/releases/final-unlock", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
     (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(confirmDialog).mockResolvedValue(true);
 
     renderPage(makeQueryClient());
     await waitFor(() => screen.getByTestId("final-unlock-btn"));
     fireEvent.click(screen.getByTestId("final-unlock-btn"));
 
     await waitFor(() => {
-      expect(confirmSpy).toHaveBeenCalled();
+      expect(confirmDialog).toHaveBeenCalled();
       expect(apiPost).toHaveBeenCalledWith("/api/releases/final-unlock", { release_id: "rel-1" });
     });
-
-    confirmSpy.mockRestore();
   });
 
   it("import pane: shows '请选择' when no file selected and import clicked", async () => {

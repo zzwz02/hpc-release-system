@@ -37,6 +37,15 @@ vi.mock("../../../api/AuthContext", () => ({
   useAuth: vi.fn(),
 }));
 
+vi.mock("../../../lib/toast", () => ({
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
+}));
+
+vi.mock("../../../lib/confirm", () => ({
+  confirmDialog: vi.fn(),
+  promptDialog: vi.fn(),
+}));
+
 vi.mock("../../../store/uiStore", () => {
   let _state = {
     selectedReleaseId: "",
@@ -61,6 +70,7 @@ vi.mock("../../../store/uiStore", () => {
 // vi.mock is hoisted, so these imports get the mocked versions.
 import { apiGet, apiPost } from "../../../api/http";
 import { useAuth } from "../../../api/AuthContext";
+import { promptDialog } from "../../../lib/confirm";
 // Access __setState from the mocked uiStore to manipulate mock state in tests.
 // The vi.mock factory above exports it; casting bypasses missing types.
 import * as _uiStoreMod from "../../../store/uiStore";
@@ -306,7 +316,7 @@ describe("CicdPage", () => {
   });
 
   it("DeliveryPane: RM can reject a returned delivery", async () => {
-    vi.stubGlobal("prompt", vi.fn(() => "obsolete"));
+    vi.mocked(promptDialog).mockResolvedValue("obsolete");
     const returned = makeRequest({
       id: 7,
       status: "approved",

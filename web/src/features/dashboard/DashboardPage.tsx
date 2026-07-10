@@ -27,6 +27,8 @@ import { isRM, isOwner } from "../../lib/roles";
 import { displayName } from "../../lib/identity";
 import { formatDateValue, formatServerTime } from "../../lib/time";
 import { qaStatusLabels } from "../../lib/labels";
+import { toast } from "../../lib/toast";
+import { confirmDialog } from "../../lib/confirm";
 import { needsAttention } from "../appWorkbench/helpers";
 import type {
   StatePayload,
@@ -323,12 +325,16 @@ function SchedulePanel({ entries, userIsRM, onMutated }: SchedulePanelProps) {
   }
 
   async function deleteEntry(entry: ReleaseScheduleEntry) {
-    if (!confirm(`确定删除发布时间线"${entry.version || entry.id}"？`)) return;
+    if (!(await confirmDialog({
+      body: `确定删除发布时间线"${entry.version || entry.id}"？`,
+      danger: true,
+      confirmText: "删除",
+    }))) return;
     try {
       await apiPost("/api/release-schedule/delete", { id: entry.id });
       onMutated();
     } catch (e) {
-      alert("删除失败：" + (e instanceof Error ? e.message : String(e)));
+      toast.error("删除失败：" + (e instanceof Error ? e.message : String(e)));
     }
   }
 
@@ -341,7 +347,7 @@ function SchedulePanel({ entries, userIsRM, onMutated }: SchedulePanelProps) {
         <span className="count" id="scheduleCount">
           {entries.length ? `共 ${entries.length} 个版本` : ""}
         </span>
-        <span style={{ flex: 1 }} />
+        <span className="flex-1" />
         {userIsRM && (
           <button
             className="btn sm primary"
@@ -352,17 +358,17 @@ function SchedulePanel({ entries, userIsRM, onMutated }: SchedulePanelProps) {
           </button>
         )}
       </div>
-      <div className="panel-body" style={{ padding: 0 }}>
-        {error && <div className="lerr" style={{ padding: "8px 12px" }}>{error}</div>}
+      <div className="panel-body p-0">
+        {error && <div className="lerr p-8-12">{error}</div>}
         <div id="scheduleBox" className="schedule-box">
           <table>
             <thead>
               <tr>
-                <th style={{ width: "25%" }}>版本号</th>
-                <th style={{ width: "25%" }}>拉 branch 时间</th>
-                <th style={{ width: "25%" }}>Release 发布时间</th>
+                <th className="w-25p">版本号</th>
+                <th className="w-25p">拉 branch 时间</th>
+                <th className="w-25p">Release 发布时间</th>
                 <th>备注</th>
-                {userIsRM && <th style={{ width: 120, textAlign: "right" }}>操作</th>}
+                {userIsRM && <th className="w-120 ta-r">操作</th>}
               </tr>
             </thead>
             <tbody>
@@ -399,7 +405,7 @@ function SchedulePanel({ entries, userIsRM, onMutated }: SchedulePanelProps) {
               )}
               {entries.length === 0 && editId !== "__new__" && (
                 <tr className="empty-row">
-                  <td colSpan={cols} className="muted" style={{ textAlign: "center", padding: 14 }}>
+                  <td colSpan={cols} className="muted ta-c p-14">
                     {userIsRM
                       ? '尚未维护发布时间线，点击右上角"+ 新增"填入版本号、拉 branch 时间、发布时间。'
                       : "尚未维护发布时间线。"}
@@ -538,8 +544,7 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
         <h2 id="dashboardOwnerTitle">{title}</h2>
         <span className="count" id="dashboardOwnerCount">共 {gridRows.length} 个</span>
         <label
-          className="check"
-          style={{ whiteSpace: "nowrap" }}
+          className="check nowrap"
           title="仅显示待办不齐全或 QA 存在问题 / 不可发布的 app"
         >
           <input
@@ -550,13 +555,13 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
           />
           只看待办/QA 异常
         </label>
-        <span style={{ flex: 1 }} />
+        <span className="flex-1" />
         <span className="muted small">点击行 → App 工作台查看 / 编辑</span>
       </div>
-      <div className="panel-body" style={{ padding: 0 }}>
+      <div className="panel-body p-0">
         <div id="dashboardOwnerGrid">
           {gridRows.length === 0 ? (
-            <p className="muted small" style={{ padding: "14px" }}>
+            <p className="muted small p-14">
               {issueOnly
                 ? "没有待办不齐全或 QA 有问题的 app。"
                 : userIsOwner
@@ -572,9 +577,9 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
                   {!userIsOwner && <th>Owner</th>}
                   <th>决策</th>
                   <th>QA</th>
-                  <th style={{ width: 150 }}>填写完成度</th>
-                  <th style={{ width: 70 }}>待办</th>
-                  <th style={{ width: 40 }} aria-label="跳转" />
+                  <th className="w-150">填写完成度</th>
+                  <th className="w-70">待办</th>
+                  <th className="w-40" aria-label="跳转" />
                 </tr>
               </thead>
               <tbody>
@@ -591,7 +596,7 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
                       data-testid={`dashboard-app-row-${app.id}`}
                     >
                       <td>
-                        <span className="row2" style={{ gap: 8, flexWrap: "nowrap" }}>
+                        <span className="row2 gap-8 nowrap-flex">
                           <span className="app-ico">{initials(displayName(snap))}</span>
                           <span className="ov-name">{displayName(snap)}</span>
                           {rel && snap.owner_confirmed && <span className="pill ok">已确认</span>}
@@ -603,8 +608,8 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
                       <td>{rel ? <QaPill status={snap.qa_status} /> : <span className="muted">—</span>}</td>
                       <td>
                         {rel ? (
-                          <span className="row2" style={{ gap: 7, flexWrap: "nowrap" }}>
-                            <span className="bar" style={{ flex: 1 }}>
+                          <span className="row2 gap-7 nowrap-flex">
+                            <span className="bar flex-1">
                               <span style={{ width: `${prog.pct}%` }} />
                             </span>
                             <span className="prog-label">{prog.pct}%</span>
@@ -618,7 +623,7 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
                               : <span className="pill ok">齐全</span>)
                           : <span className="muted">—</span>}
                       </td>
-                      <td className="ov-jump" style={{ textAlign: "center" }}>›</td>
+                      <td className="ov-jump ta-c">›</td>
                     </tr>
                   );
                 })}
@@ -647,8 +652,7 @@ function ReleaseSelector({ releases, selectedId, onChange }: ReleaseSelectorProp
   }
   return (
     <select
-      className="input"
-      style={{ width: "auto", minWidth: 160 }}
+      className="input select-inline"
       value={selectedId ?? ""}
       onChange={(e) => onChange(e.target.value)}
       aria-label="选择 release"
@@ -746,13 +750,13 @@ export function DashboardPage() {
       </div>
 
       {error && (
-        <div className="lerr" style={{ padding: "12px 16px" }}>
+        <div className="lerr p-12-16">
           加载失败：{error instanceof Error ? error.message : String(error)}
         </div>
       )}
 
       {!data && isFetching && (
-        <div className="muted" style={{ padding: "1rem" }}>加载中…</div>
+        <div className="muted p-1r">加载中…</div>
       )}
 
       {data && (

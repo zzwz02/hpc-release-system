@@ -23,6 +23,8 @@ import { apiGet, apiPost } from "../../api/http";
 import { useUiStore } from "../../store/uiStore";
 import { formatDateValue, formatServerTime } from "../../lib/time";
 import type { StatePayload, ReleaseSummary } from "../../types";
+import { toast } from "../../lib/toast";
+import { confirmDialog } from "../../lib/confirm";
 
 // ---------------------------------------------------------------------------
 // Query key + fetcher (mirrors appWorkbench / dashboard pattern)
@@ -144,7 +146,7 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
       setNewAppFreeze("");
       setNewDocDeadline("");
       onMutated(r.release_id);
-      alert("新 Release 已创建");
+      toast.success("新 Release 已创建");
     } catch (e) {
       setCreateErr(e instanceof Error ? e.message : "创建失败");
     } finally {
@@ -165,7 +167,7 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
         doc_deadline: editDocDeadline || "",
       });
       onMutated();
-      alert("Release 设置已更新");
+      toast.success("Release 设置已更新");
     } catch (e) {
       setSaveErr(e instanceof Error ? e.message : "保存失败");
     } finally {
@@ -175,24 +177,35 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
 
   async function handleFinalLock() {
     if (!currentRelease) return;
-    if (!window.confirm("确认最终锁定？锁定后所有信息冻结，仅可由 RM 解锁。")) return;
+    if (!(await confirmDialog({
+      title: "最终锁定",
+      body: "确认最终锁定？锁定后所有信息冻结，仅可由 RM 解锁。",
+      danger: true,
+      confirmText: "锁定",
+    }))) return;
     try {
       await apiPost("/api/releases/final-lock", { release_id: currentRelease.id });
       onMutated();
-      alert("已最终锁定。");
+      toast.success("已最终锁定。");
     } catch (e) {
-      alert(`最终 Lock 失败：${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`最终 Lock 失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
   async function handleFinalUnlock() {
     if (!currentRelease) return;
-    if (!window.confirm("确认要解锁？解锁后最终 artifacts 将被清除。")) return;
+    if (!(await confirmDialog({
+      title: "解锁 Release",
+      body: "确认要解锁？解锁后最终 artifacts 将被清除。",
+      danger: true,
+      confirmText: "解锁",
+    }))) return;
     try {
       await apiPost("/api/releases/final-unlock", { release_id: currentRelease.id });
       onMutated();
+      toast.success("已解锁。");
     } catch (e) {
-      alert(`解锁失败：${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`解锁失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -240,7 +253,7 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
             </label>
           </div>
           {createErr && <p className="lerr" data-testid="create-err">{createErr}</p>}
-          <div className="row" style={{ marginTop: 13 }}>
+          <div className="row mt-13">
             <button
               className="btn primary"
               onClick={() => void handleCreate()}
@@ -296,7 +309,7 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
                 </label>
               </div>
               {saveErr && <p className="lerr">{saveErr}</p>}
-              <div className="row" style={{ marginTop: 13 }}>
+              <div className="row mt-13">
                 <button
                   className="btn"
                   onClick={() => void handleSaveDeadlines()}
@@ -322,10 +335,10 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
       <div className="panel">
         <div className="panel-head"><h2>最终发布锁</h2></div>
         <div className="panel-body">
-          <p className="hint" style={{ marginTop: 0 }}>
+          <p className="hint mt-0">
             Manager 在 Gerrit 上 merge 完报告后，由 RM 执行最终锁，所有信息从此冻结。
           </p>
-          <div className="row" style={{ marginTop: 11 }}>
+          <div className="row mt-11">
             <button
               className="btn danger"
               onClick={() => void handleFinalLock()}
@@ -388,11 +401,11 @@ function InitImportPane({ onMutated }: InitImportPaneProps) {
     <div className="panel" data-testid="init-import-pane">
       <div className="panel-head"><h2>首次初始化</h2></div>
       <div className="panel-body">
-        <p className="hint" style={{ marginTop: 0 }}>
+        <p className="hint mt-0">
           导入一个 CSV 即可（列：类别, id, 名称, Owner, 类型, 描述, git_url,
           git_branch）。同一 (git_url, git_branch) 视为同一个 app；后续 release 从上一版本克隆。
         </p>
-        <div className="form" style={{ gridTemplateColumns: "1fr 1fr", marginTop: 12 }}>
+        <div className="form grid-2col mt-12">
           <label>
             初始化 CSV
             <input
@@ -414,7 +427,7 @@ function InitImportPane({ onMutated }: InitImportPaneProps) {
             />
           </label>
         </div>
-        <div className="row" style={{ marginTop: 13 }}>
+        <div className="row mt-13">
           <button
             className="btn primary"
             onClick={() => void handleImport()}
@@ -485,7 +498,7 @@ export function ReleaseCyclePage() {
   if (error) {
     return (
       <section className="view active" data-testid="release-cycle-page">
-        <p className="muted" style={{ padding: "1rem" }}>
+        <p className="muted p-1r">
           加载失败：{(error as Error).message}
         </p>
       </section>
@@ -498,8 +511,7 @@ export function ReleaseCyclePage() {
         <h2>周期管理</h2>
         {releases.length > 0 && (
           <select
-            className="input"
-            style={{ width: "auto", minWidth: 160 }}
+            className="input select-inline"
             value={selectedReleaseId ?? currentRelease?.id ?? ""}
             onChange={(e) => setSelectedReleaseId(e.target.value)}
             aria-label="选择 release"
@@ -539,7 +551,7 @@ export function ReleaseCyclePage() {
       </div>
 
       {isFetching && !data ? (
-        <div style={{ padding: "1rem" }} className="muted">加载中…</div>
+        <div className="muted p-1r">加载中…</div>
       ) : (
         <>
           {subPane === "releaseCyclePane" && (

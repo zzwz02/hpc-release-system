@@ -30,6 +30,7 @@ import type { MarkdownOutlineItem } from "../../lib/markdown";
 import { formatServerTime } from "../../lib/time";
 import { isRM, canGenerateMarkdown } from "../../lib/roles";
 import { downloadCsvText, parseCsvRows } from "../../lib/csv";
+import { toast } from "../../lib/toast";
 import type { ArtifactKind, StatePayload } from "../../types";
 import {
   ARTIFACT_KEY,
@@ -95,14 +96,14 @@ function CsvTable({ text }: { text: string }) {
   const rows = parseCsvRows(text).filter((r) => r.some((c) => c.trim()));
   if (!rows.length) {
     return (
-      <div className="artifact-csv-empty muted" style={{ padding: "24px 12px" }}>
+      <div className="artifact-csv-empty muted p-24-12">
         暂无 CSV 内容，请点击刷新生成。
       </div>
     );
   }
   const [header, ...body] = rows;
   return (
-    <div className="table" style={{ overflowX: "auto" }}>
+    <div className="table scroll-x">
       <table className="report-table artifact-csv-report">
         <thead>
           <tr>
@@ -135,7 +136,7 @@ function OutlineNav({ outline }: { outline: MarkdownOutlineItem[] }) {
       <div className="wiki-outline-head">目录</div>
       <div className="wiki-outline-list">
         {outline.length === 0 ? (
-          <div className="small muted" style={{ padding: "6px 8px" }}>
+          <div className="small muted p-6-8">
             这份文档暂无小标题。
           </div>
         ) : (
@@ -214,10 +215,9 @@ function ArtifactViewer({ kind, result }: ArtifactViewerProps) {
       {/* Source textarea */}
       {sourceMode && (
         <textarea
-          className="artifact"
+          className="artifact block"
           readOnly
           value={result.text}
-          style={{ display: "block" }}
         />
       )}
 
@@ -286,13 +286,12 @@ function ManagerReviewPane({ releaseId, onGenerated }: ManagerReviewPaneProps) {
   }
 
   return (
-    <div className="manager-review-pane" style={{ marginTop: 12 }}>
-      <p className="hint" style={{ marginTop: 0 }}>
+    <div className="manager-review-pane mt-12">
+      <p className="hint mt-0">
         Manager Review CSV 包含当前 release 的所有 app。请选择需要输出的字段。
       </p>
       <div
-        className="form"
-        style={{ gridTemplateColumns: "repeat(4,1fr)", marginTop: 12 }}
+        className="form grid-4col mt-12"
       >
         {MANAGER_FIELDS.map((f) => (
           <label key={f.key} className="check">
@@ -305,8 +304,8 @@ function ManagerReviewPane({ releaseId, onGenerated }: ManagerReviewPaneProps) {
           </label>
         ))}
       </div>
-      {error && <p className="log" style={{ color: "var(--danger)", marginTop: 8 }}>{error}</p>}
-      <div className="row" style={{ marginTop: 13 }}>
+      {error && <p className="log danger-text mt-8">{error}</p>}
+      <div className="row mt-13">
         <button
           className="btn primary"
           onClick={() => void handleGenerate()}
@@ -445,7 +444,7 @@ export function ArtifactsPage() {
       const text = res.data ?? "";
       downloadCsvText(`test-scope-${releaseId}.csv`, text);
     } catch (e) {
-      alert("下载失败：" + (e instanceof Error ? e.message : String(e)));
+      toast.error("下载失败：" + (e instanceof Error ? e.message : String(e)));
     }
   }
 
@@ -463,8 +462,7 @@ export function ArtifactsPage() {
         <h2>发布文档</h2>
         {releases.length > 0 && (
           <select
-            className="input"
-            style={{ width: "auto", minWidth: 160 }}
+            className="input select-inline"
             value={releaseId || ""}
             onChange={(e) => setSelectedReleaseId(e.target.value)}
             aria-label="选择 release"
@@ -479,7 +477,7 @@ export function ArtifactsPage() {
         )}
         <span className="spacer" />
         {refreshError && (
-          <span className="small" style={{ color: "var(--danger)" }}>{refreshError}</span>
+          <span className="small danger-text">{refreshError}</span>
         )}
         {releaseId && rmRole && (
           <button
@@ -583,11 +581,11 @@ export function ArtifactsPage() {
 
                   <div id="artifactViewer">
                     {artifactError ? (
-                      <p className="log" style={{ color: "var(--danger)", marginTop: 12 }}>
+                      <p className="log danger-text mt-12">
                         加载失败：{(artifactError as Error).message}
                       </p>
                     ) : artifactFetching ? (
-                      <p className="muted" style={{ marginTop: 12 }}>加载中…</p>
+                      <p className="muted mt-12">加载中…</p>
                     ) : artifactResult ? (
                       <ArtifactViewer kind={activeKind} result={artifactResult} />
                     ) : null}
