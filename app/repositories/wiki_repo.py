@@ -71,11 +71,11 @@ def insert_article(
     created_by: str,
     created_at: str,
 ) -> None:
-    """Insert a new wiki article."""
+    """Insert a new wiki article (updated_* mirrors created_* per wiki/core.py)."""
     conn.execute(
-        "INSERT INTO wiki_articles(id, title, body_md, pinned, created_by, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (article_id, title, body_md, pinned, created_by, created_at),
+        "INSERT INTO wiki_articles(id, title, body_md, pinned, created_by, created_at, "
+        "updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (article_id, title, body_md, pinned, created_by, created_at, created_by, created_at),
     )
 
 
@@ -97,6 +97,22 @@ def update_article(
     )
 
 
+def update_pinned(
+    conn: sqlite3.Connection,
+    article_id: str,
+    *,
+    pinned: int,
+    updated_by: str,
+    updated_at: str,
+) -> None:
+    """Update only the pinned flag on a non-deleted article."""
+    conn.execute(
+        "UPDATE wiki_articles SET pinned = ?, updated_by = ?, updated_at = ? "
+        "WHERE id = ? AND deleted = 0",
+        (pinned, updated_by, updated_at, article_id),
+    )
+
+
 def soft_delete_article(
     conn: sqlite3.Connection,
     article_id: str,
@@ -104,10 +120,11 @@ def soft_delete_article(
     deleted_by: str,
     deleted_at: str,
 ) -> None:
-    """Soft-delete a wiki article."""
+    """Soft-delete a wiki article (also bumps updated_* per wiki/core.py)."""
     conn.execute(
-        "UPDATE wiki_articles SET deleted = 1, deleted_by = ?, deleted_at = ? WHERE id = ?",
-        (deleted_by, deleted_at, article_id),
+        "UPDATE wiki_articles SET deleted = 1, deleted_by = ?, deleted_at = ?, "
+        "updated_by = ?, updated_at = ? WHERE id = ? AND deleted = 0",
+        (deleted_by, deleted_at, deleted_by, deleted_at, article_id),
     )
 
 

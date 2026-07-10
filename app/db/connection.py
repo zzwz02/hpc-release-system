@@ -94,6 +94,24 @@ def transaction(conn: sqlite3.Connection) -> Iterator[None]:
         conn._transaction_depth = 0
 
 
+def backup_sqlite(src_path: str | Path, dest_path: str | Path) -> None:
+    """Write a consistent backup of the SQLite db at *src_path* to *dest_path*.
+
+    Uses the SQLite online-backup API rather than a file copy: in WAL mode a
+    plain file copy can miss committed transactions still in the -wal file and
+    skips the -wal/-shm sidecars, producing a silently stale backup.
+    """
+    source = sqlite3.connect(src_path)
+    try:
+        dest = sqlite3.connect(dest_path)
+        try:
+            source.backup(dest)
+        finally:
+            dest.close()
+    finally:
+        source.close()
+
+
 def connect(path: str | Path = "release_system.db") -> sqlite3.Connection:
     """Open (or create) the SQLite database at *path*.
 

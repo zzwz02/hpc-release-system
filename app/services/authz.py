@@ -11,6 +11,7 @@ from __future__ import annotations
 import sqlite3
 
 from app.api.errors import AuthzError
+from app.repositories import snapshots_repo
 
 
 def require_owner_or_rm(
@@ -68,20 +69,13 @@ def require_app_audit_access(
         raise AuthzError("App audit access denied")
 
     # Owner: check snapshot ownership
-    from release_system import core as _core
-
     if release_id:
-        release = _core.get_release(conn, release_id)
-        if release:
-            snapshot = release["snapshots"].get(app_id)
-            if snapshot and username in (snapshot.get("owners") or []):
-                return
+        snapshot = snapshots_repo.get_snapshot(conn, release_id, app_id)
+        if snapshot and username in (snapshot.get("owners") or []):
+            return
         raise AuthzError("App audit access denied")
 
-    for release in _core.list_releases(conn):
-        release_data = _core.get_release(conn, release["id"])
-        if release_data:
-            snapshot = release_data["snapshots"].get(app_id)
-            if snapshot and username in (snapshot.get("owners") or []):
-                return
+    for snapshot in snapshots_repo.get_snapshots_for_app(conn, app_id):
+        if username in (snapshot.get("owners") or []):
+            return
     raise AuthzError("App audit access denied")

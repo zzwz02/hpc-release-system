@@ -13,6 +13,9 @@ from __future__ import annotations
 import sqlite3
 
 from app.db.connection import transaction
+from app.domain import app_info as app_info_domain
+from app.domain import decisions as decisions_domain
+from app.domain.textutil import order_chips
 from app.repositories import apps_repo, cicd_repo, releases_repo, snapshots_repo
 from app.repositories.audit_repo import log_audit
 from app.timeutil import beijing_timestamp
@@ -486,10 +489,8 @@ def _apply_deferred_release_decision(
     ts: str,
 ) -> None:
     """Apply a release decision that was waiting for CICD delivery."""
-    import release_system.core as core
-
-    decision = core.normalize_release_decision(target_decision)
-    if decision not in core.RELEASE_DECISIONS:
+    decision = decisions_domain.normalize_release_decision(target_decision)
+    if decision not in decisions_domain.RELEASE_DECISIONS:
         return
     snap = snapshots_repo.get_snapshot(conn, release_id, app_id)
     if not snap or snap.get("release_decision") == decision:
@@ -669,8 +670,6 @@ def _rollback_deferred_decision_sync(
     payload: dict,
 ) -> None:
     """Undo release-decision fan-out for a rejected/cancelled start request."""
-    import release_system.core as core
-
     entries = payload.get(_DECISION_SYNC_ROLLBACK_FIELD)
     if not isinstance(entries, list):
         return
@@ -682,12 +681,12 @@ def _rollback_deferred_decision_sync(
         applied = str(item.get("applied_decision") or "").strip()
         if not release_id or not previous:
             continue
-        previous = core.normalize_release_decision(previous)
-        applied = core.normalize_release_decision(applied) if applied else ""
+        previous = decisions_domain.normalize_release_decision(previous)
+        applied = decisions_domain.normalize_release_decision(applied) if applied else ""
         snap = snapshots_repo.get_snapshot(conn, release_id, app_id)
         if not snap:
             continue
-        current = core.normalize_release_decision(snap.get("release_decision", "release"))
+        current = decisions_domain.normalize_release_decision(snap.get("release_decision", "release"))
         if applied and current != applied:
             continue
         if current == previous:
@@ -1885,12 +1884,10 @@ def _activate_created_cicd_first_app(
     target_decision: str,
 ) -> None:
     """Make a CICD-first-created app active after its create request applies."""
-    import release_system.core as core
-
-    decision = core.normalize_release_decision(target_decision or "cicd_only")
+    decision = decisions_domain.normalize_release_decision(target_decision or "cicd_only")
     if decision not in {"release", "cicd_only", "stopped"}:
         decision = "cicd_only"
-    for rel in core.list_releases(conn):
+    for rel in releases_repo.list_release_rows(conn):
         if rel.get("released_locked"):
             continue
         snap = snapshots_repo.get_snapshot(conn, rel["id"], app_id)
@@ -1941,8 +1938,6 @@ def preview_cicd_app_info(
                     All other failure modes (manifest unresolvable, Gerrit unreachable)
                     are returned as soft flags in the response dict, NOT exceptions.
     """
-    import release_system.core as core
-
     from app.config import settings
     from app.identity import repo_to_git_identity
 
@@ -2001,15 +1996,15 @@ def preview_cicd_app_info(
         }
 
     # Happy path: identity resolved + content fetched.
-    parsed = core.parse_app_info(raw_json)
+    parsed = app_info_domain.parse_app_info(raw_json)
 
     return {
         **base,
         "app_info_unavailable": False,
         "app_info_error": None,
         "app_version": parsed.get("app_version", ""),
-        "x86_chips": ",".join(core.order_chips(parsed.get("x86_chips", []))),
-        "arm_chips": ",".join(core.order_chips(parsed.get("arm_chips", []))),
+        "x86_chips": ",".join(order_chips(parsed.get("x86_chips", []))),
+        "arm_chips": ",".join(order_chips(parsed.get("arm_chips", []))),
         "python_label": ",".join(parsed.get("python_labels", [])),
         "pytorch_label": ",".join(parsed.get("pytorch_labels", [])),
         "os": ",".join(parsed.get("build_os", [])),
@@ -2172,8 +2167,6 @@ def _apply_parsed_app_info_to_snapshot(
     Sets owner_confirmed=True because the submitter explicitly provided the
     app_info (equivalent to confirming the content they fetched).
     """
-    import release_system.core as core
-
     snapshot["app_info"] = {
         "source": f"{parsed.get('app_name', '')} (cicd_first)",
         "source_type": "cicd_workbench",
@@ -2185,8 +2178,8 @@ def _apply_parsed_app_info_to_snapshot(
     }
     snapshot["app_info_diffs"] = []  # no previous version to diff against
     snapshot["version"] = parsed.get("app_version", "") or snapshot.get("version", "")
-    snapshot["x86_chips"] = ",".join(core.order_chips(parsed.get("x86_chips", [])))
-    snapshot["arm_chips"] = ",".join(core.order_chips(parsed.get("arm_chips", [])))
+    snapshot["x86_chips"] = ",".join(order_chips(parsed.get("x86_chips", [])))
+    snapshot["arm_chips"] = ",".join(order_chips(parsed.get("arm_chips", [])))
     snapshot["python_labels"] = ",".join(parsed.get("python_labels", []))
     snapshot["pytorch_labels"] = ",".join(parsed.get("pytorch_labels", []))
     snapshot["build_os"] = ",".join(parsed.get("build_os", []))
@@ -2239,8 +2232,6 @@ def cicd_first_new_app(
       and owner_confirmed is set to True (owner confirmed the Gerrit content).
     """
     import json as _json
-
-    import release_system.core as core
 
     from app.identity import repo_to_git_identity
 
@@ -2307,19 +2298,18 @@ def cicd_first_new_app(
             # ---- No existing app: create new app + initial stopped snapshots ----
             # Find anchor release (first unlocked) so add_new_app_request can
             # propagate the snapshot to it and all subsequent unlocked releases.
-            releases = core.list_releases(conn)
+            releases = releases_repo.list_release_rows(conn)
             unlocked = [r for r in releases if not r.get("released_locked")]
             if not unlocked:
                 raise RuntimeError("没有可用的未锁定 release，无法创建 app")
             anchor_release_id = unlocked[0]["id"]
 
-            # Reuse core's single dedup gate (git_url/git_branch unique check +
-            # id allocation + current/future release forward-sync).
-            # core.add_new_app_request internally opens its own transaction()
-            # context; because conn is app.db.connection.ManagedConnection and
-            # _transaction_depth is already > 0, core's commit() calls are
-            # suppressed — all writes batch into our outer transaction.
-            app_id = core.add_new_app_request(
+            # Reuse the single dedup gate (git_url/git_branch unique check +
+            # id allocation + current/future release forward-sync).  Its inner
+            # transaction() nests as a SAVEPOINT inside our outer transaction.
+            from app.services import app_service as _app_service
+
+            app_id = _app_service.add_new_app_request(
                 conn,
                 anchor_release_id,
                 official_name=official_name,
@@ -2340,12 +2330,10 @@ def cicd_first_new_app(
         # owner_confirmed is set to True because the submitter explicitly
         # confirmed the Gerrit content they fetched.
         if app_info_parsed:
-            releases = core.list_releases(conn)
-            for rel in releases:
+            for rel in releases_repo.list_release_rows(conn):
                 if rel.get("released_locked"):
                     continue
-                rel_full = core.get_release(conn, rel["id"])
-                snap = rel_full["snapshots"].get(app_id)
+                snap = snapshots_repo.get_snapshot(conn, rel["id"], app_id)
                 if snap is None:
                     continue
                 _apply_parsed_app_info_to_snapshot(
@@ -2354,7 +2342,7 @@ def cicd_first_new_app(
                     submitter=submitter,
                     commit_id=app_info_commit_id,
                 )
-                core.save_snapshot(conn, rel["id"], app_id, snap)
+                snapshots_repo.save_snapshot(conn, rel["id"], app_id, snap)
 
         apps_repo.update_cicd_config(
             conn,

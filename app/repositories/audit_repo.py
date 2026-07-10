@@ -126,7 +126,7 @@ def qa_audit_logs_by_app(
     params: list[Any] = [release_id, "qa_set_status", *app_ids]
     rows = conn.execute(
         f"""
-        SELECT ts, user, role, app_id, event, message, detail
+        SELECT ts, user, role, app_id, release_id, event, message, detail
         FROM audit
         WHERE release_id = ? AND event = ? AND app_id IN ({placeholders})
         ORDER BY id DESC

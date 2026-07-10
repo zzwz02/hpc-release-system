@@ -18,10 +18,9 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, Query
 
-import release_system.core as core
 from app.api.errors import AuthzError
 from app.deps import get_db, require_login
-from app.services import app_service
+from app.services import app_service, release_reads
 
 router = APIRouter(tags=["apps"])
 
@@ -131,7 +130,7 @@ def api_apps_decision_sync_preview(
 
     Auth mirrors /api/apps/update: RM, or an Owner of the app in this release.
     """
-    release = core.get_release(conn, body["release_id"])
+    release = release_reads.get_release(conn, body["release_id"])
     snap = release["snapshots"].get(body["app_id"], {})
     from app.services.authz import require_owner_or_rm_with_owners
 
@@ -160,7 +159,7 @@ def api_app_info(
     Auth enforced inside apply_app_info (require_owner_or_rm on snapshot owners).
     """
     # Replicate require_owner_or_rm check from server.py:1203-1205
-    release = core.get_release(conn, body["release_id"])
+    release = release_reads.get_release(conn, body["release_id"])
     snap = release["snapshots"].get(body["app_id"], {})
     role = user["role"]
     username = user["username"]
@@ -195,7 +194,7 @@ def api_app_info_fetch(
     Mirrors server.py:1218-1237.
     """
     # Replicate require_owner_or_rm check from server.py:1221-1224
-    release = core.get_release(conn, body["release_id"])
+    release = release_reads.get_release(conn, body["release_id"])
     snap = release["snapshots"].get(body["app_id"], {})
     role = user["role"]
     username = user["username"]

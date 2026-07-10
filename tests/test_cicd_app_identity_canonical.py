@@ -153,9 +153,9 @@ def test_app_workbench_audit_uses_naive_beijing_timestamp(monkeypatch):
             lambda: "2026-06-24 15:30:00",
         )
         monkeypatch.setattr(
-            app_service.core,
-            "now",
-            lambda: "2026-06-24T07:30:00+00:00",
+            app_service,
+            "beijing_timestamp",
+            lambda: "2026-06-24 15:30:00",
         )
 
         app_service.update_snapshot(

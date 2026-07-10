@@ -10,10 +10,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import release_system.core as core
 from app.db.connection import transaction
-from app.repositories import qa_repo
+from app.domain.decisions import QA_STATUSES
+from app.repositories import apps_repo, qa_repo
 from app.repositories.audit_repo import log_audit
+from app.services import release_reads
 from app.timeutil import beijing_timestamp
 
 _QA_TEST_RESULT_STATUSES = {"pass", "fail", "skip", "unknown"}
@@ -179,8 +180,8 @@ def analyze_qa_log(
         truncated = True
 
     _progress(progress, "building_inventory", "正在准备 app 和测试清单")
-    release = core.get_release(conn, release_id)
-    apps = {app["id"]: app for app in core.list_apps(conn)}
+    release = release_reads.get_release(conn, release_id)
+    apps = {app["id"]: app for app in apps_repo.list_apps(conn)}
     inventory = _analysis_inventory(release, apps)
     if not inventory:
         raise RuntimeError("本 release 没有 release 决策为 release 的 app，无法分析")
@@ -238,7 +239,7 @@ def analyze_qa_log(
         if not isinstance(row, dict) or row.get("app_id") not in valid_ids:
             continue
         status = row.get("qa_status") or "not_checked"
-        if status not in core.QA_STATUSES:
+        if status not in QA_STATUSES:
             status = "not_checked"
         apps_out.append(
             {

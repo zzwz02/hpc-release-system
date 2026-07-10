@@ -14,14 +14,17 @@ import secrets
 import sqlite3
 from pathlib import Path
 
+from app.db.connection import transaction
+from app.domain import permissions
 from app.repositories import sessions_repo, users_repo
+from app.repositories.audit_repo import log_audit
 from app.timeutil import beijing_timestamp
 
 # ---------------------------------------------------------------------------
 # Password hashing — mirrors core.py:hash_password / verify_password
 # ---------------------------------------------------------------------------
 
-def _hash_password(password: str, salt: str | None = None) -> str:
+def hash_password(password: str, salt: str | None = None) -> str:
     salt = salt or secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac(
         "sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000
@@ -29,11 +32,31 @@ def _hash_password(password: str, salt: str | None = None) -> str:
     return f"{salt}${digest}"
 
 
-def _verify_password(password: str, encoded: str) -> bool:
+def verify_password(password: str, encoded: str) -> bool:
     salt, expected = encoded.split("$", 1)
     return secrets.compare_digest(
-        _hash_password(password, salt).split("$", 1)[1], expected
+        hash_password(password, salt).split("$", 1)[1], expected
     )
+
+
+# Test/bootstrap accounts recreated by clear_business_data (core.py:483-489)
+DEFAULT_USERS: tuple[tuple[str, str, str], ...] = (
+    ("rm", "rm", "RM"),
+    ("owner_test", "owner_test", "Owner"),
+    ("qa", "qa", "QA"),
+    ("spd_test", "spd_test", "SPD"),
+    ("guest", "guest", "Guest"),
+)
+
+
+def ensure_default_users(conn: sqlite3.Connection) -> None:
+    """Recreate the default test accounts if missing (core.py:ensure_default_user)."""
+    for username, password, role in DEFAULT_USERS:
+        conn.execute(
+            "INSERT INTO users(username, password_hash, role) VALUES (?, ?, ?) "
+            "ON CONFLICT(username) DO NOTHING",
+            (username, hash_password(password), role),
+        )
 
 
 def ensure_admin_user(
@@ -69,7 +92,7 @@ def ensure_admin_user(
     users_repo.insert_user(
         conn,
         username="admin",
-        password_hash=_hash_password(password),
+        password_hash=hash_password(password),
         role="Admin",
         auth_source="local",
         display_name="Admin",
@@ -93,7 +116,7 @@ def login(conn: sqlite3.Connection, username: str, password: str) -> dict:
     row = conn.execute(
         "SELECT username, password_hash FROM users WHERE username = ?", (username,)
     ).fetchone()
-    if not row or not _verify_password(password, row["password_hash"]):
+    if not row or not verify_password(password, row["password_hash"]):
         return {"ok": False}
     token = secrets.token_urlsafe(32)
     sessions_repo.create_session(
@@ -120,9 +143,37 @@ def login_ldap(
 
     Mirrors core.py:ldap_login_or_create (server.py:663-703).
     """
-    from release_system import core as _core
-
-    token = _core.ldap_login_or_create(conn, username, display_name, groups)
+    with transaction(conn):
+        existing = users_repo.get_user(conn, username)
+        if not existing:
+            initial_role = permissions.ldap_role_from_groups(groups)
+            users_repo.insert_user(
+                conn,
+                username=username,
+                password_hash="",
+                role=initial_role,
+                auth_source="ldap",
+                display_name=display_name,
+            )
+            log_audit(
+                conn,
+                f"域账号首次登录，自动创建 {initial_role} 用户：{username}",
+                ts=beijing_timestamp(),
+                user=username,
+                role=initial_role,
+                event="ldap_first_login",
+                detail={"groups": list(groups or [])},
+            )
+        elif display_name and (existing.get("display_name") or "") != display_name:
+            users_repo.update_display_name(conn, username, display_name=display_name)
+    token = secrets.token_urlsafe(32)
+    with transaction(conn):
+        sessions_repo.create_session(
+            conn,
+            token=token,
+            username=username,
+            created_at=beijing_timestamp(),
+        )
     return token
 
 
@@ -163,7 +214,7 @@ def change_password(
     row = conn.execute(
         "SELECT password_hash FROM users WHERE username = ?", (username,)
     ).fetchone()
-    if not row or not _verify_password(old_password, row["password_hash"]):
+    if not row or not verify_password(old_password, row["password_hash"]):
         raise PermissionError("原密码不正确")
-    users_repo.update_password_hash(conn, username, password_hash=_hash_password(new_password))
+    users_repo.update_password_hash(conn, username, password_hash=hash_password(new_password))
     conn.commit()

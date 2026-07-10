@@ -96,6 +96,20 @@ def list_snapshots_for_release(
     ]
 
 
+def get_snapshots_for_app(
+    conn: sqlite3.Connection,
+    app_id: str,
+) -> list[dict[str, Any]]:
+    """Return the parsed snapshot dicts of *app_id* across all releases."""
+    return [
+        loads_json(row["data_json"], {})
+        for row in conn.execute(
+            "SELECT data_json FROM snapshots WHERE app_id = ?",
+            (app_id,),
+        )
+    ]
+
+
 def get_snapshots_with_decision(
     conn: sqlite3.Connection,
     app_id: str,

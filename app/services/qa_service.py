@@ -1,8 +1,7 @@
 """QA service — status batch updates, log upload/download, and LLM analysis.
 
-Most orchestration delegates to release_system.core.  QA status updates live
-here because FastAPI has runtime-only release-note rules that intentionally
-differ from the frozen legacy reference.
+QA status updates live here because FastAPI has runtime-only release-note
+rules that intentionally differ from the frozen legacy reference.
 """
 from __future__ import annotations
 
@@ -13,13 +12,13 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-import release_system.core as core
 from app.db.connection import transaction
-from app.domain.decisions import normalize_release_decision
+from app.domain.decisions import QA_STATUSES, normalize_release_decision
 from app.domain import phases as phase_policy
 from app.repositories import apps_repo, qa_repo, releases_repo, snapshots_repo, users_repo
 from app.repositories.audit_repo import log_audit
 from app.repositories.snapshots_repo import save_snapshot
+from app.services import release_reads
 from app.timeutil import beijing_timestamp
 
 _ISSUE_NOTE_REQUIRED_STATUSES = {"has_issues", "cannot_release"}
@@ -58,7 +57,7 @@ def set_qa_status_batch(
     ``cannot_release`` follows the same note requirement as ``has_issues``.
     Returns {"ok": True, "updated": n}.
     """
-    release = core.get_release(conn, release_id)
+    release = release_reads.get_release(conn, release_id)
     phase_policy.require_can(release, "edit_qa_status", "Release 已最终锁定，不可修改 QA 状态")
 
     # (app_id, snapshot, status, issue_note, old_status, old_note)
@@ -68,7 +67,7 @@ def set_qa_status_batch(
         app_id = item.get("app_id", "")
         status = item.get("status", "")
         issue_note = (item.get("issue_note") or "").strip()
-        if status not in core.QA_STATUSES:
+        if status not in QA_STATUSES:
             errors.append(f"{app_id}：无效的 QA 状态 {status!r}")
             continue
         snapshot = release["snapshots"].get(app_id)
@@ -141,7 +140,7 @@ def upload_qa_log(
     """Decode a base64-encoded QA log and embed it in SQLite."""
     if not content_b64:
         raise ValueError("content_base64 required")
-    release = core.get_release(conn, release_id)
+    release = release_reads.get_release(conn, release_id)
     phase_policy.require_can(release, "upload_qa_log", "Release 已最终锁定，不可上传 QA log")
     content = base64.b64decode(content_b64)
     if not filename:

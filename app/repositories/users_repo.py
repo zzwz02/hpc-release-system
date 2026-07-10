@@ -108,6 +108,17 @@ def delete_user(conn: sqlite3.Connection, username: str) -> None:
     conn.execute("DELETE FROM users WHERE username = ?", (username,))
 
 
+def display_name_map(conn: sqlite3.Connection) -> dict[str, str]:
+    """Return {username: display_name} for all users with a non-empty name."""
+    return {
+        row["username"]: str(row["display_name"] or "").strip()
+        for row in conn.execute(
+            "SELECT username, display_name FROM users WHERE display_name != ''"
+        )
+        if str(row["display_name"] or "").strip()
+    }
+
+
 def display_names_for(
     conn: sqlite3.Connection,
     usernames: list[str],

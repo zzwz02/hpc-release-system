@@ -41,6 +41,22 @@ def normalize_deadline(value: str | None) -> str:
     raise ValueError(f"Invalid deadline: {value!r}; expected YYYY-MM-DD or YYYY-MM-DD HH:MM")
 
 
+def validate_deadline_order(app_freeze_deadline: str | None, doc_deadline: str | None) -> None:
+    """Reject deadlines where app freeze lands after the doc deadline.
+
+    Empty deadlines mean "not set" and are always accepted. current_phase
+    assumes app freeze precedes the doc deadline; a reversed pair produces
+    incoherent phases, so it is blocked at every entry point that sets them.
+    """
+    freeze = parse_deadline(app_freeze_deadline)
+    doc = parse_deadline(doc_deadline)
+    if freeze is not None and doc is not None and freeze > doc:
+        raise ValueError(
+            f"App 冻结 deadline（{normalize_deadline(app_freeze_deadline)}）"
+            f"不能晚于 Doc deadline（{normalize_deadline(doc_deadline)}）"
+        )
+
+
 def parse_deadline(value: str | None) -> dt.datetime | None:
     """Parse a deadline string to a naive datetime, or None if empty."""
     if not value:
