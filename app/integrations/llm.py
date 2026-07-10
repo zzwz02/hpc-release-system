@@ -1,9 +1,19 @@
-"""LLM integration — QA analysis via local OpenAI-compatible endpoint.
+"""LLM integration — QA analysis via the local OpenAI-compatible endpoint.
 
-Background threads use this (not the event loop).
-
-The actual LLM call is driven by release_system.core.qa_analyze_log, which
-calls release_system.llm.chat_json internally.  This module is a placeholder
-for any future app-layer LLM helpers; currently no public API is needed here.
+Background QA jobs call this synchronous adapter from a worker thread.
 """
 from __future__ import annotations
+
+from collections.abc import Callable
+
+from release_system.llm import chat_json as _legacy_chat_json
+
+
+def chat_json(
+    system: str,
+    user: str,
+    *,
+    progress: Callable[[int], None] | None = None,
+) -> str:
+    """Call the configured JSON chat endpoint through the app integration."""
+    return _legacy_chat_json(system, user, progress=progress)

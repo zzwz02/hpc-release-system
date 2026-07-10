@@ -248,6 +248,8 @@ SPD 退回交付申请后，RM 可以在「CICD 工作台 → 待交付」对 re
 
 CICD↔App 的身份键是 `app_id`。`(git_url, git_branch)` 只用于历史展示 / 兼容匹配，新写入路径必须使用 app id。注意同一个 Gerrit URL 可以有多个 branch，不能只用 URL 匹配。身份解析见 `app/identity.py`（`repo_to_git_identity`）。
 
+QA 上传的 log 文件本体保存在 `qa_logs.content` BLOB 中，下载与 AI 分析都直接读取数据库，不再向项目旁的 `qa_logs/` 目录写新文件。旧库首次启动时会自动把仍可读取的 `storage_path` 文件导入 BLOB；为便于升级核验，原文件不会自动删除，确认数据库备份和下载正常后可人工清理旧目录。由于备份已包含 QA log，数据库备份文件体积会相应增加。
+
 ---
 
 ## 典型流程
@@ -303,7 +305,7 @@ release-system/
 └── release_system_state_machine.svg  # 旧状态机图（已被上文 mermaid 取代）
 ```
 
-运行时生成且已被 `.gitignore` 忽略：`release_system.db*`、`web/node_modules/`、`web_dist/`、`qa_logs/`、`admin_password.local`、`ldap.conf`/`jira.conf`/`qa_llm.env` 等。
+运行时生成且已被 `.gitignore` 忽略：`release_system.db*`、`web/node_modules/`、`web_dist/`、`admin_password.local`、`ldap.conf`/`jira.conf`/`qa_llm.env` 等。`qa_logs/` 仅可能作为升级前的遗留目录存在，新上传不再写入该目录。
 
 ---
 

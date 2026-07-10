@@ -8,6 +8,7 @@ API rows from ``apps`` plus snapshots, and persists workflow state in
 Schema additions kept for current runtime:
   - cicd_task_requests.app_id TEXT REFERENCES apps(id) ON DELETE CASCADE
   - cicd_task_requests.origin TEXT column
+  - qa_logs.content BLOB (legacy storage_path is retained only for migration)
   - Online-ALTER columns folded into base DDL (ALTER loop kept for idempotency)
   - Additional indexes
 """
@@ -188,7 +189,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS qa_logs (
             release_id TEXT PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE,
             filename TEXT NOT NULL,
-            storage_path TEXT NOT NULL,
+            content BLOB,
+            storage_path TEXT NOT NULL DEFAULT '',
             uploaded_at TEXT NOT NULL,
             uploaded_by TEXT NOT NULL
         );
@@ -372,6 +374,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         # Legacy table columns — tolerate older DBs
         ("cicd_tasks",         "app_id",            "TEXT REFERENCES apps(id) ON DELETE SET NULL"),
         ("cicd_task_requests", "origin",             "TEXT NOT NULL DEFAULT 'cicd_workbench'"),
+        # ``storage_path`` stays in old and new DBs only so startup can import
+        # pre-cutover files. Current runtime writes the file body to ``content``.
+        ("qa_logs",            "content",            "BLOB"),
     ]:
         try:
             conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} {_col_def}")
@@ -388,7 +393,45 @@ def init_db(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
 
+    _migrate_qa_log_files(conn)
+
     conn.commit()
+
+
+def _migrate_qa_log_files(conn: sqlite3.Connection) -> None:
+    """Copy pre-cutover QA log files into ``qa_logs.content``.
+
+    The legacy table stored only an absolute path.  Migration is deliberately
+    non-destructive: successfully imported files are left in place so an
+    operator can verify the upgraded database before removing ``qa_logs/``.
+    Missing or unreadable files leave ``content`` as NULL and do not prevent
+    the application from starting.
+    """
+    columns = {
+        row["name"] if isinstance(row, sqlite3.Row) else row[1]
+        for row in conn.execute("PRAGMA table_info(qa_logs)")
+    }
+    if "content" not in columns or "storage_path" not in columns:
+        return
+
+    rows = conn.execute(
+        "SELECT release_id, storage_path FROM qa_logs "
+        "WHERE content IS NULL AND storage_path <> ''"
+    ).fetchall()
+    for row in rows:
+        release_id = row["release_id"] if isinstance(row, sqlite3.Row) else row[0]
+        storage_path = row["storage_path"] if isinstance(row, sqlite3.Row) else row[1]
+        path = Path(storage_path)
+        try:
+            if not path.is_file():
+                continue
+            content = path.read_bytes()
+        except OSError:
+            continue
+        conn.execute(
+            "UPDATE qa_logs SET content = ? WHERE release_id = ? AND content IS NULL",
+            (content, release_id),
+        )
 
 
 _DEFAULT_USERS: tuple[tuple[str, str, str], ...] = (

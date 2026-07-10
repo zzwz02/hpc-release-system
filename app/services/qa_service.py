@@ -17,7 +17,7 @@ import release_system.core as core
 from app.db.connection import transaction
 from app.domain.decisions import normalize_release_decision
 from app.domain import phases as phase_policy
-from app.repositories import apps_repo, releases_repo, snapshots_repo, users_repo
+from app.repositories import apps_repo, qa_repo, releases_repo, snapshots_repo, users_repo
 from app.repositories.audit_repo import log_audit
 from app.repositories.snapshots_repo import save_snapshot
 from app.timeutil import beijing_timestamp
@@ -135,28 +135,40 @@ def upload_qa_log(
     *,
     content_b64: str,
     filename: str,
-    db_path: Path,
     user: str,
     role: str,
 ) -> dict:
-    """Decode and store a base64-encoded QA log.
-
-    Mirrors server.py:954-971.  Returns {"ok": True, **meta}.
-    """
+    """Decode a base64-encoded QA log and embed it in SQLite."""
     if not content_b64:
         raise ValueError("content_base64 required")
     release = core.get_release(conn, release_id)
     phase_policy.require_can(release, "upload_qa_log", "Release 已最终锁定，不可上传 QA log")
     content = base64.b64decode(content_b64)
-    meta = core.qa_upload_log(
-        conn,
-        db_path,
-        release_id,
-        content,
-        filename,
-        user=user,
-        role=role,
-    )
+    if not filename:
+        raise ValueError("filename required")
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", filename) or "qa_log"
+    ts = beijing_timestamp()
+    with transaction(conn):
+        qa_repo.upsert_qa_log(
+            conn,
+            release_id,
+            filename=safe_name,
+            content=content,
+            uploaded_at=ts,
+            uploaded_by=user,
+        )
+        log_audit(
+            conn,
+            f"QA 上传 log：{safe_name}",
+            ts=ts,
+            user=user,
+            role=role,
+            release_id=release_id,
+            event="qa_upload_log",
+        )
+    meta = qa_repo.get_qa_log(conn, release_id)
+    if meta is None:  # Defensive: the upsert above must produce metadata.
+        raise RuntimeError("QA log 保存失败")
     return {"ok": True, **meta}
 
 
@@ -168,23 +180,16 @@ def get_qa_log_download(
     conn: sqlite3.Connection,
     release_id: str,
 ) -> tuple[bytes, str]:
-    """Return (file_bytes, filename) for a QA log download.
-
-    Mirrors server.py:416-433.
-    Raises RuntimeError (→ 400) when no log or file is missing.
-    The router converts these to the right HTTP responses.
-    """
+    """Return ``(file_bytes, filename)`` from SQLite for download."""
     if not release_id:
         raise ValueError("release_id is required")
-    meta = core.get_qa_log(conn, release_id)
+    meta = qa_repo.get_qa_log(conn, release_id)
     if not meta:
-        # Old server sends HTTP 404 directly; service raises RuntimeError so
-        # the router can map it to a 404 Response.
         raise RuntimeError("no qa log")
-    path = Path(meta["storage_path"])
-    if not path.exists():
-        raise RuntimeError("qa log file missing")
-    return path.read_bytes(), meta["filename"]
+    stored = qa_repo.get_qa_log_content(conn, release_id)
+    if stored is None:
+        raise RuntimeError("qa log content missing")
+    return stored
 
 
 # ---------------------------------------------------------------------------
@@ -678,13 +683,11 @@ def get_qa_reports(
 def analyze_qa_log_sync(
     conn: sqlite3.Connection,
     release_id: str,
-    db_path: Path,
 ) -> dict:
-    """Run LLM analysis synchronously and return results.
+    """Run LLM analysis synchronously against the DB-backed log body."""
+    from app.services.qa_analysis_service import analyze_qa_log
 
-    Mirrors server.py:973-982.  Synchronous — blocks until analysis completes.
-    """
-    return core.qa_analyze_log(conn, db_path, release_id)
+    return analyze_qa_log(conn, release_id)
 
 
 # ---------------------------------------------------------------------------

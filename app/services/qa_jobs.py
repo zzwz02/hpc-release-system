@@ -16,7 +16,6 @@ import threading
 import time
 from pathlib import Path
 
-import release_system.core as core
 from app.db.connection import connect
 
 # ---------------------------------------------------------------------------
@@ -187,7 +186,9 @@ class QaJobRegistry:
             def progress(stage: str, message: str, **extra: object) -> None:
                 self._update(job_id, stage=stage, message=message, **extra)
 
-            result = core.qa_analyze_log(conn, db_path, release_id, progress=progress)
+            from app.services.qa_analysis_service import analyze_qa_log
+
+            result = analyze_qa_log(conn, release_id, progress=progress)
             self._update(
                 job_id,
                 status="completed",

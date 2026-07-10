@@ -18,7 +18,7 @@ import release_system.core as core
 from app.api.errors import AuthzError
 from app.domain import decision_sync as decision_sync_domain
 from app.domain import phases as phase_policy
-from app.repositories import apps_repo
+from app.repositories import apps_repo, qa_repo
 from app.repositories.audit_repo import app_audit_log as repo_app_audit_log
 from app.services.authz import (
     require_app_audit_access as authz_require_app_audit_access,
@@ -182,7 +182,7 @@ def get_state(
                 (release_id,),
             )
         ]
-        payload["qa_log"] = core.get_qa_log(conn, release_id)
+        payload["qa_log"] = qa_repo.get_qa_log(conn, release_id)
         if user["role"] in {"QA", "RM", "Owner", "Guest"}:
             payload["qa_audit_logs"] = core.release_qa_audit_logs(conn, release_id)
         apps_by_id = {app["id"]: app for app in apps}

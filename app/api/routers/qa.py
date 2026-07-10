@@ -158,7 +158,6 @@ def api_qa_upload_log(
         body["release_id"],
         content_b64=body.get("content_base64", ""),
         filename=body.get("filename", "qa_log"),
-        db_path=settings.db_path,
         user=user["username"],
         role=user["role"],
     )
@@ -180,7 +179,7 @@ def api_qa_analyze_log(
     """
     if user["role"] not in _QA_RM:
         raise AuthzError("只有 QA 或 RM 可使用 AI 分析 log")
-    return qa_service.analyze_qa_log_sync(conn, body["release_id"], settings.db_path)
+    return qa_service.analyze_qa_log_sync(conn, body["release_id"])
 
 
 # ---------------------------------------------------------------------------

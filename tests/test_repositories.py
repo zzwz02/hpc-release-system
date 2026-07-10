@@ -539,7 +539,7 @@ class TestQaRepo:
         qa_repo.upsert_qa_log(
             self.conn, "r1",
             filename="qa.pdf",
-            storage_path="/qa/logs/qa.pdf",
+            content=b"pdf-content",
             uploaded_at="2026-01-01 00:00:00",
             uploaded_by="qa",
         )
@@ -547,18 +547,24 @@ class TestQaRepo:
         result = qa_repo.get_qa_log(self.conn, "r1")
         assert result is not None
         assert result["filename"] == "qa.pdf"
+        assert result["size_bytes"] == len(b"pdf-content")
+        assert qa_repo.get_qa_log_content(self.conn, "r1") == (
+            b"pdf-content",
+            "qa.pdf",
+        )
 
     def test_get_missing(self):
         assert qa_repo.get_qa_log(self.conn, "r1") is None
 
     def test_upsert_replaces(self):
-        qa_repo.upsert_qa_log(self.conn, "r1", filename="old.pdf", storage_path="/old",
+        qa_repo.upsert_qa_log(self.conn, "r1", filename="old.pdf", content=b"old",
                               uploaded_at="t1", uploaded_by="qa")
-        qa_repo.upsert_qa_log(self.conn, "r1", filename="new.pdf", storage_path="/new",
+        qa_repo.upsert_qa_log(self.conn, "r1", filename="new.pdf", content=b"new",
                               uploaded_at="t2", uploaded_by="qa")
         self.conn.commit()
         result = qa_repo.get_qa_log(self.conn, "r1")
         assert result["filename"] == "new.pdf"
+        assert qa_repo.get_qa_log_content(self.conn, "r1") == (b"new", "new.pdf")
 
 
 # ---------------------------------------------------------------------------
