@@ -13,8 +13,8 @@ import tarfile
 from pathlib import Path
 
 # Mirrors server.py:1428-1429
-HPC_GERRIT_PREFIX = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/"
-HPC_GERRIT_ROOT = "ssh://sw-gerrit-devops.metax-internal.com:29418/"
+HPC_GERRIT_PREFIX = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/"
+HPC_GERRIT_ROOT = "ssh://gerrit.metax-internal.com:29418/"
 GERRIT_FETCH_TIMEOUT_SECONDS = 10
 
 

@@ -40,15 +40,15 @@ class Settings(BaseSettings):
 
     # --- Gerrit -----------------------------------------------------------------
     # Gerrit URL prefixes — mirrors server.py:1428-1429
-    hpc_gerrit_prefix: str = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/"
-    hpc_gerrit_root: str = "ssh://sw-gerrit-devops.metax-internal.com:29418/"
+    hpc_gerrit_prefix: str = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/"
+    hpc_gerrit_root: str = "ssh://gerrit.metax-internal.com:29418/"
 
     # Manifest repo URL for Google-repo .xml identity resolution (plan §4.2)
     manifest_repo_url: str = (
-        "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/manifest"
+        "ssh://gerrit.metax-internal.com:29418/PDE/HPC/manifest"
     )
     manifest_repo_base: str = (
-        "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/"
+        "ssh://gerrit.metax-internal.com:29418/PDE/HPC/"
     )
 
     # --- Server -----------------------------------------------------------------

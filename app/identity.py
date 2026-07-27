@@ -27,8 +27,8 @@ import xml.etree.ElementTree as ET
 # Constants — mirror test_data/get_release_report_test_cmd.py exactly
 # ---------------------------------------------------------------------------
 
-RESOLVED_REPO_BASE = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC"
-MANIFEST_REPO_URL = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/manifest"
+RESOLVED_REPO_BASE = "ssh://gerrit.metax-internal.com:29418/PDE/HPC"
+MANIFEST_REPO_URL = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/manifest"
 MANIFEST_BRANCH = "master"
 MANIFEST_FETCH_TIMEOUT_SECONDS = 10
 
@@ -108,7 +108,7 @@ def resolve_manifest_url(
 
     Mirrors resolve_manifest_url() in test_data/get_release_report_test_cmd.py.
 
-    Requires network access to MANIFEST_REPO_URL (sw-gerrit-devops:29418).
+    Requires network access to MANIFEST_REPO_URL (gerrit:29418).
     """
     if not git_url or not git_url.endswith(".xml"):
         return git_url, git_branch

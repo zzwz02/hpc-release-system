@@ -1969,7 +1969,7 @@ def preview_cicd_app_info(
             **base,
             "app_info_unavailable": True,
             "app_info_error": (
-                "manifest 路径需要联网解析（sw-gerrit-devops:29418 不可达）"
+                "manifest 路径需要联网解析（gerrit:29418 不可达）"
                 f"，无法确定 repo 身份 ({repo_name})"
             ),
         }

@@ -48,7 +48,7 @@ from tests.conftest import seed_app, seed_release
 _REPO_SHORT = "hpc_w3cicd"
 _BRANCH = "wave3"
 _OFFICIAL_NAME = "W3CicdFirst"
-_RESOLVED_URL = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_w3cicd"
+_RESOLVED_URL = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_w3cicd"
 _APP_ID = "w3cicdfirst"
 
 
@@ -1017,7 +1017,7 @@ class TestFetchPreviewManifest:
     _MANIFEST_PATH = "APP/chroma/hpc_2024-7-devel.xml"
     _MANIFEST_BRANCH = "master"
     _RESOLVED_MANIFEST_URL = (
-        "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_chroma"
+        "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_chroma"
     )
 
     def _preview_manifest_offline(self):

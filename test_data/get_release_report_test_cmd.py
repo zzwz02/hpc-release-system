@@ -55,9 +55,9 @@ import pandas as pd
 # Global Configuration
 today_date = datetime.date.today().strftime("%m%d")
 TARGET_VERSION = "3.8.0"
-MANIFEST_REPO_URL = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/manifest"
+MANIFEST_REPO_URL = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/manifest"
 MANIFEST_BRANCH = "master"
-RESOLVED_REPO_BASE = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC"
+RESOLVED_REPO_BASE = "ssh://gerrit.metax-internal.com:29418/PDE/HPC"
 
 
 def fetch_test_data(localhost, username, password, database):

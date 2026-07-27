@@ -26,7 +26,7 @@ _SHORT_NAME = "hpc_w4e2e"
 _BRANCH = "w4-test"
 _OFFICIAL_NAME = "W4E2EApp"
 _APP_ID = "w4e2eapp"
-_RESOLVED_URL = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_w4e2e"
+_RESOLVED_URL = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_w4e2e"
 
 _CREATE_BODY = {
     "official_name": _OFFICIAL_NAME,

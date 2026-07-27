@@ -8,7 +8,7 @@ from app.db.connection import connect, reset_init_state
 from app.repositories import apps_repo
 from app.services import app_service, cicd_service
 
-_GERRIT_BASE = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC"
+_GERRIT_BASE = "ssh://gerrit.metax-internal.com:29418/PDE/HPC"
 
 
 def fresh_conn():

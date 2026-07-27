@@ -159,7 +159,7 @@ def test_release_note_includes_release_app_even_when_qa_is_not_passed(release_wi
         conn,
         release_id,
         official_name="DeepMD",
-        git_url="ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_deepmd",
+        git_url="ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_deepmd",
         git_branch="maca",
         release_decision="release",
         owner="deepmd_owner",

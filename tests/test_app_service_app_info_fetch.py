@@ -75,7 +75,7 @@ def test_fetch_app_info_resolves_repo_manifest_before_gerrit_fetch(monkeypatch):
         monkeypatch.setattr(
             "app.identity.repo_to_git_identity",
             lambda repo_type, repo_name, branch: (
-                "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_lammps",
+                "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_lammps",
                 "maca_stable_22Jul2025",
             ),
         )
@@ -98,7 +98,7 @@ def test_fetch_app_info_resolves_repo_manifest_before_gerrit_fetch(monkeypatch):
 
         assert calls == [
             (
-                "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_lammps",
+                "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_lammps",
                 "maca_stable_22Jul2025",
             )
         ]

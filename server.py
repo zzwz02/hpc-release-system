@@ -1425,8 +1425,8 @@ def run_git(args: list[str], *, timeout: int = 60) -> subprocess.CompletedProces
     return subprocess.run(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=True)
 
 
-HPC_GERRIT_PREFIX = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/"
-HPC_GERRIT_ROOT = "ssh://sw-gerrit-devops.metax-internal.com:29418/"
+HPC_GERRIT_PREFIX = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/"
+HPC_GERRIT_ROOT = "ssh://gerrit.metax-internal.com:29418/"
 
 
 def gerrit_remote_url(git_url: str) -> str:

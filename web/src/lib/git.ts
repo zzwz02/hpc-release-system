@@ -1,4 +1,4 @@
-export const GERRIT_HPC_BASE = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC";
+export const GERRIT_HPC_BASE = "ssh://gerrit.metax-internal.com:29418/PDE/HPC";
 export const GERRIT_MANIFEST_REPO_URL = `${GERRIT_HPC_BASE}/manifest`;
 
 const GERRIT_PATH_MARKER = "/PDE/HPC/";

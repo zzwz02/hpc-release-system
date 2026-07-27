@@ -430,7 +430,7 @@ describe("CicdPage", () => {
       if (url.includes("/api/cicd/tasks")) {
         return Promise.resolve({
           tasks: [makeTask({
-            repo_name: "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_amber",
+            repo_name: "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_amber",
           })],
         });
       }
@@ -442,7 +442,7 @@ describe("CicdPage", () => {
     renderCicd("RM");
     const section = await screen.findByTestId("cicd-info-section");
     expect(await within(section).findByText("hpc_amber")).toBeInTheDocument();
-    expect(section.textContent).not.toContain("sw-gerrit-devops.metax-internal.com");
+    expect(section.textContent).not.toContain("gerrit.metax-internal.com");
   });
 
   it("renders recent request records as a read-only section", async () => {
@@ -569,8 +569,8 @@ describe("CicdPage", () => {
       submitter_display: "Bob",
       payload: {
         repo_name: {
-          old: "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_old",
-          new: "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_new",
+          old: "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_old",
+          new: "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_new",
         },
       },
     });
@@ -587,7 +587,7 @@ describe("CicdPage", () => {
     await userEvent.click(await screen.findByRole("button", { name: "审批" }));
     expect(screen.getByText("hpc_old")).toBeInTheDocument();
     expect(screen.getByText("hpc_new")).toBeInTheDocument();
-    expect(screen.getByRole("dialog").textContent).not.toContain("sw-gerrit-devops.metax-internal.com");
+    expect(screen.getByRole("dialog").textContent).not.toContain("gerrit.metax-internal.com");
   });
 
   // ── CICD workbench is approval / delivery only ────────────────────────────

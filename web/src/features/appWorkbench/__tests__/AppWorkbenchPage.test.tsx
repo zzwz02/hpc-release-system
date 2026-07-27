@@ -1235,7 +1235,7 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
     const payload = payloadTwoReleases();
     payload.apps[0] = {
       ...payload.apps[0],
-      git_url: "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_amber",
+      git_url: "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_amber",
       git_branch: "main",
     };
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
@@ -1646,7 +1646,7 @@ describe("AppWorkbenchPage lifecycle actions", () => {
 });
 
 describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
-  const GERRIT_BASE = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC";
+  const GERRIT_BASE = "ssh://gerrit.metax-internal.com:29418/PDE/HPC";
 
   beforeEach(() => {
     vi.stubGlobal("alert", vi.fn());
@@ -1811,7 +1811,7 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     const postMock = vi.fn().mockImplementation(async (url: string) => {
       if (url.includes("fetch-preview")) {
         return {
-          git_url: "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_aa",
+          git_url: "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_aa",
           git_branch: "main",
           needs_network: false,
           app_info_unavailable: false,
@@ -1862,7 +1862,7 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
 // ---------------------------------------------------------------------------
 
 describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
-  const GERRIT_BASE = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC";
+  const GERRIT_BASE = "ssh://gerrit.metax-internal.com:29418/PDE/HPC";
 
   beforeEach(() => {
     vi.stubGlobal("alert", vi.fn());

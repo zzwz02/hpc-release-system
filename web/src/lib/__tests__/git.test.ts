@@ -10,8 +10,8 @@ import {
 
 describe("formatGerritUrl", () => {
   it("shows only the path after PDE/HPC", () => {
-    expect(formatGerritUrl("ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/lammps")).toBe("lammps");
-    expect(formatGerritUrl("ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/sw-metax-open/abacus")).toBe("sw-metax-open/abacus");
+    expect(formatGerritUrl("ssh://gerrit.metax-internal.com:29418/PDE/HPC/lammps")).toBe("lammps");
+    expect(formatGerritUrl("ssh://gerrit.metax-internal.com:29418/PDE/HPC/sw-metax-open/abacus")).toBe("sw-metax-open/abacus");
   });
 
   it("keeps non-standard URLs unchanged", () => {

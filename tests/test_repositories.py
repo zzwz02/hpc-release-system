@@ -858,7 +858,7 @@ class TestIdentity:
 
     def test_normalize_git_url_absolute(self):
         from app.identity import normalize_git_url
-        url = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_hpl"
+        url = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_hpl"
         assert normalize_git_url(url) == url
 
     def test_normalize_git_url_empty(self):
@@ -892,7 +892,7 @@ class TestIdentity:
 
     def test_repo_to_git_identity_absolute(self):
         from app.identity import repo_to_git_identity
-        full = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_test"
+        full = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_test"
         url, branch = repo_to_git_identity("git", full, "main")
         assert url == full
         assert branch == "main"

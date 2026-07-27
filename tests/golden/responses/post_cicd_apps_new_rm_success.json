@@ -23,7 +23,7 @@
     "ok": true,
     "action": "created",
     "app_id": "w3cicdfirst",
-    "git_url": "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_w3cicd",
+    "git_url": "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_w3cicd",
     "git_branch": "wave3",
     "request": {
       "id": 5,

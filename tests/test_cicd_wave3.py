@@ -20,7 +20,7 @@ _REPO_SHORT = "hpc_w3cicd"
 _BRANCH = "wave3"
 _OFFICIAL_NAME = "W3CicdFirst"
 _APP_ID = "w3cicdfirst"
-_RESOLVED_URL = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_w3cicd"
+_RESOLVED_URL = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_w3cicd"
 
 _BUILD_PAYLOAD: dict = {
     "app_version": "1.2.3",

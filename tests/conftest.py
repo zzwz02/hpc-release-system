@@ -78,7 +78,7 @@ _INIT_CSV = (
     "官方名称,类型,APP类型,Owner,app_version,maca_chip,hpcc_chip,arch,"
     "maca_version,git_url,git_branch\n"
     "TestApp,HPC,分子动力学,test_owner,1.0,c500,,x86,20260601-001,"
-    "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_testapp,maca\n"
+    "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_testapp,maca\n"
 )
 
 
@@ -110,7 +110,7 @@ def seed_app(
     release_id: str,
     *,
     official_name: str = "ExtraApp",
-    git_url: str = "ssh://sw-gerrit-devops.metax-internal.com:29418/PDE/HPC/hpc_extra",
+    git_url: str = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_extra",
     git_branch: str = "maca",
     release_decision: str = "release",
     owner: str = "extra_owner",

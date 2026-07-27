@@ -674,7 +674,7 @@ test.describe("W4 wizard derived-identity display", () => {
   test("fetch-error step shows derived git_url@branch for git-type repo", async ({ page }) => {
     // Intercept fetch-preview to immediately return a 502 (Gerrit unreachable).
     // This lets the frontend show the derived identity box without waiting on
-    // a real TCP timeout to sw-gerrit-devops (can be 30-60 s).
+    // a real TCP timeout to gerrit (can be 30-60 s).
     await page.route("**/api/cicd/apps/fetch-preview", async (route) => {
       await route.fulfill({
         status: 502,
