@@ -1195,11 +1195,21 @@ def _app_info_fetch_target(app: dict) -> tuple[str, str, str]:
     fetch_branch = original_branch
     source = f"{original_url} {original_branch}:app_info.json"
 
-    if original_url.endswith(".xml"):
+    repo_type = str(app.get("cicd_repo_type") or "").strip()
+    is_manifest = repo_type == "repo" or original_url.endswith(".xml")
+    if is_manifest:
+        if not original_url.endswith(".xml"):
+            raise RuntimeError(
+                "repo 类型缺少 manifest XML 路径，不能拉取 app_info.json："
+                f"{original_url} @ {original_branch}"
+            )
         from app.identity import repo_to_git_identity
 
         resolved_url, resolved_branch = repo_to_git_identity(
-            "repo", original_url, original_branch
+            "repo",
+            original_url,
+            original_branch,
+            refresh_manifest=True,
         )
         if not resolved_url or not resolved_branch:
             raise RuntimeError(

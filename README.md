@@ -248,6 +248,8 @@ SPD 退回交付申请后，RM 可以在「CICD 工作台 → 待交付」对 re
 
 CICD↔App 的身份键是 `app_id`。`(git_url, git_branch)` 只用于历史展示 / 兼容匹配，新写入路径必须使用 app id。注意同一个 Gerrit URL 可以有多个 branch，不能只用 URL 匹配。身份解析见 `app/identity.py`（`repo_to_git_identity`）。
 
+对于 `repo` 类型，App 中持久保存、CICD 页面展示的权威配置都是 manifest XML 路径与 manifest branch（例如 `APP/slurm/hpc_slurm_22.05.3.xml @ master`）。每次拉取 `app_info` 或执行需要底层 Git 身份的操作时，都重新读取并解析当前 XML；解析结果只用于当次操作，不能覆盖 manifest 配置，也不能因进程内旧缓存而忽略 XML 更新。
+
 QA 上传的 log 文件本体保存在 `qa_logs.content` BLOB 中，下载与 AI 分析都直接读取数据库，不再向项目旁的 `qa_logs/` 目录写新文件。旧库首次启动时会自动把仍可读取的 `storage_path` 文件导入 BLOB；为便于升级核验，原文件不会自动删除，确认数据库备份和下载正常后可人工清理旧目录。由于备份已包含 QA log，数据库备份文件体积会相应增加。
 
 ---

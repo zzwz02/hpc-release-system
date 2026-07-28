@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from app.db.connection import connect, reset_init_state
+from app.db.connection import connect, init_db, reset_init_state
 from app.repositories import apps_repo
 from app.services import app_service, cicd_service
 
@@ -197,7 +197,81 @@ def test_cicd_modify_repo_identity_change_updates_app_after_approval():
         app = apps_repo.get_app(conn, "app1")
         assert app["git_url"] == f"{_GERRIT_BASE}/hpc_app_latest"
         assert app["git_branch"] == "maca_latest"
+        task = next(t for t in cicd_service.list_tasks(conn) if t["app_id"] == "app1")
+        assert task["repo_name"] == f"{_GERRIT_BASE}/hpc_app_latest"
+        assert task["branch"] == "maca_latest"
         assert not conn.execute("SELECT 1 FROM cicd_tasks").fetchone()
+    finally:
+        conn.close()
+
+
+def test_repo_task_displays_manifest_config_instead_of_resolved_git_identity(monkeypatch):
+    conn = fresh_conn()
+    try:
+        seed_app_release(conn)
+        manifest_path = "APP/slurm/hpc_slurm_22.05.3.xml"
+
+        def unexpected_resolution(*_args, **_kwargs):
+            raise AssertionError("approval must not resolve or persist manifest contents")
+
+        monkeypatch.setattr("app.identity.repo_to_git_identity", unexpected_resolution)
+        req = cicd_service.submit_request(
+            conn,
+            task_id="app1",
+            request_type="modify",
+            payload={
+                "repo_type": {"old": "git", "new": "repo"},
+                "repo_name": {"old": "hpc_app_new", "new": manifest_path},
+                "branch": {"old": "maca_new", "new": "master"},
+            },
+            submitter="owner",
+            submitter_role="Owner",
+            source="app_workbench",
+        )
+
+        cicd_service.approve_request(conn, req["id"], reviewer="rm", reviewer_role="RM")
+
+        app = apps_repo.get_app(conn, "app1")
+        assert app["git_url"] == manifest_path
+        assert app["git_branch"] == "master"
+        task = next(t for t in cicd_service.list_tasks(conn) if t["app_id"] == "app1")
+        assert task["repo_type"] == "repo"
+        assert task["repo_name"] == manifest_path
+        assert task["branch"] == "master"
+    finally:
+        conn.close()
+
+
+def test_startup_migration_restores_manifest_config_from_applied_request():
+    conn = fresh_conn()
+    try:
+        seed_app_release(conn)
+        manifest_path = "APP/slurm/hpc_slurm_22.05.3.xml"
+        req = cicd_service.submit_request(
+            conn,
+            task_id="app1",
+            request_type="modify",
+            payload={
+                "repo_type": {"old": "git", "new": "repo"},
+                "repo_name": {"old": "hpc_app_new", "new": manifest_path},
+                "branch": {"old": "maca_new", "new": "master"},
+            },
+            submitter="owner",
+            submitter_role="Owner",
+            source="app_workbench",
+        )
+        cicd_service.approve_request(conn, req["id"], reviewer="rm", reviewer_role="RM")
+        conn.execute(
+            "UPDATE apps SET git_url = ?, git_branch = ? WHERE id = 'app1'",
+            (f"{_GERRIT_BASE}/hpc_slurm", "dev"),
+        )
+        conn.commit()
+
+        init_db(conn)
+
+        app = apps_repo.get_app(conn, "app1")
+        assert app["git_url"] == manifest_path
+        assert app["git_branch"] == "master"
     finally:
         conn.close()
 

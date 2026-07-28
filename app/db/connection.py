@@ -14,6 +14,7 @@ Schema additions kept for current runtime:
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import uuid
@@ -411,9 +412,80 @@ def init_db(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
 
+    _migrate_repo_manifest_paths(conn)
     _migrate_qa_log_files(conn)
 
     conn.commit()
+
+
+def _migrate_repo_manifest_paths(conn: sqlite3.Connection) -> None:
+    """Restore repo-type Apps that were overwritten with a resolved Git URL.
+
+    Older FastAPI code resolved a manifest during CICD approval and persisted
+    the result in ``apps.git_url/git_branch``.  The manifest path is the durable
+    repo configuration, so recover the latest applied value from request
+    history.  CICD-first requests that created the App are also eligible before
+    approval because that App row is retained after rejection/cancellation;
+    requests merely associated with an existing App must have taken effect.
+    """
+    apps = conn.execute(
+        """
+        SELECT id, git_url, git_branch
+        FROM apps
+        WHERE cicd_repo_type = 'repo'
+          AND git_url NOT LIKE '%.xml'
+        """
+    ).fetchall()
+    for app in apps:
+        manifest_path = ""
+        manifest_branch = ""
+        rows = conn.execute(
+            """
+            SELECT request_type, payload, status, approval_mode, delivery_status
+            FROM cicd_task_requests
+            WHERE COALESCE(app_id, task_id) = ?
+              AND request_type IN ('create', 'modify')
+            ORDER BY id
+            """,
+            (app["id"],),
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            applied = row["status"] == "approved" and (
+                row["approval_mode"] != "dispatch_spd"
+                or row["delivery_status"] == "delivered"
+            )
+            created_app = (
+                row["request_type"] == "create"
+                and payload.get("_cicd_first_action") == "created"
+            )
+            if not applied and not created_app:
+                continue
+            repo_name = payload.get("repo_name")
+            branch = payload.get("branch")
+            if row["request_type"] == "modify":
+                repo_name = repo_name.get("new") if isinstance(repo_name, dict) else None
+                branch = branch.get("new") if isinstance(branch, dict) else None
+            candidate = str(repo_name or "").strip().lstrip("/")
+            for prefix in ("PDE/HPC/manifest/", "manifest/"):
+                if candidate.startswith(prefix):
+                    candidate = candidate[len(prefix):]
+                    break
+            if candidate.endswith(".xml"):
+                manifest_path = candidate
+            candidate_branch = str(branch or "").strip()
+            if candidate_branch:
+                manifest_branch = candidate_branch
+        if manifest_path and (
+            manifest_path != app["git_url"] or manifest_branch != app["git_branch"]
+        ):
+            conn.execute(
+                "UPDATE apps SET git_url = ?, git_branch = ? WHERE id = ?",
+                (manifest_path, manifest_branch or "master", app["id"]),
+            )
 
 
 def _migrate_qa_log_files(conn: sqlite3.Connection) -> None:

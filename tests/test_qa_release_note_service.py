@@ -153,6 +153,42 @@ def test_qa_report_keeps_changed_non_release_app_but_blanks_release_fields(relea
         assert row[column] == ""
 
 
+def test_qa_test_cmd_only_filters_explicitly_disabled_tests(release_with_app):
+    conn, release_id, app_id = release_with_app
+    seed_snapshot(
+        conn,
+        release_id,
+        app_id,
+        app_info={
+            "app_version": "2023.0807",
+            "app_name": "hpl",
+            "app_build": {
+                "ubuntu22.04_amd64": {
+                    "build_target": "release",
+                    "arch": "amd64",
+                    "supported_chip": ["c500"],
+                },
+            },
+            "app_test": {
+                "default_enabled": {
+                    "test_cmd": "/opt/rocHPL/run_hpl_autotest.sh",
+                    "supported_chip": {"c500": ["ubuntu22.04_amd64"]},
+                },
+                "explicitly_disabled": {
+                    "test_cmd": "/opt/rocHPL/run_disabled_test.sh",
+                    "supported_chip": {"c500": ["ubuntu22.04_amd64"]},
+                    "enabled": False,
+                },
+            },
+        },
+    )
+
+    report = qa_service.get_qa_reports(conn, release_id)["test_cmd"]
+
+    assert [row[5] for row in report["rows"]] == ["default_enabled"]
+    assert report["rows"][0][6].endswith("sh -c '/opt/rocHPL/run_hpl_autotest.sh'")
+
+
 def test_release_note_includes_release_app_even_when_qa_is_not_passed(release_with_app):
     conn, release_id, _app_id = release_with_app
     deepmd_id = seed_app(

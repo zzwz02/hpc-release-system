@@ -95,6 +95,8 @@ def normalize_git_url(git_url: str) -> str:
 def resolve_manifest_url(
     git_url: str,
     git_branch: str,
+    *,
+    refresh: bool = False,
 ) -> tuple[str | None, str | None]:
     """Resolve a .xml Google-repo manifest path to (repo_url, branch).
 
@@ -104,7 +106,8 @@ def resolve_manifest_url(
     <linkfile src="app_info.json"/>.  On failure returns (None, None) and
     prints a warning; callers must treat this as an unresolvable entry.
 
-    Results are cached in _manifest_cache for the process lifetime.
+    Results are cached in-process.  Runtime callers that need the current XML
+    contents pass ``refresh=True`` so a manifest change is observed.
 
     Mirrors resolve_manifest_url() in test_data/get_release_report_test_cmd.py.
 
@@ -114,6 +117,8 @@ def resolve_manifest_url(
         return git_url, git_branch
 
     xml_path = git_url.lstrip("/")
+    if refresh:
+        _manifest_cache.pop(xml_path, None)
     if xml_path in _manifest_cache:
         return _manifest_cache[xml_path]
 
@@ -178,6 +183,8 @@ def repo_to_git_identity(
     repo_type: str,
     repo_name: str,
     branch: str,
+    *,
+    refresh_manifest: bool = False,
 ) -> tuple[str | None, str | None]:
     """Map (repo_type, repo_name, branch) → (git_url, git_branch).
 
@@ -203,7 +210,11 @@ def repo_to_git_identity(
         return None, None
     # normalize_git_url expands short names (and passes .xml/absolute through);
     # resolve_manifest_url resolves .xml manifests and is a no-op otherwise.
-    return resolve_manifest_url(normalize_git_url(repo_name), branch)
+    return resolve_manifest_url(
+        normalize_git_url(repo_name),
+        branch,
+        refresh=refresh_manifest,
+    )
 
 
 def same_identity(

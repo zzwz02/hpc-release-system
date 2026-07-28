@@ -447,7 +447,7 @@ def _report_test_cmd_rows(
 
     rows: list[list[str]] = []
     for test_name, test_cfg in (raw.get("app_test") or {}).items():
-        if not isinstance(test_cfg, dict) or not test_cfg.get("enabled"):
+        if not isinstance(test_cfg, dict) or test_cfg.get("enabled") is False:
             continue
         if str(test_cfg.get("test_period") or "").strip().lower() == "weekly":
             continue

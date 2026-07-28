@@ -233,6 +233,58 @@ class TestCicdFirstAppBackedLifecycle:
         assert snap["release_decision"] == "stopped"
         assert snap["owners"] == ["rm"]
 
+    def test_repo_create_persists_manifest_config_not_resolved_identity(
+        self,
+        temp_db,
+        tmp_dir,
+        monkeypatch,
+    ):
+        manifest_path = "APP/slurm/hpc_slurm_22.05.3.xml"
+        resolved_url = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_slurm"
+        resolution_calls = []
+
+        def fake_identity(repo_type, repo_name, branch, **kwargs):
+            resolution_calls.append((repo_type, repo_name, branch, kwargs))
+            return resolved_url, "dev"
+
+        monkeypatch.setattr("app.identity.repo_to_git_identity", fake_identity)
+        seed_release(temp_db, tmp_path=tmp_dir)
+
+        result = cicd_service.cicd_first_new_app(
+            temp_db,
+            official_name="Slurm",
+            repo_type="repo",
+            repo_name=manifest_path,
+            branch="master",
+            submitter="rm",
+            submitter_role="RM",
+            payload={**_BUILD_PAYLOAD, "cicd_repo_type": "repo"},
+        )
+
+        app = apps_repo.get_app(temp_db, result["app_id"])
+        assert app["git_url"] == manifest_path
+        assert app["git_branch"] == "master"
+        assert result["git_url"] == resolved_url
+        assert result["git_branch"] == "dev"
+        assert resolution_calls == [
+            (
+                "repo",
+                manifest_path,
+                "master",
+                {"refresh_manifest": True},
+            )
+        ]
+
+        cicd_service.approve_request(
+            temp_db,
+            result["request"]["id"],
+            reviewer="rm",
+            reviewer_role="RM",
+        )
+        app = apps_repo.get_app(temp_db, result["app_id"])
+        assert app["git_url"] == manifest_path
+        assert app["git_branch"] == "master"
+
     def test_approval_keeps_task_id_as_app_id_and_creates_no_task_row(self, temp_db, tmp_dir):
         result = _create_app(temp_db, tmp_dir)
         req = result["request"]

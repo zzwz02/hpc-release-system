@@ -247,6 +247,32 @@ describe("CicdPage", () => {
     expect(screen.queryByText(/新建 CICD 任务/)).not.toBeInTheDocument();
   });
 
+  it("shows the configured manifest path for repo tasks", async () => {
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) {
+        return Promise.resolve({
+          tasks: [makeTask({
+            app_name: "Slurm",
+            app_version: "22.05.3",
+            repo_type: "repo",
+            repo_name: "APP/slurm/hpc_slurm_22.05.3.xml",
+            branch: "master",
+          })],
+        });
+      }
+      if (url.includes("/api/cicd/notifications")) {
+        return Promise.resolve({ count: 0, last_visited_at: "" });
+      }
+      if (url.includes("/api/cicd/requests")) return Promise.resolve({ requests: [] });
+      return Promise.resolve({ deliveries: [] });
+    });
+
+    renderCicd("RM");
+
+    expect(await screen.findByText("APP/slurm/hpc_slurm_22.05.3.xml")).toBeInTheDocument();
+    expect(screen.getByText("master")).toBeInTheDocument();
+  });
+
   it("hides new-task button for SPD", async () => {
     renderCicd("SPD");
     await waitFor(() => {

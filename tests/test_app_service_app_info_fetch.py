@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from app.db.connection import connect, reset_init_state
+from app import identity
 from app.services import app_service
 
 
@@ -74,7 +76,7 @@ def test_fetch_app_info_resolves_repo_manifest_before_gerrit_fetch(monkeypatch):
         )
         monkeypatch.setattr(
             "app.identity.repo_to_git_identity",
-            lambda repo_type, repo_name, branch: (
+            lambda repo_type, repo_name, branch, **_kwargs: (
                 "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_lammps",
                 "maca_stable_22Jul2025",
             ),
@@ -120,7 +122,7 @@ def test_fetch_app_info_reports_manifest_resolution_failure(monkeypatch):
         )
         monkeypatch.setattr(
             "app.identity.repo_to_git_identity",
-            lambda repo_type, repo_name, branch: (None, None),
+            lambda repo_type, repo_name, branch, **_kwargs: (None, None),
         )
 
         try:
@@ -137,3 +139,45 @@ def test_fetch_app_info_reports_manifest_resolution_failure(monkeypatch):
             raise AssertionError("expected RuntimeError")
     finally:
         conn.close()
+
+
+def test_manifest_fetch_target_observes_changed_xml_contents(monkeypatch):
+    manifest_path = "APP/slurm/hpc_slurm_22.05.3.xml"
+    current = {"name": "hpc_slurm", "revision": "dev"}
+    archive_calls = []
+
+    def fake_archive(remote, branch, path, dest_dir):
+        archive_calls.append((remote, branch, path))
+        target = Path(dest_dir) / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            "<manifest><project "
+            f"name=\"{current['name']}\" revision=\"{current['revision']}\">"
+            '<linkfile src="app_info.json"/></project></manifest>',
+            encoding="utf-8",
+        )
+        return True
+
+    monkeypatch.setattr(identity, "_git_archive_extract", fake_archive)
+    identity.clear_manifest_cache()
+    app = {
+        "git_url": manifest_path,
+        "git_branch": "master",
+        "cicd_repo_type": "repo",
+    }
+    try:
+        first = app_service._app_info_fetch_target(app)
+        current.update(name="hpc_slurm_next", revision="release-next")
+        second = app_service._app_info_fetch_target(app)
+    finally:
+        identity.clear_manifest_cache()
+
+    assert first[:2] == (
+        "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_slurm",
+        "dev",
+    )
+    assert second[:2] == (
+        "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_slurm_next",
+        "release-next",
+    )
+    assert len(archive_calls) == 2

@@ -736,6 +736,22 @@ def _apply_cicd_request(
     if request_type == "create":
         app_id = linked_app_id or payload.get("app_id") or _task_id_to_app_id(conn, task_id)
         if app_id and apps_repo.get_app(conn, app_id):
+            repo_type = str(payload.get("repo_type") or "git").strip() or "git"
+            repo_name = str(payload.get("repo_name") or "").strip().lstrip("/")
+            branch = str(payload.get("branch") or "").strip()
+            if repo_name and branch:
+                if repo_type == "repo" or repo_name.endswith(".xml"):
+                    stored_url, stored_branch = repo_name, branch
+                else:
+                    from app.identity import normalize_git_url
+
+                    stored_url, stored_branch = normalize_git_url(repo_name), branch
+                _update_app_git_identity(
+                    conn,
+                    app_id,
+                    git_url=stored_url,
+                    git_branch=stored_branch,
+                )
             apps_repo.update_cicd_config(
                 conn,
                 app_id,
@@ -778,8 +794,6 @@ def _apply_cicd_request(
                 app_updates[app_field] = new_value
             if git_url_update is not None or git_branch_update is not None:
                 if git_url_update is not None:
-                    from app.identity import repo_to_git_identity
-
                     next_repo_type = str(
                         app_updates.get("cicd_repo_type")
                         or app.get("cicd_repo_type")
@@ -790,18 +804,14 @@ def _apply_cicd_request(
                         if git_branch_update is not None
                         else app.get("git_branch", "")
                     ).strip()
-                    resolved_url, resolved_branch = repo_to_git_identity(
-                        next_repo_type,
-                        git_url_update,
-                        next_branch,
-                    )
-                    if not resolved_url or not resolved_branch:
-                        raise ValueError(
-                            "无法解析 repo 身份（repo_name 为空或 .xml manifest 解析失败），"
-                            "请检查 repo_name / branch"
-                        )
-                    git_url_update = resolved_url
-                    git_branch_update = resolved_branch
+                    if next_repo_type == "repo" or git_url_update.endswith(".xml"):
+                        git_url_update = git_url_update.lstrip("/")
+                        git_branch_update = next_branch
+                    else:
+                        from app.identity import normalize_git_url
+
+                        git_url_update = normalize_git_url(git_url_update)
+                        git_branch_update = next_branch
                 _update_app_git_identity(
                     conn,
                     app_id,
@@ -1954,7 +1964,12 @@ def preview_cicd_app_info(
     # Step 1: Derive identity FIRST.
     # For git-type short names this is offline and always succeeds.
     # For .xml manifests it requires network; returns (None, None) on failure.
-    git_url, git_branch = repo_to_git_identity(repo_type, repo_name, branch)
+    git_url, git_branch = repo_to_git_identity(
+        repo_type,
+        repo_name,
+        branch,
+        refresh_manifest=is_manifest,
+    )
 
     base: dict = {
         "git_url": git_url,
@@ -2053,7 +2068,12 @@ def preview_cicd_app_info_for_create(
         if message:
             raise RuntimeError(message)
 
-    git_url, git_branch = repo_to_git_identity(repo_type, raw_repo_name, raw_branch)
+    git_url, git_branch = repo_to_git_identity(
+        repo_type,
+        raw_repo_name,
+        raw_branch,
+        refresh_manifest=raw_repo_name.endswith(".xml"),
+    )
     if git_url and git_branch:
         existing_app = _find_app_by_identity(conn, git_url, git_branch)
         if existing_app:
@@ -2250,7 +2270,15 @@ def cicd_first_new_app(
     # Step 1 — Derive identity OUTSIDE the write transaction
     # (manifest fetches involve network I/O via git archive --remote)
     # ------------------------------------------------------------------
-    git_url, git_branch = repo_to_git_identity(repo_type, repo_name, branch)
+    raw_repo_name = repo_name.strip().lstrip("/")
+    raw_branch = branch.strip()
+    is_manifest = raw_repo_name.endswith(".xml")
+    git_url, git_branch = repo_to_git_identity(
+        repo_type,
+        raw_repo_name,
+        raw_branch,
+        refresh_manifest=is_manifest,
+    )
     if not git_url or not git_branch:
         raise ValueError(
             "无法解析 repo 身份（repo_name 为空或 .xml manifest 解析失败），"
@@ -2262,7 +2290,9 @@ def cicd_first_new_app(
     # ------------------------------------------------------------------
     with transaction(conn):
         # ---- dedup gate: find existing app with normalised identity ----
-        existing_app = _find_app_by_identity(conn, git_url, git_branch)
+        existing_app = _find_app_by_identity(conn, raw_repo_name, raw_branch)
+        if not existing_app:
+            existing_app = _find_app_by_identity(conn, git_url, git_branch)
 
         if existing_app:
             app_id = existing_app["id"]
@@ -2309,12 +2339,14 @@ def cicd_first_new_app(
             # transaction() nests as a SAVEPOINT inside our outer transaction.
             from app.services import app_service as _app_service
 
+            stored_url = raw_repo_name if is_manifest else git_url
+            stored_branch = raw_branch if is_manifest else git_branch
             app_id = _app_service.add_new_app_request(
                 conn,
                 anchor_release_id,
                 official_name=official_name,
-                git_url=git_url,
-                git_branch=git_branch,
+                git_url=stored_url,
+                git_branch=stored_branch,
                 release_decision="stopped",
                 owner=submitter,
                 doc_target="manual",
