@@ -29,7 +29,11 @@ import { formatDateValue, formatServerTime } from "../../lib/time";
 import { qaStatusLabels } from "../../lib/labels";
 import { toast } from "../../lib/toast";
 import { confirmDialog } from "../../lib/confirm";
-import { needsAttention } from "../appWorkbench/helpers";
+import {
+  APP_STATUS_FILTER_OPTIONS,
+  matchesAppStatusFilter,
+  type AppStatusFilter,
+} from "../appWorkbench/helpers";
 import type {
   StatePayload,
   Snapshot,
@@ -521,7 +525,7 @@ interface OwnerGridProps {
 }
 
 function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridProps) {
-  const [issueOnly, setIssueOnly] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<AppStatusFilter>("all");
 
   const apps = payload.apps ?? [];
   const allRows = apps
@@ -532,7 +536,7 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
     ? allRows.filter((x) => (x.snap.owners ?? []).includes(username))
     : allRows.slice()
   )
-    .filter((x) => !issueOnly || needsAttention(x.snap))
+    .filter((x) => matchesAppStatusFilter(x.snap, statusFilter))
     .sort((a, b) => compareAppRows(a, b, userIsOwner, username));
 
   const displayNames = payload.user_display_names ?? {};
@@ -543,18 +547,17 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
       <div className="panel-head">
         <h2 id="dashboardOwnerTitle">{title}</h2>
         <span className="count" id="dashboardOwnerCount">共 {gridRows.length} 个</span>
-        <label
-          className="check nowrap"
-          title="仅显示待办不齐全或 QA 存在问题 / 不可发布的 app"
+        <select
+          className="select sm select-inline"
+          aria-label="App 状态筛选"
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as AppStatusFilter)}
+          data-testid="dashboard-app-status-filter"
         >
-          <input
-            type="checkbox"
-            checked={issueOnly}
-            onChange={(e) => setIssueOnly(e.target.checked)}
-            data-testid="dashboard-issue-only-checkbox"
-          />
-          只看待办/QA 异常
-        </label>
+          {APP_STATUS_FILTER_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
         <span className="flex-1" />
         <span className="muted small">点击行 → App 工作台查看 / 编辑</span>
       </div>
@@ -562,11 +565,13 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
         <div id="dashboardOwnerGrid">
           {gridRows.length === 0 ? (
             <p className="muted small p-14">
-              {issueOnly
-                ? "没有待办不齐全或 QA 有问题的 app。"
-                : userIsOwner
-                  ? "本 release 没有归属于你的 app。"
-                  : "本 release 暂无 app。"}
+              {statusFilter === "qa_anomaly"
+                ? "没有 QA 异常的 app。"
+                : statusFilter === "doc_incomplete"
+                  ? "没有 doc 未完成的 app。"
+                  : userIsOwner
+                    ? "本 release 没有归属于你的 app。"
+                    : "本 release 暂无 app。"}
             </p>
           ) : (
             <table className="app-overview-table" data-testid="dashboard-app-table">
@@ -586,7 +591,7 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
                 {gridRows.map(({ app, snap }) => {
                   const rel = isReleaseSnap(snap);
                   const prog = ownerProgress(snap);
-                  const todoCount = (snap.missing_items ?? []).length;
+                  const todoCount = docsItems(snap).length;
                   const ownersLabel = usersLabel(snap.owners, displayNames);
                   return (
                     <tr

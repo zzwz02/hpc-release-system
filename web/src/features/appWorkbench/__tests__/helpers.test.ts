@@ -13,7 +13,8 @@ import {
   docsItems,
   docsOk,
   qaOk,
-  needsAttention,
+  APP_STATUS_FILTER_OPTIONS,
+  matchesAppStatusFilter,
   qaDotClass,
   qaDotTitle,
   compareAppRows,
@@ -217,42 +218,55 @@ describe("qaOk", () => {
 });
 
 // ---------------------------------------------------------------------------
-// needsAttention
+// App status filter
 // ---------------------------------------------------------------------------
 
-describe("needsAttention", () => {
-  it("true when missing_items non-empty (待办不齐全)", () => {
+describe("matchesAppStatusFilter", () => {
+  it("exposes the three requested options in order", () => {
+    expect(APP_STATUS_FILTER_OPTIONS).toEqual([
+      { value: "all", label: "所有" },
+      { value: "qa_anomaly", label: "只看QA异常" },
+      { value: "doc_incomplete", label: "只看doc未完成" },
+    ]);
+  });
+
+  it("all includes release and non-release apps", () => {
+    expect(matchesAppStatusFilter(makeSnap(), "all")).toBe(true);
+    expect(matchesAppStatusFilter(makeSnap({ release_decision: "cicd_only" }), "all")).toBe(true);
+  });
+
+  it("doc_incomplete matches document missing items", () => {
     const snap = makeSnap({ missing_items: [{ kind: "doc", text: "intro 段" }] });
-    expect(needsAttention(snap)).toBe(true);
+    expect(matchesAppStatusFilter(snap, "doc_incomplete")).toBe(true);
   });
 
-  it("true for qa_status has_issues", () => {
-    expect(needsAttention(makeSnap({ qa_status: "has_issues" }))).toBe(true);
+  it("doc_incomplete excludes QA-only missing items", () => {
+    const snap = makeSnap({ missing_items: [{ kind: "qa", text: "QA 未测试" }] });
+    expect(matchesAppStatusFilter(snap, "doc_incomplete")).toBe(false);
   });
 
-  it("true for qa_status cannot_release", () => {
-    expect(needsAttention(makeSnap({ qa_status: "cannot_release" }))).toBe(true);
+  it("qa_anomaly matches has_issues and cannot_release", () => {
+    expect(matchesAppStatusFilter(makeSnap({ qa_status: "has_issues" }), "qa_anomaly")).toBe(true);
+    expect(matchesAppStatusFilter(makeSnap({ qa_status: "cannot_release" }), "qa_anomaly")).toBe(true);
   });
 
-  it("false when todos complete and QA passed", () => {
-    expect(needsAttention(makeSnap({ qa_status: "qa_passed" }))).toBe(false);
+  it("qa_anomaly excludes qa_passed and not_checked", () => {
+    expect(matchesAppStatusFilter(makeSnap({ qa_status: "qa_passed" }), "qa_anomaly")).toBe(false);
+    expect(matchesAppStatusFilter(makeSnap({ qa_status: "not_checked" }), "qa_anomaly")).toBe(false);
   });
 
-  it("false for not_checked with no missing items (待测试 ≠ 有问题)", () => {
-    expect(needsAttention(makeSnap({ qa_status: "not_checked" }))).toBe(false);
-  });
-
-  it("false for non-release decision even with issues", () => {
+  it("specific filters exclude non-release decisions", () => {
     const snap = makeSnap({
       release_decision: "cicd_only",
       qa_status: "cannot_release",
       missing_items: [{ kind: "doc", text: "intro 段" }],
     });
-    expect(needsAttention(snap)).toBe(false);
+    expect(matchesAppStatusFilter(snap, "qa_anomaly")).toBe(false);
+    expect(matchesAppStatusFilter(snap, "doc_incomplete")).toBe(false);
   });
 
-  it("false for null snapshot", () => {
-    expect(needsAttention(null)).toBe(false);
+  it("all excludes a missing snapshot", () => {
+    expect(matchesAppStatusFilter(null, "all")).toBe(false);
   });
 });
 

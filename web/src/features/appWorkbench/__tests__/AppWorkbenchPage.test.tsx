@@ -279,6 +279,53 @@ describe("AppWorkbenchPage", () => {
     });
   });
 
+  it("status dropdown separates QA anomalies from incomplete docs", async () => {
+    const apps = [makeApp("qa-app"), makeApp("doc-app"), makeApp("ready-app")];
+    const payload = makePayload({
+      apps,
+      release: makeRelease({
+        "qa-app": makeSnap("qa-app", {
+          official_name: "QA App",
+          qa_status: "has_issues",
+        }),
+        "doc-app": makeSnap("doc-app", {
+          official_name: "Doc App",
+          qa_status: "qa_passed",
+          missing_items: [{ kind: "doc", text: "缺少基本介绍" }],
+        }),
+        "ready-app": makeSnap("ready-app", {
+          official_name: "Ready App",
+          qa_status: "qa_passed",
+        }),
+      }),
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    const qc = makeQueryClient();
+    renderPage(qc);
+
+    await waitFor(() => screen.getByTestId("app-status-filter"));
+    const filter = screen.getByTestId("app-status-filter") as HTMLSelectElement;
+    expect(Array.from(filter.options).map((option) => option.text)).toEqual([
+      "所有",
+      "只看QA异常",
+      "只看doc未完成",
+    ]);
+
+    fireEvent.change(filter, { target: { value: "qa_anomaly" } });
+    await waitFor(() => {
+      expect(screen.getByTestId("app-row-qa-app")).toBeTruthy();
+      expect(screen.queryByTestId("app-row-doc-app")).toBeNull();
+      expect(screen.queryByTestId("app-row-ready-app")).toBeNull();
+    });
+
+    fireEvent.change(filter, { target: { value: "doc_incomplete" } });
+    await waitFor(() => {
+      expect(screen.queryByTestId("app-row-qa-app")).toBeNull();
+      expect(screen.getByTestId("app-row-doc-app")).toBeTruthy();
+      expect(screen.queryByTestId("app-row-ready-app")).toBeNull();
+    });
+  });
+
   it("own-only checkbox visible for Owner role", async () => {
     (useAuth as ReturnType<typeof vi.fn>).mockReturnValue({
       user: { username: "alice", role: "Owner", display_name: "Alice" },

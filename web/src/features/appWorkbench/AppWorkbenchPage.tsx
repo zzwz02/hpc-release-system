@@ -54,7 +54,9 @@ import {
   docsItems,
   docsOk,
   qaOk,
-  needsAttention,
+  APP_STATUS_FILTER_OPTIONS,
+  matchesAppStatusFilter,
+  type AppStatusFilter,
   ownerProgress,
   appInfoSource,
   orderChips,
@@ -414,8 +416,8 @@ interface AppListProps {
   ownOnly: boolean;
   onOwnOnlyChange: (v: boolean) => void;
   showOwnOnly: boolean;
-  issueOnly: boolean;
-  onIssueOnlyChange: (v: boolean) => void;
+  statusFilter: AppStatusFilter;
+  onStatusFilterChange: (v: AppStatusFilter) => void;
   displayNames: Record<string, string>;
   cicdPendingCounts: Record<string, number>;
   canCreateApp: boolean;
@@ -424,7 +426,7 @@ interface AppListProps {
 
 function AppListPanel({
   rows, selectedAppId, onSelectApp, search, onSearchChange,
-  ownOnly, onOwnOnlyChange, showOwnOnly, issueOnly, onIssueOnlyChange,
+  ownOnly, onOwnOnlyChange, showOwnOnly, statusFilter, onStatusFilterChange,
   displayNames, cicdPendingCounts, canCreateApp, onNewApp,
 }: AppListProps) {
   return (
@@ -448,18 +450,17 @@ function AppListPanel({
             只看我的
           </label>
         )}
-        <label
-          className="check nowrap"
-          title="仅显示待办不齐全或 QA 存在问题 / 不可发布的 app"
+        <select
+          className="select sm select-inline"
+          aria-label="App 状态筛选"
+          value={statusFilter}
+          onChange={(e) => onStatusFilterChange(e.target.value as AppStatusFilter)}
+          data-testid="app-status-filter"
         >
-          <input
-            type="checkbox"
-            checked={issueOnly}
-            onChange={(e) => onIssueOnlyChange(e.target.checked)}
-            data-testid="issue-only-checkbox"
-          />
-          只看待办/QA 异常
-        </label>
+          {APP_STATUS_FILTER_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
         <span className="count" data-testid="app-count">共 {rows.length} 个</span>
         {canCreateApp && (
           <button className="btn sm primary" onClick={onNewApp} data-testid="new-app-btn">
@@ -2873,7 +2874,7 @@ export function AppWorkbenchPage() {
 
   const [search, setSearch] = useState("");
   const [ownOnly, setOwnOnly] = useState(false);
-  const [issueOnly, setIssueOnly] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<AppStatusFilter>("all");
   const [showNewApp, setShowNewApp] = useState(false);
   const [newAppInitialValues, setNewAppInitialValues] = useState<NewAppInitialValues | null>(null);
   const [bulkFetching, setBulkFetching] = useState(false);
@@ -2892,7 +2893,7 @@ export function AppWorkbenchPage() {
     .filter((x): x is { app: App; snap: Snapshot } => x.snap !== null);
 
   const filteredRows = filterAppRows(allRows, search, ownOnly, user, displayNames)
-    .filter((r) => !issueOnly || needsAttention(r.snap))
+    .filter((r) => matchesAppStatusFilter(r.snap, statusFilter))
     .sort((a, b) => compareAppRows(a, b, user));
 
   const selectedAppObj = apps.find((a) => a.id === selectedApp) ?? null;
@@ -3120,8 +3121,8 @@ export function AppWorkbenchPage() {
             ownOnly={ownOnly}
             onOwnOnlyChange={setOwnOnly}
             showOwnOnly={userIsOwner}
-            issueOnly={issueOnly}
-            onIssueOnlyChange={setIssueOnly}
+            statusFilter={statusFilter}
+            onStatusFilterChange={setStatusFilter}
             displayNames={displayNames}
             cicdPendingCounts={cicdPendingCounts}
             canCreateApp={canCreateAppForUser}

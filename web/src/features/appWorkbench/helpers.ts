@@ -54,16 +54,28 @@ export function qaOk(snap: Snapshot | null | undefined): boolean {
   return ["qa_passed", "has_issues"].includes(snap?.qa_status ?? "");
 }
 
-/**
- * "待办不齐全 / QA 有问题" filter predicate: release 决策的 app 中，
- * missing_items 非空（待办不齐全），或 QA 状态为存在问题 / 不可发布。
- * 非 release 决策的 app 不纳入待办与 QA，恒为 false。
- */
-export function needsAttention(snap: Snapshot | null | undefined): boolean {
+export type AppStatusFilter = "all" | "qa_anomaly" | "doc_incomplete";
+
+export const APP_STATUS_FILTER_OPTIONS: readonly {
+  value: AppStatusFilter;
+  label: string;
+}[] = [
+  { value: "all", label: "所有" },
+  { value: "qa_anomaly", label: "只看QA异常" },
+  { value: "doc_incomplete", label: "只看doc未完成" },
+];
+
+/** Shared App 工作台 / 总览 status filter predicate. */
+export function matchesAppStatusFilter(
+  snap: Snapshot | null | undefined,
+  filter: AppStatusFilter,
+): boolean {
+  if (filter === "all") return snap != null;
   if (!isReleaseSnap(snap)) return false;
-  const todoCount = (snap?.missing_items ?? []).length;
-  const qaBad = ["has_issues", "cannot_release"].includes(snap?.qa_status ?? "");
-  return todoCount > 0 || qaBad;
+  if (filter === "qa_anomaly") {
+    return ["has_issues", "cannot_release"].includes(snap?.qa_status ?? "");
+  }
+  return docsItems(snap).length > 0;
 }
 
 // ---------------------------------------------------------------------------

@@ -443,4 +443,48 @@ describe("DashboardPage owner grid", () => {
     expect(screen.getByText(/App app1/)).toBeDefined();
     expect(screen.queryByText(/App app2/)).toBeNull();
   });
+
+  it("status dropdown separates QA anomalies from incomplete docs", async () => {
+    const apps = [makeApp("qa-app"), makeApp("doc-app"), makeApp("ready-app")];
+    const payload = makePayload({
+      apps,
+      release: makeRelease({
+        "qa-app": makeSnap("qa-app", {
+          qa_status: "cannot_release",
+        }),
+        "doc-app": makeSnap("doc-app", {
+          qa_status: "qa_passed",
+          missing_items: [{ kind: "doc", text: "缺少环境搭建" }],
+        }),
+        "ready-app": makeSnap("ready-app", {
+          qa_status: "qa_passed",
+        }),
+      }),
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    const qc = makeQueryClient();
+    renderDashboard(qc);
+
+    await waitFor(() => screen.getByTestId("dashboard-app-status-filter"));
+    const filter = screen.getByTestId("dashboard-app-status-filter") as HTMLSelectElement;
+    expect(Array.from(filter.options).map((option) => option.text)).toEqual([
+      "所有",
+      "只看QA异常",
+      "只看doc未完成",
+    ]);
+
+    fireEvent.change(filter, { target: { value: "qa_anomaly" } });
+    await waitFor(() => {
+      expect(screen.getByTestId("dashboard-app-row-qa-app")).toBeDefined();
+      expect(screen.queryByTestId("dashboard-app-row-doc-app")).toBeNull();
+      expect(screen.queryByTestId("dashboard-app-row-ready-app")).toBeNull();
+    });
+
+    fireEvent.change(filter, { target: { value: "doc_incomplete" } });
+    await waitFor(() => {
+      expect(screen.queryByTestId("dashboard-app-row-qa-app")).toBeNull();
+      expect(screen.getByTestId("dashboard-app-row-doc-app")).toBeDefined();
+      expect(screen.queryByTestId("dashboard-app-row-ready-app")).toBeNull();
+    });
+  });
 });
