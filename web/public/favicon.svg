@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">HPC 发布信息协作系统</title>
+  <defs>
+    <linearGradient id="background" x1="4" y1="4" x2="60" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3b82f6" />
+      <stop offset="0.55" stop-color="#2563eb" />
+      <stop offset="1" stop-color="#4f46e5" />
+    </linearGradient>
+  </defs>
+
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#background)" />
+  <text
+    x="32"
+    y="39.5"
+    fill="#fff"
+    font-family="Inter, Segoe UI, Arial, sans-serif"
+    font-size="22"
+    font-weight="900"
+    letter-spacing="1"
+    text-anchor="middle"
+  >HPC</text>
+</svg>
