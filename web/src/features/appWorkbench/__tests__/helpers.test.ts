@@ -479,8 +479,22 @@ describe("orderChips", () => {
 // ---------------------------------------------------------------------------
 
 describe("appDescriptionCount", () => {
-  it("counts characters after trim", () => {
-    expect(appDescriptionCount("  hello  ")).toBe(5);
+  it("counts a contiguous English alphanumeric run as one word", () => {
+    expect(appDescriptionCount("  hello world 2026  ")).toBe(3);
+  });
+
+  it("counts Chinese characters individually", () => {
+    expect(appDescriptionCount("简短描述")).toBe(4);
+  });
+
+  it("matches the backend rule for mixed text and punctuation", () => {
+    expect(appDescriptionCount("hello world，中国!")).toBe(6);
+  });
+
+  it("allows thirty English words and rejects the thirty-first by count", () => {
+    const thirtyWords = Array.from({ length: 30 }, (_, index) => `word${index}`).join(" ");
+    expect(appDescriptionCount(thirtyWords)).toBe(30);
+    expect(appDescriptionCount(`${thirtyWords} overflow`)).toBe(31);
   });
 
   it("returns 0 for null", () => {

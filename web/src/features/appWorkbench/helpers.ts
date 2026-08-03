@@ -203,7 +203,9 @@ export function orderChips(value: string | null | undefined): string {
 }
 
 // ---------------------------------------------------------------------------
-// Description character count (mirrors legacy appDescriptionCount)
+// Description count (mirrors the backend app_description_count): a contiguous
+// ASCII alphanumeric run is one word; every other non-whitespace code point,
+// including each Chinese character and punctuation mark, counts as one.
 // ---------------------------------------------------------------------------
 
 const APP_DESCRIPTION_LIMIT = 30;
@@ -211,7 +213,7 @@ const APP_DESCRIPTION_LIMIT = 30;
 export { APP_DESCRIPTION_LIMIT };
 
 export function appDescriptionCount(text: string | null | undefined): number {
-  return (text ?? "").trim().length;
+  return ((text ?? "").trim().match(/[A-Za-z0-9]+|[^\s]/gu) ?? []).length;
 }
 
 // ---------------------------------------------------------------------------

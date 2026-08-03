@@ -1512,6 +1512,15 @@ describe("AppWorkbenchPage F3 unsaved-changes guard", () => {
     useUiStore.getState().setAppDetailDirty(false);
   });
 
+  it("shows the description counter by English words instead of letters", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    fireEvent.change(screen.getByTestId("field-description"), { target: { value: "hello world" } });
+    expect(screen.getByText("2/30")).toBeInTheDocument();
+  });
+
   it("sets the shared dirty flag when the form is edited", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
     const qc = makeQueryClient();
