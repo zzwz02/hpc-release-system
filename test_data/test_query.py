@@ -94,14 +94,16 @@ def filter_valid_testcases(outer_data):
     return valid_groups
 
 
-def calculate_normalized_ema(inner_data):
-    """独立归一化并计算 10 点 EMA"""
+def calculate_normalized_ema(inner_data, use_raw_metric=False):
+    """按规则准备绘图数据并计算移动平均"""
     df_calc = inner_data.copy()
 
     valid_goldens = df_calc['metric_golden'].dropna()
     rule = str(valid_goldens.iloc[0]).strip().lower() if not valid_goldens.empty else 'max'
 
-    if rule == 'max':
+    if use_raw_metric and rule == 'min':
+        df_calc['metric_percent'] = df_calc['metric']
+    elif rule == 'max':
         max_val = df_calc['metric'].max()
         df_calc['metric_percent'] = np.where(max_val != 0, df_calc['metric'] / max_val, 0)
     elif rule == 'min':
@@ -120,7 +122,7 @@ def calculate_normalized_ema(inner_data):
 # =====================================================
 # 模块 3: 可视化渲染
 # =====================================================
-def draw_single_subplot(ax, inner_data, testcase, ecc_state, rule, x_min, x_max):
+def draw_single_subplot(ax, inner_data, testcase, ecc_state, rule, x_min, x_max, use_raw_metric=False):
     """在指定的坐标轴 (ax) 上绘制单个折线图"""
     ecc_str = str(ecc_state).strip().upper()
     if 'ON' in ecc_str:
@@ -131,15 +133,17 @@ def draw_single_subplot(ax, inner_data, testcase, ecc_state, rule, x_min, x_max)
         raw_color, line_color = 'silver', 'black'
 
     ax.plot(inner_data['date'], inner_data['metric_percent'],
-            marker='o', linestyle='-', color=raw_color, alpha=0.4, label='Raw %')
+            marker='o', linestyle='-', color=raw_color, alpha=0.4,
+            label='Raw Metric' if use_raw_metric else 'Raw %')
     ax.plot(inner_data['date'], inner_data['centered_ma'],
             marker='', linestyle='-', color=line_color, linewidth=2.5, label='7-Pt Centered MA')
 
     ax.set_title(f'{testcase} | ECC: {ecc_state} (Rule: {rule})', fontsize=12, fontweight='bold')
     ax.set_xlabel('Date', fontsize=10)
-    ax.set_ylabel('Normalized Metric (%)', fontsize=10)
+    ax.set_ylabel('Metric (raw)' if use_raw_metric else 'Normalized Metric (%)', fontsize=10)
 
-    ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1.0))
+    if not use_raw_metric:
+        ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1.0))
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
     ax.tick_params(axis='x', rotation=45)
 
@@ -195,8 +199,12 @@ def generate_performance_dashboards(localhost, username, password, database, app
 
         for i, ((testcase, ecc_state), group_data) in enumerate(valid_inner_groups):
             ax = axes[i]
-            processed_data, rule = calculate_normalized_ema(group_data)
-            draw_single_subplot(ax, processed_data, testcase, ecc_state, rule, x_min, x_max)
+            use_raw_metric = testgroup.lower() == 'vkfft'
+            processed_data, rule = calculate_normalized_ema(group_data, use_raw_metric)
+            use_raw_metric = use_raw_metric and rule == 'min'
+            draw_single_subplot(
+                ax, processed_data, testcase, ecc_state, rule, x_min, x_max, use_raw_metric
+            )
 
         # 即使删除了多余的网格, 所在的占位依然存在, 从而保证页面严格等于设置的宽幅
         for j in range(num_plots, len(axes)):
