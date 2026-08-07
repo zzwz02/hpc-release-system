@@ -502,7 +502,7 @@ function payloadTwoReleases(): StatePayload {
   return makePayload({ releases: twoReleaseSummaries() });
 }
 
-function makeNewAppDecisionPreview(decision: "release" | "cicd_only" = "release") {
+function makeNewAppDecisionPreview(decision: "release" | "cicd_only" = "cicd_only") {
   return {
     decision,
     scope: "current_and_later" as const,
@@ -525,6 +525,11 @@ function makeNewAppDecisionPreview(decision: "release" | "cicd_only" = "release"
       },
     ],
   };
+}
+
+function newAppDecisionPreviewForBody(body: unknown) {
+  const requested = (body as { release_decision?: unknown } | null)?.release_decision;
+  return makeNewAppDecisionPreview(requested === "release" ? "release" : "cicd_only");
 }
 
 async function enterEditOnApp1(): Promise<void> {
@@ -1796,19 +1801,20 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
 
     const decision = await screen.findByTestId("new-app-release-decision") as HTMLSelectElement;
     expect(Array.from(decision.options).map((option) => option.text)).toEqual(["release", "cicd-only"]);
-    expect(decision.value).toBe("release");
+    expect(decision.value).toBe("cicd_only");
     expect(decision.closest(".new-app-community-decision-grid")?.textContent).toContain("开发者社区产物");
     expect(screen.getByTestId("new-app-dialog").textContent).toContain("影响 SPD 编排 CICD 构建任务顺序");
   });
 
-  it("RM sees direct-create escape-hatch button", async () => {
+  it("RM does not see the removed direct-create escape hatch", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
     const qc = makeQueryClient();
     renderPage(qc);
     await waitFor(() => screen.getByTestId("new-app-btn"));
     fireEvent.click(screen.getByTestId("new-app-btn"));
     await waitFor(() => screen.getByTestId("new-app-dialog"));
-    expect(screen.getByTestId("direct-create-btn")).toBeInTheDocument();
+    expect(screen.queryByTestId("direct-create-btn")).not.toBeInTheDocument();
+    expect(screen.getByTestId("new-app-fetch")).toBeInTheDocument();
   });
 
   it("step 1 fetch → step 2 confirm → submits official_name to POST /api/cicd/apps/new", async () => {
@@ -1828,8 +1834,8 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
       commit_id: "abc123def456",
       parsed: { version: "3.7.0", x86_chips: "C500", build_os: "kylin" },
     };
-    const postMock = vi.fn().mockImplementation(async (url: string) => {
-      if (url.includes("decision-preview")) return makeNewAppDecisionPreview("release");
+    const postMock = vi.fn().mockImplementation(async (url: string, body?: unknown) => {
+      if (url.includes("decision-preview")) return newAppDecisionPreviewForBody(body);
       if (url.includes("fetch-preview")) return mockPreview;
       return { ok: true, app_id: "new-app-1", request_id: 1 };
     });
@@ -1845,6 +1851,7 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     fireEvent.change(repoInput, { target: { value: "myrepo" } });
     const branchInput = screen.getByLabelText(/分支 /);
     fireEvent.change(branchInput, { target: { value: "main" } });
+    fireEvent.change(screen.getByTestId("new-app-release-decision"), { target: { value: "release" } });
     // Click fetch
     fireEvent.click(screen.getByTestId("new-app-fetch"));
     // Step 2 preview should appear with fetched data
@@ -1890,8 +1897,8 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
 
   it("fetch error → shows skip button → skips to POST /api/cicd/apps/new directly", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
-    const postMock = vi.fn().mockImplementation(async (url: string) => {
-      if (url.includes("decision-preview")) return makeNewAppDecisionPreview("release");
+    const postMock = vi.fn().mockImplementation(async (url: string, body?: unknown) => {
+      if (url.includes("decision-preview")) return newAppDecisionPreviewForBody(body);
       if (url.includes("fetch-preview")) throw new Error("Gerrit not reachable");
       return { ok: true, app_id: "new-app-2", request_id: 2 };
     });
@@ -1920,8 +1927,8 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
 
   it("duplicate Gerrit identity blocks skip creation", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    const postMock = vi.fn().mockImplementation(async (url: string) => {
-      if (url.includes("decision-preview")) return makeNewAppDecisionPreview("release");
+    const postMock = vi.fn().mockImplementation(async (url: string, body?: unknown) => {
+      if (url.includes("decision-preview")) return newAppDecisionPreviewForBody(body);
       if (url.includes("fetch-preview")) {
         throw new Error("该 Gerrit URL + branch 已存在 app（aaa），请使用 aaa 名称重新申请，不能重复创建");
       }
@@ -1956,8 +1963,8 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
       cicd_onboarding_review_note: "上次被拒绝",
     };
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
-    const postMock = vi.fn().mockImplementation(async (url: string) => {
-      if (url.includes("decision-preview")) return makeNewAppDecisionPreview("release");
+    const postMock = vi.fn().mockImplementation(async (url: string, body?: unknown) => {
+      if (url.includes("decision-preview")) return newAppDecisionPreviewForBody(body);
       if (url.includes("fetch-preview")) {
         return {
           git_url: "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_aa",
@@ -2031,8 +2038,8 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
 
   it("fetch-error step shows derived git_url@branch for a git-type repo", async () => {
     // Gerrit fetch throws (network unreachable)
-    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
-      if (url.includes("decision-preview")) return makeNewAppDecisionPreview("release");
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string, body?: unknown) => {
+      if (url.includes("decision-preview")) return newAppDecisionPreviewForBody(body);
       if (url.includes("fetch-preview")) throw new Error("Gerrit not reachable");
       return { ok: true, app_id: "x1", request_id: 1 };
     });
@@ -2058,8 +2065,8 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
   });
 
   it("fetch-error step shows '需联网解析' for repo-type (manifest needs network)", async () => {
-    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
-      if (url.includes("decision-preview")) return makeNewAppDecisionPreview("release");
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string, body?: unknown) => {
+      if (url.includes("decision-preview")) return newAppDecisionPreviewForBody(body);
       if (url.includes("fetch-preview")) throw new Error("Gerrit not reachable");
       return { ok: true, app_id: "x2", request_id: 2 };
     });
@@ -2099,8 +2106,8 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
       commit_id: "deadbeef1234",
       parsed: { version: "4.0.1" },
     };
-    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
-      if (url.includes("decision-preview")) return makeNewAppDecisionPreview("release");
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string, body?: unknown) => {
+      if (url.includes("decision-preview")) return newAppDecisionPreviewForBody(body);
       if (url.includes("fetch-preview")) return mockPreview;
       return { ok: true, app_id: "x3", request_id: 3 };
     });
@@ -2132,8 +2139,8 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
       app_info_error: "Gerrit archive fetch failed: 502",
       // No content fields (app_version, x86_chips, etc.) — unavailable
     };
-    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
-      if (url.includes("decision-preview")) return makeNewAppDecisionPreview("release");
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string, body?: unknown) => {
+      if (url.includes("decision-preview")) return newAppDecisionPreviewForBody(body);
       if (url.includes("fetch-preview")) return partialResponse;
       return { ok: true, app_id: "x4", request_id: 4 };
     });

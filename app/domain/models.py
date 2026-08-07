@@ -97,18 +97,6 @@ class UpdateDeadlinesRequest(BaseModel):
 # Apps / Snapshots
 # ---------------------------------------------------------------------------
 
-class NewAppRequest(BaseModel):
-    """Body for POST /api/apps/new."""
-
-    release_id: str
-    official_name: str
-    git_url: str
-    git_branch: str
-    release_decision: str = "release"
-    doc_target: str = "manual"
-    owner: str  # submitting owner username
-
-
 class UpdateSnapshotRequest(BaseModel):
     """Body for POST /api/apps/update.
 

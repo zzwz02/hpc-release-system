@@ -6,7 +6,7 @@ from app.deps import get_db, require_login
 from app.main import create_app
 
 
-def test_guest_cannot_create_app_via_api(temp_db):
+def test_direct_create_api_is_removed(temp_db):
     app = create_app()
 
     def override_db():
@@ -14,9 +14,9 @@ def test_guest_cannot_create_app_via_api(temp_db):
 
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[require_login] = lambda: {
-        "username": "guest",
-        "role": "Guest",
-        "display_name": "Guest",
+        "username": "rm",
+        "role": "RM",
+        "display_name": "RM",
     }
 
     body = {
@@ -29,4 +29,7 @@ def test_guest_cannot_create_app_via_api(temp_db):
     with TestClient(app, raise_server_exceptions=False) as client:
         resp = client.post("/api/apps/new", json=body)
 
-    assert resp.status_code == 403
+    # The SPA fallback owns unmatched paths and rejects non-GET methods with
+    # 405; OpenAPI absence proves there is no direct-create API handler.
+    assert resp.status_code == 405
+    assert "/api/apps/new" not in app.openapi()["paths"]

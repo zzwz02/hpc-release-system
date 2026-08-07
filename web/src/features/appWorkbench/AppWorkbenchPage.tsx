@@ -6,7 +6,7 @@
  *   right panel = detail editor for the selected app
  *
  * Data: GET /api/state (with optional ?release_id=)
- * Mutations: POST /api/apps/new, /api/apps/update, /api/app-info,
+ * Mutations: POST /api/apps/update, /api/app-info,
  *            /api/app-info/fetch, GET /api/app-audit
  *
  * R2: data moves only via explicit refetch after mutation or manual refresh.
@@ -32,7 +32,7 @@ import { apiGet, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
 import { isRM, isOwner, canCreateApp, canEdit } from "../../lib/roles";
-import { beforeAppFreeze, beforeDocDeadline, releaseLocked, newAppDecisionOptions } from "../../lib/phase";
+import { beforeAppFreeze, beforeDocDeadline, releaseLocked } from "../../lib/phase";
 import { displayName } from "../../lib/identity";
 import {
   GERRIT_HPC_BASE,
@@ -755,7 +755,6 @@ interface NewAppDialogProps {
   initialValues?: NewAppInitialValues | null;
   currentReleaseId: string;
   currentUsername: string;
-  userRole: string;
   onClose: () => void;
   onCreated: (appId: string) => void;
 }
@@ -774,7 +773,7 @@ interface RetryCreateInfo {
   reviewNote: string;
 }
 
-function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentUsername, userRole, onClose, onCreated }: NewAppDialogProps) {
+function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentUsername, onClose, onCreated }: NewAppDialogProps) {
   // ── Wizard state (CICD-first, step 1 → fetch → step 2 confirm) ──────────
   const [officialName, setOfficialName] = useState(initialValues?.officialName ?? "");
   const [repoType, setRepoType] = useState(initialValues?.repoType ?? "git");
@@ -798,25 +797,11 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
   const [derivedGitUrl, setDerivedGitUrl] = useState<string | null>(null);
   const [derivedGitBranch, setDerivedGitBranch] = useState<string>("");
 
-  // ── RM escape-hatch: direct /api/apps/new (no CICD task) ────────────────
-  const [useDirectCreate, setUseDirectCreate] = useState(false);
-  const [directName, setDirectName] = useState("");
-  const [gitUrl, setGitUrl] = useState("");
-  const [gitBranch, setGitBranch] = useState("");
-  const [docTarget, setDocTarget] = useState<"manual" | "ai4sci">("manual");
-  const decisionOpts = newAppDecisionOptions(release);
-  const [decision, setDecision] = useState<string>(decisionOpts[0] ?? "release");
-  const [cicdFirstDecision, setCicdFirstDecision] = useState<"release" | "cicd_only">(
-    beforeAppFreeze(release) ? "release" : "cicd_only",
-  );
+  const [cicdFirstDecision, setCicdFirstDecision] = useState<"release" | "cicd_only">("cicd_only");
   const [newCicdCommunityArtifact, setNewCicdCommunityArtifact] = useState("");
   const [newCicdBuildImage, setNewCicdBuildImage] = useState("");
   const [newCicdTimeout, setNewCicdTimeout] = useState("40");
   const [newCicdNotes, setNewCicdNotes] = useState("");
-  const [directSaving, setDirectSaving] = useState(false);
-  const [directErr, setDirectErr] = useState("");
-
-  const isRM = userRole === "RM";
   const isRepo = repoType === "repo";
   const effectiveBranch = isRepo ? "master" : branch.trim();
 
@@ -1004,121 +989,6 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
       setCreateErrMsg(e instanceof Error ? e.message : "创建失败");
       setStep("preview");
     }
-  }
-
-  async function handleDirectCreate() {
-    if (!directName.trim()) return setDirectErr("请填写官方 app/模型名称");
-    if (!gitUrl.trim()) return setDirectErr("请填写 Gerrit URL");
-    if (!gitBranch.trim()) return setDirectErr("请填写 Branch");
-    setDirectErr("");
-    setDirectSaving(true);
-    try {
-      const r = await apiPost<{ app_id: string }>("/api/apps/new", {
-        release_id: currentReleaseId,
-        official_name: directName.trim(),
-        git_url: gitUrl.trim(),
-        git_branch: gitBranch.trim(),
-        release_decision: decision,
-        doc_target: docTarget,
-        cicd_repo_type: repoType,
-        cicd_community_artifact: newCicdCommunityArtifact,
-        cicd_build_image: newCicdBuildImage,
-        cicd_test_timeout: newCicdTimeout,
-        cicd_notes: newCicdNotes,
-      });
-      onCreated(r.app_id);
-    } catch (e) {
-      setDirectErr(e instanceof Error ? e.message : "创建失败");
-    } finally {
-      setDirectSaving(false);
-    }
-  }
-
-  // ── RM escape-hatch render ───────────────────────────────────────────────
-  if (useDirectCreate && isRM) {
-    return (
-      <div className="dialog-backdrop" data-testid="new-app-dialog">
-        <div className="dialog-box">
-          <div className="dialog-head"><h3>直连创建 App（RM 快捷通道）</h3></div>
-          <div className="dialog-body">
-            <div className="banner mb-8 fs-12">
-              ⚠️ 直连创建绕过 CICD-first 流程，App 初始不关联 CICD 任务。
-            </div>
-            <div className="form">
-              <label>官方名称 <span className="required">*</span>
-                <input className="input" value={directName} onChange={(e) => setDirectName(e.target.value)} data-testid="new-app-name" />
-              </label>
-              <label>Gerrit URL
-                <input className="input" value={gitUrl} onChange={(e) => setGitUrl(e.target.value)} />
-              </label>
-              <label>Branch
-                <input className="input" value={gitBranch} onChange={(e) => setGitBranch(e.target.value)} />
-              </label>
-              <label>仓库类型
-                <select className="select" value={repoType} onChange={(e) => setRepoType(e.target.value)}>
-                  {CICD_REPO_TYPE_OPTIONS.map((value) => (
-                    <option key={value} value={value}>{value}</option>
-                  ))}
-                </select>
-              </label>
-              <div className="new-app-community-decision-grid">
-                <div>
-                  <div className="field-label">开发者社区产物</div>
-                  <div className="row gap-12 wrap">
-                    {CICD_COMMUNITY_ARTIFACT_OPTIONS.map(({ value, label }) => (
-                      <label key={value} className="check">
-                        <input
-                          type="checkbox"
-                          checked={communityArtifactList(newCicdCommunityArtifact).includes(value)}
-                          onChange={() => setNewCicdCommunityArtifact(toggleCommunityArtifact(newCicdCommunityArtifact, value))}
-                        />{" "}
-                        {label}
-                      </label>
-                    ))}
-                  </div>
-                </div>
-                <label>Release 决策
-                  <select className="select" value={decision} onChange={(e) => setDecision(e.target.value)}>
-                    {decisionOpts.map((v) => (
-                      <option key={v} value={v}>{releaseDecisionLabels[v]}</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <label><BuildImageLabel />
-                <input className="input" value={newCicdBuildImage} onChange={(e) => setNewCicdBuildImage(e.target.value)} />
-              </label>
-              <label>超时(min)
-                <input className="input" type="number" min={1} step={1} value={newCicdTimeout} onChange={(e) => setNewCicdTimeout(normalizeTimeoutText(e.target.value))} />
-              </label>
-              <label>备注
-                <input className="input" value={newCicdNotes} onChange={(e) => setNewCicdNotes(e.target.value)} />
-              </label>
-              <label>类型
-                <select className="select" value={docTarget} onChange={(e) => setDocTarget(e.target.value as "manual" | "ai4sci")}>
-                  {docTargetOptions.map((v) => (
-                    <option key={v} value={v}>{docTargetLabels[v]}</option>
-                  ))}
-                </select>
-              </label>
-              {!beforeAppFreeze(release) && (
-                <p className="hint warn-text">
-                  已过 App 冻结 deadline，本 release 不允许以 release 状态新增 app。
-                </p>
-              )}
-            </div>
-            {directErr && <p className="lerr">{directErr}</p>}
-          </div>
-          <div className="dialog-actions">
-            <button className="btn ghost sm mr-auto" onClick={() => setUseDirectCreate(false)}>← 返回 CICD-first</button>
-            <button className="btn" onClick={onClose}>取消</button>
-            <button className="btn primary" onClick={() => void handleDirectCreate()} disabled={directSaving}>
-              {directSaving ? "创建中…" : "直连创建"}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
   }
 
   // ── Step 2: preview confirmation ─────────────────────────────────────────
@@ -1343,12 +1213,6 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
           {fetchErrMsg && <p className="lerr">{fetchErrMsg}</p>}
         </div>
         <div className="dialog-actions">
-          {isRM && (
-            <button className="btn ghost sm mr-auto" onClick={() => setUseDirectCreate(true)}
-              data-testid="direct-create-btn" disabled={isFetching}>
-              RM 直连创建 ↗
-            </button>
-          )}
           <button className="btn" onClick={onClose} disabled={isFetching}>取消</button>
           <button className="btn primary" onClick={() => void handleFetch()} disabled={isFetching} data-testid="new-app-fetch">
             {isFetching ? "拉取中…" : "拉取 Gerrit 信息 →"}
@@ -3303,7 +3167,6 @@ export function AppWorkbenchPage() {
           initialValues={newAppInitialValues}
           currentReleaseId={release.id}
           currentUsername={user?.username ?? ""}
-          userRole={user?.role ?? ""}
           onClose={() => { setShowNewApp(false); setNewAppInitialValues(null); }}
           onCreated={handleNewAppCreated}
         />

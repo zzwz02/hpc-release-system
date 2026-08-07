@@ -588,8 +588,8 @@ test.describe("W3 App 工作台 sub-tabs", () => {
     const releaseDecision = page.locator('[data-testid="new-app-release-decision"]');
     await expect(releaseDecision).toBeVisible();
     await expect(releaseDecision.locator("option")).toHaveText(["release", "cicd-only"]);
-    // RM escape hatch should be visible
-    await expect(page.locator('[data-testid="direct-create-btn"]')).toBeVisible();
+    await expect(releaseDecision).toHaveValue("cicd_only");
+    await expect(page.locator('[data-testid="direct-create-btn"]')).toHaveCount(0);
   });
 
   test("W3 CICD-first wizard: fetch fails → skip → creates pending request", async ({ page }) => {

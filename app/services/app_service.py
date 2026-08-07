@@ -271,7 +271,7 @@ def get_app_audit(
 
 
 # ---------------------------------------------------------------------------
-# New app (for POST /api/apps/new)
+# New-app persistence shared by the CICD-first workflow
 # ---------------------------------------------------------------------------
 
 def _initial_snapshot_for_future_release(
@@ -383,36 +383,6 @@ def add_new_app_request(
                     release_id=target_release_id, event="sync_app",
                 )
     return app_id
-
-
-def add_new_app(
-    conn: sqlite3.Connection,
-    *,
-    release_id: str,
-    user: str,
-    **payload,
-) -> dict:
-    """Add a new app to a release (find-or-create with git identity dedup).
-
-    Mirrors server.py:759-773. Returns {"app_id": app_id}.
-    """
-    app_id = add_new_app_request(
-        conn,
-        release_id,
-        official_name=payload["official_name"],
-        git_url=payload["git_url"],
-        git_branch=payload["git_branch"],
-        release_decision=payload["release_decision"],
-        owner=user,
-        doc_target=payload.get("doc_target", "manual"),
-    )
-    apps_repo.update_cicd_config(
-        conn,
-        app_id,
-        {key: payload.get(key, "") for key in CICD_APP_CONFIG_FIELDS},
-    )
-    conn.commit()
-    return {"app_id": app_id}
 
 
 # ---------------------------------------------------------------------------

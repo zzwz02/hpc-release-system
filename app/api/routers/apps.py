@@ -2,7 +2,6 @@
 
 Faithful port of server.py POST handlers at paths:
   /api/app-audit    (GET — shares /api prefix, lives here)
-  /api/apps/new
   /api/apps/update
   /api/app-info
   /api/app-info/fetch
@@ -18,7 +17,6 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, Query
 
-from app.api.errors import AuthzError
 from app.deps import get_db, require_login
 from app.services import app_service, release_reads
 
@@ -50,41 +48,6 @@ def api_app_audit(
         role=user["role"],
     )
     return {"entries": entries}
-
-
-# ---------------------------------------------------------------------------
-# POST /api/apps/new
-# ---------------------------------------------------------------------------
-
-@router.post("/api/apps/new")
-def api_apps_new(
-    body: dict,
-    user: dict = Depends(require_login),
-    conn: sqlite3.Connection = Depends(get_db),
-) -> dict:
-    """Create a new app request in a release.
-
-    Mirrors server.py:759-773.
-    Only Owner or RM can submit.
-    """
-    if user["role"] not in {"Owner", "RM"}:
-        raise AuthzError("Only Owner or RM can submit new app requests")
-    result = app_service.add_new_app(
-        conn,
-        release_id=body["release_id"],
-        user=user["username"],
-        official_name=body["official_name"],
-        git_url=body["git_url"],
-        git_branch=body["git_branch"],
-        release_decision=body["release_decision"],
-        doc_target=body.get("doc_target", "manual"),
-        cicd_repo_type=body.get("cicd_repo_type", ""),
-        cicd_community_artifact=body.get("cicd_community_artifact", ""),
-        cicd_build_image=body.get("cicd_build_image", ""),
-        cicd_test_timeout=body.get("cicd_test_timeout", ""),
-        cicd_notes=body.get("cicd_notes", ""),
-    )
-    return result
 
 
 # ---------------------------------------------------------------------------
