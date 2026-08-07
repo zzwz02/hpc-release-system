@@ -585,6 +585,9 @@ test.describe("W3 App 工作台 sub-tabs", () => {
     // Step 1 fields visible
     await expect(page.locator('[data-testid="new-app-name"]')).toBeVisible();
     await expect(page.locator('[data-testid="new-app-fetch"]')).toBeVisible();
+    const releaseDecision = page.locator('[data-testid="new-app-release-decision"]');
+    await expect(releaseDecision).toBeVisible();
+    await expect(releaseDecision.locator("option")).toHaveText(["release", "cicd-only"]);
     // RM escape hatch should be visible
     await expect(page.locator('[data-testid="direct-create-btn"]')).toBeVisible();
   });
@@ -727,7 +730,7 @@ test.describe("W4 wizard derived-identity display", () => {
     await page.fill('[data-testid="new-app-name"]', `e2e-w4-repo-${Date.now()}`);
     // Switch to repo type — scope to dialog to avoid hitting the release picker
     const dialog = page.locator('[data-testid="new-app-dialog"]');
-    await dialog.locator("select").selectOption("repo");
+    await dialog.locator('select:not([data-testid="new-app-release-decision"])').selectOption("repo");
     await dialog.locator('[data-testid="new-app-repo-name"]').fill("manifests/releases/maca-4.0.xml");
 
     // Trigger fetch — immediately 502 via route mock

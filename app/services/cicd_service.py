@@ -14,7 +14,9 @@ import sqlite3
 
 from app.db.connection import transaction
 from app.domain import app_info as app_info_domain
+from app.domain import decision_sync as decision_sync_domain
 from app.domain import decisions as decisions_domain
+from app.domain import phases as phase_policy
 from app.domain.textutil import order_chips
 from app.repositories import apps_repo, cicd_repo, releases_repo, snapshots_repo
 from app.repositories.audit_repo import log_audit
@@ -28,6 +30,7 @@ from app.timeutil import beijing_timestamp
 CICD_APPROVER_ROLES: frozenset[str] = frozenset({"RM"})
 CICD_CREATE_ROLES: frozenset[str] = frozenset({"Owner", "RM"})
 CICD_STATUSES: frozenset[str] = frozenset({"Running", "Stopped"})
+CICD_FIRST_RELEASE_DECISIONS: frozenset[str] = frozenset({"release", "cicd_only"})
 
 # Ruling D: release_decision → CICD task status (plan §3.5 b)
 # release/cicd_only → Running; stopped → Stopped (uppercase CICD_STATUSES vocab)
@@ -56,6 +59,7 @@ _APP_BACKED_MUTABLE_FIELDS: frozenset[str] = _APP_CICD_MUTABLE_FIELDS | frozense
 
 _CICD_FIRST_ACTION_FIELD = "_cicd_first_action"
 _CICD_FIRST_TARGET_DECISION_FIELD = "_cicd_first_target_decision"
+_CICD_FIRST_RELEASE_DECISIONS_FIELD = "_cicd_first_release_decisions"
 _DECISION_SYNC_RELEASE_ID_FIELD = "_decision_sync_release_id"
 _DECISION_SYNC_TARGET_DECISION_FIELD = "_decision_sync_target_decision"
 _DECISION_SYNC_DEFERRED_RELEASES_FIELD = "_decision_sync_deferred_releases"
@@ -66,6 +70,7 @@ _INTERNAL_PAYLOAD_FIELDS: frozenset[str] = frozenset(
     {
         _CICD_FIRST_ACTION_FIELD,
         _CICD_FIRST_TARGET_DECISION_FIELD,
+        _CICD_FIRST_RELEASE_DECISIONS_FIELD,
         _DECISION_SYNC_RELEASE_ID_FIELD,
         _DECISION_SYNC_TARGET_DECISION_FIELD,
         _DECISION_SYNC_DEFERRED_RELEASES_FIELD,
@@ -723,6 +728,19 @@ def _apply_cicd_request(
     cicd_first_target_decision = str(
         payload.pop(_CICD_FIRST_TARGET_DECISION_FIELD, "cicd_only") or "cicd_only"
     )
+    raw_cicd_first_release_decisions = payload.pop(
+        _CICD_FIRST_RELEASE_DECISIONS_FIELD,
+        {},
+    )
+    cicd_first_release_decisions = (
+        raw_cicd_first_release_decisions
+        if isinstance(raw_cicd_first_release_decisions, dict)
+        else {}
+    )
+    if cicd_first_action:
+        # Public planning metadata carried by CICD-first requests; the internal
+        # target above remains authoritative when the request is applied.
+        payload.pop("release_decision", None)
     decision_sync_release_id = str(payload.pop(_DECISION_SYNC_RELEASE_ID_FIELD, "") or "")
     decision_sync_target_decision = str(
         payload.pop(_DECISION_SYNC_TARGET_DECISION_FIELD, "") or ""
@@ -765,7 +783,12 @@ def _apply_cicd_request(
             )
             cicd_repo.set_request_task_id(conn, req_id, app_id)
             if cicd_first_action == _CICD_FIRST_ACTION_CREATED:
-                _activate_created_cicd_first_app(conn, app_id, cicd_first_target_decision)
+                _activate_created_cicd_first_app(
+                    conn,
+                    app_id,
+                    cicd_first_target_decision,
+                    release_decisions=cicd_first_release_decisions,
+                )
             return app_id
         raise RuntimeError("CICD 创建申请缺少有效 app_id")
     else:
@@ -970,6 +993,16 @@ def _open_cicd_create_for_app(
         (app_id,),
     ).fetchall()
     return dict(rows[0]) if rows else None
+
+
+def ensure_no_open_cicd_create_request(conn: sqlite3.Connection, app_id: str) -> None:
+    """Keep a submitted CICD-first release decision fixed until create closes."""
+    open_create = _open_cicd_create_for_app(conn, app_id)
+    if open_create:
+        raise RuntimeError(
+            f"该 app 已有 CICD 新建申请 #{open_create['id']} 未完成，"
+            "请等待新建申请审批/交付完成后再修改 release 决策"
+        )
 
 
 def _open_jira_modify_for_app(
@@ -1265,6 +1298,15 @@ def reject_request(
                 str(req.get("app_id") or req.get("task_id") or ""),
                 payload,
             )
+        if _is_created_cicd_first_request(payload):
+            _rollback_created_cicd_first_app(
+                conn,
+                str(req.get("app_id") or req.get("task_id") or payload.get("app_id") or ""),
+                ts=ts,
+                actor=reviewer,
+                actor_role=reviewer_role,
+                reason=review_note.strip(),
+            )
         conn.execute(
             "UPDATE cicd_task_requests "
             "SET status='rejected', reviewer=?, reviewed_at=?, review_note=? WHERE id=?",
@@ -1302,6 +1344,7 @@ def cancel_request(
     payload = _json.loads(req["payload"] or "{}")
     if _is_release_decision_sync_stop_request(req, payload):
         raise RuntimeError("降停止由 App release 决策决定，CICD 申请不能取消")
+    ts = beijing_timestamp()
     with transaction(conn):
         if _is_release_decision_sync_start_request(req, payload):
             _rollback_deferred_decision_sync(
@@ -1309,9 +1352,18 @@ def cancel_request(
                 str(req.get("app_id") or req.get("task_id") or ""),
                 payload,
             )
+        if _is_created_cicd_first_request(payload):
+            _rollback_created_cicd_first_app(
+                conn,
+                str(req.get("app_id") or req.get("task_id") or payload.get("app_id") or ""),
+                ts=ts,
+                actor=username,
+                actor_role=role,
+                reason="申请取消",
+            )
         conn.execute(
             "UPDATE cicd_task_requests SET status='cancelled', reviewed_at=? WHERE id=?",
-            (beijing_timestamp(), req_id),
+            (ts, req_id),
         )
         row = conn.execute(
             "SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)
@@ -1455,6 +1507,15 @@ def reject_returned_request(
                 conn,
                 str(req.get("app_id") or req.get("task_id") or ""),
                 payload,
+            )
+        if _is_created_cicd_first_request(payload):
+            _rollback_created_cicd_first_app(
+                conn,
+                str(req.get("app_id") or req.get("task_id") or payload.get("app_id") or ""),
+                ts=ts,
+                actor=reviewer,
+                actor_role=reviewer_role,
+                reason=review_note.strip(),
             )
         conn.execute(
             """UPDATE cicd_task_requests
@@ -1885,28 +1946,200 @@ def _apply_onboarding_state_to_tasks(
         if not state or state.get("cicd_onboarding_status") == "active":
             continue
         task.update(state)
-        task["status"] = "Stopped"
+
+
+def _cicd_first_release_decisions(
+    conn: sqlite3.Connection,
+    app_id: str,
+    from_release_id: str,
+    target_decision: str,
+) -> dict[str, str]:
+    """Freeze the per-release planning decisions at request submission."""
+    effective_release_id = from_release_id
+    if not effective_release_id:
+        # Backward compatibility for service/API callers from before the
+        # release-aware create contract: add_new_app_request uses the same
+        # first-unlocked release as its propagation anchor.
+        effective_release_id = next(
+            (
+                str(release["id"])
+                for release in releases_repo.list_release_rows(conn)
+                if not release.get("released_locked")
+            ),
+            "",
+        )
+    preview = preview_cicd_first_release_decisions(
+        conn,
+        release_id=effective_release_id,
+        release_decision=target_decision,
+    )
+    return {
+        str(row["release_id"]): str(row["resulting_decision"])
+        for row in preview["releases"]
+        if not row["skipped"]
+        and snapshots_repo.get_snapshot(conn, str(row["release_id"]), app_id)
+    }
+
+
+def preview_cicd_first_release_decisions(
+    conn: sqlite3.Connection,
+    *,
+    release_id: str,
+    release_decision: str,
+) -> dict:
+    """Dry-run CICD-first decisions for the selected and later releases."""
+    decision = decisions_domain.normalize_release_decision(
+        release_decision or "cicd_only"
+    )
+    if decision not in CICD_FIRST_RELEASE_DECISIONS:
+        raise ValueError("CICD-first release_decision 只能是 release 或 cicd_only")
+    releases = releases_repo.list_release_rows(conn)
+    index = next(
+        (idx for idx, release in enumerate(releases) if release["id"] == release_id),
+        None,
+    )
+    if index is None:
+        raise ValueError(f"Release 不存在：{release_id}")
+    selected_release = releases[index]
+    intended_action = (
+        "new_app_release" if decision == "release" else "new_app_non_release"
+    )
+    if not phase_policy.can(selected_release, intended_action):
+        if decision == "release":
+            raise RuntimeError("已过 app 冻结 deadline，不可新增 release 决策的 app")
+        raise RuntimeError("当前阶段不允许新增 app")
+
+    rows: list[dict] = []
+    for release in releases[index:]:
+        phase = phase_policy.current_phase(release)
+        if release.get("released_locked"):
+            rows.append(
+                {
+                    "release_id": release["id"],
+                    "release_name": release["name"],
+                    "phase_label": decision_sync_domain.phase_label(phase),
+                    "resulting_decision": None,
+                    "skipped": True,
+                    "reason": "已最终锁定",
+                    "is_current": release["id"] == release_id,
+                }
+            )
+            continue
+        rows.append(
+            {
+                "release_id": release["id"],
+                "release_name": release["name"],
+                "phase_label": decision_sync_domain.phase_label(phase),
+                "resulting_decision": decision_sync_domain.resolve_synced_decision(
+                    decision,
+                    phase,
+                ),
+                "skipped": False,
+                "is_current": release["id"] == release_id,
+            }
+        )
+    return {"decision": decision, "releases": rows, "scope": "current_and_later"}
 
 
 def _activate_created_cicd_first_app(
     conn: sqlite3.Connection,
     app_id: str,
     target_decision: str,
+    *,
+    release_decisions: dict[str, str] | None = None,
 ) -> None:
-    """Make a CICD-first-created app active after its create request applies."""
+    """Expose submission-time per-release decisions while creation is pending.
+
+    Each propagated release is gated independently at submission.  The stored
+    mapping is replayed on approval/delivery, so later deadline crossings never
+    recalculate or downgrade a decision that was valid when submitted.
+    """
     decision = decisions_domain.normalize_release_decision(target_decision or "cicd_only")
-    if decision not in {"release", "cicd_only", "stopped"}:
+    if decision not in CICD_FIRST_RELEASE_DECISIONS:
         decision = "cicd_only"
+    app = apps_repo.get_app(conn, app_id) or {}
+    from app.services import app_service as _app_service
+
+    releases = releases_repo.list_release_rows(conn)
+    if release_decisions:
+        planned = {
+            str(release_id): decisions_domain.normalize_release_decision(value)
+            for release_id, value in release_decisions.items()
+            if decisions_domain.normalize_release_decision(value)
+            in CICD_FIRST_RELEASE_DECISIONS
+        }
+    else:
+        # Backward compatibility for requests submitted before the per-release
+        # planning map existed: preserve the already accepted single decision.
+        planned = {str(rel["id"]): decision for rel in releases}
+
+    for rel in releases:
+        if rel.get("released_locked"):
+            continue
+        release_id = str(rel["id"])
+        planned_decision = planned.get(release_id)
+        if not planned_decision:
+            continue
+        snap = snapshots_repo.get_snapshot(conn, release_id, app_id)
+        if not snap:
+            continue
+        snap["release_decision"] = planned_decision
+        snap["missing_items"] = _app_service._missing_items_for(app, snap)
+        snapshots_repo.save_snapshot(conn, release_id, app_id, snap)
+
+
+def _rollback_created_cicd_first_app(
+    conn: sqlite3.Connection,
+    app_id: str,
+    *,
+    ts: str,
+    actor: str,
+    actor_role: str,
+    reason: str,
+) -> None:
+    """Return a rejected/cancelled CICD-first placeholder to ``stopped``."""
+    app = apps_repo.get_app(conn, app_id) or {}
+    from app.services import app_service as _app_service
+
     for rel in releases_repo.list_release_rows(conn):
         if rel.get("released_locked"):
             continue
         snap = snapshots_repo.get_snapshot(conn, rel["id"], app_id)
         if not snap:
             continue
-        if snap.get("release_decision") == decision:
-            continue
-        snap["release_decision"] = decision
+        old_decision = snap.get("release_decision")
+        snap["release_decision"] = "stopped"
+        snap["missing_items"] = _app_service._missing_items_for(app, snap)
         snapshots_repo.save_snapshot(conn, rel["id"], app_id, snap)
+        if old_decision != "stopped":
+            log_audit(
+                conn,
+                f"CICD-first 申请未生效，release 决策回滚：{old_decision} -> stopped",
+                ts=ts,
+                user=actor,
+                role=actor_role,
+                app_id=app_id,
+                release_id=rel["id"],
+                event="rollback_cicd_first_decision",
+                detail=[
+                    {
+                        "field": "release_decision",
+                        "label": "release 决策",
+                        "old": old_decision,
+                        "new": "stopped",
+                    },
+                    {
+                        "field": "reason",
+                        "label": "原因",
+                        "old": "",
+                        "new": reason,
+                    },
+                ],
+            )
+
+
+def _is_created_cicd_first_request(payload: dict) -> bool:
+    return payload.get(_CICD_FIRST_ACTION_FIELD) == _CICD_FIRST_ACTION_CREATED
 
 
 def preview_cicd_app_info(
@@ -2218,6 +2451,8 @@ def cicd_first_new_app(
     submitter_role: str,
     submitter_display: str = "",
     payload: dict,
+    release_id: str = "",
+    release_decision: str = "cicd_only",
     app_info_parsed: dict | None = None,
     app_info_commit_id: str = "",
 ) -> dict:
@@ -2228,7 +2463,8 @@ def cicd_first_new_app(
     manifests) which MUST run OUTSIDE the write transaction.
 
     One outer transaction wraps:
-      - app row + initial snapshot(stopped) in all unlocked releases
+      - app row + initial snapshot in the selected and future unlocked releases,
+        immediately using the Owner's requested release/cicd_only decision for QA planning
         (OR: locate an existing app by canonical identity, skip creation)
       - optional app_info attachment to all unlocked snapshots (when
         app_info_parsed is provided — sets owner_confirmed=True)
@@ -2243,7 +2479,8 @@ def cicd_first_new_app(
         → reject "该 app 已有 CICD 任务"
       - derived identity matches existing app without an active CICD create flow
         → create pending create request for that app
-      - no existing app → create new app + initial stopped snapshots
+      - no existing app → create new app, then expose the submitted decision
+        while CICD onboarding remains pending
 
     Optional app_info:
       - app_info_parsed: full parsed dict from preview_cicd_app_info()
@@ -2260,6 +2497,25 @@ def cicd_first_new_app(
     # ------------------------------------------------------------------
     if submitter_role not in CICD_CREATE_ROLES:
         raise PermissionError("只有 Owner、RM 可以发起 CICD-first 建 app")
+
+    target_decision = decisions_domain.normalize_release_decision(
+        release_decision or "cicd_only"
+    )
+    if target_decision not in CICD_FIRST_RELEASE_DECISIONS:
+        raise ValueError("CICD-first release_decision 只能是 release 或 cicd_only")
+    if target_decision == "release" and not release_id:
+        raise ValueError("选择 release 决策时必须提供 release_id")
+    if release_id:
+        selected_release = releases_repo.get_release_row(conn, release_id)
+        if not selected_release:
+            raise ValueError(f"Release 不存在：{release_id}")
+        intended_action = (
+            "new_app_release" if target_decision == "release" else "new_app_non_release"
+        )
+        if not phase_policy.can(selected_release, intended_action):
+            if target_decision == "release":
+                raise RuntimeError("已过 app 冻结 deadline，不可新增 release 决策的 app")
+            raise RuntimeError("当前阶段不允许新增 app")
 
     official_name = (official_name or "").strip()
     if not official_name:
@@ -2325,14 +2581,16 @@ def cicd_first_new_app(
                 cicd_first_action = _CICD_FIRST_ACTION_ASSOCIATED
 
         else:
-            # ---- No existing app: create new app + initial stopped snapshots ----
-            # Find anchor release (first unlocked) so add_new_app_request can
-            # propagate the snapshot to it and all subsequent unlocked releases.
+            # ---- No existing app: create snapshots with the submitted
+            # planning decision before this transaction commits. ----
+            # Use the release selected in the App workbench as the propagation
+            # anchor.  Legacy service callers that omit it retain the prior
+            # first-unlocked fallback.
             releases = releases_repo.list_release_rows(conn)
             unlocked = [r for r in releases if not r.get("released_locked")]
             if not unlocked:
                 raise RuntimeError("没有可用的未锁定 release，无法创建 app")
-            anchor_release_id = unlocked[0]["id"]
+            anchor_release_id = release_id or unlocked[0]["id"]
 
             # Reuse the single dedup gate (git_url/git_branch unique check +
             # id allocation + current/future release forward-sync).  Its inner
@@ -2347,7 +2605,7 @@ def cicd_first_new_app(
                 official_name=official_name,
                 git_url=stored_url,
                 git_branch=stored_branch,
-                release_decision="stopped",
+                release_decision=target_decision,
                 owner=submitter,
                 doc_target="manual",
             )
@@ -2388,6 +2646,24 @@ def cicd_first_new_app(
             },
         )
 
+        # The Owner's decision is effective for release/QA planning as soon as
+        # the request is submitted.  CICD readiness remains separate and is
+        # surfaced through cicd_onboarding_status until approval/delivery.
+        release_decisions: dict[str, str] = {}
+        if cicd_first_action == _CICD_FIRST_ACTION_CREATED:
+            release_decisions = _cicd_first_release_decisions(
+                conn,
+                app_id,
+                release_id,
+                target_decision,
+            )
+            _activate_created_cicd_first_app(
+                conn,
+                app_id,
+                target_decision,
+                release_decisions=release_decisions,
+            )
+
         # ---- Create pending CICD 'create' request (Ruling B: always pending) ----
         # After the app-backed cutover, app_id is the canonical request relation
         # and task_id stores the same app id for the existing API field.
@@ -2395,17 +2671,19 @@ def cicd_first_new_app(
             "app_name": request_app_name,
             "app_id": app_id,                            # internal linkage field
             _CICD_FIRST_ACTION_FIELD: cicd_first_action,
-            _CICD_FIRST_TARGET_DECISION_FIELD: "cicd_only",
+            _CICD_FIRST_TARGET_DECISION_FIELD: target_decision,
+            _CICD_FIRST_RELEASE_DECISIONS_FIELD: release_decisions,
             "repo_type": repo_type,
             "repo_name": repo_name,
             "branch": branch,
+            "release_decision": target_decision,
             "app_version": payload.get("app_version", ""),
             "build_product": payload.get("build_product", []),
             "community_artifact": payload.get("community_artifact", []),
             "build_image": payload.get("build_image", ""),
             "test_timeout": _test_timeout_value(payload.get("test_timeout")),
             "owner_username": submitter,
-            "status": "Running",  # initial task status — aligned with cicd_only decision
+            "status": "Running",  # release and cicd_only both map to Running
             "notes": payload.get("notes", ""),
         }
 

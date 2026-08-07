@@ -219,12 +219,40 @@ export function fetchCicdPreview(body: FetchPreviewPayload): Promise<FetchPrevie
   return apiPost<FetchPreviewResponse>("/api/cicd/apps/fetch-preview", body);
 }
 
+export interface CicdFirstDecisionPreviewRow {
+  release_id: string;
+  release_name: string;
+  phase_label: string;
+  resulting_decision: "release" | "cicd_only" | null;
+  skipped: boolean;
+  reason?: string;
+  is_current: boolean;
+}
+
+export interface CicdFirstDecisionPreviewResponse {
+  decision: "release" | "cicd_only";
+  releases: CicdFirstDecisionPreviewRow[];
+  scope: "current_and_later";
+}
+
+export function fetchCicdFirstDecisionPreview(body: {
+  release_id: string;
+  release_decision: "release" | "cicd_only";
+}): Promise<CicdFirstDecisionPreviewResponse> {
+  return apiPost<CicdFirstDecisionPreviewResponse>(
+    "/api/cicd/apps/new/decision-preview",
+    body,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // POST — CICD-first app creation (Wave 3)
 // ---------------------------------------------------------------------------
 
 export interface CicdFirstNewAppPayload {
   release_id: string;
+  /** Owner decision visible immediately while CICD approval/delivery is pending. */
+  release_decision: "release" | "cicd_only";
   /** Human-readable name stored in apps table — required by backend (cicd_service.cicd_first_new_app). */
   official_name: string;
   /** Optional CICD-task display name; defaults to official_name server-side when omitted/empty. */

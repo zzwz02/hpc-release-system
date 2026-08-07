@@ -106,6 +106,7 @@ const FIELD_LABEL: Record<string, string> = {
   repo_type: "仓库类型",
   repo_name: "仓库名",
   branch: "分支",
+  release_decision: "Release 决策",
   build_product: "构建产物",
   community_artifact: "开发者社区产物",
   build_image: "构建依赖镜像",

@@ -196,7 +196,9 @@ class CicdFirstNewAppRequest(BaseModel):
     repo_type: str = "git"
     repo_name: str
     branch: str
+    official_name: str
     app_name: str
+    release_decision: str = "cicd_only"
     build_product: list[Any] = []
     community_artifact: list[Any] = []
     build_image: str = ""

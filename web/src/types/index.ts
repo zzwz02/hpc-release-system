@@ -457,6 +457,7 @@ export interface CicdMarkVisitedResponse {
 export interface QaReportRowMeta {
   release_decision: ReleaseDecision;
   is_release: boolean;
+  cicd_pending?: boolean;
 }
 
 export interface QaReportTable {

@@ -150,6 +150,82 @@ class TestFakeAppInfoPreview:
 
 
 class TestCicdFirstHttpLifecycle:
+    def test_http_decision_preview_is_read_only(self, db_path, tmp_dir):
+        _seed_db(db_path, tmp_dir)
+        conn = app_connect(db_path)
+        try:
+            app_count_before = conn.execute("SELECT COUNT(*) FROM apps").fetchone()[0]
+            request_count_before = conn.execute(
+                "SELECT COUNT(*) FROM cicd_task_requests"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        with _make_client(db_path, role="Owner", username="owner") as client:
+            release_id = client.get("/api/state").json()["release"]["id"]
+            resp = client.post(
+                "/api/cicd/apps/new/decision-preview",
+                json={"release_id": release_id, "release_decision": "release"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["decision"] == "release"
+        assert body["scope"] == "current_and_later"
+        assert body["releases"] == [
+            {
+                "release_id": release_id,
+                "release_name": body["releases"][0]["release_name"],
+                "phase_label": body["releases"][0]["phase_label"],
+                "resulting_decision": "release",
+                "skipped": False,
+                "is_current": True,
+            }
+        ]
+
+        conn = app_connect(db_path)
+        try:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM apps"
+            ).fetchone()[0] == app_count_before
+            assert conn.execute(
+                "SELECT COUNT(*) FROM cicd_task_requests"
+            ).fetchone()[0] == request_count_before
+        finally:
+            conn.close()
+
+    def test_http_create_carries_release_decision_into_pending_state(self, db_path, tmp_dir):
+        _seed_db(db_path, tmp_dir)
+
+        with _make_client(db_path, role="RM", username="rm") as client:
+            release_id = client.get("/api/state").json()["release"]["id"]
+            create_resp = client.post(
+                "/api/cicd/apps/new",
+                json={
+                    **_CREATE_BODY,
+                    "official_name": "PendingReleaseApp",
+                    "repo_name": "hpc_pending_release",
+                    "release_id": release_id,
+                    "release_decision": "release",
+                },
+            )
+            assert create_resp.status_code == 200
+            created = create_resp.json()
+            app_id = created["app_id"]
+
+            state = client.get(f"/api/state?release_id={release_id}").json()
+            app = next(item for item in state["apps"] if item["id"] == app_id)
+            task = next(
+                item for item in client.get("/api/cicd/tasks").json()["tasks"]
+                if item["app_id"] == app_id
+            )
+
+        assert state["release"]["snapshots"][app_id]["release_decision"] == "release"
+        assert _payload(created["request"])["release_decision"] == "release"
+        assert app["cicd_onboarding_status"] == "pending_create"
+        assert task["status"] == "Running"
+        assert task["cicd_onboarding_status"] == "pending_create"
+
     def test_http_create_and_approve_stay_app_backed(self, db_path, tmp_dir):
         _seed_db(db_path, tmp_dir)
 
@@ -218,7 +294,7 @@ class TestCicdFirstHttpLifecycle:
 
         assert result["request"]["app_id"] == _APP_ID
         snap = core.get_release(temp_db, release_id)["snapshots"][_APP_ID]
-        assert snap["release_decision"] == "stopped"
+        assert snap["release_decision"] == "cicd_only"
         assert snap["owner_confirmed"] is True
         assert snap["version"] == "4.4"
         assert snap["app_info"]["source_type"] == "cicd_workbench"

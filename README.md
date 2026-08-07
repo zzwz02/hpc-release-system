@@ -160,6 +160,7 @@ stateDiagram-v2
 - `stopped -> release/cicd_only` 是升运行：当前 release 以及所有被同步的未锁定 release 决策都要等 CICD immediate apply 或 SPD 交付完成后才真正生效；如果审批被拒绝或取消，release snapshot 保持原决策不变。
 - `release/cicd_only -> stopped` 是降停止：release 决策立即生效；CICD 审批/交付只是把实际运行状态最终停下来，该同步申请不允许拒绝或取消。
 - 任何跨 Running/Stopped 边界的决策变更都会创建 `origin="release_decision_sync"` 的 CICD modify 申请，因此也受 CICD 修改阻塞规则约束；如果同 app 还有未完成的新建申请或带 Jira 的未完成修改申请，则不创建 sync 申请，当前 release snapshot 保持原决策。
+- CICD-first 新建可选择 `release` 或 `cicd_only`。向当前及后续 release 传播时，系统以**提交时点逐个判断每个 release**：尚未 app freeze 的周期保留 `release`，已经 app/doc freeze 的周期落为 `cicd_only`。这组逐周期决策提交后即固定，不会因为 RM 审批或 SPD 交付跨过冻结线而再次降级。
 
 ### 可发布条件
 
@@ -215,7 +216,7 @@ flowchart TD
 - **C — Admin 出局**：Admin 不能提交/审批 CICD，也看不到 CICD 处理页签（仅 RM/SPD 可见）。
 - **D — 决策→状态**：决策联动产生一条 `origin="release_decision_sync"` 的 pending modify 申请；前端在申请列表上以「**同步联动**」徽标与普通构建配置申请（`cicd_workbench`）区分。升运行必须等 CICD immediate apply 或 SPD 交付后，所有受影响 release 才一起生效；降停止由 App owner/RM 的 release 决策立即生效，RM 审批不能拒绝或取消。
 - **A — 状态锁**：用户的 modify 申请**不允许**直接改 `status`；运行/停止只能由 App 决策驱动。CICD 不再有 `Abandoned` 状态，也不提供废弃/退役/删除入口；退役或删除通过 App 业务流程处理。
-- **CICD-first 新建 App**：新建申请待审批/交付期间 app 会保留在 App 工作台；被拒绝或取消后继续保留并显示原因。同一 `(Gerrit URL, branch)` 不能用新名称重复创建；只有使用原 app 名称才能重新提交“新建”CICD 申请。
+- **CICD-first 新建 App**：新建表单可选择 `release` 或 `cicd_only`。Gerrit 拉取完成或失败后，最终确认页都会先列出当前及后续 release 经阶段修正后的发布决策，Owner 再点击「确认并创建」或「跳过，直接创建」。提交后 snapshot 立即展示 Owner 的发布决策，同时保留「CICD 创建待处理」；选择 `release` 时，仅提交时尚未 app freeze 的当前/后续周期进入 QA 标注、Release Report 与 Test 命令并标注「CICD待完成」，已经 app/doc freeze 的周期自动记为 `cicd_only`。逐周期结果提交后即固定，RM 审批或 SPD 交付跨过 app freeze 不再重算；申请被拒绝或取消后 app 继续保留并回滚为 `stopped`，同时显示原因。同一 `(Gerrit URL, branch)` 不能用新名称重复创建；只有使用原 app 名称才能重新提交“新建”CICD 申请。
 
 ### CICD 修改阻塞与替换
 

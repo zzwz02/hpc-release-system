@@ -33,7 +33,8 @@
         "开发者社区发布包支持python版本",
         "开发者社区发布包支持的底层框架及版本",
         "ARM / Kylin sanity",
-        "Ubuntu / 兼容性 sanity"
+        "Ubuntu / 兼容性 sanity",
+        "CICD状态"
       ],
       "rows": [
         [
@@ -50,6 +51,7 @@
           "",
           "",
           "c500,x301",
+          "",
           "",
           "",
           "",
@@ -78,6 +80,7 @@
           "",
           "",
           "",
+          "",
           ""
         ],
         [
@@ -90,6 +93,7 @@
           "ssh://gerrit/PDE/HPC/hpc_lammps",
           "main",
           "stable",
+          "",
           "",
           "",
           "",
@@ -126,7 +130,8 @@
         "arch",
         "maca_version",
         "test_name",
-        "docker_cmd"
+        "docker_cmd",
+        "cicd_status"
       ],
       "rows": []
     },

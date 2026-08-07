@@ -555,6 +555,9 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
                   <div>
                     <div className="name">
                       {displayName(snap)}{" "}
+                      {app.cicd_onboarding_status === "pending_create" && (
+                        <span className="pill warnp">CICD待完成</span>
+                      )}
                       {useSuggestion && (
                         <span className="pill ai">AI 建议</span>
                       )}
@@ -979,6 +982,7 @@ interface ReportTableProps {
     rows_meta?: Array<{
       is_release: boolean;
       release_decision: string;
+      cicd_pending?: boolean;
     }>;
   };
   filterState: ReportFilterState;
@@ -1232,7 +1236,10 @@ function ReportTable({
               </tr>
             ) : (
               filteredRows.map(({ row, meta }, ri) => {
-                const trCls = meta && meta.is_release === false ? "row-not-release" : "";
+                const trCls = [
+                  meta && meta.is_release === false ? "row-not-release" : "",
+                  meta?.cicd_pending ? "row-cicd-pending" : "",
+                ].filter(Boolean).join(" ");
                 return (
                   <tr key={ri} className={trCls}>
                     {visibleIndexes.map((i) => {
@@ -1240,7 +1247,11 @@ function ReportTable({
                       const c = columns[i];
                       if (kind === "test" && c === "docker_cmd")
                         return <td key={i} className="cmd">{v}</td>;
+                      if (kind === "test" && c === "cicd_status" && v)
+                        return <td key={i}><span className="pill warnp">{v}</span></td>;
                       if (kind === "release") {
+                        if (c === "CICD状态" && v)
+                          return <td key={i}><span className="pill warnp">{v}</span></td>;
                         if (c === "描述")
                           return (
                             <td key={i} className="clamp" title={v}>

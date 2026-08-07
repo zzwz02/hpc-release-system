@@ -3,6 +3,7 @@
 Faithful port of server.py GET/POST /api/cicd/* handlers.
 
 Phase 4 additions (all wired):
+  POST /api/cicd/apps/new/decision-preview — per-release create decision preview
   POST /api/cicd/apps/fetch-preview — Gerrit preview wizard (Wave 3)
   POST /api/cicd/apps/new           — cicd_first_new_app (Wave 3)
 
@@ -382,6 +383,24 @@ async def post_apply_returned(
 # ---------------------------------------------------------------------------
 
 
+@router.post("/apps/new/decision-preview")
+async def post_cicd_apps_new_decision_preview(
+    request: Request,
+    user: dict = Depends(require_login),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    """Preview current/future CICD-first decisions without writing data."""
+    body: dict = await request.json()
+    role = user["role"]
+    if role not in cicd_service.CICD_CREATE_ROLES:
+        raise AuthzError("只有 Owner、RM 可以预览 CICD-first release 决策")
+    return cicd_service.preview_cicd_first_release_decisions(
+        conn,
+        release_id=body.get("release_id", ""),
+        release_decision=body.get("release_decision", "cicd_only"),
+    )
+
+
 @router.post("/apps/fetch-preview")
 async def post_cicd_apps_fetch_preview(
     request: Request,
@@ -451,6 +470,8 @@ async def post_cicd_apps_new(
                                  by repo_name shape per identity.py)
       repo_name          str   — short name ('hpc_hpl') or .xml manifest path
       branch             str   — git branch / revision
+      release_id         str   — release currently selected in the App workbench
+      release_decision   str   — Owner decision: release | cicd_only
       app_version        str   — optional build version label
       build_product      list  — build output identifiers
       community_artifact list  — community artifact identifiers
@@ -489,6 +510,8 @@ async def post_cicd_apps_new(
         submitter=user["username"],
         submitter_role=role,
         submitter_display=user.get("display_name", ""),
+        release_id=body.get("release_id", ""),
+        release_decision=body.get("release_decision", "cicd_only"),
         payload={
             "app_name": body.get("app_name", ""),
             "app_version": body.get("app_version", ""),

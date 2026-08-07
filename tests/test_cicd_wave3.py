@@ -227,11 +227,322 @@ class TestCicdFirstAppBackedLifecycle:
         assert req["app_id"] == _APP_ID
         assert req["task_id"] == _APP_ID
         assert _payload(req)["app_id"] == _APP_ID
+        assert _payload(req)["release_decision"] == "cicd_only"
         assert _task_table_count(temp_db) == 0
 
         snap = core.get_release(temp_db, release_id)["snapshots"][_APP_ID]
-        assert snap["release_decision"] == "stopped"
+        assert snap["release_decision"] == "cicd_only"
         assert snap["owners"] == ["rm"]
+
+        task = next(item for item in cicd_service.list_tasks(temp_db) if item["app_id"] == _APP_ID)
+        assert task["status"] == "Running"
+        assert task["cicd_onboarding_status"] == "pending_create"
+
+    def test_release_decision_is_committed_at_submission_and_survives_late_delivery(
+        self,
+        temp_db,
+        tmp_dir,
+    ):
+        from app.services import qa_service
+
+        release_id = seed_release(temp_db, tmp_path=tmp_dir)
+        temp_db.execute(
+            "UPDATE releases SET app_freeze_deadline=?, doc_deadline=? WHERE id=?",
+            ("2099-12-30 23:59:59", "2099-12-31 23:59:59", release_id),
+        )
+        temp_db.commit()
+        parsed = {
+            "app_name": _OFFICIAL_NAME,
+            "app_version": "1.2.3",
+            "x86_chips": ["c500"],
+            "arm_chips": [],
+            "python_labels": [],
+            "pytorch_labels": [],
+            "build_os": ["ubuntu22.04"],
+            "build_arches": ["amd64"],
+            "raw": {
+                "app_version": "1.2.3",
+                "app_build": {
+                    "ubuntu22.04_amd64": {
+                        "build_target": "release",
+                        "arch": "amd64",
+                        "docker_image": "hpc/w3cicd:1.2.3",
+                    }
+                },
+                "app_test": {
+                    "sanity": {
+                        "test_cmd": "w3cicd --version",
+                        "supported_chip": {"c500": ["ubuntu22.04_amd64"]},
+                    }
+                },
+            },
+        }
+
+        result = cicd_service.cicd_first_new_app(
+            temp_db,
+            official_name=_OFFICIAL_NAME,
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter="rm",
+            submitter_role="RM",
+            release_id=release_id,
+            release_decision="release",
+            payload=_BUILD_PAYLOAD,
+            app_info_parsed=parsed,
+        )
+
+        snap = core.get_release(temp_db, release_id)["snapshots"][_APP_ID]
+        assert snap["release_decision"] == "release"
+        assert _payload(result["request"])["release_decision"] == "release"
+        report = qa_service.get_qa_reports(temp_db, release_id)
+        release_rows = [
+            dict(zip(report["release_report"]["columns"], row))
+            for row in report["release_report"]["rows"]
+        ]
+        release_row = next(row for row in release_rows if row["名称"] == _OFFICIAL_NAME)
+        test_row = dict(zip(report["test_cmd"]["columns"], report["test_cmd"]["rows"][0]))
+        assert release_row["CICD状态"] == "CICD待完成"
+        assert test_row["cicd_status"] == "CICD待完成"
+        pending_meta = [
+            meta
+            for row, meta in zip(report["release_report"]["rows"], report["release_report"]["rows_meta"])
+            if dict(zip(report["release_report"]["columns"], row))["名称"] == _OFFICIAL_NAME
+        ][0]
+        assert pending_meta["cicd_pending"] is True
+
+        cicd_service.approve_request(
+            temp_db,
+            result["request"]["id"],
+            reviewer="rm",
+            reviewer_role="RM",
+            approval_mode="dispatch_spd",
+            jira_id="HPC-LATE",
+        )
+        temp_db.execute(
+            "UPDATE releases SET app_freeze_deadline=?, doc_deadline=? WHERE id=?",
+            ("2000-01-01 00:00:00", "2000-01-02 00:00:00", release_id),
+        )
+        temp_db.commit()
+        cicd_service.deliver_request(
+            temp_db,
+            result["request"]["id"],
+            deliverer="spd",
+            deliverer_role="SPD",
+        )
+
+        snap = core.get_release(temp_db, release_id)["snapshots"][_APP_ID]
+        assert snap["release_decision"] == "release"
+        delivered_report = qa_service.get_qa_reports(temp_db, release_id)
+        delivered_rows = [
+            dict(zip(delivered_report["release_report"]["columns"], row))
+            for row in delivered_report["release_report"]["rows"]
+        ]
+        delivered_row = next(row for row in delivered_rows if row["名称"] == _OFFICIAL_NAME)
+        assert delivered_row["CICD状态"] == ""
+
+    def test_release_decision_is_gated_per_target_release_at_submission(self, temp_db, tmp_dir):
+        from app.services import release_service
+
+        release_37 = seed_release(temp_db, tmp_path=tmp_dir)
+        temp_db.execute(
+            "UPDATE releases SET name=?, app_freeze_deadline=?, doc_deadline=? WHERE id=?",
+            ("3.7.0", "2099-12-30 23:59:59", "2099-12-31 23:59:59", release_37),
+        )
+        temp_db.commit()
+        release_38 = release_service.create_release(
+            temp_db,
+            name="3.8.0",
+            maca_version="",
+            app_freeze_deadline="2000-01-01",
+            doc_deadline="2000-01-02",
+            user="rm",
+            role="RM",
+        )["release_id"]
+        release_39 = release_service.create_release(
+            temp_db,
+            name="3.9.0",
+            maca_version="",
+            app_freeze_deadline="2000-01-01",
+            doc_deadline="2099-12-31",
+            user="rm",
+            role="RM",
+        )["release_id"]
+        release_310 = release_service.create_release(
+            temp_db,
+            name="3.10.0",
+            maca_version="",
+            app_freeze_deadline="2099-12-30",
+            doc_deadline="2099-12-31",
+            user="rm",
+            role="RM",
+        )["release_id"]
+        temp_db.executemany(
+            "UPDATE releases SET created_at=? WHERE id=?",
+            [
+                ("2026-01-01 00:00:01", release_37),
+                ("2026-01-01 00:00:02", release_38),
+                ("2026-01-01 00:00:03", release_39),
+                ("2026-01-01 00:00:04", release_310),
+            ],
+        )
+        temp_db.commit()
+
+        preview = cicd_service.preview_cicd_first_release_decisions(
+            temp_db,
+            release_id=release_37,
+            release_decision="release",
+        )
+        preview_by_release = {
+            row["release_id"]: row for row in preview["releases"]
+        }
+        assert preview["scope"] == "current_and_later"
+        assert preview_by_release[release_37]["resulting_decision"] == "release"
+        assert preview_by_release[release_37]["is_current"] is True
+        assert preview_by_release[release_38]["resulting_decision"] == "cicd_only"
+        assert preview_by_release[release_39]["resulting_decision"] == "cicd_only"
+        assert preview_by_release[release_310]["resulting_decision"] == "release"
+
+        result = cicd_service.cicd_first_new_app(
+            temp_db,
+            official_name=_OFFICIAL_NAME,
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter="rm",
+            submitter_role="RM",
+            release_id=release_37,
+            release_decision="release",
+            payload=_BUILD_PAYLOAD,
+        )
+
+        expected = {
+            release_37: "release",
+            release_38: "cicd_only",
+            release_39: "cicd_only",
+            release_310: "release",
+        }
+        for release_id, decision in expected.items():
+            snap = core.get_release(temp_db, release_id)["snapshots"][_APP_ID]
+            assert snap["release_decision"] == decision
+
+        public_payload = _payload(result["request"])
+        assert "_cicd_first_release_decisions" not in public_payload
+        stored_payload = json.loads(
+            temp_db.execute(
+                "SELECT payload FROM cicd_task_requests WHERE id=?",
+                (result["request"]["id"],),
+            ).fetchone()[0]
+        )
+        assert stored_payload["_cicd_first_release_decisions"] == expected
+
+        cicd_service.approve_request(
+            temp_db,
+            result["request"]["id"],
+            reviewer="rm",
+            reviewer_role="RM",
+            approval_mode="dispatch_spd",
+            jira_id="HPC-PER-RELEASE",
+        )
+        temp_db.execute(
+            "UPDATE releases SET app_freeze_deadline=?, doc_deadline=?",
+            ("2000-01-01 00:00:00", "2000-01-02 00:00:00"),
+        )
+        temp_db.commit()
+        cicd_service.deliver_request(
+            temp_db,
+            result["request"]["id"],
+            deliverer="spd",
+            deliverer_role="SPD",
+        )
+
+        for release_id, decision in expected.items():
+            snap = core.get_release(temp_db, release_id)["snapshots"][_APP_ID]
+            assert snap["release_decision"] == decision
+
+    def test_release_decision_is_rejected_when_submitted_after_freeze(self, temp_db, tmp_dir):
+        release_id = seed_release(temp_db, tmp_path=tmp_dir)
+        temp_db.execute(
+            "UPDATE releases SET app_freeze_deadline=?, doc_deadline=? WHERE id=?",
+            ("2000-01-01 00:00:00", "2000-01-02 00:00:00", release_id),
+        )
+        temp_db.commit()
+        with pytest.raises(RuntimeError, match="已过 app 冻结 deadline"):
+            cicd_service.cicd_first_new_app(
+                temp_db,
+                official_name=_OFFICIAL_NAME,
+                repo_type="git",
+                repo_name=_REPO_SHORT,
+                branch=_BRANCH,
+                submitter="rm",
+                submitter_role="RM",
+                release_id=release_id,
+                release_decision="release",
+                payload=_BUILD_PAYLOAD,
+            )
+        assert _request_count(temp_db) == 0
+
+    def test_release_decision_requires_release_id_for_submission_phase_check(self, temp_db, tmp_dir):
+        seed_release(temp_db, tmp_path=tmp_dir)
+        with pytest.raises(ValueError, match="必须提供 release_id"):
+            cicd_service.cicd_first_new_app(
+                temp_db,
+                official_name=_OFFICIAL_NAME,
+                repo_type="git",
+                repo_name=_REPO_SHORT,
+                branch=_BRANCH,
+                submitter="rm",
+                submitter_role="RM",
+                release_decision="release",
+                payload=_BUILD_PAYLOAD,
+            )
+        assert _request_count(temp_db) == 0
+
+    def test_pending_release_without_app_info_has_test_command_planning_row(self, temp_db, tmp_dir):
+        from app.services import qa_service
+
+        release_id = seed_release(temp_db, tmp_path=tmp_dir)
+        temp_db.execute(
+            "UPDATE releases SET app_freeze_deadline=?, doc_deadline=? WHERE id=?",
+            ("2099-12-30 23:59:59", "2099-12-31 23:59:59", release_id),
+        )
+        temp_db.commit()
+        cicd_service.cicd_first_new_app(
+            temp_db,
+            official_name=_OFFICIAL_NAME,
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter="rm",
+            submitter_role="RM",
+            release_id=release_id,
+            release_decision="release",
+            payload=_BUILD_PAYLOAD,
+        )
+
+        report = qa_service.get_qa_reports(temp_db, release_id)
+        rows = [
+            dict(zip(report["test_cmd"]["columns"], row))
+            for row in report["test_cmd"]["rows"]
+        ]
+        planning_row = next(row for row in rows if row["app_name"] == _OFFICIAL_NAME)
+        assert planning_row["docker_cmd"] == ""
+        assert planning_row["cicd_status"] == "CICD待完成"
+
+    def test_stopped_is_not_a_cicd_first_target_decision(self, temp_db, tmp_dir):
+        seed_release(temp_db, tmp_path=tmp_dir)
+        with pytest.raises(ValueError, match="release 或 cicd_only"):
+            cicd_service.cicd_first_new_app(
+                temp_db,
+                official_name=_OFFICIAL_NAME,
+                repo_type="git",
+                repo_name=_REPO_SHORT,
+                branch=_BRANCH,
+                submitter="rm",
+                submitter_role="RM",
+                release_decision="stopped",
+                payload=_BUILD_PAYLOAD,
+            )
 
     def test_repo_create_persists_manifest_config_not_resolved_identity(
         self,
@@ -304,7 +615,7 @@ class TestCicdFirstAppBackedLifecycle:
         snap = core.get_release(temp_db, core.list_releases(temp_db)[0]["id"])["snapshots"][_APP_ID]
         assert snap["release_decision"] == "cicd_only"
 
-    def test_dispatch_approval_applies_only_after_delivery(self, temp_db, tmp_dir):
+    def test_dispatch_approval_keeps_owner_decision_visible_before_delivery(self, temp_db, tmp_dir):
         result = _create_app(temp_db, tmp_dir)
         req = result["request"]
 
@@ -321,7 +632,7 @@ class TestCicdFirstAppBackedLifecycle:
         assert approved["delivery_status"] == "pending"
         assert _task_table_count(temp_db) == 0
         snap = core.get_release(temp_db, core.list_releases(temp_db)[0]["id"])["snapshots"][_APP_ID]
-        assert snap["release_decision"] == "stopped"
+        assert snap["release_decision"] == "cicd_only"
 
         delivered = cicd_service.deliver_request(
             temp_db,
@@ -429,6 +740,55 @@ class TestCicdFirstRejectedLifecycle:
         state = cicd_service.cicd_first_onboarding_by_app(temp_db)[result["app_id"]]
         assert state["cicd_onboarding_status"] == "rejected_create"
         assert state["cicd_onboarding_review_note"] == "镜像配置不符合要求"
+
+    def test_cancel_rolls_owner_decision_back_to_stopped(self, temp_db, tmp_dir):
+        result = _create_app(temp_db, tmp_dir)
+        before = core.get_release(temp_db, core.list_releases(temp_db)[0]["id"])["snapshots"]
+        assert before[result["app_id"]]["release_decision"] == "cicd_only"
+
+        cancelled = cicd_service.cancel_request(
+            temp_db,
+            result["request"]["id"],
+            username="rm",
+            role="RM",
+        )
+
+        assert cancelled["status"] == "cancelled"
+        after = core.get_release(temp_db, core.list_releases(temp_db)[0]["id"])["snapshots"]
+        assert after[result["app_id"]]["release_decision"] == "stopped"
+
+    def test_reject_returned_delivery_rolls_owner_decision_back_to_stopped(
+        self,
+        temp_db,
+        tmp_dir,
+    ):
+        result = _create_app(temp_db, tmp_dir)
+        cicd_service.approve_request(
+            temp_db,
+            result["request"]["id"],
+            reviewer="rm",
+            reviewer_role="RM",
+            approval_mode="dispatch_spd",
+            jira_id="HPC-RETURN",
+        )
+        cicd_service.return_delivery(
+            temp_db,
+            result["request"]["id"],
+            returner="spd",
+            returner_role="SPD",
+            reason="构建配置需调整",
+        )
+        rejected = cicd_service.reject_returned_request(
+            temp_db,
+            result["request"]["id"],
+            reviewer="rm",
+            reviewer_role="RM",
+            review_note="本轮不再交付",
+        )
+
+        assert rejected["status"] == "rejected"
+        snap = core.get_release(temp_db, core.list_releases(temp_db)[0]["id"])["snapshots"]
+        assert snap[result["app_id"]]["release_decision"] == "stopped"
 
     def test_state_apps_include_rejected_reason(self, temp_db, tmp_dir):
         result, _ = self._submit_and_reject(temp_db, tmp_dir)

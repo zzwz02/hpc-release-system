@@ -14,8 +14,15 @@
  */
 import React, { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { cicdFirstNewApp, fetchCicdDeliveries, fetchCicdPreview, fetchCicdRequests, submitCicdRequest } from "../cicd/cicdApi";
-import type { FetchPreviewResponse } from "../cicd/cicdApi";
+import {
+  cicdFirstNewApp,
+  fetchCicdDeliveries,
+  fetchCicdFirstDecisionPreview,
+  fetchCicdPreview,
+  fetchCicdRequests,
+  submitCicdRequest,
+} from "../cicd/cicdApi";
+import type { CicdFirstDecisionPreviewResponse, FetchPreviewResponse } from "../cicd/cicdApi";
 import { RefreshBar } from "../../components/RefreshBar";
 import { Markdown } from "../../components/Markdown";
 import { formatServerTime } from "../../lib/time";
@@ -43,7 +50,7 @@ import {
   docTargetOptions,
   qaStatusLabels,
 } from "../../lib/labels";
-import type { StatePayload, App, Snapshot, ReleaseSummary, ReleaseDetail, AppAuditEntry, SnapshotTestDoc, CicdRequest } from "../../types";
+import type { StatePayload, App, Snapshot, ReleaseSummary, ReleaseDetail, AppAuditEntry, SnapshotTestDoc, CicdRequest, ReleaseDecision } from "../../types";
 import {
   releaseSnap,
   isReleaseSnap,
@@ -79,6 +86,7 @@ interface DecisionSyncPreviewRow {
   resulting_decision: string | null;
   skipped: boolean;
   reason?: string;
+  is_current?: boolean;
 }
 
 interface DecisionSyncPreview {
@@ -172,6 +180,22 @@ const CICD_COMMUNITY_ARTIFACT_OPTIONS = [
   { value: "image", label: "镜像" },
   { value: "pkg", label: "软件包" },
 ] as const;
+const CICD_FIRST_RELEASE_DECISION_OPTIONS: Array<{
+  value: Extract<ReleaseDecision, "release" | "cicd_only">;
+  label: string;
+}> = [
+  { value: "release", label: "release" },
+  { value: "cicd_only", label: "cicd-only" },
+];
+
+function BuildImageLabel() {
+  return (
+    <>
+      构建依赖镜像
+      <span className="field-label-note">（影响 SPD 编排 CICD 构建任务顺序）</span>
+    </>
+  );
+}
 
 function communityArtifactList(value: string): string[] {
   return (value || "")
@@ -226,6 +250,7 @@ const CICD_FIELD_LABEL: Record<string, string> = {
   repo_type: "仓库类型",
   repo_name: "Gerrit 路径",
   branch: "Branch",
+  release_decision: "Release 决策",
   build_product: "构建产物",
   community_artifact: "开发者社区产物",
   build_image: "构建依赖镜像",
@@ -250,10 +275,6 @@ function cicdOnboardingClass(app: App): string {
   if (app.cicd_onboarding_status === "pending_create") return "warnp";
   if (app.cicd_onboarding_status === "rejected_create") return "bad";
   return "";
-}
-
-function cicdOnboardingInactive(app: App): boolean {
-  return !!app.cicd_onboarding_status;
 }
 
 function sameScalarValue(a: unknown, b: unknown): boolean {
@@ -634,6 +655,87 @@ function IdentityBox({ gitUrl, gitBranch }: { gitUrl: string | null; gitBranch: 
   );
 }
 
+function ReleaseDecisionPreviewTable({
+  rows,
+  requestedDecision,
+  rowTestIdPrefix,
+}: {
+  rows: DecisionSyncPreviewRow[];
+  requestedDecision: string;
+  rowTestIdPrefix: string;
+}) {
+  return (
+    <div className="table">
+      <table>
+        <thead>
+          <tr><th>RELEASE</th><th>阶段</th><th>RELEASE 决策</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const gated = !row.skipped && row.resulting_decision !== requestedDecision;
+            return (
+              <tr
+                key={row.release_id}
+                className={row.skipped ? "muted dim-55" : ""}
+                data-testid={`${rowTestIdPrefix}-${row.release_id}`}
+              >
+                <td>{row.release_name}{row.is_current ? "（当前）" : ""}</td>
+                <td>{row.phase_label}</td>
+                <td>
+                  {row.skipped ? (
+                    <span className="muted small">跳过：{row.reason}</span>
+                  ) : gated ? (
+                    <span className="pill warnp" title="该 release 处于冻结期，升级为 release 会扩大 QA 范围，已降级为 cicd_only">
+                      调整为 {row.resulting_decision}（冻结期降级）
+                    </span>
+                  ) : (
+                    <span>调整为 {row.resulting_decision}</span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function NewAppDecisionPlan({
+  preview,
+  loading,
+  error,
+  onRetry,
+}: {
+  preview: CicdFirstDecisionPreviewResponse | null;
+  loading: boolean;
+  error: string;
+  onRetry: () => void;
+}) {
+  return (
+    <div data-testid="new-app-decision-preview">
+      <h4>当前及后续 release 的发布决策</h4>
+      <p className="small muted">
+        请确认以下决策；已进入冻结期的后续版本会自动调整为 cicd_only。点击下方创建按钮即按此计划提交。
+      </p>
+      {loading && <div className="banner">正在计算各版本发布决策…</div>}
+      {!loading && error && (
+        <div className="banner bad">
+          发布决策预览失败：{error}{" "}
+          <button className="btn sm" onClick={onRetry} data-testid="new-app-decision-retry">重试</button>
+        </div>
+      )}
+      {!loading && preview && (
+        <ReleaseDecisionPreviewTable
+          rows={preview.releases}
+          requestedDecision={preview.decision}
+          rowTestIdPrefix="new-app-decision-row"
+        />
+      )}
+    </div>
+  );
+}
+
 function isDuplicateIdentityError(message: string): boolean {
   return message.includes("Gerrit URL + branch") && message.includes("已存在 app");
 }
@@ -686,6 +788,9 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
   const [fetchErrMsg, setFetchErrMsg] = useState("");
   const [fetchErrBlocking, setFetchErrBlocking] = useState(false);
   const [createErrMsg, setCreateErrMsg] = useState("");
+  const [decisionPreview, setDecisionPreview] = useState<CicdFirstDecisionPreviewResponse | null>(null);
+  const [decisionPreviewLoading, setDecisionPreviewLoading] = useState(false);
+  const [decisionPreviewError, setDecisionPreviewError] = useState("");
 
   // W4: derived identity — pre-computed from user inputs (or from server when
   // impl-1's backend returns identity even on content-fetch failure).
@@ -701,6 +806,9 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
   const [docTarget, setDocTarget] = useState<"manual" | "ai4sci">("manual");
   const decisionOpts = newAppDecisionOptions(release);
   const [decision, setDecision] = useState<string>(decisionOpts[0] ?? "release");
+  const [cicdFirstDecision, setCicdFirstDecision] = useState<"release" | "cicd_only">(
+    beforeAppFreeze(release) ? "release" : "cicd_only",
+  );
   const [newCicdCommunityArtifact, setNewCicdCommunityArtifact] = useState("");
   const [newCicdBuildImage, setNewCicdBuildImage] = useState("");
   const [newCicdTimeout, setNewCicdTimeout] = useState("40");
@@ -744,6 +852,32 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
 
   // ── Wizard handlers ──────────────────────────────────────────────────────
 
+  function resetDecisionPreview() {
+    setDecisionPreview(null);
+    setDecisionPreviewLoading(false);
+    setDecisionPreviewError("");
+  }
+
+  async function loadDecisionPreview(): Promise<CicdFirstDecisionPreviewResponse | null> {
+    setDecisionPreview(null);
+    setDecisionPreviewError("");
+    setDecisionPreviewLoading(true);
+    try {
+      const data = await fetchCicdFirstDecisionPreview({
+        release_id: currentReleaseId,
+        release_decision: cicdFirstDecision,
+      });
+      if (!Array.isArray(data.releases)) throw new Error("服务端未返回版本决策明细");
+      setDecisionPreview(data);
+      return data;
+    } catch (error) {
+      setDecisionPreviewError(error instanceof Error ? error.message : "无法获取版本决策");
+      return null;
+    } finally {
+      setDecisionPreviewLoading(false);
+    }
+  }
+
   async function handleFetch() {
     if (!officialName.trim()) { setFetchErrMsg("请填写官方名称"); return; }
     const normalizedRepoName = normalizeCicdRepoInput(repoType, repoName);
@@ -764,6 +898,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
     setFetchErrBlocking(false);
     setRetryCreateInfo(null);
     setStep("fetching");
+    const decisionPreviewPromise = loadDecisionPreview();
     try {
       const data = await fetchCicdPreview({
         official_name: officialName.trim(),
@@ -785,11 +920,13 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
         // Gerrit content fetch failed (soft 200); identity already updated above.
         setFetchErrMsg(data.app_info_error ?? "Gerrit app_info 不可用");
         setFetchErrBlocking(false);
+        await decisionPreviewPromise;
         setStep("fetch-error");
         return;
       }
 
       setPreview(data);
+      await decisionPreviewPromise;
       setStep("preview");
     } catch (e) {
       // Only 400 / 403 / network errors reach here under the new impl-1 contract.
@@ -798,12 +935,17 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
       setFetchErrMsg(message);
       setRetryCreateInfo(retryInfo);
       setFetchErrBlocking(isDuplicateIdentityError(message) && !retryInfo);
+      await decisionPreviewPromise;
       setStep("fetch-error");
     }
   }
 
   /** Create without Gerrit preview (fetch failed or user skipped). */
   async function handleSkipAndCreate() {
+    if (!decisionPreview) {
+      setCreateErrMsg("请先成功加载当前及后续 release 的发布决策");
+      return;
+    }
     setStep("creating");
     setCreateErrMsg("");
     const normalizedRepoName = normalizeCicdRepoInput(repoType, repoName);
@@ -821,6 +963,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
         cicd_build_image: newCicdBuildImage,
         cicd_test_timeout: newCicdTimeout,
         cicd_notes: newCicdNotes,
+        release_decision: cicdFirstDecision,
       });
       onCreated(r.app_id);
     } catch (e) {
@@ -831,6 +974,10 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
 
   /** Create with fetched app_info (step 2 confirm). */
   async function handleConfirmCreate() {
+    if (!decisionPreview) {
+      setCreateErrMsg("请先成功加载当前及后续 release 的发布决策");
+      return;
+    }
     setStep("creating");
     setCreateErrMsg("");
     const normalizedRepoName = normalizeCicdRepoInput(repoType, repoName);
@@ -848,6 +995,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
         cicd_build_image: newCicdBuildImage,
         cicd_test_timeout: newCicdTimeout,
         cicd_notes: newCicdNotes,
+        release_decision: cicdFirstDecision,
         app_info_parsed: preview?.parsed ?? undefined,
         app_info_commit_id: preview?.commit_id ?? undefined,
       });
@@ -913,22 +1061,31 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
                   ))}
                 </select>
               </label>
-              <div>
-                <div className="field-label">开发者社区产物</div>
-                <div className="row gap-12 wrap">
-                  {CICD_COMMUNITY_ARTIFACT_OPTIONS.map(({ value, label }) => (
-                    <label key={value} className="check">
-                      <input
-                        type="checkbox"
-                        checked={communityArtifactList(newCicdCommunityArtifact).includes(value)}
-                        onChange={() => setNewCicdCommunityArtifact(toggleCommunityArtifact(newCicdCommunityArtifact, value))}
-                      />{" "}
-                      {label}
-                    </label>
-                  ))}
+              <div className="new-app-community-decision-grid">
+                <div>
+                  <div className="field-label">开发者社区产物</div>
+                  <div className="row gap-12 wrap">
+                    {CICD_COMMUNITY_ARTIFACT_OPTIONS.map(({ value, label }) => (
+                      <label key={value} className="check">
+                        <input
+                          type="checkbox"
+                          checked={communityArtifactList(newCicdCommunityArtifact).includes(value)}
+                          onChange={() => setNewCicdCommunityArtifact(toggleCommunityArtifact(newCicdCommunityArtifact, value))}
+                        />{" "}
+                        {label}
+                      </label>
+                    ))}
+                  </div>
                 </div>
+                <label>Release 决策
+                  <select className="select" value={decision} onChange={(e) => setDecision(e.target.value)}>
+                    {decisionOpts.map((v) => (
+                      <option key={v} value={v}>{releaseDecisionLabels[v]}</option>
+                    ))}
+                  </select>
+                </label>
               </div>
-              <label>构建依赖镜像
+              <label><BuildImageLabel />
                 <input className="input" value={newCicdBuildImage} onChange={(e) => setNewCicdBuildImage(e.target.value)} />
               </label>
               <label>超时(min)
@@ -941,13 +1098,6 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
                 <select className="select" value={docTarget} onChange={(e) => setDocTarget(e.target.value as "manual" | "ai4sci")}>
                   {docTargetOptions.map((v) => (
                     <option key={v} value={v}>{docTargetLabels[v]}</option>
-                  ))}
-                </select>
-              </label>
-              <label>Release 决策
-                <select className="select" value={decision} onChange={(e) => setDecision(e.target.value)}>
-                  {decisionOpts.map((v) => (
-                    <option key={v} value={v}>{releaseDecisionLabels[v]}</option>
                   ))}
                 </select>
               </label>
@@ -980,11 +1130,11 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
     const identityBranch = (preview?.git_branch) || derivedGitBranch || effectiveBranch;
     return (
       <div className="dialog-backdrop" data-testid="new-app-dialog">
-        <div className="dialog-box maxw-560">
+        <div className="dialog-box minw-560 maxw-720">
           <div className="dialog-head"><h3>确认 App 信息（CICD-first）</h3></div>
           <div className="dialog-body">
             <div className="banner accent-strip">
-              ✅ Gerrit 信息已拉取。请确认以下字段后{isRetryCreate ? "重新提交新建申请" : "提交创建请求"}（RM 审批后生效）。
+              ✅ Gerrit 信息已拉取。确认后{isRetryCreate ? "重新提交新建申请" : "提交创建请求"}；发布决策立即用于 QA 规划，CICD 创建仍需 RM 审批/交付。
             </div>
             {retryCreateInfo && (
               <div className="banner warnp mb-8" data-testid="new-app-retry-banner">
@@ -999,6 +1149,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
             <div className="form overlay-freeze" data-testid="new-app-preview">
               <label>官方名称<input className="input" value={officialName.trim()} disabled /></label>
               <label>仓库<input className="input" value={`${normalizeCicdRepoInput(repoType, repoName)} @ ${effectiveBranch}`} disabled /></label>
+              <label>Release 决策<input className="input" value={cicdFirstDecision === "cicd_only" ? "cicd-only" : "release"} disabled /></label>
               {preview && (<>
                 <label>版本<input className="input" value={preview.app_version || "—"} disabled /></label>
                 <label>x86 芯片<input className="input" value={preview.x86_chips || "—"} disabled /></label>
@@ -1009,12 +1160,18 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
                 <label>架构<input className="input" value={preview.arch || "—"} disabled /></label>
               </>)}
             </div>
+            <NewAppDecisionPlan
+              preview={decisionPreview}
+              loading={decisionPreviewLoading}
+              error={decisionPreviewError}
+              onRetry={() => void loadDecisionPreview()}
+            />
             {createErrMsg && <p className="lerr">{createErrMsg}</p>}
           </div>
           <div className="dialog-actions">
-            <button className="btn ghost sm mr-auto" onClick={() => setStep("form")} disabled={isCreating}>← 重新填写</button>
+            <button className="btn ghost sm mr-auto" onClick={() => { resetDecisionPreview(); setStep("form"); }} disabled={isCreating}>← 重新填写</button>
             <button className="btn" onClick={onClose} disabled={isCreating}>取消</button>
-            <button className="btn primary" onClick={() => void handleConfirmCreate()} disabled={isCreating} data-testid="new-app-submit">
+            <button className="btn primary" onClick={() => void handleConfirmCreate()} disabled={isCreating || decisionPreviewLoading || !decisionPreview} data-testid="new-app-submit">
               {isCreating ? "提交中…" : isRetryCreate ? "重新申请" : "确认并创建"}
             </button>
           </div>
@@ -1033,7 +1190,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
     const errIdentityBranch = derivedGitBranch || effectiveBranch;
     return (
       <div className="dialog-backdrop" data-testid="new-app-dialog">
-        <div className="dialog-box maxw-520">
+        <div className="dialog-box minw-560 maxw-720">
           <div className="dialog-head"><h3>新增 App（CICD-first）</h3></div>
           <div className="dialog-body">
             <div className="banner bad mb-8">
@@ -1060,17 +1217,24 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
             <IdentityBox gitUrl={derivedGitUrl} gitBranch={errIdentityBranch} />
             <p className="small muted">
               <b>官方名称：</b>{officialName.trim()}<br />
-              <b>仓库：</b>{normalizeCicdRepoInput(repoType, repoName)} @ {effectiveBranch}
+              <b>仓库：</b>{normalizeCicdRepoInput(repoType, repoName)} @ {effectiveBranch}<br />
+              <b>Release 决策：</b>{cicdFirstDecision === "cicd_only" ? "cicd-only" : "release"}
             </p>
+            <NewAppDecisionPlan
+              preview={decisionPreview}
+              loading={decisionPreviewLoading}
+              error={decisionPreviewError}
+              onRetry={() => void loadDecisionPreview()}
+            />
             {createErrMsg && <p className="lerr">{createErrMsg}</p>}
           </div>
           <div className="dialog-actions">
-            <button className="btn ghost sm mr-auto" onClick={() => { setFetchErrMsg(""); setFetchErrBlocking(false); setRetryCreateInfo(null); setStep("form"); }} disabled={isCreating}>← 返回修改</button>
+            <button className="btn ghost sm mr-auto" onClick={() => { setFetchErrMsg(""); setFetchErrBlocking(false); setRetryCreateInfo(null); resetDecisionPreview(); setStep("form"); }} disabled={isCreating}>← 返回修改</button>
             <button className="btn" onClick={onClose} disabled={isCreating}>取消</button>
             {!fetchErrBlocking && (
               <>
-                <button className="btn warn" onClick={() => void handleFetch()} disabled={isCreating}>重试拉取</button>
-                <button className="btn primary" onClick={() => void handleSkipAndCreate()} disabled={isCreating} data-testid="new-app-submit">
+                <button className="btn warn" onClick={() => void handleFetch()} disabled={isCreating || decisionPreviewLoading}>重试拉取</button>
+                <button className="btn primary" onClick={() => void handleSkipAndCreate()} disabled={isCreating || decisionPreviewLoading || !decisionPreview} data-testid="new-app-submit">
                   {isCreating ? "提交中…" : retryCreateInfo ? "重新申请" : "跳过，直接创建"}
                 </button>
               </>
@@ -1090,7 +1254,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
           <div>
             <h3>新增 App（CICD-first）</h3>
             <p className="muted small m-4-0-0">
-              创建后进入 RM 审批；版本和芯片信息将从 Gerrit app_info 拉取。
+              发布决策提交后立即用于 QA 规划；CICD 创建进入 RM 审批，版本和芯片信息将从 Gerrit app_info 拉取。
             </p>
           </div>
         </div>
@@ -1127,23 +1291,40 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
               <input className="input" value={isRepo ? "master" : branch} disabled={isRepo || isFetching}
                 onChange={(e) => setBranch(e.target.value)} placeholder="例：master" />
             </label>
-            <div>
-              <div className="field-label">开发者社区产物</div>
-              <div className="row gap-12 wrap">
-                {CICD_COMMUNITY_ARTIFACT_OPTIONS.map(({ value, label }) => (
-                  <label key={value} className="check">
-                    <input
-                      type="checkbox"
-                      checked={communityArtifactList(newCicdCommunityArtifact).includes(value)}
-                      onChange={() => setNewCicdCommunityArtifact(toggleCommunityArtifact(newCicdCommunityArtifact, value))}
-                      disabled={isFetching}
-                    />{" "}
-                    {label}
-                  </label>
-                ))}
+            <div className="new-app-community-decision-grid">
+              <div>
+                <div className="field-label">开发者社区产物</div>
+                <div className="row gap-12 wrap">
+                  {CICD_COMMUNITY_ARTIFACT_OPTIONS.map(({ value, label }) => (
+                    <label key={value} className="check">
+                      <input
+                        type="checkbox"
+                        checked={communityArtifactList(newCicdCommunityArtifact).includes(value)}
+                        onChange={() => setNewCicdCommunityArtifact(toggleCommunityArtifact(newCicdCommunityArtifact, value))}
+                        disabled={isFetching}
+                      />{" "}
+                      {label}
+                    </label>
+                  ))}
+                </div>
               </div>
+              <label>Release 决策
+                <select
+                  className="select"
+                  value={cicdFirstDecision}
+                  onChange={(e) => setCicdFirstDecision(e.target.value as "release" | "cicd_only")}
+                  disabled={isFetching}
+                  data-testid="new-app-release-decision"
+                >
+                  {CICD_FIRST_RELEASE_DECISION_OPTIONS.map(({ value, label }) => (
+                    <option key={value} value={value} disabled={value === "release" && !beforeAppFreeze(release)}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
-            <label>构建依赖镜像
+            <label><BuildImageLabel />
               <input className="input" value={newCicdBuildImage}
                 onChange={(e) => setNewCicdBuildImage(e.target.value)}
                 disabled={isFetching} />
@@ -1201,7 +1382,7 @@ interface AppCicdPaneProps {
 }
 
 function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit, form, pendingRequests, historyRequests, repoError, onPatch }: AppCicdPaneProps) {
-  const status = cicdOnboardingInactive(app) ? "Stopped" : displayedStatus;
+  const status = displayedStatus;
   const statusCls = status === "Running" ? "ok" : "warnp";
   const disabled = !editMode || !canEdit;
   const onboardingLabel = cicdOnboardingLabel(app);
@@ -1335,7 +1516,7 @@ function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit,
                 ))}
               </div>
             </div>
-            <label>构建依赖镜像
+            <label><BuildImageLabel />
               <input className="input" value={form.cicd_build_image}
                 onChange={(e) => onPatch("cicd_build_image", e.target.value)}
                 disabled={disabled}
@@ -1647,8 +1828,8 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       await submitAppCicdChange();
       return;
     }
-    if (decisionSyncBlockedReason) {
-      setSaveErr(decisionSyncBlockedReason);
+    if (decisionChangeBlockedReason) {
+      setSaveErr(decisionChangeBlockedReason);
       return;
     }
     const descCount = appDescriptionCount(form.description);
@@ -1986,18 +2167,20 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     ? statusModifyBlockMessage(cicdOpenStatusModify)
     : "";
   const decisionChangeNeedsCicdSync = crossesDecisionRuntimeBoundary(snap.release_decision, form.release_decision);
-  const decisionSyncBlockedReason = decisionChangeNeedsCicdSync && cicdModifyBlockedReason
+  const decisionChanged = snap.release_decision !== form.release_decision;
+  const decisionChangeBlockedReason = decisionChanged && cicdOpenCreate
     ? cicdModifyBlockedReason
-    : "";
+    : decisionChangeNeedsCicdSync && cicdModifyBlockedReason
+      ? cicdModifyBlockedReason
+      : "";
   const activeSaveBlockedReason = detailTab === "cicd"
     ? cicdModifyBlockedReason
-    : decisionSyncBlockedReason;
+    : decisionChangeBlockedReason;
   const decisionSyncReq = appOpenCicd.find((req) => {
     const payload = cicdPayloadObject(req);
     return req.origin === "release_decision_sync" && !!payload.status;
   });
   const displayedCicdStatus = (() => {
-    if (app && cicdOnboardingInactive(app)) return "Stopped";
     const payload = decisionSyncReq
       ? cicdPayloadObject(decisionSyncReq) as Record<string, { old?: unknown }>
       : {};
@@ -2577,39 +2760,11 @@ function DecisionSyncDialog({
               ? `你把 release 决策改为「${newDecision}」，这会改变全局 CICD 运行/停止状态。必须同步到下列 ${applicable.length} 个${targetLabel}，避免不同 release 对同一个 CICD task 给出矛盾状态。`
               : `你把 release 决策改为「${newDecision}」。是否把该决策同步到下列 ${applicable.length} 个${targetLabel}?`}
           </p>
-          <div className="table">
-            <table>
-              <thead>
-                <tr><th>RELEASE</th><th>阶段</th><th>RELEASE 决策</th></tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => {
-                  const gated = !r.skipped && r.resulting_decision !== newDecision;
-                  return (
-                    <tr
-                      key={r.release_id}
-                      className={r.skipped ? "muted dim-55" : ""}
-                      data-testid={`sync-row-${r.release_id}`}
-                    >
-                      <td>{r.release_name}</td>
-                      <td>{r.phase_label}</td>
-                      <td>
-                        {r.skipped ? (
-                          <span className="muted small">跳过：{r.reason}</span>
-                        ) : gated ? (
-                          <span className="pill warnp" title="该 release 处于冻结期，升级为 release 会扩大 QA 范围，已降级为 cicd_only">
-                            调整为 {r.resulting_decision}（冻结期降级）
-                          </span>
-                        ) : (
-                          <span>调整为 {r.resulting_decision}</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <ReleaseDecisionPreviewTable
+            rows={rows}
+            requestedDecision={newDecision}
+            rowTestIdPrefix="sync-row"
+          />
         </div>
         <div className="dialog-actions">
           <button className="btn" onClick={onCancel} disabled={saving} data-testid="sync-cancel">取消</button>

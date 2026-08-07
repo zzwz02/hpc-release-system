@@ -822,7 +822,7 @@ class TestCicdFirstWithAppInfo:
 
         # Seed release
         conn = app_connect(db_path)
-        seed_release(conn, tmp_path=tmp_dir)
+        release_id = seed_release(conn, tmp_path=tmp_dir)
         conn.close()
 
         # Get the parsed blob via the service (mocked Gerrit)
@@ -842,8 +842,8 @@ class TestCicdFirstWithAppInfo:
             "branch": _BRANCH,
             "app_info_parsed": preview["parsed"],
             "app_info_commit_id": preview["commit_id"],
-            # FE context fields — ignored by BE:
-            "release_id": "some-release-id",
+            # FE context fields used to bind the Owner decision to this cycle:
+            "release_id": release_id,
             "owner_username": "rm",
         }
 

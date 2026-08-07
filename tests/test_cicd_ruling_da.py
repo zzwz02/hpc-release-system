@@ -543,7 +543,7 @@ class TestUpdateSnapshotIntegration:
             )
 
         snap = core.get_release(temp_db, release_id)["snapshots"][result["app_id"]]
-        assert snap["release_decision"] == "stopped"
+        assert snap["release_decision"] == "cicd_only"
 
     def test_jira_backed_sync_delivery_blocks_new_running_decision(self, temp_db, tmp_dir):
         release_id = seed_release(temp_db, tmp_path=tmp_dir)

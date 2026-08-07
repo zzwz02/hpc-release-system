@@ -502,6 +502,31 @@ function payloadTwoReleases(): StatePayload {
   return makePayload({ releases: twoReleaseSummaries() });
 }
 
+function makeNewAppDecisionPreview(decision: "release" | "cicd_only" = "release") {
+  return {
+    decision,
+    scope: "current_and_later" as const,
+    releases: [
+      {
+        release_id: "rel-1",
+        release_name: "3.0",
+        phase_label: "App 冻结前",
+        resulting_decision: decision,
+        skipped: false,
+        is_current: true,
+      },
+      {
+        release_id: "rel-2",
+        release_name: "3.1",
+        phase_label: "App 冻结后",
+        resulting_decision: "cicd_only" as const,
+        skipped: false,
+        is_current: false,
+      },
+    ],
+  };
+}
+
 async function enterEditOnApp1(): Promise<void> {
   await waitFor(() => screen.getByTestId("app-row-app1"));
   fireEvent.click(screen.getByTestId("app-row-app1"));
@@ -1019,6 +1044,31 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
     await clickCicdTab();
     await waitFor(() => screen.getByTestId("cicd-link-card"));
     expect(screen.getByTestId("cicd-link-card").textContent).toContain("Stopped");
+  });
+
+  it("keeps the Owner release decision visible while CICD-first creation is pending", async () => {
+    const payload = makePayload();
+    payload.apps[0] = {
+      ...payload.apps[0],
+      cicd_onboarding_status: "pending_create",
+      cicd_onboarding_request_id: 42,
+      cicd_onboarding_delivery_status: "pending",
+    };
+    payload.release!.snapshots.app1.release_decision = "release";
+    mockApiGetForAppCicd(payload);
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+
+    const row = screen.getByTestId("app-row-app1");
+    expect(row.textContent).toContain("release");
+    expect(row.textContent).toContain("CICD 创建待处理");
+
+    fireEvent.click(row);
+    await clickCicdTab();
+    expect(screen.getByTestId("cicd-link-card").textContent).toContain("Running");
+    expect(screen.getByTestId("cicd-link-card").textContent).toContain("CICD 创建待处理");
+    expect(screen.getByTestId("cicd-link-card").textContent).not.toContain("Stopped");
   });
 
   it("shows rejected CICD-first status and reason in the app workbench", async () => {
@@ -1737,6 +1787,20 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     expect(screen.getByPlaceholderText("xml地址，例如APP/openfoam/hpc_v2206_v0.xml")).toBeInTheDocument();
   });
 
+  it("shows release/cicd-only beside community artifacts and explains build-image ordering", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("new-app-btn"));
+    fireEvent.click(screen.getByTestId("new-app-btn"));
+
+    const decision = await screen.findByTestId("new-app-release-decision") as HTMLSelectElement;
+    expect(Array.from(decision.options).map((option) => option.text)).toEqual(["release", "cicd-only"]);
+    expect(decision.value).toBe("release");
+    expect(decision.closest(".new-app-community-decision-grid")?.textContent).toContain("开发者社区产物");
+    expect(screen.getByTestId("new-app-dialog").textContent).toContain("影响 SPD 编排 CICD 构建任务顺序");
+  });
+
   it("RM sees direct-create escape-hatch button", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
     const qc = makeQueryClient();
@@ -1748,7 +1812,7 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
   });
 
   it("step 1 fetch → step 2 confirm → submits official_name to POST /api/cicd/apps/new", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
     // Real backend keys from POST /api/cicd/apps/fetch-preview
     const mockPreview = {
       ok: true,
@@ -1765,6 +1829,7 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
       parsed: { version: "3.7.0", x86_chips: "C500", build_os: "kylin" },
     };
     const postMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("decision-preview")) return makeNewAppDecisionPreview("release");
       if (url.includes("fetch-preview")) return mockPreview;
       return { ok: true, app_id: "new-app-1", request_id: 1 };
     });
@@ -1786,6 +1851,13 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     await waitFor(() => screen.getByTestId("new-app-preview"));
     // Verify the preview shows the real fetched value (app_version key, not version)
     expect(screen.getByDisplayValue("3.7.0")).toBeTruthy();
+    expect(screen.getByTestId("new-app-decision-row-rel-1").textContent).toContain("3.0（当前）");
+    expect(screen.getByTestId("new-app-decision-row-rel-1").textContent).toContain("调整为 release");
+    expect(screen.getByTestId("new-app-decision-row-rel-2").textContent).toContain("调整为 cicd_only（冻结期降级）");
+    expect(postMock).toHaveBeenCalledWith(
+      "/api/cicd/apps/new/decision-preview",
+      { release_id: "rel-1", release_decision: "release" },
+    );
     // Click confirm → submits to /api/cicd/apps/new
     fireEvent.click(screen.getByTestId("new-app-submit"));
     await waitFor(() => {
@@ -1794,15 +1866,32 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
       const body = call![1] as Record<string, unknown>;
       expect(body.official_name).toBe("MyApp");
       expect(body.app_name).toBe("MyApp");
+      expect(body.release_decision).toBe("release");
       // Must carry parsed blob + commit_id (not app_info) so backend can persist them
       expect(body.app_info_parsed).toEqual(mockPreview.parsed);
       expect(body.app_info_commit_id).toBe("abc123def456");
     });
   });
 
+  it("disables release for CICD-first creation after app freeze", async () => {
+    const payload = makePayload();
+    payload.release!.phase = "after_app_freeze";
+    payload.releases[0].phase = "after_app_freeze";
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await waitFor(() => screen.getByTestId("new-app-btn"));
+    fireEvent.click(screen.getByTestId("new-app-btn"));
+
+    const decision = await screen.findByTestId("new-app-release-decision") as HTMLSelectElement;
+    expect(decision.value).toBe("cicd_only");
+    expect(Array.from(decision.options).find((option) => option.value === "release")).toBeDisabled();
+  });
+
   it("fetch error → shows skip button → skips to POST /api/cicd/apps/new directly", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
     const postMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("decision-preview")) return makeNewAppDecisionPreview("release");
       if (url.includes("fetch-preview")) throw new Error("Gerrit not reachable");
       return { ok: true, app_id: "new-app-2", request_id: 2 };
     });
@@ -1819,6 +1908,7 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     // Error state: skip button should appear
     await waitFor(() => screen.getByTestId("new-app-submit"));
     expect(screen.getByTestId("new-app-dialog").textContent).toContain("拉取失败");
+    expect(screen.getByTestId("new-app-decision-row-rel-2").textContent).toContain("cicd_only");
     // Click "跳过，直接创建"
     fireEvent.click(screen.getByTestId("new-app-submit"));
     await waitFor(() => {
@@ -1831,6 +1921,7 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
   it("duplicate Gerrit identity blocks skip creation", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
     const postMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("decision-preview")) return makeNewAppDecisionPreview("release");
       if (url.includes("fetch-preview")) {
         throw new Error("该 Gerrit URL + branch 已存在 app（aaa），请使用 aaa 名称重新申请，不能重复创建");
       }
@@ -1853,7 +1944,8 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     });
     expect(screen.getByTestId("new-app-dialog").textContent).toContain("已存在 app（aaa）");
     expect(screen.queryByTestId("new-app-submit")).not.toBeInTheDocument();
-    expect(postMock).toHaveBeenCalledTimes(1);
+    expect(postMock).toHaveBeenCalledTimes(2);
+    expect(postMock.mock.calls.some((call) => call[0] === "/api/cicd/apps/new")).toBe(false);
   });
 
   it("duplicate rejected app with same name fetches preview before re-apply", async () => {
@@ -1865,6 +1957,7 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     };
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
     const postMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("decision-preview")) return makeNewAppDecisionPreview("release");
       if (url.includes("fetch-preview")) {
         return {
           git_url: "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_aa",
@@ -1939,6 +2032,7 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
   it("fetch-error step shows derived git_url@branch for a git-type repo", async () => {
     // Gerrit fetch throws (network unreachable)
     (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes("decision-preview")) return makeNewAppDecisionPreview("release");
       if (url.includes("fetch-preview")) throw new Error("Gerrit not reachable");
       return { ok: true, app_id: "x1", request_id: 1 };
     });
@@ -1965,6 +2059,7 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
 
   it("fetch-error step shows '需联网解析' for repo-type (manifest needs network)", async () => {
     (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes("decision-preview")) return makeNewAppDecisionPreview("release");
       if (url.includes("fetch-preview")) throw new Error("Gerrit not reachable");
       return { ok: true, app_id: "x2", request_id: 2 };
     });
@@ -2005,6 +2100,7 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
       parsed: { version: "4.0.1" },
     };
     (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes("decision-preview")) return makeNewAppDecisionPreview("release");
       if (url.includes("fetch-preview")) return mockPreview;
       return { ok: true, app_id: "x3", request_id: 3 };
     });
@@ -2037,6 +2133,7 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
       // No content fields (app_version, x86_chips, etc.) — unavailable
     };
     (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes("decision-preview")) return makeNewAppDecisionPreview("release");
       if (url.includes("fetch-preview")) return partialResponse;
       return { ok: true, app_id: "x4", request_id: 4 };
     });

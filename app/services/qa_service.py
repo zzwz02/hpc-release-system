@@ -32,13 +32,14 @@ QA_RELEASE_REPORT_COLUMNS = [
     "X86支持芯片系列", "ARM支持芯片类型", "对比",
     "开发者社区发布情况", "开发者社区发布包支持python版本",
     "开发者社区发布包支持的底层框架及版本",
-    "ARM / Kylin sanity", "Ubuntu / 兼容性 sanity",
+    "ARM / Kylin sanity", "Ubuntu / 兼容性 sanity", "CICD状态",
 ]
 
 QA_TEST_CMD_COLUMNS = [
     "app_name", "git_branch", "app_version", "arch",
-    "maca_version", "test_name", "docker_cmd",
+    "maca_version", "test_name", "docker_cmd", "cicd_status",
 ]
+_CICD_PENDING_LABEL = "CICD待完成"
 
 # ---------------------------------------------------------------------------
 # QA status batch update — POST /api/qa/status-batch
@@ -440,6 +441,7 @@ def _report_test_cmd_rows(
     app_name: str,
     git_branch: str,
     maca_version: str,
+    cicd_status: str = "",
 ) -> list[list[str]]:
     version_value = raw.get("app_version")
     app_version = str(version_value).strip() if version_value not in (None, "") else ""
@@ -457,7 +459,8 @@ def _report_test_cmd_rows(
         if expanded_cmds:
             for arch, docker_cmd in expanded_cmds:
                 rows.append([
-                    app_name, git_branch, app_version, arch, maca_version, str(test_name), docker_cmd
+                    app_name, git_branch, app_version, arch, maca_version, str(test_name), docker_cmd,
+                    cicd_status,
                 ])
             continue
         docker_cmd = _report_docker_cmd(test_cfg)
@@ -472,6 +475,7 @@ def _report_test_cmd_rows(
                 maca_version,
                 str(test_name),
                 docker_cmd,
+                cicd_status,
             ])
     return rows
 
@@ -602,11 +606,19 @@ def get_qa_reports(
     test_rows: list[list[str]] = []
     compare_active = bool(compare_release_id) and compare_release_id != release_id
     display_names = _user_display_names(conn)
+    from app.services import cicd_service as _cicd_service
+
+    onboarding_by_app = _cicd_service.cicd_first_onboarding_by_app(conn)
     for view, app, snapshot, app_id in items:
         sanity = snapshot.get("sanity") or {}
         compare_value = _compare_summary(snapshot, base_snapshots.get(app_id)) if compare_active else ""
         decision = normalize_release_decision(snapshot.get("release_decision"))
         is_release = decision == "release"
+        cicd_pending = (
+            onboarding_by_app.get(app_id, {}).get("cicd_onboarding_status")
+            == "pending_create"
+        )
+        cicd_status = _CICD_PENDING_LABEL if cicd_pending else ""
         if not is_release and not compare_value:
             continue
         if is_release:
@@ -627,7 +639,13 @@ def get_qa_reports(
             community_framework = ""
             arm_kylin_sanity = ""
             ubuntu_sanity = ""
-        release_rows_meta.append({"release_decision": decision, "is_release": decision == "release"})
+        row_meta: dict[str, Any] = {
+            "release_decision": decision,
+            "is_release": decision == "release",
+        }
+        if cicd_pending:
+            row_meta["cicd_pending"] = True
+        release_rows_meta.append(row_meta)
         release_rows.append([
             "AI4Sci" if view["doc_target"] == "ai4sci" else "HPC",
             view["official_name"],
@@ -649,15 +667,31 @@ def get_qa_reports(
             community_framework,
             arm_kylin_sanity,
             ubuntu_sanity,
+            cicd_status,
         ])
         if is_release:
             raw = (snapshot.get("app_info") or {}).get("raw")
+            app_test_rows: list[list[str]] = []
             if isinstance(raw, dict):
-                test_rows.extend(
-                    _report_test_cmd_rows(
-                        raw, view["official_name"], app.get("git_branch", ""), maca_version
-                    )
+                app_test_rows = _report_test_cmd_rows(
+                    raw,
+                    view["official_name"],
+                    app.get("git_branch", ""),
+                    maca_version,
+                    cicd_status,
                 )
+            if cicd_pending and not app_test_rows:
+                app_test_rows.append([
+                    view["official_name"],
+                    app.get("git_branch", ""),
+                    str(snapshot.get("version") or ""),
+                    "",
+                    maca_version,
+                    "",
+                    "",
+                    cicd_status,
+                ])
+            test_rows.extend(app_test_rows)
     test_rows.sort(key=lambda row: (row[0].lower(), row[1].lower(), row[2].lower(), row[3].lower()))
 
     return {

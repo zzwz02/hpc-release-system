@@ -329,6 +329,25 @@ describe("QaPage mark pane", () => {
     });
   });
 
+  it("marks a release app whose CICD-first delivery is still pending", async () => {
+    const pendingApp = {
+      ...makeApp("app1"),
+      cicd_onboarding_status: "pending_create" as const,
+      cicd_onboarding_request_id: 42,
+      cicd_onboarding_delivery_status: "pending",
+    };
+    const payload = makePayload({ apps: [pendingApp] });
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
+      if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
+      return Promise.resolve(payload);
+    });
+    const qc = makeQClient();
+    renderQaPage(qc);
+
+    await waitFor(() => expect(screen.getByText("CICD待完成")).toBeInTheDocument());
+    expect(screen.getByText(/App app1/)).toBeInTheDocument();
+  });
+
   it("does NOT show apps with cicd_only decision", async () => {
     const payload = makePayload({
       apps: [makeApp("app1"), makeApp("app2")],

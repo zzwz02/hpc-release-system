@@ -503,13 +503,13 @@ def update_snapshot(
                 current_decision,
                 new_decision_norm,
             )
-    if (
-        requested_decision != current_decision
-        and decision_sync_domain.crosses_runtime_boundary(current_decision, requested_decision)
-    ):
+    if requested_decision != current_decision:
         from app.services import cicd_service as _cicd_svc
 
-        _cicd_svc.ensure_can_open_cicd_modify_request(conn, app_id)
+        if decision_sync_domain.crosses_runtime_boundary(current_decision, requested_decision):
+            _cicd_svc.ensure_can_open_cicd_modify_request(conn, app_id)
+        else:
+            _cicd_svc.ensure_no_open_cicd_create_request(conn, app_id)
 
     owner_meta = {"type", "official_url", "description"}
     doc_labels = {
