@@ -244,6 +244,52 @@ describe("AppWorkbenchPage", () => {
     });
   });
 
+  it("renders app_info diff type, field, and backend value keys", async () => {
+    const payload = makePayload({
+      release: makeRelease({
+        app1: makeSnap("app1", {
+          official_name: "PyFR",
+          app_info: { source_type: "gerrit_fetch" },
+          app_info_diffs: [
+            {
+              id: "diff-1",
+              type: "X86芯片变化",
+              field: "x86_chips",
+              old_value: ["C500"],
+              new_value: ["C500", "C588"],
+              qa_impact: true,
+            },
+            {
+              id: "diff-2",
+              type: "Test target变化",
+              field: "test_targets",
+              old_value: [{ path: "case-a", container_args: "--device=/dev/dri" }],
+              new_value: [{ path: "case-a", container_args: "--device=/dev/dri --cap-add=SYS_NICE" }],
+              qa_impact: true,
+            },
+          ],
+        }),
+      }),
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    const qc = makeQueryClient();
+    renderPage(qc);
+
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+    fireEvent.click(screen.getByTestId("app-row-app1"));
+
+    await waitFor(() => {
+      const detail = screen.getByTestId("detail-panel").textContent ?? "";
+      expect(detail).toContain("X86芯片变化");
+      expect(detail).toContain("x86_chips");
+      expect(detail).toContain("C500");
+      expect(detail).toContain("C588");
+      expect(detail).toContain("Test target变化");
+      expect(detail).toContain("test_targets");
+      expect(detail).toContain("--device=/dev/dri --cap-add=SYS_NICE");
+    });
+  });
+
   it("shows QA cannot_release issue banner in detail panel", async () => {
     const payload = makePayload({
       release: makeRelease({

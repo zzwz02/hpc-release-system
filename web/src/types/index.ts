@@ -154,9 +154,12 @@ export interface AppInfoSnapshot {
 }
 
 export interface AppInfoDiff {
+  id: string;
+  type: string;
   field: string;
-  old: unknown;
-  new: unknown;
+  old_value: unknown;
+  new_value: unknown;
+  qa_impact: boolean;
 }
 
 export interface Snapshot {

@@ -149,6 +149,12 @@ function QaDot({ snap }: { snap: Snapshot }) {
   );
 }
 
+function formatAppInfoDiffValue(value: unknown): string {
+  if (value === undefined) return "—";
+  if (typeof value === "string") return value || "（空）";
+  return JSON.stringify(value, null, 2) ?? String(value);
+}
+
 function CicdPendingPill({ count }: { count: number }) {
   if (count <= 0) return null;
   return (
@@ -2385,10 +2391,10 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
                   <tbody>
                     {snap.app_info_diffs.map((d, i) => (
                       <tr key={i}>
+                        <td>{d.type}</td>
                         <td>{d.field}</td>
-                        <td>{d.field}</td>
-                        <td>{JSON.stringify(d.old)}</td>
-                        <td>{JSON.stringify(d.new)}</td>
+                        <td className="cell-wrap"><div className="prewrap">{formatAppInfoDiffValue(d.old_value)}</div></td>
+                        <td className="cell-wrap"><div className="prewrap">{formatAppInfoDiffValue(d.new_value)}</div></td>
                       </tr>
                     ))}
                   </tbody>
