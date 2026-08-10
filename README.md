@@ -264,6 +264,10 @@ QA 上传的 log 文件本体保存在 `qa_logs.content` BLOB 中，下载与 AI
 5. Manager review / Gerrit merge 完成后，RM 执行最终 Lock Release。
 6. 需要跟踪构建交付时，Owner/RM 在「App 工作台 → CICD」提交配置申请；RM/SPD 在「CICD 工作台」审批、交付或查看近期申请。
 
+QA Release Report 只展示当前 QA 测试范围（`release` 决策）。选择对比版本时，额外展示从
+`release` 变为 `cicd_only` / `stopped` 的「停止发布」项，以及从非 release 进入 `release` 的
+「新增发布」项；两个版本都不在 QA 范围时，其 `cicd_only` / `stopped` 状态切换或字段变化不展示。
+
 ---
 
 ## 主要 API（节选）

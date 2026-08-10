@@ -611,9 +611,21 @@ def get_qa_reports(
     onboarding_by_app = _cicd_service.cicd_first_onboarding_by_app(conn)
     for view, app, snapshot, app_id in items:
         sanity = snapshot.get("sanity") or {}
-        compare_value = _compare_summary(snapshot, base_snapshots.get(app_id)) if compare_active else ""
         decision = normalize_release_decision(snapshot.get("release_decision"))
         is_release = decision == "release"
+        base_snapshot = base_snapshots.get(app_id)
+        base_is_release = (
+            base_snapshot is not None
+            and normalize_release_decision(base_snapshot.get("release_decision")) == "release"
+        )
+        # The QA report describes QA scope.  During comparison, keep apps that
+        # enter or leave that scope, but ignore changes wholly between the two
+        # non-QA decisions (cicd_only/stopped).
+        compare_value = (
+            _compare_summary(snapshot, base_snapshot)
+            if compare_active and (is_release or base_is_release)
+            else ""
+        )
         cicd_pending = (
             onboarding_by_app.get(app_id, {}).get("cicd_onboarding_status")
             == "pending_create"

@@ -153,6 +153,61 @@ def test_qa_report_keeps_changed_non_release_app_but_blanks_release_fields(relea
         assert row[column] == ""
 
 
+@pytest.mark.parametrize(
+    ("base_decision", "current_decision"),
+    [
+        ("cicd_only", "cicd_only"),
+        ("cicd_only", "stopped"),
+        ("stopped", "cicd_only"),
+        ("stopped", "stopped"),
+    ],
+)
+def test_qa_report_compare_hides_changes_wholly_outside_qa_scope(
+    release_with_app,
+    base_decision,
+    current_decision,
+):
+    conn, base_release_id, app_id = release_with_app
+    seed_snapshot(
+        conn,
+        base_release_id,
+        app_id,
+        app_info={
+            "app_version": "1.0",
+            "app_test": {"old": {"enabled": True, "test_cmd": "run-old"}},
+        },
+    )
+    core.update_snapshot(
+        conn,
+        base_release_id,
+        app_id,
+        lambda snapshot: snapshot.update({"release_decision": base_decision}),
+    )
+    current_release_id = core.create_release_from_previous(conn, "next")
+
+    def _change_non_qa_snapshot(snapshot: dict) -> None:
+        snapshot["release_decision"] = current_decision
+        snapshot["version"] = "2.0"
+        snapshot["test_docs"] = [{"path": "new-test.md", "content": "changed"}]
+        snapshot["app_info"] = {
+            "raw": {
+                "app_version": "2.0",
+                "app_test": {"new": {"enabled": True, "test_cmd": "run-new"}},
+            }
+        }
+
+    core.update_snapshot(conn, current_release_id, app_id, _change_non_qa_snapshot)
+
+    report = qa_service.get_qa_reports(
+        conn,
+        current_release_id,
+        compare_release_id=base_release_id,
+    )["release_report"]
+
+    assert report["rows"] == []
+    assert report["rows_meta"] == []
+
+
 def test_qa_test_cmd_only_filters_explicitly_disabled_tests(release_with_app):
     conn, release_id, app_id = release_with_app
     seed_snapshot(
