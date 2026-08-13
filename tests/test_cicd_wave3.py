@@ -10,6 +10,7 @@ import json
 
 import pytest
 
+from app.integrations import jira as jira_integration
 from app.repositories import apps_repo
 from app.services import cicd_service
 from app.timeutil import beijing_timestamp
@@ -196,6 +197,48 @@ class TestCicdFirstValidation:
 
 
 class TestCicdFirstAppBackedLifecycle:
+    def test_app_form_cicd_fields_reach_request_detail_and_jira(self, temp_db, tmp_dir):
+        seed_release(temp_db, tmp_path=tmp_dir)
+        result = cicd_service.cicd_first_new_app(
+            temp_db,
+            official_name=_OFFICIAL_NAME,
+            repo_type="git",
+            repo_name=_REPO_SHORT,
+            branch=_BRANCH,
+            submitter="owner",
+            submitter_role="Owner",
+            payload={
+                "cicd_repo_type": "git",
+                "cicd_community_artifact": "image, pkg",
+                "cicd_build_image": "pyg",
+                "cicd_test_timeout": "55",
+                "cicd_notes": "依赖 pyg",
+            },
+        )
+
+        payload = _payload(result["request"])
+        assert payload["community_artifact"] == ["image", "pkg"]
+        assert payload["build_image"] == "pyg"
+        assert payload["test_timeout"] == 55
+        assert payload["notes"] == "依赖 pyg"
+        app = apps_repo.get_app(temp_db, result["app_id"])
+        assert app is not None
+        assert app["cicd_community_artifact"] == "image, pkg"
+        assert app["cicd_build_image"] == "pyg"
+        assert app["cicd_test_timeout"] == "55"
+        assert app["cicd_notes"] == "依赖 pyg"
+
+        description = jira_integration.build_description(
+            request_id=result["request"]["id"],
+            request_type="create",
+            payload=payload,
+            task_id=result["app_id"],
+            submitter="owner",
+            title="[New] W3CicdFirst 【新发布项目】",
+        )
+        assert "|构建依赖镜像|pyg|" in description
+        assert "|备注|依赖 pyg|" in description
+
     def test_create_writes_app_and_app_backed_request(self, temp_db, tmp_dir):
         release_id = seed_release(temp_db, tmp_path=tmp_dir)
 

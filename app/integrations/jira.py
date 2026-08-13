@@ -143,8 +143,14 @@ _FIELD_LABEL: dict[str, str] = {
     "app_name":        "应用名称",
     "app_version":     "应用版本",
     "repo_url":        "代码仓库",
+    "repo_name":       "Gerrit 路径",
     "branch":          "分支",
     "repo_type":       "仓库类型",
+    "release_decision": "Release 决策",
+    "build_product":   "构建产物",
+    "community_artifact": "开发者社区产物",
+    "build_image":     "构建依赖镜像",
+    "test_timeout":    "超时(min)",
     "pipeline_url":    "流水线地址",
     "build_cmd":       "构建命令",
     "deploy_cmd":      "部署命令",
@@ -153,6 +159,8 @@ _FIELD_LABEL: dict[str, str] = {
     "env":             "环境",
     "owner_username":  "负责人",
     "qa_username":     "QA负责人",
+    "status":          "状态",
+    "notes":           "备注",
     "description":     "描述",
     "jira_id":         "Jira",
 }
@@ -199,7 +207,9 @@ def build_description(
     if request_type == "create":
         lines.append("||字段||值||")
         for k, v in payload.items():
-            if v is None or v == "":
+            if k == "app_id" or k.startswith("_"):
+                continue
+            if v is None or v == "" or v == []:
                 continue
             label = _FIELD_LABEL.get(k, k)
             val = ", ".join(v) if isinstance(v, list) else str(v)

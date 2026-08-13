@@ -177,6 +177,42 @@ def _test_timeout_value(value: object) -> int:
     return parsed if parsed > 0 else 40
 
 
+def _cicd_first_config_values(payload: dict, repo_type: str) -> dict[str, object]:
+    """Normalize the App-workbench CICD fields for a create request.
+
+    The new-App form submits App storage keys (``cicd_build_image`` etc.),
+    while CICD requests use the unprefixed task keys (``build_image`` etc.).
+    Keep the legacy unprefixed inputs as fallbacks for older API callers.
+    """
+    community_value = payload.get("cicd_community_artifact")
+    if community_value in (None, ""):
+        community_value = payload.get("community_artifact", [])
+    community_app_value = _community_app_value(community_value)
+
+    build_image = payload.get("cicd_build_image")
+    if build_image in (None, ""):
+        build_image = payload.get("build_image", "")
+
+    timeout = payload.get("cicd_test_timeout")
+    if timeout in (None, ""):
+        timeout = payload.get("test_timeout", 40)
+
+    notes = payload.get("cicd_notes")
+    if notes in (None, ""):
+        notes = payload.get("notes", "")
+
+    normalized_timeout = _test_timeout_value(timeout)
+    return {
+        "repo_type": str(payload.get("cicd_repo_type") or repo_type or "git").strip()
+        or "git",
+        "community_artifact": _community_payload_from_app(community_app_value),
+        "community_artifact_app": community_app_value,
+        "build_image": str(build_image or "").strip(),
+        "test_timeout": normalized_timeout,
+        "notes": str(notes or "").strip(),
+    }
+
+
 def _is_full_git_remote(value: str) -> bool:
     return "://" in value or value.startswith("git@")
 
@@ -2634,15 +2670,16 @@ def cicd_first_new_app(
                 )
                 snapshots_repo.save_snapshot(conn, rel["id"], app_id, snap)
 
+        cicd_config = _cicd_first_config_values(payload, repo_type)
         apps_repo.update_cicd_config(
             conn,
             app_id,
             {
-                "cicd_repo_type": payload.get("cicd_repo_type", ""),
-                "cicd_community_artifact": payload.get("cicd_community_artifact", ""),
-                "cicd_build_image": payload.get("cicd_build_image", ""),
-                "cicd_test_timeout": payload.get("cicd_test_timeout", ""),
-                "cicd_notes": payload.get("cicd_notes", ""),
+                "cicd_repo_type": cicd_config["repo_type"],
+                "cicd_community_artifact": cicd_config["community_artifact_app"],
+                "cicd_build_image": cicd_config["build_image"],
+                "cicd_test_timeout": cicd_config["test_timeout"],
+                "cicd_notes": cicd_config["notes"],
             },
         )
 
@@ -2679,12 +2716,12 @@ def cicd_first_new_app(
             "release_decision": target_decision,
             "app_version": payload.get("app_version", ""),
             "build_product": payload.get("build_product", []),
-            "community_artifact": payload.get("community_artifact", []),
-            "build_image": payload.get("build_image", ""),
-            "test_timeout": _test_timeout_value(payload.get("test_timeout")),
+            "community_artifact": cicd_config["community_artifact"],
+            "build_image": cicd_config["build_image"],
+            "test_timeout": cicd_config["test_timeout"],
             "owner_username": submitter,
             "status": "Running",  # release and cicd_only both map to Running
-            "notes": payload.get("notes", ""),
+            "notes": cicd_config["notes"],
         }
 
         ts = beijing_timestamp()

@@ -840,6 +840,11 @@ class TestCicdFirstWithAppInfo:
             "repo_type": "git",
             "repo_name": _REPO_SHORT,
             "branch": _BRANCH,
+            "cicd_repo_type": "git",
+            "cicd_community_artifact": "image, pkg",
+            "cicd_build_image": "pyg",
+            "cicd_test_timeout": "55",
+            "cicd_notes": "依赖 pyg",
             "app_info_parsed": preview["parsed"],
             "app_info_commit_id": preview["commit_id"],
             # FE context fields used to bind the Owner decision to this cycle:
@@ -860,6 +865,11 @@ class TestCicdFirstWithAppInfo:
         assert body["request"]["status"] == "pending"
         assert body["request"]["task_id"] == body["app_id"]
         assert body["request"]["app_id"] == body["app_id"]
+        request_payload = _json.loads(body["request"]["payload"])
+        assert request_payload["community_artifact"] == ["image", "pkg"]
+        assert request_payload["build_image"] == "pyg"
+        assert request_payload["test_timeout"] == 55
+        assert request_payload["notes"] == "依赖 pyg"
 
 
 # ---------------------------------------------------------------------------
