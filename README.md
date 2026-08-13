@@ -267,6 +267,8 @@ QA 上传的 log 文件本体保存在 `qa_logs.content` BLOB 中，下载与 AI
 QA Release Report 只展示当前 QA 测试范围（`release` 决策）。选择对比版本时，额外展示从
 `release` 变为 `cicd_only` / `stopped` 的「停止发布」项，以及从非 release 进入 `release` 的
 「新增发布」项；两个版本都不在 QA 范围时，其 `cicd_only` / `stopped` 状态切换或字段变化不展示。
+Test 命令表会按 `app_info.json` 中 `app_test` 的每条 `test_cmd` 展示对应的
+`perf_golden`（`max` / `min`）和 `perf_unit`；字段未配置时保持为空。
 
 ---
 

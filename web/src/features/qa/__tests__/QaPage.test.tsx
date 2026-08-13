@@ -657,6 +657,43 @@ describe("QaPage subtab navigation", () => {
     });
   });
 
+  it("shows perf_golden and perf_unit from each Test 命令 row", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
+      if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
+      if (path.includes("/api/qa-reports")) {
+        return Promise.resolve({
+          release_name: "3.0",
+          maca_version: "3.0",
+          compare_release_id: "",
+          compare_release_name: "",
+          release_report: { columns: [], rows: [], rows_meta: [] },
+          test_cmd: {
+            columns: [
+              "app_name",
+              "test_name",
+              "docker_cmd",
+              "perf_golden",
+              "perf_unit",
+            ],
+            rows: [["HPL", "sanity", "docker run hpl", "max", "GFlops"]],
+          },
+          generated_at: "2026-01-01 00:00:00",
+        });
+      }
+      return Promise.resolve(makePayload());
+    });
+    const qc = makeQClient();
+    renderQaPage(qc);
+    await waitFor(() => expect(screen.getByText("Test 命令")).toBeDefined());
+    fireEvent.click(screen.getByText("Test 命令"));
+    fireEvent.click(await screen.findByText("加载报告"));
+
+    expect(await screen.findByText("perf_golden")).toBeDefined();
+    expect(screen.getByText("perf_unit")).toBeDefined();
+    expect(screen.getByText("max")).toBeDefined();
+    expect(screen.getByText("GFlops")).toBeDefined();
+  });
+
   it("does not include the current release in the compare selector", async () => {
     const previousRelease = { ...makeReleaseSummary(), id: "rel-0", name: "2.9" };
     (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {

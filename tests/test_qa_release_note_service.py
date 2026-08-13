@@ -228,6 +228,14 @@ def test_qa_test_cmd_only_filters_explicitly_disabled_tests(release_with_app):
                 "default_enabled": {
                     "test_cmd": "/opt/rocHPL/run_hpl_autotest.sh",
                     "supported_chip": {"c500": ["ubuntu22.04_amd64"]},
+                    "perf_golden": "max",
+                    "perf_unit": "GFlops",
+                },
+                "minimum_enabled": {
+                    "test_cmd": "/opt/rocHPL/run_latency_test.sh",
+                    "supported_chip": {"c500": ["ubuntu22.04_amd64"]},
+                    "perf_golden": "min",
+                    "perf_unit": "ms",
                 },
                 "explicitly_disabled": {
                     "test_cmd": "/opt/rocHPL/run_disabled_test.sh",
@@ -240,8 +248,30 @@ def test_qa_test_cmd_only_filters_explicitly_disabled_tests(release_with_app):
 
     report = qa_service.get_qa_reports(conn, release_id)["test_cmd"]
 
-    assert [row[5] for row in report["rows"]] == ["default_enabled"]
-    assert report["rows"][0][6].endswith("sh -c '/opt/rocHPL/run_hpl_autotest.sh'")
+    rows = {
+        row["test_name"]: row
+        for values in report["rows"]
+        for row in [dict(zip(report["columns"], values))]
+    }
+    assert set(rows) == {"default_enabled", "minimum_enabled"}
+    assert rows["default_enabled"]["docker_cmd"].endswith(
+        "sh -c '/opt/rocHPL/run_hpl_autotest.sh'"
+    )
+    assert rows["default_enabled"]["perf_golden"] == "max"
+    assert rows["default_enabled"]["perf_unit"] == "GFlops"
+    assert rows["minimum_enabled"]["perf_golden"] == "min"
+    assert rows["minimum_enabled"]["perf_unit"] == "ms"
+
+
+def test_qa_test_cmd_leaves_missing_perf_fields_blank(release_with_app):
+    conn, release_id, app_id = release_with_app
+    seed_snapshot(conn, release_id, app_id)
+
+    report = qa_service.get_qa_reports(conn, release_id)["test_cmd"]
+    row = dict(zip(report["columns"], report["rows"][0]))
+
+    assert row["perf_golden"] == ""
+    assert row["perf_unit"] == ""
 
 
 def test_release_note_includes_release_app_even_when_qa_is_not_passed(release_with_app):

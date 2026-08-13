@@ -131,6 +131,8 @@
         "maca_version",
         "test_name",
         "docker_cmd",
+        "perf_golden",
+        "perf_unit",
         "cicd_status"
       ],
       "rows": []

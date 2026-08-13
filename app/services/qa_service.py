@@ -37,7 +37,8 @@ QA_RELEASE_REPORT_COLUMNS = [
 
 QA_TEST_CMD_COLUMNS = [
     "app_name", "git_branch", "app_version", "arch",
-    "maca_version", "test_name", "docker_cmd", "cicd_status",
+    "maca_version", "test_name", "docker_cmd", "perf_golden", "perf_unit",
+    "cicd_status",
 ]
 _CICD_PENDING_LABEL = "CICD待完成"
 
@@ -455,12 +456,14 @@ def _report_test_cmd_rows(
             continue
         if test_cfg.get("ignore_release"):
             continue
+        perf_golden = str(test_cfg.get("perf_golden") or "").strip()
+        perf_unit = str(test_cfg.get("perf_unit") or "").strip()
         expanded_cmds = _report_expanded_docker_cmds(raw, test_cfg)
         if expanded_cmds:
             for arch, docker_cmd in expanded_cmds:
                 rows.append([
                     app_name, git_branch, app_version, arch, maca_version, str(test_name), docker_cmd,
-                    cicd_status,
+                    perf_golden, perf_unit, cicd_status,
                 ])
             continue
         docker_cmd = _report_docker_cmd(test_cfg)
@@ -475,6 +478,8 @@ def _report_test_cmd_rows(
                 maca_version,
                 str(test_name),
                 docker_cmd,
+                perf_golden,
+                perf_unit,
                 cicd_status,
             ])
     return rows
@@ -699,6 +704,8 @@ def get_qa_reports(
                     str(snapshot.get("version") or ""),
                     "",
                     maca_version,
+                    "",
+                    "",
                     "",
                     "",
                     cicd_status,
