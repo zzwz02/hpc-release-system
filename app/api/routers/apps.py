@@ -24,6 +24,25 @@ router = APIRouter(tags=["apps"])
 
 
 # ---------------------------------------------------------------------------
+# GET /api/apps/owner-lookup
+# ---------------------------------------------------------------------------
+
+@router.get("/api/apps/owner-lookup")
+def api_apps_owner_lookup(
+    git_url: str = Query(...),
+    branch: str = Query(...),
+    user: dict = Depends(require_login),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    """Return owners/name/version for latest-release apps by repo suffix + branch.
+
+    Jenkins callers may pass either a short repo name or a full Gerrit URL; the
+    service matches by the last path component and exact branch.
+    """
+    return app_service.lookup_latest_app_owner(conn, git_url=git_url, branch=branch)
+
+
+# ---------------------------------------------------------------------------
 # GET /api/app-audit
 # ---------------------------------------------------------------------------
 

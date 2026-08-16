@@ -277,7 +277,7 @@ Test 命令表会按 `app_info.json` 中 `app_test` 的每条 `test_cmd` 展示�
 - 认证：`POST /api/login`、`POST /api/login/ldap`、`POST /api/logout`、`GET /api/me`、`GET /api/ldap/status`
 - 状态：`GET /api/state`
 - Release：`POST /api/import-initial`、`POST /api/releases/create`、`POST /api/releases/deadlines`、`POST /api/releases/final-lock`、`POST /api/releases/final-unlock`
-- App：`POST /api/apps/update`、`POST /api/app-info`、`POST /api/app-info/fetch`
+- App：`GET /api/apps/owner-lookup`（Jenkins 按 Gerrit URL 后缀 + Branch 查最新 release 的 Owner/官方名称/版本）、`POST /api/apps/update`、`POST /api/app-info`、`POST /api/app-info/fetch`
 - QA：`POST /api/qa/status-batch`、`POST /api/qa/upload-log`、`POST /api/qa/analyze-log/start`、`GET /api/qa/analyze-log/status`、`GET /api/qa-reports`
 - 产物：`POST /api/artifacts/generate`、`POST /api/artifacts/manager-review`、`GET /api/artifacts/<kind>`、`GET /api/test-scope.csv`
 - WIKI：`GET /api/wiki/articles`、`POST /api/wiki/articles/save`、`POST /api/wiki/articles/pin`、`POST /api/wiki/articles/delete`、`POST /api/wiki/images/upload`

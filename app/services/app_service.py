@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import PurePosixPath
 from typing import Any
 
 from app.api.errors import AuthzError
@@ -186,6 +187,105 @@ def release_qa_audit_logs(conn: sqlite3.Connection, release_id: str) -> dict[str
     if not app_ids:
         return {}
     return qa_audit_logs_by_app(conn, release_id, app_ids)
+
+
+def repo_suffix_for_lookup(git_url: str) -> str:
+    """Return the repository suffix used by Jenkins/Gerrit owner lookup."""
+    value = str(git_url or "").strip().rstrip("/")
+    if not value:
+        return ""
+    if value.lower().endswith(".xml"):
+        return value.lstrip("/")
+    suffix = PurePosixPath(value).name or value.rsplit("/", 1)[-1]
+    if suffix.endswith(".git"):
+        suffix = suffix[:-4]
+    return suffix
+
+
+def _escape_sql_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def lookup_latest_app_owner(
+    conn: sqlite3.Connection,
+    *,
+    git_url: str,
+    branch: str,
+) -> dict[str, Any]:
+    """Look up owner/name/version for latest-release apps by git_url suffix + branch."""
+    suffix = repo_suffix_for_lookup(git_url)
+    git_branch = str(branch or "").strip()
+    if not suffix:
+        raise ValueError("git_url is required")
+    if not git_branch:
+        raise ValueError("branch is required")
+
+    release = conn.execute(
+        """
+        SELECT id, name, created_at
+        FROM releases
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if not release:
+        return {
+            "release": None,
+            "request_git_url": git_url,
+            "request_git_branch": git_branch,
+            "git_url": git_url,
+            "repo_suffix": suffix,
+            "branch": git_branch,
+            "matches": [],
+        }
+
+    rows = conn.execute(
+        """
+        SELECT
+          a.id AS app_id,
+          a.git_url,
+          a.git_branch,
+          s.data_json
+        FROM apps a
+        JOIN snapshots s ON s.app_id = a.id
+        WHERE s.release_id = ?
+          AND a.git_url LIKE ? ESCAPE '\\'
+          AND a.git_branch = ?
+        ORDER BY a.id
+        """,
+        (release["id"], f"%{_escape_sql_like(suffix)}", git_branch),
+    ).fetchall()
+
+    matches: list[dict[str, Any]] = []
+    for row in rows:
+        snapshot = json.loads(row["data_json"] or "{}")
+        owners = snapshot.get("owners") or []
+        if not isinstance(owners, list):
+            owners = [str(owners)] if str(owners or "").strip() else []
+        matches.append(
+            {
+                "app_id": row["app_id"],
+                "git_url": row["git_url"],
+                "git_branch": row["git_branch"],
+                "owners": [str(owner) for owner in owners if str(owner).strip()],
+                "official_name": snapshot.get("official_name") or "",
+                "version": snapshot.get("version") or "",
+            }
+        )
+
+    return {
+        "release": {
+            "id": release["id"],
+            "name": release["name"],
+            "created_at": release["created_at"],
+        },
+        "request_git_url": git_url,
+        "request_git_branch": git_branch,
+        "git_url": git_url,
+        "repo_suffix": suffix,
+        "branch": git_branch,
+        "matches": matches,
+    }
 
 
 def get_state(
