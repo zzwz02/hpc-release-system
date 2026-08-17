@@ -104,7 +104,7 @@ export function JenkinsFailuresPage() {
   const [filters, setFilters] = useState<FailureRecordFilters>(emptyFilters);
   const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [summaryGroup, setSummaryGroup] = useState<SummaryGroupKey>("normalized_stage");
+  const [summaryGroup, setSummaryGroup] = useState<SummaryGroupKey>("owner_role");
   const [summaryExpanded, setSummaryExpanded] = useState(false);
 
   const activeFilters = useMemo<FailureRecordFilters>(
