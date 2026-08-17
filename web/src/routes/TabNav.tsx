@@ -1,5 +1,5 @@
 /**
- * TabNav — renders the 8 role-gated tab buttons.
+ * TabNav — renders the role-gated tab buttons.
  *
  * Mirrors legacy tab nav index.html:569-578 + renderRoleChrome:1769-1784.
  * Tabs whose roles don't include the current user's role are hidden (not
@@ -60,6 +60,9 @@ export function TabNav() {
     }
     if (view === "cicd") {
       void queryClient.invalidateQueries({ queryKey: ["cicd"] });
+    }
+    if (view === "jenkins-failures" || view === "cicd-assistant") {
+      void queryClient.invalidateQueries({ queryKey: ["cicd-agent"] });
     }
     if (view === "wiki") {
       void queryClient.invalidateQueries({ queryKey: ["wiki"] });

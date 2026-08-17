@@ -71,7 +71,7 @@ describe("TabNav", () => {
   it("renders CICD tab link for RM role", async () => {
     renderTabNav("RM");
     await waitFor(() => {
-      expect(screen.getByText(/CICD/)).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /CICD 工作台/ })).toBeInTheDocument();
     });
   });
 
@@ -79,6 +79,22 @@ describe("TabNav", () => {
     renderTabNav("Guest");
     await waitFor(() => {
       expect(screen.getByText(/总览/)).toBeInTheDocument();
+    });
+  });
+
+  it("renders Jenkins failure and CICD assistant tabs for Guest", async () => {
+    renderTabNav("Guest");
+    await waitFor(() => {
+      expect(screen.getByRole("link", { name: "jenkins失败查询" })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "CICD助手" })).toBeInTheDocument();
+    });
+  });
+
+  it("renders Jenkins failure and CICD assistant tabs for Admin", async () => {
+    renderTabNav("Admin");
+    await waitFor(() => {
+      expect(screen.getByRole("link", { name: "jenkins失败查询" })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "CICD助手" })).toBeInTheDocument();
     });
   });
 
@@ -99,7 +115,7 @@ describe("TabNav", () => {
     renderTabNav("RM");
     // Wait for query to settle then assert no badge
     await waitFor(() => {
-      expect(screen.getByText(/CICD/)).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /CICD 工作台/ })).toBeInTheDocument();
     });
     expect(document.querySelector(".badge-dot")).toBeNull();
   });
@@ -110,7 +126,7 @@ describe("TabNav", () => {
 
     renderTabNav("RM");
     await waitFor(() => {
-      expect(screen.getByText(/CICD/)).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /CICD 工作台/ })).toBeInTheDocument();
     });
     expect(document.querySelector(".badge-dot")).toBeNull();
   });

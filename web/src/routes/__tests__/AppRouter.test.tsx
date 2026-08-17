@@ -34,6 +34,12 @@ vi.mock("../../features/artifacts/ArtifactsPage", () => ({
 vi.mock("../../features/cicd/CicdPage", () => ({
   CicdPage: () => <div>cicd</div>,
 }));
+vi.mock("../../features/cicdAgent/JenkinsFailuresPage", () => ({
+  JenkinsFailuresPage: () => <div data-testid="jenkins-failures-page">jenkins-failures</div>,
+}));
+vi.mock("../../features/cicdAgent/CicdAssistantPage", () => ({
+  CicdAssistantPage: () => <div data-testid="cicd-assistant-page">cicd-assistant</div>,
+}));
 vi.mock("../../features/wiki/WikiPage", () => ({
   WikiPage: () => <div>wiki</div>,
 }));
@@ -98,6 +104,26 @@ describe("AppRouter", () => {
   it("Admin at /cicd is redirected to /admin (ruling C)", () => {
     renderAt("Admin", "/cicd");
     expect(screen.getByTestId("admin-page")).toBeInTheDocument();
+  });
+
+  it("Admin at /jenkins-failures can see Jenkins failure query", () => {
+    renderAt("Admin", "/jenkins-failures");
+    expect(screen.getByTestId("jenkins-failures-page")).toBeInTheDocument();
+  });
+
+  it("Admin at /cicd-assistant can see CICD assistant", () => {
+    renderAt("Admin", "/cicd-assistant");
+    expect(screen.getByTestId("cicd-assistant-page")).toBeInTheDocument();
+  });
+
+  it("Owner at /cicd-assistant can see CICD assistant", () => {
+    renderAt("Owner", "/cicd-assistant");
+    expect(screen.getByTestId("cicd-assistant-page")).toBeInTheDocument();
+  });
+
+  it("Guest at /cicd-assistant can see CICD assistant", () => {
+    renderAt("Guest", "/cicd-assistant");
+    expect(screen.getByTestId("cicd-assistant-page")).toBeInTheDocument();
   });
 
   // ── Non-Admin: no redirect ─────────────────────────────────────────────────

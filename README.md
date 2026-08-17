@@ -17,7 +17,7 @@
 ```mermaid
 flowchart TD
   subgraph Client["浏览器 — web/ (React 18 + Vite + TS)"]
-    UI["features/ 8 个页签<br/>周期管理 · App 工作台 · QA · 发布文档 · CICD · WIKI · 总览 · 系统管理"]
+    UI["features/ 页签<br/>周期管理 · App 工作台 · QA · 发布文档 · CICD · Jenkins失败查询 · CICD助手 · WIKI · 总览 · 系统管理"]
     Q["TanStack Query<br/>(staleTime: Infinity, 无轮询 = R2)"]
     MD["components/Markdown.tsx<br/>(唯一 dangerouslySetInnerHTML 出口 · DOMPurify)"]
     UI --> Q --> MD
@@ -111,6 +111,13 @@ NO_PROXY=localhost,127.0.0.1 npm run dev   # http://localhost:5173
 
 可选集成（LDAP / Jira / QA LLM / Gerrit）的配置文件与环境变量约定与旧系统一致，详见各 `*.example` / `*_demo` 模板。
 
+CICD Agent 集成通过 hpc_release_system 后端同源代理访问，浏览器只请求 `/api/cicd-agent/*`，后端再转发到独立的 CICD_Agent 服务。默认地址为 `http://10.2.118.76:8056`，可在 `.env` 中覆盖：
+
+```bash
+CICD_AGENT_BASE_URL=http://10.2.118.76:8056
+CICD_AGENT_TIMEOUT_SECONDS=90
+```
+
 ---
 
 ## 角色
@@ -119,7 +126,7 @@ NO_PROXY=localhost,127.0.0.1 npm run dev   # http://localhost:5173
 - **Owner**：维护自己负责的 app，提交 release 决策、文档、测试说明、`app_info.json`；可在 App 工作台的 CICD tab 提交 CICD 配置申请。
 - **QA**：上传 QA log、标注 QA 状态、使用 AI 分析建议。
 - **SPD**：处理被下发的 CICD 交付申请，可标记交付或退回。
-- **Admin**：仅负责访问控制——用户/角色管理、清空业务数据、全局删除 app、审计只读；**完全不参与 CICD/release 业务**（Ruling C），看不到 CICD 任务处理页签。
+- **Admin**：仅负责访问控制——用户/角色管理、清空业务数据、全局删除 app、审计只读；**完全不参与 CICD/release 业务**（Ruling C），看不到 CICD 任务处理页签，但可以访问 Jenkins 失败查询与 CICD 助手。
 - **Guest**：只读查看发布状态和 QA 信息。
 
 ---

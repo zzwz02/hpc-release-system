@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     # release_system/llm.py uses this file as the default config source.
     qa_llm_env_file: Path = _PROJECT_ROOT / "qa_llm.env"
 
+    # --- CICD Agent -------------------------------------------------------------
+    # Jenkins failure diagnostics backend.  Frontend calls this service through
+    # same-origin /api/cicd-agent/* proxy endpoints.
+    cicd_agent_base_url: str = "http://10.2.118.76:8056"
+    cicd_agent_timeout_seconds: int = 90
+
     # --- Gerrit -----------------------------------------------------------------
     # Gerrit URL prefixes — mirrors server.py:1428-1429
     hpc_gerrit_prefix: str = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/"

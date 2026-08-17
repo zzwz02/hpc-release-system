@@ -27,6 +27,8 @@ import { AppWorkbenchPage } from "../features/appWorkbench/AppWorkbenchPage";
 import { QaPage } from "../features/qa/QaPage";
 import { ArtifactsPage } from "../features/artifacts/ArtifactsPage";
 import { CicdPage } from "../features/cicd/CicdPage";
+import { CicdAssistantPage } from "../features/cicdAgent/CicdAssistantPage";
+import { JenkinsFailuresPage } from "../features/cicdAgent/JenkinsFailuresPage";
 import { WikiPage } from "../features/wiki/WikiPage";
 import { AdminPage } from "../features/admin/AdminPage";
 
@@ -37,21 +39,30 @@ const FEATURE_MAP: Record<string, React.ReactNode> = {
   qa:        <QaPage />,
   artifacts: <ArtifactsPage />,
   cicd:      <CicdPage />,
+  "jenkins-failures": <JenkinsFailuresPage />,
+  "cicd-assistant":   <CicdAssistantPage />,
   wiki:      <WikiPage />,
   admin:     <AdminPage />,
 };
+
+const ADMIN_ALLOWED_PATHS = ["/admin", "/jenkins-failures", "/cicd-assistant"];
+
+function pathMatches(pathname: string, routePath: string): boolean {
+  return pathname === routePath || pathname.startsWith(`${routePath}/`);
+}
 
 export function AppRouter() {
   const { user } = useAuth();
   const { pathname } = useLocation();
 
-  // Ruling C: Admin sees ONLY /admin — redirect from any other path after login.
-  if (user?.role === "Admin" && !pathname.startsWith("/admin")) {
+  // Ruling C keeps Admin out of release/CICD business pages, but Jenkins
+  // diagnostics are available to every logged-in user.
+  if (user?.role === "Admin" && !ADMIN_ALLOWED_PATHS.some((path) => pathMatches(pathname, path))) {
     return <Navigate to="/admin" replace />;
   }
 
   // Wave 3: CICD 工作台 is RM/SPD only — bounce Owner and Guest to /apps.
-  if (["Owner", "Guest"].includes(user?.role ?? "") && pathname.startsWith("/cicd")) {
+  if (["Owner", "Guest"].includes(user?.role ?? "") && pathMatches(pathname, "/cicd")) {
     return <Navigate to="/apps" replace />;
   }
 

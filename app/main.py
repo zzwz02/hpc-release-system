@@ -15,7 +15,18 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.errors import register_error_handlers
-from app.api.routers import admin, apps, artifacts, auth, cicd, qa, releases, state, wiki
+from app.api.routers import (
+    admin,
+    apps,
+    artifacts,
+    auth,
+    cicd,
+    cicd_agent,
+    qa,
+    releases,
+    state,
+    wiki,
+)
 from app.config import settings
 from app.db.connection import connect
 from app.integrations.ldap import load_ldap_config
@@ -53,6 +64,7 @@ def create_app() -> FastAPI:
     app.include_router(state.router)
     app.include_router(apps.router)
     app.include_router(cicd.router)
+    app.include_router(cicd_agent.router)
     app.include_router(qa.router)
     app.include_router(releases.router)
     app.include_router(wiki.router)

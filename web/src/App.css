@@ -766,6 +766,300 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
 .artifact-kind-card .ak-title { font-weight: 700; font-size: 14px; }
 .artifact-kind-card .ak-desc { line-height: 1.5; }
 
+/* ============================ CICD Agent ============================ */
+.cicd-agent-view {
+  display: grid;
+  gap: 14px;
+}
+.cicd-agent-filter-panel {
+  padding: 14px;
+}
+.cicd-agent-own-toggle {
+  margin-left: 4px;
+}
+.cicd-agent-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(146px, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+.cicd-agent-filters label,
+.cicd-agent-chat-toolbar label {
+  display: grid;
+  gap: 5px;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 650;
+}
+.cicd-agent-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+.cicd-agent-summary-section {
+  display: grid;
+  gap: 10px;
+}
+.cicd-agent-summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.cicd-agent-summary-head h3 {
+  margin: 0;
+}
+.cicd-agent-summary-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.cicd-agent-summary-actions select {
+  width: auto;
+  min-width: 170px;
+}
+.cicd-agent-summary-crumb {
+  padding: 7px 10px;
+  border: 1px solid var(--accent-bd);
+  border-radius: var(--r);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 12.5px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.cicd-agent-summary-card {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text);
+}
+.cicd-agent-summary-card:hover {
+  border-color: var(--accent-bd);
+  background: var(--accent-soft);
+}
+.cicd-agent-summary-card span {
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.cicd-agent-summary-card strong {
+  font-size: 24px;
+  line-height: 1.1;
+}
+.cicd-agent-summary-card small {
+  color: var(--muted);
+}
+.cicd-agent-summary-more {
+  display: flex;
+  justify-content: center;
+}
+.cicd-agent-records {
+  padding: 14px;
+}
+.section-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.section-head-row h3 {
+  margin: 0;
+}
+.pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.table-scroll {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+}
+.cicd-agent-table {
+  min-width: 1500px;
+}
+.cicd-agent-table tbody tr {
+  cursor: pointer;
+}
+.cicd-agent-table tbody tr.selected td {
+  background: var(--accent-soft);
+}
+.cicd-agent-table td small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+}
+.cicd-agent-table td small.pill {
+  display: flex;
+  width: fit-content;
+  margin-top: 6px;
+  padding: 1px 8px;
+  line-height: 1.45;
+}
+.reason-cell {
+  min-width: 260px;
+  max-width: 380px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.cicd-agent-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+.detail-item {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--surface-2);
+}
+.detail-item.wide {
+  grid-column: 1 / -1;
+}
+.detail-item span {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.detail-item p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.preserve {
+  white-space: pre-wrap;
+}
+.jenkins-link {
+  color: #fff;
+  background: #2d6f73;
+  border-color: #2d6f73;
+}
+.jenkins-link:hover:not(:disabled) {
+  color: #fff;
+  background: #265f63;
+  border-color: #265f63;
+  text-decoration: none;
+}
+.center {
+  text-align: center;
+}
+.view.active.cicd-agent-chat-view {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.cicd-agent-chat-panel {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 14px;
+}
+.cicd-agent-chat-toolbar {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: end;
+}
+.cicd-agent-chat-toolbar label {
+  min-width: 170px;
+}
+.cicd-agent-chat-log {
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--bg-soft);
+}
+.cicd-agent-chat-empty {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  color: var(--muted);
+  text-align: center;
+}
+.cicd-agent-chat-message {
+  width: min(880px, 92%);
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+.cicd-agent-chat-message.user {
+  align-self: flex-end;
+  border-color: var(--accent-bd);
+  background: var(--accent-soft);
+}
+.cicd-agent-chat-message.bad {
+  border-color: var(--bad-bd);
+  background: var(--bad-bg);
+}
+.cicd-agent-chat-message p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+.cicd-agent-chat-role {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 800;
+}
+.cicd-agent-chat-records {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.cicd-agent-chat-records span {
+  padding: 3px 8px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+.cicd-agent-chat-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+.cicd-agent-chat-form textarea {
+  min-height: 78px;
+  max-height: 170px;
+}
+@media (max-width: 760px) {
+  .cicd-agent-chat-form {
+    grid-template-columns: 1fr;
+  }
+  .cicd-agent-chat-message {
+    width: 100%;
+  }
+}
+
 /* artifacts document view (G) */
 .artifact-context-bar {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;

@@ -81,6 +81,10 @@ process-local registries.
   QA AI-analysis job (1 s interval, cancelled on unmount and release change).
 - **Auth**: cookie-based (`hpc_session` HttpOnly).  All fetches use
   `credentials: 'include'`.  A 401 response clears the user and shows the login page.
+- **CICD Agent**: the Jenkins failure query and CICD assistant pages call the
+  same-origin `/api/cicd-agent/*` proxy.  Configure the target in the FastAPI
+  `.env` with `CICD_AGENT_BASE_URL`; do not point the browser directly at the
+  standalone Agent service.
 - **Timezone**: stored times are naive Beijing strings.  The frontend displays them
   as-is with zero offset — no `+8` math.
 - **Markdown**: `src/components/Markdown.tsx` is the **sole** `dangerouslySetInnerHTML`
