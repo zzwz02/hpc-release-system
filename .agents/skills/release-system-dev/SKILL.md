@@ -89,6 +89,7 @@ work directly.
   explicit `replace_open=true` after the UI warns that old requests will be cancelled; status-sync modifies are
   never replaceable by config edits. Any Running/Stopped boundary sync uses the same blockers and must not create
   `release_decision_sync` or change the snapshot when blocked.
+  Admin navigation and route access are restricted to the `系统管理` tab (`/admin`) only. Hide all other tabs and redirect every non-`/admin` Admin deep link back to `/admin`.
   RM can reject a returned delivery through the `reject-returned` endpoint only with a reason, preserving Jira
   and return history and without applying the payload. CICD has no Abandoned/delete flow; retire/delete is
   handled through App lifecycle. CICD 工作台 is read-only; CICD config changes enter from App 工作台 → CICD tab.

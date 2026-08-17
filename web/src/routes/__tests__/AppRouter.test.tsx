@@ -106,14 +106,16 @@ describe("AppRouter", () => {
     expect(screen.getByTestId("admin-page")).toBeInTheDocument();
   });
 
-  it("Admin at /jenkins-failures can see Jenkins failure query", () => {
+  it("Admin at /jenkins-failures is redirected to /admin", () => {
     renderAt("Admin", "/jenkins-failures");
-    expect(screen.getByTestId("jenkins-failures-page")).toBeInTheDocument();
+    expect(screen.getByTestId("admin-page")).toBeInTheDocument();
+    expect(screen.queryByTestId("jenkins-failures-page")).not.toBeInTheDocument();
   });
 
-  it("Admin at /cicd-assistant can see CICD assistant", () => {
+  it("Admin at /cicd-assistant is redirected to /admin", () => {
     renderAt("Admin", "/cicd-assistant");
-    expect(screen.getByTestId("cicd-assistant-page")).toBeInTheDocument();
+    expect(screen.getByTestId("admin-page")).toBeInTheDocument();
+    expect(screen.queryByTestId("cicd-assistant-page")).not.toBeInTheDocument();
   });
 
   it("Owner at /cicd-assistant can see CICD assistant", () => {

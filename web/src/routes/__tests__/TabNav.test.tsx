@@ -90,12 +90,14 @@ describe("TabNav", () => {
     });
   });
 
-  it("renders Jenkins failure and CICD assistant tabs for Admin", async () => {
+  it("renders only the system management tab for Admin", async () => {
     renderTabNav("Admin");
     await waitFor(() => {
-      expect(screen.getByRole("link", { name: "jenkins失败查询" })).toBeInTheDocument();
-      expect(screen.getByRole("link", { name: "CICD助手" })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "系统管理" })).toBeInTheDocument();
     });
+    expect(screen.queryByRole("link", { name: "jenkins失败查询" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "CICD助手" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("link")).toHaveLength(1);
   });
 
   // ── Badge: count > 0 → dot renders ────────────────────────────────────────

@@ -45,7 +45,7 @@ const FEATURE_MAP: Record<string, React.ReactNode> = {
   admin:     <AdminPage />,
 };
 
-const ADMIN_ALLOWED_PATHS = ["/admin", "/jenkins-failures", "/cicd-assistant"];
+const ADMIN_ALLOWED_PATHS = ["/admin"];
 
 function pathMatches(pathname: string, routePath: string): boolean {
   return pathname === routePath || pathname.startsWith(`${routePath}/`);
@@ -55,8 +55,8 @@ export function AppRouter() {
   const { user } = useAuth();
   const { pathname } = useLocation();
 
-  // Ruling C keeps Admin out of release/CICD business pages, but Jenkins
-  // diagnostics are available to every logged-in user.
+  // Ruling C keeps Admin confined to system management. Direct navigation to
+  // every other page, including CICD Agent diagnostics, returns to /admin.
   if (user?.role === "Admin" && !ADMIN_ALLOWED_PATHS.some((path) => pathMatches(pathname, path))) {
     return <Navigate to="/admin" replace />;
   }

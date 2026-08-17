@@ -16,7 +16,7 @@ export interface RouteConfig {
   roles: Role[];
 }
 
-const ALL_LOGIN_ROLES: Role[] = ["RM", "Owner", "QA", "Guest", "Admin", "SPD"];
+const NON_ADMIN_ROLES: Role[] = ["RM", "Owner", "QA", "Guest", "SPD"];
 
 export const ROUTES: RouteConfig[] = [
   { path: "/",          view: "dashboard", label: "总览",      roles: ["RM", "Owner", "QA", "Guest"] },
@@ -25,8 +25,8 @@ export const ROUTES: RouteConfig[] = [
   { path: "/qa",        view: "qa",        label: "QA",        roles: ["RM", "Owner", "QA", "Guest"] },
   { path: "/artifacts", view: "artifacts", label: "发布文档",  roles: ["RM", "Owner", "Guest"] },
   { path: "/cicd",      view: "cicd",      label: "CICD 工作台",roles: ["RM", "SPD"] },
-  { path: "/jenkins-failures", view: "jenkins-failures", label: "jenkins失败查询", roles: ALL_LOGIN_ROLES },
-  { path: "/cicd-assistant",   view: "cicd-assistant",   label: "CICD助手",       roles: ALL_LOGIN_ROLES },
+  { path: "/jenkins-failures", view: "jenkins-failures", label: "jenkins失败查询", roles: NON_ADMIN_ROLES },
+  { path: "/cicd-assistant",   view: "cicd-assistant",   label: "CICD助手",       roles: NON_ADMIN_ROLES },
   { path: "/wiki",      view: "wiki",      label: "开发 WIKI", roles: ["RM", "Owner"] },
   { path: "/admin",     view: "admin",     label: "系统管理",  roles: ["Admin"] },
 ];

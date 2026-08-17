@@ -496,6 +496,7 @@ test.describe("Admin role-gating (ruling C)", () => {
     expect(tabsText).not.toContain("总览");
     expect(tabsText).not.toContain("App 工作台");
     expect(tabsText).not.toContain("CICD");
+    expect(tabsText).not.toContain("jenkins失败查询");
     expect(tabsText).not.toContain("周期管理");
   });
 
@@ -506,6 +507,16 @@ test.describe("Admin role-gating (ruling C)", () => {
     await page.goto(`${BASE}/cicd`);
     await page.waitForURL(`${BASE}/admin`, { timeout: 8_000 });
     expect(page.url()).toContain("/admin");
+  });
+
+  test("Admin navigating to CICD Agent tools is redirected to /admin", async ({ page }) => {
+    await login(page, "admin", ADMIN_PASSWORD);
+    await page.waitForURL(`${BASE}/admin`, { timeout: 8_000 });
+
+    for (const path of ["/jenkins-failures", "/cicd-assistant"]) {
+      await page.goto(`${BASE}${path}`);
+      await page.waitForURL(`${BASE}/admin`, { timeout: 8_000 });
+    }
   });
 });
 
