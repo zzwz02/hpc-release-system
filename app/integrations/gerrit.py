@@ -14,17 +14,13 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-# Mirrors server.py:1428-1429
-HPC_GERRIT_PREFIX = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/"
-HPC_GERRIT_ROOT = "ssh://gerrit.metax-internal.com:29418/"
+from app.config import settings
+
 GERRIT_FETCH_TIMEOUT_SECONDS = 10
 
 
 def gerrit_remote_url(
     git_url: str,
-    *,
-    hpc_gerrit_prefix: str = HPC_GERRIT_PREFIX,
-    hpc_gerrit_root: str = HPC_GERRIT_ROOT,
 ) -> str:
     """Resolve a (possibly short) git_url to a full Gerrit remote URL.
 
@@ -34,9 +30,12 @@ def gerrit_remote_url(
     if git_url.startswith(("ssh://", "http://", "https://", "git@")):
         return git_url
     project = git_url.lstrip("/")
-    if project.startswith("PDE/HPC/"):
-        return f"{hpc_gerrit_root}{project}"
-    return f"{hpc_gerrit_prefix}{project}"
+    prefix = settings.hpc_gerrit_prefix
+    root = settings.hpc_gerrit_root
+    hpc_project = settings.gerrit_hpc_project.strip("/")
+    if project.startswith(f"{hpc_project}/"):
+        return f"{root}{project}"
+    return f"{prefix}{project}"
 
 
 def _run_git(
@@ -59,8 +58,6 @@ def fetch_app_info(
     branch: str,
     *,
     project_root: str | Path,
-    hpc_gerrit_prefix: str = HPC_GERRIT_PREFIX,
-    hpc_gerrit_root: str = HPC_GERRIT_ROOT,
 ) -> tuple[str, str]:
     """Fetch app_info.json from Gerrit; return (raw_json, commit_id).
 
@@ -72,11 +69,7 @@ def fetch_app_info(
     """
     if not git_url or not branch:
         raise RuntimeError("Gerrit URL 和 branch 不能为空")
-    remote_url = gerrit_remote_url(
-        git_url,
-        hpc_gerrit_prefix=hpc_gerrit_prefix,
-        hpc_gerrit_root=hpc_gerrit_root,
-    )
+    remote_url = gerrit_remote_url(git_url)
     with tempfile.TemporaryDirectory(prefix="release-system-gerrit-") as temp_dir:
         control_path = Path(temp_dir) / "control"
         ssh_command = (

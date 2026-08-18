@@ -18,6 +18,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { AppWorkbenchPage } from "../AppWorkbenchPage";
+import {
+  GERRIT_HPC_BASE,
+  GERRIT_HPC_PROJECT,
+  GERRIT_MANIFEST_REPO_URL,
+} from "../../../lib/git";
 import type { StatePayload, App, Snapshot, ReleaseDetail, ReleaseSummary, CicdRequest } from "../../../types";
 
 // ---------------------------------------------------------------------------
@@ -1279,13 +1284,13 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
     await clickCicdTab();
 
     fireEvent.change(screen.getByTestId("field-cicd-git-url"), {
-      target: { value: "ssh://gerrit.example.com/PDE/HPC/hpc_app1" },
+      target: { value: `ssh://gerrit.example.com/${GERRIT_HPC_PROJECT}/hpc_app1` },
     });
     fireEvent.click(screen.getByText("提交 CICD 变更申请"));
 
     const error = await screen.findByTestId("field-cicd-git-url-error");
     expect(error).toHaveTextContent(
-      "git 类型只填写 PDE/HPC 后的短路径",
+      `git 类型只填写 ${GERRIT_HPC_PROJECT} 后的短路径`,
     );
     const gerritField = screen.getByTestId("field-cicd-git-url").closest("label");
     expect(gerritField).not.toBeNull();
@@ -1428,7 +1433,7 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
     const payload = payloadTwoReleases();
     payload.apps[0] = {
       ...payload.apps[0],
-      git_url: "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_amber",
+      git_url: `${GERRIT_HPC_BASE}/hpc_amber`,
       git_branch: "main",
     };
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
@@ -1848,8 +1853,6 @@ describe("AppWorkbenchPage lifecycle actions", () => {
 });
 
 describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
-  const GERRIT_BASE = "ssh://gerrit.metax-internal.com:29418/PDE/HPC";
-
   beforeEach(() => {
     vi.stubGlobal("alert", vi.fn());
     vi.stubGlobal("confirm", vi.fn(() => true));
@@ -1875,11 +1878,11 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     fireEvent.click(screen.getByTestId("new-app-btn"));
     await waitFor(() => screen.getByTestId("new-app-dialog"));
 
-    expect(screen.getByTestId("new-app-dialog").textContent).toContain(`${GERRIT_BASE}/`);
+    expect(screen.getByTestId("new-app-dialog").textContent).toContain(`${GERRIT_HPC_BASE}/`);
     expect(screen.getByPlaceholderText("例如hpc_amber")).toBeInTheDocument();
 
     fireEvent.change(screen.getByDisplayValue("git"), { target: { value: "repo" } });
-    expect(screen.getByTestId("new-app-dialog").textContent).toContain(`${GERRIT_BASE}/manifest`);
+    expect(screen.getByTestId("new-app-dialog").textContent).toContain(GERRIT_MANIFEST_REPO_URL);
     expect(screen.getByPlaceholderText("xml地址，例如APP/openfoam/hpc_v2206_v0.xml")).toBeInTheDocument();
   });
 
@@ -1913,7 +1916,7 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     // Real backend keys from POST /api/cicd/apps/fetch-preview
     const mockPreview = {
       ok: true,
-      git_url: `${GERRIT_BASE}/myrepo`,
+      git_url: `${GERRIT_HPC_BASE}/myrepo`,
       git_branch: "main",
       app_version: "3.7.0",
       x86_chips: "C500",
@@ -2058,7 +2061,7 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
       if (url.includes("decision-preview")) return newAppDecisionPreviewForBody(body);
       if (url.includes("fetch-preview")) {
         return {
-          git_url: "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_aa",
+          git_url: `${GERRIT_HPC_BASE}/hpc_aa`,
           git_branch: "main",
           needs_network: false,
           app_info_unavailable: false,
@@ -2109,8 +2112,6 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
 // ---------------------------------------------------------------------------
 
 describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
-  const GERRIT_BASE = "ssh://gerrit.metax-internal.com:29418/PDE/HPC";
-
   beforeEach(() => {
     vi.stubGlobal("alert", vi.fn());
     vi.stubGlobal("confirm", vi.fn(() => true));
@@ -2182,7 +2183,7 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
 
   it("preview step shows identity box with git_url from server response", async () => {
     const mockPreview = {
-      git_url: `${GERRIT_BASE}/sw-metax-open/previewapp`,
+      git_url: `${GERRIT_HPC_BASE}/sw-metax-open/previewapp`,
       git_branch: "release/4.0",
       needs_network: false,
       app_info_unavailable: false,
@@ -2223,7 +2224,7 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
     // Simulates impl-1 Wave 4 backend: HTTP 200 with soft failure flag;
     // identity (git_url / git_branch) always returned even when Gerrit content unavailable.
     const partialResponse = {
-      git_url: `${GERRIT_BASE}/sw-metax-open/partialapp`,
+      git_url: `${GERRIT_HPC_BASE}/sw-metax-open/partialapp`,
       git_branch: "main",
       needs_network: false,
       app_info_unavailable: true,

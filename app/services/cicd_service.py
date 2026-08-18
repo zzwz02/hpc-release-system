@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from app.config import settings
 from app.db.connection import transaction
 from app.domain import app_info as app_info_domain
 from app.domain import decision_sync as decision_sync_domain
@@ -225,14 +226,16 @@ def _validate_cicd_first_repo_input(repo_type: str, repo_name: str) -> None:
     if not raw:
         return
     normalized_type = (repo_type or "git").strip()
+    hpc_project = settings.gerrit_hpc_project.strip("/")
+    manifest_project = settings.gerrit_manifest_project.strip("/")
     if normalized_type == "repo":
         if (
             _is_full_git_remote(raw)
-            or raw.startswith("manifest/")
-            or raw.startswith("PDE/HPC/manifest/")
+            or raw.startswith(f"{manifest_project}/")
+            or raw.startswith(f"{hpc_project}/{manifest_project}/")
         ):
             raise ValueError(
-                "repo 类型只填写 manifest 内 XML 路径，"
+                f"repo 类型只填写 {manifest_project} 内 XML 路径，"
                 "例如 APP/openfoam/hpc_v2206_v0.xml"
             )
         if not raw.endswith(".xml"):
@@ -241,8 +244,10 @@ def _validate_cicd_first_repo_input(repo_type: str, repo_name: str) -> None:
                 "例如 APP/openfoam/hpc_v2206_v0.xml"
             )
         return
-    if _is_full_git_remote(raw) or raw.startswith("PDE/HPC/"):
-        raise ValueError("git 类型只填写 PDE/HPC 后的短路径，例如 hpc_amber")
+    if _is_full_git_remote(raw) or raw.startswith(f"{hpc_project}/"):
+        raise ValueError(
+            f"git 类型只填写 {hpc_project} 后的短路径，例如 hpc_amber"
+        )
     if raw.endswith(".xml"):
         raise ValueError("manifest XML 请使用 repo 类型填写")
 
@@ -2224,7 +2229,6 @@ def preview_cicd_app_info(
                     All other failure modes (manifest unresolvable, Gerrit unreachable)
                     are returned as soft flags in the response dict, NOT exceptions.
     """
-    from app.config import settings
     from app.identity import repo_to_git_identity
 
     # Guard: empty repo_name / branch are always caller-input errors (→ 400).
@@ -2260,7 +2264,7 @@ def preview_cicd_app_info(
             **base,
             "app_info_unavailable": True,
             "app_info_error": (
-                "manifest 路径需要联网解析（gerrit:29418 不可达）"
+                "manifest 路径需要联网解析（Gerrit 不可达）"
                 f"，无法确定 repo 身份 ({repo_name})"
             ),
         }

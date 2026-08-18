@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from app.config import settings
 from app.db.connection import connect as app_connect
 from app.db.connection import reset_init_state
 from app.deps import get_db, require_login
@@ -26,7 +27,7 @@ _SHORT_NAME = "hpc_w4e2e"
 _BRANCH = "w4-test"
 _OFFICIAL_NAME = "W4E2EApp"
 _APP_ID = "w4e2eapp"
-_RESOLVED_URL = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_w4e2e"
+_RESOLVED_URL = f"{settings.gerrit_hpc_base_url}/hpc_w4e2e"
 
 _CREATE_BODY = {
     "official_name": _OFFICIAL_NAME,

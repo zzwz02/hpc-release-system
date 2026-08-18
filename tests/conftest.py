@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from app.config import settings
 from app.db.connection import connect as _app_connect
 from app.db.connection import reset_init_state
 from release_system import core
@@ -78,7 +79,7 @@ _INIT_CSV = (
     "官方名称,类型,APP类型,Owner,app_version,maca_chip,hpcc_chip,arch,"
     "maca_version,git_url,git_branch\n"
     "TestApp,HPC,分子动力学,test_owner,1.0,c500,,x86,20260601-001,"
-    "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_testapp,maca\n"
+    f"{settings.gerrit_hpc_base_url}/hpc_testapp,maca\n"
 )
 
 
@@ -110,7 +111,7 @@ def seed_app(
     release_id: str,
     *,
     official_name: str = "ExtraApp",
-    git_url: str = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_extra",
+    git_url: str = f"{settings.gerrit_hpc_base_url}/hpc_extra",
     git_branch: str = "maca",
     release_decision: str = "release",
     owner: str = "extra_owner",

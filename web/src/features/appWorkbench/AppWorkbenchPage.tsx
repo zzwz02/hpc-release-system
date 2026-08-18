@@ -36,6 +36,8 @@ import { beforeAppFreeze, beforeDocDeadline, releaseLocked } from "../../lib/pha
 import { displayName } from "../../lib/identity";
 import {
   GERRIT_HPC_BASE,
+  GERRIT_HPC_PROJECT,
+  GERRIT_MANIFEST_PROJECT,
   GERRIT_MANIFEST_REPO_URL,
   formatCicdRepoPath,
   formatGerritUrl,
@@ -597,17 +599,28 @@ function AppListPanel({
 function newAppRepoValidationError(repoType: string, repoName: string): string {
   const value = normalizeCicdRepoInput(repoType, repoName);
   if (!value) return "请填写仓库路径";
+  const lowerValue = value.toLowerCase();
+  const hpcProjectPath = GERRIT_HPC_PROJECT.toLowerCase();
+  const manifestPath = GERRIT_MANIFEST_PROJECT.toLowerCase();
+  const fullManifestPath = `${GERRIT_HPC_PROJECT}/${GERRIT_MANIFEST_PROJECT}`.toLowerCase();
+  const hasPathPrefix = (prefix: string) => (
+    lowerValue === prefix || lowerValue.startsWith(`${prefix}/`)
+  );
   if (repoType === "repo") {
-    if (isFullGitRemote(value) || /^PDE\/HPC\/manifest(?:\/|$)/i.test(value) || /^manifest(?:\/|$)/i.test(value)) {
-      return "repo 类型只填写 manifest 内 XML 路径，例如 APP/openfoam/hpc_v2206_v0.xml";
+    if (
+      isFullGitRemote(value)
+      || hasPathPrefix(fullManifestPath)
+      || hasPathPrefix(manifestPath)
+    ) {
+      return `${repoType} 类型只填写 ${GERRIT_MANIFEST_PROJECT} 内 XML 路径，例如 APP/openfoam/hpc_v2206_v0.xml`;
     }
     if (!value.endsWith(".xml")) {
       return "repo 类型必须填写 XML 路径，例如 APP/openfoam/hpc_v2206_v0.xml";
     }
     return "";
   }
-  if (isFullGitRemote(value) || /^PDE\/HPC\//i.test(value)) {
-    return "git 类型只填写 PDE/HPC 后的短路径，例如 hpc_amber";
+  if (isFullGitRemote(value) || hasPathPrefix(hpcProjectPath)) {
+    return `git 类型只填写 ${GERRIT_HPC_PROJECT} 后的短路径，例如 hpc_amber`;
   }
   if (value.endsWith(".xml")) {
     return "manifest XML 请切换为 repo 类型填写";
@@ -1198,7 +1211,9 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
                 testId="new-app-repo-name"
               />
               <span className="hint">
-                {isRepo ? "repo 类型只填写 manifest 仓库内的 XML 路径；分支固定为 master。" : "git 类型只填写 PDE/HPC 后的短路径。"}
+                {isRepo
+                  ? `repo 类型只填写 ${GERRIT_MANIFEST_PROJECT} 仓库内的 XML 路径；分支固定为 master。`
+                  : `git 类型只填写 ${GERRIT_HPC_PROJECT} 后的短路径。`}
               </span>
             </label>
             <label>分支 <span className="required">*</span>
@@ -1395,7 +1410,9 @@ function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit,
                 disabled={disabled}
                 testId="field-cicd-git-url"
               />
-              <span className="field-help">git 类型只填 PDE/HPC 后路径；repo 类型只填 manifest 内 XML 路径。</span>
+              <span className="field-help">
+                git 类型只填 {GERRIT_HPC_PROJECT} 后路径；repo 类型只填 {GERRIT_MANIFEST_PROJECT} 内 XML 路径。
+              </span>
               {repoError && (
                 <span className="field-error" data-testid="field-cicd-git-url-error" aria-live="polite">
                   {repoError}

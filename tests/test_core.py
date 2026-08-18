@@ -1420,7 +1420,7 @@ HPC APP,2,OpenLB,刘玉春,CFD,停止发布,,
         finally:
             server.run_git = old
 
-        remote = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_hpl"
+        remote = f"{server.HPC_GERRIT_PREFIX}hpc_hpl"
         self.assertEqual(calls[0], ["git", "ls-remote", remote, "maca"])
         self.assertEqual(calls[1][2], f"--remote={remote}")
 

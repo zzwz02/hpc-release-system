@@ -11,8 +11,9 @@ from pathlib import Path
 from fastapi import Request
 from fastapi.responses import StreamingResponse
 
-from app.db.connection import connect, reset_init_state
 from app import identity
+from app.config import settings
+from app.db.connection import connect, reset_init_state
 from app.integrations import gerrit as gerrit_integration
 from app.services import app_service
 
@@ -94,7 +95,7 @@ def test_fetch_app_info_resolves_repo_manifest_before_gerrit_fetch(monkeypatch):
         monkeypatch.setattr(
             "app.identity.repo_to_git_identity",
             lambda repo_type, repo_name, branch, **_kwargs: (
-                "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_lammps",
+                f"{settings.gerrit_hpc_base_url}/hpc_lammps",
                 "maca_stable_22Jul2025",
             ),
         )
@@ -117,7 +118,7 @@ def test_fetch_app_info_resolves_repo_manifest_before_gerrit_fetch(monkeypatch):
 
         assert calls == [
             (
-                "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_lammps",
+                f"{settings.gerrit_hpc_base_url}/hpc_lammps",
                 "maca_stable_22Jul2025",
             )
         ]
@@ -190,11 +191,11 @@ def test_manifest_fetch_target_observes_changed_xml_contents(monkeypatch):
         identity.clear_manifest_cache()
 
     assert first[:2] == (
-        "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_slurm",
+        f"{settings.gerrit_hpc_base_url}/hpc_slurm",
         "dev",
     )
     assert second[:2] == (
-        "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_slurm_next",
+        f"{settings.gerrit_hpc_base_url}/hpc_slurm_next",
         "release-next",
     )
     assert len(archive_calls) == 2
@@ -247,12 +248,12 @@ def test_gerrit_fetch_reuses_one_ssh_connection_and_pins_archive_commit(monkeypa
     assert "ControlMaster=auto" in calls[0][2]
     assert calls[0][3:] == [
         "ls-remote",
-        "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_lammps",
+        f"{settings.gerrit_hpc_base_url}/hpc_lammps",
         "maca",
     ]
     assert calls[1][3:] == [
         "archive",
-        "--remote=ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_lammps",
+        f"--remote={settings.gerrit_hpc_base_url}/hpc_lammps",
         commit_id,
         "app_info.json",
     ]

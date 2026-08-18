@@ -10,6 +10,7 @@ import json
 
 import pytest
 
+from app.config import settings
 from app.integrations import jira as jira_integration
 from app.repositories import apps_repo
 from app.services import cicd_service
@@ -21,7 +22,7 @@ _REPO_SHORT = "hpc_w3cicd"
 _BRANCH = "wave3"
 _OFFICIAL_NAME = "W3CicdFirst"
 _APP_ID = "w3cicdfirst"
-_RESOLVED_URL = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_w3cicd"
+_RESOLVED_URL = f"{settings.gerrit_hpc_base_url}/hpc_w3cicd"
 
 _BUILD_PAYLOAD: dict = {
     "app_version": "1.2.3",
@@ -594,7 +595,7 @@ class TestCicdFirstAppBackedLifecycle:
         monkeypatch,
     ):
         manifest_path = "APP/slurm/hpc_slurm_22.05.3.xml"
-        resolved_url = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_slurm"
+        resolved_url = f"{settings.gerrit_hpc_base_url}/hpc_slurm"
         resolution_calls = []
 
         def fake_identity(repo_type, repo_name, branch, **kwargs):

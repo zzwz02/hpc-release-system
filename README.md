@@ -109,7 +109,17 @@ NO_PROXY=localhost,127.0.0.1 npm run dev   # http://localhost:5173
 | `guest` | `guest` | Guest |
 | `admin` | 见 `admin_password.local` | Admin |
 
-可选集成（LDAP / Jira / QA LLM / Gerrit）的配置文件与环境变量约定与旧系统一致，详见各 `*.example` / `*_demo` 模板。
+可选集成（LDAP / Jira / QA LLM）的配置文件与环境变量约定与旧系统一致，详见各 `*.example` / `*_demo` 模板。重构后运行路径中的 Gerrit 默认 SSH 地址与项目路径只在
+[`shared/integrations.json`](./shared/integrations.json) 定义一次，FastAPI、React
+和离线报告脚本共同读取。部署时如需临时覆盖 SSH origin，只设置一个环境变量：
+
+```bash
+GERRIT_SSH_BASE_URL=ssh://gerrit.example.com:29418
+```
+
+该变量同时由 FastAPI 启动配置和 Vite 构建/开发配置读取；修改后需重启后端并重新构建或重启前端。
+冻结的 `server.py` 仍保留历史常量用于 legacy/golden 基准，不属于当前运行配置；按冻结约束不修改。
+
 RM 批量拉取 Gerrit app_info 的并发上限默认为 4，可在 `.env` 中通过
 `GERRIT_FETCH_MAX_WORKERS` 调整；服务端会将其限制在 1–16 之间。
 
@@ -318,7 +328,9 @@ release-system/
 │   ├── src/{api,types,lib,store,components,features,routes}/
 │   └── README-web.md            # 前端开发说明
 ├── tools/                       # 辅助工具（如身份解析）
-├── shared/access_control.json   # 角色、页签与静态 capability 的唯一来源
+├── shared/                      # 前后端共享静态配置
+│   ├── access_control.json      # 角色、页签与静态 capability 的唯一来源
+│   └── integrations.json        # Gerrit SSH origin / 项目路径的唯一默认来源
 ├── tests/                       # pytest（含 tests/golden/ 回放）
 ├── release_system/              # 旧系统（冻结，golden 基准，勿改）
 │   ├── core.py

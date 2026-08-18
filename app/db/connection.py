@@ -428,6 +428,14 @@ def _migrate_repo_manifest_paths(conn: sqlite3.Connection) -> None:
     approval because that App row is retained after rejection/cancellation;
     requests merely associated with an existing App must have taken effect.
     """
+    from app.config import settings
+
+    hpc_project = settings.gerrit_hpc_project.strip("/")
+    manifest_project = settings.gerrit_manifest_project.strip("/")
+    manifest_prefixes = (
+        f"{hpc_project}/{manifest_project}/",
+        f"{manifest_project}/",
+    )
     apps = conn.execute(
         """
         SELECT id, git_url, git_branch
@@ -470,7 +478,7 @@ def _migrate_repo_manifest_paths(conn: sqlite3.Connection) -> None:
                 repo_name = repo_name.get("new") if isinstance(repo_name, dict) else None
                 branch = branch.get("new") if isinstance(branch, dict) else None
             candidate = str(repo_name or "").strip().lstrip("/")
-            for prefix in ("PDE/HPC/manifest/", "manifest/"):
+            for prefix in manifest_prefixes:
                 if candidate.startswith(prefix):
                     candidate = candidate[len(prefix):]
                     break

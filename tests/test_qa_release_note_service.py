@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.config import settings
 from app.services import artifact_service, qa_service, release_service
 from release_system import core
 from tests.conftest import seed_app, seed_snapshot
@@ -280,7 +281,7 @@ def test_release_note_includes_release_app_even_when_qa_is_not_passed(release_wi
         conn,
         release_id,
         official_name="DeepMD",
-        git_url="ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_deepmd",
+        git_url=f"{settings.gerrit_hpc_base_url}/hpc_deepmd",
         git_branch="maca",
         release_decision="release",
         owner="deepmd_owner",

@@ -50,14 +50,21 @@ import tarfile
 import tempfile
 import datetime
 import xml.etree.ElementTree as ET
+from pathlib import Path
+
 import pandas as pd
 
 # Global Configuration
 today_date = datetime.date.today().strftime("%m%d")
 TARGET_VERSION = "3.8.0"
-MANIFEST_REPO_URL = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/manifest"
+_INTEGRATIONS_PATH = Path(__file__).resolve().parents[1] / "shared" / "integrations.json"
+_GERRIT_CONFIG = json.loads(_INTEGRATIONS_PATH.read_text(encoding="utf-8"))["gerrit"]
+_GERRIT_SSH_BASE_URL = _GERRIT_CONFIG["ssh_base_url"].rstrip("/")
+_GERRIT_HPC_PROJECT = _GERRIT_CONFIG["hpc_project"].strip("/")
+_GERRIT_MANIFEST_PROJECT = _GERRIT_CONFIG["manifest_project"].strip("/")
+RESOLVED_REPO_BASE = f"{_GERRIT_SSH_BASE_URL}/{_GERRIT_HPC_PROJECT}"
+MANIFEST_REPO_URL = f"{RESOLVED_REPO_BASE}/{_GERRIT_MANIFEST_PROJECT}"
 MANIFEST_BRANCH = "master"
-RESOLVED_REPO_BASE = "ssh://gerrit.metax-internal.com:29418/PDE/HPC"
 
 
 def fetch_test_data(localhost, username, password, database):

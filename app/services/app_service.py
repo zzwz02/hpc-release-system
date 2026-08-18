@@ -1338,8 +1338,6 @@ def fetch_app_info(
         fetch_url,
         fetch_branch,
         project_root=_project_root,
-        hpc_gerrit_prefix=settings.hpc_gerrit_prefix,
-        hpc_gerrit_root=settings.hpc_gerrit_root,
     )
     snapshot = _apply_app_info_core(
         conn,
@@ -1446,8 +1444,6 @@ def iter_fetch_all_app_infos(
             fetch_url,
             fetch_branch,
             project_root=settings.db_path.parent,
-            hpc_gerrit_prefix=settings.hpc_gerrit_prefix,
-            hpc_gerrit_root=settings.hpc_gerrit_root,
         )
         return {
             "app_id": task.app_id,

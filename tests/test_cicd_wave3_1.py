@@ -38,6 +38,7 @@ import json
 
 import pytest
 
+from app.config import settings
 from app.services import cicd_service
 from tests.conftest import seed_app, seed_release
 
@@ -48,7 +49,7 @@ from tests.conftest import seed_app, seed_release
 _REPO_SHORT = "hpc_w3cicd"
 _BRANCH = "wave3"
 _OFFICIAL_NAME = "W3CicdFirst"
-_RESOLVED_URL = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_w3cicd"
+_RESOLVED_URL = f"{settings.gerrit_hpc_base_url}/hpc_w3cicd"
 _APP_ID = "w3cicdfirst"
 
 
@@ -1026,9 +1027,7 @@ class TestFetchPreviewManifest:
 
     _MANIFEST_PATH = "APP/chroma/hpc_2024-7-devel.xml"
     _MANIFEST_BRANCH = "master"
-    _RESOLVED_MANIFEST_URL = (
-        "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_chroma"
-    )
+    _RESOLVED_MANIFEST_URL = f"{settings.gerrit_hpc_base_url}/hpc_chroma"
 
     def _preview_manifest_offline(self):
         """Simulate manifest identity resolution failure (network down)."""

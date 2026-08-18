@@ -4,11 +4,12 @@ import json
 
 import pytest
 
+from app.config import settings
 from app.db.connection import connect, init_db, reset_init_state
 from app.repositories import apps_repo
 from app.services import app_service, cicd_service
 
-_GERRIT_BASE = "ssh://gerrit.metax-internal.com:29418/PDE/HPC"
+_GERRIT_BASE = settings.gerrit_hpc_base_url
 
 
 def fresh_conn():

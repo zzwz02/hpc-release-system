@@ -871,8 +871,8 @@ class TestIdentity:
         assert result == f"{RESOLVED_REPO_BASE}/hpc_hpl"
 
     def test_normalize_git_url_absolute(self):
-        from app.identity import normalize_git_url
-        url = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_hpl"
+        from app.identity import RESOLVED_REPO_BASE, normalize_git_url
+        url = f"{RESOLVED_REPO_BASE}/hpc_hpl"
         assert normalize_git_url(url) == url
 
     def test_normalize_git_url_empty(self):
@@ -905,8 +905,8 @@ class TestIdentity:
         assert branch == "maca"
 
     def test_repo_to_git_identity_absolute(self):
-        from app.identity import repo_to_git_identity
-        full = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/hpc_test"
+        from app.identity import RESOLVED_REPO_BASE, repo_to_git_identity
+        full = f"{RESOLVED_REPO_BASE}/hpc_test"
         url, branch = repo_to_git_identity("git", full, "main")
         assert url == full
         assert branch == "main"

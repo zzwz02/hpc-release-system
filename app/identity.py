@@ -23,12 +23,14 @@ import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 
+from app.config import settings
+
 # ---------------------------------------------------------------------------
-# Constants — mirror test_data/get_release_report_test_cmd.py exactly
+# Compatibility exports — values are derived from the shared Gerrit config.
 # ---------------------------------------------------------------------------
 
-RESOLVED_REPO_BASE = "ssh://gerrit.metax-internal.com:29418/PDE/HPC"
-MANIFEST_REPO_URL = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/manifest"
+RESOLVED_REPO_BASE = settings.gerrit_hpc_base_url
+MANIFEST_REPO_URL = settings.manifest_repo_url
 MANIFEST_BRANCH = "master"
 MANIFEST_FETCH_TIMEOUT_SECONDS = 10
 
@@ -89,7 +91,7 @@ def normalize_git_url(git_url: str) -> str:
         return value
     if _is_absolute_git_url(value):
         return value
-    return f"{RESOLVED_REPO_BASE}/{value.lstrip('/')}"
+    return f"{settings.gerrit_hpc_base_url}/{value.lstrip('/')}"
 
 
 def resolve_manifest_url(
@@ -111,12 +113,14 @@ def resolve_manifest_url(
 
     Mirrors resolve_manifest_url() in test_data/get_release_report_test_cmd.py.
 
-    Requires network access to MANIFEST_REPO_URL (gerrit:29418).
+    Requires network access to the configured manifest repository.
     """
     if not git_url or not git_url.endswith(".xml"):
         return git_url, git_branch
 
     xml_path = git_url.lstrip("/")
+    manifest_repo_url = settings.manifest_repo_url
+    resolved_repo_base = settings.gerrit_hpc_base_url
     if refresh:
         _manifest_cache.pop(xml_path, None)
     if xml_path in _manifest_cache:
@@ -124,7 +128,12 @@ def resolve_manifest_url(
 
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-            if not _git_archive_extract(MANIFEST_REPO_URL, MANIFEST_BRANCH, xml_path, tmpdir):
+            if not _git_archive_extract(
+                manifest_repo_url,
+                MANIFEST_BRANCH,
+                xml_path,
+                tmpdir,
+            ):
                 _manifest_cache[xml_path] = (None, None)
                 return None, None
 
@@ -132,7 +141,7 @@ def resolve_manifest_url(
             if not os.path.exists(xml_full):
                 print(
                     f"  [warn] manifest xml missing after extract: {xml_path} "
-                    f"(not found in {MANIFEST_REPO_URL}@{MANIFEST_BRANCH})"
+                    f"(not found in {manifest_repo_url}@{MANIFEST_BRANCH})"
                 )
                 _manifest_cache[xml_path] = (None, None)
                 return None, None
@@ -167,7 +176,7 @@ def resolve_manifest_url(
                     f"name {raw_name!r}->{name!r}, revision {raw_rev!r}->{revision!r}"
                 )
 
-            resolved_url = f"{RESOLVED_REPO_BASE}/{name}"
+            resolved_url = f"{resolved_repo_base}/{name}"
             print(f"  [debug] resolved {xml_path} -> url={resolved_url!r} branch={revision!r}")
             result: tuple[str | None, str | None] = (resolved_url, revision)
             _manifest_cache[xml_path] = result

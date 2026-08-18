@@ -83,6 +83,8 @@ process-local registries.
   completed App updates the progress dialog immediately without polling.
 - **Auth**: cookie-based (`hpc_session` HttpOnly).  All fetches use
   `credentials: 'include'`.  A 401 response clears the user and shows the login page.
+- **Gerrit config**: URL/path formatting imports `shared/integrations.json`; do
+  not duplicate the Gerrit hostname in frontend source.
 - **CICD Agent**: the Jenkins failure query and CICD assistant pages call the
   same-origin `/api/cicd-agent/*` proxy.  Configure the target in the FastAPI
   `.env` with `CICD_AGENT_BASE_URL`; do not point the browser directly at the
