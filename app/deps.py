@@ -15,6 +15,7 @@ from fastapi import Cookie, Depends
 from app.api.errors import AuthzError
 from app.config import settings
 from app.db.connection import connect
+from app.domain.tab_permissions import roles_for_tab
 from app.repositories import sessions_repo
 
 
@@ -70,3 +71,11 @@ def require_roles(*roles: str, message: str | None = None):
             raise AuthzError(_msg)
         return user
     return _check
+
+
+def require_tab_access(view: str, *, message: str | None = None):
+    """Return a role dependency backed by the shared top-level tab matrix."""
+    return require_roles(
+        *roles_for_tab(view),
+        message=message or f"No access to tab: {view}",
+    )

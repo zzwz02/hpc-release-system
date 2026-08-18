@@ -15,6 +15,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { TabNav } from "../TabNav";
+import {
+  ALL_ROLES,
+  ROUTES,
+  routeForView,
+  type Role,
+} from "../routeConfig";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -36,7 +42,7 @@ import { useAuth } from "../../api/AuthContext";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function renderTabNav(role: string) {
+function renderTabNav(role: Role) {
   vi.mocked(useAuth).mockReturnValue({
     user: { username: "alice", display_name: "Alice", role },
     ldapStatus: { enabled: false, uri: "" },
@@ -68,36 +74,19 @@ describe("TabNav", () => {
     vi.mocked(apiGet).mockResolvedValue({ count: 0, last_visited_at: "" });
   });
 
-  it("renders CICD tab link for RM role", async () => {
-    renderTabNav("RM");
+  it.each(ALL_ROLES)("renders exactly the configured tabs for %s", async (role) => {
+    renderTabNav(role);
     await waitFor(() => {
-      expect(screen.getByRole("link", { name: /CICD 工作台/ })).toBeInTheDocument();
+      expect(screen.getAllByRole("link")).toHaveLength(
+        ROUTES.filter((route) => route.roles.includes(role)).length,
+      );
     });
-  });
 
-  it("renders dashboard tab for all roles", async () => {
-    renderTabNav("Guest");
-    await waitFor(() => {
-      expect(screen.getByText(/总览/)).toBeInTheDocument();
-    });
-  });
-
-  it("renders Jenkins failure and CICD assistant tabs for Guest", async () => {
-    renderTabNav("Guest");
-    await waitFor(() => {
-      expect(screen.getByRole("link", { name: "jenkins失败查询" })).toBeInTheDocument();
-      expect(screen.getByRole("link", { name: "CICD助手" })).toBeInTheDocument();
-    });
-  });
-
-  it("renders only the system management tab for Admin", async () => {
-    renderTabNav("Admin");
-    await waitFor(() => {
-      expect(screen.getByRole("link", { name: "系统管理" })).toBeInTheDocument();
-    });
-    expect(screen.queryByRole("link", { name: "jenkins失败查询" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "CICD助手" })).not.toBeInTheDocument();
-    expect(screen.getAllByRole("link")).toHaveLength(1);
+    for (const route of ROUTES) {
+      expect(screen.queryByRole("link", { name: route.label }) !== null).toBe(
+        route.roles.includes(role),
+      );
+    }
   });
 
   // ── Badge: count > 0 → dot renders ────────────────────────────────────────
@@ -105,7 +94,7 @@ describe("TabNav", () => {
   it("shows badge-dot on CICD tab when notification count > 0", async () => {
     vi.mocked(apiGet).mockResolvedValue({ count: 5, last_visited_at: "2026-06-01 00:00:00" });
 
-    renderTabNav("RM");
+    renderTabNav(routeForView("cicd").roles[0]);
     await waitFor(() => {
       expect(document.querySelector(".badge-dot")).not.toBeNull();
     });
@@ -114,7 +103,7 @@ describe("TabNav", () => {
   it("hides badge-dot when notification count is 0", async () => {
     vi.mocked(apiGet).mockResolvedValue({ count: 0, last_visited_at: "" });
 
-    renderTabNav("RM");
+    renderTabNav(routeForView("cicd").roles[0]);
     // Wait for query to settle then assert no badge
     await waitFor(() => {
       expect(screen.getByRole("link", { name: /CICD 工作台/ })).toBeInTheDocument();
@@ -126,7 +115,7 @@ describe("TabNav", () => {
     // Simulates backend returning minimal shape without invented fields
     vi.mocked(apiGet).mockResolvedValue({ count: 0, last_visited_at: "" });
 
-    renderTabNav("RM");
+    renderTabNav(routeForView("cicd").roles[0]);
     await waitFor(() => {
       expect(screen.getByRole("link", { name: /CICD 工作台/ })).toBeInTheDocument();
     });

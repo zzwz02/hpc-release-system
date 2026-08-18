@@ -15,18 +15,19 @@ from typing import Any
 
 from app.api.errors import AuthzError
 from app.db.connection import transaction
+from app.domain.tab_permissions import roles_for_tab
 from app.repositories import wiki_repo
 from app.timeutil import beijing_timestamp
 
-READ_ROLES = {"Owner", "RM", "Admin"}
-WRITE_ROLES = {"RM", "Admin"}
+READ_ROLES = frozenset(roles_for_tab("wiki"))
+WRITE_ROLES = READ_ROLES & {"RM"}
 MAX_TITLE_CHARS = 160
 MAX_BODY_CHARS = 200_000
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 
-_READ_DENIED = "只有 Owner/RM/Admin 可以查看开发 WIKI"
-_WRITE_DENIED = "只有 RM/Admin 可以维护开发 WIKI"
+_READ_DENIED = "无权查看开发 WIKI"
+_WRITE_DENIED = "无权维护开发 WIKI"
 
 
 # ---------------------------------------------------------------------------

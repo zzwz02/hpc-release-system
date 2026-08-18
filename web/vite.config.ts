@@ -5,6 +5,10 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   server: {
+    fs: {
+      // routeConfig imports the repo-level shared tab permission matrix.
+      allow: [".."],
+    },
     proxy: {
       // Forward all /api/* calls to the FastAPI backend.
       // The system http_proxy hijacks localhost — bypass it here.

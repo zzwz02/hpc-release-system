@@ -90,6 +90,9 @@ work directly.
   never replaceable by config edits. Any Running/Stopped boundary sync uses the same blockers and must not create
   `release_decision_sync` or change the snapshot when blocked.
   Admin navigation and route access are restricted to the `系统管理` tab (`/admin`) only. Hide all other tabs and redirect every non-`/admin` Admin deep link back to `/admin`.
+  Treat `shared/tab_permissions.json` as the sole top-level tab role matrix. Make `routeConfig.ts`, navigation,
+  direct-route gates, tab-exclusive APIs, and permission tests consume it; never copy tab role arrays elsewhere.
+  Keep narrower operation-level API permissions separate when page visibility and write authority differ.
   RM can reject a returned delivery through the `reject-returned` endpoint only with a reason, preserving Jira
   and return history and without applying the payload. CICD has no Abandoned/delete flow; retire/delete is
   handled through App lifecycle. CICD 工作台 is read-only; CICD config changes enter from App 工作台 → CICD tab.

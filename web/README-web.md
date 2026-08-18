@@ -84,7 +84,9 @@ process-local registries.
 - **CICD Agent**: the Jenkins failure query and CICD assistant pages call the
   same-origin `/api/cicd-agent/*` proxy.  Configure the target in the FastAPI
   `.env` with `CICD_AGENT_BASE_URL`; do not point the browser directly at the
-  standalone Agent service.
+  standalone Agent service. Both routes and their exclusive proxy APIs consume
+  the repo-level `shared/tab_permissions.json` matrix via `routeConfig.ts` and
+  `app.domain.tab_permissions`; do not copy role arrays into feature code.
 - **Timezone**: stored times are naive Beijing strings.  The frontend displays them
   as-is with zero offset — no `+8` math.
 - **Markdown**: `src/components/Markdown.tsx` is the **sole** `dangerouslySetInnerHTML`

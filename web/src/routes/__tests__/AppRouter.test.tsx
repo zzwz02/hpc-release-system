@@ -11,6 +11,12 @@ import { render, screen } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { AppRouter } from "../AppRouter";
+import {
+  ALL_ROLES,
+  routeForView,
+  type Role,
+  type RouteView,
+} from "../routeConfig";
 
 // ---------------------------------------------------------------------------
 // Mock all feature pages to avoid deep import trees in unit tests
@@ -57,7 +63,7 @@ import { useAuth } from "../../api/AuthContext";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeAuthReturn(role: string) {
+function makeAuthReturn(role: Role) {
   return {
     user: { username: "test", display_name: "Test", role },
     ldapStatus: { enabled: false, uri: "" },
@@ -67,7 +73,7 @@ function makeAuthReturn(role: string) {
   } as unknown as ReturnType<typeof useAuth>;
 }
 
-function renderAt(role: string, initialPath = "/") {
+function renderAt(role: Role, initialPath = "/") {
   vi.mocked(useAuth).mockReturnValue(makeAuthReturn(role));
   return render(
     <MemoryRouter initialEntries={[initialPath]}>
@@ -106,27 +112,16 @@ describe("AppRouter", () => {
     expect(screen.getByTestId("admin-page")).toBeInTheDocument();
   });
 
-  it("Admin at /jenkins-failures is redirected to /admin", () => {
-    renderAt("Admin", "/jenkins-failures");
-    expect(screen.getByTestId("admin-page")).toBeInTheDocument();
-    expect(screen.queryByTestId("jenkins-failures-page")).not.toBeInTheDocument();
-  });
-
-  it("Admin at /cicd-assistant is redirected to /admin", () => {
-    renderAt("Admin", "/cicd-assistant");
-    expect(screen.getByTestId("admin-page")).toBeInTheDocument();
-    expect(screen.queryByTestId("cicd-assistant-page")).not.toBeInTheDocument();
-  });
-
-  it("Owner at /cicd-assistant can see CICD assistant", () => {
-    renderAt("Owner", "/cicd-assistant");
-    expect(screen.getByTestId("cicd-assistant-page")).toBeInTheDocument();
-  });
-
-  it("Guest at /cicd-assistant can see CICD assistant", () => {
-    renderAt("Guest", "/cicd-assistant");
-    expect(screen.getByTestId("cicd-assistant-page")).toBeInTheDocument();
-  });
+  for (const { view, testId } of [
+    { view: "jenkins-failures", testId: "jenkins-failures-page" },
+    { view: "cicd-assistant", testId: "cicd-assistant-page" },
+  ] satisfies Array<{ view: RouteView; testId: string }>) {
+    const route = routeForView(view);
+    it.each(ALL_ROLES)(`%s follows shared access for ${view}`, (role) => {
+      renderAt(role, route.path);
+      expect(screen.queryByTestId(testId) !== null).toBe(route.roles.includes(role));
+    });
+  }
 
   // ── Non-Admin: no redirect ─────────────────────────────────────────────────
 
@@ -141,30 +136,22 @@ describe("AppRouter", () => {
     expect(screen.getByTestId("dashboard-page")).toBeInTheDocument();
   });
 
-  // ── Wave 3: CICD tab RM/SPD-only — Owner and Guest bounced to /apps ─────────
+  // ── Wave 3: CICD access and App fallback derive from routeConfig ────────────
 
-  it("Owner at /cicd is redirected to /apps (W3 CICD tab gate)", () => {
-    // /apps renders the AppWorkbenchPage mock
-    renderAt("Owner", "/cicd");
-    // Should not see cicd component
-    expect(screen.queryByText("cicd")).not.toBeInTheDocument();
-    // Should see apps instead (the mock renders "apps" text)
-    expect(screen.getByText("apps")).toBeInTheDocument();
-  });
+  const cicdRoute = routeForView("cicd");
+  const appsRoute = routeForView("apps");
+  const appFallbackRoles = ALL_ROLES.filter(
+    (role) => appsRoute.roles.includes(role) && !cicdRoute.roles.includes(role),
+  );
 
-  it("Guest at /cicd is redirected to /apps (W3 CICD tab gate)", () => {
-    renderAt("Guest", "/cicd");
+  it.each(appFallbackRoles)("%s at /cicd is redirected to /apps", (role) => {
+    renderAt(role, cicdRoute.path);
     expect(screen.queryByText("cicd")).not.toBeInTheDocument();
     expect(screen.getByText("apps")).toBeInTheDocument();
   });
 
-  it("RM at /cicd sees the CICD page (W3 RM allowed)", () => {
-    renderAt("RM", "/cicd");
-    expect(screen.getByText("cicd")).toBeInTheDocument();
-  });
-
-  it("SPD at /cicd sees the CICD page (W3 SPD allowed)", () => {
-    renderAt("SPD", "/cicd");
+  it.each(cicdRoute.roles)("%s at /cicd sees the CICD page", (role) => {
+    renderAt(role, cicdRoute.path);
     expect(screen.getByText("cicd")).toBeInTheDocument();
   });
 });

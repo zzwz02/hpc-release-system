@@ -23,10 +23,11 @@ from fastapi.responses import Response
 
 from app.api.errors import AuthzError
 from app.config import settings
-from app.deps import get_db, require_login
+from app.deps import get_db, require_tab_access
 from app.services import qa_service
 
 router = APIRouter(tags=["qa"])
+require_qa_tab_access = require_tab_access("qa", message="无权访问 QA 页签")
 
 # Role set used by multiple endpoints — mirrors server.py:{"QA", "RM"}
 _QA_RM = {"QA", "RM"}
@@ -39,7 +40,7 @@ _QA_RM = {"QA", "RM"}
 @router.get("/api/qa/analyze-log/status")
 def api_qa_analyze_log_status(
     job_id: str = Query(default=""),
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_qa_tab_access),
 ) -> dict:
     """Poll an async LLM analysis job.
 
@@ -72,7 +73,7 @@ def api_qa_analyze_log_status(
 @router.get("/api/qa-log/download")
 def api_qa_log_download(
     release_id: str = Query(default=""),
-    user: dict = Depends(require_login),
+    _user: dict = Depends(require_qa_tab_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> Response:
     """Stream a QA log file for download.
@@ -102,7 +103,7 @@ def api_qa_log_download(
 def api_qa_reports(
     release_id: str = Query(default=""),
     compare_release_id: str = Query(default=""),
-    user: dict = Depends(require_login),
+    _user: dict = Depends(require_qa_tab_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Return QA release report and test-command tables.
@@ -119,7 +120,7 @@ def api_qa_reports(
 @router.post("/api/qa/status-batch")
 def api_qa_status_batch(
     body: dict,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_qa_tab_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Apply QA status annotations in batch.
@@ -144,7 +145,7 @@ def api_qa_status_batch(
 @router.post("/api/qa/upload-log")
 def api_qa_upload_log(
     body: dict,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_qa_tab_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Accept a base64-encoded QA log file and persist it.
@@ -170,7 +171,7 @@ def api_qa_upload_log(
 @router.post("/api/qa/analyze-log")
 def api_qa_analyze_log(
     body: dict,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_qa_tab_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Run LLM analysis on the uploaded QA log synchronously.
@@ -189,7 +190,7 @@ def api_qa_analyze_log(
 @router.post("/api/qa/analyze-log/start")
 def api_qa_analyze_log_start(
     body: dict,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_qa_tab_access),
 ) -> dict:
     """Start an async LLM analysis job and return the initial job state.
 

@@ -1,0 +1,12 @@
+{
+  "dashboard": ["RM", "Owner", "QA", "Guest"],
+  "init": ["RM"],
+  "apps": ["RM", "Owner", "QA", "Guest"],
+  "qa": ["RM", "Owner", "QA", "Guest"],
+  "artifacts": ["RM", "Owner", "Guest"],
+  "cicd": ["RM", "SPD"],
+  "jenkins-failures": ["RM", "Owner", "SPD", "QA"],
+  "cicd-assistant": ["RM", "Owner", "SPD"],
+  "wiki": ["RM", "Owner"],
+  "admin": ["Admin"]
+}

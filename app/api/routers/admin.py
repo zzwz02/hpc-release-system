@@ -15,10 +15,11 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, Request
 
-from app.deps import get_db, require_roles
+from app.deps import get_db, require_tab_access
 from app.services import admin_service
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+require_admin_access = require_tab_access("admin", message="Admin role required")
 
 
 # ---------------------------------------------------------------------------
@@ -26,7 +27,7 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 # ---------------------------------------------------------------------------
 
 def get_users(
-    _user: dict = Depends(require_roles("Admin", message="Admin role required")),
+    _user: dict = Depends(require_admin_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Return all users.
@@ -45,7 +46,7 @@ router.add_api_route("/users", get_users, methods=["GET"])
 
 async def post_set_role(
     request: Request,
-    user: dict = Depends(require_roles("Admin", message="Admin role required")),
+    user: dict = Depends(require_admin_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Update a user's role.
@@ -74,7 +75,7 @@ router.add_api_route("/users/set-role", post_set_role, methods=["POST"])
 
 async def post_clear_db(
     request: Request,
-    user: dict = Depends(require_roles("Admin", message="Admin role required")),
+    user: dict = Depends(require_admin_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Clear all business data after password re-verification.
@@ -103,7 +104,7 @@ router.add_api_route("/clear-db", post_clear_db, methods=["POST"])
 
 async def post_delete_app(
     request: Request,
-    user: dict = Depends(require_roles("Admin", message="Admin role required")),
+    user: dict = Depends(require_admin_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Delete an app globally after confirmation.

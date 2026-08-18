@@ -17,10 +17,11 @@ import sqlite3
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 
-from app.deps import get_db, require_login
+from app.deps import get_db, require_tab_access
 from app.services import wiki_service
 
 router = APIRouter(prefix="/api/wiki", tags=["wiki"])
+require_wiki_access = require_tab_access("wiki", message="无权访问开发 WIKI")
 
 
 # ---------------------------------------------------------------------------
@@ -28,7 +29,7 @@ router = APIRouter(prefix="/api/wiki", tags=["wiki"])
 # ---------------------------------------------------------------------------
 
 def get_articles(
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_wiki_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """List all wiki articles.
@@ -48,7 +49,7 @@ router.add_api_route("/articles", get_articles, methods=["GET"])
 
 def get_article(
     article_id: str,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_wiki_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> Response:
     """Get a single wiki article.
@@ -72,7 +73,7 @@ router.add_api_route("/articles/{article_id}", get_article, methods=["GET"])
 
 async def post_save_article(
     request: Request,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_wiki_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> Response:
     """Create or update a wiki article.
@@ -105,7 +106,7 @@ router.add_api_route("/articles/save", post_save_article, methods=["POST"])
 
 async def post_pin_article(
     request: Request,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_wiki_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> Response:
     """Toggle the pinned flag on a wiki article.
@@ -136,7 +137,7 @@ router.add_api_route("/articles/pin", post_pin_article, methods=["POST"])
 
 async def post_delete_article(
     request: Request,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_wiki_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> Response:
     """Soft-delete a wiki article.
@@ -166,7 +167,7 @@ router.add_api_route("/articles/delete", post_delete_article, methods=["POST"])
 
 async def post_upload_image(
     request: Request,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_wiki_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Upload an image (base64-encoded).
@@ -197,7 +198,7 @@ router.add_api_route("/images/upload", post_upload_image, methods=["POST"])
 
 def get_image(
     image_id: str,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_wiki_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> Response:
     """Return image binary data.

@@ -459,6 +459,10 @@ def get_artifact(
     Raises KeyError if the artifact does not exist (caller should return 404).
     """
     from app.api.errors import AuthzError
+    from app.domain.tab_permissions import roles_for_tab
+
+    if role not in roles_for_tab("artifacts"):
+        raise AuthzError("无权访问发布文档")
 
     # Non-RM can only see the four public kinds (mirrors server.py:504-505)
     _public_kinds = {"release_note", "manual", "ai4sci", "data"}

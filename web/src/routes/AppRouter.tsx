@@ -8,7 +8,12 @@
 import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
 import { RequireRole } from "./RequireRole";
-import { ROUTES } from "./routeConfig";
+import {
+  ROUTES,
+  canAccessRoute,
+  routeForView,
+  type Role,
+} from "./routeConfig";
 
 // Placeholder until each feature is implemented by its owner wave.
 function Placeholder({ label }: { label: string }) {
@@ -45,8 +50,6 @@ const FEATURE_MAP: Record<string, React.ReactNode> = {
   admin:     <AdminPage />,
 };
 
-const ADMIN_ALLOWED_PATHS = ["/admin"];
-
 function pathMatches(pathname: string, routePath: string): boolean {
   return pathname === routePath || pathname.startsWith(`${routePath}/`);
 }
@@ -54,16 +57,26 @@ function pathMatches(pathname: string, routePath: string): boolean {
 export function AppRouter() {
   const { user } = useAuth();
   const { pathname } = useLocation();
+  const role = user?.role as Role | undefined;
+  const adminRoute = routeForView("admin");
+  const cicdRoute = routeForView("cicd");
+  const appsRoute = routeForView("apps");
 
   // Ruling C keeps Admin confined to system management. Direct navigation to
   // every other page, including CICD Agent diagnostics, returns to /admin.
-  if (user?.role === "Admin" && !ADMIN_ALLOWED_PATHS.some((path) => pathMatches(pathname, path))) {
-    return <Navigate to="/admin" replace />;
+  if (role === "Admin" && !pathMatches(pathname, adminRoute.path)) {
+    return <Navigate to={adminRoute.path} replace />;
   }
 
-  // Wave 3: CICD 工作台 is RM/SPD only — bounce Owner and Guest to /apps.
-  if (["Owner", "Guest"].includes(user?.role ?? "") && pathMatches(pathname, "/cicd")) {
-    return <Navigate to="/apps" replace />;
+  // Users who can access App 工作台 but not CICD 工作台 are bounced to the
+  // former. Both permission checks consume the shared route matrix.
+  if (
+    role
+    && pathMatches(pathname, cicdRoute.path)
+    && !canAccessRoute(cicdRoute, role)
+    && canAccessRoute(appsRoute, role)
+  ) {
+    return <Navigate to={appsRoute.path} replace />;
   }
 
   return (

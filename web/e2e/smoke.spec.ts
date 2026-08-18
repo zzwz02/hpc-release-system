@@ -26,6 +26,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { test, expect, type Page } from "@playwright/test";
+import { ROUTES, routeForView, type Role } from "../src/routes/routeConfig";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -454,13 +455,22 @@ test.describe("开发 WIKI", () => {
 // ---------------------------------------------------------------------------
 
 test.describe("Role-gating", () => {
-  test("Guest does not see 周期管理 tab", async ({ page }) => {
-    await login(page, "guest");
-    // Guest role should not see the init tab button
-    const initTab = page.locator('[href="/init"], a:has-text("周期管理")');
-    const visible = await initTab.isVisible({ timeout: 2_000 }).catch(() => false);
-    expect(visible).toBe(false);
-  });
+  for (const { username, role } of [
+    { username: "rm", role: "RM" },
+    { username: "owner_test", role: "Owner" },
+    { username: "spd_test", role: "SPD" },
+    { username: "qa", role: "QA" },
+    { username: "guest", role: "Guest" },
+  ] satisfies Array<{ username: string; role: Role }>) {
+    test(`${role} sees exactly the configured tabs`, async ({ page }) => {
+      await login(page, username);
+      const visibleTabs = await page.locator("nav.tabs a").allTextContents();
+      const expectedTabs = ROUTES
+        .filter((route) => route.roles.includes(role))
+        .map((route) => route.label);
+      expect(visibleTabs).toEqual(expectedTabs);
+    });
+  }
 
   test("Owner sees App 工作台 and own-only checkbox", async ({ page }) => {
     await login(page, "owner_test");
@@ -470,6 +480,7 @@ test.describe("Role-gating", () => {
     const visible = await ownOnly.isVisible({ timeout: 5_000 }).catch(() => false);
     expect(visible).toBe(true);
   });
+
 });
 
 // ---------------------------------------------------------------------------
@@ -485,19 +496,16 @@ test.describe("Admin role-gating (ruling C)", () => {
     expect(url).toContain("/admin");
   });
 
-  test("Admin sees ONLY 系统管理 tab — no other tabs visible", async ({ page }) => {
+  test("Admin sees exactly the configured tabs", async ({ page }) => {
     await login(page, "admin", ADMIN_PASSWORD);
     await page.waitForURL(`${BASE}/admin`, { timeout: 8_000 });
     await page.waitForLoadState("networkidle", { timeout: 10_000 });
 
-    const tabsText = await page.locator("nav.tabs").textContent();
-    expect(tabsText).toContain("系统管理");
-    // Tabs that should NOT be visible for Admin
-    expect(tabsText).not.toContain("总览");
-    expect(tabsText).not.toContain("App 工作台");
-    expect(tabsText).not.toContain("CICD");
-    expect(tabsText).not.toContain("jenkins失败查询");
-    expect(tabsText).not.toContain("周期管理");
+    const visibleTabs = await page.locator("nav.tabs a").allTextContents();
+    const expectedTabs = ROUTES
+      .filter((route) => route.roles.includes("Admin"))
+      .map((route) => route.label);
+    expect(visibleTabs).toEqual(expectedTabs);
   });
 
   test("Admin navigating to /cicd is redirected to /admin", async ({ page }) => {
@@ -513,8 +521,8 @@ test.describe("Admin role-gating (ruling C)", () => {
     await login(page, "admin", ADMIN_PASSWORD);
     await page.waitForURL(`${BASE}/admin`, { timeout: 8_000 });
 
-    for (const path of ["/jenkins-failures", "/cicd-assistant"]) {
-      await page.goto(`${BASE}${path}`);
+    for (const view of ["jenkins-failures", "cicd-assistant"] as const) {
+      await page.goto(`${BASE}${routeForView(view).path}`);
       await page.waitForURL(`${BASE}/admin`, { timeout: 8_000 });
     }
   });

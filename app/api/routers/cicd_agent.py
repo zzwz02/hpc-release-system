@@ -15,9 +15,18 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.deps import require_login
+from app.deps import require_tab_access
 
 router = APIRouter(prefix="/api/cicd-agent", tags=["cicd-agent"])
+
+require_jenkins_access = require_tab_access(
+    "jenkins-failures",
+    message="无权访问 Jenkins 失败查询",
+)
+require_assistant_access = require_tab_access(
+    "cicd-assistant",
+    message="无权访问 CICD 助手",
+)
 
 
 def _agent_url(path: str, query: str = "") -> str:
@@ -65,7 +74,7 @@ def _request_agent(method: str, path: str, *, query: str = "", body: Any = None)
 @router.get("/failures")
 def list_failures(
     request: Request,
-    _user: dict = Depends(require_login),
+    _user: dict = Depends(require_jenkins_access),
 ) -> JSONResponse:
     return _request_agent("GET", "/api/v1/failures", query=request.url.query)
 
@@ -73,7 +82,7 @@ def list_failures(
 @router.get("/failures/summary")
 def summarize_failures(
     request: Request,
-    _user: dict = Depends(require_login),
+    _user: dict = Depends(require_jenkins_access),
 ) -> JSONResponse:
     return _request_agent("GET", "/api/v1/failures/summary", query=request.url.query)
 
@@ -81,7 +90,7 @@ def summarize_failures(
 @router.get("/failures/filter-options")
 def failure_filter_options(
     request: Request,
-    _user: dict = Depends(require_login),
+    _user: dict = Depends(require_jenkins_access),
 ) -> JSONResponse:
     return _request_agent("GET", "/api/v1/failures/filter-options", query=request.url.query)
 
@@ -89,7 +98,7 @@ def failure_filter_options(
 @router.get("/failures/{record_id}")
 def failure_detail(
     record_id: int,
-    _user: dict = Depends(require_login),
+    _user: dict = Depends(require_jenkins_access),
 ) -> JSONResponse:
     return _request_agent("GET", f"/api/v1/failures/{record_id}")
 
@@ -97,7 +106,7 @@ def failure_detail(
 @router.post("/failure-chat")
 async def failure_chat(
     request: Request,
-    _user: dict = Depends(require_login),
+    _user: dict = Depends(require_assistant_access),
 ) -> JSONResponse:
     body = await request.json()
     return _request_agent("POST", "/api/v1/failure-chat", body=body)

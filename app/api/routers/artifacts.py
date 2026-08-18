@@ -13,10 +13,14 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, Request, Response
 
-from app.deps import get_db, require_login, require_roles
+from app.deps import get_db, require_roles, require_tab_access
 from app.services import artifact_service
 
 router = APIRouter(tags=["artifacts"])
+require_artifacts_tab_access = require_tab_access(
+    "artifacts",
+    message="无权访问发布文档",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -26,7 +30,7 @@ router = APIRouter(tags=["artifacts"])
 def get_artifact(
     kind: str,
     release_id: str = "",
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_artifacts_tab_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> Response:
     """Download one artifact as plain text (or CSV).
@@ -108,7 +112,7 @@ router.add_api_route(
 
 async def post_generate_artifacts(
     request: Request,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_artifacts_tab_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Regenerate draft artifacts for a release.
