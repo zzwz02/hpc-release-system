@@ -84,9 +84,11 @@ process-local registries.
 - **CICD Agent**: the Jenkins failure query and CICD assistant pages call the
   same-origin `/api/cicd-agent/*` proxy.  Configure the target in the FastAPI
   `.env` with `CICD_AGENT_BASE_URL`; do not point the browser directly at the
-  standalone Agent service. Both routes and their exclusive proxy APIs consume
-  the repo-level `shared/tab_permissions.json` matrix via `routeConfig.ts` and
-  `app.domain.tab_permissions`; do not copy role arrays into feature code.
+  standalone Agent service. Routes, proxy APIs, and operation affordances
+  consume `shared/access_control.json` through `src/lib/accessControl.ts` and
+  `app.domain.permissions`; do not copy role arrays into feature code. For
+  ownership/status-dependent operations, consume backend `allowed_actions`
+  instead of recreating backend business rules in React.
 - **Timezone**: stored times are naive Beijing strings.  The frontend displays them
   as-is with zero offset — no `+8` math.
 - **Markdown**: `src/components/Markdown.tsx` is the **sole** `dangerouslySetInnerHTML`

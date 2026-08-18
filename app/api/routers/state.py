@@ -17,8 +17,14 @@ router = APIRouter(prefix="/api", tags=["state"])
 @router.get("/state")
 def api_state(
     release_id: str = Query(default=""),
+    include_allowed_actions: bool = Query(default=False),
     user: dict = Depends(require_login),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Return full page-state payload for the given (or latest) release."""
-    return get_state(conn, user=user, release_id_param=release_id)
+    return get_state(
+        conn,
+        user=user,
+        release_id_param=release_id,
+        include_allowed_actions=include_allowed_actions,
+    )

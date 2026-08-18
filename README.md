@@ -129,7 +129,9 @@ CICD_AGENT_TIMEOUT_SECONDS=90
 - **Admin**：仅负责访问控制——用户/角色管理、清空业务数据、全局删除 app、审计只读；**完全不参与 CICD/release 业务**（Ruling C）。登录后只显示并允许访问「系统管理」，包括 Jenkins 失败查询、CICD 助手在内的其他页签均不可见，直链访问也会重定向到「系统管理」。
 - **Guest**：只读查看发布状态和 QA 信息。
 
-所有顶层页签的角色矩阵以 [`shared/tab_permissions.json`](./shared/tab_permissions.json) 为唯一来源；前端导航、直链门禁和页签专属后端 API 必须消费该配置，不能各自复制角色列表。API 内比页签更细的读写权限仍由对应业务规则单独控制。
+所有角色、顶层页签和静态操作 capability 以 [`shared/access_control.json`](./shared/access_control.json) 为唯一矩阵来源。前端通过 `web/src/lib/accessControl.ts`、后端通过 `app/domain/permissions.py` 读取；导航、直链门禁、API 依赖和操作按钮不得再复制角色列表。
+
+需要 ownership、release 锁定、申请状态等上下文的例外权限，由后端 `app/domain/access_actions.py` 将共享基础 capability 与业务状态组合。`/api/state`、`/api/cicd/requests` 和 `/api/cicd/deliveries` 在 `include_allowed_actions=1` 时下发 `allowed_actions`，前端据此展示对象级操作；后端 endpoint/service 仍是最终安全边界。
 
 ---
 
@@ -314,7 +316,7 @@ release-system/
 │   ├── src/{api,types,lib,store,components,features,routes}/
 │   └── README-web.md            # 前端开发说明
 ├── tools/                       # 辅助工具（如身份解析）
-├── shared/tab_permissions.json  # 顶层页签角色权限的唯一来源
+├── shared/access_control.json   # 角色、页签与静态 capability 的唯一来源
 ├── tests/                       # pytest（含 tests/golden/ 回放）
 ├── release_system/              # 旧系统（冻结，golden 基准，勿改）
 │   ├── core.py

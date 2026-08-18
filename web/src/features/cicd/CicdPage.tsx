@@ -48,6 +48,7 @@ import {
 import type { CicdTask, CicdRequest } from "../../types";
 import { toast } from "../../lib/toast";
 import { confirmDialog, promptDialog } from "../../lib/confirm";
+import { can } from "../../lib/accessControl";
 
 // Re-export so consumers (tests, TabNav) can import from either location.
 export { CICD_TASKS_KEY, CICD_NOTIFICATIONS_KEY };
@@ -77,20 +78,8 @@ function OriginBadge({ origin }: { origin?: string }) {
   );
 }
 
-function statusChange(payload: Record<string, unknown>): { oldStatus: string; newStatus: string } {
-  const status = payload.status;
-  if (!status || typeof status !== "object") return { oldStatus: "", newStatus: "" };
-  const change = status as { old?: unknown; new?: unknown };
-  return {
-    oldStatus: String(change.old ?? "").trim(),
-    newStatus: String(change.new ?? "").trim(),
-  };
-}
-
-function isDecisionSyncStopRequest(req: CicdRequest): boolean {
-  if (req.origin !== "release_decision_sync" || req.request_type !== "modify") return false;
-  const { oldStatus, newStatus } = statusChange((req.payload ?? {}) as Record<string, unknown>);
-  return oldStatus === "Running" && newStatus === "Stopped";
+function allows(req: CicdRequest, action: string): boolean {
+  return (req.allowed_actions ?? []).includes(action);
 }
 
 const REQ_STATUS_LABEL: Record<string, string> = {
@@ -287,7 +276,7 @@ function ApproveDialog({ req, tasks, onDone, onClose }: ApproveDialogProps) {
   const [error, setError] = useState("");
 
   const payload = (req.payload ?? {}) as Record<string, unknown>;
-  const rejectDisabledByDecisionSync = isDecisionSyncStopRequest(req);
+  const rejectAllowed = allows(req, "cicd.request.reject");
   const taskName =
     (payload.app_name as string) ||
     tasks.find((t) => t.id === req.task_id)?.app_name ||
@@ -370,7 +359,7 @@ function ApproveDialog({ req, tasks, onDone, onClose }: ApproveDialogProps) {
             payload={payload}
             reqType={req.request_type}
           />
-          {rejectDisabledByDecisionSync && (
+          {!rejectAllowed && (
             <div className="small muted mt-8">
               该申请来自 release/cicd_only → stopped 的 release 决策，停止是 App owner 的决定，CICD 审批不能拒绝或取消。
             </div>
@@ -475,7 +464,7 @@ function ApproveDialog({ req, tasks, onDone, onClose }: ApproveDialogProps) {
           <button className="btn" onClick={onClose} disabled={saving}>
             取消
           </button>
-          {!rejectDisabledByDecisionSync && (
+          {rejectAllowed && (
             <button className="btn danger" onClick={handleReject} disabled={saving}>
               拒绝
             </button>
@@ -1041,9 +1030,7 @@ function PendingPane({
                 </tr>
               ) : (
                 filtered.map((r) => {
-                  const isMyReq = r.submitter === username;
                   const payload = (r.payload ?? {}) as Record<string, unknown>;
-                  const canCancelRequest = (isMyReq || canApprove) && !isDecisionSyncStopRequest(r);
                   return (
                     <tr key={r.id}>
                       <td className="cicd-id">#{r.id}</td>
@@ -1060,7 +1047,7 @@ function PendingPane({
                         {diffSummary(payload, r.request_type)}
                       </td>
                       <td className="nowrap">
-                        {canApprove && (
+                        {allows(r, "cicd.request.approve") && (
                           <button
                             className="btn sm primary"
                             onClick={() => onApprove(r)}
@@ -1068,7 +1055,7 @@ function PendingPane({
                             审批
                           </button>
                         )}{" "}
-                        {canCancelRequest && (
+                        {allows(r, "cicd.request.cancel") && (
                           <button
                             className="btn sm warn"
                             onClick={() => handleCancel(r)}
@@ -1120,7 +1107,7 @@ function DeliveryPane({
   const [search, setSearch] = useState("");
   const status = delivered
     ? "delivered"
-    : role === "SPD"
+    : can(role, "cicd.delivery.return") && !can(role, "cicd.delivery.redispatch")
     ? "pending"
     : "pending_or_returned";
 
@@ -1355,7 +1342,7 @@ function DeliveryPane({
                       )}
                     </td>
                     <td className="nowrap">
-                      {["SPD", "RM"].includes(role) && (
+                      {allows(d, "cicd.delivery.confirm") && (
                         <button
                           className="btn sm primary"
                           onClick={() => handleDeliver(d.id)}
@@ -1363,7 +1350,7 @@ function DeliveryPane({
                           确认交付
                         </button>
                       )}{" "}
-                      {role === "SPD" && (
+                      {allows(d, "cicd.delivery.return") && (
                         <button
                           className="btn sm danger"
                           onClick={() => handleReturn(d.id)}
@@ -1371,29 +1358,30 @@ function DeliveryPane({
                           退回
                         </button>
                       )}{" "}
-                      {role === "RM" &&
-                        d.delivery_status === "returned" && (
-                          <>
+                      {allows(d, "cicd.delivery.redispatch") && (
                             <button
                               className="btn sm"
                               onClick={() => handleReDispatch(d.id)}
                             >
                               重新下发
-                            </button>{" "}
+                            </button>
+                      )}{" "}
+                      {allows(d, "cicd.delivery.apply_returned") && (
                             <button
                               className="btn sm warn"
                               onClick={() => handleApplyReturned(d.id)}
                             >
                               直接生效
-                            </button>{" "}
+                            </button>
+                      )}{" "}
+                      {allows(d, "cicd.delivery.reject_returned") && (
                             <button
                               className="btn sm danger"
                               onClick={() => handleRejectReturned(d.id)}
                             >
                               拒绝
-                            </button>{" "}
-                          </>
-                        )}
+                            </button>
+                      )}{" "}
                       <button className="btn sm" onClick={() => onDetail(d)}>
                         详情
                       </button>
@@ -1428,11 +1416,11 @@ export function CicdPage() {
   const username = user?.username ?? "";
 
   // Ruling C: Admin has NO CICD create/approve/deliver affordances.
-  const canApprove = ["RM"].includes(role);
-  const canDelivery = ["SPD", "RM"].includes(role);
+  const canApprove = can(role, "cicd.request.approve");
+  const canDelivery = can(role, "cicd.delivery.confirm");
 
   // Pane visibility by role (mirrors bindCicd:4738-4754)
-  const isSPD = role === "SPD";
+  const isSPD = can(role, "cicd.delivery.return") && !canApprove;
   const availablePanes: SubPane[] = isSPD
     ? ["delivery", "delivered"]
     : canDelivery
@@ -1491,7 +1479,7 @@ export function CicdPage() {
 
   const { data: deliveryCountData } = useQuery({
     queryKey: ["cicd", "deliveries", "pending-count", role],
-    queryFn: () => fetchCicdDeliveries(role === "SPD" ? "pending" : "pending_or_returned"),
+    queryFn: () => fetchCicdDeliveries(isSPD ? "pending" : "pending_or_returned"),
     staleTime: 0,
     refetchInterval: 1000,
     refetchOnMount: true,

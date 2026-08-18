@@ -64,7 +64,7 @@ export function AppRouter() {
 
   // Ruling C keeps Admin confined to system management. Direct navigation to
   // every other page, including CICD Agent diagnostics, returns to /admin.
-  if (role === "Admin" && !pathMatches(pathname, adminRoute.path)) {
+  if (role && canAccessRoute(adminRoute, role) && !pathMatches(pathname, adminRoute.path)) {
     return <Navigate to={adminRoute.path} replace />;
   }
 

@@ -31,7 +31,7 @@ import { confirmDialog } from "../../lib/confirm";
 import { apiGet, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
-import { isRM, isOwner, canCreateApp, canEdit } from "../../lib/roles";
+import { isOwner, canCreateApp, canEdit, canEditRmFields } from "../../lib/roles";
 import { beforeAppFreeze, beforeDocDeadline, releaseLocked } from "../../lib/phase";
 import { displayName } from "../../lib/identity";
 import {
@@ -117,8 +117,9 @@ const STATE_KEY = (releaseId?: string) =>
 const EMPTY_APPS: App[] = [];
 
 async function fetchState(releaseId?: string): Promise<StatePayload> {
-  const qs = releaseId ? `?release_id=${encodeURIComponent(releaseId)}` : "";
-  return apiGet<StatePayload>(`/api/state${qs}`);
+  const qs = new URLSearchParams({ include_allowed_actions: "1" });
+  if (releaseId) qs.set("release_id", releaseId);
+  return apiGet<StatePayload>(`/api/state?${qs.toString()}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1484,7 +1485,7 @@ interface DetailPanelProps {
 
 function DetailPanel({ app, snap, release, releases, user, displayNames: _displayNames, onSaved, onRetryCreate }: DetailPanelProps) {
   const queryClient = useQueryClient();
-  const userIsRM = isRM(user);
+  const canEditRmOnlyFields = canEditRmFields(user);
   const userIsOwner = isOwner(user);
   const locked = releaseLocked(release);
   const docDeadline = beforeDocDeadline(release);
@@ -2223,17 +2224,17 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
               <label>官方名称
                 <input className="input" value={form.official_name}
                   onChange={(e) => patch("official_name", e.target.value)}
-                  disabled={!canEditDocFields || !userIsRM} data-testid="field-official-name" />
+                  disabled={!canEditDocFields || !canEditRmOnlyFields} data-testid="field-official-name" />
               </label>
               <label>Owner
                 <input className="input" value={form.owners}
                   onChange={(e) => patch("owners", e.target.value)}
-                  disabled={!canEditDocFields || !userIsRM} />
+                  disabled={!canEditDocFields || !canEditRmOnlyFields} />
               </label>
               <label>类型
                 <select className="select" value={form.doc_target}
                   onChange={(e) => patch("doc_target", e.target.value as "manual" | "ai4sci")}
-                  disabled={!canEditDocFields || !userIsRM}>
+                  disabled={!canEditDocFields || !canEditRmOnlyFields}>
                   {docTargetOptions.map((v) => (
                     <option key={v} value={v}>{docTargetLabels[v]}</option>
                   ))}
@@ -2438,13 +2439,13 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
                 <label className="check">
                   <input type="checkbox" checked={form.sanity_arm}
                     onChange={(e) => patch("sanity_arm", e.target.checked)}
-                    disabled={!canEditDocFields || !userIsRM} />
+                    disabled={!canEditDocFields || !canEditRmOnlyFields} />
                   ARM / Kylin Sanity <span className="small muted">（RM 填写）</span>
                 </label>
                 <label className="check">
                   <input type="checkbox" checked={form.sanity_ubuntu}
                     onChange={(e) => patch("sanity_ubuntu", e.target.checked)}
-                    disabled={!canEditDocFields || !userIsRM} />
+                    disabled={!canEditDocFields || !canEditRmOnlyFields} />
                   Ubuntu / 兼容性 Sanity <span className="small muted">（RM 填写）</span>
                 </label>
               </div>
@@ -2541,7 +2542,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
             {activeSaveBlockedReason}
           </span>
         )}
-        {canEditDetail && editMode && userIsRM && (
+        {canEditDetail && editMode && canEditRmOnlyFields && (
           <>
             <button className="btn" onClick={() => { setEditMode(false); setDirty(false); snap && app && setForm(snapshotToForm(snap, app)); }}>取消</button>
             <button
@@ -2864,7 +2865,7 @@ export function AppWorkbenchPage() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const userIsOwner = isOwner(user);
-  const userIsRM = isRM(user);
+  const canEditRmOnlyFields = canEditRmFields(user);
 
   const {
     selectedApp, setSelectedApp,
@@ -3108,7 +3109,7 @@ export function AppWorkbenchPage() {
             ))}
           </select>
         )}
-        {userIsRM && release && (
+        {canEditRmOnlyFields && release && (
           <button
             className="btn sm"
             onClick={() => void handleFetchAllAppInfos()}

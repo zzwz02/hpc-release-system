@@ -17,6 +17,7 @@ from app.domain import app_info as app_info_domain
 from app.domain import decision_sync as decision_sync_domain
 from app.domain import decisions as decisions_domain
 from app.domain import phases as phase_policy
+from app.domain.permissions import roles_for_capability
 from app.domain.textutil import order_chips
 from app.repositories import apps_repo, cicd_repo, releases_repo, snapshots_repo
 from app.repositories.audit_repo import log_audit
@@ -27,8 +28,10 @@ from app.timeutil import beijing_timestamp
 # CICD_APPROVER_ROLES={RM}: Admin no longer approves CICD requests (plan §3.7, DA V2)
 # CICD_CREATE_ROLES={Owner,RM}: Admin no longer submits CICD requests
 # ---------------------------------------------------------------------------
-CICD_APPROVER_ROLES: frozenset[str] = frozenset({"RM"})
-CICD_CREATE_ROLES: frozenset[str] = frozenset({"Owner", "RM"})
+CICD_APPROVER_ROLES = frozenset(roles_for_capability("cicd.request.approve"))
+CICD_CREATE_ROLES = frozenset(roles_for_capability("cicd.request.submit"))
+CICD_DELIVER_ROLES = frozenset(roles_for_capability("cicd.delivery.confirm"))
+CICD_RETURN_ROLES = frozenset(roles_for_capability("cicd.delivery.return"))
 CICD_STATUSES: frozenset[str] = frozenset({"Running", "Stopped"})
 CICD_FIRST_RELEASE_DECISIONS: frozenset[str] = frozenset({"release", "cicd_only"})
 
@@ -986,7 +989,11 @@ def get_notifications(
     Mirrors core.py:get_cicd_notifications.
     """
     return cicd_repo.notification_counts(
-        conn, username, role, approver_roles=CICD_APPROVER_ROLES
+        conn,
+        username,
+        role,
+        approver_roles=CICD_APPROVER_ROLES,
+        delivery_roles=CICD_RETURN_ROLES,
     )
 
 
@@ -1433,7 +1440,7 @@ def deliver_request(
     """
     import json as _json
 
-    if deliverer_role not in {"SPD", "RM"}:
+    if deliverer_role not in CICD_DELIVER_ROLES:
         raise PermissionError("只有 SPD、RM 可以标记已交付")
     row = conn.execute(
         "SELECT * FROM cicd_task_requests WHERE id = ?", (req_id,)
@@ -1482,7 +1489,7 @@ def return_delivery(
 
     Mirrors core.py:return_cicd_request.
     """
-    if returner_role != "SPD":
+    if returner_role not in CICD_RETURN_ROLES:
         raise PermissionError("只有 SPD 可以退回交付申请")
     if not reason or not reason.strip():
         raise ValueError("退回必须填写原因")

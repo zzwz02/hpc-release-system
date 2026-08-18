@@ -28,7 +28,8 @@ import { RefreshBar } from "../../components/RefreshBar";
 import { Markdown } from "../../components/Markdown";
 import type { MarkdownOutlineItem } from "../../lib/markdown";
 import { formatServerTime } from "../../lib/time";
-import { isRM, canGenerateMarkdown } from "../../lib/roles";
+import { canGenerateMarkdown } from "../../lib/roles";
+import { can } from "../../lib/accessControl";
 import { downloadCsvText, parseCsvRows } from "../../lib/csv";
 import { toast } from "../../lib/toast";
 import type { ArtifactKind, StatePayload } from "../../types";
@@ -347,9 +348,9 @@ export function ArtifactsPage() {
     refetchOnMount: true,
   });
   const releases = stateData?.releases ?? [];
-  const rmRole = isRM(user);
   const canGenerate = canGenerateMarkdown(user);  // RM or Owner
-  const canManagerReview = rmRole;
+  const canManagerReview = can(user?.role, "artifact.generate.manager_review");
+  const canExportTestScope = can(user?.role, "artifact.export.test_scope");
 
   // Which artifact kind is currently shown (null = nothing → picker cards)
   const [activeKind, setActiveKind] = useState<ViewKind>(null);
@@ -479,7 +480,7 @@ export function ArtifactsPage() {
         {refreshError && (
           <span className="small danger-text">{refreshError}</span>
         )}
-        {releaseId && rmRole && (
+        {releaseId && canExportTestScope && (
           <button
             className="btn sm"
             onClick={() => void handleDownloadTestScope()}

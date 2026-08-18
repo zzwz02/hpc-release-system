@@ -8,7 +8,7 @@ import { useAuth } from "../api/AuthContext";
 import type { Role } from "./routeConfig";
 
 interface Props {
-  roles: Role[];
+  roles: readonly Role[];
   children: React.ReactNode;
   /** Optional fallback rendered when the role check fails. */
   fallback?: React.ReactNode;

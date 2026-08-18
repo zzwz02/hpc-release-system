@@ -106,7 +106,7 @@ function makeTask(overrides: Partial<CicdTask> = {}): CicdTask {
 }
 
 function makeRequest(overrides: Partial<CicdRequest> = {}): CicdRequest {
-  return {
+  const request: CicdRequest = {
     id: 1,
     task_id: "task-1",
     request_type: "modify",
@@ -134,6 +134,27 @@ function makeRequest(overrides: Partial<CicdRequest> = {}): CicdRequest {
     task_status: "Running",
     ...overrides,
   };
+  if (overrides.allowed_actions === undefined) {
+    request.allowed_actions = [];
+    if (request.status === "pending") {
+      request.allowed_actions.push(
+        "cicd.request.approve",
+        "cicd.request.reject",
+        "cicd.request.cancel",
+      );
+    }
+    if (["pending", "returned"].includes(request.delivery_status)) {
+      request.allowed_actions.push("cicd.delivery.confirm");
+    }
+    if (request.delivery_status === "returned") {
+      request.allowed_actions.push(
+        "cicd.delivery.redispatch",
+        "cicd.delivery.apply_returned",
+        "cicd.delivery.reject_returned",
+      );
+    }
+  }
+  return request;
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +399,7 @@ describe("CicdPage", () => {
       status: "approved",
       delivery_status: "returned",
       jira_id: "SPD-8",
+      allowed_actions: ["cicd.delivery.confirm"],
     });
     vi.mocked(apiGet).mockImplementation((url: string) => {
       if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [makeTask()] });
@@ -531,7 +553,11 @@ describe("CicdPage", () => {
   });
 
   it("Admin role: no approve button in 待审批 pane (canApprove=false for Admin, ruling C)", async () => {
-    const pendingReq = makeRequest({ submitter: "bob", submitter_display: "Bob" });
+    const pendingReq = makeRequest({
+      submitter: "bob",
+      submitter_display: "Bob",
+      allowed_actions: [],
+    });
     vi.mocked(apiGet).mockImplementation((url: string) => {
       if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [] });
       if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
@@ -680,6 +706,7 @@ describe("CicdPage", () => {
       status: "pending",
       origin: "release_decision_sync",
       payload: { status: { old: "Running", new: "Stopped" } },
+      allowed_actions: ["cicd.request.approve"],
     });
     vi.mocked(apiGet).mockImplementation((url: string) => {
       if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [makeTask()] });

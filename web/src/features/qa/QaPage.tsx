@@ -23,7 +23,7 @@ import { RefreshBar } from "../../components/RefreshBar";
 import { apiGet, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
-import { isRM, isOwner, canEditQa } from "../../lib/roles";
+import { canEditQa, canViewQa } from "../../lib/roles";
 import { displayName } from "../../lib/identity";
 import { formatGerritUrl } from "../../lib/git";
 import { formatServerTime } from "../../lib/time";
@@ -1367,12 +1367,7 @@ export function QaPage() {
     void refetch();
   }
 
-  const userIsRM = isRM(user ?? undefined);
-  const userIsOwner = isOwner(user ?? undefined);
-
-  const canView = user
-    ? ["QA", "RM", "Owner", "Guest"].includes(user.role)
-    : false;
+  const canView = canViewQa(user ?? undefined);
 
   if (!canView) {
     return (
@@ -1398,8 +1393,6 @@ export function QaPage() {
             onChange={(id) => {
               setSelectedReleaseId(id);
             }}
-            userIsRM={userIsRM}
-            userIsOwner={userIsOwner}
           />
         )}
         <span className="spacer" />
@@ -1486,8 +1479,6 @@ interface ReleaseSelectorProps {
   releases: StatePayload["releases"];
   selectedId: string | null;
   onChange: (id: string) => void;
-  userIsRM: boolean;
-  userIsOwner: boolean;
 }
 
 function ReleaseSelector({

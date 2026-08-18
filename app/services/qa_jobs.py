@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 from app.db.connection import connect
+from app.domain.permissions import has_capability
 
 # ---------------------------------------------------------------------------
 # Module-level singleton (mirrors server.py:38-40)
@@ -109,7 +110,7 @@ class QaJobRegistry:
             job = self._jobs.get(job_id)
             if not job:
                 return None
-            if role != "RM" and job.get("user") != user:
+            if not has_capability(role, "qa.analysis.view.any") and job.get("user") != user:
                 raise AuthzError("无权查看该 AI 分析任务")
             return self._snapshot(job)
 

@@ -13,13 +13,29 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, Request, Response
 
-from app.deps import get_db, require_roles, require_tab_access
+from app.deps import get_db, require_capability, require_tab_access
 from app.services import artifact_service
 
 router = APIRouter(tags=["artifacts"])
 require_artifacts_tab_access = require_tab_access(
     "artifacts",
     message="无权访问发布文档",
+)
+require_artifact_generation = require_capability(
+    "artifact.generate",
+    message="只有 RM、Owner 可刷新发布文档",
+)
+require_test_scope_export = require_capability(
+    "artifact.export.test_scope",
+    message="RM role required",
+)
+require_manager_review = require_capability(
+    "artifact.generate.manager_review",
+    message="RM role required",
+)
+require_gerrit_plan = require_capability(
+    "artifact.plan.gerrit",
+    message="RM role required",
 )
 
 
@@ -77,7 +93,7 @@ router.add_api_route(
 
 def get_test_scope_csv(
     release_id: str = "",
-    _user: dict = Depends(require_roles("RM", message="RM role required")),
+    _user: dict = Depends(require_test_scope_export),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> Response:
     """Download the test-scope CSV for a release.
@@ -112,7 +128,7 @@ router.add_api_route(
 
 async def post_generate_artifacts(
     request: Request,
-    user: dict = Depends(require_artifacts_tab_access),
+    user: dict = Depends(require_artifact_generation),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Regenerate draft artifacts for a release.
@@ -144,7 +160,7 @@ router.add_api_route(
 
 async def post_manager_review(
     request: Request,
-    user: dict = Depends(require_roles("RM", message="RM role required")),
+    user: dict = Depends(require_manager_review),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Generate the manager-review CSV and persist it.
@@ -175,7 +191,7 @@ router.add_api_route(
 
 async def post_gerrit_plan(
     request: Request,
-    user: dict = Depends(require_roles("RM", message="RM role required")),
+    user: dict = Depends(require_gerrit_plan),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Return the Gerrit push plan for a locked release.

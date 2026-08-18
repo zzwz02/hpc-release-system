@@ -15,11 +15,11 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, Request
 
-from app.deps import get_db, require_tab_access
+from app.deps import get_db, require_capability
 from app.services import admin_service
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
-require_admin_access = require_tab_access("admin", message="Admin role required")
+require_admin_access = require_capability("admin.manage", message="Admin role required")
 
 
 # ---------------------------------------------------------------------------

@@ -17,8 +17,9 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, Query
 
-from app.deps import get_db, require_login
+from app.deps import get_db, require_capability, require_login
 from app.services import app_service, release_reads
+from app.services.authz import require_owner_or_rm_with_owners
 
 router = APIRouter(tags=["apps"])
 
@@ -114,8 +115,6 @@ def api_apps_decision_sync_preview(
     """
     release = release_reads.get_release(conn, body["release_id"])
     snap = release["snapshots"].get(body["app_id"], {})
-    from app.services.authz import require_owner_or_rm_with_owners
-
     require_owner_or_rm_with_owners(snap.get("owners"), user["username"], user["role"])
     return app_service.preview_decision_sync(
         conn,
@@ -145,9 +144,7 @@ def api_app_info(
     snap = release["snapshots"].get(body["app_id"], {})
     role = user["role"]
     username = user["username"]
-    if role != "RM":
-        if role != "Owner" or username not in (snap.get("owners") or []):
-            raise AuthzError("Owner permission required")
+    require_owner_or_rm_with_owners(snap.get("owners"), username, role)
 
     return app_service.apply_app_info(
         conn,
@@ -180,9 +177,7 @@ def api_app_info_fetch(
     snap = release["snapshots"].get(body["app_id"], {})
     role = user["role"]
     username = user["username"]
-    if role != "RM":
-        if role != "Owner" or username not in (snap.get("owners") or []):
-            raise AuthzError("Owner permission required")
+    require_owner_or_rm_with_owners(snap.get("owners"), username, role)
 
     return app_service.fetch_app_info(
         conn,
@@ -200,15 +195,15 @@ def api_app_info_fetch(
 @router.post("/api/app-info/fetch-all")
 def api_app_info_fetch_all(
     body: dict,
-    user: dict = Depends(require_login),
+    user: dict = Depends(
+        require_capability("app.edit.rm_fields", message="RM role required")
+    ),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Fetch app_info from Gerrit for all apps in a release (RM only).
 
     Mirrors server.py:1239-1243.  Uses require_rm() message exactly.
     """
-    if user["role"] != "RM":
-        raise AuthzError("RM role required")
     return app_service.fetch_all_app_infos(
         conn,
         release_id=body["release_id"],

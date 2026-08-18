@@ -762,16 +762,30 @@ class TestCicdRepo:
         )
         self.conn.commit()
         # With a cutoff after submission → empty
-        results = cicd_repo.list_requests(self.conn, since_cutoff="2026-06-01 00:00:00")
+        results = cicd_repo.list_requests(
+            self.conn,
+            since_cutoff="2026-06-01 00:00:00",
+            approver_roles=frozenset({"RM"}),
+        )
         assert results == []
         # With a cutoff before submission → returns result
-        results2 = cicd_repo.list_requests(self.conn, since_cutoff="2025-01-01 00:00:00")
+        results2 = cicd_repo.list_requests(
+            self.conn,
+            since_cutoff="2025-01-01 00:00:00",
+            approver_roles=frozenset({"RM"}),
+        )
         assert len(results2) == 1
 
     def test_mark_notification_visited(self):
         cicd_repo.mark_notification_visited(self.conn, "rm", "2026-01-01 00:00:00")
         self.conn.commit()
-        counts = cicd_repo.notification_counts(self.conn, "rm", "Owner")
+        counts = cicd_repo.notification_counts(
+            self.conn,
+            "rm",
+            "Owner",
+            approver_roles=frozenset({"RM"}),
+            delivery_roles=frozenset({"SPD"}),
+        )
         assert counts["last_visited_at"] == "2026-01-01 00:00:00"
 
     def test_legacy_task_crud_helpers_removed(self):

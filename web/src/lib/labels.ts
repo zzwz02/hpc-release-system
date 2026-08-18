@@ -135,4 +135,4 @@ export const roleLabels: Record<string, string> = {
   Guest: "访客",
 };
 
-export const allRoles = ["RM", "Owner", "QA", "SPD", "Admin", "Guest"];
+export { ALL_ROLES as allRoles } from "./accessControl";

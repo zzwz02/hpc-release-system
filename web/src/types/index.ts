@@ -191,6 +191,8 @@ export interface Snapshot {
   missing_items: SnapshotMissingItem[];
   app_info: AppInfoSnapshot | null;
   app_info_diffs: AppInfoDiff[];
+  /** Contextual actions computed by the backend for the current user. */
+  allowed_actions?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +381,8 @@ export interface CicdRequest {
   // decision-sync requests ("release_decision_sync") auto-created when an
   // App's release_decision changes (R3 Ruling D). Exposed by the API (F3).
   origin?: string;
+  /** Contextual actions computed by the backend for the current user. */
+  allowed_actions?: string[];
 }
 
 export interface CicdRequestsResponse {

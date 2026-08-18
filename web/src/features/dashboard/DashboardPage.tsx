@@ -23,7 +23,8 @@ import { RefreshBar } from "../../components/RefreshBar";
 import { apiGet, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
-import { isRM, isOwner } from "../../lib/roles";
+import { isOwner } from "../../lib/roles";
+import { can } from "../../lib/accessControl";
 import { displayName } from "../../lib/identity";
 import { formatDateValue, formatServerTime } from "../../lib/time";
 import { qaStatusLabels } from "../../lib/labels";
@@ -274,11 +275,11 @@ function entryToForm(e: ReleaseScheduleEntry): ScheduleForm {
 
 interface SchedulePanelProps {
   entries: ReleaseScheduleEntry[];
-  userIsRM: boolean;
+  canManage: boolean;
   onMutated: () => void;
 }
 
-function SchedulePanel({ entries, userIsRM, onMutated }: SchedulePanelProps) {
+function SchedulePanel({ entries, canManage, onMutated }: SchedulePanelProps) {
   // editId: entry.id being edited, "__new__" for add row, null for read-only
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState<ScheduleForm>(emptyForm());
@@ -342,7 +343,7 @@ function SchedulePanel({ entries, userIsRM, onMutated }: SchedulePanelProps) {
     }
   }
 
-  const cols = userIsRM ? 5 : 4;
+  const cols = canManage ? 5 : 4;
 
   return (
     <div id="scheduleePanel" className="panel">
@@ -352,7 +353,7 @@ function SchedulePanel({ entries, userIsRM, onMutated }: SchedulePanelProps) {
           {entries.length ? `共 ${entries.length} 个版本` : ""}
         </span>
         <span className="flex-1" />
-        {userIsRM && (
+        {canManage && (
           <button
             className="btn sm primary"
             onClick={startNew}
@@ -372,7 +373,7 @@ function SchedulePanel({ entries, userIsRM, onMutated }: SchedulePanelProps) {
                 <th className="w-25p">拉 branch 时间</th>
                 <th className="w-25p">Release 发布时间</th>
                 <th>备注</th>
-                {userIsRM && <th className="w-120 ta-r">操作</th>}
+                {canManage && <th className="w-120 ta-r">操作</th>}
               </tr>
             </thead>
             <tbody>
@@ -390,14 +391,14 @@ function SchedulePanel({ entries, userIsRM, onMutated }: SchedulePanelProps) {
                   <ScheduleReadRow
                     key={entry.id}
                     entry={entry}
-                    isRM={userIsRM}
+                    canManage={canManage}
                     today={today}
                     onEdit={() => startEdit(entry)}
                     onDelete={() => deleteEntry(entry)}
                   />
                 )
               )}
-              {userIsRM && editId === "__new__" && (
+              {canManage && editId === "__new__" && (
                 <ScheduleEditRow
                   key="__new__"
                   form={form}
@@ -410,7 +411,7 @@ function SchedulePanel({ entries, userIsRM, onMutated }: SchedulePanelProps) {
               {entries.length === 0 && editId !== "__new__" && (
                 <tr className="empty-row">
                   <td colSpan={cols} className="muted ta-c p-14">
-                    {userIsRM
+                    {canManage
                       ? '尚未维护发布时间线，点击右上角"+ 新增"填入版本号、拉 branch 时间、发布时间。'
                       : "尚未维护发布时间线。"}
                   </td>
@@ -426,13 +427,13 @@ function SchedulePanel({ entries, userIsRM, onMutated }: SchedulePanelProps) {
 
 interface ScheduleReadRowProps {
   entry: ReleaseScheduleEntry;
-  isRM: boolean;
+  canManage: boolean;
   today: string;
   onEdit: () => void;
   onDelete: () => void;
 }
 
-function ScheduleReadRow({ entry, isRM, today, onEdit, onDelete }: ScheduleReadRowProps) {
+function ScheduleReadRow({ entry, canManage, today, onEdit, onDelete }: ScheduleReadRowProps) {
   const rel = entry.release_at ?? "";
   const cls = rel && rel < today ? "past" : "";
   const soon = rel && rel >= today && daysUntil(rel) <= 14 ? "soon" : "";
@@ -442,7 +443,7 @@ function ScheduleReadRow({ entry, isRM, today, onEdit, onDelete }: ScheduleReadR
       <td>{formatServerTime(entry.branch_cut_at) || "—"}</td>
       <td className={soon}>{formatServerTime(rel) || "—"}</td>
       <td>{entry.note || ""}</td>
-      {isRM && (
+      {canManage && (
         <td>
           <div className="cell-actions">
             <button className="btn sm" onClick={onEdit}>编辑</button>
@@ -707,7 +708,7 @@ export function DashboardPage() {
     refetchOnMount: true,
   });
 
-  const userIsRM = isRM(user ?? undefined);
+  const canManageSchedule = can(user?.role, "release.manage");
   const userIsOwner = isOwner(user ?? undefined);
   const username = user?.username ?? "";
 
@@ -775,7 +776,7 @@ export function DashboardPage() {
 
             <SchedulePanel
               entries={data.release_schedule ?? []}
-              userIsRM={userIsRM}
+              canManage={canManageSchedule}
               onMutated={handleScheduleMutated}
             />
           </div>

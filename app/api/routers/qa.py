@@ -21,16 +21,29 @@ import sqlite3
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 
-from app.api.errors import AuthzError
 from app.config import settings
-from app.deps import get_db, require_tab_access
+from app.deps import get_db, require_capability, require_tab_access
 from app.services import qa_service
 
 router = APIRouter(tags=["qa"])
 require_qa_tab_access = require_tab_access("qa", message="无权访问 QA 页签")
 
-# Role set used by multiple endpoints — mirrors server.py:{"QA", "RM"}
-_QA_RM = {"QA", "RM"}
+require_qa_analysis_status = require_capability(
+    "qa.edit",
+    message="只有 QA 或 RM 可查看 AI 分析进度",
+)
+require_qa_status_edit = require_capability(
+    "qa.edit",
+    message="只有 QA 或 RM 可标注 QA 状态",
+)
+require_qa_log_upload = require_capability(
+    "qa.edit",
+    message="只有 QA 或 RM 可上传 QA log",
+)
+require_qa_analysis = require_capability(
+    "qa.edit",
+    message="只有 QA 或 RM 可使用 AI 分析 log",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -40,15 +53,13 @@ _QA_RM = {"QA", "RM"}
 @router.get("/api/qa/analyze-log/status")
 def api_qa_analyze_log_status(
     job_id: str = Query(default=""),
-    user: dict = Depends(require_qa_tab_access),
+    user: dict = Depends(require_qa_analysis_status),
 ) -> dict:
     """Poll an async LLM analysis job.
 
     Mirrors server.py:344-355.
     Returns job snapshot dict on success; 404-style error dict when not found.
     """
-    if user["role"] not in _QA_RM:
-        raise AuthzError("只有 QA 或 RM 可查看 AI 分析进度")
     if not job_id:
         raise ValueError("job_id is required")
     job = qa_service.get_qa_analysis_status(
@@ -120,15 +131,13 @@ def api_qa_reports(
 @router.post("/api/qa/status-batch")
 def api_qa_status_batch(
     body: dict,
-    user: dict = Depends(require_qa_tab_access),
+    user: dict = Depends(require_qa_status_edit),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Apply QA status annotations in batch.
 
     Mirrors server.py:941-952.
     """
-    if user["role"] not in _QA_RM:
-        raise AuthzError("只有 QA 或 RM 可标注 QA 状态")
     return qa_service.set_qa_status_batch(
         conn,
         body["release_id"],
@@ -145,15 +154,13 @@ def api_qa_status_batch(
 @router.post("/api/qa/upload-log")
 def api_qa_upload_log(
     body: dict,
-    user: dict = Depends(require_qa_tab_access),
+    user: dict = Depends(require_qa_log_upload),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Accept a base64-encoded QA log file and persist it.
 
     Mirrors server.py:954-971.
     """
-    if user["role"] not in _QA_RM:
-        raise AuthzError("只有 QA 或 RM 可上传 QA log")
     return qa_service.upload_qa_log(
         conn,
         body["release_id"],
@@ -171,15 +178,13 @@ def api_qa_upload_log(
 @router.post("/api/qa/analyze-log")
 def api_qa_analyze_log(
     body: dict,
-    user: dict = Depends(require_qa_tab_access),
+    user: dict = Depends(require_qa_analysis),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Run LLM analysis on the uploaded QA log synchronously.
 
     Mirrors server.py:973-982.
     """
-    if user["role"] not in _QA_RM:
-        raise AuthzError("只有 QA 或 RM 可使用 AI 分析 log")
     return qa_service.analyze_qa_log_sync(conn, body["release_id"])
 
 
@@ -190,15 +195,13 @@ def api_qa_analyze_log(
 @router.post("/api/qa/analyze-log/start")
 def api_qa_analyze_log_start(
     body: dict,
-    user: dict = Depends(require_qa_tab_access),
+    user: dict = Depends(require_qa_analysis),
 ) -> dict:
     """Start an async LLM analysis job and return the initial job state.
 
     Mirrors server.py:984-993.
     Note: no DB connection injected — the background thread opens its own.
     """
-    if user["role"] not in _QA_RM:
-        raise AuthzError("只有 QA 或 RM 可使用 AI 分析 log")
     release_id = body.get("release_id", "")
     if not release_id:
         raise ValueError("release_id is required")

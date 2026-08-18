@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.api.routers import cicd_agent
 from app.deps import require_login
-from app.domain.tab_permissions import ALL_ROLES, roles_for_tab
+from app.domain.permissions import ALL_ROLES, roles_for_tab
 from app.main import create_app
 
 

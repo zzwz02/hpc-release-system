@@ -32,6 +32,7 @@ import type {
   AdminDeleteAppResponse,
   AdminSetRoleResponse,
 } from "../../types";
+import { ALL_ROLES } from "../../lib/accessControl";
 
 // ---------------------------------------------------------------------------
 // Query keys + fetchers
@@ -56,8 +57,6 @@ async function fetchUsers(): Promise<AdminUsersResponse> {
 // ---------------------------------------------------------------------------
 // Role constants (mirrors index.html:5162)
 // ---------------------------------------------------------------------------
-
-const ALL_ROLES = ["RM", "Owner", "QA", "Guest", "Admin", "SPD"] as const;
 
 const ROLE_SOURCE_LABEL: Record<string, string> = {
   local: "内建账号",

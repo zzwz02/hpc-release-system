@@ -9,6 +9,7 @@
  */
 
 import type { User, Snapshot } from "../types";
+import { can, canAccessTab } from "./accessControl";
 
 /** True when the user's role is RM. */
 export function isRM(user: User | null | undefined): boolean {
@@ -45,7 +46,7 @@ export function isAdmin(user: User | null | undefined): boolean {
  * Mirrors index.html:1661.
  */
 export function canViewQa(user: User | null | undefined): boolean {
-  return ["QA", "RM", "Owner", "Guest"].includes(user?.role ?? "");
+  return canAccessTab(user?.role, "qa");
 }
 
 /**
@@ -53,7 +54,7 @@ export function canViewQa(user: User | null | undefined): boolean {
  * Mirrors index.html:1662.
  */
 export function canEditQa(user: User | null | undefined): boolean {
-  return ["QA", "RM"].includes(user?.role ?? "");
+  return can(user?.role, "qa.edit");
 }
 
 /**
@@ -61,12 +62,12 @@ export function canEditQa(user: User | null | undefined): boolean {
  * Mirrors index.html:1663.
  */
 export function canGenerateMarkdown(user: User | null | undefined): boolean {
-  return ["RM", "Owner"].includes(user?.role ?? "");
+  return can(user?.role, "artifact.generate");
 }
 
 /** True when the user can create app entries from App 工作台. */
 export function canCreateApp(user: User | null | undefined): boolean {
-  return ["RM", "Owner"].includes(user?.role ?? "");
+  return can(user?.role, "app.create");
 }
 
 /**
@@ -74,7 +75,7 @@ export function canCreateApp(user: User | null | undefined): boolean {
  * Mirrors index.html:1664.
  */
 export function canEditWiki(user: User | null | undefined): boolean {
-  return user?.role === "RM";
+  return can(user?.role, "wiki.edit");
 }
 
 /**
@@ -87,11 +88,17 @@ export function canEdit(
   snap: Snapshot | null | undefined,
 ): boolean {
   if (!user) return false;
-  if (user.role === "RM") return true;
-  if (user.role === "Owner") {
+  if (snap?.allowed_actions) return snap.allowed_actions.includes("app.edit");
+  if (can(user.role, "app.edit.any")) return true;
+  if (can(user.role, "app.edit.owned")) {
     return (snap?.owners ?? []).includes(user.username);
   }
   return false;
+}
+
+/** True when the user may edit RM-only App metadata fields. */
+export function canEditRmFields(user: User | null | undefined): boolean {
+  return can(user?.role, "app.edit.rm_fields");
 }
 
 /**

@@ -459,14 +459,14 @@ def get_artifact(
     Raises KeyError if the artifact does not exist (caller should return 404).
     """
     from app.api.errors import AuthzError
-    from app.domain.tab_permissions import roles_for_tab
+    from app.domain.permissions import has_capability, roles_for_tab
 
     if role not in roles_for_tab("artifacts"):
         raise AuthzError("无权访问发布文档")
 
     # Non-RM can only see the four public kinds (mirrors server.py:504-505)
     _public_kinds = {"release_note", "manual", "ai4sci", "data"}
-    if role != "RM" and kind not in _public_kinds:
+    if not has_capability(role, "artifact.view.internal") and kind not in _public_kinds:
         raise AuthzError("只有 RM 可查看该 artifact")
 
     row = conn.execute(
@@ -494,7 +494,9 @@ def generate_artifacts(
     """
     from app.api.errors import AuthzError
 
-    if role not in {"RM", "Owner"}:
+    from app.domain.permissions import has_capability
+
+    if not has_capability(role, "artifact.generate"):
         raise AuthzError("只有 RM、Owner 可刷新发布文档")
 
     # final=True is blocked at router level; service enforces the same check

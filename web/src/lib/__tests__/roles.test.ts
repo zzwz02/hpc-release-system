@@ -140,6 +140,14 @@ describe("canEdit (snapshot permission)", () => {
     expect(canEdit(makeUser("Owner", "owner1"), snap)).toBe(false);
   });
 
+  it("prefers backend contextual actions when present", () => {
+    const snap = makeSnap(["owner1"]);
+    snap.allowed_actions = [];
+    expect(canEdit(makeUser("Owner", "owner1"), snap)).toBe(false);
+    snap.allowed_actions = ["app.edit"];
+    expect(canEdit(makeUser("QA", "qa_user"), snap)).toBe(true);
+  });
+
   it("QA cannot edit", () => {
     const snap = makeSnap(["qa_user"]);
     expect(canEdit(makeUser("QA", "qa_user"), snap)).toBe(false);

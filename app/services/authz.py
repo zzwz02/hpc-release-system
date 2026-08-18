@@ -11,6 +11,7 @@ from __future__ import annotations
 import sqlite3
 
 from app.api.errors import AuthzError
+from app.domain.permissions import has_capability
 from app.repositories import snapshots_repo
 
 
@@ -42,9 +43,9 @@ def require_owner_or_rm_with_owners(
       - Owner: allowed iff username in owners
       - else: denied
     """
-    if role == "RM":
+    if has_capability(role, "app.edit.any"):
         return
-    if role == "Owner" and username in (owners or []):
+    if has_capability(role, "app.edit.owned") and username in (owners or []):
         return
     raise AuthzError("Owner permission required")
 
@@ -63,9 +64,9 @@ def require_app_audit_access(
       - Owner: allowed iff username in owners on any (or specified) release snapshot
       - else: denied
     """
-    if role in {"RM", "Admin", "QA"}:
+    if has_capability(role, "app.audit.view.any"):
         return
-    if role != "Owner":
+    if not has_capability(role, "app.audit.view.owned"):
         raise AuthzError("App audit access denied")
 
     # Owner: check snapshot ownership

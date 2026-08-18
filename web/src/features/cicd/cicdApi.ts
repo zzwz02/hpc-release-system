@@ -56,6 +56,7 @@ export function fetchCicdRequests(params: FetchRequestsParams = {}): Promise<Cic
   if (params.taskId) qs.set("task_id", params.taskId);
   if (params.status) qs.set("status", params.status);
   if (params.sinceDays != null && params.sinceDays > 0) qs.set("since_days", String(params.sinceDays));
+  qs.set("include_allowed_actions", "1");
   const str = qs.toString();
   return apiGet<CicdRequestsResponse>(`/api/cicd/requests${str ? `?${str}` : ""}`);
 }
@@ -65,8 +66,9 @@ export function fetchCicdNotifications(): Promise<CicdNotificationsResponse> {
 }
 
 export function fetchCicdDeliveries(status?: string): Promise<CicdDeliveriesResponse> {
-  const qs = status ? `?status=${encodeURIComponent(status)}` : "";
-  return apiGet<CicdDeliveriesResponse>(`/api/cicd/deliveries${qs}`);
+  const qs = new URLSearchParams({ include_allowed_actions: "1" });
+  if (status) qs.set("status", status);
+  return apiGet<CicdDeliveriesResponse>(`/api/cicd/deliveries?${qs.toString()}`);
 }
 
 // ---------------------------------------------------------------------------

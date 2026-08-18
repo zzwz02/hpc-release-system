@@ -15,7 +15,7 @@ from fastapi import Cookie, Depends
 from app.api.errors import AuthzError
 from app.config import settings
 from app.db.connection import connect
-from app.domain.tab_permissions import roles_for_tab
+from app.domain.permissions import roles_for_capability, roles_for_tab
 from app.repositories import sessions_repo
 
 
@@ -78,4 +78,12 @@ def require_tab_access(view: str, *, message: str | None = None):
     return require_roles(
         *roles_for_tab(view),
         message=message or f"No access to tab: {view}",
+    )
+
+
+def require_capability(capability: str, *, message: str | None = None):
+    """Return a role dependency backed by the shared capability matrix."""
+    return require_roles(
+        *roles_for_capability(capability),
+        message=message or f"Missing capability: {capability}",
     )

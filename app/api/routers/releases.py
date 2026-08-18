@@ -20,12 +20,12 @@ import sqlite3
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from app.deps import get_db, require_tab_access
+from app.deps import get_db, require_capability
 from app.services import release_service
 
 router = APIRouter(tags=["releases"])
-require_release_management_access = require_tab_access(
-    "init",
+require_release_management_access = require_capability(
+    "release.manage",
     message="RM role required",
 )
 

@@ -15,12 +15,12 @@ from typing import Any
 
 from app.api.errors import AuthzError
 from app.db.connection import transaction
-from app.domain.tab_permissions import roles_for_tab
+from app.domain.permissions import roles_for_capability, roles_for_tab
 from app.repositories import wiki_repo
 from app.timeutil import beijing_timestamp
 
 READ_ROLES = frozenset(roles_for_tab("wiki"))
-WRITE_ROLES = READ_ROLES & {"RM"}
+WRITE_ROLES = frozenset(roles_for_capability("wiki.edit"))
 MAX_TITLE_CHARS = 160
 MAX_BODY_CHARS = 200_000
 MAX_IMAGE_BYTES = 5 * 1024 * 1024

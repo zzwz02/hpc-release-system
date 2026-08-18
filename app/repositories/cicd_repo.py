@@ -107,7 +107,7 @@ def list_requests(
     status_filter: str | None = None,
     since_cutoff: str | None = None,  # pre-computed Beijing timestamp (DA C5 fix)
     exclude_cancelled: bool = False,
-    approver_roles: frozenset[str] | None = None,
+    approver_roles: frozenset[str],
 ) -> list[dict[str, Any]]:
     """Return cicd_task_requests with flexible filters.
 
@@ -115,11 +115,8 @@ def list_requests(
     caller (e.g. beijing_timestamp() offset by N days).  Do NOT use SQL
     datetime('now') here — that would embed UTC (DA C5 fix).
 
-    approver_roles: set of roles that can see all records; defaults to {"RM"}.
+    approver_roles: set of roles that can see all records, supplied by service policy.
     """
-    if approver_roles is None:
-        approver_roles = frozenset({"RM"})
-
     clauses: list[str] = []
     params: list[Any] = []
 
@@ -187,22 +184,20 @@ def notification_counts(
     username: str,
     role: str,
     *,
-    approver_roles: frozenset[str] | None = None,
+    approver_roles: frozenset[str],
+    delivery_roles: frozenset[str],
 ) -> dict[str, Any]:
     """Return notification badge data for a user.
 
     Mirrors core.py:get_cicd_notifications (read path only).
     """
-    if approver_roles is None:
-        approver_roles = frozenset({"RM"})
-
     row = conn.execute(
         "SELECT last_visited_at FROM cicd_notifications WHERE username = ?",
         (username,),
     ).fetchone()
     last_visited = row["last_visited_at"] if row else ""
 
-    if role == "SPD":
+    if role in delivery_roles:
         count = conn.execute(
             """
             SELECT COUNT(*)

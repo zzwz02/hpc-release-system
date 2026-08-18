@@ -22,6 +22,8 @@ from app.domain import app_info as app_info_domain
 from app.domain import decision_sync as decision_sync_domain
 from app.domain import gates
 from app.domain import phases as phase_policy
+from app.domain.access_actions import snapshot_allowed_actions
+from app.domain.permissions import has_capability
 from app.domain.audit_diff import field_diff, fmt_audit_value, test_docs_diff
 from app.domain.decisions import RELEASE_DECISIONS, normalize_release_decision
 from app.domain.snapshots import (
@@ -293,6 +295,7 @@ def get_state(
     *,
     user: dict,
     release_id_param: str = "",
+    include_allowed_actions: bool = False,
 ) -> dict:
     """Build the full page-state payload.
 
@@ -340,13 +343,20 @@ def get_state(
             )
         ]
         payload["qa_log"] = qa_repo.get_qa_log(conn, release_id)
-        if user["role"] in {"QA", "RM", "Owner", "Guest"}:
+        if has_capability(user["role"], "qa.audit.view"):
             payload["qa_audit_logs"] = release_qa_audit_logs(conn, release_id)
         apps_by_id = {app["id"]: app for app in apps}
         for aid, snap in (payload["release"] or {}).get("snapshots", {}).items():
             app = apps_by_id.get(aid)
             if app:
                 snap["missing_items"] = _missing_items_for(app, snap)
+            if include_allowed_actions:
+                snap["allowed_actions"] = snapshot_allowed_actions(
+                    role=user["role"],
+                    username=user["username"],
+                    owners=snap.get("owners"),
+                    release_locked=bool(payload["release"].get("released_locked")),
+                )
     return payload
 
 
@@ -534,7 +544,7 @@ def update_snapshot(
     app_owner_allowed_keys = CICD_APP_CONFIG_FIELDS | APP_REPO_IDENTITY_FIELDS
     app_owner_forbidden_keys = app_update_keys - app_owner_allowed_keys
 
-    if role == "Owner":
+    if has_capability(role, "app.edit.owned"):
         owner_content_keys = set(snap_update) - {"release_decision", "owner_confirmed"}
         if (app_update_keys or owner_content_keys) and snap_update.get("owner_confirmed") is not True:
             raise AuthzError("Owner edits must be saved with Owner confirmation")
@@ -710,7 +720,7 @@ def update_snapshot(
                 value = (value or "").strip()
             if snapshot.get(key) == value:
                 continue
-            if key not in owner_meta and role != "RM":
+            if key not in owner_meta and not has_capability(role, "app.edit.rm_fields"):
                 raise AuthzError(f"仅 RM 可修改{APP_META_LABELS.get(key, key)}")
             meta_before[key] = snapshot.get(key)
             meta_after[key] = value
@@ -730,7 +740,7 @@ def update_snapshot(
             )
 
         if "owner_confirmed" in snap_update:
-            if role != "Owner":
+            if not has_capability(role, "app.owner.confirm"):
                 raise AuthzError("Owner confirmation must be submitted by an Owner")
             if snap_update["owner_confirmed"] and not snapshot.get("owner_confirmed"):
                 log_audit(
@@ -811,7 +821,7 @@ def update_snapshot(
             }
             sanity_changes = field_diff(sanity_before, sanity_update, sanity_labels)
             if sanity_changes:
-                if role != "RM":
+                if not has_capability(role, "app.edit.rm_fields"):
                     raise AuthzError("仅 RM 可修改 Sanity 信息")
                 log_audit(
                     conn_ref,

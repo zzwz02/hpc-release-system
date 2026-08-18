@@ -18,14 +18,68 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from app.api.errors import AuthzError
-from app.deps import get_db, require_login
+from app.deps import get_db, require_capability, require_login
+from app.domain.access_actions import cicd_request_allowed_actions
+from app.domain.permissions import has_capability
 from app.integrations import jira as jira_integration
 from app.services import cicd_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cicd", tags=["cicd"])
+
+require_cicd_submit = require_capability(
+    "cicd.request.submit",
+    message="只有 Owner、RM 可以提交 CICD 任务申请",
+)
+require_cicd_decision_preview = require_capability(
+    "cicd.request.submit",
+    message="只有 Owner、RM 可以预览 CICD-first release 决策",
+)
+require_cicd_fetch_preview = require_capability(
+    "cicd.request.submit",
+    message="只有 Owner、RM 可以预览 Gerrit app_info",
+)
+require_cicd_first_create = require_capability(
+    "cicd.request.submit",
+    message="只有 Owner、RM 可以发起 CICD-first 建 app",
+)
+require_cicd_approve = require_capability(
+    "cicd.request.approve",
+    message="只有 RM 可以审批",
+)
+require_cicd_reject = require_capability(
+    "cicd.request.reject",
+    message="只有 RM 可以拒绝",
+)
+require_cicd_cancel = require_capability(
+    "cicd.request.cancel",
+    message="只有提交人或 RM 可以取消申请",
+)
+require_delivery_view = require_capability(
+    "cicd.delivery.view",
+    message="无权访问交付列表",
+)
+require_delivery_confirm = require_capability(
+    "cicd.delivery.confirm",
+    message="只有 SPD、RM 可以标记已交付",
+)
+require_delivery_return = require_capability(
+    "cicd.delivery.return",
+    message="只有 SPD 可以退回交付申请",
+)
+require_delivery_redispatch = require_capability(
+    "cicd.delivery.redispatch",
+    message="只有 RM 可以重新下发",
+)
+require_delivery_apply_returned = require_capability(
+    "cicd.delivery.apply_returned",
+    message="只有 RM 可以直接生效",
+)
+require_delivery_reject_returned = require_capability(
+    "cicd.delivery.reject_returned",
+    message="只有 RM 可以拒绝",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +121,7 @@ def get_requests(
     task_id: str | None = Query(default=None),
     status: str | None = Query(default=None),
     since_days: str | None = Query(default=None),
+    include_allowed_actions: bool = Query(default=False),
     user: dict = Depends(require_login),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
@@ -87,6 +142,13 @@ def get_requests(
         since_days=days,
         exclude_cancelled=True,
     )
+    if include_allowed_actions:
+        for item in requests:
+            item["allowed_actions"] = cicd_request_allowed_actions(
+                item,
+                role=role,
+                username=username,
+            )
     return {"requests": requests}
 
 
@@ -105,7 +167,8 @@ def get_notifications(
 @router.get("/deliveries")
 def get_deliveries(
     status: str | None = Query(default=None),
-    user: dict = Depends(require_login),
+    include_allowed_actions: bool = Query(default=False),
+    user: dict = Depends(require_delivery_view),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """GET /api/cicd/deliveries — delivery workflow requests.
@@ -113,15 +176,25 @@ def get_deliveries(
     Mirrors server.py:do_GET:485-499.
     """
     role = user["role"]
-    if role not in {"SPD", "RM", "Owner"}:
-        raise AuthzError("无权访问交付列表")
-    submitter_filter = user["username"] if role == "Owner" else None
+    submitter_filter = (
+        user["username"]
+        if has_capability(role, "cicd.delivery.view.owned")
+        and not has_capability(role, "cicd.delivery.view.all")
+        else None
+    )
     deliveries = cicd_service.list_deliveries(
         conn,
         status_filter=status,
         role=role,
         submitter=submitter_filter,
     )
+    if include_allowed_actions:
+        for item in deliveries:
+            item["allowed_actions"] = cicd_request_allowed_actions(
+                item,
+                role=role,
+                username=user["username"],
+            )
     return {"deliveries": deliveries}
 
 
@@ -133,7 +206,7 @@ def get_deliveries(
 @router.post("/requests/submit")
 async def post_submit(
     request: Request,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_cicd_submit),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """POST /api/cicd/requests/submit — submit a create/modify request.
@@ -142,8 +215,6 @@ async def post_submit(
     """
     body: dict = await request.json()
     role = user["role"]
-    if role not in cicd_service.CICD_CREATE_ROLES:
-        raise AuthzError("只有 Owner、RM 可以提交 CICD 任务申请")
     req = cicd_service.submit_request(
         conn,
         task_id=body.get("task_id") or None,
@@ -161,7 +232,7 @@ async def post_submit(
 @router.post("/requests/approve")
 async def post_approve(
     request: Request,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_cicd_approve),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """POST /api/cicd/requests/approve — RM approves a pending request (Ruling C: Admin excluded).
@@ -171,8 +242,6 @@ async def post_approve(
     logged and does NOT block approval.
     """
     body: dict = await request.json()
-    if user["role"] not in cicd_service.CICD_APPROVER_ROLES:
-        raise AuthzError("只有 RM 可以审批")
     approval_mode = body.get("approval_mode", "immediate")
     jira_auto_created = int(body.get("jira_auto_created", 0))
     jira_id = body.get("jira_id", "")
@@ -229,7 +298,7 @@ async def post_approve(
 @router.post("/requests/reject")
 async def post_reject(
     request: Request,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_cicd_reject),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """POST /api/cicd/requests/reject — RM rejects a pending request (Ruling C: Admin excluded).
@@ -237,8 +306,6 @@ async def post_reject(
     Mirrors server.py:do_POST:1090-1103.
     """
     body: dict = await request.json()
-    if user["role"] not in cicd_service.CICD_APPROVER_ROLES:
-        raise AuthzError("只有 RM 可以拒绝")
     req = cicd_service.reject_request(
         conn,
         int(body["request_id"]),
@@ -252,7 +319,7 @@ async def post_reject(
 @router.post("/requests/cancel")
 async def post_cancel(
     request: Request,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_cicd_cancel),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """POST /api/cicd/requests/cancel — cancel a pending request.
@@ -272,7 +339,7 @@ async def post_cancel(
 @router.post("/requests/deliver")
 async def post_deliver(
     request: Request,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_delivery_confirm),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """POST /api/cicd/requests/deliver — SPD/RM marks as delivered (Ruling C: Admin excluded).
@@ -280,8 +347,6 @@ async def post_deliver(
     Mirrors server.py:do_POST:1147-1159.
     """
     body: dict = await request.json()
-    if user["role"] not in {"SPD", "RM"}:
-        raise AuthzError("只有 SPD、RM 可以标记已交付")
     req = cicd_service.deliver_request(
         conn,
         int(body["request_id"]),
@@ -294,7 +359,7 @@ async def post_deliver(
 @router.post("/requests/return-delivery")
 async def post_return_delivery(
     request: Request,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_delivery_return),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """POST /api/cicd/requests/return-delivery — SPD returns to RM.
@@ -302,8 +367,6 @@ async def post_return_delivery(
     Mirrors server.py:do_POST:1160-1173.
     """
     body: dict = await request.json()
-    if user["role"] != "SPD":
-        raise AuthzError("只有 SPD 可以退回交付申请")
     req = cicd_service.return_delivery(
         conn,
         int(body["request_id"]),
@@ -317,13 +380,11 @@ async def post_return_delivery(
 @router.post("/requests/reject-returned")
 async def post_reject_returned(
     request: Request,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_delivery_reject_returned),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """POST /api/cicd/requests/reject-returned — RM rejects a returned delivery."""
     body: dict = await request.json()
-    if user["role"] not in cicd_service.CICD_APPROVER_ROLES:
-        raise AuthzError("只有 RM 可以拒绝")
     req = cicd_service.reject_returned_request(
         conn,
         int(body["request_id"]),
@@ -337,7 +398,7 @@ async def post_reject_returned(
 @router.post("/requests/re-dispatch")
 async def post_re_dispatch(
     request: Request,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_delivery_redispatch),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """POST /api/cicd/requests/re-dispatch — RM re-dispatches returned delivery (Ruling C: Admin excluded).
@@ -345,8 +406,6 @@ async def post_re_dispatch(
     Mirrors server.py:do_POST:1174-1186.
     """
     body: dict = await request.json()
-    if user["role"] not in cicd_service.CICD_APPROVER_ROLES:
-        raise AuthzError("只有 RM 可以重新下发")
     req = cicd_service.re_dispatch_request(
         conn,
         int(body["request_id"]),
@@ -359,7 +418,7 @@ async def post_re_dispatch(
 @router.post("/requests/apply-returned")
 async def post_apply_returned(
     request: Request,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_delivery_apply_returned),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """POST /api/cicd/requests/apply-returned — RM applies returned request immediately (Ruling C: Admin excluded).
@@ -367,8 +426,6 @@ async def post_apply_returned(
     Mirrors server.py:do_POST:1187-1199.
     """
     body: dict = await request.json()
-    if user["role"] not in cicd_service.CICD_APPROVER_ROLES:
-        raise AuthzError("只有 RM 可以直接生效")
     req = cicd_service.apply_returned_request(
         conn,
         int(body["request_id"]),
@@ -386,14 +443,11 @@ async def post_apply_returned(
 @router.post("/apps/new/decision-preview")
 async def post_cicd_apps_new_decision_preview(
     request: Request,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_cicd_decision_preview),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """Preview current/future CICD-first decisions without writing data."""
     body: dict = await request.json()
-    role = user["role"]
-    if role not in cicd_service.CICD_CREATE_ROLES:
-        raise AuthzError("只有 Owner、RM 可以预览 CICD-first release 决策")
     return cicd_service.preview_cicd_first_release_decisions(
         conn,
         release_id=body.get("release_id", ""),
@@ -404,7 +458,7 @@ async def post_cicd_apps_new_decision_preview(
 @router.post("/apps/fetch-preview")
 async def post_cicd_apps_fetch_preview(
     request: Request,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_cicd_fetch_preview),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """POST /api/cicd/apps/fetch-preview — Gerrit app_info preview for CICD-first wizard.
@@ -436,8 +490,6 @@ async def post_cicd_apps_fetch_preview(
     """
     body: dict = await request.json()
     role = user["role"]
-    if role not in cicd_service.CICD_CREATE_ROLES:
-        raise AuthzError("只有 Owner、RM 可以预览 Gerrit app_info")
 
     result = cicd_service.preview_cicd_app_info_for_create(
         conn,
@@ -453,7 +505,7 @@ async def post_cicd_apps_fetch_preview(
 @router.post("/apps/new")
 async def post_cicd_apps_new(
     request: Request,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_cicd_first_create),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """POST /api/cicd/apps/new — CICD-first app creation (Wave 3, plan §3.5 a).
@@ -498,8 +550,6 @@ async def post_cicd_apps_new(
     """
     body: dict = await request.json()
     role = user["role"]
-    if role not in cicd_service.CICD_CREATE_ROLES:
-        raise AuthzError("只有 Owner、RM 可以发起 CICD-first 建 app")
 
     result = cicd_service.cicd_first_new_app(
         conn,
