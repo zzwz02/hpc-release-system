@@ -49,6 +49,28 @@ def test_one_base_url_override_updates_gerrit_fetch_and_identity(monkeypatch):
     assert settings.manifest_repo_url.startswith(f"{expected_hpc_base}/")
 
 
+def test_repo_storage_path_keeps_database_identity_origin_free():
+    hpc_project = settings.gerrit_hpc_project
+    manifest_project = settings.gerrit_manifest_project
+
+    assert identity.repo_storage_path("git", "hpc_demo") == "hpc_demo"
+    assert (
+        identity.repo_storage_path(
+            "git",
+            f"ssh://gerrit.example.test:29418/{hpc_project}/team/hpc_demo",
+        )
+        == "team/hpc_demo"
+    )
+    assert (
+        identity.repo_storage_path(
+            "repo",
+            f"ssh://gerrit.example.test:29418/{hpc_project}/"
+            f"{manifest_project}/APP/demo/default.xml",
+        )
+        == "APP/demo/default.xml"
+    )
+
+
 def test_runtime_sources_do_not_duplicate_shared_gerrit_base_url():
     """Changing the shared default must not require editing another runtime file."""
     ssh_base = _shared_gerrit()["ssh_base_url"]

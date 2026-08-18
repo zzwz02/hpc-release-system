@@ -69,8 +69,8 @@ def find_by_identity(
 ) -> dict[str, Any] | None:
     """Find an app by its (git_url, git_branch) natural key.
 
-    Both sides must be the normalized full URL — use domain/identity.py
-    normalize_git_url before calling this.
+    This exact lookup does not normalize identities. Callers comparing a
+    stored short path with a derived full URL must use app.identity helpers.
     """
     row = conn.execute(
         "SELECT * FROM apps WHERE git_url = ? AND git_branch = ?",

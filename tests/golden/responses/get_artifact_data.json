@@ -21,7 +21,7 @@
         "created_at": "SCRUBBED_TIMESTAMP",
         "created_by": "import",
         "git_branch": "maca",
-        "git_url": "ssh://gerrit/PDE/HPC/hpc_amber",
+        "git_url": "hpc_amber",
         "id": "goldenamber"
       },
       {

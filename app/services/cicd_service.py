@@ -802,12 +802,13 @@ def _apply_cicd_request(
             repo_name = str(payload.get("repo_name") or "").strip().lstrip("/")
             branch = str(payload.get("branch") or "").strip()
             if repo_name and branch:
-                if repo_type == "repo" or repo_name.endswith(".xml"):
-                    stored_url, stored_branch = repo_name, branch
-                else:
-                    from app.identity import normalize_git_url
+                from app.identity import repo_storage_path
 
-                    stored_url, stored_branch = normalize_git_url(repo_name), branch
+                storage_type = (
+                    "repo" if repo_type == "repo" or repo_name.endswith(".xml") else "git"
+                )
+                stored_url = repo_storage_path(storage_type, repo_name)
+                stored_branch = branch
                 _update_app_git_identity(
                     conn,
                     app_id,
@@ -872,13 +873,14 @@ def _apply_cicd_request(
                         else app.get("git_branch", "")
                     ).strip()
                     if next_repo_type == "repo" or git_url_update.endswith(".xml"):
-                        git_url_update = git_url_update.lstrip("/")
+                        storage_type = "repo"
                         git_branch_update = next_branch
                     else:
-                        from app.identity import normalize_git_url
-
-                        git_url_update = normalize_git_url(git_url_update)
+                        storage_type = "git"
                         git_branch_update = next_branch
+                    from app.identity import repo_storage_path
+
+                    git_url_update = repo_storage_path(storage_type, git_url_update)
                 _update_app_git_identity(
                     conn,
                     app_id,
@@ -2644,7 +2646,9 @@ def cicd_first_new_app(
             # transaction() nests as a SAVEPOINT inside our outer transaction.
             from app.services import app_service as _app_service
 
-            stored_url = raw_repo_name if is_manifest else git_url
+            from app.identity import repo_storage_path
+
+            stored_url = repo_storage_path(repo_type, raw_repo_name)
             stored_branch = raw_branch if is_manifest else git_branch
             app_id = _app_service.add_new_app_request(
                 conn,

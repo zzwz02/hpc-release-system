@@ -260,7 +260,7 @@ class TestCicdFirstHttpLifecycle:
         try:
             app = apps_repo.get_app(conn, _APP_ID)
             assert app is not None
-            assert app["git_url"] == _RESOLVED_URL
+            assert app["git_url"] == _SHORT_NAME
             assert app["git_branch"] == _BRANCH
             assert app["cicd_build_image"] == "hpc/w4e2e:latest"
             snap = core.get_release(conn, core.list_releases(conn)[0]["id"])["snapshots"][_APP_ID]

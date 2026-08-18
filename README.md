@@ -270,7 +270,7 @@ SPD 退回交付申请后，RM 可以在「CICD 工作台 → 待交付」对 re
 
 `apps` 表只保存全局身份（`id`、`git_url`、`git_branch`、别名、创建信息）。官方名称、类型、官方 URL、描述、文档目标、Owner、release 决策、文档字段、测试说明、`app_info`、QA 状态等都保存在**每个 release 的 snapshot** 中。因此同一个 app 在不同 release 中可以有不同版本、Owner、文档与 QA 状态。新建 release 会从上一版克隆 snapshot 并重置 QA 状态。
 
-CICD↔App 的身份键是 `app_id`。`(git_url, git_branch)` 只用于历史展示 / 兼容匹配，新写入路径必须使用 app id。注意同一个 Gerrit URL 可以有多个 branch，不能只用 URL 匹配。身份解析见 `app/identity.py`（`repo_to_git_identity`）。
+CICD↔App 的身份键是 `app_id`。`(git_url, git_branch)` 只用于历史展示 / 兼容匹配，新写入路径必须使用 app id。注意同一个 Gerrit URL 可以有多个 branch，不能只用 URL 匹配。`git` 类型在 `apps.git_url` 中持久保存相对于 Gerrit HPC 项目的短路径（例如 `hpc_hpl`），完整 SSH URL 仅在拉取和身份比较时按统一 Gerrit 配置派生；CICD-first 新建和仓库路径修改都不得把 origin 写入数据库。身份解析见 `app/identity.py`（`repo_to_git_identity`）。
 
 对于 `repo` 类型，App 中持久保存、CICD 页面展示的权威配置都是 manifest XML 路径与 manifest branch（例如 `APP/slurm/hpc_slurm_22.05.3.xml @ master`）。每次拉取 `app_info` 或执行需要底层 Git 身份的操作时，都重新读取并解析当前 XML；解析结果只用于当次操作，不能覆盖 manifest 配置，也不能因进程内旧缓存而忽略 XML 更新。
 

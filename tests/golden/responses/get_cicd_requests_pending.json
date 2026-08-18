@@ -39,7 +39,7 @@
         "origin": "cicd_workbench",
         "task_app_name": "GoldenAmber",
         "task_app_version": "22",
-        "task_repo_name": "ssh://gerrit/PDE/HPC/hpc_amber",
+        "task_repo_name": "hpc_amber",
         "task_branch": "maca",
         "task_status": "Running"
       }

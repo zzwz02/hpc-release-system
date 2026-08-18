@@ -11,7 +11,7 @@
     "apps": [
       {
         "id": "goldenamber",
-        "git_url": "ssh://gerrit/PDE/HPC/hpc_amber",
+        "git_url": "hpc_amber",
         "git_branch": "maca",
         "created_by": "import",
         "created_at": "SCRUBBED_TIMESTAMP",

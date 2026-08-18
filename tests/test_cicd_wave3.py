@@ -261,7 +261,7 @@ class TestCicdFirstAppBackedLifecycle:
 
         app = apps_repo.get_app(temp_db, _APP_ID)
         assert app is not None
-        assert app["git_url"] == _RESOLVED_URL
+        assert app["git_url"] == _REPO_SHORT
         assert app["git_branch"] == _BRANCH
         assert app["cicd_build_image"] == "hpc/w3cicd:latest"
 
@@ -656,6 +656,7 @@ class TestCicdFirstAppBackedLifecycle:
         assert approved["task_id"] == _APP_ID
         assert approved["is_self_approved"] == 1
         assert _task_table_count(temp_db) == 0
+        assert apps_repo.get_app(temp_db, _APP_ID)["git_url"] == _REPO_SHORT
         snap = core.get_release(temp_db, core.list_releases(temp_db)[0]["id"])["snapshots"][_APP_ID]
         assert snap["release_decision"] == "cicd_only"
 

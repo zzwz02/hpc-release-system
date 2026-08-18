@@ -196,10 +196,10 @@ def test_cicd_modify_repo_identity_change_updates_app_after_approval():
         )
         cicd_service.approve_request(conn, req["id"], reviewer="rm", reviewer_role="RM")
         app = apps_repo.get_app(conn, "app1")
-        assert app["git_url"] == f"{_GERRIT_BASE}/hpc_app_latest"
+        assert app["git_url"] == "hpc_app_latest"
         assert app["git_branch"] == "maca_latest"
         task = next(t for t in cicd_service.list_tasks(conn) if t["app_id"] == "app1")
-        assert task["repo_name"] == f"{_GERRIT_BASE}/hpc_app_latest"
+        assert task["repo_name"] == "hpc_app_latest"
         assert task["branch"] == "maca_latest"
         assert not conn.execute("SELECT 1 FROM cicd_tasks").fetchone()
     finally:

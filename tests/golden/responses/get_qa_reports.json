@@ -44,7 +44,7 @@
           "分子动力学",
           "",
           "",
-          "ssh://gerrit/PDE/HPC/hpc_amber",
+          "hpc_amber",
           "maca",
           "22",
           "",

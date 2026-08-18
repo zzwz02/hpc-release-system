@@ -15,7 +15,7 @@
         "app_name": "GoldenAmber",
         "app_version": "22",
         "repo_type": "git",
-        "repo_name": "ssh://gerrit/PDE/HPC/hpc_amber",
+        "repo_name": "hpc_amber",
         "branch": "maca",
         "build_product": [],
         "community_artifact": [],

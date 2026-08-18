@@ -94,6 +94,35 @@ def normalize_git_url(git_url: str) -> str:
     return f"{settings.gerrit_hpc_base_url}/{value.lstrip('/')}"
 
 
+def repo_storage_path(repo_type: str, repo_name: str) -> str:
+    """Return the canonical project-relative path persisted in ``apps.git_url``.
+
+    Git repositories are stored relative to the configured HPC project (for
+    example ``hpc_hpl``). Repo/manifest identities are additionally stored
+    relative to the manifest repository (for example ``APP/hpl/default.xml``).
+    Absolute/internal-prefixed input is accepted here for compatibility with
+    already-pending requests, although current API validation requires users
+    to submit the short form.
+    """
+    value = str(repo_name or "").strip().lstrip("/")
+    if not value:
+        return value
+
+    hpc_project = settings.gerrit_hpc_project.strip("/")
+    hpc_marker = f"/{hpc_project}/"
+    marker_index = value.find(hpc_marker)
+    if marker_index >= 0:
+        value = value[marker_index + len(hpc_marker):]
+    elif value.startswith(f"{hpc_project}/"):
+        value = value[len(hpc_project) + 1:]
+
+    if (repo_type or "git").strip() == "repo":
+        manifest_project = settings.gerrit_manifest_project.strip("/")
+        if value.startswith(f"{manifest_project}/"):
+            value = value[len(manifest_project) + 1:]
+    return value.lstrip("/")
+
+
 def resolve_manifest_url(
     git_url: str,
     git_branch: str,
