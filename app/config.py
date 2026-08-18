@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     hpc_gerrit_prefix: str = "ssh://gerrit.metax-internal.com:29418/PDE/HPC/"
     hpc_gerrit_root: str = "ssh://gerrit.metax-internal.com:29418/"
 
+    # Maximum Gerrit/manifest I/O operations issued concurrently by one bulk
+    # app_info fetch.  Database writes remain serial in the request thread.
+    gerrit_fetch_max_workers: int = 4
+
     # Manifest repo URL for Google-repo .xml identity resolution (plan §4.2)
     manifest_repo_url: str = (
         "ssh://gerrit.metax-internal.com:29418/PDE/HPC/manifest"

@@ -79,6 +79,8 @@ process-local registries.
 - **R2 refresh model**: data moves only on explicit RefreshBar click, nav mount,
   or post-mutation `invalidateQueries`.  No background polling anywhere except the
   QA AI-analysis job (1 s interval, cancelled on unmount and release change).
+  Long-running RM bulk app_info fetches use one NDJSON streaming POST so each
+  completed App updates the progress dialog immediately without polling.
 - **Auth**: cookie-based (`hpc_session` HttpOnly).  All fetches use
   `credentials: 'include'`.  A 401 response clears the user and shows the login page.
 - **CICD Agent**: the Jenkins failure query and CICD assistant pages call the

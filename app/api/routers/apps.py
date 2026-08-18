@@ -13,15 +13,29 @@ since it belongs to the apps workbench slice.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
+from collections.abc import Iterable, Iterator
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import StreamingResponse
 
 from app.deps import get_db, require_capability, require_login
 from app.services import app_service, release_reads
 from app.services.authz import require_owner_or_rm_with_owners
 
 router = APIRouter(tags=["apps"])
+
+
+def _encode_ndjson_events(
+    events: Iterable[dict],
+) -> Iterator[str]:
+    for event in events:
+        yield json.dumps(
+            event,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -192,18 +206,42 @@ def api_app_info_fetch(
 # POST /api/app-info/fetch-all
 # ---------------------------------------------------------------------------
 
-@router.post("/api/app-info/fetch-all")
+@router.post("/api/app-info/fetch-all", response_model=None)
 def api_app_info_fetch_all(
+    request: Request,
     body: dict,
     user: dict = Depends(
         require_capability("app.edit.rm_fields", message="RM role required")
     ),
     conn: sqlite3.Connection = Depends(get_db),
-) -> dict:
+) -> dict | StreamingResponse:
     """Fetch app_info from Gerrit for all apps in a release (RM only).
 
-    Mirrors server.py:1239-1243.  Uses require_rm() message exactly.
+    Existing callers receive the original aggregate JSON response.  Clients
+    requesting ``application/x-ndjson`` receive start/item/complete events as
+    each bounded-concurrency fetch finishes.
     """
+    if "application/x-ndjson" in request.headers.get("accept", ""):
+        plan = app_service.prepare_fetch_all_app_infos(
+            conn,
+            release_id=body["release_id"],
+        )
+        events = app_service.iter_fetch_all_app_infos(
+            conn,
+            plan=plan,
+            uploaded_by=user["username"],
+            role=user["role"],
+        )
+
+        return StreamingResponse(
+            _encode_ndjson_events(events),
+            media_type="application/x-ndjson",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     return app_service.fetch_all_app_infos(
         conn,
         release_id=body["release_id"],

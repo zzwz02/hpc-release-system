@@ -13,7 +13,7 @@
  *  - Detail panel shows release decision select
  */
 
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
@@ -27,6 +27,7 @@ import type { StatePayload, App, Snapshot, ReleaseDetail, ReleaseSummary, CicdRe
 vi.mock("../../../api/http", () => ({
   apiGet: vi.fn(),
   apiPost: vi.fn(),
+  apiPostNdjson: vi.fn(),
 }));
 
 
@@ -43,7 +44,7 @@ vi.mock("../../../lib/confirm", () => ({
   promptDialog: vi.fn(),
 }));
 
-import { apiGet, apiPost } from "../../../api/http";
+import { apiGet, apiPost, apiPostNdjson } from "../../../api/http";
 import { useAuth } from "../../../api/AuthContext";
 import { toast } from "../../../lib/toast";
 import { confirmDialog } from "../../../lib/confirm";
@@ -467,9 +468,17 @@ describe("AppWorkbenchPage", () => {
     vi.stubGlobal("alert", vi.fn());
     vi.stubGlobal("confirm", vi.fn(() => true));
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    (apiPost as ReturnType<typeof vi.fn>).mockImplementation((_url: string, body?: { app_id?: string }) => {
-      if (body?.app_id === "app2") return Promise.reject(new Error("Gerrit unreachable"));
-      return Promise.resolve({ commit_id: "abc", source: "repo/app1 main:app_info.json" });
+    let emitEvent: ((event: unknown) => void) | undefined;
+    let finishStream: (() => void) | undefined;
+    (apiPostNdjson as ReturnType<typeof vi.fn>).mockImplementation((
+      _url: string,
+      _body: unknown,
+      onItem: (event: unknown) => void,
+    ) => {
+      emitEvent = onItem;
+      return new Promise<void>((resolve) => {
+        finishStream = resolve;
+      });
     });
 
     const qc = makeQueryClient();
@@ -477,11 +486,47 @@ describe("AppWorkbenchPage", () => {
     await waitFor(() => screen.getByTestId("fetch-all-app-info-btn"));
     fireEvent.click(screen.getByTestId("fetch-all-app-info-btn"));
 
-    await waitFor(() => {
-      expect(apiPost).toHaveBeenCalledWith("/api/app-info/fetch", { release_id: "rel-1", app_id: "app1" });
-      expect(apiPost).toHaveBeenCalledWith("/api/app-info/fetch", { release_id: "rel-1", app_id: "app2" });
+    await waitFor(() => expect(apiPostNdjson).toHaveBeenCalledWith(
+      "/api/app-info/fetch-all",
+      { release_id: "rel-1" },
+      expect.any(Function),
+    ));
+
+    act(() => {
+      emitEvent?.({ type: "start", total: 2, max_workers: 4 });
+      emitEvent?.({
+        type: "item", completed: 1, total: 2,
+        app_id: "app1", ok: false, error: "first error",
+      });
     });
-    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("成功 1，失败 1"));
+    await waitFor(() => {
+      expect(screen.getByTestId("app-info-fetch-progress").textContent).toContain("进度 1/2");
+      expect(screen.getByTestId("app-info-fetch-errors").textContent).toContain("first error");
+    });
+
+    act(() => {
+      emitEvent?.({
+        type: "item", completed: 2, total: 2,
+        app_id: "app2", ok: false, error: "second error",
+      });
+      emitEvent?.({
+        type: "complete", ok: true, total: 2, succeeded: 0, failed: 2,
+        results: [
+          { app_id: "app1", ok: false, error: "first error" },
+          { app_id: "app2", ok: false, error: "second error" },
+        ],
+      });
+      finishStream?.();
+    });
+
+    await waitFor(() => {
+      const errors = screen.getByTestId("app-info-fetch-errors").textContent ?? "";
+      expect(errors).toContain("first error");
+      expect(errors).toContain("second error");
+      expect(screen.getByTestId("app-info-fetch-close")).toBeTruthy();
+      expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("成功 0，失败 2"));
+    });
+    expect(apiPost).not.toHaveBeenCalledWith("/api/app-info/fetch", expect.anything());
   });
 
   it("shows an in-progress dialog while fetching one app_info from Gerrit", async () => {

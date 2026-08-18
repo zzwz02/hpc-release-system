@@ -59,6 +59,72 @@ export async function apiPost<T = unknown>(path: string, body: unknown): Promise
   });
 }
 
+/**
+ * Streaming NDJSON POST. Each complete JSON line is delivered immediately;
+ * chunk boundaries may split or combine lines. Used for long-running batch
+ * mutations that need real-time progress without polling.
+ */
+export async function apiPostNdjson<T = unknown>(
+  path: string,
+  body: unknown,
+  onItem: (item: T) => void,
+): Promise<void> {
+  const res = await fetch(path, {
+    method: "POST",
+    body: JSON.stringify(body),
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/x-ndjson",
+    },
+  });
+
+  if (!res.ok) {
+    if (res.status === 401) _on401();
+    const raw = await res.text().catch(() => "");
+    let message = raw || res.statusText;
+    try {
+      const parsed = JSON.parse(raw) as ApiEnvelope;
+      message = parsed.error || message;
+    } catch {
+      // Keep the plain-text response as the error message.
+    }
+    throw new Error(message || `HTTP ${res.status}`);
+  }
+  if (!res.body) {
+    throw new Error("服务器未返回批量拉取进度流");
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let lineNumber = 0;
+
+  const emitLine = (rawLine: string) => {
+    const line = rawLine.trim();
+    if (!line) return;
+    lineNumber += 1;
+    try {
+      onItem(JSON.parse(line) as T);
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new Error(`批量拉取进度流第 ${lineNumber} 行不是有效 JSON`);
+      }
+      throw error;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) emitLine(line);
+    if (done) break;
+  }
+  emitLine(buffer);
+}
+
 /** Convenience GET helper. */
 export async function apiGet<T = unknown>(path: string): Promise<T> {
   return apiFetch<T>(path);

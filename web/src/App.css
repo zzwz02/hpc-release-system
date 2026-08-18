@@ -1108,6 +1108,7 @@ textarea.artifact {
 .dialog-head { border-bottom: 0; background: transparent; }
 .dialog-body { padding: 15px 18px; display: grid; gap: 12px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; padding: 13px 18px; border-top: 1px solid var(--border); }
+.app-info-fetch-errors { max-height: 240px; overflow: auto; }
 .confirm-card { width: min(440px, 100%); }
 .confirm-body { white-space: pre-line; line-height: 1.6; color: var(--ink-2); }
 

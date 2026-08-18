@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -63,6 +66,7 @@ CICD_APP_CONFIG_FIELDS = {
     "cicd_notes",
 }
 APP_REPO_IDENTITY_FIELDS = {"git_url", "git_branch"}
+MAX_GERRIT_FETCH_WORKERS = 16
 
 CICD_APP_CONFIG_LABELS = {
     "cicd_repo_type": "仓库类型",
@@ -1357,64 +1361,187 @@ def fetch_app_info(
     }
 
 
+@dataclass(frozen=True)
+class AppInfoFetchTask:
+    """Immutable DB-free input for one bulk Gerrit fetch worker."""
+
+    app_id: str
+    app: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AppInfoFetchPlan:
+    """Prevalidated bulk fetch plan shared by JSON and streaming responses."""
+
+    release_id: str
+    tasks: tuple[AppInfoFetchTask, ...]
+    max_workers: int
+
+
+def prepare_fetch_all_app_infos(
+    conn: sqlite3.Connection,
+    *,
+    release_id: str,
+    max_workers: int | None = None,
+) -> AppInfoFetchPlan:
+    """Validate a bulk fetch and copy all worker inputs out of SQLite.
+
+    This runs before a streaming response starts so release/phase errors still
+    use the normal JSON error envelope and HTTP status.  Worker threads never
+    receive or access ``conn``.
+    """
+    from app.config import settings
+
+    release = release_reads.get_release(conn, release_id)
+    if release.get("released_locked"):
+        raise RuntimeError("Release 已最终锁定，不可上传 app_info")
+    phase_policy.require_can(release, "edit_app_info", "已过 doc deadline，不可再上传 app_info")
+
+    tasks = tuple(
+        AppInfoFetchTask(app_id=app_id, app=_get_app_or_raise(conn, app_id))
+        for app_id in sorted(release.get("snapshots", {}))
+    )
+    configured_workers = (
+        settings.gerrit_fetch_max_workers if max_workers is None else max_workers
+    )
+    worker_count = max(1, min(int(configured_workers), MAX_GERRIT_FETCH_WORKERS))
+    if tasks:
+        worker_count = min(worker_count, len(tasks))
+    return AppInfoFetchPlan(
+        release_id=release_id,
+        tasks=tasks,
+        max_workers=worker_count,
+    )
+
+
+def iter_fetch_all_app_infos(
+    conn: sqlite3.Connection,
+    *,
+    plan: AppInfoFetchPlan,
+    uploaded_by: str,
+    role: str = "RM",
+    fetch_fn: Callable[..., tuple[str, str]] | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Yield real-time events for a bounded-concurrency bulk Gerrit fetch.
+
+    Gerrit and manifest resolution are I/O-bound and run in the bounded worker
+    pool.  Snapshot parsing, policy rechecks, audit writes, and SQLite commits
+    remain serial on the request connection as each worker completes.
+    """
+    from app.config import settings
+
+    if fetch_fn is None:
+        from app.integrations.gerrit import fetch_app_info as fetch_fn
+
+    total = len(plan.tasks)
+    yield {
+        "type": "start",
+        "total": total,
+        "max_workers": plan.max_workers,
+    }
+
+    def fetch_one(task: AppInfoFetchTask) -> dict[str, Any]:
+        fetch_url, fetch_branch, source = _app_info_fetch_target(task.app)
+        raw, commit_id = fetch_fn(
+            fetch_url,
+            fetch_branch,
+            project_root=settings.db_path.parent,
+            hpc_gerrit_prefix=settings.hpc_gerrit_prefix,
+            hpc_gerrit_root=settings.hpc_gerrit_root,
+        )
+        return {
+            "app_id": task.app_id,
+            "raw": raw,
+            "commit_id": commit_id,
+            "source": source,
+            "fetch_git_url": fetch_url,
+            "fetch_git_branch": fetch_branch,
+        }
+
+    results: list[dict[str, Any]] = []
+    if plan.tasks:
+        with ThreadPoolExecutor(
+            max_workers=plan.max_workers,
+            thread_name_prefix="app-info-fetch",
+        ) as executor:
+            future_tasks = {
+                executor.submit(fetch_one, task): task for task in plan.tasks
+            }
+            for completed, future in enumerate(as_completed(future_tasks), start=1):
+                task = future_tasks[future]
+                try:
+                    fetched = future.result()
+                    snapshot = _apply_app_info_core(
+                        conn,
+                        plan.release_id,
+                        task.app_id,
+                        fetched["raw"],
+                        source=fetched["source"],
+                        source_type="gerrit_fetch",
+                        commit_id=fetched["commit_id"],
+                        uploaded_by=uploaded_by,
+                        role=role,
+                    )
+                    result = {
+                        "app_id": task.app_id,
+                        "ok": True,
+                        "commit_id": fetched["commit_id"],
+                        "source": snapshot.get("app_info", {}).get("source", ""),
+                        "fetch_git_url": fetched["fetch_git_url"],
+                        "fetch_git_branch": fetched["fetch_git_branch"],
+                    }
+                except Exception as exc:
+                    result = {
+                        "app_id": task.app_id,
+                        "ok": False,
+                        "error": str(exc),
+                    }
+                results.append(result)
+                yield {
+                    "type": "item",
+                    "completed": completed,
+                    "total": total,
+                    **result,
+                }
+
+    ordered_results = sorted(results, key=lambda item: item["app_id"])
+    succeeded = sum(1 for item in ordered_results if item["ok"])
+    yield {
+        "type": "complete",
+        "ok": True,
+        "total": total,
+        "succeeded": succeeded,
+        "failed": total - succeeded,
+        "results": ordered_results,
+    }
+
+
 def fetch_all_app_infos(
     conn: sqlite3.Connection,
     *,
     release_id: str,
     uploaded_by: str,
     role: str = "RM",
+    fetch_fn: Callable[..., tuple[str, str]] | None = None,
+    max_workers: int | None = None,
 ) -> dict:
     """Fetch app_info from Gerrit for every app in a release.
 
-    Mirrors server.py:1239-1243 + fetch_all_app_infos_from_gerrit.
+    Keeps the original JSON response contract while using the same bounded
+    concurrent implementation as the streaming endpoint.
     """
-    from app.config import settings
-    from app.integrations.gerrit import fetch_app_info as gerrit_fetch
-
-    _project_root = settings.db_path.parent
-    release = release_reads.get_release(conn, release_id)
-    if release.get("released_locked"):
-        raise RuntimeError("Release 已最终锁定，不可上传 app_info")
-    phase_policy.require_can(release, "edit_app_info", "已过 doc deadline，不可再上传 app_info")
-    results = []
-    for app_id in sorted(release.get("snapshots", {})):
-        try:
-            app = _get_app_or_raise(conn, app_id)
-            fetch_url, fetch_branch, source = _app_info_fetch_target(app)
-            raw, commit_id = gerrit_fetch(
-                fetch_url,
-                fetch_branch,
-                project_root=_project_root,
-                hpc_gerrit_prefix=settings.hpc_gerrit_prefix,
-                hpc_gerrit_root=settings.hpc_gerrit_root,
-            )
-            snapshot = _apply_app_info_core(
-                conn,
-                release_id,
-                app_id,
-                raw,
-                source=source,
-                source_type="gerrit_fetch",
-                commit_id=commit_id,
-                uploaded_by=uploaded_by,
-                role=role,
-            )
-            results.append({
-                "app_id": app_id,
-                "ok": True,
-                "commit_id": commit_id,
-                "source": snapshot.get("app_info", {}).get("source", ""),
-                "fetch_git_url": fetch_url,
-                "fetch_git_branch": fetch_branch,
-            })
-        except Exception as exc:
-            results.append({"app_id": app_id, "ok": False, "error": str(exc)})
-
-    succeeded = sum(1 for item in results if item["ok"])
-    return {
-        "ok": True,
-        "total": len(results),
-        "succeeded": succeeded,
-        "failed": len(results) - succeeded,
-        "results": results,
-    }
+    plan = prepare_fetch_all_app_infos(
+        conn,
+        release_id=release_id,
+        max_workers=max_workers,
+    )
+    for event in iter_fetch_all_app_infos(
+        conn,
+        plan=plan,
+        uploaded_by=uploaded_by,
+        role=role,
+        fetch_fn=fetch_fn,
+    ):
+        if event["type"] == "complete":
+            return {key: value for key, value in event.items() if key != "type"}
+    raise RuntimeError("批量拉取未返回完成结果")

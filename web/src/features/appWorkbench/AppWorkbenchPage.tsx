@@ -28,7 +28,7 @@ import { Markdown } from "../../components/Markdown";
 import { formatServerTime } from "../../lib/time";
 import { toast } from "../../lib/toast";
 import { confirmDialog } from "../../lib/confirm";
-import { apiGet, apiPost } from "../../api/http";
+import { apiGet, apiPost, apiPostNdjson } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
 import { isOwner, canCreateApp, canEdit, canEditRmFields } from "../../lib/roles";
@@ -100,12 +100,32 @@ interface AppInfoFetchProgress {
   title: string;
   currentApp?: string;
   currentIdentity?: string;
+  maxWorkers?: number;
   total: number;
   completed: number;
   ok: number;
   failed: number;
   failures: string[];
+  finished?: boolean;
 }
+
+interface AppInfoFetchResult {
+  app_id: string;
+  ok: boolean;
+  error?: string;
+}
+
+type AppInfoFetchStreamEvent =
+  | { type: "start"; total: number; max_workers: number }
+  | ({ type: "item"; completed: number; total: number } & AppInfoFetchResult)
+  | {
+      type: "complete";
+      ok: true;
+      total: number;
+      succeeded: number;
+      failed: number;
+      results: AppInfoFetchResult[];
+    };
 
 // ---------------------------------------------------------------------------
 // Query key + fetcher
@@ -397,8 +417,15 @@ function uniqueCicdRequestCount(requests: CicdRequest[]): number {
   ).size;
 }
 
-function AppInfoFetchProgressDialog({ progress }: { progress: AppInfoFetchProgress }) {
+function AppInfoFetchProgressDialog({
+  progress,
+  onClose,
+}: {
+  progress: AppInfoFetchProgress;
+  onClose?: () => void;
+}) {
   const pct = progress.total ? Math.round((progress.completed / progress.total) * 100) : 0;
+  const visibleFailures = progress.finished ? progress.failures : progress.failures.slice(-4);
   return (
     <div className="dialog-backdrop" role="dialog" aria-modal="true" data-testid="app-info-fetch-progress">
       <div className="dialog-box maxw-520">
@@ -412,20 +439,30 @@ function AppInfoFetchProgressDialog({ progress }: { progress: AppInfoFetchProgre
             <span style={{ width: `${pct}%` }} />
           </div>
           <div className="banner m-0">
-            <div><b>当前：</b>{progress.currentApp ?? "准备中..."}</div>
+            <div>
+              <b>{progress.finished ? "状态：" : "最近完成："}</b>
+              {progress.currentApp ?? (progress.maxWorkers ? `服务端 ${progress.maxWorkers} 路并发拉取中...` : "准备中...")}
+            </div>
             {progress.currentIdentity && (
               <div className="small muted mt-4">{progress.currentIdentity}</div>
             )}
           </div>
-          {progress.failures.length > 0 && (
-            <div className="small warnp prewrap">
-              {progress.failures.slice(-4).join("\n")}
+          {visibleFailures.length > 0 && (
+            <div className="small warnp prewrap app-info-fetch-errors" data-testid="app-info-fetch-errors">
+              {visibleFailures.join("\n")}
             </div>
           )}
-          <p className="small muted m-0">
-            Gerrit 拉取可能耗时较久。窗口关闭前请不要刷新页面。
-          </p>
+          {!progress.finished && (
+            <p className="small muted m-0">
+              Gerrit 拉取可能耗时较久。窗口关闭前请不要刷新页面。
+            </p>
+          )}
         </div>
+        {progress.finished && onClose && (
+          <div className="dialog-actions">
+            <button className="btn primary" onClick={onClose} data-testid="app-info-fetch-close">关闭</button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -3019,57 +3056,87 @@ export function AppWorkbenchPage() {
       failed: 0,
       failures: [],
     });
-    const results: { app_id: string; ok: boolean; error?: string }[] = [];
+    const rowByAppId = new Map(allRows.map((row) => [row.app.id, row]));
+    const failureText = (result: AppInfoFetchResult) => {
+      const row = rowByAppId.get(result.app_id);
+      const name = row ? displayName(row.snap) : result.app_id;
+      return `- ${name} (${result.app_id}): ${result.error ?? "未知错误"}`;
+    };
+    const finalResult: {
+      event: Extract<AppInfoFetchStreamEvent, { type: "complete" }> | null;
+    } = { event: null };
     try {
-      for (const { app, snap } of allRows) {
-        setBulkProgress((p) => p && {
-          ...p,
-          currentApp: displayName(snap),
-          currentIdentity: `${formatCicdRepoPath(app.git_url, app.cicd_repo_type || "git")} @ ${app.git_branch}`,
-        });
-        try {
-          await apiPost<{ commit_id?: string; source?: string }>("/api/app-info/fetch", {
-            release_id: release.id,
-            app_id: app.id,
-          });
-          results.push({ app_id: app.id, ok: true });
+      await apiPostNdjson<AppInfoFetchStreamEvent>(
+        "/api/app-info/fetch-all",
+        { release_id: release.id },
+        (event) => {
+          if (event.type === "start") {
+            setBulkProgress((p) => p && {
+              ...p,
+              total: event.total,
+              maxWorkers: event.max_workers,
+            });
+            return;
+          }
+          if (event.type === "item") {
+            const row = rowByAppId.get(event.app_id);
+            const failure = event.ok ? null : failureText(event);
+            setBulkProgress((p) => p && {
+              ...p,
+              currentApp: row ? displayName(row.snap) : event.app_id,
+              currentIdentity: row
+                ? `${formatCicdRepoPath(row.app.git_url, row.app.cicd_repo_type || "git")} @ ${row.app.git_branch}`
+                : undefined,
+              total: event.total,
+              completed: event.completed,
+              ok: p.ok + (event.ok ? 1 : 0),
+              failed: p.failed + (event.ok ? 0 : 1),
+              failures: failure ? [...p.failures, failure] : p.failures,
+            });
+            return;
+          }
+
+          finalResult.event = event;
+          const allFailures = event.results.filter((result) => !result.ok).map(failureText);
           setBulkProgress((p) => p && {
             ...p,
-            completed: p.completed + 1,
-            ok: p.ok + 1,
+            title: "Gerrit app_info 批量拉取完成",
+            currentApp: "全部任务已完成",
+            currentIdentity: undefined,
+            total: event.total,
+            completed: event.total,
+            ok: event.succeeded,
+            failed: event.failed,
+            failures: allFailures,
+            finished: true,
           });
-        } catch (e) {
-          const errorMsg = e instanceof Error ? e.message : String(e);
-          results.push({ app_id: app.id, ok: false, error: errorMsg });
-          setBulkProgress((p) => p && {
-            ...p,
-            completed: p.completed + 1,
-            failed: p.failed + 1,
-            failures: [...p.failures, `${app.id}: ${errorMsg}`],
-          });
-        }
+        },
+      );
+      const completedEvent = finalResult.event;
+      if (!completedEvent) {
+        throw new Error("批量拉取进度流意外结束，缺少完成结果");
       }
       await refetch();
 
-      const ok = results.filter((r) => r.ok).length;
-      const failed = results.filter((r) => !r.ok);
-      const failurePreview = failed
-        .slice(0, 8)
-        .map((r) => `- ${r.app_id}: ${r.error ?? "未知错误"}`)
-        .join("\n");
-      const summary = [
-        `Gerrit app_info.json 批量拉取完成：成功 ${ok}，失败 ${failed.length}。`,
-        failurePreview ? `\n失败项：\n${failurePreview}${failed.length > 8 ? "\n- ..." : ""}` : "",
-      ].join("");
-      if (failed.length) {
-        toast.error(summary);
+      const summary = `Gerrit app_info.json 批量拉取完成：成功 ${completedEvent.succeeded}，失败 ${completedEvent.failed}。`;
+      if (completedEvent.failed) {
+        toast.error(`${summary}\n请在结果窗口查看全部错误。`);
       } else {
         toast.success(summary);
       }
     } catch (e) {
-      toast.error(`Gerrit app_info.json 批量拉取失败：\n\n${e instanceof Error ? e.message : String(e)}`);
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      setBulkProgress((p) => p && {
+        ...p,
+        title: "Gerrit app_info 批量拉取异常结束",
+        currentApp: "连接或响应异常",
+        currentIdentity: undefined,
+        failures: [...p.failures, `- 批量请求：${errorMessage}`],
+        finished: true,
+      });
+      await refetch();
+      toast.error(`Gerrit app_info.json 批量拉取失败：\n\n${errorMessage}`);
     } finally {
-      setBulkProgress(null);
       setBulkFetching(false);
     }
   }
@@ -3178,7 +3245,12 @@ export function AppWorkbenchPage() {
           onCreated={handleNewAppCreated}
         />
       )}
-      {bulkProgress && <AppInfoFetchProgressDialog progress={bulkProgress} />}
+      {bulkProgress && (
+        <AppInfoFetchProgressDialog
+          progress={bulkProgress}
+          onClose={bulkProgress.finished ? () => setBulkProgress(null) : undefined}
+        />
+      )}
     </section>
   );
 }

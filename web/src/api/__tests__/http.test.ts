@@ -5,7 +5,7 @@
  * All tests mock global.fetch to avoid any real network calls.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { apiFetch, apiPost, apiGet, register401Handler } from "../http";
+import { apiFetch, apiPost, apiPostNdjson, apiGet, register401Handler } from "../http";
 
 // Helper to create a mock Response
 function mockResponse(
@@ -112,6 +112,51 @@ describe("apiPost", () => {
         body: JSON.stringify({ username: "u", password: "p" }),
       }),
     );
+  });
+});
+
+describe("apiPostNdjson", () => {
+  it("parses NDJSON across arbitrary response chunks", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('{"type":"start","total":2}\n{"type":"it'));
+        controller.enqueue(encoder.encode('em","app_id":"a","ok":true}\n'));
+        controller.enqueue(encoder.encode('{"type":"complete","total":2}'));
+        controller.close();
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "application/x-ndjson" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const events: Array<Record<string, unknown>> = [];
+
+    await apiPostNdjson<Record<string, unknown>>(
+      "/api/app-info/fetch-all",
+      { release_id: "rel-1" },
+      (event) => events.push(event),
+    );
+
+    expect(events.map((event) => event.type)).toEqual(["start", "item", "complete"]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/app-info/fetch-all",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        headers: expect.objectContaining({ Accept: "application/x-ndjson" }),
+      }),
+    );
+  });
+
+  it("uses a JSON preflight error from a non-OK response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(mockResponse({ ok: false, error: "Release 已锁定" }, 400)),
+    );
+    await expect(apiPostNdjson("/api/app-info/fetch-all", {}, vi.fn()))
+      .rejects.toThrow("Release 已锁定");
   });
 });
 

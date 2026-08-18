@@ -58,7 +58,7 @@ flowchart TD
 | 数据库 | SQLite，WAL 模式，`ManagedConnection` 嵌套 savepoint |
 | 前端 | React 18 + Vite + TypeScript + TanStack Query + zustand + react-router |
 | 认证 | PBKDF2-HMAC-SHA256 本地口令，HttpOnly session cookie；可选 LDAP |
-| 集成 | Gerrit `git ls-remote` / `git archive`、Jira REST、OpenAI 兼容 Chat API |
+| 集成 | Gerrit `git ls-remote` / `git archive`（短时 SSH 连接复用）、Jira REST、OpenAI 兼容 Chat API |
 | 测试 | 后端 `pytest`（含 golden 回放）；前端 `vitest` + Playwright e2e；ESLint + tsc strict |
 
 后端依赖见 [requirements.txt](./requirements.txt)。前端依赖见 [web/package.json](./web/package.json)，Markdown 走 `marked` + `DOMPurify`（仅在 `web/src/components/Markdown.tsx` 内）。
@@ -110,6 +110,8 @@ NO_PROXY=localhost,127.0.0.1 npm run dev   # http://localhost:5173
 | `admin` | 见 `admin_password.local` | Admin |
 
 可选集成（LDAP / Jira / QA LLM / Gerrit）的配置文件与环境变量约定与旧系统一致，详见各 `*.example` / `*_demo` 模板。
+RM 批量拉取 Gerrit app_info 的并发上限默认为 4，可在 `.env` 中通过
+`GERRIT_FETCH_MAX_WORKERS` 调整；服务端会将其限制在 1–16 之间。
 
 CICD Agent 集成通过 hpc_release_system 后端同源代理访问，浏览器只请求 `/api/cicd-agent/*`，后端再转发到独立的 CICD_Agent 服务。默认地址为 `http://10.2.118.76:8056`，可在 `.env` 中覆盖：
 
@@ -288,7 +290,7 @@ Test 命令表会按 `app_info.json` 中 `app_test` 的每条 `test_cmd` 展示�
 - 认证：`POST /api/login`、`POST /api/login/ldap`、`POST /api/logout`、`GET /api/me`、`GET /api/ldap/status`
 - 状态：`GET /api/state`
 - Release：`POST /api/import-initial`、`POST /api/releases/create`、`POST /api/releases/deadlines`、`POST /api/releases/final-lock`、`POST /api/releases/final-unlock`
-- App：`GET /api/apps/owner-lookup`（Jenkins 按 Gerrit URL 后缀 + Branch 查最新 release 的 Owner/官方名称/版本）、`POST /api/apps/update`、`POST /api/app-info`、`POST /api/app-info/fetch`
+- App：`GET /api/apps/owner-lookup`（Jenkins 按 Gerrit URL 后缀 + Branch 查最新 release 的 Owner/官方名称/版本）、`POST /api/apps/update`、`POST /api/app-info`、`POST /api/app-info/fetch`、`POST /api/app-info/fetch-all`（RM 批量限流并发拉取；默认兼容聚合 JSON，`Accept: application/x-ndjson` 时流式返回 `start/item/complete` 进度）
 - QA：`POST /api/qa/status-batch`、`POST /api/qa/upload-log`、`POST /api/qa/analyze-log/start`、`GET /api/qa/analyze-log/status`、`GET /api/qa-reports`
 - 产物：`POST /api/artifacts/generate`、`POST /api/artifacts/manager-review`、`GET /api/artifacts/<kind>`、`GET /api/test-scope.csv`
 - WIKI：`GET /api/wiki/articles`、`POST /api/wiki/articles/save`、`POST /api/wiki/articles/pin`、`POST /api/wiki/articles/delete`、`POST /api/wiki/images/upload`
