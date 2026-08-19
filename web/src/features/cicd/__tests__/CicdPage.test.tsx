@@ -187,6 +187,9 @@ function renderCicd(role = "RM") {
 // Default API responses
 function setDefaultMocks() {
   vi.mocked(apiGet).mockImplementation((url: string) => {
+    if (url.includes("/api/cicd/config")) {
+      return Promise.resolve({ jira_browse_url: "https://jira.example.test/browse/" });
+    }
     if (url.includes("/api/cicd/tasks")) {
       return Promise.resolve({ tasks: [makeTask()] });
     }
@@ -361,6 +364,30 @@ describe("CicdPage", () => {
     await waitFor(() => {
       expect(screen.getByText("已交付")).toBeInTheDocument();
     });
+  });
+
+  it("uses the backend-provided Jira browse URL", async () => {
+    const delivered = makeRequest({
+      id: 9,
+      status: "approved",
+      delivery_status: "delivered",
+      jira_id: "SPD-9",
+    });
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/config")) {
+        return Promise.resolve({ jira_browse_url: "https://jira.example.test/browse/" });
+      }
+      if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [makeTask()] });
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      if (url.includes("/api/cicd/requests")) return Promise.resolve({ requests: [] });
+      if (url.includes("/api/cicd/deliveries")) return Promise.resolve({ deliveries: [delivered] });
+      return Promise.resolve({});
+    });
+
+    renderCicd("RM");
+    await userEvent.click(await screen.findByText("已交付"));
+    const link = await screen.findByRole("link", { name: "SPD-9" });
+    expect(link).toHaveAttribute("href", "https://jira.example.test/browse/SPD-9");
   });
 
   it("DeliveryPane: RM can reject a returned delivery", async () => {

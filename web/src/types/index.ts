@@ -338,6 +338,10 @@ export interface CicdTasksResponse {
   tasks: CicdTask[];
 }
 
+export interface CicdConfigResponse {
+  jira_browse_url: string;
+}
+
 export interface CicdTaskHistoryResponse {
   history: CicdRequest[];
 }

@@ -30,6 +30,8 @@ import { formatCicdRepoPath } from "../../lib/git";
 import {
   CICD_TASKS_KEY,
   CICD_NOTIFICATIONS_KEY,
+  CICD_CONFIG_KEY,
+  fetchCicdConfig,
   fetchCicdTasks,
   fetchCicdTaskHistory,
   fetchCicdRequests,
@@ -51,7 +53,7 @@ import { confirmDialog, promptDialog } from "../../lib/confirm";
 import { can } from "../../lib/accessControl";
 
 // Re-export so consumers (tests, TabNav) can import from either location.
-export { CICD_TASKS_KEY, CICD_NOTIFICATIONS_KEY };
+export { CICD_CONFIG_KEY, CICD_TASKS_KEY, CICD_NOTIFICATIONS_KEY };
 
 // ---------------------------------------------------------------------------
 // Label helpers (mirrors index.html:3897-3905)
@@ -125,6 +127,13 @@ function communityArtifactStr(arr: string[] | null | undefined): string {
   return items
     .map((v) => (v === "image" ? "镜像" : v === "pkg" ? "软件包" : v))
     .join("、");
+}
+
+function jiraIssueUrl(browseUrl: string, issueId: string): string {
+  const base = browseUrl.trim();
+  const issue = issueId.trim();
+  if (!base || !issue) return "";
+  return `${base.replace(/\/*$/, "/")}${encodeURIComponent(issue)}`;
 }
 
 function cicdFieldValue(field: string, value: unknown): string {
@@ -556,16 +565,16 @@ function HistoryDialog({
 function DetailDialog({
   req,
   tasks,
+  jiraBrowseUrl,
   onClose,
 }: {
   req: CicdRequest;
   tasks: CicdTask[];
+  jiraBrowseUrl: string;
   onClose: () => void;
 }) {
   const payload = (req.payload ?? {}) as Record<string, unknown>;
-  const jiraHref = req.jira_id
-    ? `http://jira.metax-tech.com/browse/${req.jira_id}`
-    : null;
+  const jiraHref = jiraIssueUrl(jiraBrowseUrl, req.jira_id);
 
   return (
     <div className="dialog-backdrop" role="dialog" aria-modal="true">
@@ -1091,6 +1100,7 @@ interface DeliveryPaneProps {
   role: string;
   delivered: boolean;  // false = pending/returned; true = delivered
   tasks: CicdTask[];
+  jiraBrowseUrl: string;
   onDetail: (req: CicdRequest) => void;
   onRefreshed: () => void;
   deliveryCount?: (n: number) => void;
@@ -1100,6 +1110,7 @@ function DeliveryPane({
   role,
   delivered,
   tasks: _tasks,
+  jiraBrowseUrl,
   onDetail,
   onRefreshed,
   deliveryCount,
@@ -1217,8 +1228,6 @@ function DeliveryPane({
     }
   }
 
-  const jiraBase = "http://jira.metax-tech.com/browse/";
-
   return (
     <div className="cicd-pane">
       <div className="cicd-toolbar">
@@ -1288,17 +1297,15 @@ function DeliveryPane({
                     <td>{d.delivered_by || "—"}</td>
                     <td>{formatServerTime(d.delivered_at ?? "")}</td>
                     <td>
-                      {d.jira_id ? (
+                      {d.jira_id && jiraBrowseUrl ? (
                         <a
-                          href={jiraBase + d.jira_id}
+                          href={jiraIssueUrl(jiraBrowseUrl, d.jira_id)}
                           target="_blank"
                           rel="noopener noreferrer"
                         >
                           {d.jira_id}
                         </a>
-                      ) : (
-                        "—"
-                      )}
+                      ) : d.jira_id || "—"}
                     </td>
                     <td className="nowrap">
                       <button className="btn sm" onClick={() => onDetail(d)}>
@@ -1319,17 +1326,15 @@ function DeliveryPane({
                     <td>{d.submitter_display || d.submitter}</td>
                     <td>{formatServerTime(d.reviewed_at ?? "")}</td>
                     <td>
-                      {d.jira_id ? (
+                      {d.jira_id && jiraBrowseUrl ? (
                         <a
-                          href={jiraBase + d.jira_id}
+                          href={jiraIssueUrl(jiraBrowseUrl, d.jira_id)}
                           target="_blank"
                           rel="noopener noreferrer"
                         >
                           {d.jira_id}
                         </a>
-                      ) : (
-                        "—"
-                      )}
+                      ) : d.jira_id || "—"}
                     </td>
                     <td>
                       <span className={`cicd-delivery-status-${d.delivery_status}`}>
@@ -1440,6 +1445,16 @@ export function CicdPage() {
   const [pendingBadge, setPendingBadge] = useState(0);
   const [deliveryBadge, setDeliveryBadge] = useState(0);
 
+  const { data: configData } = useQuery({
+    queryKey: CICD_CONFIG_KEY,
+    queryFn: fetchCicdConfig,
+    staleTime: Infinity,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: true,
+  });
+
   // Tasks query provides task identity details for approval/delivery rows.
   const {
     data: tasksData,
@@ -1493,6 +1508,7 @@ export function CicdPage() {
   }, [queryClient]);
 
   const tasks = tasksData?.tasks ?? [];
+  const jiraBrowseUrl = configData?.jira_browse_url ?? "";
   const notifCount = notifData?.count ?? 0;
 
   useEffect(() => {
@@ -1547,6 +1563,7 @@ export function CicdPage() {
         <DetailDialog
           req={detailReq}
           tasks={tasks}
+          jiraBrowseUrl={jiraBrowseUrl}
           onClose={() => setDetailReq(null)}
         />
       )}
@@ -1617,6 +1634,7 @@ export function CicdPage() {
           role={role}
           delivered={false}
           tasks={tasks}
+          jiraBrowseUrl={jiraBrowseUrl}
           onDetail={(r) => setDetailReq(r)}
           onRefreshed={handleMutated}
           deliveryCount={setDeliveryBadge}
@@ -1628,6 +1646,7 @@ export function CicdPage() {
           role={role}
           delivered={true}
           tasks={tasks}
+          jiraBrowseUrl={jiraBrowseUrl}
           onDetail={(r) => setDetailReq(r)}
           onRefreshed={handleMutated}
         />

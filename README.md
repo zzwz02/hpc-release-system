@@ -131,6 +131,9 @@ GERRIT_SSH_BASE_URL=ssh://gerrit.example.com:29418
 该变量同时由 FastAPI 启动配置和 Vite 构建/开发配置读取；修改后需重启后端并重新构建或重启前端。
 冻结的 `server.py` 仍保留历史常量用于 legacy/golden 基准，不属于当前运行配置；按冻结约束不修改。
 
+Jira 的浏览地址同样只取自 `jira.conf` 的 `JIRA_BASE_URL`。后端通过 `/api/cicd/config` 仅下发不含 token 的
+`jira_browse_url`，前端据此生成 issue 链接，不保存或写死 Jira 域名。
+
 RM 批量拉取 Gerrit app_info 的并发上限默认为 4，可在 `.env` 中通过
 `GERRIT_FETCH_MAX_WORKERS` 调整；服务端会将其限制在 1–16 之间。
 

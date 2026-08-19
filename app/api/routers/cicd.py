@@ -101,6 +101,12 @@ def get_tasks(
     return {"tasks": tasks}
 
 
+@router.get("/config")
+def get_config(user: dict = Depends(require_login)) -> dict:
+    """Return browser-safe CICD integration configuration."""
+    return {"jira_browse_url": jira_integration.browse_url()}
+
+
 @router.get("/tasks/{task_id}/history")
 def get_task_history(
     task_id: str,

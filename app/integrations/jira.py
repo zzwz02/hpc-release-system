@@ -24,11 +24,11 @@ logger = logging.getLogger(__name__)
 # Config
 # ─────────────────────────────────────────────────────────────
 
-def load_config(conf_path: str | Path | None = None) -> dict | None:
-    """Load jira.conf.  Returns None if file missing or required keys absent."""
+def _read_config(conf_path: str | Path | None = None) -> dict:
+    """Read non-secret and secret Jira settings without validating use cases."""
     p = Path(conf_path) if conf_path else settings.jira_conf_path
     if not p.exists():
-        return None
+        return {}
     cfg: dict = {}
     with open(p, encoding="utf-8") as f:
         for line in f:
@@ -37,10 +37,23 @@ def load_config(conf_path: str | Path | None = None) -> dict | None:
                 continue
             key, _, val = line.partition("=")
             cfg[key.strip()] = val.strip()
+    if cfg.get("JIRA_BASE_URL"):
+        cfg["JIRA_BASE_URL"] = cfg["JIRA_BASE_URL"].rstrip("/")
+    return cfg
+
+
+def load_config(conf_path: str | Path | None = None) -> dict | None:
+    """Load jira.conf.  Returns None if file missing or required keys absent."""
+    cfg = _read_config(conf_path)
     if not cfg.get("JIRA_BASE_URL") or not cfg.get("JIRA_TOKEN"):
         return None
-    cfg["JIRA_BASE_URL"] = cfg["JIRA_BASE_URL"].rstrip("/")
     return cfg
+
+
+def browse_url(conf_path: str | Path | None = None) -> str:
+    """Return the safe, browser-facing Jira issue prefix (never a token)."""
+    base_url = str(_read_config(conf_path).get("JIRA_BASE_URL") or "").strip()
+    return f"{base_url}/browse/" if base_url else ""
 
 
 # ─────────────────────────────────────────────────────────────

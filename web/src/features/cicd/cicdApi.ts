@@ -11,10 +11,12 @@
 
 export const CICD_TASKS_KEY = ["cicd", "tasks"] as const;
 export const CICD_NOTIFICATIONS_KEY = ["cicd", "notifications"] as const;
+export const CICD_CONFIG_KEY = ["cicd", "config"] as const;
 
 import { apiGet, apiPost } from "../../api/http";
 import type {
   CicdTasksResponse,
+  CicdConfigResponse,
   CicdTaskHistoryResponse,
   CicdRequestsResponse,
   CicdNotificationsResponse,
@@ -37,6 +39,10 @@ import type {
 export function fetchCicdTasks(statusFilter?: string): Promise<CicdTasksResponse> {
   const qs = statusFilter ? `?status=${encodeURIComponent(statusFilter)}` : "";
   return apiGet<CicdTasksResponse>(`/api/cicd/tasks${qs}`);
+}
+
+export function fetchCicdConfig(): Promise<CicdConfigResponse> {
+  return apiGet<CicdConfigResponse>("/api/cicd/config");
 }
 
 export function fetchCicdTaskHistory(taskId: string): Promise<CicdTaskHistoryResponse> {
