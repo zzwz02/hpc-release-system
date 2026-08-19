@@ -107,7 +107,7 @@ NO_PROXY=localhost,127.0.0.1 npm run dev   # http://localhost:5173
 > **本机代理注意**：本机 `http_proxy`/`https_proxy` 会劫持 localhost。运行 npm / curl 前请设置
 > `export no_proxy=localhost,127.0.0.1`（npm 脚本已内置；curl 用 `--noproxy '*'`）。
 
-首次启动会确保默认本地账号存在并创建 `admin`。Admin 初始口令优先级：环境变量 `HPC_ADMIN_PASSWORD` → `admin_password.local` → 自动生成并写入 `admin_password.local`。
+首次启动会确保默认本地账号存在并创建 `admin`。内置开发账号与本地口令哈希规则统一定义在 `app/domain/authn.py`。Admin 初始口令优先级：环境变量 `HPC_ADMIN_PASSWORD` → `admin_password.local` → 自动生成并写入 `admin_password.local`。
 
 默认开发账号（生产环境请立即替换）：
 

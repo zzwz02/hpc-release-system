@@ -23,6 +23,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from app.domain import authn
+
 _INIT_LOCK = threading.Lock()
 _INITIALIZED_DBS: set[str] = set()
 
@@ -532,29 +534,10 @@ def _migrate_qa_log_files(conn: sqlite3.Connection) -> None:
         )
 
 
-_DEFAULT_USERS: tuple[tuple[str, str, str], ...] = (
-    ("rm", "rm", "RM"),
-    ("owner_test", "owner_test", "Owner"),
-    ("qa", "qa", "QA"),
-    ("spd_test", "spd_test", "SPD"),
-    ("guest", "guest", "Guest"),
-)
-
-
 def _ensure_default_user(conn: sqlite3.Connection) -> None:
     """Ensure built-in dev users exist without overwriting existing accounts."""
-    import hashlib
-    import secrets as _secrets
-
-    def _hash(pw: str) -> str:
-        salt = _secrets.token_hex(16)
-        digest = hashlib.pbkdf2_hmac(
-            "sha256", pw.encode(), salt.encode(), 120_000
-        ).hex()
-        return f"{salt}${digest}"
-
-    for username, password, role in _DEFAULT_USERS:
+    for username, password, role in authn.DEFAULT_USERS:
         conn.execute(
             "INSERT OR IGNORE INTO users(username, password_hash, role) VALUES (?,?,?)",
-            (username, _hash(password), role),
+            (username, authn.hash_password(password), role),
         )

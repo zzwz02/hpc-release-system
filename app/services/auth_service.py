@@ -8,45 +8,21 @@ transaction boundaries.
 """
 from __future__ import annotations
 
-import hashlib
 import os
 import secrets
 import sqlite3
 from pathlib import Path
 
 from app.db.connection import transaction
-from app.domain import permissions
+from app.domain import authn, permissions
 from app.repositories import sessions_repo, users_repo
 from app.repositories.audit_repo import log_audit
 from app.timeutil import beijing_timestamp
 
-# ---------------------------------------------------------------------------
-# Password hashing — mirrors core.py:hash_password / verify_password
-# ---------------------------------------------------------------------------
-
-def hash_password(password: str, salt: str | None = None) -> str:
-    salt = salt or secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac(
-        "sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000
-    ).hex()
-    return f"{salt}${digest}"
-
-
-def verify_password(password: str, encoded: str) -> bool:
-    salt, expected = encoded.split("$", 1)
-    return secrets.compare_digest(
-        hash_password(password, salt).split("$", 1)[1], expected
-    )
-
-
-# Test/bootstrap accounts recreated by clear_business_data (core.py:483-489)
-DEFAULT_USERS: tuple[tuple[str, str, str], ...] = (
-    ("rm", "rm", "RM"),
-    ("owner_test", "owner_test", "Owner"),
-    ("qa", "qa", "QA"),
-    ("spd_test", "spd_test", "SPD"),
-    ("guest", "guest", "Guest"),
-)
+# Compatibility exports for existing service callers.
+hash_password = authn.hash_password
+verify_password = authn.verify_password
+DEFAULT_USERS = authn.DEFAULT_USERS
 
 
 def ensure_default_users(conn: sqlite3.Connection) -> None:
