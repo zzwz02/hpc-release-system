@@ -33,16 +33,7 @@ CICD_APPROVER_ROLES = frozenset(roles_for_capability("cicd.request.approve"))
 CICD_CREATE_ROLES = frozenset(roles_for_capability("cicd.request.submit"))
 CICD_DELIVER_ROLES = frozenset(roles_for_capability("cicd.delivery.confirm"))
 CICD_RETURN_ROLES = frozenset(roles_for_capability("cicd.delivery.return"))
-CICD_STATUSES: frozenset[str] = frozenset({"Running", "Stopped"})
-CICD_FIRST_RELEASE_DECISIONS: frozenset[str] = frozenset({"release", "cicd_only"})
-
-# Ruling D: release_decision → CICD task status (plan §3.5 b)
-# release/cicd_only → Running; stopped → Stopped (uppercase CICD_STATUSES vocab)
-_DECISION_TO_CICD_STATUS: dict[str, str] = {
-    "release": "Running",
-    "cicd_only": "Running",
-    "stopped": "Stopped",
-}
+CICD_FIRST_RELEASE_DECISIONS = decisions_domain.RUNNING_DECISIONS
 
 _APP_CICD_FIELD_TO_PAYLOAD_FIELD: dict[str, str] = {
     "cicd_repo_type": "repo_type",
@@ -140,9 +131,8 @@ def _app_display_name(conn: sqlite3.Connection, app_id: str, fallback: str = "")
 
 
 def _status_from_snapshot(snapshot: dict) -> str:
-    return _DECISION_TO_CICD_STATUS.get(
-        (snapshot.get("release_decision") or "release").strip(),
-        "Running",
+    return decisions_domain.decision_to_cicd_status(
+        (snapshot.get("release_decision") or "release").strip()
     )
 
 
@@ -925,7 +915,7 @@ def list_tasks(
 ) -> list[dict]:
     """Return App-backed CICD rows with pending/delivery flags."""
     tasks = _app_cicd_tasks(conn)
-    if status_filter and status_filter in CICD_STATUSES:
+    if status_filter and status_filter in decisions_domain.CICD_STATUSES:
         tasks = [task for task in tasks if task["status"] == status_filter]
     return [_strip_task(t) for t in tasks]
 
@@ -1691,7 +1681,7 @@ def sync_decision_to_cicd(
     * Task is already at the target status.
     * A pending modify-on-status request already exists (idempotent guard, plan P4).
     """
-    target_status = _DECISION_TO_CICD_STATUS.get(release_decision)
+    target_status = decisions_domain.DECISION_TO_CICD_STATUS.get(release_decision)
     if not target_status:
         return None  # unknown decision value — defensive no-op
     if not apps_repo.get_app(conn, app_id):

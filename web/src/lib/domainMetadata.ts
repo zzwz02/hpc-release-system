@@ -24,3 +24,26 @@ export function releasePhaseHasTrait(phase: string, trait: ReleasePhaseTrait): b
   const item = releasePhaseMetadata[phase as ReleasePhase];
   return item?.[trait] === true;
 }
+
+export const releaseDecisionMetadata = metadata.release_decisions;
+export type ReleaseDecision = keyof typeof releaseDecisionMetadata;
+
+export const RELEASE_DECISIONS = (
+  Object.entries(releaseDecisionMetadata) as Array<
+    [ReleaseDecision, (typeof releaseDecisionMetadata)[ReleaseDecision]]
+  >
+)
+  .sort(([, left], [, right]) => left.order - right.order)
+  .map(([decision]) => decision);
+
+export function releaseDecisionCicdStatus(decision: string): "Running" | "Stopped" {
+  const item = releaseDecisionMetadata[decision as ReleaseDecision];
+  return item?.cicd_status === "Stopped" ? "Stopped" : "Running";
+}
+
+export function crossesReleaseDecisionRuntimeBoundary(
+  oldDecision: string,
+  newDecision: string,
+): boolean {
+  return releaseDecisionCicdStatus(oldDecision) !== releaseDecisionCicdStatus(newDecision);
+}

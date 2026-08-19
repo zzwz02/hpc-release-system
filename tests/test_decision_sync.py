@@ -19,7 +19,7 @@ from unittest import mock
 import pytest
 
 import release_system.core as core
-from app.domain import decision_sync
+from app.domain import decision_sync, decisions
 from app.services import app_service, cicd_service, release_service
 from tests.conftest import seed_release
 
@@ -52,6 +52,12 @@ def test_resolve_synced_decision_non_release_always_verbatim():
 
 
 def test_crosses_runtime_boundary_only_for_running_stopped_edges():
+    assert decisions.DECISION_TO_CICD_STATUS == {
+        "release": "Running",
+        "cicd_only": "Running",
+        "stopped": "Stopped",
+    }
+    assert decisions.CICD_STATUSES == {"Running", "Stopped"}
     assert decision_sync.crosses_runtime_boundary("release", "stopped") is True
     assert decision_sync.crosses_runtime_boundary("cicd_only", "stopped") is True
     assert decision_sync.crosses_runtime_boundary("stopped", "release") is True

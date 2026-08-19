@@ -10,7 +10,10 @@
  * No camelCase conversion — these mirror the raw JSON.
  */
 
-import type { ReleasePhase as SharedReleasePhase } from "../lib/domainMetadata";
+import type {
+  ReleaseDecision as SharedReleaseDecision,
+  ReleasePhase as SharedReleasePhase,
+} from "../lib/domainMetadata";
 
 // ---------------------------------------------------------------------------
 // Auth / User
@@ -137,10 +140,7 @@ export type QaStatus =
   | "has_issues"
   | "cannot_release";
 
-export type ReleaseDecision =
-  | "release"
-  | "cicd_only"
-  | "stopped";
+export type ReleaseDecision = SharedReleaseDecision;
 
 export type DocTarget =
   | "manual"

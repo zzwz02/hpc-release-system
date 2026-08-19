@@ -32,5 +32,22 @@
       "before_doc_deadline": false,
       "qa_scope_frozen": true
     }
+  },
+  "release_decisions": {
+    "release": {
+      "label": "release：进入 release note/文档/QA",
+      "order": 0,
+      "cicd_status": "Running"
+    },
+    "cicd_only": {
+      "label": "cicd_only：仅纳入 CICD 构建/测试管控",
+      "order": 1,
+      "cicd_status": "Running"
+    },
+    "stopped": {
+      "label": "stopped：停止维护/停止发布",
+      "order": 2,
+      "cicd_status": "Stopped"
+    }
   }
 }

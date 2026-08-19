@@ -33,6 +33,7 @@ import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
 import { isOwner, canCreateApp, canEdit, canEditRmFields } from "../../lib/roles";
 import { beforeAppFreeze, beforeDocDeadline, releaseLocked } from "../../lib/phase";
+import { crossesReleaseDecisionRuntimeBoundary } from "../../lib/domainMetadata";
 import { displayName } from "../../lib/identity";
 import {
   GERRIT_HPC_BASE,
@@ -247,12 +248,8 @@ function normalizeTimeoutText(value: string | number | null | undefined): string
   return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : "40";
 }
 
-function decisionRuntimeGroup(decision: string): "running" | "stopped" {
-  return decision === "stopped" ? "stopped" : "running";
-}
-
 function crossesDecisionRuntimeBoundary(oldDecision: string, newDecision: string): boolean {
-  return decisionRuntimeGroup(oldDecision) !== decisionRuntimeGroup(newDecision);
+  return crossesReleaseDecisionRuntimeBoundary(oldDecision, newDecision);
 }
 
 const CICD_REQ_TYPE_LABEL: Record<string, string> = {

@@ -11,31 +11,27 @@ import type {
   ReleaseDecision,
   ArtifactKind,
 } from "../types";
+import {
+  RELEASE_DECISIONS,
+  releaseDecisionMetadata,
+} from "./domainMetadata";
 
 // ---------------------------------------------------------------------------
 // Release decision
 // ---------------------------------------------------------------------------
 
-export const releaseDecisionOptions: ReleaseDecision[] = [
-  "release",
-  "cicd_only",
-  "stopped",
-];
+export const releaseDecisionOptions: ReleaseDecision[] = [...RELEASE_DECISIONS];
 
 // Mirrors index.html:1454-1458 exactly (full label strings used in selects;
 // Wave-2 components split on ：to extract the short display portion).
-export const releaseDecisionLabels: Record<ReleaseDecision, string> = {
-  release: "release：进入 release note/文档/QA",
-  cicd_only: "cicd_only：仅纳入 CICD 构建/测试管控",
-  stopped: "stopped：停止维护/停止发布",
-};
+export const releaseDecisionLabels = Object.fromEntries(
+  releaseDecisionOptions.map((decision) => [decision, releaseDecisionMetadata[decision].label]),
+) as Record<ReleaseDecision, string>;
 
 /** Order for sorting apps by release decision in the app workbench. */
-export const releaseDecisionOrder: Record<string, number> = {
-  release: 0,
-  cicd_only: 1,
-  stopped: 2,
-};
+export const releaseDecisionOrder = Object.fromEntries(
+  releaseDecisionOptions.map((decision) => [decision, releaseDecisionMetadata[decision].order]),
+) as Record<ReleaseDecision, number>;
 
 // ---------------------------------------------------------------------------
 // Doc target

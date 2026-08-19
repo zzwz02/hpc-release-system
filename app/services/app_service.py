@@ -28,7 +28,11 @@ from app.domain import phases as phase_policy
 from app.domain.access_actions import snapshot_allowed_actions
 from app.domain.permissions import has_capability
 from app.domain.audit_diff import field_diff, fmt_audit_value, test_docs_diff
-from app.domain.decisions import RELEASE_DECISIONS, normalize_release_decision
+from app.domain.decisions import (
+    DECISION_TO_CICD_STATUS,
+    RELEASE_DECISIONS,
+    normalize_release_decision,
+)
 from app.domain.snapshots import (
     APP_META_LABELS,
     SNAPSHOT_META_FIELDS,
@@ -895,9 +899,7 @@ def update_snapshot(
                 aid,
                 requested_decision,
                 submitter=actor,
-                current_status_override=_cicd_svc._DECISION_TO_CICD_STATUS.get(
-                    current_decision, ""
-                ),
+                current_status_override=DECISION_TO_CICD_STATUS.get(current_decision, ""),
                 release_id=rid,
                 apply_release_decision_on_delivery=defer_decision_until_cicd_delivery,
             )

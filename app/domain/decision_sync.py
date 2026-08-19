@@ -21,9 +21,7 @@ Changed rule vs. ``core.sync_decision_to_later_releases``:
 """
 from __future__ import annotations
 
-from app.domain import phases
-
-RUNNING_DECISIONS: frozenset[str] = frozenset({"release", "cicd_only"})
+from app.domain import decisions, phases
 
 
 def phase_label(phase: str) -> str:
@@ -44,12 +42,12 @@ def resolve_synced_decision(target_decision: str, phase: str) -> str:
 
 def runtime_group(decision: str) -> str:
     """Decision group that drives the global CICD running/stopped status."""
-    return "running" if decision in RUNNING_DECISIONS else "stopped"
+    return decisions.decision_to_cicd_status(decision).lower()
 
 
 def crosses_runtime_boundary(old_decision: str, new_decision: str) -> bool:
     """Whether a decision change flips CICD between Running and Stopped."""
-    return runtime_group(old_decision) != runtime_group(new_decision)
+    return decisions.crosses_running_stopped_boundary(old_decision, new_decision)
 
 
 def is_running_upgrade(old_decision: str, new_decision: str) -> bool:
