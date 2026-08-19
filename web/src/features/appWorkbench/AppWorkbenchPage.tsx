@@ -362,43 +362,19 @@ function requestMatchesApp(req: CicdRequest, app: App): boolean {
 }
 
 function isOpenCreateRequest(req: CicdRequest): boolean {
-  return req.request_type === "create" &&
-    (req.status === "pending" || ["pending", "returned"].includes(req.delivery_status ?? ""));
+  return req.is_open === true && req.blocker_kind === "create";
 }
 
 function isOpenJiraModifyRequest(req: CicdRequest): boolean {
-  return req.request_type === "modify" &&
-    !!req.jira_id &&
-    (req.status === "pending" || ["pending", "returned"].includes(req.delivery_status ?? ""));
-}
-
-function cicdPayloadObject(req: CicdRequest): Record<string, unknown> {
-  const raw = req.payload as unknown;
-  if (typeof raw === "string") {
-    try {
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? parsed as Record<string, unknown>
-        : {};
-    } catch {
-      return {};
-    }
-  }
-  return (req.payload ?? {}) as Record<string, unknown>;
+  return req.is_open === true && req.blocker_kind === "jira";
 }
 
 function isOpenStatusModifyRequest(req: CicdRequest): boolean {
-  const payload = cicdPayloadObject(req);
-  return req.request_type === "modify" &&
-    (req.origin === "release_decision_sync" || !!payload.status) &&
-    (req.status === "pending" || ["pending", "returned"].includes(req.delivery_status ?? ""));
+  return req.is_open === true && req.blocker_kind === "status";
 }
 
 function isReplaceablePendingModifyRequest(req: CicdRequest): boolean {
-  return req.request_type === "modify" &&
-    req.origin === "cicd_workbench" &&
-    req.status === "pending" &&
-    !req.jira_id;
+  return req.replaceable === true;
 }
 
 function jiraModifyBlockMessage(req: CicdRequest): string {
@@ -2097,18 +2073,11 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
   const activeSaveBlockedReason = detailTab === "cicd"
     ? cicdModifyBlockedReason
     : decisionChangeBlockedReason;
-  const decisionSyncReq = appOpenCicd.find((req) => {
-    const payload = cicdPayloadObject(req);
-    return req.origin === "release_decision_sync" && !!payload.status;
-  });
+  const decisionSyncReq = appOpenCicd.find((req) => !!req.status_sync_direction);
   const displayedCicdStatus = (() => {
-    const payload = decisionSyncReq
-      ? cicdPayloadObject(decisionSyncReq) as Record<string, { old?: unknown }>
-      : {};
-    const oldStatus = String(payload.status?.old ?? "").trim();
-    return oldStatus === "Running" || oldStatus === "Stopped"
-      ? oldStatus
-      : appCicdStatus(snap.release_decision);
+    if (decisionSyncReq?.status_sync_direction === "stop") return "Running";
+    if (decisionSyncReq?.status_sync_direction === "start") return "Stopped";
+    return appCicdStatus(snap.release_decision);
   })();
   const onboardingLabel = app ? cicdOnboardingLabel(app) : "";
   const canRetryCreate = !!(

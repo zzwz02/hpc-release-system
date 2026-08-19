@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from app.deps import get_db, require_capability, require_login
 from app.domain.access_actions import cicd_request_allowed_actions
 from app.domain.cicd_config import CICD_REPO_TYPE_DEFAULT, CICD_TEST_TIMEOUT_DEFAULT
+from app.domain.cicd_requests import lifecycle_fields
 from app.domain.permissions import has_capability
 from app.integrations import jira as jira_integration
 from app.services import cicd_service
@@ -151,6 +152,7 @@ def get_requests(
     )
     if include_allowed_actions:
         for item in requests:
+            item.update(lifecycle_fields(item))
             item["allowed_actions"] = cicd_request_allowed_actions(
                 item,
                 role=role,
@@ -197,6 +199,7 @@ def get_deliveries(
     )
     if include_allowed_actions:
         for item in deliveries:
+            item.update(lifecycle_fields(item))
             item["allowed_actions"] = cicd_request_allowed_actions(
                 item,
                 role=role,

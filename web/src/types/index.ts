@@ -379,6 +379,11 @@ export interface CicdRequest {
   // decision-sync requests ("release_decision_sync") auto-created when an
   // App's release_decision changes (R3 Ruling D). Exposed by the API (F3).
   origin?: string;
+  /** Backend-derived lifecycle fields returned with include_allowed_actions=1. */
+  is_open?: boolean;
+  blocker_kind?: "create" | "jira" | "status" | "modify" | "";
+  replaceable?: boolean;
+  status_sync_direction?: "start" | "stop" | "";
   /** Contextual actions computed by the backend for the current user. */
   allowed_actions?: string[];
 }

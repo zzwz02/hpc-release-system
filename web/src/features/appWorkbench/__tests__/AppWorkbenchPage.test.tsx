@@ -961,6 +961,10 @@ function makeCicdRequest(overrides: Partial<CicdRequest> = {}): CicdRequest {
     task_branch: "main",
     task_status: "Running",
     origin: "cicd_workbench",
+    is_open: true,
+    blocker_kind: "modify",
+    replaceable: true,
+    status_sync_direction: "",
     ...overrides,
   };
 }
@@ -1349,6 +1353,8 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
       delivery_status: "returned",
       jira_id: "SPD-1615",
       returned_reason: "AA",
+      blocker_kind: "jira",
+      replaceable: false,
     });
     (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
       if (url.startsWith("/api/cicd/requests?status=pending")) return Promise.resolve({ requests: [] });
@@ -1378,6 +1384,9 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
       jira_id: "",
       origin: "release_decision_sync",
       payload: JSON.stringify({ status: { old: "Running", new: "Stopped" } }) as unknown as CicdRequest["payload"],
+      blocker_kind: "status",
+      replaceable: false,
+      status_sync_direction: "stop",
     });
     (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
       if (url.startsWith("/api/cicd/requests?status=pending")) return Promise.resolve({ requests: [statusReq] });
@@ -1551,6 +1560,8 @@ describe("AppWorkbenchPage W2 decision-change App CICD preview", () => {
       delivery_status: "",
       payload: { app_id: "app1" },
       task_status: "Stopped",
+      blocker_kind: "create",
+      replaceable: false,
     });
     (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
       if (url.startsWith("/api/cicd/requests?status=pending")) return Promise.resolve({ requests: [createReq] });
@@ -1581,6 +1592,9 @@ describe("AppWorkbenchPage W2 decision-change App CICD preview", () => {
       origin: "release_decision_sync",
       payload: { status: { old: "Stopped", new: "Running" } },
       task_status: "Stopped",
+      blocker_kind: "jira",
+      replaceable: false,
+      status_sync_direction: "start",
     });
     (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
       if (url.startsWith("/api/cicd/requests?status=pending")) return Promise.resolve({ requests: [] });
@@ -1613,6 +1627,8 @@ describe("AppWorkbenchPage W2 decision-change App CICD preview", () => {
         repo_name: { old: "hpc_abacus2", new: "hpc_abacus" },
         branch: { old: "maca2", new: "maca" },
       },
+      blocker_kind: "jira",
+      replaceable: false,
     });
     (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
       if (url.startsWith("/api/cicd/requests?status=pending")) return Promise.resolve({ requests: [] });

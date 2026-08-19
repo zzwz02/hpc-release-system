@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.api.routers.cicd import get_requests
 from app.domain.access_actions import (
     cicd_request_allowed_actions,
     snapshot_allowed_actions,
@@ -11,6 +12,7 @@ from app.domain.permissions import (
     roles_for_capability,
     roles_for_tab,
 )
+from app.services import cicd_service
 from app.services.app_service import get_state
 from tests.conftest import seed_release
 
@@ -105,3 +107,44 @@ def test_state_allowed_actions_are_opt_in(temp_db, tmp_dir) -> None:
         snapshot["allowed_actions"] == ["app.edit", "app.audit.view"]
         for snapshot in state["release"]["snapshots"].values()
     )
+
+
+def test_cicd_request_context_fields_are_opt_in(temp_db, tmp_dir) -> None:
+    seed_release(temp_db, tmp_path=tmp_dir)
+    app_id = temp_db.execute("SELECT id FROM apps ORDER BY id LIMIT 1").fetchone()["id"]
+    cicd_service.submit_request(
+        temp_db,
+        task_id=app_id,
+        request_type="modify",
+        payload={"notes": {"old": "", "new": "test"}},
+        submitter="test_owner",
+        submitter_role="Owner",
+        source="app_workbench",
+    )
+    user = {"username": "test_owner", "role": "Owner", "display_name": ""}
+
+    legacy = get_requests(
+        only_mine="",
+        task_id=None,
+        status=None,
+        since_days=None,
+        include_allowed_actions=False,
+        user=user,
+        conn=temp_db,
+    )["requests"][0]
+    assert "blocker_kind" not in legacy
+
+    enriched = get_requests(
+        only_mine="",
+        task_id=None,
+        status=None,
+        since_days=None,
+        include_allowed_actions=True,
+        user=user,
+        conn=temp_db,
+    )["requests"][0]
+    assert enriched["is_open"] is True
+    assert enriched["blocker_kind"] == "modify"
+    assert enriched["replaceable"] is True
+    assert enriched["status_sync_direction"] == ""
+    assert enriched["allowed_actions"] == ["cicd.request.cancel"]

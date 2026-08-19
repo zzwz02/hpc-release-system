@@ -157,7 +157,7 @@ CICD_AGENT_TIMEOUT_SECONDS=90
 
 所有角色、顶层页签和静态操作 capability 以 [`shared/access_control.json`](./shared/access_control.json) 为唯一矩阵来源。前端通过 `web/src/lib/accessControl.ts`、后端通过 `app/domain/permissions.py` 读取；导航、直链门禁、API 依赖和操作按钮不得再复制角色列表。
 
-需要 ownership、release 锁定、申请状态等上下文的例外权限，由后端 `app/domain/access_actions.py` 将共享基础 capability 与业务状态组合。`/api/state`、`/api/cicd/requests` 和 `/api/cicd/deliveries` 在 `include_allowed_actions=1` 时下发 `allowed_actions`，前端据此展示对象级操作；后端 endpoint/service 仍是最终安全边界。
+需要 ownership、release 锁定、申请状态等上下文的例外权限，由后端 `app/domain/access_actions.py` 将共享基础 capability 与业务状态组合。CICD 申请的未完成状态、阻塞类型、可替换性和决策同步方向统一由 `app/domain/cicd_requests.py` 分类。`/api/state`、`/api/cicd/requests` 和 `/api/cicd/deliveries` 在 `include_allowed_actions=1` 时下发 `allowed_actions`；后两个接口同时下发生命周期分类字段，前端据此展示对象级状态与操作，不自行拼装状态条件。后端 endpoint/service 仍是最终安全边界。
 
 ---
 

@@ -10,29 +10,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from app.domain import cicd_requests
 from app.domain.permissions import has_capability
-
-
-def _status_change(payload: object) -> tuple[str, str]:
-    if not isinstance(payload, Mapping):
-        return "", ""
-    change = payload.get("status")
-    if not isinstance(change, Mapping):
-        return "", ""
-    return (
-        str(change.get("old") or "").strip(),
-        str(change.get("new") or "").strip(),
-    )
-
-
-def is_release_decision_sync_stop_request(request: Mapping[str, Any]) -> bool:
-    """Whether a request is the non-rejectable Running -> Stopped sync."""
-    if (
-        request.get("origin") != "release_decision_sync"
-        or request.get("request_type") != "modify"
-    ):
-        return False
-    return _status_change(request.get("payload")) == ("Running", "Stopped")
 
 
 def snapshot_allowed_actions(
@@ -69,7 +48,7 @@ def cicd_request_allowed_actions(
     """Return actions currently valid for a CICD request/delivery row."""
     status = str(request.get("status") or "")
     delivery_status = str(request.get("delivery_status") or "")
-    stop_sync = is_release_decision_sync_stop_request(request)
+    stop_sync = cicd_requests.is_release_decision_sync_stop_request(request)
     actions: list[str] = []
 
     if status == "pending":

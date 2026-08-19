@@ -16,6 +16,7 @@ from app.config import settings
 from app.db.connection import transaction
 from app.domain import app_info as app_info_domain
 from app.domain import cicd_config as cicd_config_domain
+from app.domain import cicd_requests as cicd_requests_domain
 from app.domain import decision_sync as decision_sync_domain
 from app.domain import decisions as decisions_domain
 from app.domain import phases as phase_policy
@@ -574,36 +575,6 @@ def _apply_deferred_release_decisions(
         )
 
 
-def _status_change(payload: dict) -> tuple[str, str]:
-    change = payload.get("status") if isinstance(payload, dict) else None
-    if not isinstance(change, dict):
-        return "", ""
-    return (
-        str(change.get("old") or "").strip(),
-        str(change.get("new") or "").strip(),
-    )
-
-
-def _is_release_decision_sync_stop_request(req: dict, payload: dict) -> bool:
-    """True for release/cicd_only -> stopped status requests.
-
-    These requests represent an owner/RM release-decision downgrade that has
-    already taken effect in App snapshots. CICD approval is only the completion
-    point for operational stopping, so RM must not reject it.
-    """
-    if req.get("origin") != "release_decision_sync" or req.get("request_type") != "modify":
-        return False
-    old_status, new_status = _status_change(payload)
-    return old_status == "Running" and new_status == "Stopped"
-
-
-def _is_release_decision_sync_start_request(req: dict, payload: dict) -> bool:
-    if req.get("origin") != "release_decision_sync" or req.get("request_type") != "modify":
-        return False
-    old_status, new_status = _status_change(payload)
-    return old_status == "Stopped" and new_status == "Running"
-
-
 def _deferred_release_decision_targets(payload: dict) -> set[str]:
     """Release ids whose release_decision is deferred behind this request."""
     targets: set[str] = set()
@@ -1036,15 +1007,14 @@ def _replaceable_pending_modifies_for_app(
         SELECT *
         FROM cicd_task_requests
         WHERE request_type = 'modify'
-          AND origin = 'cicd_workbench'
           AND COALESCE(app_id, task_id) = ?
           AND status = 'pending'
-          AND TRIM(COALESCE(jira_id, '')) = ''
         ORDER BY id
         """,
         (app_id,),
     ).fetchall()
-    return [dict(row) for row in rows]
+    requests = [dict(row) for row in rows]
+    return [request for request in requests if cicd_requests_domain.is_replaceable(request)]
 
 
 def _open_status_modify_for_app(
@@ -1288,11 +1258,11 @@ def reject_request(
     import json as _json
 
     payload = _json.loads(req["payload"] or "{}")
-    if _is_release_decision_sync_stop_request(req, payload):
+    if cicd_requests_domain.is_release_decision_sync_stop_request(req, payload):
         raise RuntimeError("降停止由 App release 决策决定，CICD 审批不能拒绝")
     ts = beijing_timestamp()
     with transaction(conn):
-        if _is_release_decision_sync_start_request(req, payload):
+        if cicd_requests_domain.is_release_decision_sync_start_request(req, payload):
             _rollback_deferred_decision_sync(
                 conn,
                 str(req.get("app_id") or req.get("task_id") or ""),
@@ -1342,11 +1312,11 @@ def cancel_request(
     import json as _json
 
     payload = _json.loads(req["payload"] or "{}")
-    if _is_release_decision_sync_stop_request(req, payload):
+    if cicd_requests_domain.is_release_decision_sync_stop_request(req, payload):
         raise RuntimeError("降停止由 App release 决策决定，CICD 申请不能取消")
     ts = beijing_timestamp()
     with transaction(conn):
-        if _is_release_decision_sync_start_request(req, payload):
+        if cicd_requests_domain.is_release_decision_sync_start_request(req, payload):
             _rollback_deferred_decision_sync(
                 conn,
                 str(req.get("app_id") or req.get("task_id") or ""),
@@ -1498,11 +1468,11 @@ def reject_returned_request(
     import json as _json
 
     payload = _json.loads(req["payload"] or "{}")
-    if _is_release_decision_sync_stop_request(req, payload):
+    if cicd_requests_domain.is_release_decision_sync_stop_request(req, payload):
         raise RuntimeError("降停止由 App release 决策决定，CICD 审批不能拒绝")
     ts = beijing_timestamp()
     with transaction(conn):
-        if _is_release_decision_sync_start_request(req, payload):
+        if cicd_requests_domain.is_release_decision_sync_start_request(req, payload):
             _rollback_deferred_decision_sync(
                 conn,
                 str(req.get("app_id") or req.get("task_id") or ""),
@@ -1876,18 +1846,6 @@ def _has_active_cicd_create_for_app(
     return False
 
 
-def _onboarding_status_for_request(row: dict) -> str:
-    status = row.get("status") or ""
-    delivery_status = row.get("delivery_status") or ""
-    if status == "pending" or delivery_status in ("pending", "returned"):
-        return "pending_create"
-    if status == "rejected":
-        return "rejected_create"
-    if status == "cancelled":
-        return "cancelled_create"
-    return "active"
-
-
 def cicd_first_onboarding_by_app(conn: sqlite3.Connection) -> dict[str, dict]:
     """Return latest CICD-first create lifecycle state by app id.
 
@@ -1914,7 +1872,7 @@ def cicd_first_onboarding_by_app(conn: sqlite3.Connection) -> dict[str, dict]:
         if not app_id:
             continue
         result[app_id] = {
-            "cicd_onboarding_status": _onboarding_status_for_request(raw),
+            "cicd_onboarding_status": cicd_requests_domain.onboarding_status(raw),
             "cicd_onboarding_request_id": raw.get("id"),
             "cicd_onboarding_review_note": raw.get("review_note") or "",
             "cicd_onboarding_reviewed_at": raw.get("reviewed_at") or "",
