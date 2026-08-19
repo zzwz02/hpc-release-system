@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
   GERRIT_HPC_BASE,
+  GERRIT_MANIFEST_BRANCH,
   GERRIT_MANIFEST_REPO_URL,
   formatCicdRepoPath,
   formatGerritUrl,
   normalizeCicdRepoInput,
   normalizeGitUrl,
 } from "../git";
+
+describe("shared Gerrit configuration", () => {
+  it("exports the configured manifest branch", () => {
+    expect(GERRIT_MANIFEST_BRANCH).toBe("master");
+  });
+});
 
 describe("formatGerritUrl", () => {
   it("shows only the path after PDE/HPC", () => {

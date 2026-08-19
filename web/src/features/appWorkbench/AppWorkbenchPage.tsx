@@ -37,6 +37,7 @@ import { displayName } from "../../lib/identity";
 import {
   GERRIT_HPC_BASE,
   GERRIT_HPC_PROJECT,
+  GERRIT_MANIFEST_BRANCH,
   GERRIT_MANIFEST_PROJECT,
   GERRIT_MANIFEST_REPO_URL,
   formatCicdRepoPath,
@@ -860,7 +861,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
   const [newCicdTimeout, setNewCicdTimeout] = useState("40");
   const [newCicdNotes, setNewCicdNotes] = useState("");
   const isRepo = repoType === "repo";
-  const effectiveBranch = isRepo ? "master" : branch.trim();
+  const effectiveBranch = isRepo ? GERRIT_MANIFEST_BRANCH : branch.trim();
 
   function retryInfoForDuplicate(message: string): RetryCreateInfo | null {
     const duplicateAppId = duplicateAppIdFromError(message);
@@ -1196,7 +1197,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
                 const v = e.target.value;
                 setRepoType(v);
                 setRepoName((name) => normalizeCicdRepoInput(v, name));
-                if (v === "repo") setBranch("master");
+                if (v === "repo") setBranch(GERRIT_MANIFEST_BRANCH);
               }}>
                 <option value="git">git</option>
                 <option value="repo">repo</option>
@@ -1212,13 +1213,13 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
               />
               <span className="hint">
                 {isRepo
-                  ? `repo 类型只填写 ${GERRIT_MANIFEST_PROJECT} 仓库内的 XML 路径；分支固定为 master。`
+                  ? `repo 类型只填写 ${GERRIT_MANIFEST_PROJECT} 仓库内的 XML 路径；分支固定为 ${GERRIT_MANIFEST_BRANCH}。`
                   : `git 类型只填写 ${GERRIT_HPC_PROJECT} 后的短路径。`}
               </span>
             </label>
             <label>分支 <span className="required">*</span>
-              <input className="input" value={isRepo ? "master" : branch} disabled={isRepo || isFetching}
-                onChange={(e) => setBranch(e.target.value)} placeholder="例：master" />
+              <input className="input" value={isRepo ? GERRIT_MANIFEST_BRANCH : branch} disabled={isRepo || isFetching}
+                onChange={(e) => setBranch(e.target.value)} placeholder={`例：${GERRIT_MANIFEST_BRANCH}`} />
             </label>
             <div className="new-app-community-decision-grid">
               <div>
@@ -1393,7 +1394,7 @@ function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit,
                   const nextRepoType = e.target.value;
                   onPatch("cicd_repo_type", nextRepoType);
                   onPatch("git_url", normalizeCicdRepoInput(nextRepoType, form.git_url));
-                  if (nextRepoType === "repo") onPatch("git_branch", "master");
+                  if (nextRepoType === "repo") onPatch("git_branch", GERRIT_MANIFEST_BRANCH);
                 }}
                 disabled={disabled}
                 data-testid="field-cicd-repo-type">

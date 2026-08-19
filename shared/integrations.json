@@ -2,6 +2,7 @@
   "gerrit": {
     "ssh_base_url": "ssh://gerrit.metax-internal.com:29418",
     "hpc_project": "PDE/HPC",
-    "manifest_project": "manifest"
+    "manifest_project": "manifest",
+    "manifest_branch": "master"
   }
 }

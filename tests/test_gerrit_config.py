@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 
 from app import identity
-from app.config import DEFAULT_GERRIT_SSH_BASE_URL, settings
+from app.config import (
+    DEFAULT_GERRIT_MANIFEST_BRANCH,
+    DEFAULT_GERRIT_SSH_BASE_URL,
+    settings,
+)
 from app.integrations.gerrit import gerrit_remote_url
 
 
@@ -21,10 +25,12 @@ def test_backend_gerrit_urls_are_derived_from_shared_config():
     ssh_base = shared["ssh_base_url"].rstrip("/")
     hpc_project = shared["hpc_project"].strip("/")
     manifest_project = shared["manifest_project"].strip("/")
+    manifest_branch = shared["manifest_branch"].strip()
     configured_ssh_base = settings.gerrit_ssh_base_url
     hpc_base = f"{configured_ssh_base}/{hpc_project}"
 
     assert DEFAULT_GERRIT_SSH_BASE_URL == ssh_base
+    assert DEFAULT_GERRIT_MANIFEST_BRANCH == manifest_branch
     assert settings.gerrit_hpc_base_url == hpc_base
     assert settings.hpc_gerrit_root == f"{configured_ssh_base}/"
     assert settings.hpc_gerrit_prefix == f"{hpc_base}/"
@@ -32,6 +38,7 @@ def test_backend_gerrit_urls_are_derived_from_shared_config():
     assert settings.manifest_repo_base == f"{hpc_base}/"
     assert identity.RESOLVED_REPO_BASE == hpc_base
     assert identity.MANIFEST_REPO_URL == settings.manifest_repo_url
+    assert identity.MANIFEST_BRANCH == settings.gerrit_manifest_branch == manifest_branch
 
 
 def test_one_base_url_override_updates_gerrit_fetch_and_identity(monkeypatch):

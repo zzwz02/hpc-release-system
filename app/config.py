@@ -15,7 +15,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _INTEGRATIONS_PATH = _PROJECT_ROOT / "shared" / "integrations.json"
 
 
-def _load_gerrit_defaults() -> tuple[str, str, str]:
+def _load_gerrit_defaults() -> tuple[str, str, str, str]:
     """Load the Gerrit defaults shared by the backend and React frontend."""
     raw = json.loads(_INTEGRATIONS_PATH.read_text(encoding="utf-8"))
     try:
@@ -23,20 +23,22 @@ def _load_gerrit_defaults() -> tuple[str, str, str]:
         ssh_base_url = str(gerrit["ssh_base_url"]).strip().rstrip("/")
         hpc_project = str(gerrit["hpc_project"]).strip().strip("/")
         manifest_project = str(gerrit["manifest_project"]).strip().strip("/")
+        manifest_branch = str(gerrit["manifest_branch"]).strip()
     except (KeyError, TypeError) as exc:
         raise RuntimeError(
             "shared/integrations.json must define gerrit ssh_base_url, "
-            "hpc_project, and manifest_project"
+            "hpc_project, manifest_project, and manifest_branch"
         ) from exc
-    if not ssh_base_url or not hpc_project or not manifest_project:
+    if not ssh_base_url or not hpc_project or not manifest_project or not manifest_branch:
         raise RuntimeError("shared Gerrit configuration values must be non-empty")
-    return ssh_base_url, hpc_project, manifest_project
+    return ssh_base_url, hpc_project, manifest_project, manifest_branch
 
 
 (
     DEFAULT_GERRIT_SSH_BASE_URL,
     DEFAULT_GERRIT_HPC_PROJECT,
     DEFAULT_GERRIT_MANIFEST_PROJECT,
+    DEFAULT_GERRIT_MANIFEST_BRANCH,
 ) = _load_gerrit_defaults()
 
 
@@ -87,6 +89,10 @@ class Settings(BaseSettings):
     @property
     def gerrit_manifest_project(self) -> str:
         return DEFAULT_GERRIT_MANIFEST_PROJECT
+
+    @property
+    def gerrit_manifest_branch(self) -> str:
+        return DEFAULT_GERRIT_MANIFEST_BRANCH
 
     @property
     def gerrit_hpc_base_url(self) -> str:

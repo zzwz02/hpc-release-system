@@ -13,7 +13,7 @@ HPC 发布信息汇总脚本
        顶层 `app_version` 字段读取，缺失时输出为空。
     3. 对每个 app：
          - 若 git_url 是短仓库名（如 hpc_hpl），先补全为 Gerrit SSH URL。
-         - 若 git_url 以 .xml 结尾，先从 MANIFEST_REPO_URL@master 拉取该 XML，
+         - 若 git_url 以 .xml 结尾，先从配置的 manifest branch 拉取该 XML，
            解析含 <linkfile src="app_info.json"/> 的 <project>，得到真实
            (repo_url, branch)；否则直接使用原值。
          - 通过 `git archive --remote=<url> <branch> app_info.json` 拉取并解析
@@ -64,7 +64,7 @@ _GERRIT_HPC_PROJECT = _GERRIT_CONFIG["hpc_project"].strip("/")
 _GERRIT_MANIFEST_PROJECT = _GERRIT_CONFIG["manifest_project"].strip("/")
 RESOLVED_REPO_BASE = f"{_GERRIT_SSH_BASE_URL}/{_GERRIT_HPC_PROJECT}"
 MANIFEST_REPO_URL = f"{RESOLVED_REPO_BASE}/{_GERRIT_MANIFEST_PROJECT}"
-MANIFEST_BRANCH = "master"
+MANIFEST_BRANCH = _GERRIT_CONFIG["manifest_branch"].strip()
 
 
 def fetch_test_data(localhost, username, password, database):
@@ -241,7 +241,7 @@ def _git_archive_extract(remote, branch, path, dest_dir):
 
 
 def resolve_manifest_url(git_url, git_branch):
-    """If git_url ends with .xml, fetch the manifest from MANIFEST_REPO_URL@master
+    """If git_url ends with .xml, fetch it from the configured manifest branch
     and resolve to the actual (repo_url, branch) of the project carrying
     <linkfile src="app_info.json"/>.
 

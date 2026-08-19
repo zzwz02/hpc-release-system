@@ -5,10 +5,11 @@ const configuredSshBaseUrl = __GERRIT_SSH_BASE_URL__.trim();
 export const GERRIT_SSH_BASE_URL = (configuredSshBaseUrl || gerrit.ssh_base_url).replace(/\/+$/, "");
 export const GERRIT_HPC_PROJECT = gerrit.hpc_project.replace(/^\/+|\/+$/g, "");
 export const GERRIT_MANIFEST_PROJECT = gerrit.manifest_project.replace(/^\/+|\/+$/g, "");
+export const GERRIT_MANIFEST_BRANCH = gerrit.manifest_branch.trim();
 export const GERRIT_HPC_BASE = `${GERRIT_SSH_BASE_URL}/${GERRIT_HPC_PROJECT}`;
 export const GERRIT_MANIFEST_REPO_URL = `${GERRIT_HPC_BASE}/${GERRIT_MANIFEST_PROJECT}`;
 
-if (!GERRIT_SSH_BASE_URL || !GERRIT_HPC_PROJECT || !GERRIT_MANIFEST_PROJECT) {
+if (!GERRIT_SSH_BASE_URL || !GERRIT_HPC_PROJECT || !GERRIT_MANIFEST_PROJECT || !GERRIT_MANIFEST_BRANCH) {
   throw new Error("Shared Gerrit configuration values must be non-empty");
 }
 

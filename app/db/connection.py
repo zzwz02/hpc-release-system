@@ -492,7 +492,7 @@ def _migrate_repo_manifest_paths(conn: sqlite3.Connection) -> None:
         ):
             conn.execute(
                 "UPDATE apps SET git_url = ?, git_branch = ? WHERE id = ?",
-                (manifest_path, manifest_branch or "master", app["id"]),
+                (manifest_path, manifest_branch or settings.gerrit_manifest_branch, app["id"]),
             )
 
 

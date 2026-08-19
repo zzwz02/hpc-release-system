@@ -121,7 +121,7 @@ NO_PROXY=localhost,127.0.0.1 npm run dev   # http://localhost:5173
 | `admin` | 见 `admin_password.local` | Admin |
 
 可选集成（LDAP / Jira / QA LLM）的配置文件与环境变量约定与旧系统一致，详见各 `*.example` / `*_demo` 模板。重构后运行路径中的 Gerrit 默认 SSH 地址与项目路径只在
-[`shared/integrations.json`](./shared/integrations.json) 定义一次，FastAPI、React
+[`shared/integrations.json`](./shared/integrations.json) 定义一次（包括 manifest 默认分支），FastAPI、React
 和离线报告脚本共同读取。部署时如需临时覆盖 SSH origin，只设置一个环境变量：
 
 ```bash

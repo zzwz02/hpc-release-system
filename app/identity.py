@@ -5,7 +5,7 @@ test_data/get_release_report_test_cmd.py):
 
   - Short repo name (e.g. 'hpc_hpl') → prepend HPC Gerrit prefix
   - Absolute URL (starts with '://' or 'git@') or .xml path → pass through
-  - '.xml' manifest path (Google-repo) → fetch from MANIFEST_REPO_URL@master,
+  - '.xml' manifest path (Google-repo) → fetch from the configured manifest branch,
     parse <project> with <linkfile src="app_info.json"/>, return (url, revision)
 
 NOTE: manifest resolution involves network I/O via `git archive --remote`.
@@ -31,7 +31,7 @@ from app.config import settings
 
 RESOLVED_REPO_BASE = settings.gerrit_hpc_base_url
 MANIFEST_REPO_URL = settings.manifest_repo_url
-MANIFEST_BRANCH = "master"
+MANIFEST_BRANCH = settings.gerrit_manifest_branch
 MANIFEST_FETCH_TIMEOUT_SECONDS = 10
 
 # In-process resolution cache.
