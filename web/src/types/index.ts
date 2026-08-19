@@ -66,6 +66,8 @@ export interface App {
   cicd_onboarding_review_note?: string;
   cicd_onboarding_reviewed_at?: string;
   cicd_onboarding_delivery_status?: string;
+  /** Selected release is visible for planning while CICD is unfinished. */
+  cicd_release_pending?: boolean;
   created_by: string;
   created_at: string;
   aliases: string[];

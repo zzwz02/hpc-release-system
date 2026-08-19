@@ -571,7 +571,10 @@ def get_qa_reports(
     display_names = _user_display_names(conn)
     from app.services import cicd_service as _cicd_service
 
-    onboarding_by_app = _cicd_service.cicd_first_onboarding_by_app(conn)
+    cicd_pending_app_ids = _cicd_service.cicd_pending_release_app_ids(
+        conn,
+        release_id,
+    )
     for view, app, snapshot, app_id in items:
         sanity = snapshot.get("sanity") or {}
         decision = normalize_release_decision(snapshot.get("release_decision"))
@@ -589,10 +592,7 @@ def get_qa_reports(
             if compare_active and (is_release or base_is_release)
             else ""
         )
-        cicd_pending = (
-            onboarding_by_app.get(app_id, {}).get("cicd_onboarding_status")
-            == "pending_create"
-        )
+        cicd_pending = app_id in cicd_pending_app_ids
         cicd_status = _CICD_PENDING_LABEL if cicd_pending else ""
         if not is_release and not compare_value:
             continue

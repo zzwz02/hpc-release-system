@@ -550,7 +550,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
                   <div>
                     <div className="name">
                       {displayName(snap)}{" "}
-                      {app.cicd_onboarding_status === "pending_create" && (
+                      {(app.cicd_release_pending || app.cicd_onboarding_status === "pending_create") && (
                         <span className="pill warnp">CICD待完成</span>
                       )}
                       {useSuggestion && (

@@ -424,7 +424,7 @@ class TestUpdateSnapshotIntegration:
         payload = req["payload"] if isinstance(req["payload"], dict) else json.loads(req["payload"])
         assert payload["status"]["new"] == "Stopped"
 
-    def test_stopped_to_running_defers_release_decision_until_cicd_apply(self, temp_db, tmp_dir):
+    def test_stopped_to_running_applies_release_decision_while_cicd_is_pending(self, temp_db, tmp_dir):
         release_id = seed_release(temp_db, tmp_path=tmp_dir)
         import release_system.core as core
 
@@ -446,12 +446,12 @@ class TestUpdateSnapshotIntegration:
             fields={"snapshot": {"release_decision": "cicd_only"}},
         )
 
-        assert response["snapshot"]["release_decision"] == "stopped"
+        assert response["snapshot"]["release_decision"] == "cicd_only"
         req = response["cicd_sync"]["request"]
         assert req is not None
         payload = req["payload"] if isinstance(req["payload"], dict) else json.loads(req["payload"])
         assert payload["status"] == {"old": "Stopped", "new": "Running"}
-        assert core.get_release(temp_db, release_id)["snapshots"][app_id]["release_decision"] == "stopped"
+        assert core.get_release(temp_db, release_id)["snapshots"][app_id]["release_decision"] == "cicd_only"
 
         cicd_service.approve_request(
             temp_db,
@@ -462,7 +462,7 @@ class TestUpdateSnapshotIntegration:
 
         assert core.get_release(temp_db, release_id)["snapshots"][app_id]["release_decision"] == "cicd_only"
 
-    def test_deferred_release_decision_apply_writes_app_audit(self, temp_db, tmp_dir):
+    def test_optimistic_release_decision_writes_audit_at_submission(self, temp_db, tmp_dir):
         release_id = seed_release(temp_db, tmp_path=tmp_dir)
         import release_system.core as core
 
@@ -485,11 +485,13 @@ class TestUpdateSnapshotIntegration:
         )
         req_id = response["cicd_sync"]["request"]["id"]
 
-        assert not [
+        entries = [
             row
             for row in audit_repo.app_audit_log(temp_db, app_id, release_id)
-            if row["event"] == "apply_deferred_release_decision"
+            if row["event"] == "update_release_decision"
         ]
+        assert len(entries) == 1
+        assert "stopped -> cicd_only" in entries[0]["message"]
 
         cicd_service.approve_request(
             temp_db,
@@ -498,18 +500,12 @@ class TestUpdateSnapshotIntegration:
             reviewer_role="RM",
         )
 
-        entries = [
+        assert not [
             row
             for row in audit_repo.app_audit_log(temp_db, app_id, release_id)
             if row["event"] == "apply_deferred_release_decision"
         ]
-        assert len(entries) == 1
-        assert "stopped -> cicd_only" in entries[0]["message"]
-        detail = {item["field"]: item for item in entries[0]["detail"]}
-        assert detail["request_id"]["new"] == req_id
-        assert detail["release_decision"]["old"] == "stopped"
-        assert detail["release_decision"]["new"] == "cicd_only"
-        assert detail["applied_by"]["new"] == "rm"
+        assert core.get_release(temp_db, release_id)["snapshots"][app_id]["release_decision"] == "cicd_only"
 
     def test_pending_create_blocks_stopped_to_running_decision(self, temp_db, tmp_dir):
         release_id = seed_release(temp_db, tmp_path=tmp_dir)

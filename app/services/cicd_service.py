@@ -558,11 +558,28 @@ def _deferred_release_decision_targets(payload: dict) -> set[str]:
     return targets
 
 
+def _rollback_release_decision_targets(payload: dict) -> set[str]:
+    """Release ids whose optimistic decision may roll back while CICD is open."""
+    entries = payload.get(_DECISION_SYNC_ROLLBACK_FIELD)
+    if not isinstance(entries, list):
+        return set()
+    return {
+        str(item.get("release_id") or "").strip()
+        for item in entries
+        if isinstance(item, dict) and str(item.get("release_id") or "").strip()
+    }
+
+
 def open_deferred_release_decision_requests_for_release(
     conn: sqlite3.Connection,
     release_id: str,
 ) -> list[dict]:
-    """Open release_decision_sync requests that will mutate *release_id* on delivery."""
+    """Open sync requests that may still mutate *release_id*.
+
+    This covers legacy deferred decisions that apply on delivery and current
+    optimistic decisions that roll back if the CICD start request is rejected
+    or cancelled.
+    """
     rows = conn.execute(
         """
         SELECT *
@@ -580,7 +597,11 @@ def open_deferred_release_decision_requests_for_release(
     for row in rows:
         req = dict(row)
         payload = cicd_repo._load_payload(req.get("payload") or "{}")
-        if release_id in _deferred_release_decision_targets(payload):
+        targets = (
+            _deferred_release_decision_targets(payload)
+            | _rollback_release_decision_targets(payload)
+        )
+        if release_id in targets:
             req["payload"] = payload
             result.append(req)
     return result
@@ -590,7 +611,7 @@ def ensure_no_open_deferred_release_decision_for_release(
     conn: sqlite3.Connection,
     release_id: str,
 ) -> None:
-    """Block final lock while a deferred CICD decision can still edit this release."""
+    """Block final lock while an open CICD sync can still edit this release."""
     open_requests = open_deferred_release_decision_requests_for_release(conn, release_id)
     if not open_requests:
         return
@@ -605,8 +626,13 @@ def _rollback_deferred_decision_sync(
     conn: sqlite3.Connection,
     app_id: str,
     payload: dict,
+    *,
+    ts: str,
+    actor: str,
+    actor_role: str,
+    reason: str,
 ) -> None:
-    """Undo release-decision fan-out for a rejected/cancelled start request."""
+    """Undo optimistic release decisions for a rejected/cancelled start request."""
     entries = payload.get(_DECISION_SYNC_ROLLBACK_FIELD)
     if not isinstance(entries, list):
         return
@@ -629,7 +655,37 @@ def _rollback_deferred_decision_sync(
         if current == previous:
             continue
         snap["release_decision"] = previous
+        from app.services import app_service as _app_service
+
+        snap["missing_items"] = _app_service._missing_items_for(
+            apps_repo.get_app(conn, app_id) or {},
+            snap,
+        )
         snapshots_repo.save_snapshot(conn, release_id, app_id, snap)
+        log_audit(
+            conn,
+            f"CICD 升运行申请未完成，回滚 release 决策：{applied or current} -> {previous}",
+            ts=ts,
+            user=actor or "system",
+            role=actor_role or "system",
+            app_id=app_id,
+            release_id=release_id,
+            event="rollback_release_decision_sync",
+            detail=[
+                {
+                    "field": "release_decision",
+                    "label": "release 决策",
+                    "old": current,
+                    "new": previous,
+                },
+                {
+                    "field": "reason",
+                    "label": "回滚原因",
+                    "old": "",
+                    "new": reason,
+                },
+            ],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -991,6 +1047,19 @@ def _open_status_modify_for_app(
     return rows[0] if rows else None
 
 
+def ensure_no_open_cicd_status_sync_request(
+    conn: sqlite3.Connection,
+    app_id: str,
+) -> None:
+    """Keep optimistic release decisions fixed until CICD start/stop closes."""
+    status_req = _open_status_modify_for_app(conn, app_id)
+    if status_req:
+        raise RuntimeError(
+            f"该 app 已有运行/停止状态同步申请 #{status_req['id']} 未完成，"
+            "请等待申请完成、拒绝或取消后再修改 release 决策"
+        )
+
+
 def ensure_can_open_cicd_modify_request(
     conn: sqlite3.Connection,
     app_id: str,
@@ -1233,6 +1302,10 @@ def reject_request(
                 conn,
                 str(req.get("app_id") or req.get("task_id") or ""),
                 payload,
+                ts=ts,
+                actor=reviewer,
+                actor_role=reviewer_role,
+                reason=review_note.strip(),
             )
         if _is_created_cicd_first_request(payload):
             _rollback_created_cicd_first_app(
@@ -1287,6 +1360,10 @@ def cancel_request(
                 conn,
                 str(req.get("app_id") or req.get("task_id") or ""),
                 payload,
+                ts=ts,
+                actor=username,
+                actor_role=role,
+                reason="申请取消",
             )
         if _is_created_cicd_first_request(payload):
             _rollback_created_cicd_first_app(
@@ -1443,6 +1520,10 @@ def reject_returned_request(
                 conn,
                 str(req.get("app_id") or req.get("task_id") or ""),
                 payload,
+                ts=ts,
+                actor=reviewer,
+                actor_role=reviewer_role,
+                reason=review_note.strip(),
             )
         if _is_created_cicd_first_request(payload):
             _rollback_created_cicd_first_app(
@@ -1858,6 +1939,73 @@ def attach_cicd_onboarding_state(
         if not state or state.get("cicd_onboarding_status") == "active":
             continue
         app.update(state)
+
+
+def cicd_pending_release_app_ids(
+    conn: sqlite3.Connection,
+    release_id: str,
+) -> set[str]:
+    """Apps whose submitted release plan still waits for CICD completion.
+
+    CICD-first create requests apply their release plan immediately, and
+    existing stopped Apps now do the same for optimistic start requests.  This
+    helper is the authoritative release-scoped predicate used by state/QA
+    views to add the ``CICD待完成`` planning marker.
+    """
+    pending = {
+        app_id
+        for app_id, state in cicd_first_onboarding_by_app(conn).items()
+        if state.get("cicd_onboarding_status") == "pending_create"
+    }
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM cicd_task_requests
+        WHERE request_type = 'modify'
+          AND origin = 'release_decision_sync'
+          AND (
+            status = 'pending'
+            OR delivery_status IN ('pending', 'returned')
+          )
+        ORDER BY id
+        """
+    ).fetchall()
+    for row in rows:
+        request = dict(row)
+        payload = cicd_repo._load_payload(request.get("payload") or "{}")
+        if not cicd_requests_domain.is_release_decision_sync_start_request(
+            request,
+            payload,
+        ):
+            continue
+        for item in payload.get(_DECISION_SYNC_ROLLBACK_FIELD) or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("release_id") or "").strip() != release_id:
+                continue
+            applied_raw = str(item.get("applied_decision") or "").strip()
+            if not applied_raw:
+                continue
+            applied = decisions_domain.normalize_release_decision(applied_raw)
+            if applied == "release":
+                pending.add(
+                    str(request.get("app_id") or request.get("task_id") or "").strip()
+                )
+                break
+    pending.discard("")
+    return pending
+
+
+def attach_cicd_release_pending_state(
+    conn: sqlite3.Connection,
+    apps: list[dict],
+    release_id: str,
+) -> None:
+    """Attach selected-release CICD planning state to App read models."""
+    pending = cicd_pending_release_app_ids(conn, release_id) if release_id else set()
+    for app in apps:
+        if app.get("id") in pending:
+            app["cicd_release_pending"] = True
 
 
 def _apply_onboarding_state_to_tasks(

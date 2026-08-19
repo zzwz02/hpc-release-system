@@ -2009,7 +2009,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     : "";
   const decisionChangeNeedsCicdSync = crossesDecisionRuntimeBoundary(snap.release_decision, form.release_decision);
   const decisionChanged = snap.release_decision !== form.release_decision;
-  const decisionChangeBlockedReason = decisionChanged && cicdOpenCreate
+  const decisionChangeBlockedReason = decisionChanged && (cicdOpenCreate || cicdOpenStatusModify)
     ? cicdModifyBlockedReason
     : decisionChangeNeedsCicdSync && cicdModifyBlockedReason
       ? cicdModifyBlockedReason
@@ -2594,6 +2594,12 @@ function DecisionSyncDialog({
               ? `你把 release 决策改为「${newDecision}」，这会改变全局 CICD 运行/停止状态。必须同步到下列 ${applicable.length} 个${targetLabel}，避免不同 release 对同一个 CICD task 给出矛盾状态。`
               : `你把 release 决策改为「${newDecision}」。是否把该决策同步到下列 ${applicable.length} 个${targetLabel}?`}
           </p>
+          {forced && newDecision !== "stopped" && (
+            <div className="banner warnp" data-testid="decision-sync-cicd-pending-note">
+              确认后，当前及下列 release 将立即展示提交时计算的发布决策，并标注「CICD待完成」；
+              RM 审批或 SPD 交付期间跨过冻结线不会重算这些决策。
+            </div>
+          )}
           <ReleaseDecisionPreviewTable
             rows={rows}
             requestedDecision={newDecision}

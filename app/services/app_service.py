@@ -311,6 +311,7 @@ def get_state(
     from app.services import cicd_service as _cicd_svc
 
     _cicd_svc.attach_cicd_onboarding_state(conn, apps)
+    _cicd_svc.attach_cicd_release_pending_state(conn, apps, release_id)
     payload: dict = {
         "apps": apps,
         "releases": [_serialize_release(r) for r in releases],
@@ -569,7 +570,7 @@ def update_snapshot(
     )
     new_decision = snap_update.get("release_decision")
     requested_decision = current_decision
-    defer_decision_until_cicd_delivery = False
+    optimistic_running_upgrade = False
     if new_decision is not None:
         new_decision_norm = normalize_release_decision(new_decision)
         requested_decision = new_decision_norm
@@ -579,7 +580,7 @@ def update_snapshot(
                     "已过 app freeze/doc deadline，不可将 release 决策切换为 release，"
                     "只能选择 cicd_only 或 stopped"
                 )
-            defer_decision_until_cicd_delivery = decision_sync_domain.is_running_upgrade(
+            optimistic_running_upgrade = decision_sync_domain.is_running_upgrade(
                 current_decision,
                 new_decision_norm,
             )
@@ -590,6 +591,7 @@ def update_snapshot(
             _cicd_svc.ensure_can_open_cicd_modify_request(conn, app_id)
         else:
             _cicd_svc.ensure_no_open_cicd_create_request(conn, app_id)
+            _cicd_svc.ensure_no_open_cicd_status_sync_request(conn, app_id)
 
     owner_meta = {"type", "official_url", "description"}
     doc_labels = {
@@ -681,9 +683,7 @@ def update_snapshot(
             decision = normalize_release_decision(snap_update["release_decision"])
             if decision not in RELEASE_DECISIONS:
                 raise ValueError(f"Invalid release_decision: {snap_update['release_decision']}")
-            if defer_decision_until_cicd_delivery:
-                pass
-            elif decision != snapshot.get("release_decision"):
+            if decision != snapshot.get("release_decision"):
                 log_audit(
                     conn_ref,
                     (
@@ -895,7 +895,7 @@ def update_snapshot(
                 submitter=actor,
                 current_status_override=DECISION_TO_CICD_STATUS.get(current_decision, ""),
                 release_id=rid,
-                apply_release_decision_on_delivery=defer_decision_until_cicd_delivery,
+                apply_release_decision_on_delivery=False,
             )
             response["cicd_sync"] = {
                 "created": cicd_req is not None,
@@ -910,7 +910,7 @@ def update_snapshot(
             and requested_decision != current_decision
         ):
             # R3: use the new app-layer gating rule (NOT core's).
-            if defer_decision_until_cicd_delivery and cicd_req is None:
+            if optimistic_running_upgrade and cicd_req is None:
                 raise RuntimeError(
                     "已有未完成 CICD 运行状态变更申请，不能继续同步 release 决策"
                 )
@@ -922,23 +922,31 @@ def update_snapshot(
                 user=actor,
                 role=role,
                 scope="all_unlocked" if forced_decision_sync else "later",
-                defer_apply=defer_decision_until_cicd_delivery,
+                defer_apply=False,
             )
             response["decision_sync"]["forced"] = forced_decision_sync
-            if defer_decision_until_cicd_delivery and cicd_req is not None:
+            if optimistic_running_upgrade and cicd_req is not None:
                 from app.services import cicd_service as _cicd_svc
-                deferred_entries = [
+                rollback_entries = [
                     {
-                        "release_id": item["release_id"],
-                        "target_decision": item["resulting_decision"],
-                    }
-                    for item in response["decision_sync"].get("applied", [])
-                    if item.get("changed")
+                        "release_id": rid,
+                        "previous_decision": current_decision,
+                        "applied_decision": requested_decision,
+                    },
+                    *[
+                        {
+                            "release_id": item["release_id"],
+                            "previous_decision": item["previous_decision"],
+                            "applied_decision": item["resulting_decision"],
+                        }
+                        for item in response["decision_sync"].get("applied", [])
+                        if item.get("changed")
+                    ],
                 ]
-                cicd_req = _cicd_svc.attach_deferred_release_decisions(
+                cicd_req = _cicd_svc.attach_decision_sync_rollback(
                     conn,
                     cicd_req["id"],
-                    deferred_entries,
+                    rollback_entries,
                 )
                 response["cicd_sync"]["request"] = cicd_req
     return response

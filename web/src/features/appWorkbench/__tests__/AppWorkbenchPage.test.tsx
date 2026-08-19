@@ -668,6 +668,7 @@ describe("AppWorkbenchPage F1 decision-sync dialog", () => {
     await waitFor(() => screen.getByTestId("decision-sync-dialog"));
     expect(screen.getByTestId("decision-sync-dialog").textContent).toContain("必须同步 release 决策");
     expect(screen.getByTestId("decision-sync-dialog").textContent).toContain("所有未锁定 release");
+    expect(screen.queryByTestId("decision-sync-cicd-pending-note")).toBeNull();
     expect(screen.queryByTestId("sync-local-only")).toBeNull();
     expect(screen.getByTestId("sync-row-rel-2").textContent).toContain("调整为 stopped");
   });
@@ -698,6 +699,9 @@ describe("AppWorkbenchPage F1 decision-sync dialog", () => {
     await waitFor(() => screen.getByTestId("decision-sync-dialog"));
     expect(screen.getByTestId("decision-sync-dialog").textContent).toContain("必须同步 release 决策");
     expect(screen.getByTestId("decision-sync-dialog").textContent).toContain("所有未锁定 release");
+    expect(screen.getByTestId("decision-sync-cicd-pending-note").textContent).toContain("立即展示");
+    expect(screen.getByTestId("decision-sync-cicd-pending-note").textContent).toContain("CICD待完成");
+    expect(screen.getByTestId("decision-sync-cicd-pending-note").textContent).toContain("跨过冻结线不会重算");
     expect(screen.queryByTestId("sync-local-only")).toBeNull();
     expect(screen.getByTestId("sync-row-rel-2").textContent).toContain("调整为 cicd_only");
   });
@@ -1613,6 +1617,38 @@ describe("AppWorkbenchPage W2 decision-change App CICD preview", () => {
     const footerReason = await screen.findByTestId("app-save-blocked-reason");
     expect(footerReason).toHaveTextContent("HPC-222");
     expect(footerReason).toHaveTextContent("待交付页拒绝旧申请");
+    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  it("blocks another release-decision edit while an optimistic CICD start is pending", async () => {
+    const optimisticPayload = makePayload();
+    optimisticPayload.release!.snapshots.app1.release_decision = "release";
+    const startReq = makeCicdRequest({
+      id: 63,
+      status: "pending",
+      delivery_status: "",
+      origin: "release_decision_sync",
+      payload: { status: { old: "Stopped", new: "Running" } },
+      task_status: "Stopped",
+      blocker_kind: "status",
+      replaceable: false,
+      status_sync_direction: "start",
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.startsWith("/api/cicd/requests?status=pending")) return Promise.resolve({ requests: [startReq] });
+      if (url.startsWith("/api/cicd/deliveries")) return Promise.resolve({ deliveries: [] });
+      if (url.startsWith("/api/cicd/requests?since_days=")) return Promise.resolve({ requests: [startReq] });
+      return Promise.resolve(optimisticPayload);
+    });
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1WithCicd();
+
+    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "cicd_only" } });
+
+    const footerReason = await screen.findByTestId("app-save-blocked-reason");
+    expect(footerReason).toHaveTextContent("状态同步申请 #63 未完成");
     expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
     expect(apiPost).not.toHaveBeenCalled();
   });

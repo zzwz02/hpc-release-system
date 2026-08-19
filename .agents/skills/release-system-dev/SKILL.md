@@ -88,8 +88,9 @@ work directly.
   `is_self_approved`); user modify requests may NOT set `status`. Admin is out of CICD/release business. App
   `release_decision` drives CICD Running/Stopped via pending modify requests
   (`origin="release_decision_sync"`). Running-boundary decision changes must sync to every unlocked release,
-  not just later releases. `stopped -> release/cicd_only` is a running upgrade: the current release decision is
-  deferred until CICD delivery and synced release decisions roll back if the request is rejected/cancelled.
+  not just later releases. `stopped -> release/cicd_only` is a running upgrade: apply the submission-time
+  per-release decisions immediately, mark release/QA planning as CICD pending, never recompute them when approval
+  or delivery crosses a freeze line, and roll them back if the request is rejected/cancelled.
   `release/cicd_only -> stopped` is a stop downgrade: the release decision takes effect immediately and the
   CICD request cannot be rejected or cancelled. CICD-first create starts snapshots as `stopped`; rejected or
   cancelled create requests leave the app visible with the reason, block duplicate `(git_url, branch)` creates,
