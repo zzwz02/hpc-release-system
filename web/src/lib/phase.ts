@@ -12,6 +12,9 @@
  */
 
 import type { ReleaseSummary, ReleaseDecision } from "../types";
+import { releasePhaseHasTrait, releasePhaseLabel } from "./domainMetadata";
+
+export { releasePhaseLabel };
 
 /** True when the release has been final-locked. */
 export function releaseLocked(
@@ -34,7 +37,7 @@ export function releasePhase(
 export function beforeAppFreeze(
   release: ReleaseSummary | null | undefined,
 ): boolean {
-  return releasePhase(release) === "before_app_freeze";
+  return releasePhaseHasTrait(releasePhase(release), "before_app_freeze");
 }
 
 /**
@@ -44,8 +47,7 @@ export function beforeAppFreeze(
 export function beforeDocDeadline(
   release: ReleaseSummary | null | undefined,
 ): boolean {
-  const p = releasePhase(release);
-  return p === "before_app_freeze" || p === "after_app_freeze";
+  return releasePhaseHasTrait(releasePhase(release), "before_doc_deadline");
 }
 
 /**

@@ -1,0 +1,36 @@
+{
+  "release_phases": {
+    "before_app_freeze": {
+      "label": "App 冻结前",
+      "order": 0,
+      "locked": false,
+      "before_app_freeze": true,
+      "before_doc_deadline": true,
+      "qa_scope_frozen": false
+    },
+    "after_app_freeze": {
+      "label": "App 冻结后",
+      "order": 1,
+      "locked": false,
+      "before_app_freeze": false,
+      "before_doc_deadline": true,
+      "qa_scope_frozen": true
+    },
+    "after_doc_deadline": {
+      "label": "Doc deadline 后",
+      "order": 2,
+      "locked": false,
+      "before_app_freeze": false,
+      "before_doc_deadline": false,
+      "qa_scope_frozen": true
+    },
+    "released_locked": {
+      "label": "已最终锁定",
+      "order": 3,
+      "locked": true,
+      "before_app_freeze": false,
+      "before_doc_deadline": false,
+      "qa_scope_frozen": true
+    }
+  }
+}

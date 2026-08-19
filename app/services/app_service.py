@@ -565,8 +565,8 @@ def update_snapshot(
         app_other_keys=app_update_keys - CICD_APP_CONFIG_FIELDS - APP_REPO_IDENTITY_FIELDS,
     )
     phase = phase_policy.current_phase(release)
-    past_app_freeze = phase in {"after_app_freeze", "after_doc_deadline", "released_locked"}
-    past_doc_deadline = phase in {"after_doc_deadline", "released_locked"}
+    past_app_freeze = not phase_policy.is_before_app_freeze_phase(phase)
+    past_doc_deadline = not phase_policy.is_before_doc_deadline_phase(phase)
 
     current_decision = normalize_release_decision(
         snap_now.get("release_decision", "release")

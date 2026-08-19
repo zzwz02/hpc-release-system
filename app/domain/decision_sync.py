@@ -21,23 +21,14 @@ Changed rule vs. ``core.sync_decision_to_later_releases``:
 """
 from __future__ import annotations
 
-# Phase string (from core.current_phase) → Chinese label shown in the dialog.
-PHASE_LABELS: dict[str, str] = {
-    "before_app_freeze": "App 冻结前",
-    "after_app_freeze": "App 冻结后",
-    "after_doc_deadline": "Doc deadline 后",
-    "released_locked": "已最终锁定",
-}
+from app.domain import phases
 
-# Phases where a release can no longer take on new QA/test scope, so an
-# upgrade *to* release is downgraded to cicd_only instead of applied verbatim.
-FROZEN_PHASES: frozenset[str] = frozenset({"after_app_freeze", "after_doc_deadline"})
 RUNNING_DECISIONS: frozenset[str] = frozenset({"release", "cicd_only"})
 
 
 def phase_label(phase: str) -> str:
     """Human label for a release phase (falls back to the raw phase string)."""
-    return PHASE_LABELS.get(phase, phase)
+    return phases.phase_label(phase)
 
 
 def resolve_synced_decision(target_decision: str, phase: str) -> str:
@@ -46,7 +37,7 @@ def resolve_synced_decision(target_decision: str, phase: str) -> str:
     See the module docstring for the rule. ``target_decision`` and the returned
     value are canonical decisions (``release`` / ``cicd_only`` / ``stopped``).
     """
-    if target_decision == "release" and phase in FROZEN_PHASES:
+    if target_decision == "release" and phases.is_qa_scope_frozen_phase(phase):
         return "cicd_only"
     return target_decision
 

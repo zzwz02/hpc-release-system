@@ -1831,10 +1831,10 @@ describe("AppWorkbenchPage lifecycle actions", () => {
     payload.release = {
       ...release,
       doc_deadline: "2000-01-01",
-      phase: "released",
+      phase: "after_doc_deadline",
       released_locked: false,
     };
-    payload.releases = [{ ...payload.releases[0], doc_deadline: "2000-01-01", phase: "released", released_locked: false }];
+    payload.releases = [{ ...payload.releases[0], doc_deadline: "2000-01-01", phase: "after_doc_deadline", released_locked: false }];
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
     const qc = makeQueryClient();
     renderPage(qc);

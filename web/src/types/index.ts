@@ -10,6 +10,8 @@
  * No camelCase conversion — these mirror the raw JSON.
  */
 
+import type { ReleasePhase as SharedReleasePhase } from "../lib/domainMetadata";
+
 // ---------------------------------------------------------------------------
 // Auth / User
 // ---------------------------------------------------------------------------
@@ -68,10 +70,7 @@ export interface App {
 // Release
 // ---------------------------------------------------------------------------
 
-export type ReleasePhase =
-  | "before_app_freeze"
-  | "after_app_freeze"
-  | "released";
+export type ReleasePhase = SharedReleasePhase;
 
 export interface ReleaseSummary {
   id: string;

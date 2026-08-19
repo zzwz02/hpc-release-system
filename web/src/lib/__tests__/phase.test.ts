@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   releaseLocked,
   releasePhase,
+  releasePhaseLabel,
   beforeAppFreeze,
   beforeDocDeadline,
   newAppDecisionOptions,
@@ -33,7 +34,7 @@ describe("releaseLocked", () => {
   });
 
   it("returns true when released_locked is true", () => {
-    expect(releaseLocked(makeRelease("released", true))).toBe(true);
+    expect(releaseLocked(makeRelease("released_locked", true))).toBe(true);
   });
 
   it("returns false for null release", () => {
@@ -54,11 +55,19 @@ describe("releasePhase", () => {
   });
 });
 
+describe("releasePhaseLabel", () => {
+  it("uses the shared phase labels and preserves unknown values", () => {
+    expect(releasePhaseLabel("after_app_freeze")).toBe("App 冻结后");
+    expect(releasePhaseLabel("after_doc_deadline")).toBe("Doc deadline 后");
+    expect(releasePhaseLabel("unknown")).toBe("unknown");
+  });
+});
+
 describe("beforeAppFreeze", () => {
   it("true only when phase is before_app_freeze", () => {
     expect(beforeAppFreeze(makeRelease("before_app_freeze"))).toBe(true);
     expect(beforeAppFreeze(makeRelease("after_app_freeze"))).toBe(false);
-    expect(beforeAppFreeze(makeRelease("released"))).toBe(false);
+    expect(beforeAppFreeze(makeRelease("released_locked"))).toBe(false);
   });
 
   it("false for null release", () => {
@@ -73,7 +82,8 @@ describe("beforeDocDeadline", () => {
   });
 
   it("false for released / locked phase", () => {
-    expect(beforeDocDeadline(makeRelease("released"))).toBe(false);
+    expect(beforeDocDeadline(makeRelease("after_doc_deadline"))).toBe(false);
+    expect(beforeDocDeadline(makeRelease("released_locked"))).toBe(false);
   });
 
   it("false for null release", () => {
@@ -94,7 +104,7 @@ describe("newAppDecisionOptions", () => {
   });
 
   it("returns only cicd_only and stopped for released phase", () => {
-    const opts = newAppDecisionOptions(makeRelease("released"));
+    const opts = newAppDecisionOptions(makeRelease("released_locked"));
     expect(opts).toEqual(["cicd_only", "stopped"]);
   });
 

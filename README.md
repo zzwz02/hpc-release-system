@@ -163,7 +163,7 @@ CICD_AGENT_TIMEOUT_SECONDS=90
 
 ## 发布生命周期 / 阶段机
 
-阶段由北京时间 deadline 与 lock 状态实时派生（`app/domain/phases.py`：`derive_phase`）：
+阶段枚举与显示标签来自 [`shared/domain_metadata.json`](./shared/domain_metadata.json)，由北京时间 deadline 与 lock 状态通过 `app/domain/phases.py` 实时派生：
 
 ```mermaid
 stateDiagram-v2

@@ -22,6 +22,7 @@ import { RefreshBar } from "../../components/RefreshBar";
 import { apiGet, apiPost } from "../../api/http";
 import { useUiStore } from "../../store/uiStore";
 import { formatDateValue, formatServerTime } from "../../lib/time";
+import { releasePhaseLabel } from "../../lib/phase";
 import type { StatePayload, ReleaseSummary } from "../../types";
 import { toast } from "../../lib/toast";
 import { confirmDialog } from "../../lib/confirm";
@@ -51,12 +52,6 @@ interface ReleasesTableProps {
 }
 
 function ReleasesTable({ releases }: ReleasesTableProps) {
-  const phaseLabels: Record<string, string> = {
-    before_app_freeze: "App 冻结前",
-    after_app_freeze: "已冻结",
-    released: "已发布",
-  };
-
   if (!releases.length) {
     return <p className="muted small">暂无发布周期数据。</p>;
   }
@@ -78,7 +73,7 @@ function ReleasesTable({ releases }: ReleasesTableProps) {
           {releases.map((r) => (
             <tr key={r.id}>
               <td>{r.name}</td>
-              <td>{phaseLabels[r.phase] ?? r.phase}</td>
+              <td>{releasePhaseLabel(r.phase)}</td>
               <td>{formatDateValue(r.app_freeze_deadline) || "—"}</td>
               <td>{formatDateValue(r.doc_deadline) || "—"}</td>
               <td>
