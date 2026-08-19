@@ -11,6 +11,10 @@ from typing import Any
 
 from pydantic import BaseModel, field_validator
 
+from app.domain.cicd_config import (
+    CICD_REPO_TYPE_DEFAULT,
+    CICD_TEST_TIMEOUT_DEFAULT,
+)
 from app.domain.qa import QA_STATUSES
 
 # ---------------------------------------------------------------------------
@@ -153,13 +157,13 @@ class CicdCreateRequest(BaseModel):
 
     app_name: str
     app_version: str = ""
-    repo_type: str = "git"
+    repo_type: str = CICD_REPO_TYPE_DEFAULT
     repo_name: str
     branch: str
     build_product: list[Any] = []
     community_artifact: list[Any] = []
     build_image: str = ""
-    test_timeout: int = 40
+    test_timeout: int = CICD_TEST_TIMEOUT_DEFAULT
     owner_username: str
     notes: str = ""
 
@@ -183,7 +187,7 @@ class CicdFirstNewAppRequest(BaseModel):
     repo_type/repo_name/branch by the service via repo_to_git_identity().
     """
 
-    repo_type: str = "git"
+    repo_type: str = CICD_REPO_TYPE_DEFAULT
     repo_name: str
     branch: str
     official_name: str
@@ -192,7 +196,7 @@ class CicdFirstNewAppRequest(BaseModel):
     build_product: list[Any] = []
     community_artifact: list[Any] = []
     build_image: str = ""
-    test_timeout: int = 40
+    test_timeout: int = CICD_TEST_TIMEOUT_DEFAULT
     owner_username: str
     notes: str = ""
     release_id: str  # which release to create the initial snapshot in

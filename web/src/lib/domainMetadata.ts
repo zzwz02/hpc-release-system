@@ -70,3 +70,55 @@ export function qaStatusRequiresIssueNote(status: string): boolean {
   const item = qaStatusMetadata[status as QaStatus];
   return item?.issue_note_required === true;
 }
+
+export const cicdConfigMetadata = metadata.cicd_config;
+export const cicdRepoTypeMetadata = cicdConfigMetadata.repo_types;
+export type CicdRepoType = keyof typeof cicdRepoTypeMetadata;
+export const CICD_REPO_TYPE_OPTIONS = orderedKeys(cicdRepoTypeMetadata);
+export const CICD_REPO_TYPE_DEFAULT = CICD_REPO_TYPE_OPTIONS.find(
+  (repoType) => cicdRepoTypeMetadata[repoType].default,
+) as CicdRepoType;
+export const CICD_TEST_TIMEOUT_DEFAULT = cicdConfigMetadata.default_test_timeout;
+
+export const cicdCommunityArtifactMetadata = cicdConfigMetadata.community_artifacts;
+export type CicdCommunityArtifact = keyof typeof cicdCommunityArtifactMetadata;
+export const CICD_COMMUNITY_ARTIFACT_KEYS = orderedKeys(cicdCommunityArtifactMetadata);
+export const CICD_COMMUNITY_ARTIFACT_OPTIONS = CICD_COMMUNITY_ARTIFACT_KEYS.map(
+  (value) => ({ value, label: cicdCommunityArtifactMetadata[value].label }),
+);
+const cicdCommunityArtifactAliases = new Map<string, CicdCommunityArtifact>(
+  CICD_COMMUNITY_ARTIFACT_KEYS.flatMap((artifact) =>
+    [artifact, ...cicdCommunityArtifactMetadata[artifact].aliases]
+      .map((alias) => [alias.toLowerCase(), artifact] as const),
+  ),
+);
+
+export function normalizeCicdCommunityArtifacts(
+  value: string | readonly string[] | null | undefined,
+): CicdCommunityArtifact[] {
+  const rawItems = Array.isArray(value) ? value : String(value ?? "").split(/[，,]/);
+  const result: CicdCommunityArtifact[] = [];
+  rawItems.forEach((item) => {
+    const artifact = cicdCommunityArtifactAliases.get(String(item).trim().toLowerCase());
+    if (artifact && !result.includes(artifact)) result.push(artifact);
+  });
+  return result;
+}
+
+export function cicdCommunityArtifactsAppValue(
+  value: string | readonly string[] | null | undefined,
+): string {
+  return normalizeCicdCommunityArtifacts(value).join(", ");
+}
+
+export function normalizeCicdTestTimeout(
+  value: string | number | null | undefined,
+): number {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : CICD_TEST_TIMEOUT_DEFAULT;
+}
+
+export const cicdAppConfigFieldMetadata = cicdConfigMetadata.app_fields;
+export const cicdPayloadConfigLabels = Object.fromEntries(
+  Object.values(cicdAppConfigFieldMetadata).map((field) => [field.payload_field, field.label]),
+) as Record<string, string>;

@@ -97,5 +97,54 @@
       "releasable": false,
       "issue_note_prefix": "QA 不可发布"
     }
+  },
+  "cicd_config": {
+    "default_test_timeout": 40,
+    "repo_types": {
+      "git": {
+        "label": "git",
+        "order": 0,
+        "default": true
+      },
+      "repo": {
+        "label": "repo",
+        "order": 1,
+        "default": false
+      }
+    },
+    "community_artifacts": {
+      "image": {
+        "label": "镜像",
+        "order": 0,
+        "aliases": ["镜像"]
+      },
+      "pkg": {
+        "label": "软件包",
+        "order": 1,
+        "aliases": ["package", "软件包"]
+      }
+    },
+    "app_fields": {
+      "cicd_repo_type": {
+        "payload_field": "repo_type",
+        "label": "仓库类型"
+      },
+      "cicd_community_artifact": {
+        "payload_field": "community_artifact",
+        "label": "开发者社区产物"
+      },
+      "cicd_build_image": {
+        "payload_field": "build_image",
+        "label": "构建依赖镜像"
+      },
+      "cicd_test_timeout": {
+        "payload_field": "test_timeout",
+        "label": "超时(min)"
+      },
+      "cicd_notes": {
+        "payload_field": "notes",
+        "label": "备注"
+      }
+    }
   }
 }

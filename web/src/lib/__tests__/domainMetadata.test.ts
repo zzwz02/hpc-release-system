@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CICD_COMMUNITY_ARTIFACT_OPTIONS,
+  CICD_REPO_TYPE_DEFAULT,
+  CICD_REPO_TYPE_OPTIONS,
+  CICD_TEST_TIMEOUT_DEFAULT,
   DOC_TARGET_DEFAULT,
   DOC_TARGETS,
   QA_STATUS_DEFAULT,
   crossesReleaseDecisionRuntimeBoundary,
   normalizeDocTarget,
+  normalizeCicdCommunityArtifacts,
+  normalizeCicdTestTimeout,
   qaStatusRequiresIssueNote,
   RELEASE_DECISIONS,
   releaseDecisionCicdStatus,
@@ -23,6 +29,28 @@ describe("release decision metadata", () => {
     expect(crossesReleaseDecisionRuntimeBoundary("release", "cicd_only")).toBe(false);
     expect(crossesReleaseDecisionRuntimeBoundary("release", "stopped")).toBe(true);
     expect(crossesReleaseDecisionRuntimeBoundary("stopped", "cicd_only")).toBe(true);
+  });
+});
+
+describe("CICD configuration metadata", () => {
+  it("provides shared repo, artifact, and timeout options", () => {
+    expect(CICD_REPO_TYPE_OPTIONS).toEqual(["git", "repo"]);
+    expect(CICD_REPO_TYPE_DEFAULT).toBe("git");
+    expect(CICD_COMMUNITY_ARTIFACT_OPTIONS).toEqual([
+      { value: "image", label: "镜像" },
+      { value: "pkg", label: "软件包" },
+    ]);
+    expect(CICD_TEST_TIMEOUT_DEFAULT).toBe(40);
+  });
+
+  it("normalizes artifact aliases and invalid timeouts", () => {
+    expect(normalizeCicdCommunityArtifacts("镜像, package, image")).toEqual([
+      "image",
+      "pkg",
+    ]);
+    expect(normalizeCicdTestTimeout("75")).toBe(75);
+    expect(normalizeCicdTestTimeout("invalid")).toBe(40);
+    expect(normalizeCicdTestTimeout(0)).toBe(40);
   });
 });
 

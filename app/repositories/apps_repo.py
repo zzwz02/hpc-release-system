@@ -7,35 +7,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from app.domain.cicd_config import CICD_APP_CONFIG_FIELDS
 from app.repositories.base import dumps_json, loads_json, row_to_dict
-
-_COMMUNITY_ARTIFACT_ALIASES = {
-    "image": "image",
-    "镜像": "image",
-    "pkg": "pkg",
-    "package": "pkg",
-    "软件包": "pkg",
-}
-
-
-def _normalize_cicd_value(key: str, value: Any) -> str:
-    raw = str(value or "").strip()
-    if key == "cicd_repo_type":
-        return raw if raw in {"git", "repo"} else "git"
-    if key == "cicd_test_timeout":
-        try:
-            parsed = int(raw or "40")
-        except ValueError:
-            parsed = 40
-        return str(parsed if parsed > 0 else 40)
-    if key == "cicd_community_artifact":
-        items: list[str] = []
-        for part in raw.replace("，", ",").split(","):
-            mapped = _COMMUNITY_ARTIFACT_ALIASES.get(part.strip())
-            if mapped and mapped not in items:
-                items.append(mapped)
-        return ", ".join(items)
-    return raw
 
 # ---------------------------------------------------------------------------
 # Row shaping — mirror core.py:row_to_app
@@ -146,18 +119,11 @@ def update_cicd_config(
     app_id: str,
     fields: dict[str, Any],
 ) -> None:
-    """Update CICD config columns stored directly on apps."""
-    allowed = {
-        "cicd_repo_type",
-        "cicd_community_artifact",
-        "cicd_build_image",
-        "cicd_test_timeout",
-        "cicd_notes",
-    }
+    """Persist already-normalized CICD config columns directly on apps."""
     updates = {
-        key: _normalize_cicd_value(key, value)
+        key: str(value)
         for key, value in (fields or {}).items()
-        if key in allowed
+        if key in CICD_APP_CONFIG_FIELDS
     }
     if not updates:
         return

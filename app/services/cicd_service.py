@@ -15,6 +15,7 @@ import sqlite3
 from app.config import settings
 from app.db.connection import transaction
 from app.domain import app_info as app_info_domain
+from app.domain import cicd_config as cicd_config_domain
 from app.domain import decision_sync as decision_sync_domain
 from app.domain import decisions as decisions_domain
 from app.domain import phases as phase_policy
@@ -36,20 +37,7 @@ CICD_DELIVER_ROLES = frozenset(roles_for_capability("cicd.delivery.confirm"))
 CICD_RETURN_ROLES = frozenset(roles_for_capability("cicd.delivery.return"))
 CICD_FIRST_RELEASE_DECISIONS = decisions_domain.RUNNING_DECISIONS
 
-_APP_CICD_FIELD_TO_PAYLOAD_FIELD: dict[str, str] = {
-    "cicd_repo_type": "repo_type",
-    "cicd_community_artifact": "community_artifact",
-    "cicd_build_image": "build_image",
-    "cicd_test_timeout": "test_timeout",
-    "cicd_notes": "notes",
-}
-
-_PAYLOAD_FIELD_TO_APP_CICD_FIELD: dict[str, str] = {
-    value: key for key, value in _APP_CICD_FIELD_TO_PAYLOAD_FIELD.items()
-}
-
-_APP_CICD_MUTABLE_FIELDS: frozenset[str] = frozenset(_PAYLOAD_FIELD_TO_APP_CICD_FIELD)
-_APP_BACKED_MUTABLE_FIELDS: frozenset[str] = _APP_CICD_MUTABLE_FIELDS | frozenset(
+_APP_BACKED_MUTABLE_FIELDS: frozenset[str] = cicd_config_domain.CICD_PAYLOAD_CONFIG_FIELDS | frozenset(
     {"repo_name", "branch"}
 )
 
@@ -137,41 +125,6 @@ def _status_from_snapshot(snapshot: dict) -> str:
     )
 
 
-def _community_payload_from_app(value: str | None) -> list[str]:
-    raw = (value or "").strip()
-    if not raw:
-        return []
-    aliases = {"image": "image", "镜像": "image", "pkg": "pkg", "package": "pkg", "软件包": "pkg"}
-    items: list[str] = []
-    for part in raw.replace("，", ",").split(","):
-        mapped = aliases.get(part.strip())
-        if mapped and mapped not in items:
-            items.append(mapped)
-    return items
-
-
-def _community_app_value(value: object) -> str:
-    aliases = {"image": "image", "镜像": "image", "pkg": "pkg", "package": "pkg", "软件包": "pkg"}
-    if isinstance(value, list):
-        raw_items = [str(item).strip() for item in value]
-    else:
-        raw_items = str(value or "").replace("，", ",").split(",")
-    items: list[str] = []
-    for item in raw_items:
-        mapped = aliases.get(item.strip())
-        if mapped and mapped not in items:
-            items.append(mapped)
-    return ", ".join(items)
-
-
-def _test_timeout_value(value: object) -> int:
-    try:
-        parsed = int(str(value or "").strip() or "40")
-    except ValueError:
-        parsed = 40
-    return parsed if parsed > 0 else 40
-
-
 def _cicd_first_config_values(payload: dict, repo_type: str) -> dict[str, object]:
     """Normalize the App-workbench CICD fields for a create request.
 
@@ -182,7 +135,7 @@ def _cicd_first_config_values(payload: dict, repo_type: str) -> dict[str, object
     community_value = payload.get("cicd_community_artifact")
     if community_value in (None, ""):
         community_value = payload.get("community_artifact", [])
-    community_app_value = _community_app_value(community_value)
+    community_app_value = cicd_config_domain.community_artifacts_app_value(community_value)
 
     build_image = payload.get("cicd_build_image")
     if build_image in (None, ""):
@@ -190,17 +143,20 @@ def _cicd_first_config_values(payload: dict, repo_type: str) -> dict[str, object
 
     timeout = payload.get("cicd_test_timeout")
     if timeout in (None, ""):
-        timeout = payload.get("test_timeout", 40)
+        timeout = payload.get("test_timeout", cicd_config_domain.CICD_TEST_TIMEOUT_DEFAULT)
 
     notes = payload.get("cicd_notes")
     if notes in (None, ""):
         notes = payload.get("notes", "")
 
-    normalized_timeout = _test_timeout_value(timeout)
+    normalized_timeout = cicd_config_domain.normalize_test_timeout(timeout)
     return {
-        "repo_type": str(payload.get("cicd_repo_type") or repo_type or "git").strip()
-        or "git",
-        "community_artifact": _community_payload_from_app(community_app_value),
+        "repo_type": cicd_config_domain.normalize_repo_type(
+            payload.get("cicd_repo_type") or repo_type
+        ),
+        "community_artifact": cicd_config_domain.normalize_community_artifacts(
+            community_app_value
+        ),
         "community_artifact_app": community_app_value,
         "build_image": str(build_image or "").strip(),
         "test_timeout": normalized_timeout,
@@ -216,7 +172,7 @@ def _validate_cicd_first_repo_input(repo_type: str, repo_name: str) -> None:
     raw = (repo_name or "").strip().lstrip("/")
     if not raw:
         return
-    normalized_type = (repo_type or "git").strip()
+    normalized_type = cicd_config_domain.normalize_repo_type(repo_type)
     hpc_project = settings.gerrit_hpc_project.strip("/")
     manifest_project = settings.gerrit_manifest_project.strip("/")
     if normalized_type == "repo":
@@ -253,11 +209,11 @@ def _validate_app_workbench_modify_repo_input(
     app = apps_repo.get_app(conn, app_id) or {}
     repo_type_change = (payload or {}).get("repo_type")
     repo_name_change = (payload or {}).get("repo_name")
-    next_repo_type = str(
+    next_repo_type = cicd_config_domain.normalize_repo_type(
         repo_type_change.get("new")
         if isinstance(repo_type_change, dict) and "new" in repo_type_change
-        else app.get("cicd_repo_type") or "git"
-    ).strip() or "git"
+        else app.get("cicd_repo_type")
+    )
     next_repo_name = str(
         repo_name_change.get("new")
         if isinstance(repo_name_change, dict) and "new" in repo_name_change
@@ -316,13 +272,17 @@ def _app_to_cicd_task(
         "app_id": app["id"],
         "app_name": snapshot.get("official_name") or fallback_name,
         "app_version": snapshot.get("version", ""),
-        "repo_type": app.get("cicd_repo_type") or "git",
+        "repo_type": cicd_config_domain.normalize_repo_type(app.get("cicd_repo_type")),
         "repo_name": app.get("git_url", ""),
         "branch": app.get("git_branch", ""),
         "build_product": [],
-        "community_artifact": _community_payload_from_app(app.get("cicd_community_artifact")),
+        "community_artifact": cicd_config_domain.normalize_community_artifacts(
+            app.get("cicd_community_artifact")
+        ),
         "build_image": app.get("cicd_build_image", ""),
-        "test_timeout": _test_timeout_value(app.get("cicd_test_timeout")),
+        "test_timeout": cicd_config_domain.normalize_test_timeout(
+            app.get("cicd_test_timeout")
+        ),
         "owner_username": owner_username,
         "status": _status_from_snapshot(snapshot),
         "notes": app.get("cicd_notes", ""),
@@ -789,14 +749,16 @@ def _apply_cicd_request(
     if request_type == "create":
         app_id = linked_app_id or payload.get("app_id") or _task_id_to_app_id(conn, task_id)
         if app_id and apps_repo.get_app(conn, app_id):
-            repo_type = str(payload.get("repo_type") or "git").strip() or "git"
+            repo_type = cicd_config_domain.normalize_repo_type(payload.get("repo_type"))
             repo_name = str(payload.get("repo_name") or "").strip().lstrip("/")
             branch = str(payload.get("branch") or "").strip()
             if repo_name and branch:
                 from app.identity import repo_storage_path
 
                 storage_type = (
-                    "repo" if repo_type == "repo" or repo_name.endswith(".xml") else "git"
+                    "repo"
+                    if repo_type == "repo" or repo_name.endswith(".xml")
+                    else cicd_config_domain.CICD_REPO_TYPE_DEFAULT
                 )
                 stored_url = repo_storage_path(storage_type, repo_name)
                 stored_branch = branch
@@ -809,13 +771,13 @@ def _apply_cicd_request(
             apps_repo.update_cicd_config(
                 conn,
                 app_id,
-                {
+                cicd_config_domain.normalize_app_config({
                     "cicd_repo_type": payload.get("repo_type", ""),
-                    "cicd_community_artifact": _community_app_value(payload.get("community_artifact")),
+                    "cicd_community_artifact": payload.get("community_artifact"),
                     "cicd_build_image": payload.get("build_image", ""),
                     "cicd_test_timeout": payload.get("test_timeout", ""),
                     "cicd_notes": payload.get("notes", ""),
-                },
+                }),
             )
             cicd_repo.set_request_task_id(conn, req_id, app_id)
             if cicd_first_action == _CICD_FIRST_ACTION_CREATED:
@@ -844,20 +806,17 @@ def _apply_cicd_request(
                 if field == "branch":
                     git_branch_update = str(change.get("new") or "").strip()
                     continue
-                app_field = _PAYLOAD_FIELD_TO_APP_CICD_FIELD.get(field)
+                app_field = cicd_config_domain.CICD_PAYLOAD_FIELD_TO_APP_FIELD.get(field)
                 if not app_field:
                     continue
-                new_value = change.get("new")
-                if field == "community_artifact":
-                    new_value = _community_app_value(new_value)
-                app_updates[app_field] = new_value
+                app_updates[app_field] = change.get("new")
+            app_updates = cicd_config_domain.normalize_app_config(app_updates)
             if git_url_update is not None or git_branch_update is not None:
                 if git_url_update is not None:
-                    next_repo_type = str(
+                    next_repo_type = cicd_config_domain.normalize_repo_type(
                         app_updates.get("cicd_repo_type")
                         or app.get("cicd_repo_type")
-                        or "git"
-                    ).strip()
+                    )
                     next_branch = str(
                         git_branch_update
                         if git_branch_update is not None
@@ -2229,6 +2188,7 @@ def preview_cicd_app_info(
         raise ValueError("repo_name 不能为空，请检查 repo_name / branch")
     if not (branch or "").strip():
         raise ValueError("branch 不能为空，请检查 repo_name / branch")
+    repo_type = cicd_config_domain.normalize_repo_type(repo_type)
     _validate_cicd_first_repo_input(repo_type, repo_name)
 
     # Determine if this is a manifest repo (identity needs network).
@@ -2326,6 +2286,7 @@ def preview_cicd_app_info_for_create(
         raise ValueError("repo_name 不能为空，请检查 repo_name / branch")
     if not (branch or "").strip():
         raise ValueError("branch 不能为空，请检查 repo_name / branch")
+    repo_type = cicd_config_domain.normalize_repo_type(repo_type)
     _validate_cicd_first_repo_input(repo_type, repo_name)
 
     raw_repo_name = repo_name.strip()
@@ -2560,6 +2521,7 @@ def cicd_first_new_app(
     official_name = (official_name or "").strip()
     if not official_name:
         raise ValueError("必须提供 app 名称（official_name）")
+    repo_type = cicd_config_domain.normalize_repo_type(repo_type)
     _validate_cicd_first_repo_input(repo_type, repo_name)
 
     # ------------------------------------------------------------------

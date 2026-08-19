@@ -24,6 +24,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 from app.config import settings
+from app.domain.cicd_config import CICD_REPO_TYPE_DEFAULT
 
 # ---------------------------------------------------------------------------
 # Compatibility exports — values are derived from the shared Gerrit config.
@@ -116,7 +117,7 @@ def repo_storage_path(repo_type: str, repo_name: str) -> str:
     elif value.startswith(f"{hpc_project}/"):
         value = value[len(hpc_project) + 1:]
 
-    if (repo_type or "git").strip() == "repo":
+    if (repo_type or CICD_REPO_TYPE_DEFAULT).strip() == "repo":
         manifest_project = settings.gerrit_manifest_project.strip("/")
         if value.startswith(f"{manifest_project}/"):
             value = value[len(manifest_project) + 1:]

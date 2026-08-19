@@ -26,6 +26,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../../api/AuthContext";
 import { RefreshBar } from "../../components/RefreshBar";
 import { formatServerTime } from "../../lib/time";
+import {
+  cicdCommunityArtifactMetadata,
+  cicdPayloadConfigLabels,
+  type CicdCommunityArtifact,
+} from "../../lib/domainMetadata";
 import { formatCicdRepoPath } from "../../lib/git";
 import {
   CICD_TASKS_KEY,
@@ -94,17 +99,13 @@ const REQ_STATUS_LABEL: Record<string, string> = {
 const FIELD_LABEL: Record<string, string> = {
   app_name: "项目名称",
   app_version: "项目版本",
-  repo_type: "仓库类型",
   repo_name: "仓库名",
   branch: "分支",
   release_decision: "Release 决策",
   build_product: "构建产物",
-  community_artifact: "开发者社区产物",
-  build_image: "构建依赖镜像",
-  test_timeout: "超时(min)",
   owner_username: "负责人",
   status: "状态",
-  notes: "备注",
+  ...cicdPayloadConfigLabels,
 };
 
 const DELIVERY_STATUS_LABEL: Record<string, string> = {
@@ -125,7 +126,7 @@ function communityArtifactStr(arr: string[] | null | undefined): string {
   const items = Array.isArray(arr) ? arr : [];
   if (!items.length) return "—";
   return items
-    .map((v) => (v === "image" ? "镜像" : v === "pkg" ? "软件包" : v))
+    .map((value) => cicdCommunityArtifactMetadata[value as CicdCommunityArtifact]?.label ?? value)
     .join("、");
 }
 

@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from app.deps import get_db, require_capability, require_login
 from app.domain.access_actions import cicd_request_allowed_actions
+from app.domain.cicd_config import CICD_REPO_TYPE_DEFAULT, CICD_TEST_TIMEOUT_DEFAULT
 from app.domain.permissions import has_capability
 from app.integrations import jira as jira_integration
 from app.services import cicd_service
@@ -499,7 +500,7 @@ async def post_cicd_apps_fetch_preview(
 
     result = cicd_service.preview_cicd_app_info_for_create(
         conn,
-        repo_type=body.get("repo_type", "git"),
+        repo_type=body.get("repo_type", CICD_REPO_TYPE_DEFAULT),
         repo_name=body.get("repo_name", ""),
         branch=body.get("branch", ""),
         submitter_role=role,
@@ -534,7 +535,7 @@ async def post_cicd_apps_new(
       build_product      list  — build output identifiers
       community_artifact list  — community artifact identifiers
       build_image        str   — container image for building
-      test_timeout       int   — timeout in minutes (default 40)
+      test_timeout       int   — timeout in minutes (shared CICD default)
       notes              str   — free-form notes
       app_name           str   — override display name in CICD task (optional;
                                  defaults to official_name)
@@ -560,7 +561,7 @@ async def post_cicd_apps_new(
     result = cicd_service.cicd_first_new_app(
         conn,
         official_name=body.get("official_name", ""),
-        repo_type=body.get("repo_type", "git"),
+        repo_type=body.get("repo_type", CICD_REPO_TYPE_DEFAULT),
         repo_name=body.get("repo_name", ""),
         branch=body.get("branch", ""),
         submitter=user["username"],
@@ -574,7 +575,7 @@ async def post_cicd_apps_new(
             "build_product": body.get("build_product", []),
             "community_artifact": body.get("community_artifact", []),
             "build_image": body.get("build_image", ""),
-            "test_timeout": body.get("test_timeout", 40),
+            "test_timeout": body.get("test_timeout", CICD_TEST_TIMEOUT_DEFAULT),
             "notes": body.get("notes", ""),
             "cicd_repo_type": body.get("cicd_repo_type", ""),
             "cicd_community_artifact": body.get("cicd_community_artifact", ""),

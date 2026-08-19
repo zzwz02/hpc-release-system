@@ -29,6 +29,11 @@ from app.domain.qa import QA_STATUS_DEFAULT
 from app.domain.access_actions import snapshot_allowed_actions
 from app.domain.permissions import has_capability
 from app.domain.audit_diff import field_diff, fmt_audit_value, test_docs_diff
+from app.domain.cicd_config import (
+    CICD_APP_CONFIG_FIELDS,
+    CICD_APP_CONFIG_LABELS,
+    normalize_app_config,
+)
 from app.domain.decisions import (
     DECISION_TO_CICD_STATUS,
     RELEASE_DECISIONS,
@@ -64,23 +69,8 @@ from app.timeutil import beijing_timestamp
 # State / list helpers (for GET /api/state)
 # ---------------------------------------------------------------------------
 
-CICD_APP_CONFIG_FIELDS = {
-    "cicd_repo_type",
-    "cicd_community_artifact",
-    "cicd_build_image",
-    "cicd_test_timeout",
-    "cicd_notes",
-}
 APP_REPO_IDENTITY_FIELDS = {"git_url", "git_branch"}
 MAX_GERRIT_FETCH_WORKERS = 16
-
-CICD_APP_CONFIG_LABELS = {
-    "cicd_repo_type": "仓库类型",
-    "cicd_community_artifact": "开发者社区产物",
-    "cicd_build_image": "构建依赖镜像",
-    "cicd_test_timeout": "超时",
-    "cicd_notes": "备注",
-}
 
 _AFTER_DOC_EDIT_MESSAGE = (
     "已过 doc deadline，只能修改 release 决策和 CICD 配置，不能再修改文档/表单/app_info"
@@ -654,11 +644,13 @@ def update_snapshot(
                 ),
             )
 
-        cicd_update = {key: app_update.get(key, "") for key in app_cicd_keys}
+        cicd_update = normalize_app_config(
+            {key: app_update.get(key, "") for key in app_cicd_keys}
+        )
         if cicd_update:
             cicd_before = {key: app.get(key, "") for key in CICD_APP_CONFIG_FIELDS}
             apps_repo.update_cicd_config(conn_ref, aid, cicd_update)
-            app.update({key: str(value or "").strip() for key, value in cicd_update.items()})
+            app.update(cicd_update)
             cicd_after = {key: app.get(key, "") for key in CICD_APP_CONFIG_FIELDS}
             changes = field_diff(cicd_before, cicd_after, CICD_APP_CONFIG_LABELS)
             if changes:

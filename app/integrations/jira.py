@@ -16,6 +16,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from app.config import settings
+from app.domain.cicd_config import CICD_PAYLOAD_CONFIG_LABELS
 
 logger = logging.getLogger(__name__)
 
@@ -158,12 +159,8 @@ _FIELD_LABEL: dict[str, str] = {
     "repo_url":        "代码仓库",
     "repo_name":       "Gerrit 路径",
     "branch":          "分支",
-    "repo_type":       "仓库类型",
     "release_decision": "Release 决策",
     "build_product":   "构建产物",
-    "community_artifact": "开发者社区产物",
-    "build_image":     "构建依赖镜像",
-    "test_timeout":    "超时(min)",
     "pipeline_url":    "流水线地址",
     "build_cmd":       "构建命令",
     "deploy_cmd":      "部署命令",
@@ -173,9 +170,9 @@ _FIELD_LABEL: dict[str, str] = {
     "owner_username":  "负责人",
     "qa_username":     "QA负责人",
     "status":          "状态",
-    "notes":           "备注",
     "description":     "描述",
     "jira_id":         "Jira",
+    **CICD_PAYLOAD_CONFIG_LABELS,
 }
 
 _REQ_TYPE_LABEL: dict[str, str] = {
