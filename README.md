@@ -297,7 +297,7 @@ QA 上传的 log 文件本体保存在 `qa_logs.content` BLOB 中，下载与 AI
 1. RM 在「周期管理」导入初始化 CSV，或从上一版克隆新 release，并设置 app freeze / doc deadline。
 2. Owner 在「App 工作台」维护本 release 的 app 信息、文档、`app_info.json` 和测试说明，提交 Owner 确认。
 3. RM 导出测试范围 CSV；QA 上传 log，必要时用 AI 分析建议，核对后保存 QA 状态。
-4. RM 刷新发布文档与 Manager Review CSV。
+4. RM 刷新发布文档与 Manager Review CSV；评审 CSV 的字段顺序、标签和默认勾选项统一来自 `shared/domain_metadata.json`。
 5. Manager review / Gerrit merge 完成后，RM 执行最终 Lock Release。
 6. 需要跟踪构建交付时，Owner/RM 在「App 工作台 → CICD」提交配置申请；RM/SPD 在「CICD 工作台」审批、交付或查看近期申请。
 

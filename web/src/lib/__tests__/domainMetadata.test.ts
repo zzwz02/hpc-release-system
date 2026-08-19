@@ -8,6 +8,7 @@ import {
   DOC_TARGET_DEFAULT,
   DOC_TARGETS,
   QA_STATUS_DEFAULT,
+  MANAGER_REVIEW_FIELD_OPTIONS,
   crossesReleaseDecisionRuntimeBoundary,
   normalizeDocTarget,
   normalizeCicdCommunityArtifacts,
@@ -29,6 +30,30 @@ describe("release decision metadata", () => {
     expect(crossesReleaseDecisionRuntimeBoundary("release", "cicd_only")).toBe(false);
     expect(crossesReleaseDecisionRuntimeBoundary("release", "stopped")).toBe(true);
     expect(crossesReleaseDecisionRuntimeBoundary("stopped", "cicd_only")).toBe(true);
+  });
+});
+
+describe("Manager Review field metadata", () => {
+  it("provides the shared order, labels, and defaults", () => {
+    expect(MANAGER_REVIEW_FIELD_OPTIONS.map((field) => field.key)).toHaveLength(18);
+    expect(MANAGER_REVIEW_FIELD_OPTIONS[0]).toEqual({
+      key: "app_name",
+      label: "App",
+      defaultChecked: true,
+    });
+    expect(
+      MANAGER_REVIEW_FIELD_OPTIONS
+        .filter((field) => field.defaultChecked)
+        .map((field) => field.key),
+    ).toEqual([
+      "app_name",
+      "owners",
+      "chip_support",
+      "qa_issue_note",
+      "releasable",
+      "not_releasable_reason",
+      "known_limitations",
+    ]);
   });
 });
 

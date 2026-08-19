@@ -32,6 +32,7 @@ import { canGenerateMarkdown } from "../../lib/roles";
 import { can } from "../../lib/accessControl";
 import { downloadCsvText, parseCsvRows } from "../../lib/csv";
 import { toast } from "../../lib/toast";
+import { MANAGER_REVIEW_FIELD_OPTIONS } from "../../lib/domainMetadata";
 import type { ArtifactKind, StatePayload } from "../../types";
 import {
   ARTIFACT_KEY,
@@ -66,28 +67,6 @@ const KIND_DESC: Record<ArtifactKind, { icon: string; desc: string }> = {
   data:         { icon: "🗃️", desc: "结构化的 release-data 纯文本，便于核对原始字段。" },
   manager_review: { icon: "📊", desc: "管理评审导出：自选字段生成可下载的 CSV 汇总表。" },
 };
-
-// Manager review field picker options (mirrors index.html:762-781)
-const MANAGER_FIELDS: Array<{ key: string; label: string; defaultChecked: boolean }> = [
-  { key: "app_name",            label: "App",           defaultChecked: true  },
-  { key: "official_name",       label: "官方名称",       defaultChecked: false },
-  { key: "doc_target",          label: "文档类型",       defaultChecked: false },
-  { key: "app_type",            label: "App类型",        defaultChecked: false },
-  { key: "version",             label: "版本号",         defaultChecked: false },
-  { key: "owners",              label: "Owner",          defaultChecked: true  },
-  { key: "chip_support",        label: "支持芯片类型",    defaultChecked: true  },
-  { key: "qa_issue_note",       label: "QA问题",         defaultChecked: true  },
-  { key: "x86_chips",           label: "X86支持芯片",    defaultChecked: false },
-  { key: "arm_chips",           label: "ARM支持芯片",    defaultChecked: false },
-  { key: "release_decision",    label: "Release决策",    defaultChecked: false },
-  { key: "qa_status",           label: "QA状态",         defaultChecked: false },
-  { key: "owner_confirmed",     label: "Owner确认",      defaultChecked: false },
-  { key: "releasable",          label: "是否可发布",      defaultChecked: true  },
-  { key: "not_releasable_reason", label: "不可发布原因",  defaultChecked: true  },
-  { key: "known_limitations",   label: "已知限制",       defaultChecked: true  },
-  { key: "gerrit_url",          label: "Gerrit URL",    defaultChecked: false },
-  { key: "git_branch",          label: "Branch",        defaultChecked: false },
-];
 
 // ---------------------------------------------------------------------------
 // CsvTable — renders a parsed CSV as an HTML table
@@ -254,7 +233,7 @@ interface ManagerReviewPaneProps {
 
 function ManagerReviewPane({ releaseId, onGenerated }: ManagerReviewPaneProps) {
   const [checkedFields, setCheckedFields] = useState<Set<string>>(
-    () => new Set(MANAGER_FIELDS.filter((f) => f.defaultChecked).map((f) => f.key)),
+    () => new Set(MANAGER_REVIEW_FIELD_OPTIONS.filter((f) => f.defaultChecked).map((f) => f.key)),
   );
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
@@ -294,7 +273,7 @@ function ManagerReviewPane({ releaseId, onGenerated }: ManagerReviewPaneProps) {
       <div
         className="form grid-4col mt-12"
       >
-        {MANAGER_FIELDS.map((f) => (
+        {MANAGER_REVIEW_FIELD_OPTIONS.map((f) => (
           <label key={f.key} className="check">
             <input
               type="checkbox"

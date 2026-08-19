@@ -3,9 +3,27 @@ from __future__ import annotations
 import csv
 import io
 
+from app.domain import manager_review
 from app.services import artifact_service, qa_service
 from release_system import core
 from tests.conftest import seed_snapshot
+
+
+def test_manager_review_field_metadata_is_authoritative() -> None:
+    assert manager_review.FIELDS[0] == "app_name"
+    assert manager_review.FIELD_LABELS["official_name"] == "官方名称"
+    assert manager_review.DEFAULT_FIELDS == (
+        "app_name",
+        "owners",
+        "chip_support",
+        "qa_issue_note",
+        "releasable",
+        "not_releasable_reason",
+        "known_limitations",
+    )
+    assert manager_review.NON_RELEASE_BLANK_FIELDS == frozenset(
+        {"chip_support", "qa_issue_note", "releasable", "known_limitations"}
+    )
 
 
 def test_manager_review_moves_non_release_apps_last_and_masks_review_fields(release_with_app):

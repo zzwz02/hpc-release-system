@@ -20,7 +20,7 @@ import sqlite3
 from typing import Any
 
 from app.db.connection import transaction
-from app.domain import gates, qa
+from app.domain import gates, manager_review, qa
 from app.domain.decisions import normalize_release_decision
 from app.domain.markdown import (
     guide_test_doc_field,
@@ -37,44 +37,6 @@ from app.repositories.audit_repo import log_audit
 from app.repositories.base import dumps_json
 from app.services import release_reads
 from app.timeutil import BEIJING_TZ, beijing_now, beijing_timestamp
-
-_NON_RELEASE_MANAGER_REVIEW_BLANK_FIELDS = {
-    "chip_support",
-    "qa_issue_note",
-    "releasable",
-    "known_limitations",
-}
-
-MANAGER_REVIEW_FIELDS = [
-    ("app_name", "App"),
-    ("official_name", "官方名称"),
-    ("doc_target", "文档类型"),
-    ("app_type", "App类型"),
-    ("version", "版本号"),
-    ("owners", "Owner"),
-    ("chip_support", "支持芯片类型"),
-    ("qa_issue_note", "QA问题"),
-    ("x86_chips", "X86支持芯片"),
-    ("arm_chips", "ARM支持芯片"),
-    ("release_decision", "Release决策"),
-    ("qa_status", "QA状态"),
-    ("owner_confirmed", "Owner确认"),
-    ("releasable", "是否可发布"),
-    ("not_releasable_reason", "不可发布原因"),
-    ("known_limitations", "已知限制"),
-    ("gerrit_url", "Gerrit URL"),
-    ("git_branch", "Branch"),
-]
-DEFAULT_MANAGER_REVIEW_FIELDS = [
-    "app_name",
-    "owners",
-    "chip_support",
-    "qa_issue_note",
-    "releasable",
-    "not_releasable_reason",
-    "known_limitations",
-]
-
 
 # ---------------------------------------------------------------------------
 # QA display helpers
@@ -264,8 +226,8 @@ def _render_manager_review_csv(
     fields: list[str] | None = None,
 ) -> str:
     """Render Manager Review CSV with FastAPI non-release row handling."""
-    field_labels = dict(MANAGER_REVIEW_FIELDS)
-    selected = fields or DEFAULT_MANAGER_REVIEW_FIELDS
+    field_labels = manager_review.FIELD_LABELS
+    selected = fields or manager_review.DEFAULT_FIELDS
     if not selected:
         raise ValueError("至少选择一个输出字段")
     invalid = [field for field in selected if field not in field_labels]
@@ -307,7 +269,7 @@ def _render_manager_review_csv(
             "git_branch": app.get("git_branch", ""),
         }
         if is_non_release:
-            for field in _NON_RELEASE_MANAGER_REVIEW_BLANK_FIELDS:
+            for field in manager_review.NON_RELEASE_BLANK_FIELDS:
                 values[field] = ""
             values["not_releasable_reason"] = "不发布"
         writer.writerow([values[field] for field in selected])

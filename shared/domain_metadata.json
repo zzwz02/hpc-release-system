@@ -146,5 +146,115 @@
         "label": "备注"
       }
     }
+  },
+  "manager_review_fields": {
+    "app_name": {
+      "label": "App",
+      "order": 0,
+      "default": true,
+      "blank_for_non_release": false
+    },
+    "official_name": {
+      "label": "官方名称",
+      "order": 1,
+      "default": false,
+      "blank_for_non_release": false
+    },
+    "doc_target": {
+      "label": "文档类型",
+      "order": 2,
+      "default": false,
+      "blank_for_non_release": false
+    },
+    "app_type": {
+      "label": "App类型",
+      "order": 3,
+      "default": false,
+      "blank_for_non_release": false
+    },
+    "version": {
+      "label": "版本号",
+      "order": 4,
+      "default": false,
+      "blank_for_non_release": false
+    },
+    "owners": {
+      "label": "Owner",
+      "order": 5,
+      "default": true,
+      "blank_for_non_release": false
+    },
+    "chip_support": {
+      "label": "支持芯片类型",
+      "order": 6,
+      "default": true,
+      "blank_for_non_release": true
+    },
+    "qa_issue_note": {
+      "label": "QA问题",
+      "order": 7,
+      "default": true,
+      "blank_for_non_release": true
+    },
+    "x86_chips": {
+      "label": "X86支持芯片",
+      "order": 8,
+      "default": false,
+      "blank_for_non_release": false
+    },
+    "arm_chips": {
+      "label": "ARM支持芯片",
+      "order": 9,
+      "default": false,
+      "blank_for_non_release": false
+    },
+    "release_decision": {
+      "label": "Release决策",
+      "order": 10,
+      "default": false,
+      "blank_for_non_release": false
+    },
+    "qa_status": {
+      "label": "QA状态",
+      "order": 11,
+      "default": false,
+      "blank_for_non_release": false
+    },
+    "owner_confirmed": {
+      "label": "Owner确认",
+      "order": 12,
+      "default": false,
+      "blank_for_non_release": false
+    },
+    "releasable": {
+      "label": "是否可发布",
+      "order": 13,
+      "default": true,
+      "blank_for_non_release": true
+    },
+    "not_releasable_reason": {
+      "label": "不可发布原因",
+      "order": 14,
+      "default": true,
+      "blank_for_non_release": false
+    },
+    "known_limitations": {
+      "label": "已知限制",
+      "order": 15,
+      "default": true,
+      "blank_for_non_release": true
+    },
+    "gerrit_url": {
+      "label": "Gerrit URL",
+      "order": 16,
+      "default": false,
+      "blank_for_non_release": false
+    },
+    "git_branch": {
+      "label": "Branch",
+      "order": 17,
+      "default": false,
+      "blank_for_non_release": false
+    }
   }
 }

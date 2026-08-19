@@ -122,3 +122,13 @@ export const cicdAppConfigFieldMetadata = cicdConfigMetadata.app_fields;
 export const cicdPayloadConfigLabels = Object.fromEntries(
   Object.values(cicdAppConfigFieldMetadata).map((field) => [field.payload_field, field.label]),
 ) as Record<string, string>;
+
+export const managerReviewFieldMetadata = metadata.manager_review_fields;
+export type ManagerReviewField = keyof typeof managerReviewFieldMetadata;
+export const MANAGER_REVIEW_FIELD_OPTIONS = orderedKeys(managerReviewFieldMetadata).map(
+  (key) => ({
+    key,
+    label: managerReviewFieldMetadata[key].label,
+    defaultChecked: managerReviewFieldMetadata[key].default,
+  }),
+);
