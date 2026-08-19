@@ -12,12 +12,6 @@ _RELEASE_DECISION_METADATA = mapping_section("release_decisions")
 RELEASE_DECISIONS: frozenset[str] = frozenset(_RELEASE_DECISION_METADATA)
 NON_RELEASE_DECISIONS: frozenset[str] = frozenset({"cicd_only", "stopped"})
 
-# Valid QA statuses stored on snapshots (mirrors core.py:498)
-QA_STATUSES: frozenset[str] = frozenset({"not_checked", "qa_passed", "has_issues", "cannot_release"})
-
-# Valid documentation targets (mirrors core.py:497)
-DOC_TARGETS: frozenset[str] = frozenset({"manual", "ai4sci"})
-
 # Mapping from release_decision to CICD task status (plan §3.5 b)
 # Upper-case status values per the plan's word-table.
 DECISION_TO_CICD_STATUS: dict[str, str] = {

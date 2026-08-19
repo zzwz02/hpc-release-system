@@ -17,6 +17,7 @@ from typing import Any
 from app.db.connection import transaction
 from app.domain import import_csv, phases
 from app.domain.audit_diff import field_diff
+from app.domain.qa import QA_STATUS_DEFAULT
 from app.domain.snapshots import base_snapshot, variant_app_id
 from app.domain.textutil import join_list, normalize_name, order_chips, split_list
 from app.repositories import (
@@ -261,7 +262,7 @@ def create_release(
             snapshot.pop("locked_in_release", None)
             snapshot.update(
                 {
-                    "qa_status": "not_checked",
+                    "qa_status": QA_STATUS_DEFAULT,
                     "qa_issue_note": "",
                     "missing_items": [],
                 }

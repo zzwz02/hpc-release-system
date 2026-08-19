@@ -11,20 +11,21 @@ from pathlib import Path
 from typing import Any
 
 from app.db.connection import transaction
-from app.domain.decisions import QA_STATUSES
+from app.domain.qa import QA_STATUSES, QA_STATUS_DEFAULT, QA_STATUS_OPTIONS
 from app.repositories import apps_repo, qa_repo
 from app.repositories.audit_repo import log_audit
 from app.services import release_reads
 from app.timeutil import beijing_timestamp
 
 _QA_TEST_RESULT_STATUSES = {"pass", "fail", "skip", "unknown"}
+_QA_STATUS_PROMPT = "|".join(f'"{status}"' for status in QA_STATUS_OPTIONS)
 
 _QA_ANALYSIS_SYSTEM = (
     "You analyze QA test logs/summary tables for an HPC release. Match the "
     "log content to the provided per-app test inventory and report results.\n"
     "Return STRICT JSON of the form: "
     "{\"apps\": [{\"app_id\": str, "
-    "\"qa_status\": \"qa_passed\"|\"has_issues\"|\"cannot_release\"|\"not_checked\", "
+    f"\"qa_status\": {_QA_STATUS_PROMPT}, "
     "\"qa_issue_note\": str, \"tests\": [{\"test\": str, \"arch\": str, "
     "\"status\": \"pass\"|\"fail\"|\"skip\"|\"unknown\", \"perf\": str, \"note\": str}]}]}.\n"
     "Rules:\n"
@@ -238,9 +239,9 @@ def analyze_qa_log(
     for row in parsed.get("apps") or []:
         if not isinstance(row, dict) or row.get("app_id") not in valid_ids:
             continue
-        status = row.get("qa_status") or "not_checked"
+        status = row.get("qa_status") or QA_STATUS_DEFAULT
         if status not in QA_STATUSES:
-            status = "not_checked"
+            status = QA_STATUS_DEFAULT
         apps_out.append(
             {
                 "app_id": row["app_id"],

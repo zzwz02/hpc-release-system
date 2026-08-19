@@ -20,7 +20,7 @@ import sqlite3
 from typing import Any
 
 from app.db.connection import transaction
-from app.domain import gates
+from app.domain import gates, qa
 from app.domain.decisions import normalize_release_decision
 from app.domain.markdown import (
     guide_test_doc_field,
@@ -38,7 +38,6 @@ from app.repositories.base import dumps_json
 from app.services import release_reads
 from app.timeutil import BEIJING_TZ, beijing_now, beijing_timestamp
 
-_ISSUE_NOTE_STATUSES = {"has_issues", "cannot_release"}
 _NON_RELEASE_MANAGER_REVIEW_BLANK_FIELDS = {
     "chip_support",
     "qa_issue_note",
@@ -82,17 +81,12 @@ DEFAULT_MANAGER_REVIEW_FIELDS = [
 # ---------------------------------------------------------------------------
 
 def _qa_status_label(snapshot: dict[str, Any]) -> str:
-    status = snapshot.get("qa_status", "not_checked")
-    return {
-        "qa_passed": "通过",
-        "has_issues": "存在问题",
-        "cannot_release": "不可发布",
-        "not_checked": "未测试",
-    }.get(status, str(status))
+    status = str(snapshot.get("qa_status", qa.QA_STATUS_DEFAULT))
+    return qa.qa_status_label(status)
 
 
 def _qa_issue_note(snapshot: dict[str, Any]) -> str:
-    if snapshot.get("qa_status") in _ISSUE_NOTE_STATUSES:
+    if qa.issue_note_required(str(snapshot.get("qa_status") or "")):
         return str(snapshot.get("qa_issue_note") or "")
     return ""
 
@@ -106,7 +100,7 @@ def _merged_limitations_with_qa_note(snapshot: dict[str, Any]) -> str:
     note = _qa_issue_note(snapshot)
     if not note:
         return text
-    prefix = "QA 不可发布" if snapshot.get("qa_status") == "cannot_release" else "QA 备注"
+    prefix = qa.issue_note_prefix(str(snapshot.get("qa_status") or ""))
     qa_text = f"{prefix}：{note}"
     return f"{text}\n\n{qa_text}".strip() if text else qa_text
 
@@ -304,7 +298,7 @@ def _render_manager_review_csv(
             "x86_chips": snapshot.get("x86_chips", ""),
             "arm_chips": snapshot.get("arm_chips", ""),
             "release_decision": normalize_release_decision(snapshot.get("release_decision")),
-            "qa_status": snapshot.get("qa_status", "not_checked"),
+            "qa_status": snapshot.get("qa_status", qa.QA_STATUS_DEFAULT),
             "owner_confirmed": "是" if snapshot.get("owner_confirmed") else "否",
             "releasable": "是" if gates.qualifies_for_final(snapshot) else "否",
             "not_releasable_reason": gates.not_releasable_reason(snapshot),

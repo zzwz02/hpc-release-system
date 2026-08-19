@@ -9,6 +9,7 @@ import {
   qaStatusLabels,
 } from "../../lib/labels";
 import { displayName, appSortName } from "../../lib/identity";
+import { normalizeDocTarget } from "../../lib/domainMetadata";
 import { isOwner } from "../../lib/roles";
 import type { User } from "../../types";
 
@@ -247,7 +248,7 @@ export function copiedScalarFields(s: Snapshot): CopiedSnapshotFields {
     type: s.type ?? "",
     official_url: s.official_url ?? "",
     description: s.description ?? "",
-    doc_target: s.doc_target ?? "manual",
+    doc_target: normalizeDocTarget(s.doc_target),
     intro: s.doc?.intro ?? "",
     image_usage: s.doc?.image_usage ?? "",
     binary_usage: s.doc?.binary_usage ?? "",

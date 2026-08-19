@@ -29,6 +29,7 @@ import { formatGerritUrl } from "../../lib/git";
 import { formatServerTime } from "../../lib/time";
 import { downloadCsv } from "../../lib/csv";
 import { qaStatusLabels, qaStatusOptions } from "../../lib/labels";
+import { qaStatusRequiresIssueNote } from "../../lib/domainMetadata";
 import { toast } from "../../lib/toast";
 import type {
   StatePayload,
@@ -50,12 +51,6 @@ const QA_RELEASE_REPORT_DEFAULT_HIDDEN = new Set([
 
 const CHIP_LEGEND =
   "x201系列芯片包括x201, x203 · x301系列芯片 · x302系列芯片 · C500系列芯片包括C500, C550 · C600系列芯片包括C600 · N300系列芯片包括N300";
-const QA_NOTE_REQUIRED_STATUSES = new Set<QaStatus>(["has_issues", "cannot_release"]);
-
-function qaIssueNoteRequired(status: string): boolean {
-  return QA_NOTE_REQUIRED_STATUSES.has(status as QaStatus);
-}
-
 // ---------------------------------------------------------------------------
 // Query key + fetchers
 // ---------------------------------------------------------------------------
@@ -386,7 +381,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
       return;
     }
     const missingNote = items.find(
-      (item) => qaIssueNoteRequired(item.status) && !item.issue_note.trim(),
+      (item) => qaStatusRequiresIssueNote(item.status) && !item.issue_note.trim(),
     );
     if (missingNote) {
       toast.info(
@@ -594,7 +589,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
                   </label>
                   <label>
                     问题说明{" "}
-                    {qaIssueNoteRequired(status) ? (
+                    {qaStatusRequiresIssueNote(status) ? (
                       <span className="req">必填</span>
                     ) : (
                       "(可选)"

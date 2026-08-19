@@ -12,7 +12,11 @@ import type {
   ArtifactKind,
 } from "../types";
 import {
+  DOC_TARGETS,
+  QA_STATUSES,
   RELEASE_DECISIONS,
+  docTargetMetadata,
+  qaStatusMetadata,
   releaseDecisionMetadata,
 } from "./domainMetadata";
 
@@ -37,33 +41,22 @@ export const releaseDecisionOrder = Object.fromEntries(
 // Doc target
 // ---------------------------------------------------------------------------
 
-// Mirrors index.html:1461 exactly — only 2 selectable options in the UI.
-// "none" is a valid DB value but is not shown in any label select.
-export const docTargetOptions: Array<"manual" | "ai4sci"> = ["manual", "ai4sci"];
+export const docTargetOptions = [...DOC_TARGETS];
 
-export const docTargetLabels: Record<"manual" | "ai4sci", string> = {
-  manual: "HPC",
-  ai4sci: "AI4Sci",
-};
+export const docTargetLabels = Object.fromEntries(
+  docTargetOptions.map((target) => [target, docTargetMetadata[target].label]),
+) as Record<(typeof docTargetOptions)[number], string>;
 
 // ---------------------------------------------------------------------------
 // QA status
 // ---------------------------------------------------------------------------
 
-export const qaStatusOptions: QaStatus[] = [
-  "not_checked",
-  "qa_passed",
-  "has_issues",
-  "cannot_release",
-];
+export const qaStatusOptions: QaStatus[] = [...QA_STATUSES];
 
 // Mirrors index.html:1463-1468 (qaStatusLabels)
-export const qaStatusLabels: Record<QaStatus, string> = {
-  not_checked: "未测试",
-  qa_passed: "通过",
-  has_issues: "存在问题",
-  cannot_release: "不可发布",
-};
+export const qaStatusLabels = Object.fromEntries(
+  qaStatusOptions.map((status) => [status, qaStatusMetadata[status].label]),
+) as Record<QaStatus, string>;
 
 // ---------------------------------------------------------------------------
 // Artifact kinds

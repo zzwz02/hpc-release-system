@@ -11,6 +11,8 @@ from typing import Any
 
 from pydantic import BaseModel, field_validator
 
+from app.domain.qa import QA_STATUSES
+
 # ---------------------------------------------------------------------------
 # Generic envelopes
 # ---------------------------------------------------------------------------
@@ -136,7 +138,7 @@ class SetQaStatusRequest(BaseModel):
     @field_validator("qa_status")
     @classmethod
     def valid_qa_status(cls, v: str) -> str:
-        allowed = {"not_checked", "qa_passed", "has_issues", "cannot_release"}
+        allowed = QA_STATUSES
         if v not in allowed:
             raise ValueError(f"qa_status must be one of {sorted(allowed)}")
         return v

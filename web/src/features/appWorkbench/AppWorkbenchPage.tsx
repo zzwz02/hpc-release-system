@@ -33,7 +33,11 @@ import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
 import { isOwner, canCreateApp, canEdit, canEditRmFields } from "../../lib/roles";
 import { beforeAppFreeze, beforeDocDeadline, releaseLocked } from "../../lib/phase";
-import { crossesReleaseDecisionRuntimeBoundary } from "../../lib/domainMetadata";
+import {
+  DOC_TARGET_DEFAULT,
+  crossesReleaseDecisionRuntimeBoundary,
+  normalizeDocTarget,
+} from "../../lib/domainMetadata";
 import { displayName } from "../../lib/identity";
 import {
   GERRIT_HPC_BASE,
@@ -1647,7 +1651,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       type: s.type ?? "",
       official_url: s.official_url ?? "",
       description: s.description ?? "",
-      doc_target: s.doc_target ?? "manual",
+      doc_target: normalizeDocTarget(s.doc_target),
       owners: (s.owners ?? []).join(","),
       release_decision: s.release_decision ?? "release",
       git_url: a.git_url ?? "",
@@ -1678,7 +1682,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
   function emptyForm(): FormState {
     return {
       official_name: "", type: "", official_url: "", description: "",
-      doc_target: "manual", owners: "", release_decision: "release",
+      doc_target: DOC_TARGET_DEFAULT, owners: "", release_decision: "release",
       git_url: "", git_branch: "",
       cicd_repo_type: "git", cicd_community_artifact: "", cicd_build_image: "", cicd_test_timeout: "40", cicd_notes: "",
       intro: "", image_usage: "", binary_usage: "", env_setup: "", limitations: "",
@@ -2151,7 +2155,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
               </span>
             )}
             {snap.version && <span className="pill">版本 {snap.version}</span>}
-            <span className="pill">{(docTargetLabels as Record<string, string>)[snap.doc_target] ?? snap.doc_target}</span>
+            <span className="pill">{docTargetLabels[normalizeDocTarget(snap.doc_target)]}</span>
             {rel && (todo.length ? <span className="pill warnp">待补 {todo.length} 项</span> : <span className="pill ok">信息齐全</span>)}
             {rel && <QaPill status={snap.qa_status} />}
             <CicdPendingPill count={uniqueCicdRequestCount(appOpenCicd)} />
@@ -2285,7 +2289,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
               </label>
               <label>类型
                 <select className="select" value={form.doc_target}
-                  onChange={(e) => patch("doc_target", e.target.value as "manual" | "ai4sci")}
+                  onChange={(e) => patch("doc_target", e.target.value)}
                   disabled={!canEditDocFields || !canEditRmOnlyFields}>
                   {docTargetOptions.map((v) => (
                     <option key={v} value={v}>{docTargetLabels[v]}</option>

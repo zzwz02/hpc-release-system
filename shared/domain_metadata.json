@@ -49,5 +49,53 @@
       "order": 2,
       "cicd_status": "Stopped"
     }
+  },
+  "doc_targets": {
+    "manual": {
+      "label": "HPC",
+      "order": 0,
+      "default": true,
+      "aliases": ["HPC", "hpc"]
+    },
+    "ai4sci": {
+      "label": "AI4Sci",
+      "order": 1,
+      "default": false,
+      "aliases": ["AI4Sci", "AI4SCI"]
+    }
+  },
+  "qa_statuses": {
+    "not_checked": {
+      "label": "未测试",
+      "order": 0,
+      "default": true,
+      "issue_note_required": false,
+      "releasable": false,
+      "issue_note_prefix": ""
+    },
+    "qa_passed": {
+      "label": "通过",
+      "order": 1,
+      "default": false,
+      "issue_note_required": false,
+      "releasable": true,
+      "issue_note_prefix": ""
+    },
+    "has_issues": {
+      "label": "存在问题",
+      "order": 2,
+      "default": false,
+      "issue_note_required": true,
+      "releasable": true,
+      "issue_note_prefix": "QA 备注"
+    },
+    "cannot_release": {
+      "label": "不可发布",
+      "order": 3,
+      "default": false,
+      "issue_note_required": true,
+      "releasable": false,
+      "issue_note_prefix": "QA 不可发布"
+    }
   }
 }

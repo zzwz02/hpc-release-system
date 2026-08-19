@@ -7,8 +7,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.domain.decisions import DOC_TARGETS, normalize_release_decision
+from app.domain import qa
+from app.domain.decisions import normalize_release_decision
 from app.domain.snapshots import (
+    DOC_TARGETS,
     MAX_APP_DESCRIPTION_CHARS,
     app_description_count,
     normalize_doc_target,
@@ -99,7 +101,7 @@ def missing_items_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[dic
                 add_doc(f"{doc['path']} 缺少{label}")
     if not snapshot.get("owner_confirmed"):
         add_doc("Owner 未确认 doc")
-    qa_status = snapshot.get("qa_status", "not_checked")
+    qa_status = snapshot.get("qa_status", qa.QA_STATUS_DEFAULT)
     if qa_status == "not_checked":
         add_qa("QA 未测试")
     elif qa_status == "cannot_release":
@@ -128,7 +130,7 @@ def qualifies_for_final(snapshot: dict[str, Any]) -> bool:
         return False
     if docs_gate_items(snapshot):
         return False
-    if snapshot.get("qa_status") in {"qa_passed", "has_issues"}:
+    if qa.is_releasable(str(snapshot.get("qa_status") or qa.QA_STATUS_DEFAULT)):
         return True
     return False
 
@@ -162,7 +164,7 @@ def not_releasable_reason(snapshot: dict[str, Any]) -> str:
             reasons.append("文档/发布信息未完成")
         if not snapshot.get("owner_confirmed"):
             reasons.append("Owner未确认")
-        qa_status = snapshot.get("qa_status", "not_checked")
+        qa_status = snapshot.get("qa_status", qa.QA_STATUS_DEFAULT)
         if qa_status == "not_checked":
             reasons.append("QA未测试")
         elif qa_status == "cannot_release":

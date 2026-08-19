@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.domain.qa import QA_STATUS_DEFAULT
+from app.domain.shared_metadata import mapping_section
 from app.domain.textutil import normalize_name
 
 MAX_APP_DESCRIPTION_CHARS = 30
@@ -20,18 +22,26 @@ APP_META_LABELS = {
     "owners": "Owner",
 }
 
+_DOC_TARGET_METADATA = mapping_section("doc_targets")
+DOC_TARGETS: frozenset[str] = frozenset(_DOC_TARGET_METADATA)
+_DOC_TARGET_DEFAULTS = [
+    target
+    for target, metadata in _DOC_TARGET_METADATA.items()
+    if metadata.get("default") is True
+]
+if len(_DOC_TARGET_DEFAULTS) != 1:
+    raise RuntimeError("doc_targets must define exactly one default")
+DOC_TARGET_DEFAULT = _DOC_TARGET_DEFAULTS[0]
+_DOC_TARGET_ALIASES = {
+    str(alias).strip().lower(): target
+    for target, metadata in _DOC_TARGET_METADATA.items()
+    for alias in [target, *(metadata.get("aliases") or [])]
+}
+
 
 def normalize_doc_target(value: str | None) -> str:
-    target = (value or "manual").strip()
-    aliases = {
-        "HPC": "manual",
-        "hpc": "manual",
-        "manual": "manual",
-        "AI4Sci": "ai4sci",
-        "ai4sci": "ai4sci",
-        "AI4SCI": "ai4sci",
-    }
-    return aliases.get(target, "manual")
+    target = (value or DOC_TARGET_DEFAULT).strip().lower()
+    return _DOC_TARGET_ALIASES.get(target, DOC_TARGET_DEFAULT)
 
 
 def app_description_count(value: str | None) -> int:
@@ -114,7 +124,7 @@ def base_snapshot(
     app_type: str = "",
     official_url: str = "",
     description: str = "",
-    doc_target: str = "manual",
+    doc_target: str = DOC_TARGET_DEFAULT,
     owners: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -126,7 +136,7 @@ def base_snapshot(
         "doc_target": normalize_doc_target(doc_target),
         "owners": sorted(set(owners or [])),
         "release_decision": "release",
-        "qa_status": "not_checked",
+        "qa_status": QA_STATUS_DEFAULT,
         "qa_issue_note": "",
         "owner_confirmed": False,
         "version": "",

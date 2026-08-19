@@ -25,6 +25,7 @@ from app.domain import app_info as app_info_domain
 from app.domain import decision_sync as decision_sync_domain
 from app.domain import gates
 from app.domain import phases as phase_policy
+from app.domain.qa import QA_STATUS_DEFAULT
 from app.domain.access_actions import snapshot_allowed_actions
 from app.domain.permissions import has_capability
 from app.domain.audit_diff import field_diff, fmt_audit_value, test_docs_diff
@@ -35,6 +36,7 @@ from app.domain.decisions import (
 )
 from app.domain.snapshots import (
     APP_META_LABELS,
+    DOC_TARGET_DEFAULT,
     SNAPSHOT_META_FIELDS,
     base_snapshot,
     normalize_app_description,
@@ -401,7 +403,7 @@ def _initial_snapshot_for_future_release(
     future.pop("locked_in_release", None)
     future.update(
         {
-            "qa_status": "not_checked",
+            "qa_status": QA_STATUS_DEFAULT,
             "qa_issue_note": "",
             "missing_items": [],
         }
@@ -424,7 +426,7 @@ def add_new_app_request(
     git_branch: str,
     release_decision: str,
     owner: str,
-    doc_target: str = "manual",
+    doc_target: str = DOC_TARGET_DEFAULT,
 ) -> str:
     """Find-or-create an app and register it in this + future unlocked releases.
 

@@ -20,6 +20,7 @@ from app.domain import decisions as decisions_domain
 from app.domain import phases as phase_policy
 from app.domain.permissions import roles_for_capability
 from app.domain.textutil import order_chips
+from app.domain.snapshots import DOC_TARGET_DEFAULT
 from app.repositories import apps_repo, cicd_repo, releases_repo, snapshots_repo
 from app.repositories.audit_repo import log_audit
 from app.timeutil import beijing_timestamp
@@ -2648,7 +2649,7 @@ def cicd_first_new_app(
                 git_branch=stored_branch,
                 release_decision=target_decision,
                 owner=submitter,
-                doc_target="manual",
+                doc_target=DOC_TARGET_DEFAULT,
             )
             action = "created"
             cicd_first_action = _CICD_FIRST_ACTION_CREATED

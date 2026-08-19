@@ -28,6 +28,7 @@ import { can } from "../../lib/accessControl";
 import { displayName } from "../../lib/identity";
 import { formatDateValue, formatServerTime } from "../../lib/time";
 import { qaStatusLabels } from "../../lib/labels";
+import { normalizeDocTarget, QA_STATUS_DEFAULT } from "../../lib/domainMetadata";
 import { toast } from "../../lib/toast";
 import { confirmDialog } from "../../lib/confirm";
 import {
@@ -192,7 +193,7 @@ function StatsRow({ payload, userIsOwner, username }: StatsRowProps) {
   const releaseRows = rows.filter((x) => isReleaseSnap(x.snap));
 
   const byTarget = (list: typeof rows, t: string) =>
-    list.filter((x) => x.snap.doc_target === t).length;
+    list.filter((x) => normalizeDocTarget(x.snap.doc_target) === t).length;
 
   const hpcAll = byTarget(rows, "manual");
   const aiAll = byTarget(rows, "ai4sci");
@@ -201,7 +202,7 @@ function StatsRow({ payload, userIsOwner, username }: StatsRowProps) {
   const docIncomplete = releaseRows.filter((x) => docsItems(x.snap).length > 0).length;
 
   const qa = {
-    not_checked: releaseRows.filter((x) => (x.snap.qa_status || "not_checked") === "not_checked").length,
+    not_checked: releaseRows.filter((x) => (x.snap.qa_status || QA_STATUS_DEFAULT) === "not_checked").length,
     qa_passed: releaseRows.filter((x) => x.snap.qa_status === "qa_passed").length,
     has_issues: releaseRows.filter((x) => x.snap.qa_status === "has_issues").length,
     cannot_release: releaseRows.filter((x) => x.snap.qa_status === "cannot_release").length,

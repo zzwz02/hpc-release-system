@@ -11,6 +11,8 @@
  */
 
 import type {
+  DocTarget as SharedDocTarget,
+  QaStatus as SharedQaStatus,
   ReleaseDecision as SharedReleaseDecision,
   ReleasePhase as SharedReleasePhase,
 } from "../lib/domainMetadata";
@@ -134,18 +136,11 @@ export interface SnapshotTestDoc {
   obsolete?: boolean;
 }
 
-export type QaStatus =
-  | "not_checked"
-  | "qa_passed"
-  | "has_issues"
-  | "cannot_release";
+export type QaStatus = SharedQaStatus;
 
 export type ReleaseDecision = SharedReleaseDecision;
 
-export type DocTarget =
-  | "manual"
-  | "ai4sci"
-  | "none";
+export type DocTarget = SharedDocTarget;
 
 export interface AppInfoSnapshot {
   // Opaque dict from Gerrit/upload; shape varies

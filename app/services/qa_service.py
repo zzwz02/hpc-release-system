@@ -13,19 +13,22 @@ from pathlib import Path
 from typing import Any
 
 from app.db.connection import transaction
-from app.domain.decisions import QA_STATUSES, normalize_release_decision
 from app.domain import phases as phase_policy
+from app.domain.decisions import normalize_release_decision
+from app.domain.qa import (
+    QA_STATUSES,
+    QA_STATUS_DEFAULT,
+    issue_note_required,
+    qa_status_label,
+)
+from app.domain.snapshots import app_view
+from app.domain.textutil import order_chips
 from app.repositories import apps_repo, qa_repo, releases_repo, snapshots_repo, users_repo
 from app.repositories.audit_repo import log_audit
 from app.repositories.snapshots_repo import save_snapshot
 from app.services import release_reads
 from app.timeutil import beijing_timestamp
 
-_ISSUE_NOTE_REQUIRED_STATUSES = {"has_issues", "cannot_release"}
-_QA_STATUS_LABELS = {
-    "has_issues": "存在问题",
-    "cannot_release": "不可发布",
-}
 QA_RELEASE_REPORT_COLUMNS = [
     "类别", "名称", "Owner", "类型", "描述", "官方URL", "git_url", "git_branch",
     "对应官方版本", "OS", "Python version", "PyTorch version",
@@ -79,8 +82,8 @@ def set_qa_status_batch(
         if snapshot.get("release_decision") != "release":
             errors.append(f"{app_id}：仅 release 决策的 app 可标注 QA 状态")
             continue
-        if status in _ISSUE_NOTE_REQUIRED_STATUSES and not issue_note:
-            label = _QA_STATUS_LABELS.get(status, status)
+        if issue_note_required(status) and not issue_note:
+            label = qa_status_label(status)
             errors.append(f"{app_id}：标注「{label}」时必须填写问题说明")
             continue
         prepared.append((
@@ -88,7 +91,7 @@ def set_qa_status_batch(
             snapshot,
             status,
             issue_note,
-            snapshot.get("qa_status", "not_checked"),
+            snapshot.get("qa_status", QA_STATUS_DEFAULT),
             snapshot.get("qa_issue_note", ""),
         ))
 
@@ -100,7 +103,7 @@ def set_qa_status_batch(
         for app_id, snapshot, status, issue_note, old_status, old_note in prepared:
             snapshot["qa_status"] = status
             snapshot["qa_issue_note"] = (
-                issue_note if status in _ISSUE_NOTE_REQUIRED_STATUSES else ""
+                issue_note if issue_note_required(status) else ""
             )
             save_snapshot(conn, release_id, app_id, snapshot)
             detail = [{"field": "qa_status", "label": "QA 状态", "old": old_status, "new": status}]
@@ -196,51 +199,6 @@ def get_qa_log_download(
 # ---------------------------------------------------------------------------
 # QA reports — GET /api/qa-reports
 # ---------------------------------------------------------------------------
-
-def _normalize_doc_target(value: str | None) -> str:
-    target = (value or "manual").strip()
-    aliases = {"HPC": "manual", "hpc": "manual", "manual": "manual", "AI4Sci": "ai4sci"}
-    return aliases.get(target, target or "manual")
-
-
-def _display_name(official_name: str | None, version: str | None = "") -> str:
-    official = (official_name or "").strip()
-    ver = (version or "").strip()
-    return f"{official} {ver}".strip() if ver else official
-
-
-def _app_view(app: dict[str, Any], snapshot: dict[str, Any] | None) -> dict[str, Any]:
-    snapshot = snapshot or {}
-    view = {
-        "id": app.get("id", ""),
-        "git_url": app.get("git_url", ""),
-        "git_branch": app.get("git_branch", ""),
-        "official_name": snapshot.get("official_name", ""),
-        "type": snapshot.get("type", ""),
-        "official_url": snapshot.get("official_url", ""),
-        "description": snapshot.get("description", ""),
-        "doc_target": _normalize_doc_target(snapshot.get("doc_target")),
-        "owners": list(snapshot.get("owners", []) or []),
-        "version": snapshot.get("version", ""),
-    }
-    view["name"] = _display_name(view["official_name"], view["version"])
-    return view
-
-
-def _order_chips(values: str | list[str] | set[str] | tuple[str, ...] | None) -> list[str]:
-    if isinstance(values, str):
-        items: list[Any] = re.split(r"[,，、;；/]+", values)
-    else:
-        items = list(values or [])
-    seen: list[str] = []
-    for item in items:
-        text = str(item).strip()
-        if text and text not in seen:
-            seen.append(text)
-    rest = sorted((c for c in seen if c.lower() != "x201"), key=str.lower)
-    tail = [c for c in seen if c.lower() == "x201"]
-    return rest + tail
-
 
 def _owner_display_text(
     owners: list[str] | tuple[str, ...] | set[str] | None,
@@ -498,7 +456,7 @@ def _compare_summary(snapshot: dict[str, Any], base_snapshot: dict[str, Any] | N
         tags.append("停止发布")
 
     def _chip_set(value: Any) -> tuple[str, ...]:
-        return tuple(_order_chips(value or ""))
+        return tuple(order_chips(value or ""))
 
     if (_chip_set(snapshot.get("x86_chips")) != _chip_set(base_snapshot.get("x86_chips"))
             or _chip_set(snapshot.get("arm_chips")) != _chip_set(base_snapshot.get("arm_chips"))):
@@ -600,7 +558,7 @@ def get_qa_reports(
     for app_id, snapshot in snapshots.items():
         app = apps.get(app_id)
         if app:
-            items.append((_app_view(app, snapshot), app, snapshot, app_id))
+            items.append((app_view(app, snapshot), app, snapshot, app_id))
     items.sort(key=lambda item: (
         0 if normalize_release_decision(item[2].get("release_decision")) == "release" else 1,
         (item[0]["name"] or "").lower(),
@@ -639,8 +597,8 @@ def get_qa_reports(
         if not is_release and not compare_value:
             continue
         if is_release:
-            x86_chips = ",".join(_order_chips(snapshot.get("x86_chips", "")))
-            arm_chips = ",".join(_order_chips(snapshot.get("arm_chips", "")))
+            x86_chips = ",".join(order_chips(snapshot.get("x86_chips", "")))
+            arm_chips = ",".join(order_chips(snapshot.get("arm_chips", "")))
             display_compare = compare_value
             community_release, community_python, community_framework = _community_report_values(
                 app, snapshot

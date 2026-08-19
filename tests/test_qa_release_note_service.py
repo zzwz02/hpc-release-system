@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 
 from app.config import settings
+from app.domain import qa
+from app.domain.snapshots import normalize_doc_target
 from app.services import artifact_service, qa_service, release_service
 from release_system import core
 from tests.conftest import seed_app, seed_snapshot
@@ -73,6 +75,32 @@ def test_qa_report_blanks_legacy_community_fields_without_cicd_artifact(release_
     assert row["开发者社区发布情况"] == ""
     assert row["开发者社区发布包支持python版本"] == ""
     assert row["开发者社区发布包支持的底层框架及版本"] == ""
+
+
+def test_qa_report_unknown_doc_target_falls_back_to_manual(release_with_app):
+    conn, release_id, app_id = release_with_app
+    seed_snapshot(conn, release_id, app_id, owner_confirmed=True)
+    core.update_snapshot(
+        conn,
+        release_id,
+        app_id,
+        lambda snapshot: snapshot.update({"doc_target": "unexpected-target"}),
+    )
+
+    report = qa_service.get_qa_reports(conn, release_id)["release_report"]
+    row = dict(zip(report["columns"], report["rows"][0]))
+
+    assert normalize_doc_target("unexpected-target") == "manual"
+    assert row["类别"] == "HPC"
+
+
+def test_shared_qa_status_behavior():
+    assert qa.QA_STATUS_DEFAULT == "not_checked"
+    assert qa.issue_note_required("has_issues")
+    assert qa.issue_note_required("cannot_release")
+    assert qa.is_releasable("qa_passed")
+    assert qa.is_releasable("has_issues")
+    assert not qa.is_releasable("cannot_release")
 
 
 def test_qa_report_keeps_community_fields_when_cicd_artifact_is_selected(release_with_app):
