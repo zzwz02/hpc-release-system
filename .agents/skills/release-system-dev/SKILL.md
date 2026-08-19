@@ -30,6 +30,17 @@ conventions for every change unless the user explicitly overrides them.
 - **DB** = single `release_system.db` (SQLite WAL). Backup = stop server + copy, or `sqlite3 … ".backup"`.
 - **Identity mapping** = `app/identity.py` (`repo_to_git_identity`, short repo name → full ssh URL;
   `.xml` manifest → networked resolve).
+- **Single source of truth**: before adding or changing a configuration value, enum, label, default, field mapping,
+  normalization, or lifecycle predicate, search the whole repository for equivalent definitions. Choose one
+  authoritative source and make every caller consume it; never copy the same rule into routers, services,
+  repositories, React components, scripts, or tests. Put deploy-time integration defaults shared by runtimes in
+  `shared/*.json` and load them through `app/config.py`; expose runtime values needed by the browser through a safe
+  backend API instead of hardcoding internal URLs. Put stable cross-stack vocabularies/field descriptors in
+  `shared/*.json`, load and validate them through a focused `app/domain/` module, and expose a focused frontend
+  `lib` wrapper. Keep executable state/permission/normalization rules in `app/domain/`; services orchestrate,
+  repositories remain SQL-only, and the frontend consumes backend-derived classifications/actions instead of
+  reimplementing them. Do not expose secrets or move a module-local implementation detail into shared config merely
+  for symmetry. Add tests for the authoritative definition and at least one consumer whenever consolidating a rule.
 - **Deploy** = single process: `python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1`
   (serves both API and the built SPA). `--workers 1` is REQUIRED (in-process QA job registry + LDAP state).
 
