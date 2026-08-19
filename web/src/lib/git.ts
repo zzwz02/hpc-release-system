@@ -54,35 +54,3 @@ export function formatCicdRepoPath(
   }
   return hpcPath;
 }
-
-export function normalizeCicdRepoInput(repoType: string | null | undefined, value: string): string {
-  const raw = (value ?? "").trim();
-  if (!raw) return "";
-
-  if (repoType === "repo") {
-    const manifestRelative = stripKnownPrefix(raw, GERRIT_MANIFEST_REPO_URL);
-    if (manifestRelative !== null) return stripLeadingSlash(manifestRelative);
-
-    const hpcPath = formatGerritUrl(raw);
-    if (hpcPath.startsWith(MANIFEST_PATH_PREFIX)) {
-      return stripLeadingSlash(hpcPath.slice(MANIFEST_PATH_PREFIX.length));
-    }
-    return stripLeadingSlash(hpcPath);
-  }
-
-  const hpcRelative = stripKnownPrefix(raw, GERRIT_HPC_BASE);
-  if (hpcRelative !== null) return stripLeadingSlash(hpcRelative);
-  return stripLeadingSlash(raw);
-}
-
-export function normalizeGitUrl(url: string): string {
-  const value = (url ?? "").trim();
-  if (!value) return value;
-  if (value.includes("://") || value.startsWith("git@") || value.endsWith(".xml")) return value;
-  return `${GERRIT_HPC_BASE}/${stripLeadingSlash(value)}`;
-}
-
-export function isFullGitRemote(value: string | null | undefined): boolean {
-  const raw = (value ?? "").trim();
-  return raw.includes("://") || raw.startsWith("git@");
-}

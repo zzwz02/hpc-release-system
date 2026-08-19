@@ -1,13 +1,27 @@
 import { describe, expect, it } from "vitest";
+import gerritPathContract from "../../../../tests/contracts/gerrit_paths.json";
 import {
   GERRIT_HPC_BASE,
+  GERRIT_HPC_PROJECT,
   GERRIT_MANIFEST_BRANCH,
+  GERRIT_MANIFEST_PROJECT,
   GERRIT_MANIFEST_REPO_URL,
   formatCicdRepoPath,
   formatGerritUrl,
-  normalizeCicdRepoInput,
-  normalizeGitUrl,
 } from "../git";
+
+function expandContractValue(value: string): string {
+  const replacements: Record<string, string> = {
+    "{gerrit_hpc_base}": GERRIT_HPC_BASE,
+    "{gerrit_hpc_project}": GERRIT_HPC_PROJECT,
+    "{gerrit_manifest_project}": GERRIT_MANIFEST_PROJECT,
+    "{gerrit_manifest_repo_url}": GERRIT_MANIFEST_REPO_URL,
+  };
+  return Object.entries(replacements).reduce(
+    (result, [placeholder, replacement]) => result.split(placeholder).join(replacement),
+    value,
+  );
+}
 
 describe("shared Gerrit configuration", () => {
   it("exports the configured manifest branch", () => {
@@ -28,31 +42,12 @@ describe("formatGerritUrl", () => {
 });
 
 describe("formatCicdRepoPath", () => {
-  it("shows the PDE/HPC suffix for Gerrit git repos", () => {
-    expect(formatCicdRepoPath(`${GERRIT_HPC_BASE}/hpc_amber`, "git")).toBe("hpc_amber");
-  });
-
-  it("shows only the XML path for manifest repos", () => {
-    expect(formatCicdRepoPath(`${GERRIT_MANIFEST_REPO_URL}/APP/openfoam/hpc_v2206_v0.xml`, "repo"))
-      .toBe("APP/openfoam/hpc_v2206_v0.xml");
-    expect(formatCicdRepoPath("manifest/APP/openfoam/hpc_v2206_v0.xml", "repo"))
-      .toBe("APP/openfoam/hpc_v2206_v0.xml");
-  });
-});
-
-describe("normalizeCicdRepoInput", () => {
-  it("strips the fixed Gerrit prefix from git input", () => {
-    expect(normalizeCicdRepoInput("git", `${GERRIT_HPC_BASE}/hpc_amber`)).toBe("hpc_amber");
-  });
-
-  it("strips the manifest repo prefix from repo input", () => {
-    expect(normalizeCicdRepoInput("repo", `${GERRIT_MANIFEST_REPO_URL}/APP/openfoam/hpc_v2206_v0.xml`))
-      .toBe("APP/openfoam/hpc_v2206_v0.xml");
-  });
-});
-
-describe("normalizeGitUrl", () => {
-  it("expands short HPC paths to full Gerrit URLs", () => {
-    expect(normalizeGitUrl("hpc_amber")).toBe(`${GERRIT_HPC_BASE}/hpc_amber`);
+  it.each(gerritPathContract.cases)("matches the shared display contract: $name", (testCase) => {
+    expect(
+      formatCicdRepoPath(
+        expandContractValue(testCase.input),
+        testCase.repo_type,
+      ),
+    ).toBe(expandContractValue(testCase.display_path));
   });
 });

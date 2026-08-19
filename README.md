@@ -131,6 +131,11 @@ GERRIT_SSH_BASE_URL=ssh://gerrit.example.com:29418
 该变量同时由 FastAPI 启动配置和 Vite 构建/开发配置读取；修改后需重启后端并重新构建或重启前端。
 冻结的 `server.py` 仍保留历史常量用于 legacy/golden 基准，不属于当前运行配置；按冻结约束不修改。
 
+Gerrit 短路径展开、持久化短路径转换、身份比较和 manifest 解析以 `app/identity.py` 为唯一实现；
+离线报告脚本直接导入该模块。React 只格式化路径用于展示，并显示后端返回的解析结果，不自行推导完整
+Gerrit 身份或复制后端路径校验。前后端展示/规范化的共同测试样例位于
+`tests/contracts/gerrit_paths.json`，该文件仅是测试夹具，不是运行时配置。
+
 Jira 的浏览地址同样只取自 `jira.conf` 的 `JIRA_BASE_URL`。后端通过 `/api/cicd/config` 仅下发不含 token 的
 `jira_browse_url`，前端据此生成 issue 链接，不保存或写死 Jira 域名。
 

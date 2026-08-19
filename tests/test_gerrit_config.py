@@ -14,10 +14,23 @@ from app.integrations.gerrit import gerrit_remote_url
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SHARED_CONFIG_PATH = PROJECT_ROOT / "shared" / "integrations.json"
+PATH_CONTRACT_PATH = PROJECT_ROOT / "tests" / "contracts" / "gerrit_paths.json"
 
 
 def _shared_gerrit() -> dict[str, str]:
     return json.loads(SHARED_CONFIG_PATH.read_text(encoding="utf-8"))["gerrit"]
+
+
+def _expand_contract_value(value: str) -> str:
+    replacements = {
+        "{gerrit_hpc_base}": settings.gerrit_hpc_base_url,
+        "{gerrit_hpc_project}": settings.gerrit_hpc_project,
+        "{gerrit_manifest_project}": settings.gerrit_manifest_project,
+        "{gerrit_manifest_repo_url}": settings.manifest_repo_url,
+    }
+    for placeholder, replacement in replacements.items():
+        value = value.replace(placeholder, replacement)
+    return value
 
 
 def test_backend_gerrit_urls_are_derived_from_shared_config():
@@ -76,6 +89,25 @@ def test_repo_storage_path_keeps_database_identity_origin_free():
         )
         == "APP/demo/default.xml"
     )
+
+
+def test_python_identity_matches_shared_path_contract():
+    contract = json.loads(PATH_CONTRACT_PATH.read_text(encoding="utf-8"))
+    for case in contract["cases"]:
+        input_value = _expand_contract_value(case["input"])
+        assert identity.repo_storage_path(case["repo_type"], input_value) == (
+            _expand_contract_value(case["storage_path"])
+        ), case["name"]
+        assert identity.normalize_git_url(input_value) == (
+            _expand_contract_value(case["normalized_url"])
+        ), case["name"]
+
+
+def test_offline_report_reuses_authoritative_identity_implementation():
+    from test_data import get_release_report_test_cmd as report_script
+
+    assert report_script.normalize_git_url is identity.normalize_git_url
+    assert report_script.resolve_manifest_url is identity.resolve_manifest_url
 
 
 def test_runtime_sources_do_not_duplicate_shared_gerrit_base_url():

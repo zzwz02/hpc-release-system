@@ -54,9 +54,6 @@ import {
   GERRIT_MANIFEST_REPO_URL,
   formatCicdRepoPath,
   formatGerritUrl,
-  isFullGitRemote,
-  normalizeCicdRepoInput,
-  normalizeGitUrl,
 } from "../../lib/git";
 import {
   releaseDecisionLabels,
@@ -564,58 +561,16 @@ function AppListPanel({
   );
 }
 
-// ---------------------------------------------------------------------------
-// CICD repo-path input helpers
-// ---------------------------------------------------------------------------
-
-function newAppRepoValidationError(repoType: string, repoName: string): string {
-  const value = normalizeCicdRepoInput(repoType, repoName);
-  if (!value) return "请填写仓库路径";
-  const lowerValue = value.toLowerCase();
-  const hpcProjectPath = GERRIT_HPC_PROJECT.toLowerCase();
-  const manifestPath = GERRIT_MANIFEST_PROJECT.toLowerCase();
-  const fullManifestPath = `${GERRIT_HPC_PROJECT}/${GERRIT_MANIFEST_PROJECT}`.toLowerCase();
-  const hasPathPrefix = (prefix: string) => (
-    lowerValue === prefix || lowerValue.startsWith(`${prefix}/`)
-  );
-  if (repoType === "repo") {
-    if (
-      isFullGitRemote(value)
-      || hasPathPrefix(fullManifestPath)
-      || hasPathPrefix(manifestPath)
-    ) {
-      return `${repoType} 类型只填写 ${GERRIT_MANIFEST_PROJECT} 内 XML 路径，例如 APP/openfoam/hpc_v2206_v0.xml`;
-    }
-    if (!value.endsWith(".xml")) {
-      return "repo 类型必须填写 XML 路径，例如 APP/openfoam/hpc_v2206_v0.xml";
-    }
-    return "";
-  }
-  if (isFullGitRemote(value) || hasPathPrefix(hpcProjectPath)) {
-    return `git 类型只填写 ${GERRIT_HPC_PROJECT} 后的短路径，例如 hpc_amber`;
-  }
-  if (value.endsWith(".xml")) {
-    return "manifest XML 请切换为 repo 类型填写";
-  }
-  return "";
-}
-
 function sameCicdRepoName(
   oldRepoType: string,
   newRepoType: string,
   oldValue: string,
   newValue: string,
 ): boolean {
-  const oldPath = normalizeCicdRepoInput(oldRepoType, formatCicdRepoPath(oldValue, oldRepoType));
-  const newPath = normalizeCicdRepoInput(newRepoType, formatCicdRepoPath(newValue, newRepoType));
-  if (oldRepoType === "git" && newRepoType === "git") {
-    return normalizeGitUrl(oldPath) === normalizeGitUrl(newPath);
-  }
+  if (oldRepoType !== newRepoType) return false;
+  const oldPath = formatCicdRepoPath(oldValue, oldRepoType).trim();
+  const newPath = newValue.trim();
   return oldPath === newPath;
-}
-
-function cicdRepoPathForPayload(repoType: string, value: string): string {
-  return normalizeCicdRepoInput(repoType, formatCicdRepoPath(value, repoType));
 }
 
 function RepoPathInput({
@@ -641,8 +596,8 @@ function RepoPathInput({
       <span className="repo-input-prefix">{prefix}</span>
       <input
         className="input"
-        value={normalizeCicdRepoInput(repoType, value)}
-        onChange={(e) => onChange(normalizeCicdRepoInput(repoType, e.target.value))}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         disabled={disabled}
         data-testid={testId}
@@ -656,23 +611,28 @@ function RepoPathInput({
 // ---------------------------------------------------------------------------
 
 /**
- * Prominently displays the derived (git_url @ git_branch) so the repo→Gerrit
- * mapping is debuggable at real deployment even when the content fetch 502s.
- *
- * - git-type repos: git_url is always derivable offline (short name → full SSH URL)
- * - repo-type (.xml manifests): identity needs network; gitUrl === null → "需联网解析"
+ * Displays only the identity returned by the backend. The browser formats the
+ * URL for readability but never derives the canonical Gerrit identity itself.
  */
-function IdentityBox({ gitUrl, gitBranch }: { gitUrl: string | null; gitBranch: string }) {
+function IdentityBox({
+  gitUrl,
+  gitBranch,
+  needsNetwork = false,
+}: {
+  gitUrl: string | null;
+  gitBranch: string | null;
+  needsNetwork?: boolean;
+}) {
   const isUnresolved = !gitUrl;
   return (
     <div className="idbox" data-testid="derived-identity-box">
       <div className="idbox-title">
-        🔗 Gerrit 身份（已解析）
+        🔗 Gerrit 身份（服务端解析）
       </div>
       <div className="idbox-line break">
         <span className="idbox-label">git_url:</span>
         {isUnresolved
-          ? <span className="idbox-warn">需联网解析</span>
+          ? <span className="idbox-warn">{needsNetwork ? "需联网解析" : "服务端未返回解析结果"}</span>
           : <span className="idbox-value" title={gitUrl}>{formatGerritUrl(gitUrl)}</span>
         }
       </div>
@@ -820,11 +780,13 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
   const [decisionPreviewLoading, setDecisionPreviewLoading] = useState(false);
   const [decisionPreviewError, setDecisionPreviewError] = useState("");
 
-  // W4: derived identity — pre-computed from user inputs (or from server when
-  // impl-1's backend returns identity even on content-fetch failure).
-  // null git_url = repo-type manifest needs network to resolve.
-  const [derivedGitUrl, setDerivedGitUrl] = useState<string | null>(null);
-  const [derivedGitBranch, setDerivedGitBranch] = useState<string>("");
+  // Canonical identity is owned by the backend. A null state means the API did
+  // not return an identity response (for example, the HTTP request itself failed).
+  const [serverIdentity, setServerIdentity] = useState<{
+    gitUrl: string | null;
+    gitBranch: string | null;
+    needsNetwork: boolean;
+  } | null>(null);
 
   const [cicdFirstDecision, setCicdFirstDecision] = useState<"release" | "cicd_only">("cicd_only");
   const [newCicdCommunityArtifact, setNewCicdCommunityArtifact] = useState("");
@@ -894,41 +856,32 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
 
   async function handleFetch() {
     if (!officialName.trim()) { setFetchErrMsg("请填写官方名称"); return; }
-    const normalizedRepoName = normalizeCicdRepoInput(repoType, repoName);
-    setRepoName(normalizedRepoName);
-    const repoErr = newAppRepoValidationError(repoType, normalizedRepoName);
-    if (repoErr) { setFetchErrMsg(repoErr); return; }
+    const submittedRepoName = repoName.trim();
+    setRepoName(submittedRepoName);
+    if (!submittedRepoName) { setFetchErrMsg("请填写仓库路径"); return; }
     if (!effectiveBranch) { setFetchErrMsg("请填写分支"); return; }
-
-    // W4: Pre-compute client-side derived identity BEFORE the network call so
-    // it is always displayable even if the Gerrit content fetch 502s.
-    // git-type: normalize short name → full SSH URL (offline, always derivable).
-    // repo-type (.xml manifest): needs Gerrit network to resolve → null = "需联网解析".
-    const clientUrl = isRepo ? null : normalizeGitUrl(normalizedRepoName);
-    setDerivedGitUrl(clientUrl);
-    setDerivedGitBranch(effectiveBranch);
 
     setFetchErrMsg("");
     setFetchErrBlocking(false);
     setRetryCreateInfo(null);
+    setServerIdentity(null);
     setStep("fetching");
     const decisionPreviewPromise = loadDecisionPreview();
     try {
       const data = await fetchCicdPreview({
         official_name: officialName.trim(),
         repo_type: repoType,
-        repo_name: normalizedRepoName,
+        repo_name: submittedRepoName,
         branch: effectiveBranch,
       });
       const retryInfo = retryInfoFromPreview(data);
       setRetryCreateInfo(retryInfo);
 
-      // W4: impl-1 backend always returns identity fields (git_url / git_branch)
-      // even when the Gerrit content fetch fails (app_info_unavailable=true, HTTP 200).
-      // Update derived identity from server — more authoritative than the client-computed value.
-      if (data.git_url) setDerivedGitUrl(data.git_url);
-      else if (data.needs_network) setDerivedGitUrl(null); // manifest still needs network
-      if (data.git_branch) setDerivedGitBranch(data.git_branch);
+      setServerIdentity({
+        gitUrl: data.git_url,
+        gitBranch: data.git_branch,
+        needsNetwork: data.needs_network,
+      });
 
       if (data.app_info_unavailable) {
         // Gerrit content fetch failed (soft 200); identity already updated above.
@@ -962,7 +915,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
     }
     setStep("creating");
     setCreateErrMsg("");
-    const normalizedRepoName = normalizeCicdRepoInput(repoType, repoName);
+    const submittedRepoName = repoName.trim();
     try {
       const r = await cicdFirstNewApp({
         release_id: currentReleaseId,
@@ -970,7 +923,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
         app_name: officialName.trim(),
         owner_username: currentUsername,
         repo_type: repoType,
-        repo_name: normalizedRepoName,
+        repo_name: submittedRepoName,
         branch: effectiveBranch,
         cicd_repo_type: repoType,
         cicd_community_artifact: newCicdCommunityArtifact,
@@ -994,7 +947,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
     }
     setStep("creating");
     setCreateErrMsg("");
-    const normalizedRepoName = normalizeCicdRepoInput(repoType, repoName);
+    const submittedRepoName = repoName.trim();
     try {
       const r = await cicdFirstNewApp({
         release_id: currentReleaseId,
@@ -1002,7 +955,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
         app_name: officialName.trim(),
         owner_username: currentUsername,
         repo_type: repoType,
-        repo_name: normalizedRepoName,
+        repo_name: submittedRepoName,
         branch: effectiveBranch,
         cicd_repo_type: repoType,
         cicd_community_artifact: newCicdCommunityArtifact,
@@ -1024,9 +977,8 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
   if (step === "preview" || (step === "creating" && preview !== null)) {
     const isCreating = step === "creating";
     const isRetryCreate = retryCreateInfo !== null;
-    // W4: Use server-returned identity (most authoritative); fall back to client-computed.
-    const identityUrl = (preview?.git_url) || derivedGitUrl;
-    const identityBranch = (preview?.git_branch) || derivedGitBranch || effectiveBranch;
+    const identityUrl = preview?.git_url ?? serverIdentity?.gitUrl ?? null;
+    const identityBranch = preview?.git_branch ?? serverIdentity?.gitBranch ?? null;
     return (
       <div className="dialog-backdrop" data-testid="new-app-dialog">
         <div className="dialog-box minw-560 maxw-720">
@@ -1042,12 +994,14 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
                 确认后将为 {retryCreateInfo.appName} 重新提交“新建”CICD 申请。
               </div>
             )}
-            {/* W4: Derived Gerrit identity — always shown so the repo→Gerrit mapping
-                is debuggable at real deployment (helps verify normalization is correct). */}
-            <IdentityBox gitUrl={identityUrl} gitBranch={identityBranch} />
+            <IdentityBox
+              gitUrl={identityUrl}
+              gitBranch={identityBranch}
+              needsNetwork={preview?.needs_network ?? serverIdentity?.needsNetwork ?? false}
+            />
             <div className="form overlay-freeze" data-testid="new-app-preview">
               <label>官方名称<input className="input" value={officialName.trim()} disabled /></label>
-              <label>仓库<input className="input" value={`${normalizeCicdRepoInput(repoType, repoName)} @ ${effectiveBranch}`} disabled /></label>
+              <label>仓库<input className="input" value={`${repoName.trim()} @ ${effectiveBranch}`} disabled /></label>
               <label>Release 决策<input className="input" value={cicdFirstDecision === "cicd_only" ? "cicd-only" : "release"} disabled /></label>
               {preview && (<>
                 <label>版本<input className="input" value={preview.app_version || "—"} disabled /></label>
@@ -1082,11 +1036,6 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
   // ── Fetch-error: Gerrit unreachable ──────────────────────────────────────
   if (step === "fetch-error" || (step === "creating" && preview === null)) {
     const isCreating = step === "creating";
-    // W4: show derived identity even when content fetch fails.
-    // derivedGitUrl was pre-computed just before the fetch call so it
-    // reflects the latest user inputs (or the server-returned value when
-    // impl-1's backend returns identity even on content_ok=false).
-    const errIdentityBranch = derivedGitBranch || effectiveBranch;
     return (
       <div className="dialog-backdrop" data-testid="new-app-dialog">
         <div className="dialog-box minw-560 maxw-720">
@@ -1110,13 +1059,14 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
                 可为 {retryCreateInfo.appName} 重新提交“新建”CICD 申请。
               </div>
             )}
-            {/* W4: Derived identity — always shown so the repo→Gerrit URL mapping
-                is debuggable at real deployment even when Gerrit content is unreachable.
-                For git-type repos, the full SSH URL is derived offline. */}
-            <IdentityBox gitUrl={derivedGitUrl} gitBranch={errIdentityBranch} />
+            <IdentityBox
+              gitUrl={serverIdentity?.gitUrl ?? null}
+              gitBranch={serverIdentity?.gitBranch ?? null}
+              needsNetwork={serverIdentity?.needsNetwork ?? false}
+            />
             <p className="small muted">
               <b>官方名称：</b>{officialName.trim()}<br />
-              <b>仓库：</b>{normalizeCicdRepoInput(repoType, repoName)} @ {effectiveBranch}<br />
+              <b>仓库：</b>{repoName.trim()} @ {effectiveBranch}<br />
               <b>Release 决策：</b>{cicdFirstDecision === "cicd_only" ? "cicd-only" : "release"}
             </p>
             <NewAppDecisionPlan
@@ -1167,7 +1117,6 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
               <select className="select" value={repoType} disabled={isFetching} onChange={(e) => {
                 const v = e.target.value;
                 setRepoType(v);
-                setRepoName((name) => normalizeCicdRepoInput(v, name));
                 if (v === "repo") setBranch(GERRIT_MANIFEST_BRANCH);
               }}>
                 <option value="git">git</option>
@@ -1364,7 +1313,6 @@ function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit,
                 onChange={(e) => {
                   const nextRepoType = e.target.value;
                   onPatch("cicd_repo_type", nextRepoType);
-                  onPatch("git_url", normalizeCicdRepoInput(nextRepoType, form.git_url));
                   if (nextRepoType === "repo") onPatch("git_branch", GERRIT_MANIFEST_BRANCH);
                 }}
                 disabled={disabled}
@@ -1624,7 +1572,10 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       doc_target: normalizeDocTarget(s.doc_target),
       owners: (s.owners ?? []).join(","),
       release_decision: s.release_decision ?? "release",
-      git_url: a.git_url ?? "",
+      git_url: formatCicdRepoPath(
+        a.git_url,
+        a.cicd_repo_type || CICD_REPO_TYPE_DEFAULT,
+      ),
       git_branch: a.git_branch ?? "",
       cicd_repo_type: a.cicd_repo_type || CICD_REPO_TYPE_DEFAULT,
       cicd_community_artifact: a.cicd_community_artifact ?? "",
@@ -1785,8 +1736,8 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     }
     if (!sameCicdRepoName(originalRepoType, nextRepoType, app.git_url || "", form.git_url)) {
       diff.repo_name = {
-        old: cicdRepoPathForPayload(originalRepoType, app.git_url || ""),
-        new: cicdRepoPathForPayload(nextRepoType, form.git_url),
+        old: formatCicdRepoPath(app.git_url || "", originalRepoType).trim(),
+        new: form.git_url.trim(),
       };
     }
     if (!sameScalarValue(app.git_branch, form.git_branch)) {
@@ -1821,13 +1772,6 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       if (!Object.keys(diff).length) {
         setSaveErr("CICD 配置没有任何字段发生变化。");
         return;
-      }
-      if (diff.repo_name || diff.repo_type) {
-        const repoErr = newAppRepoValidationError(form.cicd_repo_type || CICD_REPO_TYPE_DEFAULT, form.git_url);
-        if (repoErr) {
-          setCicdRepoErr(`Gerrit 路径校验失败：${repoErr}`);
-          return;
-        }
       }
       const openCreate = appOpenCicd.find(isOpenCreateRequest);
       if (openCreate) {
@@ -3010,7 +2954,10 @@ export function AppWorkbenchPage() {
     setNewAppInitialValues({
       officialName: snap.official_name || app.aliases?.[0] || app.id,
       repoType: app.cicd_repo_type || (app.git_url.endsWith(".xml") ? "repo" : CICD_REPO_TYPE_DEFAULT),
-      repoName: app.git_url,
+      repoName: formatCicdRepoPath(
+        app.git_url,
+        app.cicd_repo_type || (app.git_url.endsWith(".xml") ? "repo" : CICD_REPO_TYPE_DEFAULT),
+      ),
       branch: app.git_branch,
     });
     setShowNewApp(true);

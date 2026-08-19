@@ -1279,9 +1279,11 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["cicd", "tasks"] });
   });
 
-  it("blocks invalid Gerrit path changes in the App CICD tab", async () => {
+  it("shows authoritative backend Gerrit path validation in the App CICD tab", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
-    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, request: { id: 1 } });
+    (apiPost as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error(`git 类型只填写 ${GERRIT_HPC_PROJECT} 后的短路径，例如 hpc_amber`),
+    );
     const qc = makeQueryClient();
     renderPage(qc);
     await enterEditOnApp1();
@@ -1299,7 +1301,7 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
     const gerritField = screen.getByTestId("field-cicd-git-url").closest("label");
     expect(gerritField).not.toBeNull();
     expect(gerritField!).toContainElement(error);
-    expect(apiPost).not.toHaveBeenCalled();
+    expect(apiPost).toHaveBeenCalledWith("/api/cicd/requests/submit", expect.anything());
   });
 
   it("shows App CICD config even without any legacy CICD task", async () => {
@@ -2144,8 +2146,7 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
     await waitFor(() => screen.getByTestId("new-app-dialog"));
   }
 
-  it("fetch-error step shows derived git_url@branch for a git-type repo", async () => {
-    // Gerrit fetch throws (network unreachable)
+  it("does not derive a Gerrit identity when the backend request fails", async () => {
     (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string, body?: unknown) => {
       if (url.includes("decision-preview")) return newAppDecisionPreviewForBody(body);
       if (url.includes("fetch-preview")) throw new Error("Gerrit not reachable");
@@ -2166,16 +2167,21 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
     await waitFor(() => screen.getByTestId("derived-identity-box"));
     const box = screen.getByTestId("derived-identity-box");
 
-    expect(box.textContent).toContain("sw-metax-open/myapp");
-    expect(box.textContent).toContain("main");
-    // Labeling
-    expect(box.textContent).toContain("Gerrit 身份");
+    expect(box.textContent).toContain("服务端未返回解析结果");
+    expect(box.textContent).not.toContain("sw-metax-open/myapp");
+    expect(box.textContent).toContain("Gerrit 身份（服务端解析）");
   });
 
-  it("fetch-error step shows '需联网解析' for repo-type (manifest needs network)", async () => {
+  it("shows the backend needs-network result for a repo-type manifest", async () => {
     (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string, body?: unknown) => {
       if (url.includes("decision-preview")) return newAppDecisionPreviewForBody(body);
-      if (url.includes("fetch-preview")) throw new Error("Gerrit not reachable");
+      if (url.includes("fetch-preview")) return {
+        git_url: null,
+        git_branch: null,
+        needs_network: true,
+        app_info_unavailable: true,
+        app_info_error: "manifest 路径需要联网解析（Gerrit 不可达）",
+      };
       return { ok: true, app_id: "x2", request_id: 2 };
     });
     await openWizard();
@@ -2193,8 +2199,7 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
     await waitFor(() => screen.getByTestId("derived-identity-box"));
     const box = screen.getByTestId("derived-identity-box");
     expect(box.textContent).toContain("需联网解析");
-    // Branch (auto-fixed to master for repo-type)
-    expect(box.textContent).toContain("master");
+    expect(box.textContent).toContain("—");
   });
 
   it("preview step shows identity box with git_url from server response", async () => {

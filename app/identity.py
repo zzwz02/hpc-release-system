@@ -1,7 +1,6 @@
 """Git identity seam — canonical mapping from repo info to (git_url, git_branch).
 
-Algorithm per plan §4.2 (mirrors normalize_git_url + resolve_manifest_url from
-test_data/get_release_report_test_cmd.py):
+This module is the authoritative implementation for runtime and offline tools:
 
   - Short repo name (e.g. 'hpc_hpl') → prepend HPC Gerrit prefix
   - Absolute URL (starts with '://' or 'git@') or .xml path → pass through
@@ -45,9 +44,15 @@ _manifest_cache: dict[str, tuple[str | None, str | None]] = {}
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def is_full_git_remote(value: str | None) -> bool:
+    """Return whether *value* is an absolute URL or an scp-style git remote."""
+    raw = str(value or "").strip()
+    return "://" in raw or raw.startswith("git@")
+
+
 def _is_absolute_git_url(value: str) -> bool:
     """Return True if *value* is already an absolute URL, git@ remote, or .xml path."""
-    return "://" in value or value.startswith("git@") or value.endswith(".xml")
+    return is_full_git_remote(value) or value.endswith(".xml")
 
 
 def _git_archive_extract(remote: str, branch: str, path: str, dest_dir: str) -> bool:
@@ -85,7 +90,7 @@ def normalize_git_url(git_url: str) -> str:
     Absolute URLs, git@ remotes and .xml paths are returned unchanged.
     Empty strings are returned as-is.
 
-    Mirrors normalize_git_url() in test_data/get_release_report_test_cmd.py.
+    Offline tools import this function instead of maintaining a copy.
     """
     value = str(git_url or "").strip()
     if not value:
@@ -124,6 +129,45 @@ def repo_storage_path(repo_type: str, repo_name: str) -> str:
     return value.lstrip("/")
 
 
+def validate_repo_path_input(repo_type: str, repo_name: str) -> None:
+    """Validate the short Gerrit path accepted by CICD write APIs.
+
+    Full/internal-prefixed values remain supported by :func:`repo_storage_path`
+    for legacy data migration, but interactive writes must submit the short
+    path shown in the UI. Keeping this rule here makes the backend the sole
+    authority; browser-side formatting is not a security or data boundary.
+    """
+    raw = str(repo_name or "").strip().lstrip("/")
+    if not raw:
+        return
+
+    normalized_type = (repo_type or CICD_REPO_TYPE_DEFAULT).strip()
+    hpc_project = settings.gerrit_hpc_project.strip("/")
+    manifest_project = settings.gerrit_manifest_project.strip("/")
+    if normalized_type == "repo":
+        if (
+            is_full_git_remote(raw)
+            or raw.startswith(f"{manifest_project}/")
+            or raw.startswith(f"{hpc_project}/{manifest_project}/")
+        ):
+            raise ValueError(
+                f"repo 类型只填写 {manifest_project} 内 XML 路径，"
+                "例如 APP/openfoam/hpc_v2206_v0.xml"
+            )
+        if not raw.endswith(".xml"):
+            raise ValueError(
+                "repo 类型必须填写 XML 路径，"
+                "例如 APP/openfoam/hpc_v2206_v0.xml"
+            )
+        return
+    if is_full_git_remote(raw) or raw.startswith(f"{hpc_project}/"):
+        raise ValueError(
+            f"git 类型只填写 {hpc_project} 后的短路径，例如 hpc_amber"
+        )
+    if raw.endswith(".xml"):
+        raise ValueError("manifest XML 请使用 repo 类型填写")
+
+
 def resolve_manifest_url(
     git_url: str,
     git_branch: str,
@@ -141,7 +185,7 @@ def resolve_manifest_url(
     Results are cached in-process.  Runtime callers that need the current XML
     contents pass ``refresh=True`` so a manifest change is observed.
 
-    Mirrors resolve_manifest_url() in test_data/get_release_report_test_cmd.py.
+    Offline tools import this function instead of maintaining a copy.
 
     Requires network access to the configured manifest repository.
     """

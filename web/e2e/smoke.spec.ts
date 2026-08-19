@@ -692,11 +692,8 @@ async function freshLogin(page: Page, username: string): Promise<void> {
   await login(page, username);
 }
 
-test.describe("W4 wizard derived-identity display", () => {
-  test("fetch-error step shows derived git_url@branch for git-type repo", async ({ page }) => {
-    // Intercept fetch-preview to immediately return a 502 (Gerrit unreachable).
-    // This lets the frontend show the derived identity box without waiting on
-    // a real TCP timeout to gerrit (can be 30-60 s).
+test.describe("W4 wizard backend-identity display", () => {
+  test("does not derive an identity when the backend request fails", async ({ page }) => {
     await page.route("**/api/cicd/apps/fetch-preview", async (route) => {
       await route.fulfill({
         status: 502,
@@ -710,7 +707,8 @@ test.describe("W4 wizard derived-identity display", () => {
     await page.click('[data-testid="new-app-btn"]');
     await page.waitForSelector('[data-testid="new-app-dialog"]', { timeout: 5_000 });
 
-    // Fill a git-type short repo name — identity is always derivable offline
+    // Fill a git-type short repo name. The browser must not expand it into a
+    // canonical Gerrit URL when the authoritative backend request fails.
     const uniq = Date.now();
     await page.fill('[data-testid="new-app-name"]', `e2e-w4-identity-${uniq}`);
     await page.fill('[data-testid="new-app-repo-name"]', `sw-metax-open/e2e-app-${uniq}`);
@@ -719,14 +717,12 @@ test.describe("W4 wizard derived-identity display", () => {
     // Trigger fetch — immediately 502 via our route mock
     await page.click('[data-testid="new-app-fetch"]');
 
-    // Error state must appear with the identity box (fast — no real network wait)
     await page.waitForSelector('[data-testid="derived-identity-box"]', { timeout: 5_000 });
 
     const boxText = await page.textContent('[data-testid="derived-identity-box"]');
-    // The UI displays the shortened Gerrit identity for readability.
-    expect(boxText).toContain(`sw-metax-open/e2e-app-${uniq}`);
-    expect(boxText).toContain("main");
-    expect(boxText).toContain("Gerrit 身份");
+    expect(boxText).toContain("服务端未返回解析结果");
+    expect(boxText).not.toContain(`sw-metax-open/e2e-app-${uniq}`);
+    expect(boxText).toContain("Gerrit 身份（服务端解析）");
 
     // Screenshot for team-lead verification
     await page.screenshot({ path: "e2e/screenshots/w4-wizard-identity-fetch-error.png", fullPage: false });
@@ -735,9 +731,15 @@ test.describe("W4 wizard derived-identity display", () => {
   test("fetch-error step shows 需联网解析 for repo-type", async ({ page }) => {
     await page.route("**/api/cicd/apps/fetch-preview", async (route) => {
       await route.fulfill({
-        status: 502,
+        status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ ok: false, error: "Gerrit 网络不可达（e2e w4 mock）" }),
+        body: JSON.stringify({
+          git_url: null,
+          git_branch: null,
+          needs_network: true,
+          app_info_unavailable: true,
+          app_info_error: "manifest 路径需要联网解析（Gerrit 不可达）",
+        }),
       });
     });
 
@@ -760,7 +762,7 @@ test.describe("W4 wizard derived-identity display", () => {
     await page.waitForSelector('[data-testid="derived-identity-box"]', { timeout: 5_000 });
     const boxText = await page.textContent('[data-testid="derived-identity-box"]');
     expect(boxText).toContain("需联网解析");
-    expect(boxText).toContain("master");
+    expect(boxText).toContain("—");
 
     // Screenshot
     await page.screenshot({ path: "e2e/screenshots/w4-wizard-identity-repo-type.png", fullPage: false });

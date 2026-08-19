@@ -12,8 +12,9 @@ HPC 发布信息汇总脚本
        (app_name, git_url, git_branch) 清单；app_version 仅从 app_info.json
        顶层 `app_version` 字段读取，缺失时输出为空。
     3. 对每个 app：
-         - 若 git_url 是短仓库名（如 hpc_hpl），先补全为 Gerrit SSH URL。
-         - 若 git_url 以 .xml 结尾，先从配置的 manifest branch 拉取该 XML，
+         - Gerrit 路径与 manifest 解析统一复用 `app.identity`，不在脚本内
+           维护第二套规范化规则。
+         - 若 git_url 以 .xml 结尾，从配置的 manifest branch 拉取该 XML，
            解析含 <linkfile src="app_info.json"/> 的 <project>，得到真实
            (repo_url, branch)；否则直接使用原值。
          - 通过 `git archive --remote=<url> <branch> app_info.json` 拉取并解析
@@ -42,6 +43,7 @@ HPC 发布信息汇总脚本
 
 import io
 import os
+import sys
 import json
 import argparse
 import shlex
@@ -49,22 +51,19 @@ import subprocess
 import tarfile
 import tempfile
 import datetime
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pandas as pd
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.identity import normalize_git_url, resolve_manifest_url
+
 # Global Configuration
 today_date = datetime.date.today().strftime("%m%d")
 TARGET_VERSION = "3.8.0"
-_INTEGRATIONS_PATH = Path(__file__).resolve().parents[1] / "shared" / "integrations.json"
-_GERRIT_CONFIG = json.loads(_INTEGRATIONS_PATH.read_text(encoding="utf-8"))["gerrit"]
-_GERRIT_SSH_BASE_URL = _GERRIT_CONFIG["ssh_base_url"].rstrip("/")
-_GERRIT_HPC_PROJECT = _GERRIT_CONFIG["hpc_project"].strip("/")
-_GERRIT_MANIFEST_PROJECT = _GERRIT_CONFIG["manifest_project"].strip("/")
-RESOLVED_REPO_BASE = f"{_GERRIT_SSH_BASE_URL}/{_GERRIT_HPC_PROJECT}"
-MANIFEST_REPO_URL = f"{RESOLVED_REPO_BASE}/{_GERRIT_MANIFEST_PROJECT}"
-MANIFEST_BRANCH = _GERRIT_CONFIG["manifest_branch"].strip()
 
 
 def fetch_test_data(localhost, username, password, database):
@@ -121,25 +120,6 @@ def _strip_string_columns(df):
     for col in df.select_dtypes(include=['object']).columns:
         df[col] = df[col].apply(lambda v: v.strip() if isinstance(v, str) else v)
     return df
-
-
-def _is_absolute_git_url(git_url):
-    value = str(git_url or '').strip()
-    return (
-        '://' in value
-        or value.startswith('git@')
-        or value.endswith('.xml')
-    )
-
-
-def normalize_git_url(git_url):
-    """Convert CSV short repo names into full Gerrit SSH URLs."""
-    value = str(git_url or '').strip()
-    if not value:
-        return value
-    if _is_absolute_git_url(value):
-        return value
-    return f"{RESOLVED_REPO_BASE}/{value.lstrip('/')}"
 
 
 def read_app_csv(csv_file):
@@ -238,66 +218,6 @@ def _git_archive_extract(remote, branch, path, dest_dir):
         print(f"    stderr: {result.stderr.strip()}")
         return False
     return True
-
-
-def resolve_manifest_url(git_url, git_branch):
-    """If git_url ends with .xml, fetch it from the configured manifest branch
-    and resolve to the actual (repo_url, branch) of the project carrying
-    <linkfile src="app_info.json"/>.
-
-    Returns:
-      (resolved_url, resolved_branch) — on success, or when input was not an .xml.
-      (None, None) — when input was .xml but resolution failed; callers must skip
-                     fetching app_info (otherwise the .xml path would be passed
-                     to `git archive` as a repo URL, which always fails).
-    """
-    if not git_url or not git_url.endswith('.xml'):
-        return git_url, git_branch
-
-    xml_path = git_url.lstrip('/')
-    try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            if not _git_archive_extract(MANIFEST_REPO_URL, MANIFEST_BRANCH, xml_path, tmpdir):
-                return None, None
-            xml_full = os.path.join(tmpdir, xml_path)
-            if not os.path.exists(xml_full):
-                print(f"  [warn] manifest xml missing after extract: {xml_path} "
-                      f"(file does not exist in {MANIFEST_REPO_URL}@{MANIFEST_BRANCH})")
-                return None, None
-
-            root = ET.parse(xml_full).getroot()
-            default_rev = ''
-            default_elem = root.find('default')
-            if default_elem is not None:
-                default_rev = default_elem.get('revision', '')
-
-            target_project = None
-            for proj in root.findall('project'):
-                for link in proj.findall('linkfile'):
-                    if link.get('src') == 'app_info.json':
-                        target_project = proj
-                        break
-                if target_project is not None:
-                    break
-
-            if target_project is None:
-                print(f"  [warn] no project with app_info.json linkfile in {xml_path}")
-                print(f"    available projects: {[p.get('name') for p in root.findall('project')]}")
-                return None, None
-
-            raw_name = target_project.get('name')
-            raw_rev = target_project.get('revision')
-            name = (raw_name or '').strip()
-            revision = (raw_rev or default_rev or '').strip()
-            if raw_name != name or (raw_rev or '') != revision:
-                print(f"  [debug] manifest {xml_path}: stripped whitespace "
-                      f"name {raw_name!r}->{name!r}, revision {raw_rev!r}->{revision!r}")
-            resolved_url = f"{RESOLVED_REPO_BASE}/{name}"
-            print(f"  [debug] resolved {xml_path} -> url={resolved_url!r} branch={revision!r}")
-            return resolved_url, revision
-    except Exception as e:
-        print(f"  [warn] error resolving manifest {git_url}: {e}")
-        return None, None
 
 
 def fetch_app_info(git_url, git_branch):

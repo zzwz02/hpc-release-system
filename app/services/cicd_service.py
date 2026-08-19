@@ -23,6 +23,7 @@ from app.domain import phases as phase_policy
 from app.domain.permissions import roles_for_capability
 from app.domain.textutil import order_chips
 from app.domain.snapshots import DOC_TARGET_DEFAULT
+from app.identity import validate_repo_path_input
 from app.repositories import apps_repo, cicd_repo, releases_repo, snapshots_repo
 from app.repositories.audit_repo import log_audit
 from app.timeutil import beijing_timestamp
@@ -165,41 +166,6 @@ def _cicd_first_config_values(payload: dict, repo_type: str) -> dict[str, object
     }
 
 
-def _is_full_git_remote(value: str) -> bool:
-    return "://" in value or value.startswith("git@")
-
-
-def _validate_cicd_first_repo_input(repo_type: str, repo_name: str) -> None:
-    raw = (repo_name or "").strip().lstrip("/")
-    if not raw:
-        return
-    normalized_type = cicd_config_domain.normalize_repo_type(repo_type)
-    hpc_project = settings.gerrit_hpc_project.strip("/")
-    manifest_project = settings.gerrit_manifest_project.strip("/")
-    if normalized_type == "repo":
-        if (
-            _is_full_git_remote(raw)
-            or raw.startswith(f"{manifest_project}/")
-            or raw.startswith(f"{hpc_project}/{manifest_project}/")
-        ):
-            raise ValueError(
-                f"repo 类型只填写 {manifest_project} 内 XML 路径，"
-                "例如 APP/openfoam/hpc_v2206_v0.xml"
-            )
-        if not raw.endswith(".xml"):
-            raise ValueError(
-                "repo 类型必须填写 XML 路径，"
-                "例如 APP/openfoam/hpc_v2206_v0.xml"
-            )
-        return
-    if _is_full_git_remote(raw) or raw.startswith(f"{hpc_project}/"):
-        raise ValueError(
-            f"git 类型只填写 {hpc_project} 后的短路径，例如 hpc_amber"
-        )
-    if raw.endswith(".xml"):
-        raise ValueError("manifest XML 请使用 repo 类型填写")
-
-
 def _validate_app_workbench_modify_repo_input(
     conn: sqlite3.Connection,
     app_id: str,
@@ -222,7 +188,7 @@ def _validate_app_workbench_modify_repo_input(
     ).strip()
     if not next_repo_name:
         raise ValueError("repo_name 不能为空，请检查 repo_name / branch")
-    _validate_cicd_first_repo_input(next_repo_type, next_repo_name)
+    validate_repo_path_input(next_repo_type, next_repo_name)
 
 
 def _task_id_to_app_id(conn: sqlite3.Connection, task_id: str | None) -> str | None:
@@ -2147,7 +2113,7 @@ def preview_cicd_app_info(
     if not (branch or "").strip():
         raise ValueError("branch 不能为空，请检查 repo_name / branch")
     repo_type = cicd_config_domain.normalize_repo_type(repo_type)
-    _validate_cicd_first_repo_input(repo_type, repo_name)
+    validate_repo_path_input(repo_type, repo_name)
 
     # Determine if this is a manifest repo (identity needs network).
     is_manifest = (repo_name or "").strip().endswith(".xml")
@@ -2245,7 +2211,7 @@ def preview_cicd_app_info_for_create(
     if not (branch or "").strip():
         raise ValueError("branch 不能为空，请检查 repo_name / branch")
     repo_type = cicd_config_domain.normalize_repo_type(repo_type)
-    _validate_cicd_first_repo_input(repo_type, repo_name)
+    validate_repo_path_input(repo_type, repo_name)
 
     raw_repo_name = repo_name.strip()
     raw_branch = branch.strip()
@@ -2480,7 +2446,7 @@ def cicd_first_new_app(
     if not official_name:
         raise ValueError("必须提供 app 名称（official_name）")
     repo_type = cicd_config_domain.normalize_repo_type(repo_type)
-    _validate_cicd_first_repo_input(repo_type, repo_name)
+    validate_repo_path_input(repo_type, repo_name)
 
     # ------------------------------------------------------------------
     # Step 1 — Derive identity OUTSIDE the write transaction

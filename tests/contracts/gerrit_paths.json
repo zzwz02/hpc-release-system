@@ -1,0 +1,61 @@
+{
+  "description": "Cross-runtime test vectors for Python Gerrit path authority and TypeScript display formatting; not runtime configuration.",
+  "cases": [
+    {
+      "name": "git short path",
+      "repo_type": "git",
+      "input": "hpc_amber",
+      "storage_path": "hpc_amber",
+      "display_path": "hpc_amber",
+      "normalized_url": "{gerrit_hpc_base}/hpc_amber"
+    },
+    {
+      "name": "git nested short path",
+      "repo_type": "git",
+      "input": "sw-metax-open/abacus",
+      "storage_path": "sw-metax-open/abacus",
+      "display_path": "sw-metax-open/abacus",
+      "normalized_url": "{gerrit_hpc_base}/sw-metax-open/abacus"
+    },
+    {
+      "name": "git configured full URL",
+      "repo_type": "git",
+      "input": "{gerrit_hpc_base}/team/hpc_demo",
+      "storage_path": "team/hpc_demo",
+      "display_path": "team/hpc_demo",
+      "normalized_url": "{gerrit_hpc_base}/team/hpc_demo"
+    },
+    {
+      "name": "git alternate origin with HPC project path",
+      "repo_type": "git",
+      "input": "ssh://mirror.example.test:29418/{gerrit_hpc_project}/team/hpc_demo",
+      "storage_path": "team/hpc_demo",
+      "display_path": "team/hpc_demo",
+      "normalized_url": "ssh://mirror.example.test:29418/{gerrit_hpc_project}/team/hpc_demo"
+    },
+    {
+      "name": "manifest short path",
+      "repo_type": "repo",
+      "input": "APP/openfoam/hpc_v2206_v0.xml",
+      "storage_path": "APP/openfoam/hpc_v2206_v0.xml",
+      "display_path": "APP/openfoam/hpc_v2206_v0.xml",
+      "normalized_url": "APP/openfoam/hpc_v2206_v0.xml"
+    },
+    {
+      "name": "manifest project-relative path",
+      "repo_type": "repo",
+      "input": "{gerrit_manifest_project}/APP/openfoam/hpc_v2206_v0.xml",
+      "storage_path": "APP/openfoam/hpc_v2206_v0.xml",
+      "display_path": "APP/openfoam/hpc_v2206_v0.xml",
+      "normalized_url": "{gerrit_manifest_project}/APP/openfoam/hpc_v2206_v0.xml"
+    },
+    {
+      "name": "manifest configured full URL",
+      "repo_type": "repo",
+      "input": "{gerrit_manifest_repo_url}/APP/openfoam/hpc_v2206_v0.xml",
+      "storage_path": "APP/openfoam/hpc_v2206_v0.xml",
+      "display_path": "APP/openfoam/hpc_v2206_v0.xml",
+      "normalized_url": "{gerrit_manifest_repo_url}/APP/openfoam/hpc_v2206_v0.xml"
+    }
+  ]
+}
