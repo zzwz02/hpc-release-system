@@ -193,7 +193,7 @@ def ensure_test_docs(snapshot: dict[str, Any], parsed: dict[str, Any], diffs: li
 
 
 def qa_scope_additions(old_parsed: dict[str, Any], new_parsed: dict[str, Any]) -> list[str]:
-    """Describe QA-scope-expanding additions: new chips or new test paths."""
+    """Describe new build chips, test paths, or chips on an existing test."""
     additions: list[str] = []
     old_chips = set(old_parsed.get("x86_chips", [])) | set(old_parsed.get("arm_chips", []))
     new_chips = set(new_parsed.get("x86_chips", [])) | set(new_parsed.get("arm_chips", []))
@@ -205,4 +205,27 @@ def qa_scope_additions(old_parsed: dict[str, Any], new_parsed: dict[str, Any]) -
     added_paths = sorted(path for path in new_paths - old_paths if path)
     if added_paths:
         additions.append("新增测试 " + ", ".join(added_paths))
+
+    def test_chips_by_path(parsed: dict[str, Any]) -> dict[str, set[str]]:
+        chips_by_path: dict[str, set[str]] = {}
+        for test in parsed.get("tests", []):
+            path = str(test.get("path") or "").strip()
+            if not path:
+                continue
+            normalized_chips = {
+                str(chip).strip().upper()
+                for chip in (test.get("supported_chips") or [])
+                if str(chip).strip()
+            }
+            chips_by_path.setdefault(path, set()).update(normalized_chips)
+        return chips_by_path
+
+    old_test_chips = test_chips_by_path(old_parsed)
+    new_test_chips = test_chips_by_path(new_parsed)
+    for path in sorted(old_test_chips.keys() & new_test_chips.keys()):
+        added_test_chips = sorted(new_test_chips[path] - old_test_chips[path])
+        if added_test_chips:
+            additions.append(
+                f"测试 {path} 新增芯片 " + ", ".join(added_test_chips)
+            )
     return additions

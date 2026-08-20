@@ -185,6 +185,8 @@ stateDiagram-v2
 ```
 
 > 阶段是**派生值**，不是存储字段：lock 状态优先，其次比较当前北京时间与 doc deadline、app freeze deadline。解锁后阶段会按 deadline 重新计算，因此可能直接落回任意更早阶段。旧的 `release_system_state_machine.svg` 与此图等价但已过时，以本图为准。
+>
+> App freeze 后的 QA 范围扩大包括：新增构建芯片、新增测试路径，以及给已有测试路径新增 `app_test.supported_chip` 芯片；以上变更均会被 `app_info` 上传或 Gerrit 拉取入口拒绝。
 
 ### Release 决策
 
