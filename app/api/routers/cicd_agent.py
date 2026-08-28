@@ -110,3 +110,13 @@ async def failure_chat(
 ) -> JSONResponse:
     body = await request.json()
     return _request_agent("POST", "/api/v1/failure-chat", body=body)
+
+
+@router.post("/cicd-assistant")
+async def cicd_assistant(
+    request: Request,
+    user: dict = Depends(require_assistant_access),
+) -> JSONResponse:
+    body = await request.json()
+    body["user_id"] = user.get("username") or user.get("display_name") or "frontend"
+    return _request_agent("POST", "/api/v1/cicd-assistant", body=body)

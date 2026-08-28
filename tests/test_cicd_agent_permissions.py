@@ -10,7 +10,7 @@ from app.domain.permissions import ALL_ROLES, roles_for_tab
 from app.main import create_app
 
 
-def _client_for_role(monkeypatch: pytest.MonkeyPatch, role: str) -> TestClient:
+def _client_for_role(monkeypatch: pytest.MonkeyPatch, role: str, responder=None) -> TestClient:
     app = create_app()
     app.dependency_overrides[require_login] = lambda: {
         "username": role.lower(),
@@ -20,7 +20,7 @@ def _client_for_role(monkeypatch: pytest.MonkeyPatch, role: str) -> TestClient:
     monkeypatch.setattr(
         cicd_agent,
         "_request_agent",
-        lambda *_args, **_kwargs: JSONResponse({"ok": True}),
+        responder or (lambda *_args, **_kwargs: JSONResponse({"ok": True})),
     )
     return TestClient(app, raise_server_exceptions=False)
 
@@ -47,10 +47,25 @@ def test_cicd_assistant_api_role_gate(
     monkeypatch: pytest.MonkeyPatch,
     role: str,
 ) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_request_agent(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return JSONResponse({"ok": True})
+
     expected_status = 200 if role in roles_for_tab("cicd-assistant") else 403
-    with _client_for_role(monkeypatch, role) as client:
+    with _client_for_role(monkeypatch, role, responder=fake_request_agent) as client:
         response = client.post(
-            "/api/cicd-agent/failure-chat",
-            json={"message": "why did this build fail?"},
+            "/api/cicd-agent/cicd-assistant",
+            json={"message": "query hpcg images", "user_id": "spoofed"},
         )
     assert response.status_code == expected_status
+    if expected_status == 200:
+        assert captured["args"] == ("POST", "/api/v1/cicd-assistant")
+        assert captured["kwargs"] == {
+            "body": {
+                "message": "query hpcg images",
+                "user_id": role.lower(),
+            }
+        }

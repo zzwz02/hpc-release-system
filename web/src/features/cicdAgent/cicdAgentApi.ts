@@ -136,6 +136,22 @@ export interface FailureChatResponse {
   error?: string | null;
 }
 
+export interface CicdAssistantMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface CicdAssistantResponse {
+  answer: string;
+  conversation_id: string;
+  provider: string;
+  model: string;
+  tools: string[];
+  available_tools: string[];
+  error?: string | null;
+  tool_error?: string | null;
+}
+
 function compactParams(values: Record<string, unknown>): Record<string, string> {
   return Object.fromEntries(
     Object.entries(values)
@@ -203,4 +219,12 @@ export function sendFailureChat(
     filters,
     limit: 50,
   });
+}
+
+export function sendCicdAssistant(payload: {
+  message: string;
+  conversation_id: string;
+  history: CicdAssistantMessage[];
+}): Promise<CicdAssistantResponse> {
+  return apiPost<CicdAssistantResponse>("/api/cicd-agent/cicd-assistant", payload);
 }

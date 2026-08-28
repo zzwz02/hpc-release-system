@@ -1,51 +1,47 @@
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useState } from "react";
+import { useAuth } from "../../api/AuthContext";
 import { Markdown } from "../../components/Markdown";
 import {
-  sendFailureChat,
-  todayString,
-  type FailureChatResponse,
-  type FailureRecordFilters,
-  type FailureRecordListItem,
+  sendCicdAssistant,
+  type CicdAssistantMessage,
+  type CicdAssistantResponse,
 } from "./cicdAgentApi";
 
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
-  data?: FailureChatResponse;
+  data?: CicdAssistantResponse;
   error?: boolean;
 }
 
-function compactFilters(filters: FailureRecordFilters): FailureRecordFilters {
-  return Object.fromEntries(
-    Object.entries(filters).filter(([, value]) => value !== undefined && value !== null && value !== ""),
-  );
+const EXAMPLE_PROMPTS = [
+  "帮我查询 hpcg 最近发布的镜像",
+  "帮我查询 hpcg maca 最近的测试结果",
+  "我想发布一个 APP，请帮我生成 app_info.json 和 app_keyword.json 的内容模板",
+];
+
+function createConversationId(): string {
+  return `cicd-assistant-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function fmt(value: string | null | undefined): string {
-  return value || "N/A";
-}
-
-function formatRecord(record: FailureRecordListItem): string {
-  const stage = record.normalized_stage || record.failed_stage || "N/A";
-  return `#${record.id} ${stage} · ${fmt(record.official_name)} · ${record.job_name} #${record.build_number}`;
+function visibleHistory(messages: ChatMessage[]): CicdAssistantMessage[] {
+  return messages
+    .slice(-12)
+    .filter((item) => item.role === "user" || item.role === "assistant")
+    .map((item) => ({ role: item.role, content: item.content }));
 }
 
 export function CicdAssistantPage() {
-  const [input, setInput] = useState("今天测试失败主要是什么原因？");
+  const { user } = useAuth();
+  const [input, setInput] = useState("帮我查询 hpcg 最近发布的镜像");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [conversationId, setConversationId] = useState(createConversationId);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [dateFrom, setDateFrom] = useState(todayString());
-  const [dateTo, setDateTo] = useState(todayString());
 
-  const filters = useMemo<FailureRecordFilters>(
-    () => compactFilters({ date_from: dateFrom, date_to: dateTo }),
-    [dateFrom, dateTo],
-  );
-
-  async function send(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const message = input.trim();
+  async function send(event?: FormEvent<HTMLFormElement>, preset?: string) {
+    event?.preventDefault();
+    const message = (preset ?? input).trim();
     if (!message || loading) return;
 
     setInput("");
@@ -54,12 +50,16 @@ export function CicdAssistantPage() {
     setMessages((current) => [...current, { role: "user", content: message }]);
 
     try {
-      const data = await sendFailureChat(message, filters);
+      const data = await sendCicdAssistant({
+        message,
+        conversation_id: conversationId,
+        history: visibleHistory(messages),
+      });
       setMessages((current) => [
         ...current,
         {
           role: "assistant",
-          content: data.answer || "没有返回可展示的分析结果。",
+          content: data.answer || "没有返回可展示的回答。",
           data,
           error: Boolean(data.error),
         },
@@ -69,7 +69,7 @@ export function CicdAssistantPage() {
       setError(messageText);
       setMessages((current) => [
         ...current,
-        { role: "assistant", content: `查询失败：${messageText}`, error: true },
+        { role: "assistant", content: `CICD助手调用失败：${messageText}`, error: true },
       ]);
     } finally {
       setLoading(false);
@@ -79,36 +79,44 @@ export function CicdAssistantPage() {
   function clearChat() {
     setMessages([]);
     setError("");
+    setConversationId(createConversationId());
   }
 
   return (
     <section className="view active cicd-agent-chat-view">
       <div className="page-toolbar">
         <h2>CICD助手</h2>
+        <span className="muted small">
+          {user ? `${user.display_name || user.username} · ${user.role}` : "未登录"}
+        </span>
         <div className="spacer" />
         <button className="btn ghost sm" type="button" onClick={clearChat} disabled={!messages.length && !error}>
-          清空
+          新会话
         </button>
       </div>
 
-      {error && <div className="error-banner">查询失败：{error}</div>}
+      {error && <div className="error-banner">调用失败：{error}</div>}
 
       <section className="panel cicd-agent-chat-panel">
         <div className="cicd-agent-chat-toolbar">
-          <label>
-            开始时间
-            <input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} />
-          </label>
-          <label>
-            结束时间
-            <input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} />
-          </label>
+          {EXAMPLE_PROMPTS.map((prompt) => (
+            <button
+              className="btn ghost sm"
+              type="button"
+              key={prompt}
+              onClick={() => void send(undefined, prompt)}
+              disabled={loading}
+            >
+              {prompt}
+            </button>
+          ))}
         </div>
 
         <div className="cicd-agent-chat-log">
           {!messages.length && (
             <div className="cicd-agent-chat-empty">
-              <strong>暂无聊天记录</strong>
+              <strong>CICD助手</strong>
+              <span>可查询 APP 镜像与测试结果，也可生成发布配置内容建议。</span>
             </div>
           )}
 
@@ -119,35 +127,32 @@ export function CicdAssistantPage() {
             >
               <div className="cicd-agent-chat-role">{message.role === "user" ? "你" : "CICD助手"}</div>
               {message.role === "assistant" ? (
-                <Markdown value={message.content} />
+                <Markdown value={message.content} className="md-view cicd-agent-chat-md" />
               ) : (
                 <p>{message.content}</p>
               )}
-              {message.data?.error && (
-                <small className="danger-text">
-                  LLM 调用失败，当前展示的是数据库确定性摘要：{message.data.error}
-                </small>
-              )}
-              {message.data?.records?.length ? (
-                <div className="cicd-agent-chat-records">
-                  {message.data.records.slice(0, 8).map((record) => (
-                    <span key={record.id}>{formatRecord(record)}</span>
-                  ))}
-                </div>
+              {message.data?.tools?.length ? (
+                <small>使用工具：{message.data.tools.join(", ")}</small>
+              ) : null}
+              {message.data?.tool_error ? (
+                <small className="danger-text">查询工具不可用：{message.data.tool_error}</small>
+              ) : null}
+              {message.data?.error ? (
+                <small className="danger-text">助手调用异常：{message.data.error}</small>
               ) : null}
             </article>
           ))}
         </div>
 
-        <form className="cicd-agent-chat-form" onSubmit={send}>
+        <form className="cicd-agent-chat-form" onSubmit={(event) => void send(event)}>
           <textarea
             value={input}
             onChange={(event) => setInput(event.target.value)}
-            placeholder="输入你想查询的失败记录问题"
+            placeholder="查询 APP 最近镜像、测试结果，或让我输出 app_info.json / app_keyword.json 内容建议"
             rows={3}
           />
           <button className="btn primary" type="submit" disabled={loading || !input.trim()}>
-            {loading ? "查询中" : "发送"}
+            {loading ? "思考中" : "发送"}
           </button>
         </form>
       </section>

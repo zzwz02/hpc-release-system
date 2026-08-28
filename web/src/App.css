@@ -976,10 +976,7 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
-  align-items: end;
-}
-.cicd-agent-chat-toolbar label {
-  min-width: 170px;
+  align-items: center;
 }
 .cicd-agent-chat-log {
   min-height: 0;
@@ -994,6 +991,7 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
 }
 .cicd-agent-chat-empty {
   display: grid;
+  gap: 6px;
   place-items: center;
   min-height: 180px;
   color: var(--muted);
@@ -1019,6 +1017,46 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
 .cicd-agent-chat-message p {
   margin: 0;
   white-space: pre-wrap;
+}
+.cicd-agent-chat-message small {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+}
+.cicd-agent-chat-message .md-view {
+  font-size: 13px;
+  line-height: 1.6;
+}
+.cicd-agent-chat-message .md-view > :first-child {
+  margin-top: 0;
+}
+.cicd-agent-chat-message .md-view > :last-child {
+  margin-bottom: 0;
+}
+.cicd-agent-chat-message .md-view p {
+  margin: 7px 0;
+  white-space: normal;
+}
+.cicd-agent-chat-message .md-view h1,
+.cicd-agent-chat-message .md-view h2,
+.cicd-agent-chat-message .md-view h3 {
+  margin: 10px 0 6px;
+  padding-bottom: 0;
+  border-bottom: 0;
+  font-size: 15px;
+  line-height: 1.35;
+}
+.cicd-agent-chat-message .md-view table {
+  min-width: 520px;
+  table-layout: auto;
+}
+.cicd-agent-chat-message .md-view th,
+.cicd-agent-chat-message .md-view td {
+  vertical-align: top;
+  word-break: break-word;
+}
+.cicd-agent-chat-message .md-view code {
+  overflow-wrap: anywhere;
 }
 .cicd-agent-chat-role {
   margin-bottom: 6px;
