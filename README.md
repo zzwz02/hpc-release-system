@@ -160,7 +160,7 @@ CICD_Agent 的 `/api/v1/cicd-assistant`，并由 hpc_release_system 后端使用
 - **RM**：管理 release、deadline、Gerrit 信息、测试范围导出、发布文档与 Manager Review CSV、最终锁定/解锁；**唯一的 CICD 申请审批人**，可在 App 工作台的 CICD tab 提交配置变更（Ruling B/C）。
 - **Owner**：维护自己负责的 app，提交 release 决策、文档、测试说明、`app_info.json`；可在 App 工作台的 CICD tab 提交 CICD 配置申请。
 - **QA**：上传 QA log、标注 QA 状态、使用 AI 分析建议。
-- **SPD**：处理被下发的 CICD 交付申请，可标记交付或退回。
+- **SPD**：可在 CICD 工作台查看只读的 CICD 信息总览；处理被下发的 CICD 交付申请，可标记交付或退回。
 - **Admin**：仅负责访问控制——用户/角色管理、清空业务数据、全局删除 app、审计只读；**完全不参与 CICD/release 业务**（Ruling C）。登录后只显示并允许访问「系统管理」，包括 Jenkins 失败查询、CICD 助手在内的其他页签均不可见，直链访问也会重定向到「系统管理」。
 - **Guest**：只读查看发布状态和 QA 信息。
 

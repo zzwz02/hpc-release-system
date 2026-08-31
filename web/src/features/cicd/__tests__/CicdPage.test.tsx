@@ -3,7 +3,7 @@
  *
  * Covers:
  *  - Sub-panes visible for RM
- *  - SPD sees only delivery panes (no approval)
+ *  - SPD sees the read-only CICD overview and delivery panes (no approval)
  *  - CICD workbench shows read-only CICD info and recent requests
  *  - PendingPane: renders pending requests with approve/reject buttons
  *  - DeliveryPane: renders 待交付 pane
@@ -253,15 +253,20 @@ describe("CicdPage", () => {
     expect(screen.queryByText("已交付")).not.toBeInTheDocument();
   });
 
-  it("SPD role: only sees 待交付 and 已交付 panes", async () => {
+  it("SPD role: sees CICD 信息, 待交付 and 已交付 panes", async () => {
     renderCicd("SPD");
     await waitFor(() => {
       expect(screen.getByText("待交付")).toBeInTheDocument();
     });
     expect(screen.getByText("已交付")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "CICD 信息" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "CICD 信息" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "近期申请" })).not.toBeInTheDocument();
     expect(screen.queryByText("待审批")).not.toBeInTheDocument();
+
+    expect(screen.getByRole("button", { name: "待交付" })).toHaveClass("active");
+    await userEvent.click(screen.getByRole("button", { name: "CICD 信息" }));
+    const overview = await screen.findByTestId("cicd-info-section");
+    expect(within(overview).getByText("TestApp")).toBeInTheDocument();
   });
 
   it("does not show legacy new-task button for RM", async () => {

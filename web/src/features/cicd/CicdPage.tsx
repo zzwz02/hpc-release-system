@@ -11,7 +11,7 @@
  *   - 已交付   (DeliveredPane)    — delivered history
  *
  * Role visibility (mirrors bindCicd index.html:4738-4754):
- *   SPD:  only 待交付 + 已交付 (delivery panes)
+ *   SPD:  CICD 信息 + 待交付 + 已交付 (read-only overview + delivery panes)
  *   RM: 待审批 + 待交付 + 已交付
  *
  * Build-config changes are submitted from App 工作台 → App-CICD only.
@@ -1428,7 +1428,7 @@ export function CicdPage() {
   // Pane visibility by role (mirrors bindCicd:4738-4754)
   const isSPD = can(role, "cicd.delivery.return") && !canApprove;
   const availablePanes: SubPane[] = isSPD
-    ? ["delivery", "delivered"]
+    ? ["info", "delivery", "delivered"]
     : canDelivery
     ? ["info", "recent", "pending", "delivery", "delivered"]
     : ["info", "recent", "pending"];
