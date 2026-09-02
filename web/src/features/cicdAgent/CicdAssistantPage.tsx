@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../../api/AuthContext";
 import { Markdown } from "../../components/Markdown";
 import {
@@ -6,14 +6,16 @@ import {
   deleteAssistantConversation,
   fetchAssistantConversation,
   fetchAssistantConversations,
-  sendAssistantConversationMessage,
+  sendAssistantConversationMessageStream,
   type AssistantConversation,
   type AssistantConversationState,
+  type AssistantStreamEvent,
   type CicdAssistantMessage,
 } from "./cicdAgentApi";
 
 type UiMessage = CicdAssistantMessage & {
   error?: boolean;
+  streaming?: boolean;
 };
 
 const EXAMPLE_HINTS = [
@@ -74,6 +76,16 @@ function messageTextMeta(message: CicdAssistantMessage, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
+function appendTool(metadata: Record<string, unknown> | undefined, toolName: string): Record<string, unknown> {
+  const tools = Array.isArray(metadata?.tools)
+    ? metadata.tools.map((item) => String(item)).filter(Boolean)
+    : [];
+  return {
+    ...(metadata ?? {}),
+    tools: tools.includes(toolName) ? tools : [...tools, toolName],
+  };
+}
+
 function displayTime(value: string | null | undefined): string {
   if (!value) return "";
   return value.slice(5, 16);
@@ -87,6 +99,9 @@ function slotValueText(value: unknown): string {
 
 export function CicdAssistantPage() {
   const { user } = useAuth();
+  const chatLogRef = useRef<HTMLDivElement | null>(null);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const shouldStickToBottomRef = useRef(true);
   const [input, setInput] = useState("");
   const [conversations, setConversations] = useState<AssistantConversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -110,6 +125,19 @@ export function CicdAssistantPage() {
         .filter(([, value]) => !Array.isArray(value) || value.length > 0),
     [conversationState.slots],
   );
+
+  function scrollChatToBottom(behavior: ScrollBehavior = "auto") {
+    window.requestAnimationFrame(() => {
+      chatEndRef.current?.scrollIntoView({ block: "end", behavior });
+    });
+  }
+
+  function updateChatStickiness() {
+    const log = chatLogRef.current;
+    if (!log) return;
+    const distanceToBottom = log.scrollHeight - log.scrollTop - log.clientHeight;
+    shouldStickToBottomRef.current = distanceToBottom < 80;
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -140,6 +168,15 @@ export function CicdAssistantPage() {
       cancelled = true;
     };
   }, [user?.username]);
+
+  useEffect(() => {
+    shouldStickToBottomRef.current = true;
+    if (!loadingMessages) scrollChatToBottom();
+  }, [activeConversationId, loadingMessages]);
+
+  useEffect(() => {
+    if (shouldStickToBottomRef.current) scrollChatToBottom();
+  }, [messages]);
 
   useEffect(() => {
     if (!activeConversationId) {
@@ -191,11 +228,14 @@ export function CicdAssistantPage() {
     setInput("");
     setError("");
     setSending(true);
+    shouldStickToBottomRef.current = true;
 
-    const tempId = `pending-${Date.now()}`;
+    const tempId = `pending-user-${Date.now()}`;
+    const assistantTempId = `pending-assistant-${Date.now()}`;
     setMessages((current) => [
       ...current,
       { id: tempId, role: "user", content: message },
+      { id: assistantTempId, role: "assistant", content: "", streaming: true },
     ]);
 
     try {
@@ -212,24 +252,109 @@ export function CicdAssistantPage() {
       }
       if (!targetConversationId) throw new Error("无法创建 CICD助手会话");
 
-      const data = await sendAssistantConversationMessage(targetConversationId, message);
-      setConversations((current) => upsertConversation(current, data.conversation));
-      setActiveConversationId(data.conversation.id);
-      setMessages((current) => [
-        ...current.filter((item) => item.id !== tempId),
-        ...data.messages,
-      ]);
-      setConversationState(data.state);
+      await sendAssistantConversationMessageStream(targetConversationId, message, (streamEvent) => {
+        handleStreamEvent(streamEvent, tempId, assistantTempId);
+      });
     } catch (err) {
       const messageText = err instanceof Error ? err.message : String(err);
       setError(messageText);
       setMessages((current) => [
-        ...current.filter((item) => item.id !== tempId),
+        ...current.filter((item) => item.id !== tempId && item.id !== assistantTempId),
         { role: "user", content: message },
         { role: "assistant", content: `CICD助手调用失败：${messageText}`, error: true },
       ]);
     } finally {
       setSending(false);
+    }
+  }
+
+  function handleStreamEvent(
+    streamEvent: AssistantStreamEvent,
+    userTempId: string,
+    assistantTempId: string,
+  ) {
+    if (streamEvent.type === "start") {
+      setConversations((current) => upsertConversation(current, streamEvent.conversation));
+      setMessages((current) =>
+        current.map((item) => (item.id === userTempId ? streamEvent.user_message : item)),
+      );
+      return;
+    }
+
+    if (streamEvent.type === "metadata") {
+      setMessages((current) =>
+        current.map((item) => {
+          if (item.id !== assistantTempId) return item;
+          return {
+            ...item,
+            metadata: {
+              ...(item.metadata ?? {}),
+              provider: streamEvent.provider,
+              model: streamEvent.model,
+              available_tools: streamEvent.available_tools,
+              tool_error: streamEvent.tool_error,
+            },
+          };
+        }),
+      );
+      return;
+    }
+
+    if (streamEvent.type === "tool") {
+      setMessages((current) =>
+        current.map((item) => {
+          if (item.id !== assistantTempId) return item;
+          return {
+            ...item,
+            metadata: appendTool(item.metadata, streamEvent.name),
+          };
+        }),
+      );
+      return;
+    }
+
+    if (streamEvent.type === "token") {
+      setMessages((current) =>
+        current.map((item) => {
+          if (item.id !== assistantTempId) return item;
+          return { ...item, content: `${item.content}${streamEvent.content}` };
+        }),
+      );
+      return;
+    }
+
+    if (streamEvent.type === "done") {
+      setConversations((current) => upsertConversation(current, streamEvent.conversation));
+      setActiveConversationId(streamEvent.conversation.id);
+      setConversationState(streamEvent.state);
+      setMessages((current) =>
+        current.map((item) =>
+          item.id === assistantTempId ? streamEvent.assistant_message : item,
+        ),
+      );
+      return;
+    }
+
+    if (streamEvent.type === "error") {
+      const messageText = streamEvent.error || streamEvent.assistant?.agent_error || "CICD助手调用失败";
+      const conversation = streamEvent.conversation;
+      setError(messageText);
+      if (conversation) {
+        setConversations((current) => upsertConversation(current, conversation));
+        setActiveConversationId(conversation.id);
+      }
+      if (streamEvent.state) setConversationState(streamEvent.state);
+      setMessages((current) =>
+        current.map((item) =>
+          item.id === assistantTempId
+            ? {
+                ...(streamEvent.assistant_message ?? item),
+                error: true,
+                streaming: false,
+              }
+            : item,
+        ),
+      );
     }
   }
 
@@ -273,17 +398,6 @@ export function CicdAssistantPage() {
           {user ? `${user.display_name || user.username} · ${user.role}` : "未登录"}
         </span>
         <div className="spacer" />
-        <button className="btn ghost sm" type="button" onClick={() => void startNewConversation()} disabled={creating || sending}>
-          新会话
-        </button>
-        <button
-          className="btn ghost sm"
-          type="button"
-          onClick={() => void deleteCurrentConversation()}
-          disabled={!activeConversationId || deleting || sending}
-        >
-          删除会话
-        </button>
       </div>
 
       {error && <div className="error-banner">调用失败：{error}</div>}
@@ -291,8 +405,23 @@ export function CicdAssistantPage() {
       <section className="cicd-agent-chat-shell">
         <aside className="panel cicd-agent-chat-sidebar">
           <div className="cicd-agent-chat-sidebar-head">
-            <strong>会话</strong>
-            <span>{loadingConversations ? "加载中" : `${conversations.length} 条`}</span>
+            <div className="cicd-agent-chat-sidebar-title">
+              <strong>会话</strong>
+              <span>{loadingConversations ? "加载中" : `${conversations.length} 条`}</span>
+            </div>
+            <div className="cicd-agent-chat-sidebar-actions">
+              <button className="btn ghost sm" type="button" onClick={() => void startNewConversation()} disabled={creating || sending}>
+                新会话
+              </button>
+              <button
+                className="btn ghost sm"
+                type="button"
+                onClick={() => void deleteCurrentConversation()}
+                disabled={!activeConversationId || deleting || sending}
+              >
+                删除会话
+              </button>
+            </div>
           </div>
           <div className="cicd-agent-chat-session-list">
             {!conversations.length && !loadingConversations ? (
@@ -340,7 +469,7 @@ export function CicdAssistantPage() {
             </div>
           </div>
 
-          <div className="cicd-agent-chat-log">
+          <div className="cicd-agent-chat-log" ref={chatLogRef} onScroll={updateChatStickiness}>
             {!messages.length && !loadingMessages ? (
               <div className="cicd-agent-chat-empty">
                 <strong>CICD助手</strong>
@@ -371,8 +500,10 @@ export function CicdAssistantPage() {
                     {message.role === "user" ? "你" : "CICD助手"}
                     {message.created_at ? <span>{displayTime(message.created_at)}</span> : null}
                   </div>
-                  {message.role === "assistant" ? (
+                  {message.role === "assistant" && message.content ? (
                     <Markdown value={message.content} className="md-view cicd-agent-chat-md" />
+                  ) : message.role === "assistant" ? (
+                    <p className="muted">{message.streaming ? "思考中..." : ""}</p>
                   ) : (
                     <p>{message.content}</p>
                   )}
@@ -382,6 +513,7 @@ export function CicdAssistantPage() {
                 </article>
               );
             })}
+            <div className="cicd-agent-chat-end" ref={chatEndRef} />
           </div>
 
           <form className="cicd-agent-chat-form" onSubmit={(event) => void send(event)}>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -172,6 +173,71 @@ def test_assistant_state_rolls_older_messages_into_summary(
             original_trigger,
         )
         monkeypatch.setattr(cicd_agent.settings, "assistant_summary_keep_messages", original_keep)
+
+
+def test_assistant_stream_persists_final_message_and_state(
+    assistant_conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_body: dict[str, Any] = {}
+
+    def fake_stream_events(path: str, *, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        assert path == "/api/v1/cicd-assistant/stream"
+        captured_body.update(body)
+        yield {
+            "type": "start",
+            "conversation_id": body["conversation_id"],
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "available_tools": ["query_images"],
+        }
+        yield {"type": "token", "content": "hello "}
+        yield {"type": "tool", "name": "query_images"}
+        yield {"type": "token", "content": "world"}
+        yield {
+            "type": "done",
+            "answer": "hello world",
+            "conversation_id": body["conversation_id"],
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "tools": ["query_images"],
+            "available_tools": ["query_images"],
+            "state_delta": {"app_name": "hpcg", "intent": "query_images"},
+        }
+
+    monkeypatch.setattr(cicd_agent, "_request_agent_stream_events", fake_stream_events)
+
+    with _client(conn=assistant_conn, username="owner1") as client:
+        created = client.post("/api/cicd-agent/assistant/conversations", json={})
+        conversation_id = created.json()["conversation"]["id"]
+
+        with client.stream(
+            "POST",
+            f"/api/cicd-agent/assistant/conversations/{conversation_id}/messages/stream",
+            json={"message": "帮我查询 hpcg app 最近发布的镜像"},
+        ) as response:
+            assert response.status_code == 200
+            events = [json.loads(line) for line in response.iter_lines() if line]
+
+        assert [event["type"] for event in events] == [
+            "start",
+            "metadata",
+            "token",
+            "tool",
+            "token",
+            "done",
+        ]
+        assert captured_body["context"] == {"rolling_summary": "", "slots": {}}
+        assert captured_body["history"] == []
+        assert events[2]["content"] == "hello "
+        assert events[-1]["assistant_message"]["content"] == "hello world"
+        assert events[-1]["state"]["slots"]["app_name"] == "hpcg"
+
+        detail = client.get(f"/api/cicd-agent/assistant/conversations/{conversation_id}")
+        assert [message["content"] for message in detail.json()["messages"]] == [
+            "帮我查询 hpcg app 最近发布的镜像",
+            "hello world",
+        ]
 
 
 def test_assistant_conversation_is_owned_by_user(

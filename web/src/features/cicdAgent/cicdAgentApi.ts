@@ -1,4 +1,4 @@
-import { apiFetch, apiGet, apiPost } from "../../api/http";
+import { apiFetch, apiGet, apiPost, apiPostNdjson } from "../../api/http";
 
 export const CICD_AGENT_FAILURES_KEY = ["cicd-agent", "failures"] as const;
 export const CICD_AGENT_FILTER_OPTIONS_KEY = ["cicd-agent", "filter-options"] as const;
@@ -192,6 +192,46 @@ export interface AssistantMessageSendResponse {
   state: AssistantConversationState;
 }
 
+export type AssistantStreamEvent =
+  | {
+      type: "start";
+      conversation: AssistantConversation;
+      user_message: CicdAssistantMessage;
+    }
+  | {
+      type: "metadata";
+      conversation_id?: string;
+      provider?: string;
+      model?: string;
+      tools?: string[];
+      available_tools?: string[];
+      tool_error?: string | null;
+      event?: unknown;
+    }
+  | {
+      type: "token";
+      content: string;
+    }
+  | {
+      type: "tool";
+      name: string;
+    }
+  | {
+      type: "done";
+      conversation: AssistantConversation;
+      assistant_message: CicdAssistantMessage;
+      assistant: AssistantMessageSendResponse["assistant"];
+      state: AssistantConversationState;
+    }
+  | {
+      type: "error";
+      error?: string;
+      conversation?: AssistantConversation;
+      assistant_message?: CicdAssistantMessage;
+      assistant?: AssistantMessageSendResponse["assistant"];
+      state?: AssistantConversationState;
+    };
+
 export interface AssistantConversationState {
   conversation_id: string;
   rolling_summary: string;
@@ -304,6 +344,18 @@ export function sendAssistantConversationMessage(
   return apiPost<AssistantMessageSendResponse>(
     `/api/cicd-agent/assistant/conversations/${encodeURIComponent(conversationId)}/messages`,
     { message },
+  );
+}
+
+export function sendAssistantConversationMessageStream(
+  conversationId: string,
+  message: string,
+  onEvent: (event: AssistantStreamEvent) => void,
+): Promise<void> {
+  return apiPostNdjson<AssistantStreamEvent>(
+    `/api/cicd-agent/assistant/conversations/${encodeURIComponent(conversationId)}/messages/stream`,
+    { message },
+    onEvent,
   );
 }
 

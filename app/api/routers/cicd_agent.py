@@ -10,10 +10,11 @@ import sqlite3
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Iterator
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -72,6 +73,10 @@ def _decode_json(body: bytes) -> Any:
         return {"ok": False, "error": text or "CICD Agent returned a non-JSON response"}
 
 
+def _encode_ndjson(event: dict[str, Any]) -> str:
+    return json.dumps(event, ensure_ascii=False) + "\n"
+
+
 def _request_agent_payload(
     method: str,
     path: str,
@@ -106,6 +111,58 @@ def _request_agent_payload(
 def _request_agent(method: str, path: str, *, query: str = "", body: Any = None) -> JSONResponse:
     status_code, payload = _request_agent_payload(method, path, query=query, body=body)
     return JSONResponse(status_code=status_code, content=payload)
+
+
+def _request_agent_stream_events(path: str, *, body: Any) -> Iterator[dict[str, Any]]:
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        _agent_url(path),
+        data=data,
+        headers={
+            "Accept": "application/x-ndjson",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=settings.cicd_agent_timeout_seconds) as response:
+            for raw_line in response:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    yield {
+                        "type": "error",
+                        "error": "CICD Agent 返回了无效的 NDJSON 流",
+                        "agent_status_code": response.status,
+                    }
+                    return
+                if isinstance(event, dict):
+                    yield event
+                else:
+                    yield {
+                        "type": "error",
+                        "error": "CICD Agent 返回的流事件不是 JSON object",
+                        "agent_status_code": response.status,
+                    }
+                    return
+    except urllib.error.HTTPError as exc:
+        payload = _decode_json(exc.read())
+        error = payload.get("error") if isinstance(payload, dict) else None
+        yield {
+            "type": "error",
+            "error": error or f"CICD Agent HTTP {exc.code}",
+            "agent_status_code": exc.code,
+        }
+    except urllib.error.URLError as exc:
+        yield {
+            "type": "error",
+            "error": f"CICD Agent 不可用：{exc.reason}",
+            "agent_status_code": 502,
+        }
 
 
 def _assistant_user_id(user: dict) -> str:
@@ -284,6 +341,64 @@ def _refresh_assistant_state(
         summarized_until_sequence=summarized_until,
         updated_at=updated_at,
     )
+
+
+def _persist_stream_assistant_result(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    user_id: str,
+    state: dict[str, Any],
+    agent_event: dict[str, Any],
+    fallback_answer: str,
+) -> dict[str, Any]:
+    event = dict(agent_event)
+    if not str(event.get("answer") or "").strip():
+        event["answer"] = fallback_answer or "CICD助手没有返回可展示的回答。"
+    status_code = int(event.get("agent_status_code") or 200)
+    assistant = _assistant_result(
+        conversation_id=conversation_id,
+        status_code=status_code,
+        payload=event,
+    )
+    with transaction(conn):
+        assistant_message = assistant_repo.add_message(
+            conn,
+            conversation_id=conversation_id,
+            role="assistant",
+            content=assistant["answer"],
+            created_at=beijing_timestamp(),
+            metadata={
+                "streaming": True,
+                "provider": assistant["provider"],
+                "model": assistant["model"],
+                "tools": assistant["tools"],
+                "available_tools": assistant["available_tools"],
+                "tool_error": assistant["tool_error"],
+                "agent_error": assistant["agent_error"],
+                "agent_status_code": assistant["agent_status_code"],
+                "agent_conversation_id": assistant["conversation_id"],
+            },
+        )
+        updated_conversation = assistant_repo.get_conversation(
+            conn,
+            conversation_id=conversation_id,
+            user_id=user_id,
+        )
+        updated_state = _refresh_assistant_state(
+            conn,
+            conversation_id=conversation_id,
+            state=state,
+            state_delta=assistant["state_delta"],
+            message_count=int(updated_conversation["message_count"]) if updated_conversation else 0,
+            updated_at=beijing_timestamp(),
+        )
+    return {
+        "conversation": updated_conversation,
+        "assistant_message": assistant_message,
+        "assistant": assistant,
+        "state": updated_state,
+    }
 
 
 @router.get("/failures")
@@ -491,6 +606,140 @@ def send_assistant_conversation_message(
         "assistant": assistant,
         "state": updated_state,
     }
+
+
+@router.post("/assistant/conversations/{conversation_id}/messages/stream")
+def stream_assistant_conversation_message(
+    conversation_id: str,
+    payload: AssistantConversationMessageCreate,
+    user: dict = Depends(require_assistant_access),
+    conn: sqlite3.Connection = Depends(get_assistant_db),
+) -> StreamingResponse:
+    user_id = _assistant_user_id(user)
+    message_text = payload.message.strip()
+    if not message_text:
+        raise HTTPException(status_code=422, detail="消息不能为空")
+
+    conversation = assistant_repo.get_conversation(
+        conn,
+        conversation_id=conversation_id,
+        user_id=user_id,
+    )
+    if not conversation:
+        raise HTTPException(status_code=404, detail="会话不存在或无权访问")
+
+    history = assistant_repo.recent_messages(
+        conn,
+        conversation_id=conversation_id,
+        limit=max(settings.assistant_history_limit, 0),
+    )
+    state = assistant_repo.get_state(conn, conversation_id=conversation_id)
+    now = beijing_timestamp()
+    with transaction(conn):
+        user_message = assistant_repo.add_message(
+            conn,
+            conversation_id=conversation_id,
+            role="user",
+            content=message_text,
+            created_at=now,
+        )
+        if not conversation["message_count"]:
+            assistant_repo.update_title(
+                conn,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                title=_title_from_message(message_text),
+                updated_at=now,
+            )
+        started_conversation = assistant_repo.get_conversation(
+            conn,
+            conversation_id=conversation_id,
+            user_id=user_id,
+        )
+
+    agent_body = {
+        "message": message_text,
+        "conversation_id": conversation_id,
+        "history": _agent_history(history),
+        "context": _assistant_context(state),
+        "user_id": user_id,
+    }
+
+    def generate() -> Iterator[str]:
+        yield _encode_ndjson(
+            {
+                "type": "start",
+                "conversation": started_conversation,
+                "user_message": user_message,
+            }
+        )
+        answer_parts: list[str] = []
+        stream_metadata: dict[str, Any] = {}
+        for event in _request_agent_stream_events("/api/v1/cicd-assistant/stream", body=agent_body):
+            event_type = event.get("type")
+            if event_type == "start":
+                stream_metadata = {
+                    "conversation_id": event.get("conversation_id") or conversation_id,
+                    "provider": event.get("provider") or "",
+                    "model": event.get("model") or "",
+                    "tools": event.get("tools") if isinstance(event.get("tools"), list) else [],
+                    "available_tools": (
+                        event.get("available_tools")
+                        if isinstance(event.get("available_tools"), list)
+                        else []
+                    ),
+                    "tool_error": event.get("tool_error") or None,
+                }
+                yield _encode_ndjson({"type": "metadata", **stream_metadata})
+                continue
+            if event_type == "token":
+                content = str(event.get("content") or "")
+                if content:
+                    answer_parts.append(content)
+                yield _encode_ndjson(event)
+                continue
+            if event_type == "tool":
+                yield _encode_ndjson(event)
+                continue
+            if event_type in {"done", "error"}:
+                final_event = {**stream_metadata, **event}
+                if event_type == "error" and not final_event.get("agent_status_code"):
+                    final_event["agent_status_code"] = 502
+                result = _persist_stream_assistant_result(
+                    conn,
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    state=state,
+                    agent_event=final_event,
+                    fallback_answer="".join(answer_parts).strip(),
+                )
+                yield _encode_ndjson({"type": event_type, **result})
+                return
+            yield _encode_ndjson({"type": "metadata", "event": event})
+
+        result = _persist_stream_assistant_result(
+            conn,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            state=state,
+            agent_event={
+                **stream_metadata,
+                "type": "error",
+                "error": "CICD Agent 流式响应提前结束",
+                "agent_status_code": 502,
+            },
+            fallback_answer="".join(answer_parts).strip(),
+        )
+        yield _encode_ndjson({"type": "error", **result})
+
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/cicd-assistant")

@@ -986,6 +986,17 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
   gap: 10px;
   font-size: 13px;
 }
+.cicd-agent-chat-sidebar-title {
+  min-width: 52px;
+  display: grid;
+  gap: 2px;
+}
+.cicd-agent-chat-sidebar-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 .cicd-agent-chat-sidebar-head span,
 .cicd-agent-chat-title span {
   color: var(--muted);
@@ -1104,6 +1115,9 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
   border: 1px solid var(--border);
   border-radius: var(--r);
   background: var(--bg-soft);
+}
+.cicd-agent-chat-end {
+  flex: 0 0 1px;
 }
 .cicd-agent-chat-empty {
   display: grid;
