@@ -155,6 +155,7 @@ export interface CicdAssistantResponse {
   available_tools: string[];
   error?: string | null;
   tool_error?: string | null;
+  state_delta?: Record<string, unknown>;
 }
 
 export interface AssistantConversation {
@@ -178,6 +179,7 @@ export interface AssistantConversationResponse {
 export interface AssistantConversationDetailResponse {
   conversation: AssistantConversation;
   messages: CicdAssistantMessage[];
+  state: AssistantConversationState;
 }
 
 export interface AssistantMessageSendResponse {
@@ -187,6 +189,15 @@ export interface AssistantMessageSendResponse {
     agent_error?: string | null;
     agent_status_code?: number;
   };
+  state: AssistantConversationState;
+}
+
+export interface AssistantConversationState {
+  conversation_id: string;
+  rolling_summary: string;
+  slots: Record<string, unknown>;
+  summarized_until_sequence: number;
+  updated_at: string;
 }
 
 function compactParams(values: Record<string, unknown>): Record<string, string> {

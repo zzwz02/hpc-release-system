@@ -20,6 +20,21 @@ def _message_row(row: sqlite3.Row) -> dict[str, Any]:
     return data
 
 
+def _state_row(row: sqlite3.Row | None, conversation_id: str) -> dict[str, Any]:
+    if not row:
+        return {
+            "conversation_id": conversation_id,
+            "rolling_summary": "",
+            "slots": {},
+            "summarized_until_sequence": 0,
+            "updated_at": "",
+        }
+    data = row_to_dict(row)
+    data["slots"] = loads_json(data.pop("slots_json", "{}"), {})
+    data["summarized_until_sequence"] = int(data.get("summarized_until_sequence") or 0)
+    return data
+
+
 def create_conversation(
     conn: sqlite3.Connection,
     *,
@@ -40,9 +55,9 @@ def create_conversation(
     conn.execute(
         """
         INSERT INTO assistant_conversation_state(
-            conversation_id, rolling_summary, slots_json, updated_at
+            conversation_id, rolling_summary, slots_json, summarized_until_sequence, updated_at
         )
-        VALUES (?, '', '{}', ?)
+        VALUES (?, '', '{}', 0, ?)
         """,
         (conv_id, created_at),
     )
@@ -217,3 +232,75 @@ def recent_messages(
         (conversation_id, limit),
     ).fetchall()
     return [_message_row(row) for row in reversed(rows)]
+
+
+def get_state(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT conversation_id, rolling_summary, slots_json,
+               summarized_until_sequence, updated_at
+        FROM assistant_conversation_state
+        WHERE conversation_id = ?
+        """,
+        (conversation_id,),
+    ).fetchone()
+    return _state_row(row, conversation_id)
+
+
+def update_state(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    rolling_summary: str,
+    slots: dict[str, Any],
+    summarized_until_sequence: int,
+    updated_at: str,
+) -> dict[str, Any]:
+    conn.execute(
+        """
+        INSERT INTO assistant_conversation_state(
+            conversation_id, rolling_summary, slots_json, summarized_until_sequence, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(conversation_id) DO UPDATE SET
+            rolling_summary = excluded.rolling_summary,
+            slots_json = excluded.slots_json,
+            summarized_until_sequence = excluded.summarized_until_sequence,
+            updated_at = excluded.updated_at
+        """,
+        (
+            conversation_id,
+            rolling_summary,
+            dumps_json(slots),
+            summarized_until_sequence,
+            updated_at,
+        ),
+    )
+    return get_state(conn, conversation_id=conversation_id)
+
+
+def messages_in_sequence_range(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    after_sequence: int,
+    through_sequence: int,
+) -> list[dict[str, Any]]:
+    if through_sequence <= after_sequence:
+        return []
+    rows = conn.execute(
+        """
+        SELECT id, conversation_id, sequence, role, content, metadata_json, created_at
+        FROM assistant_messages
+        WHERE conversation_id = ?
+          AND sequence > ?
+          AND sequence <= ?
+        ORDER BY sequence ASC
+        """,
+        (conversation_id, after_sequence, through_sequence),
+    ).fetchall()
+    return [_message_row(row) for row in rows]

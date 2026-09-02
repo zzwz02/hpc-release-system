@@ -42,6 +42,22 @@ class AssistantConversationMessageCreate(BaseModel):
     message: str = Field(..., min_length=1)
 
 
+_ASSISTANT_SLOT_KEYS = {
+    "intent",
+    "app_name",
+    "app_version",
+    "dockerfile_path",
+    "os",
+    "arch",
+    "sdk",
+    "sdkversion",
+    "supported_chip",
+    "image_aliases",
+    "test_cases",
+    "last_query_summary",
+}
+
+
 def _agent_url(path: str, query: str = "") -> str:
     base = settings.cicd_agent_base_url.rstrip("/")
     url = f"{base}{path}"
@@ -150,7 +166,124 @@ def _assistant_result(
         "tool_error": data.get("tool_error") or None,
         "agent_error": agent_error,
         "agent_status_code": status_code,
+        "state_delta": (
+            data.get("state_delta") if isinstance(data.get("state_delta"), dict) else {}
+        ),
     }
+
+
+def _assistant_context(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "rolling_summary": state.get("rolling_summary") or "",
+        "slots": state.get("slots") if isinstance(state.get("slots"), dict) else {},
+    }
+
+
+def _clean_state_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text[:500] if text else None
+    if isinstance(value, list):
+        result = []
+        for item in value:
+            clean = _clean_state_value(item)
+            if clean is not None and clean not in result:
+                result.append(clean)
+        return result or None
+    if isinstance(value, dict):
+        result = {
+            str(key): clean
+            for key, item in value.items()
+            if (clean := _clean_state_value(item)) is not None
+        }
+        return result or None
+    if isinstance(value, bool | int | float):
+        return value
+    return str(value).strip()[:500] or None
+
+
+def _merge_slots(current: dict[str, Any], state_delta: Any) -> dict[str, Any]:
+    merged = dict(current)
+    if not isinstance(state_delta, dict):
+        return merged
+    for key, value in state_delta.items():
+        if key not in _ASSISTANT_SLOT_KEYS:
+            continue
+        clean = _clean_state_value(value)
+        if clean is not None:
+            merged[key] = clean
+    return merged
+
+
+def _summary_line(message: dict[str, Any]) -> str:
+    role = "用户" if message.get("role") == "user" else "助手"
+    content = " ".join(str(message.get("content") or "").split())
+    if len(content) > 320:
+        content = f"{content[:320]}..."
+    return f"- {role}: {content}"
+
+
+def _append_rolling_summary(
+    existing: str,
+    *,
+    messages: list[dict[str, Any]],
+    through_sequence: int,
+) -> str:
+    if not messages:
+        return existing
+    lines = [_summary_line(message) for message in messages]
+    section = f"[截至第 {through_sequence} 条消息]\n" + "\n".join(lines)
+    combined = f"{existing.rstrip()}\n\n{section}".strip() if existing else section
+    max_chars = max(settings.assistant_summary_max_chars, 500)
+    if len(combined) <= max_chars:
+        return combined
+    return "（前序摘要已截断）\n" + combined[-max_chars:]
+
+
+def _refresh_assistant_state(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    state: dict[str, Any],
+    state_delta: Any,
+    message_count: int,
+    updated_at: str,
+) -> dict[str, Any]:
+    slots = _merge_slots(
+        state.get("slots") if isinstance(state.get("slots"), dict) else {},
+        state_delta,
+    )
+    rolling_summary = str(state.get("rolling_summary") or "")
+    summarized_until = int(state.get("summarized_until_sequence") or 0)
+
+    trigger = max(settings.assistant_summary_trigger_messages, 0)
+    keep_messages = max(settings.assistant_summary_keep_messages, 0)
+    if trigger and message_count > trigger:
+        target_sequence = max(message_count - keep_messages, summarized_until)
+        if target_sequence > summarized_until:
+            messages = assistant_repo.messages_in_sequence_range(
+                conn,
+                conversation_id=conversation_id,
+                after_sequence=summarized_until,
+                through_sequence=target_sequence,
+            )
+            rolling_summary = _append_rolling_summary(
+                rolling_summary,
+                messages=messages,
+                through_sequence=target_sequence,
+            )
+            summarized_until = target_sequence
+
+    return assistant_repo.update_state(
+        conn,
+        conversation_id=conversation_id,
+        rolling_summary=rolling_summary,
+        slots=slots,
+        summarized_until_sequence=summarized_until,
+        updated_at=updated_at,
+    )
 
 
 @router.get("/failures")
@@ -237,6 +370,7 @@ def get_assistant_conversation(
     return {
         "conversation": conversation,
         "messages": assistant_repo.list_messages(conn, conversation_id=conversation_id),
+        "state": assistant_repo.get_state(conn, conversation_id=conversation_id),
     }
 
 
@@ -283,6 +417,7 @@ def send_assistant_conversation_message(
         conversation_id=conversation_id,
         limit=max(settings.assistant_history_limit, 0),
     )
+    state = assistant_repo.get_state(conn, conversation_id=conversation_id)
     now = beijing_timestamp()
     with transaction(conn):
         user_message = assistant_repo.add_message(
@@ -308,6 +443,7 @@ def send_assistant_conversation_message(
             "message": message_text,
             "conversation_id": conversation_id,
             "history": _agent_history(history),
+            "context": _assistant_context(state),
             "user_id": user_id,
         },
     )
@@ -340,11 +476,20 @@ def send_assistant_conversation_message(
             conversation_id=conversation_id,
             user_id=user_id,
         )
+        updated_state = _refresh_assistant_state(
+            conn,
+            conversation_id=conversation_id,
+            state=state,
+            state_delta=assistant["state_delta"],
+            message_count=int(updated_conversation["message_count"]) if updated_conversation else 0,
+            updated_at=beijing_timestamp(),
+        )
 
     return {
         "conversation": updated_conversation,
         "messages": [user_message, assistant_message],
         "assistant": assistant,
+        "state": updated_state,
     }
 
 

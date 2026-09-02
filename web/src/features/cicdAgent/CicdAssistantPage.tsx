@@ -8,6 +8,7 @@ import {
   fetchAssistantConversations,
   sendAssistantConversationMessage,
   type AssistantConversation,
+  type AssistantConversationState,
   type CicdAssistantMessage,
 } from "./cicdAgentApi";
 
@@ -20,6 +21,29 @@ const EXAMPLE_HINTS = [
   "帮我查询 <xx> app 在 maca 分支最近的测试结果",
   "我想发布一个 APP，请帮我生成 app_info.json 和 app_keyword.json 的内容模板",
 ];
+
+const EMPTY_STATE: AssistantConversationState = {
+  conversation_id: "",
+  rolling_summary: "",
+  slots: {},
+  summarized_until_sequence: 0,
+  updated_at: "",
+};
+
+const SLOT_LABELS: Record<string, string> = {
+  intent: "意图",
+  app_name: "APP",
+  app_version: "版本",
+  dockerfile_path: "Dockerfile",
+  os: "OS",
+  arch: "架构",
+  sdk: "SDK",
+  sdkversion: "SDK版本",
+  supported_chip: "芯片",
+  image_aliases: "镜像别名",
+  test_cases: "测试用例",
+  last_query_summary: "最近查询",
+};
 
 function compactTitle(value: string): string {
   const title = value.trim().replace(/\s+/g, " ");
@@ -55,12 +79,19 @@ function displayTime(value: string | null | undefined): string {
   return value.slice(5, 16);
 }
 
+function slotValueText(value: unknown): string {
+  if (Array.isArray(value)) return value.map((item) => String(item)).join(", ");
+  if (value && typeof value === "object") return JSON.stringify(value);
+  return String(value ?? "");
+}
+
 export function CicdAssistantPage() {
   const { user } = useAuth();
   const [input, setInput] = useState("");
   const [conversations, setConversations] = useState<AssistantConversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<UiMessage[]>([]);
+  const [conversationState, setConversationState] = useState<AssistantConversationState>(EMPTY_STATE);
   const [loadingConversations, setLoadingConversations] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [sending, setSending] = useState(false);
@@ -71,6 +102,13 @@ export function CicdAssistantPage() {
   const activeConversation = useMemo(
     () => conversations.find((item) => item.id === activeConversationId) ?? null,
     [activeConversationId, conversations],
+  );
+  const slotEntries = useMemo(
+    () =>
+      Object.entries(conversationState.slots)
+        .filter(([, value]) => value !== undefined && value !== null && value !== "")
+        .filter(([, value]) => !Array.isArray(value) || value.length > 0),
+    [conversationState.slots],
   );
 
   useEffect(() => {
@@ -86,7 +124,10 @@ export function CicdAssistantPage() {
           if (current && sorted.some((item) => item.id === current)) return current;
           return sorted[0]?.id ?? null;
         });
-        if (!sorted.length) setMessages([]);
+        if (!sorted.length) {
+          setMessages([]);
+          setConversationState(EMPTY_STATE);
+        }
       })
       .catch((err) => {
         if (cancelled) return;
@@ -103,6 +144,7 @@ export function CicdAssistantPage() {
   useEffect(() => {
     if (!activeConversationId) {
       setMessages([]);
+      setConversationState(EMPTY_STATE);
       return;
     }
     let cancelled = false;
@@ -113,6 +155,7 @@ export function CicdAssistantPage() {
         if (cancelled) return;
         setConversations((current) => upsertConversation(current, data.conversation));
         setMessages(data.messages);
+        setConversationState(data.state);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -133,6 +176,7 @@ export function CicdAssistantPage() {
       setConversations((current) => upsertConversation(current, data.conversation));
       setActiveConversationId(data.conversation.id);
       setMessages([]);
+      setConversationState({ ...EMPTY_STATE, conversation_id: data.conversation.id });
       return data.conversation;
     } finally {
       setCreating(false);
@@ -175,6 +219,7 @@ export function CicdAssistantPage() {
         ...current.filter((item) => item.id !== tempId),
         ...data.messages,
       ]);
+      setConversationState(data.state);
     } catch (err) {
       const messageText = err instanceof Error ? err.message : String(err);
       setError(messageText);
@@ -209,7 +254,10 @@ export function CicdAssistantPage() {
       const next = conversations.filter((item) => item.id !== deletedId);
       setConversations(next);
       setActiveConversationId(next[0]?.id ?? null);
-      if (!next.length) setMessages([]);
+      if (!next.length) {
+        setMessages([]);
+        setConversationState(EMPTY_STATE);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -266,6 +314,21 @@ export function CicdAssistantPage() {
                 </small>
               </button>
             ))}
+          </div>
+          <div className="cicd-agent-chat-state">
+            <strong>已确认信息</strong>
+            {slotEntries.length ? (
+              <dl>
+                {slotEntries.map(([key, value]) => (
+                  <div key={key}>
+                    <dt>{SLOT_LABELS[key] || key}</dt>
+                    <dd>{slotValueText(value)}</dd>
+                  </div>
+                ))}
+              </dl>
+            ) : (
+              <span>暂无</span>
+            )}
           </div>
         </aside>
 

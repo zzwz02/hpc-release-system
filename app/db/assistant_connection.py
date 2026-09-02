@@ -91,6 +91,7 @@ def init_assistant_db(conn: sqlite3.Connection) -> None:
                 REFERENCES assistant_conversations(id) ON DELETE CASCADE,
             rolling_summary TEXT NOT NULL DEFAULT '',
             slots_json TEXT NOT NULL DEFAULT '{}',
+            summarized_until_sequence INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL
         );
 
@@ -101,4 +102,24 @@ def init_assistant_db(conn: sqlite3.Connection) -> None:
             ON assistant_messages(conversation_id, sequence);
         """
     )
+    _ensure_column(
+        conn,
+        "assistant_conversation_state",
+        "summarized_until_sequence",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
     conn.commit()
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    ddl: str,
+) -> None:
+    columns = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")

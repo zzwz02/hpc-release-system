@@ -64,6 +64,7 @@ def test_assistant_conversation_lifecycle_persists_messages(
             "tools": ["query_images"],
             "available_tools": ["query_images"],
             "tool_error": None,
+            "state_delta": {"app_name": "hpcg", "intent": "query_image"},
         }
 
     monkeypatch.setattr(cicd_agent, "_request_agent_payload", fake_request_agent_payload)
@@ -83,12 +84,17 @@ def test_assistant_conversation_lifecycle_persists_messages(
         assert [message["role"] for message in first_data["messages"]] == ["user", "assistant"]
         assert captured_bodies[0]["user_id"] == "owner1"
         assert captured_bodies[0]["history"] == []
+        assert captured_bodies[0]["context"] == {"rolling_summary": "", "slots": {}}
 
         second = client.post(
             f"/api/cicd-agent/assistant/conversations/{conversation_id}/messages",
             json={"message": "second question"},
         )
         assert second.status_code == 200
+        assert captured_bodies[1]["context"]["slots"] == {
+            "app_name": "hpcg",
+            "intent": "query_image",
+        }
         assert captured_bodies[1]["history"] == [
             {"role": "user", "content": "first question"},
             {"role": "assistant", "content": "answer 1"},
@@ -102,6 +108,7 @@ def test_assistant_conversation_lifecycle_persists_messages(
             "second question",
             "answer 2",
         ]
+        assert detail.json()["state"]["slots"]["app_name"] == "hpcg"
 
         listed = client.get("/api/cicd-agent/assistant/conversations")
         assert listed.status_code == 200
@@ -114,6 +121,57 @@ def test_assistant_conversation_lifecycle_persists_messages(
         listed_after_delete = client.get("/api/cicd-agent/assistant/conversations")
         assert listed_after_delete.status_code == 200
         assert listed_after_delete.json()["conversations"] == []
+
+
+def test_assistant_state_rolls_older_messages_into_summary(
+    assistant_conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_trigger = cicd_agent.settings.assistant_summary_trigger_messages
+    original_keep = cicd_agent.settings.assistant_summary_keep_messages
+    monkeypatch.setattr(cicd_agent.settings, "assistant_summary_trigger_messages", 4)
+    monkeypatch.setattr(cicd_agent.settings, "assistant_summary_keep_messages", 2)
+
+    def fake_request_agent_payload(_method: str, _path: str, **kwargs: Any) -> tuple[int, dict]:
+        body = kwargs["body"]
+        return 200, {
+            "answer": f"reply to {body['message']}",
+            "conversation_id": body["conversation_id"],
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "tools": [],
+            "available_tools": [],
+            "state_delta": {"app_version": "1.0"},
+        }
+
+    monkeypatch.setattr(cicd_agent, "_request_agent_payload", fake_request_agent_payload)
+
+    try:
+        with _client(conn=assistant_conn, username="owner1") as client:
+            created = client.post("/api/cicd-agent/assistant/conversations", json={})
+            conversation_id = created.json()["conversation"]["id"]
+
+            for index in range(3):
+                response = client.post(
+                    f"/api/cicd-agent/assistant/conversations/{conversation_id}/messages",
+                    json={"message": f"question {index + 1}"},
+                )
+                assert response.status_code == 200
+
+            detail = client.get(f"/api/cicd-agent/assistant/conversations/{conversation_id}")
+            state = detail.json()["state"]
+            assert state["slots"]["app_version"] == "1.0"
+            assert state["summarized_until_sequence"] == 4
+            assert "question 1" in state["rolling_summary"]
+            assert "reply to question 1" in state["rolling_summary"]
+            assert "question 3" not in state["rolling_summary"]
+    finally:
+        monkeypatch.setattr(
+            cicd_agent.settings,
+            "assistant_summary_trigger_messages",
+            original_trigger,
+        )
+        monkeypatch.setattr(cicd_agent.settings, "assistant_summary_keep_messages", original_keep)
 
 
 def test_assistant_conversation_is_owned_by_user(

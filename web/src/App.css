@@ -974,7 +974,7 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
 .cicd-agent-chat-sidebar {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 10px;
   padding: 12px;
   overflow: hidden;
@@ -1037,6 +1037,37 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
   place-items: center;
   color: var(--muted);
   font-size: 12px;
+}
+.cicd-agent-chat-state {
+  display: grid;
+  gap: 8px;
+  max-height: 240px;
+  overflow: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+.cicd-agent-chat-state > span {
+  color: var(--muted);
+}
+.cicd-agent-chat-state dl {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+.cicd-agent-chat-state div {
+  display: grid;
+  gap: 3px;
+}
+.cicd-agent-chat-state dt {
+  color: var(--muted);
+  font-weight: 750;
+}
+.cicd-agent-chat-state dd {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 .cicd-agent-chat-panel {
   flex: 1;

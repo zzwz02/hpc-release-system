@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     cicd_agent_timeout_seconds: int = 90
     assistant_database_url: str = f"sqlite:///{(_PROJECT_ROOT / 'assistant_conversations.db').as_posix()}"
     assistant_history_limit: int = 12
+    assistant_summary_trigger_messages: int = 20
+    assistant_summary_keep_messages: int = 12
+    assistant_summary_max_chars: int = 4000
 
     # --- Gerrit -----------------------------------------------------------------
     # One deploy-time override for the Gerrit SSH origin. Project paths come
