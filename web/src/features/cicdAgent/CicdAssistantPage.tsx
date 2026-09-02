@@ -1,85 +1,220 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../../api/AuthContext";
 import { Markdown } from "../../components/Markdown";
 import {
-  sendCicdAssistant,
+  createAssistantConversation,
+  deleteAssistantConversation,
+  fetchAssistantConversation,
+  fetchAssistantConversations,
+  sendAssistantConversationMessage,
+  type AssistantConversation,
   type CicdAssistantMessage,
-  type CicdAssistantResponse,
 } from "./cicdAgentApi";
 
-interface ChatMessage {
-  role: "user" | "assistant";
-  content: string;
-  data?: CicdAssistantResponse;
+type UiMessage = CicdAssistantMessage & {
   error?: boolean;
-}
+};
 
-const EXAMPLE_PROMPTS = [
-  "帮我查询 hpcg 最近发布的镜像",
-  "帮我查询 hpcg maca 最近的测试结果",
+const EXAMPLE_HINTS = [
+  "帮我查询 <xx> app 最近发布的镜像",
+  "帮我查询 <xx> app 在 maca 分支最近的测试结果",
   "我想发布一个 APP，请帮我生成 app_info.json 和 app_keyword.json 的内容模板",
 ];
 
-function createConversationId(): string {
-  return `cicd-assistant-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+function compactTitle(value: string): string {
+  const title = value.trim().replace(/\s+/g, " ");
+  return title.length > 36 ? `${title.slice(0, 36)}...` : title;
 }
 
-function visibleHistory(messages: ChatMessage[]): CicdAssistantMessage[] {
-  return messages
-    .slice(-12)
-    .filter((item) => item.role === "user" || item.role === "assistant")
-    .map((item) => ({ role: item.role, content: item.content }));
+function sortConversations(items: AssistantConversation[]): AssistantConversation[] {
+  return [...items].sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+}
+
+function upsertConversation(
+  items: AssistantConversation[],
+  conversation: AssistantConversation,
+): AssistantConversation[] {
+  return sortConversations([
+    conversation,
+    ...items.filter((item) => item.id !== conversation.id),
+  ]);
+}
+
+function messageTools(message: CicdAssistantMessage): string[] {
+  const tools = message.metadata?.tools;
+  return Array.isArray(tools) ? tools.map((item) => String(item)).filter(Boolean) : [];
+}
+
+function messageTextMeta(message: CicdAssistantMessage, key: string): string {
+  const value = message.metadata?.[key];
+  return typeof value === "string" ? value : "";
+}
+
+function displayTime(value: string | null | undefined): string {
+  if (!value) return "";
+  return value.slice(5, 16);
 }
 
 export function CicdAssistantPage() {
   const { user } = useAuth();
-  const [input, setInput] = useState("帮我查询 hpcg 最近发布的镜像");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [conversationId, setConversationId] = useState(createConversationId);
-  const [loading, setLoading] = useState(false);
+  const [input, setInput] = useState("");
+  const [conversations, setConversations] = useState<AssistantConversation[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<UiMessage[]>([]);
+  const [loadingConversations, setLoadingConversations] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
+
+  const activeConversation = useMemo(
+    () => conversations.find((item) => item.id === activeConversationId) ?? null,
+    [activeConversationId, conversations],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingConversations(true);
+    setError("");
+    fetchAssistantConversations()
+      .then((data) => {
+        if (cancelled) return;
+        const sorted = sortConversations(data.conversations);
+        setConversations(sorted);
+        setActiveConversationId((current) => {
+          if (current && sorted.some((item) => item.id === current)) return current;
+          return sorted[0]?.id ?? null;
+        });
+        if (!sorted.length) setMessages([]);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingConversations(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.username]);
+
+  useEffect(() => {
+    if (!activeConversationId) {
+      setMessages([]);
+      return;
+    }
+    let cancelled = false;
+    setLoadingMessages(true);
+    setError("");
+    fetchAssistantConversation(activeConversationId)
+      .then((data) => {
+        if (cancelled) return;
+        setConversations((current) => upsertConversation(current, data.conversation));
+        setMessages(data.messages);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingMessages(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeConversationId]);
+
+  async function createConversation(title?: string): Promise<AssistantConversation> {
+    setCreating(true);
+    try {
+      const data = await createAssistantConversation(title);
+      setConversations((current) => upsertConversation(current, data.conversation));
+      setActiveConversationId(data.conversation.id);
+      setMessages([]);
+      return data.conversation;
+    } finally {
+      setCreating(false);
+    }
+  }
 
   async function send(event?: FormEvent<HTMLFormElement>, preset?: string) {
     event?.preventDefault();
     const message = (preset ?? input).trim();
-    if (!message || loading) return;
+    if (!message || sending || creating) return;
 
     setInput("");
     setError("");
-    setLoading(true);
-    setMessages((current) => [...current, { role: "user", content: message }]);
+    setSending(true);
+
+    const tempId = `pending-${Date.now()}`;
+    setMessages((current) => [
+      ...current,
+      { id: tempId, role: "user", content: message },
+    ]);
 
     try {
-      const data = await sendCicdAssistant({
-        message,
-        conversation_id: conversationId,
-        history: visibleHistory(messages),
-      });
+      let targetConversationId = activeConversationId;
+      if (!targetConversationId) {
+        setCreating(true);
+        try {
+          const created = await createAssistantConversation(compactTitle(message));
+          targetConversationId = created.conversation.id;
+          setConversations((current) => upsertConversation(current, created.conversation));
+        } finally {
+          setCreating(false);
+        }
+      }
+      if (!targetConversationId) throw new Error("无法创建 CICD助手会话");
+
+      const data = await sendAssistantConversationMessage(targetConversationId, message);
+      setConversations((current) => upsertConversation(current, data.conversation));
+      setActiveConversationId(data.conversation.id);
       setMessages((current) => [
-        ...current,
-        {
-          role: "assistant",
-          content: data.answer || "没有返回可展示的回答。",
-          data,
-          error: Boolean(data.error),
-        },
+        ...current.filter((item) => item.id !== tempId),
+        ...data.messages,
       ]);
     } catch (err) {
       const messageText = err instanceof Error ? err.message : String(err);
       setError(messageText);
       setMessages((current) => [
-        ...current,
+        ...current.filter((item) => item.id !== tempId),
+        { role: "user", content: message },
         { role: "assistant", content: `CICD助手调用失败：${messageText}`, error: true },
       ]);
     } finally {
-      setLoading(false);
+      setSending(false);
     }
   }
 
-  function clearChat() {
-    setMessages([]);
+  async function startNewConversation() {
+    if (creating || sending) return;
     setError("");
-    setConversationId(createConversationId());
+    setInput("");
+    try {
+      await createConversation();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function deleteCurrentConversation() {
+    if (!activeConversationId || deleting || sending) return;
+    const deletedId = activeConversationId;
+    setDeleting(true);
+    setError("");
+    try {
+      await deleteAssistantConversation(deletedId);
+      const next = conversations.filter((item) => item.id !== deletedId);
+      setConversations(next);
+      setActiveConversationId(next[0]?.id ?? null);
+      if (!next.length) setMessages([]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeleting(false);
+    }
   }
 
   return (
@@ -90,71 +225,114 @@ export function CicdAssistantPage() {
           {user ? `${user.display_name || user.username} · ${user.role}` : "未登录"}
         </span>
         <div className="spacer" />
-        <button className="btn ghost sm" type="button" onClick={clearChat} disabled={!messages.length && !error}>
+        <button className="btn ghost sm" type="button" onClick={() => void startNewConversation()} disabled={creating || sending}>
           新会话
+        </button>
+        <button
+          className="btn ghost sm"
+          type="button"
+          onClick={() => void deleteCurrentConversation()}
+          disabled={!activeConversationId || deleting || sending}
+        >
+          删除会话
         </button>
       </div>
 
       {error && <div className="error-banner">调用失败：{error}</div>}
 
-      <section className="panel cicd-agent-chat-panel">
-        <div className="cicd-agent-chat-toolbar">
-          {EXAMPLE_PROMPTS.map((prompt) => (
-            <button
-              className="btn ghost sm"
-              type="button"
-              key={prompt}
-              onClick={() => void send(undefined, prompt)}
-              disabled={loading}
-            >
-              {prompt}
-            </button>
-          ))}
-        </div>
+      <section className="cicd-agent-chat-shell">
+        <aside className="panel cicd-agent-chat-sidebar">
+          <div className="cicd-agent-chat-sidebar-head">
+            <strong>会话</strong>
+            <span>{loadingConversations ? "加载中" : `${conversations.length} 条`}</span>
+          </div>
+          <div className="cicd-agent-chat-session-list">
+            {!conversations.length && !loadingConversations ? (
+              <div className="cicd-agent-chat-session-empty">暂无历史会话</div>
+            ) : null}
+            {conversations.map((conversation) => (
+              <button
+                type="button"
+                key={conversation.id}
+                className={`cicd-agent-chat-session ${
+                  conversation.id === activeConversationId ? "active" : ""
+                }`}
+                onClick={() => setActiveConversationId(conversation.id)}
+                disabled={sending}
+              >
+                <span>{conversation.title || "新会话"}</span>
+                <small>
+                  {conversation.message_count} 条 · {displayTime(conversation.updated_at)}
+                </small>
+              </button>
+            ))}
+          </div>
+        </aside>
 
-        <div className="cicd-agent-chat-log">
-          {!messages.length && (
-            <div className="cicd-agent-chat-empty">
-              <strong>CICD助手</strong>
-              <span>可查询 APP 镜像与测试结果，也可生成发布配置内容建议。</span>
+        <section className="panel cicd-agent-chat-panel">
+          <div className="cicd-agent-chat-toolbar">
+            <div className="cicd-agent-chat-title">
+              <strong>{activeConversation?.title || "新会话"}</strong>
+              <span>{activeConversation ? activeConversation.id : "发送消息后自动保存"}</span>
             </div>
-          )}
+          </div>
 
-          {messages.map((message, index) => (
-            <article
-              className={`cicd-agent-chat-message ${message.role}${message.error ? " bad" : ""}`}
-              key={`${message.role}-${index}`}
-            >
-              <div className="cicd-agent-chat-role">{message.role === "user" ? "你" : "CICD助手"}</div>
-              {message.role === "assistant" ? (
-                <Markdown value={message.content} className="md-view cicd-agent-chat-md" />
-              ) : (
-                <p>{message.content}</p>
-              )}
-              {message.data?.tools?.length ? (
-                <small>使用工具：{message.data.tools.join(", ")}</small>
-              ) : null}
-              {message.data?.tool_error ? (
-                <small className="danger-text">查询工具不可用：{message.data.tool_error}</small>
-              ) : null}
-              {message.data?.error ? (
-                <small className="danger-text">助手调用异常：{message.data.error}</small>
-              ) : null}
-            </article>
-          ))}
-        </div>
+          <div className="cicd-agent-chat-log">
+            {!messages.length && !loadingMessages ? (
+              <div className="cicd-agent-chat-empty">
+                <strong>CICD助手</strong>
+                <span>可查询 APP 镜像与测试结果，也可生成发布配置内容建议。</span>
+                <div className="cicd-agent-chat-examples">
+                  {EXAMPLE_HINTS.map((hint) => (
+                    <span key={hint}>{hint}</span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {loadingMessages ? (
+              <div className="cicd-agent-chat-empty">
+                <strong>加载会话中</strong>
+              </div>
+            ) : null}
 
-        <form className="cicd-agent-chat-form" onSubmit={(event) => void send(event)}>
-          <textarea
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            placeholder="查询 APP 最近镜像、测试结果，或让我输出 app_info.json / app_keyword.json 内容建议"
-            rows={3}
-          />
-          <button className="btn primary" type="submit" disabled={loading || !input.trim()}>
-            {loading ? "思考中" : "发送"}
-          </button>
-        </form>
+            {messages.map((message, index) => {
+              const tools = messageTools(message);
+              const toolError = messageTextMeta(message, "tool_error");
+              const agentError = messageTextMeta(message, "agent_error");
+              return (
+                <article
+                  className={`cicd-agent-chat-message ${message.role}${message.error ? " bad" : ""}`}
+                  key={message.id || `${message.role}-${index}`}
+                >
+                  <div className="cicd-agent-chat-role">
+                    {message.role === "user" ? "你" : "CICD助手"}
+                    {message.created_at ? <span>{displayTime(message.created_at)}</span> : null}
+                  </div>
+                  {message.role === "assistant" ? (
+                    <Markdown value={message.content} className="md-view cicd-agent-chat-md" />
+                  ) : (
+                    <p>{message.content}</p>
+                  )}
+                  {tools.length ? <small>使用工具：{tools.join(", ")}</small> : null}
+                  {toolError ? <small className="danger-text">查询工具不可用：{toolError}</small> : null}
+                  {agentError ? <small className="danger-text">助手调用异常：{agentError}</small> : null}
+                </article>
+              );
+            })}
+          </div>
+
+          <form className="cicd-agent-chat-form" onSubmit={(event) => void send(event)}>
+            <textarea
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              placeholder="查询 APP 最近镜像、测试结果，或让我输出 app_info.json / app_keyword.json 内容建议"
+              rows={3}
+            />
+            <button className="btn primary" type="submit" disabled={sending || creating || !input.trim()}>
+              {sending ? "思考中" : "发送"}
+            </button>
+          </form>
+        </section>
       </section>
     </section>
   );

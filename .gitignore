@@ -15,6 +15,7 @@ jira.conf
 qa_llm.env
 qa_logs/
 hpc_app.csv
+docs/cicd-assistant-optimization-plan.md
 .vscode
 *.pyc
 *.db-wal

@@ -72,6 +72,8 @@ class Settings(BaseSettings):
     # same-origin /api/cicd-agent/* proxy endpoints.
     cicd_agent_base_url: str = "http://10.2.118.76:8056"
     cicd_agent_timeout_seconds: int = 90
+    assistant_database_url: str = f"sqlite:///{(_PROJECT_ROOT / 'assistant_conversations.db').as_posix()}"
+    assistant_history_limit: int = 12
 
     # --- Gerrit -----------------------------------------------------------------
     # One deploy-time override for the Gerrit SSH origin. Project paths come

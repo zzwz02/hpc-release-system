@@ -147,11 +147,17 @@ CICD Agent 集成通过 hpc_release_system 后端同源代理访问，浏览器�
 ```bash
 CICD_AGENT_BASE_URL=http://10.2.118.76:8056
 CICD_AGENT_TIMEOUT_SECONDS=90
+ASSISTANT_DATABASE_URL=sqlite:///./assistant_conversations.db
+ASSISTANT_HISTORY_LIMIT=12
 ```
 
 Jenkins 失败查询继续代理到 CICD_Agent 的失败记录 API；`/api/cicd-agent/cicd-assistant` 会代理到
 CICD_Agent 的 `/api/v1/cicd-assistant`，并由 hpc_release_system 后端使用当前登录用户覆盖请求中的 `user_id`，
 用于 CICD助手的会话追踪和 Langfuse 用户维度记录。
+
+CICD助手会话使用独立数据库，不写入 `release_system.db`。当前实现支持 `sqlite:///` 形式的
+`ASSISTANT_DATABASE_URL`，本地默认文件会被 `.gitignore` 忽略；后续如接入 MySQL/PostgreSQL，应只用于
+CICD助手会话库，不改造 release 系统主业务库。
 
 ---
 

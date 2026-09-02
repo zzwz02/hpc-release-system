@@ -14,6 +14,7 @@ from fastapi import Cookie, Depends
 
 from app.api.errors import AuthzError
 from app.config import settings
+from app.db.assistant_connection import connect_assistant
 from app.db.connection import connect
 from app.domain.permissions import roles_for_capability, roles_for_tab
 from app.repositories import sessions_repo
@@ -31,6 +32,15 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
     correctness by never sharing a connection across concurrent requests.
     """
     conn = connect(settings.db_path)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def get_assistant_db() -> Generator[sqlite3.Connection, None, None]:
+    """Yield one connection to the independent CICD assistant conversation DB."""
+    conn = connect_assistant(settings.assistant_database_url)
     try:
         yield conn
     finally:

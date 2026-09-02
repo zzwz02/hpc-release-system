@@ -964,6 +964,80 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
   flex-direction: column;
   overflow: hidden;
 }
+.cicd-agent-chat-shell {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 12px;
+}
+.cicd-agent-chat-sidebar {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
+  overflow: hidden;
+}
+.cicd-agent-chat-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+}
+.cicd-agent-chat-sidebar-head span,
+.cicd-agent-chat-title span {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.cicd-agent-chat-session-list {
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cicd-agent-chat-session,
+.cicd-agent-chat-session-empty {
+  width: 100%;
+  min-height: 58px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+}
+.cicd-agent-chat-session {
+  cursor: pointer;
+}
+.cicd-agent-chat-session:hover:not(:disabled),
+.cicd-agent-chat-session.active {
+  border-color: var(--accent-bd);
+  background: var(--accent-soft);
+}
+.cicd-agent-chat-session span,
+.cicd-agent-chat-session small {
+  display: block;
+}
+.cicd-agent-chat-session span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 750;
+}
+.cicd-agent-chat-session small {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.cicd-agent-chat-session-empty {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
 .cicd-agent-chat-panel {
   flex: 1;
   min-height: 0;
@@ -977,6 +1051,17 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
   gap: 10px;
   flex-wrap: wrap;
   align-items: center;
+}
+.cicd-agent-chat-title {
+  min-width: min(260px, 100%);
+  display: grid;
+  gap: 3px;
+}
+.cicd-agent-chat-title strong,
+.cicd-agent-chat-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .cicd-agent-chat-log {
   min-height: 0;
@@ -996,6 +1081,18 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
   min-height: 180px;
   color: var(--muted);
   text-align: center;
+}
+.cicd-agent-chat-examples {
+  display: grid;
+  gap: 6px;
+  width: min(560px, 100%);
+  margin-top: 8px;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.cicd-agent-chat-examples span {
+  display: block;
 }
 .cicd-agent-chat-message {
   width: min(880px, 92%);
@@ -1059,6 +1156,10 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
   overflow-wrap: anywhere;
 }
 .cicd-agent-chat-role {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   margin-bottom: 6px;
   color: var(--muted);
   font-size: 11.5px;
@@ -1090,6 +1191,12 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
   max-height: 170px;
 }
 @media (max-width: 760px) {
+  .cicd-agent-chat-shell {
+    grid-template-columns: 1fr;
+  }
+  .cicd-agent-chat-sidebar {
+    max-height: 190px;
+  }
   .cicd-agent-chat-form {
     grid-template-columns: 1fr;
   }

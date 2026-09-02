@@ -1,4 +1,4 @@
-import { apiGet, apiPost } from "../../api/http";
+import { apiFetch, apiGet, apiPost } from "../../api/http";
 
 export const CICD_AGENT_FAILURES_KEY = ["cicd-agent", "failures"] as const;
 export const CICD_AGENT_FILTER_OPTIONS_KEY = ["cicd-agent", "filter-options"] as const;
@@ -137,8 +137,13 @@ export interface FailureChatResponse {
 }
 
 export interface CicdAssistantMessage {
+  id?: string;
+  conversation_id?: string;
+  sequence?: number;
   role: "user" | "assistant";
   content: string;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
 }
 
 export interface CicdAssistantResponse {
@@ -150,6 +155,38 @@ export interface CicdAssistantResponse {
   available_tools: string[];
   error?: string | null;
   tool_error?: string | null;
+}
+
+export interface AssistantConversation {
+  id: string;
+  user_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string;
+  message_count: number;
+}
+
+export interface AssistantConversationListResponse {
+  conversations: AssistantConversation[];
+}
+
+export interface AssistantConversationResponse {
+  conversation: AssistantConversation;
+}
+
+export interface AssistantConversationDetailResponse {
+  conversation: AssistantConversation;
+  messages: CicdAssistantMessage[];
+}
+
+export interface AssistantMessageSendResponse {
+  conversation: AssistantConversation;
+  messages: CicdAssistantMessage[];
+  assistant: Omit<CicdAssistantResponse, "error"> & {
+    agent_error?: string | null;
+    agent_status_code?: number;
+  };
 }
 
 function compactParams(values: Record<string, unknown>): Record<string, string> {
@@ -227,4 +264,41 @@ export function sendCicdAssistant(payload: {
   history: CicdAssistantMessage[];
 }): Promise<CicdAssistantResponse> {
   return apiPost<CicdAssistantResponse>("/api/cicd-agent/cicd-assistant", payload);
+}
+
+export function fetchAssistantConversations(): Promise<AssistantConversationListResponse> {
+  return apiGet<AssistantConversationListResponse>("/api/cicd-agent/assistant/conversations");
+}
+
+export function createAssistantConversation(
+  title?: string,
+): Promise<AssistantConversationResponse> {
+  return apiPost<AssistantConversationResponse>("/api/cicd-agent/assistant/conversations", {
+    title,
+  });
+}
+
+export function fetchAssistantConversation(
+  conversationId: string,
+): Promise<AssistantConversationDetailResponse> {
+  return apiGet<AssistantConversationDetailResponse>(
+    `/api/cicd-agent/assistant/conversations/${encodeURIComponent(conversationId)}`,
+  );
+}
+
+export function sendAssistantConversationMessage(
+  conversationId: string,
+  message: string,
+): Promise<AssistantMessageSendResponse> {
+  return apiPost<AssistantMessageSendResponse>(
+    `/api/cicd-agent/assistant/conversations/${encodeURIComponent(conversationId)}/messages`,
+    { message },
+  );
+}
+
+export function deleteAssistantConversation(conversationId: string): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>(
+    `/api/cicd-agent/assistant/conversations/${encodeURIComponent(conversationId)}`,
+    { method: "DELETE" },
+  );
 }
