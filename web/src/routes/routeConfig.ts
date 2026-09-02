@@ -32,7 +32,7 @@ export const ROUTES: RouteConfig[] = [
   { path: "/qa",        view: "qa",        label: "QA",         roles: rolesForTab("qa") },
   { path: "/artifacts", view: "artifacts", label: "发布文档",   roles: rolesForTab("artifacts") },
   { path: "/cicd",      view: "cicd",      label: "CICD 工作台", roles: rolesForTab("cicd") },
-  { path: "/jenkins-failures", view: "jenkins-failures", label: "jenkins失败查询", roles: rolesForTab("jenkins-failures") },
+  { path: "/jenkins-failures", view: "jenkins-failures", label: "Jenkins失败查询", roles: rolesForTab("jenkins-failures") },
   { path: "/cicd-assistant",   view: "cicd-assistant",   label: "CICD助手",       roles: rolesForTab("cicd-assistant") },
   { path: "/wiki",      view: "wiki",      label: "开发 WIKI",  roles: rolesForTab("wiki") },
   { path: "/admin",     view: "admin",     label: "系统管理",   roles: rolesForTab("admin") },
