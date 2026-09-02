@@ -6,13 +6,17 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.routers import cicd_agent
 from app.db.assistant_connection import connect_assistant, reset_assistant_init_state
+from app.db.connection import transaction
 from app.deps import get_assistant_db, require_login
 from app.main import create_app
+from app.repositories import assistant_repo
+from app.timeutil import beijing_timestamp
 
 
 def _client(
@@ -244,6 +248,93 @@ def test_assistant_stream_persists_final_message_and_state(
 def test_interrupted_answer_marks_partial_content() -> None:
     assert cicd_agent._interrupted_answer("hello world") == "hello world\n\n（已停止生成）"
     assert cicd_agent._interrupted_answer("") == "已停止生成，未产生可展示内容。"
+
+
+def test_agent_stream_error_messages_are_human_readable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cicd_agent.settings, "cicd_agent_timeout_seconds", 7)
+
+    assert cicd_agent._agent_stream_timeout_error() == "CICD Agent 请求超时（超过 7 秒）"
+    assert (
+        cicd_agent._agent_request_error(httpx.ConnectError("", request=httpx.Request("POST", "http://agent")))
+        == "CICD Agent 不可用：ConnectError"
+    )
+
+
+def test_assistant_regenerate_appends_answer_without_duplicate_user(
+    assistant_conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_body: dict[str, Any] = {}
+    now = beijing_timestamp()
+    with transaction(assistant_conn):
+        conversation = assistant_repo.create_conversation(
+            assistant_conn,
+            user_id="owner1",
+            title="regen",
+            created_at=now,
+        )
+        user_message = assistant_repo.add_message(
+            assistant_conn,
+            conversation_id=conversation["id"],
+            role="user",
+            content="帮我查询 hpcg app 最近发布的镜像",
+            created_at=now,
+        )
+        assistant_message = assistant_repo.add_message(
+            assistant_conn,
+            conversation_id=conversation["id"],
+            role="assistant",
+            content="old answer",
+            created_at=now,
+        )
+
+    async def fake_stream_events(path: str, *, body: dict[str, Any]):
+        assert path == "/api/v1/cicd-assistant/stream"
+        captured_body.update(body)
+        yield {
+            "type": "start",
+            "conversation_id": body["conversation_id"],
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "available_tools": ["query_images"],
+        }
+        yield {"type": "token", "content": "new answer"}
+        yield {
+            "type": "done",
+            "answer": "new answer",
+            "conversation_id": body["conversation_id"],
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "tools": ["query_images"],
+            "available_tools": ["query_images"],
+            "state_delta": {"last_query_summary": "new answer"},
+        }
+
+    monkeypatch.setattr(cicd_agent, "_request_agent_stream_events", fake_stream_events)
+
+    with _client(conn=assistant_conn, username="owner1") as client:
+        with client.stream(
+            "POST",
+            (
+                "/api/cicd-agent/assistant/conversations/"
+                f"{conversation['id']}/messages/{assistant_message['id']}/regenerate/stream"
+            ),
+            json={},
+        ) as response:
+            assert response.status_code == 200
+            events = [json.loads(line) for line in response.iter_lines() if line]
+
+        assert events[0]["source_user_message"]["id"] == user_message["id"]
+        assert events[-1]["assistant_message"]["content"] == "new answer"
+        assert captured_body["message"] == "帮我查询 hpcg app 最近发布的镜像"
+        assert captured_body["history"] == []
+
+        detail = client.get(f"/api/cicd-agent/assistant/conversations/{conversation['id']}")
+        assert [message["content"] for message in detail.json()["messages"]] == [
+            "帮我查询 hpcg app 最近发布的镜像",
+            "old answer",
+            "new answer",
+        ]
 
 
 def test_assistant_conversation_is_owned_by_user(

@@ -215,6 +215,42 @@ def list_messages(
     return [_message_row(row) for row in rows]
 
 
+def get_message(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    message_id: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT id, conversation_id, sequence, role, content, metadata_json, created_at
+        FROM assistant_messages
+        WHERE conversation_id = ? AND id = ?
+        """,
+        (conversation_id, message_id),
+    ).fetchone()
+    return _message_row(row) if row else None
+
+
+def previous_user_message(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    before_sequence: int,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT id, conversation_id, sequence, role, content, metadata_json, created_at
+        FROM assistant_messages
+        WHERE conversation_id = ? AND sequence < ? AND role = 'user'
+        ORDER BY sequence DESC
+        LIMIT 1
+        """,
+        (conversation_id, before_sequence),
+    ).fetchone()
+    return _message_row(row) if row else None
+
+
 def recent_messages(
     conn: sqlite3.Connection,
     *,
@@ -230,6 +266,26 @@ def recent_messages(
         LIMIT ?
         """,
         (conversation_id, limit),
+    ).fetchall()
+    return [_message_row(row) for row in reversed(rows)]
+
+
+def recent_messages_before_sequence(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    before_sequence: int,
+    limit: int,
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT id, conversation_id, sequence, role, content, metadata_json, created_at
+        FROM assistant_messages
+        WHERE conversation_id = ? AND sequence < ?
+        ORDER BY sequence DESC
+        LIMIT ?
+        """,
+        (conversation_id, before_sequence, limit),
     ).fetchall()
     return [_message_row(row) for row in reversed(rows)]
 

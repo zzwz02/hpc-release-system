@@ -1,11 +1,13 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../../api/AuthContext";
 import { Markdown } from "../../components/Markdown";
+import { toast } from "../../lib/toast";
 import {
   createAssistantConversation,
   deleteAssistantConversation,
   fetchAssistantConversation,
   fetchAssistantConversations,
+  regenerateAssistantConversationMessageStream,
   sendAssistantConversationMessageStream,
   type AssistantConversation,
   type AssistantConversationState,
@@ -101,6 +103,23 @@ function stoppedAssistantContent(content: string): string {
   return "已停止生成，未产生可展示内容。";
 }
 
+async function writeClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("浏览器不允许写入剪贴板");
+}
+
 function displayTime(value: string | null | undefined): string {
   if (!value) return "";
   return value.slice(5, 16);
@@ -140,6 +159,13 @@ export function CicdAssistantPage() {
         .filter(([, value]) => value !== undefined && value !== null && value !== "")
         .filter(([, value]) => !Array.isArray(value) || value.length > 0),
     [conversationState.slots],
+  );
+  const lastAssistantMessageId = useMemo(
+    () =>
+      [...messages]
+        .reverse()
+        .find((message) => message.role === "assistant" && !message.streaming)?.id ?? "",
+    [messages],
   );
 
   function scrollChatToBottom(behavior: ScrollBehavior = "auto") {
@@ -313,16 +339,95 @@ export function CicdAssistantPage() {
     abortControllerRef.current?.abort();
   }
 
+  async function copyAssistantMessage(message: UiMessage) {
+    if (!message.content.trim()) return;
+    try {
+      await writeClipboard(message.content);
+      toast.success("已复制回答");
+    } catch (err) {
+      toast.error(`复制失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  async function regenerateAssistantMessage(message: UiMessage) {
+    if (!activeConversationId || !message.id || sending || creating) return;
+    setError("");
+    setSending(true);
+    shouldStickToBottomRef.current = true;
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const assistantTempId = `pending-regenerate-${Date.now()}`;
+    setMessages((current) => [
+      ...current,
+      {
+        id: assistantTempId,
+        role: "assistant",
+        content: "",
+        streaming: true,
+        metadata: {
+          regenerated_from_message_id: message.id,
+        },
+      },
+    ]);
+
+    try {
+      await regenerateAssistantConversationMessageStream(activeConversationId, message.id, (streamEvent) => {
+        handleStreamEvent(streamEvent, null, assistantTempId);
+      }, { signal: controller.signal });
+    } catch (err) {
+      if (isAbortError(err)) {
+        setMessages((current) =>
+          current.map((item) => {
+            if (item.id !== assistantTempId) return item;
+            return {
+              ...item,
+              content: stoppedAssistantContent(item.content),
+              streaming: false,
+              metadata: {
+                ...(item.metadata ?? {}),
+                agent_error: "用户停止了生成",
+                agent_status_code: 499,
+              },
+            };
+          }),
+        );
+        return;
+      }
+      const messageText = err instanceof Error ? err.message : String(err);
+      setError(messageText);
+      setMessages((current) =>
+        current.map((item) =>
+          item.id === assistantTempId
+            ? {
+                ...item,
+                content: `CICD助手重新生成失败：${messageText}`,
+                error: true,
+                streaming: false,
+              }
+            : item,
+        ),
+      );
+    } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
+      setSending(false);
+    }
+  }
+
   function handleStreamEvent(
     streamEvent: AssistantStreamEvent,
-    userTempId: string,
+    userTempId: string | null,
     assistantTempId: string,
   ) {
     if (streamEvent.type === "start") {
       setConversations((current) => upsertConversation(current, streamEvent.conversation));
-      setMessages((current) =>
-        current.map((item) => (item.id === userTempId ? streamEvent.user_message : item)),
-      );
+      if (userTempId && streamEvent.user_message) {
+        setMessages((current) =>
+          current.map((item) => (item.id === userTempId ? streamEvent.user_message! : item)),
+        );
+      }
       return;
     }
 
@@ -536,6 +641,12 @@ export function CicdAssistantPage() {
               const tools = messageTools(message);
               const toolError = messageTextMeta(message, "tool_error");
               const agentError = messageTextMeta(message, "agent_error");
+              const canCopy = message.role === "assistant" && !!message.content.trim();
+              const canRegenerate =
+                canCopy &&
+                !message.streaming &&
+                !sending &&
+                message.id === lastAssistantMessageId;
               return (
                 <article
                   className={`cicd-agent-chat-message ${message.role}${message.error ? " bad" : ""}`}
@@ -552,7 +663,21 @@ export function CicdAssistantPage() {
                   ) : (
                     <p>{message.content}</p>
                   )}
-                  {tools.length ? <small>使用工具：{tools.join(", ")}</small> : null}
+                  {canCopy ? (
+                    <div className="cicd-agent-chat-message-actions">
+                      <button className="btn ghost sm" type="button" onClick={() => void copyAssistantMessage(message)}>
+                        复制
+                      </button>
+                      {canRegenerate ? (
+                        <button className="btn ghost sm" type="button" onClick={() => void regenerateAssistantMessage(message)}>
+                          重新生成
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {tools.length ? (
+                    <small>{message.streaming ? "正在使用工具" : "使用工具"}：{tools.join(", ")}</small>
+                  ) : null}
                   {toolError ? <small className="danger-text">查询工具不可用：{toolError}</small> : null}
                   {agentError ? <small className="danger-text">助手调用异常：{agentError}</small> : null}
                 </article>

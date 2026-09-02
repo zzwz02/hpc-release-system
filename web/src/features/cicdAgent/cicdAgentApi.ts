@@ -196,7 +196,9 @@ export type AssistantStreamEvent =
   | {
       type: "start";
       conversation: AssistantConversation;
-      user_message: CicdAssistantMessage;
+      user_message?: CicdAssistantMessage;
+      source_user_message?: CicdAssistantMessage;
+      regenerated_from_message_id?: string;
     }
   | {
       type: "metadata";
@@ -356,6 +358,20 @@ export function sendAssistantConversationMessageStream(
   return apiPostNdjson<AssistantStreamEvent>(
     `/api/cicd-agent/assistant/conversations/${encodeURIComponent(conversationId)}/messages/stream`,
     { message },
+    onEvent,
+    options,
+  );
+}
+
+export function regenerateAssistantConversationMessageStream(
+  conversationId: string,
+  messageId: string,
+  onEvent: (event: AssistantStreamEvent) => void,
+  options: { signal?: AbortSignal } = {},
+): Promise<void> {
+  return apiPostNdjson<AssistantStreamEvent>(
+    `/api/cicd-agent/assistant/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/regenerate/stream`,
+    {},
     onEvent,
     options,
   );

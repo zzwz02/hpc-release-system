@@ -115,6 +115,15 @@ def _request_agent(method: str, path: str, *, query: str = "", body: Any = None)
     return JSONResponse(status_code=status_code, content=payload)
 
 
+def _agent_stream_timeout_error() -> str:
+    return f"CICD Agent 请求超时（超过 {settings.cicd_agent_timeout_seconds} 秒）"
+
+
+def _agent_request_error(exc: httpx.RequestError) -> str:
+    detail = str(exc).strip() or exc.__class__.__name__
+    return f"CICD Agent 不可用：{detail}"
+
+
 async def _request_agent_stream_events(path: str, *, body: Any) -> AsyncIterator[dict[str, Any]]:
     timeout = httpx.Timeout(settings.cicd_agent_timeout_seconds)
     try:
@@ -160,10 +169,16 @@ async def _request_agent_stream_events(path: str, *, body: Any) -> AsyncIterator
                             "agent_status_code": response.status_code,
                         }
                         return
+    except httpx.TimeoutException:
+        yield {
+            "type": "error",
+            "error": _agent_stream_timeout_error(),
+            "agent_status_code": 504,
+        }
     except httpx.RequestError as exc:
         yield {
             "type": "error",
-            "error": f"CICD Agent 不可用：{exc}",
+            "error": _agent_request_error(exc),
             "agent_status_code": 502,
         }
 
@@ -409,6 +424,125 @@ def _persist_stream_assistant_result(
         "assistant": assistant,
         "state": updated_state,
     }
+
+
+async def _stream_agent_events_to_browser(
+    *,
+    request: Request,
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    user_id: str,
+    state: dict[str, Any],
+    agent_body: dict[str, Any],
+    start_event: dict[str, Any],
+) -> AsyncIterator[str]:
+    finalized = False
+    yield _encode_ndjson(start_event)
+    answer_parts: list[str] = []
+    stream_metadata: dict[str, Any] = {}
+    used_tools: list[str] = []
+
+    def persist_interrupted() -> None:
+        nonlocal finalized
+        if finalized:
+            return
+        final_event = {
+            **stream_metadata,
+            "type": "error",
+            "answer": _interrupted_answer("".join(answer_parts)),
+            "error": "用户停止了生成",
+            "agent_status_code": 499,
+            "tools": used_tools or stream_metadata.get("tools", []),
+            "state_delta": stream_metadata.get("state_delta", {}),
+        }
+        _persist_stream_assistant_result(
+            conn,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            state=state,
+            agent_event=final_event,
+            fallback_answer=_interrupted_answer("".join(answer_parts)),
+        )
+        finalized = True
+
+    try:
+        async for event in _request_agent_stream_events(
+            "/api/v1/cicd-assistant/stream",
+            body=agent_body,
+        ):
+            if await request.is_disconnected():
+                persist_interrupted()
+                return
+
+            event_type = event.get("type")
+            if event_type == "start":
+                stream_metadata = {
+                    "conversation_id": event.get("conversation_id") or conversation_id,
+                    "provider": event.get("provider") or "",
+                    "model": event.get("model") or "",
+                    "tools": event.get("tools") if isinstance(event.get("tools"), list) else [],
+                    "available_tools": (
+                        event.get("available_tools")
+                        if isinstance(event.get("available_tools"), list)
+                        else []
+                    ),
+                    "tool_error": event.get("tool_error") or None,
+                    "state_delta": (
+                        event.get("state_delta")
+                        if isinstance(event.get("state_delta"), dict)
+                        else {}
+                    ),
+                }
+                yield _encode_ndjson({"type": "metadata", **stream_metadata})
+                continue
+            if event_type == "token":
+                content = str(event.get("content") or "")
+                if content:
+                    answer_parts.append(content)
+                yield _encode_ndjson(event)
+                continue
+            if event_type == "tool":
+                tool_name = str(event.get("name") or "").strip()
+                if tool_name and tool_name not in used_tools:
+                    used_tools.append(tool_name)
+                yield _encode_ndjson(event)
+                continue
+            if event_type in {"done", "error"}:
+                final_event = {**stream_metadata, **event}
+                if event_type == "error" and not final_event.get("agent_status_code"):
+                    final_event["agent_status_code"] = 502
+                result = _persist_stream_assistant_result(
+                    conn,
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    state=state,
+                    agent_event=final_event,
+                    fallback_answer="".join(answer_parts).strip(),
+                )
+                finalized = True
+                yield _encode_ndjson({"type": event_type, **result})
+                return
+            yield _encode_ndjson({"type": "metadata", "event": event})
+
+        result = _persist_stream_assistant_result(
+            conn,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            state=state,
+            agent_event={
+                **stream_metadata,
+                "type": "error",
+                "error": "CICD Agent 流式响应提前结束",
+                "agent_status_code": 502,
+                "state_delta": stream_metadata.get("state_delta", {}),
+            },
+            fallback_answer="".join(answer_parts).strip(),
+        )
+        finalized = True
+        yield _encode_ndjson({"type": "error", **result})
+    except asyncio.CancelledError:
+        persist_interrupted()
+        raise
 
 
 @router.get("/failures")
@@ -676,123 +810,91 @@ async def stream_assistant_conversation_message(
         "user_id": user_id,
     }
 
-    async def generate() -> AsyncIterator[str]:
-        finalized = False
-        yield _encode_ndjson(
-            {
+    return StreamingResponse(
+        _stream_agent_events_to_browser(
+            request=request,
+            conn=conn,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            state=state,
+            agent_body=agent_body,
+            start_event={
                 "type": "start",
                 "conversation": started_conversation,
                 "user_message": user_message,
-            }
-        )
-        answer_parts: list[str] = []
-        stream_metadata: dict[str, Any] = {}
-        used_tools: list[str] = []
+            },
+        ),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
-        def persist_interrupted() -> None:
-            nonlocal finalized
-            if finalized:
-                return
-            final_event = {
-                **stream_metadata,
-                "type": "error",
-                "answer": _interrupted_answer("".join(answer_parts)),
-                "error": "用户停止了生成",
-                "agent_status_code": 499,
-                "tools": used_tools or stream_metadata.get("tools", []),
-                "state_delta": stream_metadata.get("state_delta", {}),
-            }
-            _persist_stream_assistant_result(
-                conn,
-                conversation_id=conversation_id,
-                user_id=user_id,
-                state=state,
-                agent_event=final_event,
-                fallback_answer=_interrupted_answer("".join(answer_parts)),
-            )
-            finalized = True
 
-        try:
-            async for event in _request_agent_stream_events(
-                "/api/v1/cicd-assistant/stream",
-                body=agent_body,
-            ):
-                if await request.is_disconnected():
-                    persist_interrupted()
-                    return
+@router.post("/assistant/conversations/{conversation_id}/messages/{message_id}/regenerate/stream")
+async def regenerate_assistant_conversation_message(
+    conversation_id: str,
+    message_id: str,
+    request: Request,
+    user: dict = Depends(require_assistant_access),
+    conn: sqlite3.Connection = Depends(get_assistant_db),
+) -> StreamingResponse:
+    user_id = _assistant_user_id(user)
+    conversation = assistant_repo.get_conversation(
+        conn,
+        conversation_id=conversation_id,
+        user_id=user_id,
+    )
+    if not conversation:
+        raise HTTPException(status_code=404, detail="会话不存在或无权访问")
 
-                event_type = event.get("type")
-                if event_type == "start":
-                    stream_metadata = {
-                        "conversation_id": event.get("conversation_id") or conversation_id,
-                        "provider": event.get("provider") or "",
-                        "model": event.get("model") or "",
-                        "tools": event.get("tools") if isinstance(event.get("tools"), list) else [],
-                        "available_tools": (
-                            event.get("available_tools")
-                            if isinstance(event.get("available_tools"), list)
-                            else []
-                        ),
-                        "tool_error": event.get("tool_error") or None,
-                        "state_delta": (
-                            event.get("state_delta")
-                            if isinstance(event.get("state_delta"), dict)
-                            else {}
-                        ),
-                    }
-                    yield _encode_ndjson({"type": "metadata", **stream_metadata})
-                    continue
-                if event_type == "token":
-                    content = str(event.get("content") or "")
-                    if content:
-                        answer_parts.append(content)
-                    yield _encode_ndjson(event)
-                    continue
-                if event_type == "tool":
-                    tool_name = str(event.get("name") or "").strip()
-                    if tool_name and tool_name not in used_tools:
-                        used_tools.append(tool_name)
-                    yield _encode_ndjson(event)
-                    continue
-                if event_type in {"done", "error"}:
-                    final_event = {**stream_metadata, **event}
-                    if event_type == "error" and not final_event.get("agent_status_code"):
-                        final_event["agent_status_code"] = 502
-                    result = _persist_stream_assistant_result(
-                        conn,
-                        conversation_id=conversation_id,
-                        user_id=user_id,
-                        state=state,
-                        agent_event=final_event,
-                        fallback_answer="".join(answer_parts).strip(),
-                    )
-                    finalized = True
-                    yield _encode_ndjson({"type": event_type, **result})
-                    return
-                yield _encode_ndjson({"type": "metadata", "event": event})
+    target_message = assistant_repo.get_message(
+        conn,
+        conversation_id=conversation_id,
+        message_id=message_id,
+    )
+    if not target_message or target_message["role"] != "assistant":
+        raise HTTPException(status_code=404, detail="助手消息不存在")
 
-            result = _persist_stream_assistant_result(
-                conn,
-                conversation_id=conversation_id,
-                user_id=user_id,
-                state=state,
-                agent_event={
-                    **stream_metadata,
-                    "type": "error",
-                    "error": "CICD Agent 流式响应提前结束",
-                    "agent_status_code": 502,
-                    "state_delta": stream_metadata.get("state_delta", {}),
-                },
-                fallback_answer="".join(answer_parts).strip(),
-            )
-            finalized = True
-            yield _encode_ndjson({"type": "error", **result})
-        except asyncio.CancelledError:
-            persist_interrupted()
-            raise
+    source_user_message = assistant_repo.previous_user_message(
+        conn,
+        conversation_id=conversation_id,
+        before_sequence=int(target_message["sequence"]),
+    )
+    if not source_user_message:
+        raise HTTPException(status_code=422, detail="找不到可重新生成的用户消息")
+
+    history = assistant_repo.recent_messages_before_sequence(
+        conn,
+        conversation_id=conversation_id,
+        before_sequence=int(source_user_message["sequence"]),
+        limit=max(settings.assistant_history_limit, 0),
+    )
+    state = assistant_repo.get_state(conn, conversation_id=conversation_id)
+    agent_body = {
+        "message": source_user_message["content"],
+        "conversation_id": conversation_id,
+        "history": _agent_history(history),
+        "context": _assistant_context(state),
+        "user_id": user_id,
+    }
 
     return StreamingResponse(
-        generate(),
+        _stream_agent_events_to_browser(
+            request=request,
+            conn=conn,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            state=state,
+            agent_body=agent_body,
+            start_event={
+                "type": "start",
+                "conversation": conversation,
+                "source_user_message": source_user_message,
+                "regenerated_from_message_id": message_id,
+            },
+        ),
         media_type="application/x-ndjson",
         headers={
             "Cache-Control": "no-cache",

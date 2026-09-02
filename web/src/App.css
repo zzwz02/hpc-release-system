@@ -1200,6 +1200,12 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
 .cicd-agent-chat-message .md-view code {
   overflow-wrap: anywhere;
 }
+.cicd-agent-chat-message-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
 .cicd-agent-chat-role {
   display: flex;
   align-items: center;
