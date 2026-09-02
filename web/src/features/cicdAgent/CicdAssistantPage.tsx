@@ -86,6 +86,21 @@ function appendTool(metadata: Record<string, unknown> | undefined, toolName: str
   };
 }
 
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    error.name === "AbortError"
+  );
+}
+
+function stoppedAssistantContent(content: string): string {
+  const text = content.trim();
+  if (text) return `${text}\n\n（已停止生成）`;
+  return "已停止生成，未产生可展示内容。";
+}
+
 function displayTime(value: string | null | undefined): string {
   if (!value) return "";
   return value.slice(5, 16);
@@ -102,6 +117,7 @@ export function CicdAssistantPage() {
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const shouldStickToBottomRef = useRef(true);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const [input, setInput] = useState("");
   const [conversations, setConversations] = useState<AssistantConversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -178,6 +194,8 @@ export function CicdAssistantPage() {
     if (shouldStickToBottomRef.current) scrollChatToBottom();
   }, [messages]);
 
+  useEffect(() => () => abortControllerRef.current?.abort(), []);
+
   useEffect(() => {
     if (!activeConversationId) {
       setMessages([]);
@@ -230,6 +248,8 @@ export function CicdAssistantPage() {
     setSending(true);
     shouldStickToBottomRef.current = true;
 
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     const tempId = `pending-user-${Date.now()}`;
     const assistantTempId = `pending-assistant-${Date.now()}`;
     setMessages((current) => [
@@ -254,8 +274,26 @@ export function CicdAssistantPage() {
 
       await sendAssistantConversationMessageStream(targetConversationId, message, (streamEvent) => {
         handleStreamEvent(streamEvent, tempId, assistantTempId);
-      });
+      }, { signal: controller.signal });
     } catch (err) {
+      if (isAbortError(err)) {
+        setMessages((current) =>
+          current.map((item) => {
+            if (item.id !== assistantTempId) return item;
+            return {
+              ...item,
+              content: stoppedAssistantContent(item.content),
+              streaming: false,
+              metadata: {
+                ...(item.metadata ?? {}),
+                agent_error: "用户停止了生成",
+                agent_status_code: 499,
+              },
+            };
+          }),
+        );
+        return;
+      }
       const messageText = err instanceof Error ? err.message : String(err);
       setError(messageText);
       setMessages((current) => [
@@ -264,8 +302,15 @@ export function CicdAssistantPage() {
         { role: "assistant", content: `CICD助手调用失败：${messageText}`, error: true },
       ]);
     } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
       setSending(false);
     }
+  }
+
+  function stopGenerating() {
+    abortControllerRef.current?.abort();
   }
 
   function handleStreamEvent(
@@ -523,9 +568,16 @@ export function CicdAssistantPage() {
               placeholder="查询 APP 最近镜像、测试结果，或让我输出 app_info.json / app_keyword.json 内容建议"
               rows={3}
             />
-            <button className="btn primary" type="submit" disabled={sending || creating || !input.trim()}>
-              {sending ? "思考中" : "发送"}
-            </button>
+            <div className="cicd-agent-chat-form-actions">
+              <button className="btn primary" type="submit" disabled={sending || creating || !input.trim()}>
+                {sending ? "发送中" : "发送"}
+              </button>
+              {sending ? (
+                <button className="btn ghost" type="button" onClick={stopGenerating}>
+                  停止
+                </button>
+              ) : null}
+            </div>
           </form>
         </section>
       </section>

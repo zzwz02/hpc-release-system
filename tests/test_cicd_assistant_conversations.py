@@ -181,7 +181,7 @@ def test_assistant_stream_persists_final_message_and_state(
 ) -> None:
     captured_body: dict[str, Any] = {}
 
-    def fake_stream_events(path: str, *, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    async def fake_stream_events(path: str, *, body: dict[str, Any]):
         assert path == "/api/v1/cicd-assistant/stream"
         captured_body.update(body)
         yield {
@@ -190,6 +190,7 @@ def test_assistant_stream_persists_final_message_and_state(
             "provider": "deepseek",
             "model": "deepseek-chat",
             "available_tools": ["query_images"],
+            "state_delta": {"app_name": "hpcg"},
         }
         yield {"type": "token", "content": "hello "}
         yield {"type": "tool", "name": "query_images"}
@@ -238,6 +239,11 @@ def test_assistant_stream_persists_final_message_and_state(
             "帮我查询 hpcg app 最近发布的镜像",
             "hello world",
         ]
+
+
+def test_interrupted_answer_marks_partial_content() -> None:
+    assert cicd_agent._interrupted_answer("hello world") == "hello world\n\n（已停止生成）"
+    assert cicd_agent._interrupted_answer("") == "已停止生成，未产生可展示内容。"
 
 
 def test_assistant_conversation_is_owned_by_user(

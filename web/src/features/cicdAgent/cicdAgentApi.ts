@@ -351,11 +351,13 @@ export function sendAssistantConversationMessageStream(
   conversationId: string,
   message: string,
   onEvent: (event: AssistantStreamEvent) => void,
+  options: { signal?: AbortSignal } = {},
 ): Promise<void> {
   return apiPostNdjson<AssistantStreamEvent>(
     `/api/cicd-agent/assistant/conversations/${encodeURIComponent(conversationId)}/messages/stream`,
     { message },
     onEvent,
+    options,
   );
 }
 

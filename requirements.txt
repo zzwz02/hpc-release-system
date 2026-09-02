@@ -1,6 +1,7 @@
 ldap3
 openpyxl
 openai
+httpx
 fastapi
 uvicorn[standard]
 pydantic>=2

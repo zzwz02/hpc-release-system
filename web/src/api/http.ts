@@ -68,11 +68,13 @@ export async function apiPostNdjson<T = unknown>(
   path: string,
   body: unknown,
   onItem: (item: T) => void,
+  options: { signal?: AbortSignal } = {},
 ): Promise<void> {
   const res = await fetch(path, {
     method: "POST",
     body: JSON.stringify(body),
     credentials: "include",
+    signal: options.signal,
     headers: {
       "Content-Type": "application/json",
       Accept: "application/x-ndjson",

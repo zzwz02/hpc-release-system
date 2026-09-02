@@ -11,6 +11,7 @@ dependencies = [
     "ldap3",
     "openpyxl",
     "openai",
+    "httpx",
 ]
 
 [tool.ruff]
