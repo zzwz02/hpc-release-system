@@ -9,6 +9,7 @@
     "cicd": ["RM", "SPD"],
     "jenkins-failures": ["RM", "Owner", "SPD", "QA"],
     "cicd-assistant": ["RM", "Owner", "SPD"],
+    "cicd-assistant-v2": ["RM", "Owner", "SPD"],
     "wiki": ["RM", "Owner"],
     "admin": ["Admin"]
   },

@@ -7,7 +7,7 @@
  *  - Unknown path falls back to / (catch-all)
  */
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { AppRouter } from "../AppRouter";
@@ -45,6 +45,9 @@ vi.mock("../../features/cicdAgent/JenkinsFailuresPage", () => ({
 }));
 vi.mock("../../features/cicdAgent/CicdAssistantPage", () => ({
   CicdAssistantPage: () => <div data-testid="cicd-assistant-page">cicd-assistant</div>,
+}));
+vi.mock("../../features/cicdAgent/CicdAssistantV2Page", () => ({
+  CicdAssistantV2Page: () => <div data-testid="cicd-assistant-v2-page">cicd-assistant-v2</div>,
 }));
 vi.mock("../../features/wiki/WikiPage", () => ({
   WikiPage: () => <div>wiki</div>,
@@ -115,11 +118,14 @@ describe("AppRouter", () => {
   for (const { view, testId } of [
     { view: "jenkins-failures", testId: "jenkins-failures-page" },
     { view: "cicd-assistant", testId: "cicd-assistant-page" },
+    { view: "cicd-assistant-v2", testId: "cicd-assistant-v2-page" },
   ] satisfies Array<{ view: RouteView; testId: string }>) {
     const route = routeForView(view);
-    it.each(ALL_ROLES)(`%s follows shared access for ${view}`, (role) => {
+    it.each(ALL_ROLES)(`%s follows shared access for ${view}`, async (role) => {
       renderAt(role, route.path);
-      expect(screen.queryByTestId(testId) !== null).toBe(route.roles.includes(role));
+      await waitFor(() => {
+        expect(screen.queryByTestId(testId) !== null).toBe(route.roles.includes(role));
+      });
     });
   }
 

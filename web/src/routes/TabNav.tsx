@@ -61,7 +61,7 @@ export function TabNav() {
     if (view === "cicd") {
       void queryClient.invalidateQueries({ queryKey: ["cicd"] });
     }
-    if (view === "jenkins-failures" || view === "cicd-assistant") {
+    if (["jenkins-failures", "cicd-assistant", "cicd-assistant-v2"].includes(view)) {
       void queryClient.invalidateQueries({ queryKey: ["cicd-agent"] });
     }
     if (view === "wiki") {

@@ -15,6 +15,7 @@ describe("shared access control", () => {
   it("uses the requested diagnostic tab matrices", () => {
     expect(rolesForTab("jenkins-failures")).toEqual(["RM", "Owner", "SPD", "QA"]);
     expect(rolesForTab("cicd-assistant")).toEqual(["RM", "Owner", "SPD"]);
+    expect(rolesForTab("cicd-assistant-v2")).toEqual(["RM", "Owner", "SPD"]);
     expect(canAccessTab("Admin", "admin")).toBe(true);
     expect(canAccessTab("Admin", "dashboard")).toBe(false);
   });
