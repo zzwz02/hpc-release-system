@@ -223,6 +223,47 @@ def _agent_error(status_code: int, payload: Any) -> str | None:
     return None
 
 
+def _clean_timings(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    timings: dict[str, int] = {}
+    for key, item in value.items():
+        try:
+            timings[str(key)] = int(item)
+        except (TypeError, ValueError):
+            continue
+    return timings
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _merge_stream_metadata(current: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(current)
+    for key in ("conversation_id", "provider", "model", "route"):
+        value = str(event.get(key) or "").strip()
+        if value:
+            merged[key] = value
+    for key in ("tools", "available_tools"):
+        value = event.get(key)
+        if isinstance(value, list):
+            merged[key] = value
+    if "tool_error" in event:
+        merged["tool_error"] = event.get("tool_error") or None
+    timings = _clean_timings(event.get("timings"))
+    if timings:
+        merged["timings"] = {**_clean_timings(merged.get("timings")), **timings}
+    for key in ("publish_skill_included", "query_tools_enabled"):
+        value = _bool_or_none(event.get(key))
+        if value is not None:
+            merged[key] = value
+    state_delta = event.get("state_delta")
+    if isinstance(state_delta, dict):
+        merged["state_delta"] = state_delta
+    return merged
+
+
 def _assistant_result(
     *,
     conversation_id: str,
@@ -245,6 +286,10 @@ def _assistant_result(
         "available_tools": (
             data.get("available_tools") if isinstance(data.get("available_tools"), list) else []
         ),
+        "route": str(data.get("route") or ""),
+        "timings": _clean_timings(data.get("timings")),
+        "publish_skill_included": _bool_or_none(data.get("publish_skill_included")),
+        "query_tools_enabled": _bool_or_none(data.get("query_tools_enabled")),
         "tool_error": data.get("tool_error") or None,
         "agent_error": agent_error,
         "agent_status_code": status_code,
@@ -399,6 +444,10 @@ def _persist_stream_assistant_result(
                 "model": assistant["model"],
                 "tools": assistant["tools"],
                 "available_tools": assistant["available_tools"],
+                "route": assistant["route"],
+                "timings": assistant["timings"],
+                "publish_skill_included": assistant["publish_skill_included"],
+                "query_tools_enabled": assistant["query_tools_enabled"],
                 "tool_error": assistant["tool_error"],
                 "agent_error": assistant["agent_error"],
                 "agent_status_code": assistant["agent_status_code"],
@@ -476,24 +525,18 @@ async def _stream_agent_events_to_browser(
 
             event_type = event.get("type")
             if event_type == "start":
-                stream_metadata = {
-                    "conversation_id": event.get("conversation_id") or conversation_id,
-                    "provider": event.get("provider") or "",
-                    "model": event.get("model") or "",
-                    "tools": event.get("tools") if isinstance(event.get("tools"), list) else [],
-                    "available_tools": (
-                        event.get("available_tools")
-                        if isinstance(event.get("available_tools"), list)
-                        else []
-                    ),
-                    "tool_error": event.get("tool_error") or None,
-                    "state_delta": (
-                        event.get("state_delta")
-                        if isinstance(event.get("state_delta"), dict)
-                        else {}
-                    ),
-                }
+                stream_metadata = _merge_stream_metadata(stream_metadata, event)
                 yield _encode_ndjson({"type": "metadata", **stream_metadata})
+                continue
+            if event_type == "metadata":
+                stream_metadata = _merge_stream_metadata(stream_metadata, event)
+                yield _encode_ndjson({"type": "metadata", **stream_metadata})
+                continue
+            if event_type == "status":
+                stream_metadata = _merge_stream_metadata(stream_metadata, event)
+                stream_metadata["status_stage"] = str(event.get("stage") or "")
+                stream_metadata["status_message"] = str(event.get("message") or "")
+                yield _encode_ndjson({"type": "status", **event})
                 continue
             if event_type == "token":
                 content = str(event.get("content") or "")
@@ -724,6 +767,10 @@ def send_assistant_conversation_message(
                 "model": assistant["model"],
                 "tools": assistant["tools"],
                 "available_tools": assistant["available_tools"],
+                "route": assistant["route"],
+                "timings": assistant["timings"],
+                "publish_skill_included": assistant["publish_skill_included"],
+                "query_tools_enabled": assistant["query_tools_enabled"],
                 "tool_error": assistant["tool_error"],
                 "agent_error": assistant["agent_error"],
                 "agent_status_code": assistant["agent_status_code"],

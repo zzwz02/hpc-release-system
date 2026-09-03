@@ -153,6 +153,10 @@ export interface CicdAssistantResponse {
   model: string;
   tools: string[];
   available_tools: string[];
+  route?: string;
+  timings?: Record<string, number>;
+  publish_skill_included?: boolean | null;
+  query_tools_enabled?: boolean | null;
   error?: string | null;
   tool_error?: string | null;
   state_delta?: Record<string, unknown>;
@@ -207,8 +211,19 @@ export type AssistantStreamEvent =
       model?: string;
       tools?: string[];
       available_tools?: string[];
+      route?: string;
+      timings?: Record<string, number>;
+      publish_skill_included?: boolean | null;
+      query_tools_enabled?: boolean | null;
       tool_error?: string | null;
       event?: unknown;
+    }
+  | {
+      type: "status";
+      stage: string;
+      message: string;
+      route?: string;
+      timings?: Record<string, number>;
     }
   | {
       type: "token";

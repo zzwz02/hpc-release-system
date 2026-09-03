@@ -68,6 +68,8 @@ def test_assistant_conversation_lifecycle_persists_messages(
             "model": "deepseek-chat",
             "tools": ["query_images"],
             "available_tools": ["query_images"],
+            "route": "agent_query_tools",
+            "timings": {"total_ms": 1234},
             "tool_error": None,
             "state_delta": {"app_name": "hpcg", "intent": "query_image"},
         }
@@ -146,6 +148,8 @@ def test_assistant_state_rolls_older_messages_into_summary(
             "model": "deepseek-chat",
             "tools": [],
             "available_tools": [],
+            "route": "plain_model_publish",
+            "timings": {"total_ms": 800},
             "state_delta": {"app_version": "1.0"},
         }
 
@@ -194,7 +198,16 @@ def test_assistant_stream_persists_final_message_and_state(
             "provider": "deepseek",
             "model": "deepseek-chat",
             "available_tools": ["query_images"],
+            "route": "agent_query_tools",
+            "timings": {"routing_ms": 1},
             "state_delta": {"app_name": "hpcg"},
+        }
+        yield {
+            "type": "status",
+            "stage": "loading_tools",
+            "message": "正在加载 hpc-query 查询工具",
+            "route": "agent_query_tools",
+            "timings": {"routing_ms": 1, "mcp_load_ms": 50},
         }
         yield {"type": "token", "content": "hello "}
         yield {"type": "tool", "name": "query_images"}
@@ -207,6 +220,8 @@ def test_assistant_stream_persists_final_message_and_state(
             "model": "deepseek-chat",
             "tools": ["query_images"],
             "available_tools": ["query_images"],
+            "route": "agent_query_tools",
+            "timings": {"routing_ms": 1, "mcp_load_ms": 50, "total_ms": 1200},
             "state_delta": {"app_name": "hpcg", "intent": "query_images"},
         }
 
@@ -227,6 +242,7 @@ def test_assistant_stream_persists_final_message_and_state(
         assert [event["type"] for event in events] == [
             "start",
             "metadata",
+            "status",
             "token",
             "tool",
             "token",
@@ -234,8 +250,11 @@ def test_assistant_stream_persists_final_message_and_state(
         ]
         assert captured_body["context"] == {"rolling_summary": "", "slots": {}}
         assert captured_body["history"] == []
-        assert events[2]["content"] == "hello "
+        assert events[2]["stage"] == "loading_tools"
+        assert events[3]["content"] == "hello "
         assert events[-1]["assistant_message"]["content"] == "hello world"
+        assert events[-1]["assistant_message"]["metadata"]["route"] == "agent_query_tools"
+        assert events[-1]["assistant_message"]["metadata"]["timings"]["total_ms"] == 1200
         assert events[-1]["state"]["slots"]["app_name"] == "hpcg"
 
         detail = client.get(f"/api/cicd-agent/assistant/conversations/{conversation_id}")

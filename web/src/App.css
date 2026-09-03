@@ -1165,6 +1165,16 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
   margin-top: 8px;
   color: var(--muted);
 }
+.cicd-agent-chat-status,
+.cicd-agent-chat-observation {
+  font-size: 11.5px;
+}
+.cicd-agent-chat-status {
+  color: var(--info-fg);
+}
+.cicd-agent-chat-observation {
+  color: var(--ink-2);
+}
 .cicd-agent-chat-message .md-view {
   font-size: 13px;
   line-height: 1.6;

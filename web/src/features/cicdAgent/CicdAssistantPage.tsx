@@ -78,6 +78,21 @@ function messageTextMeta(message: CicdAssistantMessage, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
+function regenerateTargetMessageId(message: CicdAssistantMessage): string {
+  const sourceMessageId = messageTextMeta(message, "regenerated_from_message_id");
+  return sourceMessageId || message.id || "";
+}
+
+function messageTimings(message: CicdAssistantMessage): Record<string, number> {
+  const value = message.metadata?.timings;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([key, item]) => [key, Number(item)])
+      .filter(([, item]) => Number.isFinite(item)),
+  );
+}
+
 function appendTool(metadata: Record<string, unknown> | undefined, toolName: string): Record<string, unknown> {
   const tools = Array.isArray(metadata?.tools)
     ? metadata.tools.map((item) => String(item)).filter(Boolean)
@@ -129,6 +144,35 @@ function slotValueText(value: unknown): string {
   if (Array.isArray(value)) return value.map((item) => String(item)).join(", ");
   if (value && typeof value === "object") return JSON.stringify(value);
   return String(value ?? "");
+}
+
+const ROUTE_LABELS: Record<string, string> = {
+  static_publish_overview: "发布概要",
+  plain_model_publish: "发布配置",
+  plain_model_general: "普通问答",
+  agent_query_tools: "查询工具",
+};
+
+function routeLabel(route: string): string {
+  return ROUTE_LABELS[route] || route;
+}
+
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms)) return "";
+  if (ms >= 10000) return `${(ms / 1000).toFixed(0)}s`;
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.max(Math.round(ms), 0)}ms`;
+}
+
+function timingSummary(timings: Record<string, number>): string[] {
+  const items: string[] = [];
+  if (timings.total_ms !== undefined) items.push(`总耗时 ${formatDuration(timings.total_ms)}`);
+  if (timings.first_token_ms !== undefined) {
+    items.push(`首 token ${formatDuration(timings.first_token_ms)}`);
+  }
+  if (timings.mcp_load_ms !== undefined) items.push(`MCP ${formatDuration(timings.mcp_load_ms)}`);
+  if (timings.prompt_chars !== undefined) items.push(`Prompt ${timings.prompt_chars} 字符`);
+  return items;
 }
 
 export function CicdAssistantPage() {
@@ -350,7 +394,8 @@ export function CicdAssistantPage() {
   }
 
   async function regenerateAssistantMessage(message: UiMessage) {
-    if (!activeConversationId || !message.id || sending || creating) return;
+    const targetMessageId = regenerateTargetMessageId(message);
+    if (!activeConversationId || !targetMessageId || sending || creating) return;
     setError("");
     setSending(true);
     shouldStickToBottomRef.current = true;
@@ -366,13 +411,13 @@ export function CicdAssistantPage() {
         content: "",
         streaming: true,
         metadata: {
-          regenerated_from_message_id: message.id,
+          regenerated_from_message_id: targetMessageId,
         },
       },
     ]);
 
     try {
-      await regenerateAssistantConversationMessageStream(activeConversationId, message.id, (streamEvent) => {
+      await regenerateAssistantConversationMessageStream(activeConversationId, targetMessageId, (streamEvent) => {
         handleStreamEvent(streamEvent, null, assistantTempId);
       }, { signal: controller.signal });
     } catch (err) {
@@ -404,6 +449,10 @@ export function CicdAssistantPage() {
                 content: `CICD助手重新生成失败：${messageText}`,
                 error: true,
                 streaming: false,
+                metadata: {
+                  ...(item.metadata ?? {}),
+                  agent_error: messageText,
+                },
               }
             : item,
         ),
@@ -435,14 +484,41 @@ export function CicdAssistantPage() {
       setMessages((current) =>
         current.map((item) => {
           if (item.id !== assistantTempId) return item;
+          const metadata = { ...(item.metadata ?? {}) };
+          if (streamEvent.provider) metadata.provider = streamEvent.provider;
+          if (streamEvent.model) metadata.model = streamEvent.model;
+          if (streamEvent.available_tools) metadata.available_tools = streamEvent.available_tools;
+          if (streamEvent.tools) metadata.tools = streamEvent.tools;
+          if (streamEvent.route) metadata.route = streamEvent.route;
+          if (streamEvent.timings) metadata.timings = streamEvent.timings;
+          if (streamEvent.publish_skill_included !== undefined) {
+            metadata.publish_skill_included = streamEvent.publish_skill_included;
+          }
+          if (streamEvent.query_tools_enabled !== undefined) {
+            metadata.query_tools_enabled = streamEvent.query_tools_enabled;
+          }
+          if (streamEvent.tool_error !== undefined) metadata.tool_error = streamEvent.tool_error;
+          return {
+            ...item,
+            metadata,
+          };
+        }),
+      );
+      return;
+    }
+
+    if (streamEvent.type === "status") {
+      setMessages((current) =>
+        current.map((item) => {
+          if (item.id !== assistantTempId) return item;
           return {
             ...item,
             metadata: {
               ...(item.metadata ?? {}),
-              provider: streamEvent.provider,
-              model: streamEvent.model,
-              available_tools: streamEvent.available_tools,
-              tool_error: streamEvent.tool_error,
+              status_stage: streamEvent.stage,
+              status_message: streamEvent.message,
+              ...(streamEvent.route ? { route: streamEvent.route } : {}),
+              ...(streamEvent.timings ? { timings: streamEvent.timings } : {}),
             },
           };
         }),
@@ -641,11 +717,16 @@ export function CicdAssistantPage() {
               const tools = messageTools(message);
               const toolError = messageTextMeta(message, "tool_error");
               const agentError = messageTextMeta(message, "agent_error");
+              const route = messageTextMeta(message, "route");
+              const statusMessage = messageTextMeta(message, "status_message");
+              const timingItems = timingSummary(messageTimings(message));
+              const regenerateTargetId = regenerateTargetMessageId(message);
               const canCopy = message.role === "assistant" && !!message.content.trim();
               const canRegenerate =
                 canCopy &&
                 !message.streaming &&
                 !sending &&
+                !!regenerateTargetId &&
                 message.id === lastAssistantMessageId;
               return (
                 <article
@@ -659,10 +740,13 @@ export function CicdAssistantPage() {
                   {message.role === "assistant" && message.content ? (
                     <Markdown value={message.content} className="md-view cicd-agent-chat-md" />
                   ) : message.role === "assistant" ? (
-                    <p className="muted">{message.streaming ? "思考中..." : ""}</p>
+                    <p className="muted">{message.streaming ? statusMessage || "思考中..." : ""}</p>
                   ) : (
                     <p>{message.content}</p>
                   )}
+                  {message.role === "assistant" && message.streaming && statusMessage && message.content ? (
+                    <small className="cicd-agent-chat-status">{statusMessage}</small>
+                  ) : null}
                   {canCopy ? (
                     <div className="cicd-agent-chat-message-actions">
                       <button className="btn ghost sm" type="button" onClick={() => void copyAssistantMessage(message)}>
@@ -670,13 +754,20 @@ export function CicdAssistantPage() {
                       </button>
                       {canRegenerate ? (
                         <button className="btn ghost sm" type="button" onClick={() => void regenerateAssistantMessage(message)}>
-                          重新生成
+                          {message.error ? "重试" : "重新生成"}
                         </button>
                       ) : null}
                     </div>
                   ) : null}
                   {tools.length ? (
                     <small>{message.streaming ? "正在使用工具" : "使用工具"}：{tools.join(", ")}</small>
+                  ) : null}
+                  {message.role === "assistant" && (route || timingItems.length) ? (
+                    <small className="cicd-agent-chat-observation">
+                      {route ? `路线：${routeLabel(route)}` : ""}
+                      {route && timingItems.length ? " · " : ""}
+                      {timingItems.join(" · ")}
+                    </small>
                   ) : null}
                   {toolError ? <small className="danger-text">查询工具不可用：{toolError}</small> : null}
                   {agentError ? <small className="danger-text">助手调用异常：{agentError}</small> : null}
