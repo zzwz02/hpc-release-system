@@ -167,6 +167,9 @@ function formatDuration(ms: number): string {
 function timingSummary(timings: Record<string, number>): string[] {
   const items: string[] = [];
   if (timings.total_ms !== undefined) items.push(`总耗时 ${formatDuration(timings.total_ms)}`);
+  if (timings.queue_wait_ms !== undefined && timings.queue_wait_ms > 0) {
+    items.push(`排队 ${formatDuration(timings.queue_wait_ms)}`);
+  }
   if (timings.first_token_ms !== undefined) {
     items.push(`首 token ${formatDuration(timings.first_token_ms)}`);
   }
