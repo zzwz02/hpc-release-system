@@ -41,6 +41,10 @@ class AssistantConversationCreate(BaseModel):
     title: str | None = None
 
 
+class AssistantConversationUpdate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=80)
+
+
 class AssistantConversationMessageCreate(BaseModel):
     message: str = Field(..., min_length=1)
 
@@ -674,6 +678,40 @@ def get_assistant_conversation(
         "messages": assistant_repo.list_messages(conn, conversation_id=conversation_id),
         "state": assistant_repo.get_state(conn, conversation_id=conversation_id),
     }
+
+
+@router.patch("/assistant/conversations/{conversation_id}")
+def update_assistant_conversation(
+    conversation_id: str,
+    payload: AssistantConversationUpdate,
+    user: dict = Depends(require_assistant_access),
+    conn: sqlite3.Connection = Depends(get_assistant_db),
+) -> dict:
+    user_id = _assistant_user_id(user)
+    title = " ".join(payload.title.split())[:80]
+    if not title:
+        raise HTTPException(status_code=422, detail="标题不能为空")
+    conversation = assistant_repo.get_conversation(
+        conn,
+        conversation_id=conversation_id,
+        user_id=user_id,
+    )
+    if not conversation:
+        raise HTTPException(status_code=404, detail="会话不存在或无权访问")
+    with transaction(conn):
+        assistant_repo.update_title(
+            conn,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            title=title,
+            updated_at=beijing_timestamp(),
+        )
+        updated = assistant_repo.get_conversation(
+            conn,
+            conversation_id=conversation_id,
+            user_id=user_id,
+        )
+    return {"conversation": updated}
 
 
 @router.delete("/assistant/conversations/{conversation_id}")

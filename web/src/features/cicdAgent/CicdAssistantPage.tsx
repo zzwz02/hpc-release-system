@@ -9,6 +9,7 @@ import {
   fetchAssistantConversations,
   regenerateAssistantConversationMessageStream,
   sendAssistantConversationMessageStream,
+  updateAssistantConversation,
   type AssistantConversation,
   type AssistantConversationState,
   type AssistantStreamEvent,
@@ -195,6 +196,9 @@ export function CicdAssistantPage() {
   const [sending, setSending] = useState(false);
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
   const [error, setError] = useState("");
 
   const activeConversation = useMemo(
@@ -269,6 +273,11 @@ export function CicdAssistantPage() {
   }, [messages]);
 
   useEffect(() => () => abortControllerRef.current?.abort(), []);
+
+  useEffect(() => {
+    setEditingTitle(false);
+    setTitleDraft(activeConversation?.title || "");
+  }, [activeConversation?.id, activeConversation?.title]);
 
   useEffect(() => {
     if (!activeConversationId) {
@@ -620,6 +629,40 @@ export function CicdAssistantPage() {
     }
   }
 
+  function startRenameConversation() {
+    if (!activeConversation || sending) return;
+    setError("");
+    setTitleDraft(activeConversation.title || "");
+    setEditingTitle(true);
+  }
+
+  function cancelRenameConversation() {
+    setEditingTitle(false);
+    setTitleDraft(activeConversation?.title || "");
+  }
+
+  async function saveConversationTitle(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    if (!activeConversationId || renaming || sending) return;
+    const title = titleDraft.trim().replace(/\s+/g, " ");
+    if (!title) {
+      setError("标题不能为空");
+      return;
+    }
+    setRenaming(true);
+    setError("");
+    try {
+      const data = await updateAssistantConversation(activeConversationId, title);
+      setConversations((current) => upsertConversation(current, data.conversation));
+      setEditingTitle(false);
+      toast.success("会话标题已更新");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRenaming(false);
+    }
+  }
+
   return (
     <section className="view active cicd-agent-chat-view">
       <div className="page-toolbar">
@@ -694,9 +737,39 @@ export function CicdAssistantPage() {
         <section className="panel cicd-agent-chat-panel">
           <div className="cicd-agent-chat-toolbar">
             <div className="cicd-agent-chat-title">
-              <strong>{activeConversation?.title || "新会话"}</strong>
-              <span>{activeConversation ? activeConversation.id : "发送消息后自动保存"}</span>
+              {editingTitle ? (
+                <form className="cicd-agent-chat-title-edit" onSubmit={(event) => void saveConversationTitle(event)}>
+                  <input
+                    className="input"
+                    value={titleDraft}
+                    onChange={(event) => setTitleDraft(event.target.value)}
+                    maxLength={80}
+                    autoFocus
+                  />
+                  <button className="btn primary sm" type="submit" disabled={renaming || !titleDraft.trim()}>
+                    保存
+                  </button>
+                  <button className="btn ghost sm" type="button" onClick={cancelRenameConversation} disabled={renaming}>
+                    取消
+                  </button>
+                </form>
+              ) : (
+                <>
+                  <strong>{activeConversation?.title || "新会话"}</strong>
+                  <span>{activeConversation ? activeConversation.id : "发送消息后自动保存"}</span>
+                </>
+              )}
             </div>
+            {activeConversation && !editingTitle ? (
+              <button
+                className="btn ghost sm"
+                type="button"
+                onClick={startRenameConversation}
+                disabled={sending || renaming}
+              >
+                重命名
+              </button>
+            ) : null}
           </div>
 
           <div className="cicd-agent-chat-log" ref={chatLogRef} onScroll={updateChatStickiness}>

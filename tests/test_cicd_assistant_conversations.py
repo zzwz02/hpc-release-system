@@ -130,6 +130,41 @@ def test_assistant_conversation_lifecycle_persists_messages(
         assert listed_after_delete.json()["conversations"] == []
 
 
+def test_assistant_conversation_title_can_be_renamed_by_owner(
+    assistant_conn: sqlite3.Connection,
+) -> None:
+    with _client(conn=assistant_conn, username="owner1") as client:
+        created = client.post("/api/cicd-agent/assistant/conversations", json={"title": "旧标题"})
+        assert created.status_code == 200
+        conversation_id = created.json()["conversation"]["id"]
+
+        renamed = client.patch(
+            f"/api/cicd-agent/assistant/conversations/{conversation_id}",
+            json={"title": "  amber   查询  "},
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["conversation"]["title"] == "amber 查询"
+
+        detail = client.get(f"/api/cicd-agent/assistant/conversations/{conversation_id}")
+        assert detail.status_code == 200
+        assert detail.json()["conversation"]["title"] == "amber 查询"
+
+
+def test_assistant_conversation_title_cannot_be_renamed_by_other_user(
+    assistant_conn: sqlite3.Connection,
+) -> None:
+    with _client(conn=assistant_conn, username="owner1") as owner_client:
+        created = owner_client.post("/api/cicd-agent/assistant/conversations", json={})
+        conversation_id = created.json()["conversation"]["id"]
+
+    with _client(conn=assistant_conn, username="owner2") as other_client:
+        renamed = other_client.patch(
+            f"/api/cicd-agent/assistant/conversations/{conversation_id}",
+            json={"title": "不该成功"},
+        )
+        assert renamed.status_code == 404
+
+
 def test_assistant_state_rolls_older_messages_into_summary(
     assistant_conn: sqlite3.Connection,
     monkeypatch: pytest.MonkeyPatch,

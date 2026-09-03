@@ -354,6 +354,20 @@ export function fetchAssistantConversation(
   );
 }
 
+export function updateAssistantConversation(
+  conversationId: string,
+  title: string,
+): Promise<AssistantConversationResponse> {
+  return apiFetch<AssistantConversationResponse>(
+    `/api/cicd-agent/assistant/conversations/${encodeURIComponent(conversationId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    },
+  );
+}
+
 export function sendAssistantConversationMessage(
   conversationId: string,
   message: string,

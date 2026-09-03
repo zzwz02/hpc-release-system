@@ -1105,6 +1105,17 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.cicd-agent-chat-title-edit {
+  min-width: min(420px, 100%);
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) auto auto;
+  gap: 7px;
+  align-items: center;
+}
+.cicd-agent-chat-title-edit .input {
+  height: 32px;
+  min-width: 0;
+}
 .cicd-agent-chat-log {
   min-height: 0;
   overflow: auto;
@@ -1267,6 +1278,9 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
   }
   .cicd-agent-chat-form-actions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .cicd-agent-chat-title-edit {
+    grid-template-columns: 1fr;
   }
   .cicd-agent-chat-message {
     width: 100%;
