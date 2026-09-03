@@ -148,6 +148,7 @@ function slotValueText(value: unknown): string {
 
 const ROUTE_LABELS: Record<string, string> = {
   static_publish_overview: "发布概要",
+  static_publish_onboarding: "发布起步",
   plain_model_publish: "发布配置",
   plain_model_general: "普通问答",
   agent_query_tools: "查询工具",
