@@ -77,7 +77,33 @@ def list_conversations(
     *,
     user_id: str,
     limit: int = 100,
+    query: str = "",
 ) -> list[dict[str, Any]]:
+    search = query.strip()
+    if search:
+        pattern = f"%{search}%"
+        rows = conn.execute(
+            """
+            SELECT id, user_id, title, created_at, updated_at, deleted_at, message_count
+            FROM assistant_conversations AS conversation
+            WHERE user_id = ?
+              AND deleted_at = ''
+              AND (
+                title LIKE ?
+                OR EXISTS (
+                  SELECT 1
+                  FROM assistant_messages AS message
+                  WHERE message.conversation_id = conversation.id
+                    AND message.content LIKE ?
+                )
+              )
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT ?
+            """,
+            (user_id, pattern, pattern, limit),
+        ).fetchall()
+        return [_conversation_row(row) for row in rows]
+
     rows = conn.execute(
         """
         SELECT id, user_id, title, created_at, updated_at, deleted_at, message_count

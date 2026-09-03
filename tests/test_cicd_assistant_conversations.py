@@ -165,6 +165,65 @@ def test_assistant_conversation_title_cannot_be_renamed_by_other_user(
         assert renamed.status_code == 404
 
 
+def test_assistant_conversations_can_be_searched_by_title_and_content(
+    assistant_conn: sqlite3.Connection,
+) -> None:
+    now = beijing_timestamp()
+    with transaction(assistant_conn):
+        amber = assistant_repo.create_conversation(
+            assistant_conn,
+            user_id="owner1",
+            title="amber 发布讨论",
+            created_at=now,
+        )
+        pyfr = assistant_repo.create_conversation(
+            assistant_conn,
+            user_id="owner1",
+            title="普通会话",
+            created_at=now,
+        )
+        secret = assistant_repo.create_conversation(
+            assistant_conn,
+            user_id="owner2",
+            title="amber secret",
+            created_at=now,
+        )
+        assistant_repo.add_message(
+            assistant_conn,
+            conversation_id=amber["id"],
+            role="user",
+            content="帮我查询 hpcg 最近镜像",
+            created_at=now,
+        )
+        assistant_repo.add_message(
+            assistant_conn,
+            conversation_id=pyfr["id"],
+            role="user",
+            content="pyfr maca 测试结果",
+            created_at=now,
+        )
+        assistant_repo.add_message(
+            assistant_conn,
+            conversation_id=secret["id"],
+            role="user",
+            content="不要被其他用户搜到",
+            created_at=now,
+        )
+
+    with _client(conn=assistant_conn, username="owner1") as client:
+        by_title = client.get("/api/cicd-agent/assistant/conversations", params={"q": "amber"})
+        assert by_title.status_code == 200
+        assert [item["id"] for item in by_title.json()["conversations"]] == [amber["id"]]
+
+        by_content = client.get("/api/cicd-agent/assistant/conversations", params={"q": "pyfr"})
+        assert by_content.status_code == 200
+        assert [item["id"] for item in by_content.json()["conversations"]] == [pyfr["id"]]
+
+        hidden = client.get("/api/cicd-agent/assistant/conversations", params={"q": "secret"})
+        assert hidden.status_code == 200
+        assert hidden.json()["conversations"] == []
+
+
 def test_assistant_state_rolls_older_messages_into_summary(
     assistant_conn: sqlite3.Connection,
     monkeypatch: pytest.MonkeyPatch,

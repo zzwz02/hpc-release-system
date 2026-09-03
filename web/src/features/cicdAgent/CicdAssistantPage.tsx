@@ -191,6 +191,7 @@ export function CicdAssistantPage() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [conversationState, setConversationState] = useState<AssistantConversationState>(EMPTY_STATE);
+  const [conversationSearch, setConversationSearch] = useState("");
   const [loadingConversations, setLoadingConversations] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [sending, setSending] = useState(false);
@@ -205,6 +206,7 @@ export function CicdAssistantPage() {
     () => conversations.find((item) => item.id === activeConversationId) ?? null,
     [activeConversationId, conversations],
   );
+  const conversationSearchText = conversationSearch.trim();
   const slotEntries = useMemo(
     () =>
       Object.entries(conversationState.slots)
@@ -235,33 +237,36 @@ export function CicdAssistantPage() {
 
   useEffect(() => {
     let cancelled = false;
-    setLoadingConversations(true);
-    setError("");
-    fetchAssistantConversations()
-      .then((data) => {
-        if (cancelled) return;
-        const sorted = sortConversations(data.conversations);
-        setConversations(sorted);
-        setActiveConversationId((current) => {
-          if (current && sorted.some((item) => item.id === current)) return current;
-          return sorted[0]?.id ?? null;
+    const timer = window.setTimeout(() => {
+      setLoadingConversations(true);
+      setError("");
+      fetchAssistantConversations(conversationSearchText)
+        .then((data) => {
+          if (cancelled) return;
+          const sorted = sortConversations(data.conversations);
+          setConversations(sorted);
+          setActiveConversationId((current) => {
+            if (current && sorted.some((item) => item.id === current)) return current;
+            return sorted[0]?.id ?? null;
+          });
+          if (!sorted.length) {
+            setMessages([]);
+            setConversationState(EMPTY_STATE);
+          }
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          setError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          if (!cancelled) setLoadingConversations(false);
         });
-        if (!sorted.length) {
-          setMessages([]);
-          setConversationState(EMPTY_STATE);
-        }
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingConversations(false);
-      });
+    }, conversationSearchText ? 250 : 0);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, [user?.username]);
+  }, [conversationSearchText, user?.username]);
 
   useEffect(() => {
     shouldStickToBottomRef.current = true;
@@ -601,6 +606,7 @@ export function CicdAssistantPage() {
     if (creating || sending) return;
     setError("");
     setInput("");
+    setConversationSearch("");
     try {
       await createConversation();
     } catch (err) {
@@ -696,9 +702,24 @@ export function CicdAssistantPage() {
               </button>
             </div>
           </div>
+          <div className="cicd-agent-chat-search">
+            <input
+              className="input"
+              value={conversationSearch}
+              onChange={(event) => setConversationSearch(event.target.value)}
+              placeholder="搜索标题或内容"
+            />
+            {conversationSearchText ? (
+              <button className="btn ghost sm" type="button" onClick={() => setConversationSearch("")}>
+                清空
+              </button>
+            ) : null}
+          </div>
           <div className="cicd-agent-chat-session-list">
             {!conversations.length && !loadingConversations ? (
-              <div className="cicd-agent-chat-session-empty">暂无历史会话</div>
+              <div className="cicd-agent-chat-session-empty">
+                {conversationSearchText ? "没有匹配会话" : "暂无历史会话"}
+              </div>
             ) : null}
             {conversations.map((conversation) => (
               <button

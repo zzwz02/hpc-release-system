@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -635,10 +635,15 @@ async def failure_chat(
 
 @router.get("/assistant/conversations")
 def list_assistant_conversations(
+    q: str = Query("", max_length=100),
     user: dict = Depends(require_assistant_access),
     conn: sqlite3.Connection = Depends(get_assistant_db),
 ) -> dict:
-    conversations = assistant_repo.list_conversations(conn, user_id=_assistant_user_id(user))
+    conversations = assistant_repo.list_conversations(
+        conn,
+        user_id=_assistant_user_id(user),
+        query=" ".join(q.split()),
+    )
     return {"conversations": conversations}
 
 

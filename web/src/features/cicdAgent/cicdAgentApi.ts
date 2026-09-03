@@ -334,8 +334,12 @@ export function sendCicdAssistant(payload: {
   return apiPost<CicdAssistantResponse>("/api/cicd-agent/cicd-assistant", payload);
 }
 
-export function fetchAssistantConversations(): Promise<AssistantConversationListResponse> {
-  return apiGet<AssistantConversationListResponse>("/api/cicd-agent/assistant/conversations");
+export function fetchAssistantConversations(
+  query = "",
+): Promise<AssistantConversationListResponse> {
+  return apiGet<AssistantConversationListResponse>(
+    `/api/cicd-agent/assistant/conversations${buildQuery({ q: query.trim() })}`,
+  );
 }
 
 export function createAssistantConversation(

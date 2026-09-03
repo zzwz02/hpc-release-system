@@ -974,7 +974,7 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
 .cicd-agent-chat-sidebar {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 10px;
   padding: 12px;
   overflow: hidden;
@@ -1001,6 +1001,16 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
 .cicd-agent-chat-title span {
   color: var(--muted);
   font-size: 11.5px;
+}
+.cicd-agent-chat-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+.cicd-agent-chat-search .input {
+  height: 32px;
+  min-width: 0;
 }
 .cicd-agent-chat-session-list {
   min-height: 0;
