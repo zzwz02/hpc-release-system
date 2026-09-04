@@ -25,6 +25,7 @@ export interface FailureRecordFilters {
   matched_rule_id?: string;
   confidence?: string;
   need_human_review?: boolean;
+  responsibility_status?: string;
   notification_status?: string;
   keyword?: string;
 }
@@ -57,9 +58,42 @@ export interface FailureRecordListItem {
   reason_summary?: string | null;
   key_error_snippet?: string | null;
   action_suggestion?: string | null;
+  final_owner_account?: string | null;
+  final_owner_role?: string | null;
+  final_reason_summary?: string | null;
+  final_action_suggestion?: string | null;
+  responsibility_status?: string | null;
+  responsibility_status_label?: string | null;
+  responsibility_updated_by?: string | null;
+  responsibility_updated_at?: string | null;
+  responsibility_note?: string | null;
+  effective_owner_account?: string | null;
+  effective_owner_role?: string | null;
+  effective_reason_summary?: string | null;
+  effective_action_suggestion?: string | null;
   notification_status?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+}
+
+export interface FailureResponsibilityEvent {
+  id: number;
+  failure_id: number;
+  event_type: string;
+  actor: string;
+  actor_role?: string | null;
+  from_status?: string | null;
+  to_status?: string | null;
+  previous_owner_account?: string | null;
+  previous_owner_role?: string | null;
+  new_owner_account?: string | null;
+  new_owner_role?: string | null;
+  feedback_type?: string | null;
+  suggested_owner_account?: string | null;
+  suggested_owner_role?: string | null;
+  reason?: string | null;
+  evidence?: string | null;
+  created_at: string;
 }
 
 export interface FailureRecordDetail extends FailureRecordListItem {
@@ -81,6 +115,7 @@ export interface FailureRecordDetail extends FailureRecordListItem {
   notification_errors?: string[];
   notified_at?: string | null;
   daily_reported_at?: string | null;
+  responsibility_events?: FailureResponsibilityEvent[];
 }
 
 export interface FailureRecordListResponse {
@@ -107,7 +142,29 @@ export interface FailureFilterOptionsResponse {
   matched_rule_ids: string[];
   notification_statuses: string[];
   confidences: string[];
+  responsibility_statuses: string[];
   job_names: string[];
+}
+
+export interface FailureResponsibilityFeedbackPayload {
+  feedback_type: string;
+  reason: string;
+  suggested_owner_account?: string | null;
+  suggested_owner_role?: string | null;
+  evidence?: string | null;
+}
+
+export interface FailureResponsibilityResolutionPayload {
+  action: "confirm" | "correct" | "unresolved";
+  final_owner_account?: string | null;
+  final_owner_role?: string | null;
+  final_reason_summary?: string | null;
+  final_action_suggestion?: string | null;
+  note?: string | null;
+}
+
+export interface FailureResponsibilityResponse {
+  record: FailureRecordDetail;
 }
 
 export interface FailureSummaryGroup {
@@ -314,6 +371,26 @@ export function fetchFailureSummary(
 ): Promise<FailureSummaryResponse> {
   return apiGet<FailureSummaryResponse>(
     `/api/cicd-agent/failures/summary${buildQuery({ ...filters, group_by: groupBy })}`,
+  );
+}
+
+export function submitFailureResponsibilityFeedback(
+  recordId: number,
+  payload: FailureResponsibilityFeedbackPayload,
+): Promise<FailureResponsibilityResponse> {
+  return apiPost<FailureResponsibilityResponse>(
+    `/api/cicd-agent/failures/${recordId}/responsibility-feedback`,
+    payload,
+  );
+}
+
+export function resolveFailureResponsibility(
+  recordId: number,
+  payload: FailureResponsibilityResolutionPayload,
+): Promise<FailureResponsibilityResponse> {
+  return apiPost<FailureResponsibilityResponse>(
+    `/api/cicd-agent/failures/${recordId}/responsibility-resolution`,
+    payload,
   );
 }
 

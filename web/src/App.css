@@ -405,6 +405,11 @@ input:disabled {
 .pill.ok, .badge.ok { background: var(--ok-bg); color: var(--ok-fg); border-color: var(--ok-bd); }
 .pill.warnp, .pill.warn, .badge.warn { background: var(--warn-bg); color: var(--warn-fg); border-color: var(--warn-bd); }
 .pill.bad, .badge.bad, .badge.danger { background: var(--bad-bg); color: var(--bad-fg); border-color: var(--bad-bd); }
+.pill.responsibility-ai { background: #eef2f7; color: #475569; border-color: #d7dee8; }
+.pill.responsibility-disputed { background: #fff3d6; color: #9a5a00; border-color: #f6c453; }
+.pill.responsibility-confirmed { background: var(--ok-bg); color: var(--ok-fg); border-color: var(--ok-bd); }
+.pill.responsibility-corrected { background: #f1eafe; color: #6b21a8; border-color: #cfb5ff; }
+.pill.responsibility-unresolved { background: var(--bad-bg); color: var(--bad-fg); border-color: var(--bad-bd); }
 .pill-group { display: inline-flex; gap: 5px; flex-wrap: wrap; align-items: center; }
 
 /* cicd task / request / delivery status colors */
@@ -980,6 +985,145 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
 .cicd-agent-detail-close span[aria-hidden="true"] {
   font-size: 16px;
   line-height: 1;
+}
+.cicd-agent-feedback-trigger {
+  border-color: var(--warn-bd);
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  font-weight: 800;
+}
+.cicd-agent-feedback-trigger:hover:not(:disabled) {
+  border-color: #f59e0b;
+  background: #fff0c2;
+  color: #8a4d00;
+}
+.cicd-agent-resolution-trigger {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-weight: 800;
+}
+.cicd-agent-resolution-trigger:hover:not(:disabled) {
+  border-color: #1d4ed8;
+  background: #1d4ed8;
+  color: #fff;
+}
+.cicd-agent-chain-trigger[aria-expanded="true"] {
+  border-color: var(--accent-bd);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 800;
+}
+.cicd-agent-responsibility-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 12px 18px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--surface-2);
+}
+.cicd-agent-responsibility-strip > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+.cicd-agent-responsibility-strip > b {
+  color: var(--text);
+  font-size: 13px;
+}
+.cicd-agent-responsibility-strip > small:not(.pill) {
+  color: var(--ink-2);
+  font-size: 12px;
+}
+.cicd-agent-responsibility-panel {
+  display: grid;
+  gap: 12px;
+  margin: 8px 18px 18px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: #fffdf7;
+}
+.cicd-agent-responsibility-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.cicd-agent-responsibility-head h4 {
+  margin: 0 0 4px;
+}
+.cicd-agent-responsibility-head .pill {
+  margin-left: 6px;
+}
+.cicd-agent-responsibility-grid,
+.cicd-agent-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+}
+.cicd-agent-responsibility-form {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.cicd-agent-responsibility-form label {
+  display: grid;
+  gap: 5px;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+.cicd-agent-responsibility-form textarea {
+  width: 100%;
+  min-height: 76px;
+  resize: vertical;
+}
+.cicd-agent-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.cicd-agent-form-error {
+  margin: 0;
+}
+.cicd-agent-responsibility-events {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.cicd-agent-responsibility-events h5 {
+  margin: 0;
+  font-size: 13px;
+}
+.cicd-agent-responsibility-event {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 4px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: rgba(255,255,255,.78);
+}
+.cicd-agent-responsibility-event b {
+  color: var(--text);
+  font-size: 12px;
+}
+.cicd-agent-responsibility-event span {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.cicd-agent-responsibility-event p {
+  grid-column: 1 / -1;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 .cicd-agent-detail-grid {
   display: grid;

@@ -12,7 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.db.connection import transaction
-from app.deps import get_assistant_db, require_tab_access
+from app.deps import get_assistant_db, require_roles, require_tab_access
 from app.repositories import assistant_repo
 from app.timeutil import beijing_timestamp
 
@@ -35,6 +35,10 @@ require_assistant_access = require_tab_access(
     "cicd-assistant",
     message="无权访问 CICD 助手",
 )
+require_responsibility_resolution = require_roles(
+    "RM",
+    message="无权处理 Jenkins 失败责任争议",
+)
 
 
 class AssistantConversationCreate(BaseModel):
@@ -47,6 +51,23 @@ class AssistantConversationUpdate(BaseModel):
 
 class AssistantConversationMessageCreate(BaseModel):
     message: str = Field(..., min_length=1)
+
+
+class FailureResponsibilityFeedbackCreate(BaseModel):
+    feedback_type: str = Field(..., min_length=1, max_length=100)
+    reason: str = Field(..., min_length=1, max_length=4000)
+    suggested_owner_account: str | None = Field(default=None, max_length=255)
+    suggested_owner_role: str | None = Field(default=None, max_length=100)
+    evidence: str | None = Field(default=None, max_length=4000)
+
+
+class FailureResponsibilityResolutionCreate(BaseModel):
+    action: Literal["confirm", "correct", "unresolved"]
+    final_owner_account: str | None = Field(default=None, max_length=255)
+    final_owner_role: str | None = Field(default=None, max_length=100)
+    final_reason_summary: str | None = Field(default=None, max_length=4000)
+    final_action_suggestion: str | None = Field(default=None, max_length=4000)
+    note: str | None = Field(default=None, max_length=4000)
 
 
 _ASSISTANT_SLOT_KEYS = {
@@ -624,6 +645,38 @@ def failure_detail(
     _user: dict = Depends(require_jenkins_access),
 ) -> JSONResponse:
     return _request_agent("GET", f"/api/v1/failures/{record_id}")
+
+
+@router.post("/failures/{record_id}/responsibility-feedback")
+def submit_failure_responsibility_feedback(
+    record_id: int,
+    payload: FailureResponsibilityFeedbackCreate,
+    user: dict = Depends(require_jenkins_access),
+) -> JSONResponse:
+    body = payload.model_dump()
+    body["actor_user"] = _assistant_user_id(user)
+    body["actor_role"] = str(user.get("role") or "")
+    return _request_agent(
+        "POST",
+        f"/api/v1/failures/{record_id}/responsibility-feedback",
+        body=body,
+    )
+
+
+@router.post("/failures/{record_id}/responsibility-resolution")
+def resolve_failure_responsibility(
+    record_id: int,
+    payload: FailureResponsibilityResolutionCreate,
+    user: dict = Depends(require_responsibility_resolution),
+) -> JSONResponse:
+    body = payload.model_dump()
+    body["actor_user"] = _assistant_user_id(user)
+    body["actor_role"] = str(user.get("role") or "")
+    return _request_agent(
+        "POST",
+        f"/api/v1/failures/{record_id}/responsibility-resolution",
+        body=body,
+    )
 
 
 @router.post("/failure-chat")
