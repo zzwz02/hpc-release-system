@@ -258,7 +258,7 @@ def _merge_stream_metadata(current: dict[str, Any], event: dict[str, Any]) -> di
     timings = _clean_timings(event.get("timings"))
     if timings:
         merged["timings"] = {**_clean_timings(merged.get("timings")), **timings}
-    for key in ("publish_skill_included", "query_tools_enabled"):
+    for key in ("publish_skill_included", "publish_tool_enabled", "query_tools_enabled"):
         value = _bool_or_none(event.get(key))
         if value is not None:
             merged[key] = value
@@ -293,6 +293,7 @@ def _assistant_result(
         "route": str(data.get("route") or ""),
         "timings": _clean_timings(data.get("timings")),
         "publish_skill_included": _bool_or_none(data.get("publish_skill_included")),
+        "publish_tool_enabled": _bool_or_none(data.get("publish_tool_enabled")),
         "query_tools_enabled": _bool_or_none(data.get("query_tools_enabled")),
         "tool_error": data.get("tool_error") or None,
         "agent_error": agent_error,
@@ -451,6 +452,7 @@ def _persist_stream_assistant_result(
                 "route": assistant["route"],
                 "timings": assistant["timings"],
                 "publish_skill_included": assistant["publish_skill_included"],
+                "publish_tool_enabled": assistant["publish_tool_enabled"],
                 "query_tools_enabled": assistant["query_tools_enabled"],
                 "tool_error": assistant["tool_error"],
                 "agent_error": assistant["agent_error"],
@@ -813,6 +815,7 @@ def send_assistant_conversation_message(
                 "route": assistant["route"],
                 "timings": assistant["timings"],
                 "publish_skill_included": assistant["publish_skill_included"],
+                "publish_tool_enabled": assistant["publish_tool_enabled"],
                 "query_tools_enabled": assistant["query_tools_enabled"],
                 "tool_error": assistant["tool_error"],
                 "agent_error": assistant["agent_error"],

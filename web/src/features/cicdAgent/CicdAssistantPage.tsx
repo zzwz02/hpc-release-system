@@ -151,6 +151,7 @@ const ROUTE_LABELS: Record<string, string> = {
   static_publish_overview: "发布概要",
   static_publish_onboarding: "发布起步",
   plain_model_publish: "发布配置",
+  publish_tool: "发布工具",
   plain_model_general: "普通问答",
   agent_query_tools: "查询工具",
 };
@@ -511,6 +512,9 @@ export function CicdAssistantPage() {
           if (streamEvent.timings) metadata.timings = streamEvent.timings;
           if (streamEvent.publish_skill_included !== undefined) {
             metadata.publish_skill_included = streamEvent.publish_skill_included;
+          }
+          if (streamEvent.publish_tool_enabled !== undefined) {
+            metadata.publish_tool_enabled = streamEvent.publish_tool_enabled;
           }
           if (streamEvent.query_tools_enabled !== undefined) {
             metadata.query_tools_enabled = streamEvent.query_tools_enabled;

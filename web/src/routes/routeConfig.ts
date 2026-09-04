@@ -23,6 +23,8 @@ export interface RouteConfig {
   label: string;
   /** Roles that may see this tab.  Empty = nobody (placeholder). */
   roles: readonly Role[];
+  /** Hide from the top tab bar while keeping direct route access. */
+  showInNav?: boolean;
 }
 
 export const ROUTES: RouteConfig[] = [
@@ -33,7 +35,7 @@ export const ROUTES: RouteConfig[] = [
   { path: "/artifacts", view: "artifacts", label: "发布文档",   roles: rolesForTab("artifacts") },
   { path: "/cicd",      view: "cicd",      label: "CICD 工作台", roles: rolesForTab("cicd") },
   { path: "/jenkins-failures", view: "jenkins-failures", label: "Jenkins失败查询", roles: rolesForTab("jenkins-failures") },
-  { path: "/cicd-assistant",   view: "cicd-assistant",   label: "CICD助手",       roles: rolesForTab("cicd-assistant") },
+  { path: "/cicd-assistant",   view: "cicd-assistant",   label: "CICD助手",       roles: rolesForTab("cicd-assistant"), showInNav: false },
   { path: "/cicd-assistant-v2", view: "cicd-assistant-v2", label: "CICD助手V2",    roles: rolesForTab("cicd-assistant-v2") },
   { path: "/wiki",      view: "wiki",      label: "开发 WIKI",  roles: rolesForTab("wiki") },
   { path: "/admin",     view: "admin",     label: "系统管理",   roles: rolesForTab("admin") },

@@ -44,7 +44,7 @@ export function TabNav() {
   const cicdBadge = (notifData?.count ?? 0) > 0;
 
   const visibleRoutes = role
-    ? ROUTES.filter((r) => r.roles.includes(role))
+    ? ROUTES.filter((r) => r.roles.includes(role) && r.showInNav !== false)
     : [];
 
   // F3: when the App 工作台 detail form has unsaved edits, confirm before
@@ -96,7 +96,7 @@ export function TabNav() {
   return (
     <nav className="tabs">
       {ROUTES.map((route) => {
-        const visible = role ? route.roles.includes(role) : false;
+        const visible = role ? route.roles.includes(role) && route.showInNav !== false : false;
         if (!visible) return null;
         return (
           <NavLink

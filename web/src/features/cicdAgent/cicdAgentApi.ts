@@ -156,6 +156,7 @@ export interface CicdAssistantResponse {
   route?: string;
   timings?: Record<string, number>;
   publish_skill_included?: boolean | null;
+  publish_tool_enabled?: boolean | null;
   query_tools_enabled?: boolean | null;
   error?: string | null;
   tool_error?: string | null;
@@ -214,6 +215,7 @@ export type AssistantStreamEvent =
       route?: string;
       timings?: Record<string, number>;
       publish_skill_included?: boolean | null;
+      publish_tool_enabled?: boolean | null;
       query_tools_enabled?: boolean | null;
       tool_error?: string | null;
       event?: unknown;

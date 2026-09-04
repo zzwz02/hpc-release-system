@@ -78,13 +78,13 @@ describe("TabNav", () => {
     renderTabNav(role);
     await waitFor(() => {
       expect(screen.getAllByRole("link")).toHaveLength(
-        ROUTES.filter((route) => route.roles.includes(role)).length,
+        ROUTES.filter((route) => route.roles.includes(role) && route.showInNav !== false).length,
       );
     });
 
     for (const route of ROUTES) {
       expect(screen.queryByRole("link", { name: route.label }) !== null).toBe(
-        route.roles.includes(role),
+        route.roles.includes(role) && route.showInNav !== false,
       );
     }
   });
