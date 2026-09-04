@@ -54,7 +54,7 @@ const FEATURE_MAP: Record<string, React.ReactNode> = {
   "jenkins-failures": <JenkinsFailuresPage />,
   "cicd-assistant":   <CicdAssistantPage />,
   "cicd-assistant-v2": (
-    <Suspense fallback={<section className="view active p-2r muted">加载 CICD助手V2 中...</section>}>
+    <Suspense fallback={<section className="view active p-2r muted">加载 CICD助手 中...</section>}>
       <CicdAssistantV2Page />
     </Suspense>
   ),

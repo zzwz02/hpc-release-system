@@ -306,7 +306,7 @@ function AssistantUiMessage({
       className={`cicd-agent-chat-message ${message.role}${customFlag(message, "error") ? " bad" : ""}`}
     >
       <div className="cicd-agent-chat-role">
-        {message.role === "user" ? "你" : "CICD助手V2"}
+        {message.role === "user" ? "你" : "CICD助手"}
         <span>{displayMessageTime(message.createdAt)}</span>
       </div>
       {content ? (

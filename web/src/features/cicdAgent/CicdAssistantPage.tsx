@@ -359,7 +359,7 @@ export function CicdAssistantPage() {
           setCreating(false);
         }
       }
-      if (!targetConversationId) throw new Error("无法创建 CICD助手会话");
+      if (!targetConversationId) throw new Error("无法创建 CICD助手V1会话");
 
       await sendAssistantConversationMessageStream(targetConversationId, message, (streamEvent) => {
         handleStreamEvent(streamEvent, tempId, assistantTempId);
@@ -388,7 +388,7 @@ export function CicdAssistantPage() {
       setMessages((current) => [
         ...current.filter((item) => item.id !== tempId && item.id !== assistantTempId),
         { role: "user", content: message },
-        { role: "assistant", content: `CICD助手调用失败：${messageText}`, error: true },
+        { role: "assistant", content: `CICD助手V1调用失败：${messageText}`, error: true },
       ]);
     } finally {
       if (abortControllerRef.current === controller) {
@@ -465,7 +465,7 @@ export function CicdAssistantPage() {
           item.id === assistantTempId
             ? {
                 ...item,
-                content: `CICD助手重新生成失败：${messageText}`,
+                content: `CICD助手V1重新生成失败：${messageText}`,
                 error: true,
                 streaming: false,
                 metadata: {
@@ -584,7 +584,7 @@ export function CicdAssistantPage() {
     }
 
     if (streamEvent.type === "error") {
-      const messageText = streamEvent.error || streamEvent.assistant?.agent_error || "CICD助手调用失败";
+      const messageText = streamEvent.error || streamEvent.assistant?.agent_error || "CICD助手V1调用失败";
       const conversation = streamEvent.conversation;
       setError(messageText);
       if (conversation) {
@@ -676,7 +676,7 @@ export function CicdAssistantPage() {
   return (
     <section className="view active cicd-agent-chat-view">
       <div className="page-toolbar">
-        <h2>CICD助手</h2>
+        <h2>CICD助手V1</h2>
         <span className="muted small">
           {user ? `${user.display_name || user.username} · ${user.role}` : "未登录"}
         </span>
@@ -800,7 +800,7 @@ export function CicdAssistantPage() {
           <div className="cicd-agent-chat-log" ref={chatLogRef} onScroll={updateChatStickiness}>
             {!messages.length && !loadingMessages ? (
               <div className="cicd-agent-chat-empty">
-                <strong>CICD助手</strong>
+                <strong>CICD助手V1</strong>
                 <span>可查询 APP 镜像与测试结果，也可生成发布配置内容建议。</span>
                 <div className="cicd-agent-chat-examples">
                   {EXAMPLE_HINTS.map((hint) => (
@@ -836,7 +836,7 @@ export function CicdAssistantPage() {
                   key={message.id || `${message.role}-${index}`}
                 >
                   <div className="cicd-agent-chat-role">
-                    {message.role === "user" ? "你" : "CICD助手"}
+                    {message.role === "user" ? "你" : "CICD助手V1"}
                     {message.created_at ? <span>{displayTime(message.created_at)}</span> : null}
                   </div>
                   {message.role === "assistant" && message.content ? (

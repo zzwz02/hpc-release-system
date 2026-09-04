@@ -82,8 +82,11 @@ describe("TabNav", () => {
       );
     });
 
+    const visiblePaths = new Set(
+      screen.getAllByRole("link").map((link) => link.getAttribute("href")),
+    );
     for (const route of ROUTES) {
-      expect(screen.queryByRole("link", { name: route.label }) !== null).toBe(
+      expect(visiblePaths.has(route.path)).toBe(
         route.roles.includes(role) && route.showInNav !== false,
       );
     }
