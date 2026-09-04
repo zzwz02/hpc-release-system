@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../../api/AuthContext";
 import { apiGet } from "../../api/http";
@@ -206,6 +206,19 @@ export function JenkinsFailuresPage() {
     void queryClient.invalidateQueries({ queryKey: ["cicd-agent"] });
   }
 
+  const closeDetail = useCallback(() => {
+    setSelectedId(null);
+  }, []);
+
+  useEffect(() => {
+    if (selectedId == null) return undefined;
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") closeDetail();
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [closeDetail, selectedId]);
+
   return (
     <section className="view active cicd-agent-view">
       <div className="page-toolbar">
@@ -385,6 +398,7 @@ export function JenkinsFailuresPage() {
                 <th>责任人/角色</th>
                 <th>原因摘要</th>
                 <th>时间</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -411,11 +425,24 @@ export function JenkinsFailuresPage() {
                   </td>
                   <td className="reason-cell">{record.reason_summary || "暂无摘要"}</td>
                   <td>{formatDateTime(record.created_at)}</td>
+                  <td className="cicd-agent-table-action">
+                    <button
+                      className="btn sm cicd-agent-detail-trigger"
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setSelectedId(record.id);
+                      }}
+                    >
+                      <span>查看详情</span>
+                      <span aria-hidden="true">›</span>
+                    </button>
+                  </td>
                 </tr>
               ))}
               {!records.length && (
                 <tr>
-                  <td colSpan={12} className="muted center">
+                  <td colSpan={13} className="muted center">
                     {recordsQuery.isLoading ? "正在加载..." : "没有匹配记录"}
                   </td>
                 </tr>
@@ -431,11 +458,22 @@ export function JenkinsFailuresPage() {
         </div>
       )}
 
-      <FailureDetail
-        record={detailQuery.data}
-        loading={detailQuery.isFetching}
-        displayNames={displayNames}
-      />
+      {selectedId != null ? (
+        <div
+          className="dialog-backdrop cicd-agent-detail-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="failure-detail-title"
+          onClick={closeDetail}
+        >
+          <FailureDetail
+            record={detailQuery.data}
+            loading={detailQuery.isFetching}
+            displayNames={displayNames}
+            onClose={closeDetail}
+          />
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -474,29 +512,48 @@ function FilterSelect({ label, value, options, formatOption, onChange }: {
   );
 }
 
-function FailureDetail({ record, loading, displayNames }: {
+function FailureDetail({ record, loading, displayNames, onClose }: {
   record?: FailureRecordDetail;
   loading: boolean;
   displayNames: Record<string, string>;
+  onClose: () => void;
 }) {
   if (!record) {
     return (
-      <section className="panel p-2r">
-        <h3>记录详情</h3>
-        <p className="muted">{loading ? "正在加载..." : "点击一条失败记录查看详情"}</p>
+      <section
+        className="panel p-2r cicd-agent-detail-dialog"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="section-head-row">
+          <h3 id="failure-detail-title">记录详情</h3>
+          <button className="btn sm cicd-agent-detail-close" type="button" onClick={onClose}>
+            <span aria-hidden="true">×</span>
+            关闭
+          </button>
+        </div>
+        <p className="muted">{loading ? "正在加载..." : "没有找到记录详情"}</p>
       </section>
     );
   }
 
   return (
-    <section className="panel p-2r">
+    <section
+      className="panel p-2r cicd-agent-detail-dialog"
+      onClick={(event) => event.stopPropagation()}
+    >
       <div className="section-head-row">
-        <h3>记录详情</h3>
-        {record.build_url && (
-          <a className="btn sm jenkins-link" href={record.build_url} target="_blank" rel="noreferrer">
-            打开 Jenkins
-          </a>
-        )}
+        <h3 id="failure-detail-title">记录详情</h3>
+        <div className="cicd-agent-detail-actions">
+          {record.build_url && (
+            <a className="btn sm jenkins-link" href={record.build_url} target="_blank" rel="noreferrer">
+              打开 Jenkins
+            </a>
+          )}
+          <button className="btn sm cicd-agent-detail-close" type="button" onClick={onClose}>
+            <span aria-hidden="true">×</span>
+            关闭
+          </button>
+        </div>
       </div>
       <div className="cicd-agent-detail-grid">
         <Detail label="Job" value={`${record.job_name} #${record.build_number}`} />
