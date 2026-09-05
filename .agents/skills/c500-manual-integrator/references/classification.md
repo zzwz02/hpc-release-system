@@ -1,61 +1,27 @@
-# Classification Reference
+# 手册与发布说明分类
 
-Use these categories as defaults when merging release-system manual artifacts into the C500 RST manuals and when classifying release-note rows. Prefer the current RST structure when it is already accurate; update names when the artifact content makes a better category clear.
+分类服务于读者查找 App，不决定发布资格或芯片支持。权威身份、版本、支持范围来自目标 release 与其产物；分类先沿用目标 RST 中准确的结构。这里提供编辑用默认类别，不是完整产品目录。
 
-Release-note classifications must use these same category names so `新增特性及变更` and `发布列表` stay consistent with `HPC_Manual_CN.rst` chapter 10 and `C500_AI4SciUserGuide_CN.rst` chapters 5 and 6.
+## HPC APP
 
-## HPC Chapter 10
+按实际用途使用：基准测试、材料科学计算、分子模拟、数值计算库与求解器、HPC 框架与工具、CFD 与流体模拟、地球系统模拟、海洋环流模拟、天气预报模拟、物理仿真、量子与高能物理计算、信号处理、密码学与安全计算、可视化。
 
-- 基准测试: HPL, HPCG
-- 材料科学计算: ABACUS, GAMESS, GPAW, LAMMPS when used for materials workflows, Quantum ESPRESSO, Siesta
-- 分子模拟: GROMACS, Amber, NAMD, OpenMM
-- 数值计算库与求解器: hypre, PETSc, SuperLU, Trilinos, MAGMA
-- HPC框架与工具: Kokkos, RAJA, Charm++, HPX, Legion, Slurm, HPC SDK基础镜像
-- CFD与流体模拟: OpenFOAM, SU2, NekRS, ExaFOAM
-- 生命科学计算: NWChem, VASP-related bio workflows only when artifact says so
-- 医学影像: MONAI when placed in HPC docs as imaging compute
-- 地球系统模拟: E3SM, CESM, WRF when coupled earth-system context is explicit
-- 海洋环流模拟: MITgcm, MOM6, ROMS
-- 天气预报模拟: WRF, ICON, MPAS, FV3
-- 物理仿真: WarpX, AMReX applications, PIConGPU
-- 量子与高能物理计算: QUDA, Chroma, Grid, Geant4
-- 信号处理: cuSignal-equivalent libraries, FFT/signal apps
-- 密码学与安全计算: sppark or zero-knowledge proof tools
-- 可视化: ParaView, VTK-m
+例如 HPL/HPCG 可沿用基准测试分类，数值库放在数值计算库与求解器；跨领域软件按目标手册介绍的用途判断。不要凭某个软件可以用于某领域，就为它新增没有来源的应用描述。
 
-## AI4Sci Chapter 5
+## AI4Sci
 
-Use chapter 5 for frameworks, libraries, and AI4Sci infrastructure:
+框架、库和基础设施放在框架章节；模型放在模型章节。历史 C500 手册分别为第 5、6 章，实际编辑应按标题核对。
 
-- AI for Science框架: DeepXDE, FTorch, PaddleScience, PhysicsNeMo
-- 图学习框架与AI工具: DGL, PyG
-- Add a new subgroup only when an artifact is clearly neither a science framework nor a graph/AI tooling library.
+模型按已有内容选择：气象与气候、蛋白质与生物分子、材料科学、分子、基因与组学、医学影像、CFD。只有现有类别无法准确承载新内容时才增加子类，避免为单个版本增加类别。
 
-## AI4Sci Chapter 6
+## 名称与别名
 
-Use chapter 6 for models and group by discipline:
+比较条目前同时查看 App ID、官方名称、别名、版本与仓库/分支。空格、下划线和大小写可用于查找候选，不是自动合并证据。`Grid` 等通用名称尤其需要确认身份。
 
-- 气象与气候模型: ai-models, Earth-2, NeuralGCM, NowcastNet, Pangu-Weather, GraphCast, FourCastNet, FuXi, FengWu, AIFS, Aurora
-- 蛋白质与生物分子模型: AlphaFold 3, BindCraft, ESM3, HelixFold3, OpenFold, ProtTrans, rc-foundry
-- 材料科学模型: ALIGNN, AVIARY, DARWIN, EquiformerV2, MACE, MatRIS, MatterGen, MatterSim
-- 分子模型: Boltz-2, DiffDock and ligand/protein docking or molecular generation models
-- 基因与组学模型: Cell2location, PePPER and sequencing/genomics models
-- 医学影像模型: MONAI and medical imaging AI models
-- CFD模型: DeepCFD and fluid simulation neural models
+保留现有准确写法；旧名到新名的映射应有数据库别名、历史文档或用户说明支持。名称修正不要暗示新发布，也不要把停止某版本误写成停止整个 App。
 
-When an APP could fit multiple categories, classify by the workflow emphasized in the release artifact, not by the upstream project’s broad scope.
+类别同义词可统一，例如 `HPC基准测试` → `基准测试`、`HPC框架/工具` → `HPC框架与工具`、`CFD/流体模拟` → `CFD与流体模拟`。采用哪种空格与排版服从目标手册风格。手册、变更表、发布列表使用同一套类别名称，避免分别维护互相冲突的映射。
 
-## Common Category Name Normalizations
+## 芯片与类别分开
 
-Use these normalizations when older release notes, DB exports, or generated drafts use legacy category names:
-
-- `HPC基准测试` -> `基准测试`
-- `HPC框架/工具` -> `HPC框架与工具`
-- `CFD/流体模拟` -> `CFD与流体模拟`
-- `数值计算库/求解器` -> `数值计算库与求解器`
-- `量子/高能物理计算` -> `量子与高能物理计算`
-- `密码学/安全计算` -> `密码学与安全计算`
-- `AI框架/工具` -> `图学习框架与AI工具`
-- `气象/气候模型` -> `气象与气候模型`
-- `蛋白质/生物分子模型` -> `蛋白质与生物分子模型`
-- `基因/组学模型` -> `基因与组学模型`
+学科分类不能推导芯片支持。每个版本分别从目标周期的支持芯片字段建立映射：X201 版本进入 X201 文档，非 X201 版本进入 MACA 文档，双支持版本可同时进入两边。未知支持范围标记待核实，不猜测归属。

@@ -1,147 +1,50 @@
 ---
 name: release-system-dev
-description: Development standards for the HPC App 发布信息协作系统 (FastAPI + React rewrite). Use whenever extending/changing this repo — new endpoints, UI, migrations, or fixes — so work follows the same architecture, quality gates, and review discipline. Triggers when the task touches app/, web/, tools/, tests/, or asks to "add/change/fix a feature" in this release system.
+description: Develop, debug, or review this HPC release collaboration repository using its current FastAPI/React architecture, release and CICD rules, and isolated verification workflow.
 ---
 
-# HPC 发布系统 — Development Standards
+# 发布协作系统开发
 
-This repo is a **FastAPI + React/Vite/TS rewrite** of a legacy single-file system. Follow these project
-conventions for every change unless the user explicitly overrides them.
+适用于本仓库的功能开发、修复和代码审查。先读根目录 [README](../../../README.md) 了解产品与入口，再沿当前调用链确认行为；历史文档、注释与旧实现只提供线索。用户明确要求变更的规则可以调整，不能用旧规范否决已授权的工作。
 
-## 0. Read the repo docs first
-- Before changing code in this repo, read `README.md` for the current architecture, roles, release lifecycle,
-  CICD/App business rules, API map, test commands, and frozen-file policy. Treat `README.md` as the compact
-  product/system orientation and keep this skill focused on execution discipline.
-- For frontend work, also read `web/README-web.md`. For golden/parity work, also read `tests/golden/README.md`.
-- If a behavior change modifies a rule documented in `README.md`, update the README in the same change so future
-  agents load the correct context through this skill.
+## 按任务读取
 
-## 1. Architecture & where code goes
-- **Backend** = `app/`: thin routers (`app/api/routers/`) → services (`app/services/`, module-level functions
-  taking `conn` first, owning orchestration + transaction boundaries + a single `ts` per op via
-  `app.timeutil.beijing_timestamp()`) → repositories (`app/repositories/`, SQL only) → `app/db/connection.py`
-  (`ManagedConnection`, WAL, nested-savepoint `transaction()`). Pure logic in `app/domain/`. `app/main.py`
-  wires routers + lifespan + a guarded `StaticFiles` SPA mount (serves `web_dist`, deep-link fallback to
-  index.html for non-`/api` paths).
-- **Frontend** = `web/` (React 18 + Vite + TS + TanStack Query + zustand + react-router): `api/` (typed http
-  client), `types/`, `lib/` (time/csv/markdown/roles/phase/identity), `store/uiStore` (zustand), `components/`
-  (incl. `RefreshBar`, `DataTable`, and `Markdown` — THE single sanitized-HTML sink), `features/` (8 tabs),
-  `routes/` (routeConfig + RequireRole + AppRouter).
-- **DB** = single `release_system.db` (SQLite WAL). Backup = stop server + copy, or `sqlite3 … ".backup"`.
-- **Identity mapping** = `app/identity.py` (`repo_to_git_identity`, short repo name → full ssh URL;
-  `.xml` manifest → networked resolve).
-- **Single source of truth**: before adding or changing a configuration value, enum, label, default, field mapping,
-  normalization, or lifecycle predicate, search the whole repository for equivalent definitions. Choose one
-  authoritative source and make every caller consume it; never copy the same rule into routers, services,
-  repositories, React components, scripts, or tests. Put deploy-time integration defaults shared by runtimes in
-  `shared/*.json` and load them through `app/config.py`; expose runtime values needed by the browser through a safe
-  backend API instead of hardcoding internal URLs. Put stable cross-stack vocabularies/field descriptors in
-  `shared/*.json`, load and validate them through a focused `app/domain/` module, and expose a focused frontend
-  `lib` wrapper. Keep executable state/permission/normalization rules in `app/domain/`; services orchestrate,
-  repositories remain SQL-only, and the frontend consumes backend-derived classifications/actions instead of
-  reimplementing them. Do not expose secrets or move a module-local implementation detail into shared config merely
-  for symmetry. Add tests for the authoritative definition and at least one consumer whenever consolidating a rule.
-- **Deploy** = single process: `python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1`
-  (serves both API and the built SPA). `--workers 1` is REQUIRED (in-process QA job registry + LDAP state).
+- 发布决策、App、QA、审批/交付、最终产物：读 [workflows.md](references/workflows.md)，再看对应 domain、service 和测试。
+- 前端：读 [web/README-web.md](../../../web/README-web.md)。交互修改要验证实际页面和真实请求形状。
+- 测试、迁移、运行环境：读 [verification.md](references/verification.md)。文档修改只做相称的链接、语法和事实检查。
+- C500/X201 RST 合并使用相邻的 `c500-manual-integrator` 技能，本技能不代替手册分类与版本规则。
 
-## 2. Legacy reference files — read-only
-`release_system/core.py`, `server.py`, `index.html`. Implement ALL new behavior in `app/` + `web/` + `tools/`.
-A change is only done if `git diff` shows ZERO modifications to those three. You MAY read them as a runnable
-parity reference, but do not edit them.
+## 修改落点与事实源
 
-## 3. Optional multi-agent workflow
-Use a team only when the user explicitly asks for a multi-agent workflow. For normal tasks, one agent should
-work directly.
-- Split parallel work by file ownership to avoid collisions: backend, tests, frontend/docs, or another clear
-  ownership boundary.
-- Use one review gate per batch: implementers report, a lead verifies quality gates/frozen-file/no-junk checks,
-  reviewers inspect correctness, and fixes land before any checkpoint commit.
-- Reviewer reviews; implementers fix. Review must check behavior, tests, and rendered UI when frontend output is
-  affected.
+当前运行层为 `app/`、`web/`、`shared/`；离线工具在 `tools/`。日常变更保留 `server.py`、根 `index.html` 和 `release_system/` 为旧实现参考，不顺手重写它们。针对这些文件的明确用户要求另按任务处理。
 
-## 4. Quality gates (must be green before any commit)
-- Backend: `python3 -m pytest -q` (run from repo root). Frontend (in `web/`): `npm run build` (tsc strict +
-  vite), `npm run lint` (`--max-warnings 0`), `npx vitest run`, `npm run test:e2e` (Playwright).
-- **Frozen-file guard**: `git diff --name-only -- server.py release_system/ index.html` must be empty.
-- **No junk committed**: never stage `node_modules/`, `web_dist/`, `*.db*`, `*.bak`, `web/e2e/screenshots/`,
-  `playwright-report/`, the `/tmp` candidate DBs, or scratch `*.mjs`/`ss_*.spec.ts`. Stage explicit paths.
+- Router 负责 HTTP 与依赖鉴权；service 编排业务和事务；repository 负责数据访问；纯判断放 domain。现有 service 中仍有 SQL，不把“已完成全部分层”当成事实。
+- 静态权限唯一来源为 `shared/access_control.json`；词表与字段描述为 `shared/domain_metadata.json`；集成默认配置为 `shared/integrations.json` 和 `app/config.py`。
+- 修改常量、默认值、状态、身份或权限前，先全仓搜索同义定义。让消费者使用现有权威实现，不复制角色数组、状态谓词或仓库解析。
+- 所有权、阶段、锁定与申请状态由后端组合静态权限。读取模型已有 `allowed_actions` 时前端消费它；后端仍需重新鉴权，缓存中的动作列表不是写入凭证。
+- `app/identity.py` 处理仓库短路径、manifest 存储身份与 Git 解析。使用 App ID 做当前身份；涉及历史匹配同时检查仓库与分支，不能仅按 URL、名称或模型名合并。
 
-## 5. Hard invariants
-- **Refresh/data-fetch policy**: no polling. TanStack Query uses `staleTime: Infinity` with automatic
-  refetch disabled; refresh only through explicit refetch/invalidate actions. The only allowed interval is
-  the QA AI-analysis 1s poll. Each section's `RefreshBar` shows its OWN content fetch time
-  (`dataUpdatedAt`), not page-load time.
-- **Sole Markdown sink**: only `web/src/components/Markdown.tsx` may use `dangerouslySetInnerHTML`
-  (DOMPurify pipeline). `grep -r dangerouslySetInnerHTML web/src` must show exactly one real hit.
-- **Timezone**: stored + displayed times are **naive Beijing** `"%Y-%m-%d %H:%M:%S"`, zero offset. No `+8`
-  math, no UTC `+00:00` in the (migrated) DB. (One documented exception historically: wiki — keep columns
-  uniform if you touch them.)
-- **Date inputs**: app-facing date-only fields (deadlines, release schedule dates, etc.) display and submit
-  `YYYY-MM-DD`. Use shared `DateInput` + `formatDateValue`; never expose a visible raw browser
-  `input[type=date]`.
-- **CICD/App lifecycle rules**: CICD cutover is complete and **app-backed**. `cicd_task_requests.app_id`
-  links directly to `apps.id`; `task_id` stores the same app id for the existing API field. Do not generate
-  `CICD-xxxx` ids. FastAPI runtime must not read/write `cicd_tasks`; that legacy table may exist only so old
-  DBs and frozen reference tests open cleanly. New code must use app id for identity; `(git_url, git_branch)`
-  is only for historical display/compatibility matching, and never match by Gerrit URL alone because branches
-  may share one URL. All CICD requests require pending→RM approval (RM may self-approve,
-  `is_self_approved`); user modify requests may NOT set `status`. Admin is out of CICD/release business. App
-  `release_decision` drives CICD Running/Stopped via pending modify requests
-  (`origin="release_decision_sync"`). Running-boundary decision changes must sync to every unlocked release,
-  not just later releases. `stopped -> release/cicd_only` is a running upgrade: apply the submission-time
-  per-release decisions immediately, mark release/QA planning as CICD pending, never recompute them when approval
-  or delivery crosses a freeze line, and roll them back if the request is rejected/cancelled.
-  `release/cicd_only -> stopped` is a stop downgrade: the release decision takes effect immediately and the
-  CICD request cannot be rejected or cancelled. CICD-first create starts snapshots as `stopped`; rejected or
-  cancelled create requests leave the app visible with the reason, block duplicate `(git_url, branch)` creates,
-  and only allow same-name retry. New CICD modify requests are blocked while the same app has an unfinished
-  CICD-first create request, an unfinished Jira-backed modify delivery (`delivery_status` pending/returned),
-  or an unfinished `release_decision_sync` Running/Stopped status modify request (`payload.status`, whether
-  pending approval, delivery pending, or returned). No-Jira pending workbench modifies may be replaced only with
-  explicit `replace_open=true` after the UI warns that old requests will be cancelled; status-sync modifies are
-  never replaceable by config edits. Any Running/Stopped boundary sync uses the same blockers and must not create
-  `release_decision_sync` or change the snapshot when blocked.
-  Admin navigation and route access are restricted to the `系统管理` tab (`/admin`) only. Hide all other tabs and redirect every non-`/admin` Admin deep link back to `/admin`.
-  Treat `shared/access_control.json` as the sole static role matrix for role catalogs, top-level tabs, and named
-  operation capabilities. Make frontend `accessControl.ts`/`routeConfig.ts`, backend `domain/permissions.py`,
-  API dependencies, services, navigation, affordances, and permission tests consume it; never copy role arrays.
-  Keep contextual rules such as ownership, release lock, phase, and request status in centralized backend domain
-  helpers that compose the shared capabilities. Expose per-resource `allowed_actions` on read models and make the
-  frontend consume them instead of duplicating those rules. Always retain backend endpoint/service authorization
-  as the final security boundary; frontend capability checks only control presentation.
-  RM can reject a returned delivery through the `reject-returned` endpoint only with a reason, preserving Jira
-  and return history and without applying the payload. CICD has no Abandoned/delete flow; retire/delete is
-  handled through App lifecycle. CICD 工作台 is read-only; CICD config changes enter from App 工作台 → CICD tab.
+## 数据与外部调用
 
-## 6. Regression fixtures / golden responses
-- `tests/golden/` contains captured expected API responses replayed by `test_fastapi_parity`. Behavior-preserving
-  changes should keep these fixtures unchanged.
-- For an intentional behavior change: **re-baseline the affected fixture to the new, verified-correct body —
-  NEVER delete or `@skip` a fixture to hide a regression.** Add new fixtures for new endpoints. Reviewers must
-  reject lazy fixture changes. Timestamps are scrubbed to `SCRUBBED_TIMESTAMP`; fields like `origin`/`app_id`
-  are not scrubbed and do change response shapes.
+仓库根 `release_system.db` 可能是真实业务库。分析用标准 `sqlite3` 的 URI `mode=ro`，加 `PRAGMA query_only=ON`；避免读取认证密钥、口令哈希、会话 token。不要用应用 `connect()` 或 `/api/state` 做严格只读检查，它们可能写入数据。
 
-## 7. Frontend/backend contract drift
-Unit tests pass on each side while the frontend sends or reads the wrong keys. Catch this by verifying the
-contract across the API boundary:
-- Verify the **live** round-trip (boot the server, actually submit), not just dialog-open / mocked shapes.
-- Keep the Vitest mock shaped EXACTLY like the real backend response; assert the real payload keys.
-- Examples that bit us: FE sent `app_name` while BE required `official_name`; FE read `version`/`app_info`
-  while BE returned `app_version`/`parsed`/`app_info_parsed`. Always reconcile field names against the BE.
+测试、迁移演练和故障复现使用临时库或一致性备份。自动化浏览器测试会写数据，不能连接真实业务实例。备份使用 SQLite backup API；助手库单独备份。只有任务范围包含真实数据变更时才执行对应迁移、清理或恢复。
 
-## 8. Environment caveats (this dev box)
-- `http_proxy`/`https_proxy` hijack localhost → set `no_proxy=localhost,127.0.0.1` (npm scripts already do;
-  for curl use `--noproxy '*'`). `pkill -f 'uvicorn app.main'` self-matches the shell — kill by PID (use
-  `pgrep -f 'uvicorn [a]pp.main'`) and don't put the start command in the same shell line.
-- **No Gerrit network** (`sw-gerrit-devops:29418` unreachable): mock app_info for tests
-  (`make_fake_app_info_fetch`); the `.xml` manifest resolution + new-app Gerrit fetch only work on a networked
-  deploy (surface the derived identity in the UI for debugging).
-## 9. Commits
-Branch `rewrite/fastapi-react`. Conventional, descriptive (Chinese summaries are fine, matching the repo).
-End commit messages with:
-`Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`
+新增写操作把读取最新状态、检查权限/锁定、条件更新及审计放在同一事务边界。考虑 SQLite 写锁和冲突处理；整份 JSON 写回应有版本校验，不能只因套了 `transaction()` 就认定不会丢失更新。保存冲突必须可见，禁止静默覆盖。
 
-## 10. Key files to read first
-Start with `README.md`. For frontend work read `web/README-web.md`; for golden response work read
-`tests/golden/README.md`. Historical design reference:
-`/remote_home/zhawu/.claude/plans/clever-swimming-quiche.md`.
+同步 Git、LDAP、HTTP 和重计算不要直接堵在 `async def` 的事件循环里；使用同步路由、线程池或异步客户端。网络请求不占用长时间数据库写事务。Jira 等不可回滚的外部副作用需考虑重试幂等、失败状态和补偿，不能仅凭本地事务宣称原子性。
+
+## 前端与时间
+
+- 保持按需刷新，除 QA AI 任务进度外不自行新增周期轮询。注意 `staleTime: Infinity` 下 `refetchOnMount: true` 不保证重新请求。
+- 设计缓存时同时考虑用户身份、release、查询参数与返回形状；账号切换、401、写操作需要合适的取消/清理/失效。共用查询键不能对应不同权限或字段集合。
+- 共享周期选择使用 `uiStore`；编辑表单保留未保存变更保护。密集列表采用可检索表格或主从布局，选中项目后详情应直接可见。
+- Markdown 使用统一 `Markdown.tsx` + DOMPurify，不增加任意 HTML 注入出口。
+- 新业务事件使用 `beijing_timestamp()`；deadline、日期分别使用对应归一化函数。日期输入使用 `DateInput`，提交 `YYYY-MM-DD`。
+- 旧库可同时含带时区 ISO 与北京时间字符串。先统计列与嵌套字段的格式，再在副本制定迁移；禁止整库无差别加 8 小时或去掉 offset 后声称时区已转换。
+
+## 完成标准
+
+按 [verification.md](references/verification.md) 验证受影响行为，报告实际通过、失败和未执行项。前后端变更核对实际 payload / response，不能只通过双方各自的 mock。行为变更需要更新对应测试和文档，不删用例或放宽 golden 来掩盖错误。
+
+保持工作区清晰，不提交数据库、配置密钥、备份、`node_modules/`、`web_dist/` 或临时报告。不要硬编码分支、测试数量、协作者模型或提交署名。用户未要求团队协作时单代理执行；未要求提交或部署时不把它们当成必需步骤。

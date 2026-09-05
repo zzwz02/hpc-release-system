@@ -1,135 +1,68 @@
 ---
 name: c500-manual-integrator
-description: Merge C500 release-system documentation data into C500/X201 RST docs. Use when Codex must update HPC_Manual_CN.rst or X201_HPCManual_CN.rst DockerHub HPC APP sections, C500_AI4SciUserGuide_CN.rst chapters 5 and 6, MACA_HPC_release_notes_CN.rst, or X201_HPC_release_notes_CN.rst from release-system data; reconcile app/model versions; classify entries by discipline or chip series; keep release-note changes separate from full release lists; preserve AI4Sci usage methods; or render/validate the resulting Sphinx documentation.
+description: Integrate release-system artifacts and versioned App data into C500/X201 RST manuals or HPC release notes, preserving chip scope, usage content, provenance, and Sphinx validity.
 ---
 
-# C500 Documentation Integrator
+# C500 / X201 发布文档整合
 
-## Scope
+用于把指定发布周期的系统数据整合到外部 RST 手册和发布说明，或渲染这些文档。系统导出的 Markdown 是输入，RST 手册有自己的历史结构；不要直接用自动草稿覆盖整份手册。
 
-Use this workflow for C500 documentation integration from the release system database:
+## 先明确来源与目标
 
-- HPC manual artifact: `artifacts.kind = "manual"` / `hpc_manual_apps.md` -> `HPC_Manual_CN.rst` and `X201_HPCManual_CN.rst` DockerHub HPC APP sections.
-- AI4Sci manual artifact: `artifacts.kind = "ai4sci"` / `ai4sci_user_guide_apps.md` -> `C500_AI4SciUserGuide_CN.rst` chapters 5 and 6.
-- HPC release notes: release-system app/model/tool data -> `MACA_HPC_release_notes_CN.rst` and `X201_HPC_release_notes_CN.rst`.
-- Prefer the latest `final=1` artifact. If none exists, use the latest generated artifact and explicitly mention that it is non-final.
+- 用户指定的 release 优先。未指定时，检查可用 release 与产物，选择符合“当前草稿”或“已发布文档”语义的周期；只有存在会改变结果的歧义时才询问。
+- 同一周期内优先使用对应 final；无 final 时使用该周期草稿并说明生成时间。不能为了拿到 final 而悄悄换成旧 release。
+- 比较快照与产物生成时间/内容，识别过期草稿。产物是生成时刻的结果，不是实时数据库视图。
+- 根 `release_system.db` 可是真实业务数据，只读检查用 SQLite `mode=ro`；不要调用应用 `connect()`、`/api/state` 或生成接口来完成只读导出。
+- 不导出 users、sessions、集成凭据或无关审计。导出的文档/数据也属于业务资料，放在指定工作目录或 `/tmp`，不顺手提交原始数据库。
 
-## Manual Workflow
+脚本 [export_release_manual_artifacts.py](scripts/export_release_manual_artifacts.py) 的 CLI 使用普通读写 SQLite 连接，当前仅执行查询；为保持真实库只读约束，先用 SQLite backup API 从只读源生成副本，再把副本传给脚本。在线 WAL 库不要直接复制主文件。
 
-1. Inspect current files before editing:
-   - `/remote_home/zhawu/c500_rest_doc/module_pde/C500_Docs/HPC_Manual/source/HPC_Manual_CN.rst`
-   - `/remote_home/zhawu/c500_rest_doc/module_pde/X201_Docs/HPC_Manual/source/X201_HPCManual_CN.rst`
-   - `/remote_home/zhawu/c500_rest_doc/module_pde/C500_Docs/AI4Sci_User_Guide/source/C500_AI4SciUserGuide_CN.rst`
-   - `scripts/render_c500_manual_html.py` if rendering is requested.
+```bash
+python .agents/skills/c500-manual-integrator/scripts/export_release_manual_artifacts.py \
+  /tmp/release-doc-source.sqlite \
+  --release-id TARGET_RELEASE_ID \
+  --out-dir /tmp/release-manual-export
+```
 
-2. Export release-system manual artifacts:
+`TARGET_RELEASE_ID` 必须替换成实际选定 ID。脚本省略 `--release-id` 时对 manual、ai4sci 分别按 final 和生成时间排序，可能选中不同周期；有明确目标时总是传 ID，并检查两个 `.artifact.json` 的周期一致性。
 
-   ```bash
-   python3 /remote_home/zhawu/release-system/.agents/skills/c500-manual-integrator/scripts/export_release_manual_artifacts.py \
-     /remote_home/zhawu/release-system/release_system.db \
-     --out-dir /tmp/c500_manual_artifacts
-   ```
+## RST 目标与范围
 
-   Read the generated summaries and use them as source of truth for app names, versions, official URLs, and usage methods.
+默认外部文档根目录为 `/remote_home/zhawu/c500_rest_doc/module_pde`；路径可由用户指定。先确认文件实际存在，不把本机默认路径视为所有环境的约定。
 
-3. Merge versions by APP/model name:
-   - If the same APP appears in multiple versions, write one RST entry.
-   - Put all versions on one `版本：` line, sorted naturally and separated with `、`.
-   - Do not create duplicate entries for version-only differences.
+| 相对文档根目录的路径 | 合并内容 |
+| --- | --- |
+| `C500_Docs/HPC_Manual/source/HPC_Manual_CN.rst` | DockerHub HPC APP 章节；按当前章节结构定位，不仅按历史章节号 |
+| `X201_Docs/HPC_Manual/source/X201_HPCManual_CN.rst` | X201 范围的 HPC APP |
+| `C500_Docs/AI4Sci_User_Guide/source/C500_AI4SciUserGuide_CN.rst` | 框架/库与模型章节，历史上为第 5、6 章 |
+| `C500_Docs/HPC_Release_Notes/source/MACA_HPC_release_notes_CN.rst` | MACA 范围变更和发布列表 |
+| `X201_Docs/HPC_Release_Notes/source/X201_HPC_release_notes_CN.rst` | X201 范围变更和发布列表 |
 
-4. Resolve conflicts:
-   - If RST and DB artifact conflict, DB artifact wins.
-   - For missing entries in RST, add them.
-   - Manual APP/model lists are append-only: do not remove an existing APP/model entry just because it is absent from the latest DB artifact or stopped in a future release.
-   - If an APP/model stops publishing, preserve its existing manual information unless the user explicitly asks to remove historical content.
+外部 RST 写入仅在用户任务包含该整合工作时执行；本仓库文档/技能维护并不授权修改外部手册。
 
-5. Scope manual entries by support chip:
-   - `HPC_Manual_CN.rst` is for C500/MACA scope. Include an APP/model when it has at least one non-X201 support chip, such as `C500`, `C588`, `C600`, `C600U`, `N260`, `N300`, `X206`, `X301`, or `X302`.
-   - `X201_HPCManual_CN.rst` is for X201 scope. Include an APP/model only when it supports `X201`.
-   - If an APP/model supports both scopes, include it in both manuals. If it is MACA-only or X201-only, include it only in the matching manual.
-   - When versions of the same APP/model have different support chips, keep one entry per manual but list only the versions supported by that manual's chip scope.
-   - Apply the append-only rule within each manual's chip scope: do not remove historical entries unless explicitly requested, but do not newly add entries to the wrong chip-scope manual.
+## 合并方法
 
-6. Apply document-specific rules:
-   - HPC chapter 10: include Chinese introduction, version, official URL when available. Do not carry over image usage, binary usage, environment setup, or tests unless the user asks.
-   - X201 HPC manual: follow the same HPC manual style, but keep APP entries and version lists scoped to X201 support.
-   - AI4Sci chapters 5 and 6: preserve the prior manual style. Keep introduction, version, official URL, `镜像使用方法` when present, `二进制包使用方法` when present, and relevant setup/test usage if the artifact provides it.
-   - AI4Sci chapter 5 is for frameworks/libraries; chapter 6 is for models.
-   - AI4Sci chapter 6 must be grouped by discipline because model count is large.
+1. 阅读目标 RST、产物 `.raw.md` 和 `.artifact.json`，用目标周期快照补充每版本的支持芯片与来源。脚本 `.entries.json` 是粗略名称归并结果，不含可靠的每版本芯片映射。
+2. 以 App 身份、别名和版本证据核对同名条目。确认确为同一 App 后每个手册保留一个条目，版本自然排序并以 `、` 分隔；不能因为归一化名称相同就合并不同仓库/分支。
+3. MACA/C500 手册新合入非 X201 芯片支持的版本，X201 手册新合入 X201 版本。双范围 App 可以出现在两边，但版本分别过滤，不能把各版本芯片简单取并集。
+4. 手册保留有依据的历史 App 和说明；某 App 不在当前产物中，可能是停止、缺项或尚未确认，不足以删除历史条目。清理历史内容须符合用户明确范围。
+5. HPC APP 条目通常保留中文介绍、版本、官方网址；AI4Sci 还保留镜像/二进制使用方法以及有来源的环境和测试说明。选定版本间用法有差异时标明适用版本，不能只保留归并时遇到的第一份用法。
+6. 分类按 [classification.md](references/classification.md) 与目标文档已有准确结构；不确定项在工作记录说明，不能用臆测补事实。
+7. 发布说明额外遵循 [release_notes.md](references/release_notes.md)：变更列表与完整发布列表分开，缺席不自动等于停止。
 
-7. Classify by discipline:
-   - Use the current RST structure first.
-   - If names are inaccurate, rename groups to match the artifact content.
-   - Read `references/classification.md` for recommended categories and known APP/model placements.
-   - Put unknown entries in the closest defensible discipline and mention uncertainty in the working notes, not in the final user-facing manual.
+来源冲突先检查周期、final 状态、完整性与时间。目标 release 有明确非空事实时据其更新；不以空值覆盖已有可追溯内容。无法判定的冲突留下待核实项，不把“DB 永远覆盖 RST”作为机械规则。
 
-8. Maintain RST quality:
-   - Use existing heading levels and local style.
-   - Make Chinese heading underlines at least the display width of the heading; CJK characters count as width 2 for docutils.
-   - Convert duplicate named external links like `` `官方文档 <url>`_ `` to anonymous links `` `官方文档 <url>`__ ``.
-   - Keep generated prose concise and Chinese-only for HPC introductions.
+## 导出与渲染验证
 
-9. Validate:
-   - Run `/remote_home/zhawu/release-system/.agents/skills/c500-manual-integrator/scripts/render_c500_manual_html.py --clean --sphinx-build /remote_home/zhawu/.local/bin/sphinx-build`.
-   - The default output is one standalone HTML file per document under `/tmp/c500_manual_html/*.html`.
-   - Add `--preview-folders` only when preview-style output folders are needed; then open generated entry pages under `/tmp/c500_manual_html/*/index.html` and `/tmp/c500_manual_html/*/split_files/`.
-   - Treat title underline and duplicate target warnings as fixable RST issues. The known `changelog` no-title warning can remain if keeping it out of the HTML table of contents is desired.
+导出脚本生成 `manual/ai4sci.raw.md`、`.artifact.json`、`.entries.json`，以及 HPC 简版、AI4Sci 完整版 RST 草稿。它不是完整 Markdown→RST 转换器，也不负责芯片过滤或版本间用法合并，草稿需要人工核对。
 
-## Release Note Workflow
+渲染使用 [render_c500_manual_html.py](scripts/render_c500_manual_html.py)：
 
-For release-note updates, read `references/release_notes.md` and `references/classification.md` before editing. Core rules:
+```bash
+python .agents/skills/c500-manual-integrator/scripts/render_c500_manual_html.py \
+  --out-dir /tmp/c500_manual_html --clean --sphinx-build sphinx-build
+```
 
-1. Inspect both release notes before changing either file:
-   - `/remote_home/zhawu/c500_rest_doc/module_pde/C500_Docs/HPC_Release_Notes/source/MACA_HPC_release_notes_CN.rst`
-   - `/remote_home/zhawu/c500_rest_doc/module_pde/X201_Docs/HPC_Release_Notes/source/X201_HPC_release_notes_CN.rst`
+可用 `--docs-root` / `--x201-docs-root` 覆盖外部目录，`--strict` 将 Sphinx 警告视为错误。默认输出每文档一个独立 HTML；`--preview-folders` 输出预览目录，`--plain-sphinx` 仅在预览目录模式使用。`--clean` 会删除脚本管理的输出目录，确认它是生成物目录。
 
-2. Keep document scopes separate:
-   - X201 release note contains X201-only content. Its release-list `支持芯片系列` column must contain only `X201`.
-   - MACA release note excludes X201 and X201-only apps. Its release-list `支持芯片系列` column must not contain `X201`.
-
-3. `新增特性及变更` is a delta section, not a full inventory:
-   - Include only first releases, version additions/changes, restored releases, and confirmed stops.
-   - Do not list an app just because it appears in the release list.
-   - Do not use generic `发布/更新...` wording unless the source explicitly states a combined update that cannot be split.
-
-4. `发布列表` is the full current inventory:
-   - Keep all currently shipped apps/tools/models for that document scope.
-   - Merge multiple versions of the same app into one row.
-
-5. Classify entries with the same category source as the manuals:
-   - Use `references/classification.md` for HPC APP and AI4Sci framework/model category names and known placements.
-   - Release-note classification names must stay consistent with `HPC_Manual_CN.rst` chapter 10 and `C500_AI4SciUserGuide_CN.rst` chapters 5 and 6.
-
-6. Maintain RST table style:
-   - Use `.. table::` grid tables, not `.. list-table::`.
-   - Merge repeated module cells with grid-table row spans, matching the existing release-note style.
-
-7. Validate both release notes with Sphinx after edits. Use the project `sphinx-build` path when available:
-
-   ```bash
-   /remote_home/zhawu/release-system/.agents/skills/c500-manual-integrator/scripts/render_c500_manual_html.py \
-     --clean --sphinx-build /remote_home/zhawu/.local/bin/sphinx-build
-   ```
-
-   Or build only the native Sphinx projects:
-
-   ```bash
-   /remote_home/zhawu/.local/bin/sphinx-build -b html -d /tmp/c500_hpc_release_notes_doctree \
-     /remote_home/zhawu/c500_rest_doc/module_pde/C500_Docs/HPC_Release_Notes/source \
-     /tmp/c500_hpc_release_notes_html
-
-   /remote_home/zhawu/.local/bin/sphinx-build -b html -d /tmp/x201_hpc_release_notes_doctree \
-     /remote_home/zhawu/c500_rest_doc/module_pde/X201_Docs/HPC_Release_Notes/source \
-     /tmp/x201_hpc_release_notes_html
-   ```
-
-## Helper Script
-
-Use `scripts/export_release_manual_artifacts.py` to inspect and export DB artifacts. It creates:
-
-- `manual.raw.md` and `ai4sci.raw.md`: original artifact Markdown.
-- `manual.entries.json` and `ai4sci.entries.json`: parsed and version-merged entries.
-- `manual.hpc_chapter10_draft.rst`: RST draft suitable for HPC chapter 10 review.
-- `ai4sci.full_draft.rst`: RST draft preserving usage sections for AI4Sci review.
-
-Do not paste drafts blindly. Compare them against the existing RST structure, then merge with the document-specific rules above.
+保持 RST 标题层级，中文标题下划线按显示宽度处理；重复外链使用匿名链接 `` `名称 <url>`__ ``。检查表格、目录、代码块、相对链接、版本范围和支持芯片，记录构建警告；不自动忽略新的 Sphinx 警告。交付说明目标周期、来源生成时间、修改文件与验证结果，不声称已推送/发布，除非任务确实执行了该动作。

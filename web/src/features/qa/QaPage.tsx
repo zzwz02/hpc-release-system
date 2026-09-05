@@ -222,7 +222,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
   const startPoll = useCallback(
     (jobId: string) => {
       stopPoll();
-      // This is THE ONLY allowed 1 s interval in the entire app (phase3_brief §1)
+      // QA job progress is the polling exception documented in web/README-web.md.
       pollRef.current = setInterval(async () => {
         try {
           const job = await apiGet<QaAnalysisJob>(

@@ -5,7 +5,7 @@ import { App } from "./App";
 import { AuthProvider } from "./api/AuthContext";
 
 /**
- * QueryClient with R2 defaults (phase3_brief.md §1):
+ * QueryClient defaults (see web/README-web.md, cache and data contract):
  *  - staleTime: Infinity — data never goes stale automatically
  *  - refetchInterval: false — no background polling
  *  - refetchOnWindowFocus: false — no refetch on tab focus

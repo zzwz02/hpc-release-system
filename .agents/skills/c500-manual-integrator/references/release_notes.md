@@ -1,99 +1,40 @@
-# Release Note Reference
+# 发布说明：变更与完整列表
 
-Use this reference when updating C500/MACA or X201 HPC release notes from release-system data or from the current RST release-list inventory.
+用于 MACA / X201 HPC release notes。目标文件路径与导出入口见上级 [SKILL.md](../SKILL.md)，分类见 [classification.md](classification.md)。
 
-## Files
+## 比较对象
 
-- MACA release note: `/remote_home/zhawu/c500_rest_doc/module_pde/C500_Docs/HPC_Release_Notes/source/MACA_HPC_release_notes_CN.rst`
-- X201 release note: `/remote_home/zhawu/c500_rest_doc/module_pde/X201_Docs/HPC_Release_Notes/source/X201_HPC_release_notes_CN.rst`
-- Release DB: `/remote_home/zhawu/release-system/release_system.db`
+先明确目标周期、用于比较的已发布周期、文档范围和每版本支持芯片。比较同一文档范围下有来源的 App/版本，不把另一个芯片范围的历史混入当前变更。
 
-## Source Priority
+优先使用目标周期已确认的数据与产物；没有 final 时标明草稿。既有 RST 的完整发布列表可以补历史证据，但不能反过来把未确认的本期计划当作已交付。来源不完整时留下缺口，不用空库/缺项数据覆盖已有完整说明。
 
-1. Use complete release-system data for the target release when available.
-2. If `release_system.db` only has placeholder or incomplete snapshots, do not overwrite good RST data with empty DB data. Use the current release-list tables in the RST as the current inventory and say that the DB was incomplete in working notes.
-3. Use historical `新增特性及变更` sections in the same release note to decide whether an item is new, restored, changed, or stopped.
+## 两张表的职责
 
-## Document Scope
+`新增特性及变更` 只写相对基线的变化：
 
-X201 release note:
+- 同范围首次出现且有发布依据：首次发布。
+- 以前发布、后来停止、当前恢复：恢复发布。
+- 引入新版本：写清新增版本及旧版本是否保留。
+- 停止某版本或整个 App：必须有明确停止决策、交付清单或人工确认等证据。
+- 支持芯片变化：分别说明新增/停止的范围，不能由版本号变化推断。
 
-- Contains only X201 release information.
-- In `发布列表`, every `支持芯片系列` cell must be exactly `X201`.
-- In the 3.8.0-style `新增特性及变更` table, module names should be unsuffixed: `AI for Science模型与框架`, `HPC APP`, `工具`, `停止发布`.
-- Do not add `（X201系列）` to module names in X201 release notes.
+**不在生成文档中不等于停止发布。** 系统会按 Owner 确认和文档缺项筛选产物，缺席还可能来自未完成信息。先对照目标周期完整快照和历史清单，再决定是否写停止。
 
-MACA release note:
+`发布列表` 写该范围本次实际交付的完整清单。同 App 的多个版本在同一行列出；只合并该文档支持的版本。未发布计划、待交付 CICD 请求与已交付条目不能混列。
 
-- Excludes X201 content and X201-only apps.
-- In `发布列表`, remove `X201` from `支持芯片系列`; drop a row only if it becomes X201-only.
-- In `新增特性及变更`, do not use `通用GPU系列`. Split rows by chip series, following the existing 3.7.0 style:
-  - `X206系列`
-  - `X301系列` for X301/X302
-  - `C500系列` for C500/C588
-  - `C600系列` for C600/C600U
-  - `N300系列` for N260/N300
+避免“发布/更新所有 App”一类无法核对的概述。每条变更都应能关联基线与目标版本的证据。
 
-## Change Table Rules
+## MACA 与 X201
 
-`新增特性及变更` must list changes only. `发布列表` is where the full inventory belongs.
+- X201 发布列表的支持芯片列仅为 X201；变更模块名按当地样式使用，不额外重复“X201 系列”。
+- MACA 排除 X201-only 条目；双支持条目移除芯片列中的 X201，但保留有依据的 MACA 支持版本。
+- MACA 变更若按系列分组，沿用文档已有映射，例如 X301/X302、C500/C588、C600/C600U、N260/N300。遇到新芯片先核对定义，不套用未知映射。
+- 手册可保留历史使用说明，发布列表只描述本次交付；这两种内容的保留规则不同。
 
-Classification names in release notes must use the same source as the manuals:
+## 表格与验收
 
-- Read `references/classification.md` before assigning HPC APP or AI4Sci framework/model categories.
-- HPC APP categories must match `HPC_Manual_CN.rst` chapter 10.
-- AI for Science framework/model categories must match `C500_AI4SciUserGuide_CN.rst` chapters 5 and 6.
-- If the current manuals and `references/classification.md` differ, inspect the manuals and update `references/classification.md` so release notes and manuals continue to share one classification reference.
+使用目标 RST 的 `.. table::` 网格表，保留当地 `:widths:` / `:class:` 约定。已有模块跨行时正确保留空首格和分隔线，不用批量文本替换猜测网格边界。
 
-Include a row when:
+检查：变更是否有基线、完整列表是否漏项、版本是否跨芯片混合、停止是否有证据、分类是否与手册一致、代码/链接/表格能否正常渲染。对实际修改的 Sphinx 项目进行构建；也可使用上级渲染脚本一次构建其支持的全部项目。
 
-- The app/model/tool is in the current release list and was not active in the same document/same chip series before this release: write `首次发布...`.
-- The app/model/tool previously existed, was stopped, and appears again: write `恢复发布...`.
-- A new version is introduced for an existing app while older versions remain or stop: write explicit version text such as `新增v2026.1版本发布，停止v2025.2版本发布`.
-- A previously active app/model/tool is absent from the current release list for the same document/same chip series: write `停止发布`.
-
-Do not include a row when:
-
-- The app appears in the current release list but was already active and no version/support/status change is documented.
-- The only evidence for a stop comes from another document scope. For example, X201/M200 history does not justify a MACA stop row.
-- The app has no prior release evidence in the same release note history and no release-system stop record tied to that document scope.
-
-Avoid broad labels like `发布/更新HPC框架/工具`; split into `首次发布`, `恢复发布`, `新增...版本`, or `停止发布` when possible.
-
-## Known Pitfalls
-
-- Kokkos and RAJA existed in X201 history (`HTHPCC-M200-2.19.0.2`); do not list them in X201 3.8.0 changes unless there is an actual version/support change.
-- `Grid` and `mpi-operator` have X201 history but no MACA release-note history; do not add them as MACA stop rows without a MACA-scope source.
-- A line like `停止发布v2023.1版本` is a version stop, not necessarily an application stop.
-- App names may differ historically. Normalize obvious aliases when comparing:
-  - `PhengLie` -> `PHengLEI`
-  - `ParaView & Vtk-m` -> `ParaView & VTK-m`
-  - `PyG_lib` -> `PyG`
-  - `AImodels` / `aimodes` -> `ai-models`
-  - `Shoc` -> `SHOC`
-
-## Table Style
-
-- Use `.. table::` grid tables with the local `:widths:` and `:class: longtable` style.
-- Do not use `.. list-table::`.
-- Consecutive rows with the same module should use grid-table row spans:
-  - First row contains the module text.
-  - Continuation rows have a blank first cell.
-  - Separators between continuation rows use spaces in the first-column segment, e.g. `+      +----+`.
-- Keep `发布列表` as normal grid tables; row spans are only needed where the existing style uses repeated modules.
-
-## Validation
-
-Build both documents after release-note edits:
-
-```bash
-/remote_home/zhawu/.local/bin/sphinx-build -b html -d /tmp/c500_hpc_release_notes_doctree \
-  /remote_home/zhawu/c500_rest_doc/module_pde/C500_Docs/HPC_Release_Notes/source \
-  /tmp/c500_hpc_release_notes_html
-
-/remote_home/zhawu/.local/bin/sphinx-build -b html -d /tmp/x201_hpc_release_notes_doctree \
-  /remote_home/zhawu/c500_rest_doc/module_pde/X201_Docs/HPC_Release_Notes/source \
-  /tmp/x201_hpc_release_notes_html
-```
-
-Treat table parsing warnings, missing blank lines after tables, malformed row spans, and accidental X201 content in MACA as fixable errors.
+本地生成 HTML 不代表文档已发布。对外推送或提交到外部系统需要处于用户任务的明确范围内。
