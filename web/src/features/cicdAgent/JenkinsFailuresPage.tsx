@@ -595,12 +595,16 @@ export function JenkinsFailuresPage() {
                   <td>{userDisplayLabel(record.code_owner, displayNames)}</td>
                   <td>
                     <b>{ownerLabel(record, displayNames)}</b>
-                    <small className={`pill ${ownerRoleClass(effectiveOwnerRole(record))}`}>
-                      {fmt(effectiveOwnerRole(record))}
-                    </small>
-                    <small className={`pill ${responsibilityStatusClass(record.responsibility_status)}`}>
-                      {responsibilityStatusLabel(record.responsibility_status)}
-                    </small>
+                    <div className="cicd-agent-owner-tags">
+                      <small className={`pill ${ownerRoleClass(effectiveOwnerRole(record))}`}>
+                        {fmt(effectiveOwnerRole(record))}
+                      </small>
+                      {record.responsibility_status && record.responsibility_status !== "ai_suggested" && (
+                        <small className={`pill ${responsibilityStatusClass(record.responsibility_status)}`}>
+                          {responsibilityStatusLabel(record.responsibility_status)}
+                        </small>
+                      )}
+                    </div>
                   </td>
                   <td className="reason-cell">{effectiveReason(record) || "暂无摘要"}</td>
                   <td>{formatDateTime(record.created_at)}</td>

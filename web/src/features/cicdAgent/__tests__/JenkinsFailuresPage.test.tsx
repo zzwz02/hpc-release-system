@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -182,9 +182,13 @@ describe("JenkinsFailuresPage", () => {
   it("opens failure detail in a dialog and closes it", async () => {
     renderPage();
 
+    const table = await screen.findByRole("table");
+    expect(within(table).queryByText("AI建议")).not.toBeInTheDocument();
+
     await userEvent.click(await screen.findByRole("button", { name: "查看详情" }));
 
     const dialog = await screen.findByRole("dialog", { name: "记录详情" });
+    expect(dialog).toHaveTextContent("AI建议");
     expect(dialog).toHaveTextContent("Hpc_App_Release #88");
     expect(dialog).toHaveTextContent("镜像推送失败");
     expect(dialog).not.toHaveTextContent("命中 build image push 规则");
