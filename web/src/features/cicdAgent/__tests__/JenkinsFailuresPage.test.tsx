@@ -56,7 +56,7 @@ const failureRecord = {
   created_at: "2026-09-04T12:00:00",
 };
 
-function renderPage() {
+function renderPage(route = "/jenkins-failures") {
   vi.mocked(useAuth).mockReturnValue({
     user: { username: "alice", display_name: "Alice", role: "RM" },
     ldapStatus: { enabled: false, uri: "" },
@@ -71,7 +71,7 @@ function renderPage() {
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[route]}>
         <JenkinsFailuresPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -176,6 +176,24 @@ describe("JenkinsFailuresPage", () => {
         };
       }
       throw new Error(`Unhandled apiPost path: ${path}`);
+    });
+  });
+
+  it("uses date filters from email link query params", async () => {
+    renderPage("/jenkins-failures?date_from=2026-08-31&date_to=2026-09-06");
+
+    expect(screen.getByLabelText("开始时间")).toHaveValue("2026-08-31");
+    expect(screen.getByLabelText("结束时间")).toHaveValue("2026-09-06");
+
+    await waitFor(() => {
+      expect(apiGet).toHaveBeenCalledWith(
+        expect.stringContaining("/api/cicd-agent/failures?date_from=2026-08-31&date_to=2026-09-06"),
+      );
+      expect(apiGet).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "/api/cicd-agent/failures/filter-options?date_from=2026-08-31&date_to=2026-09-06",
+        ),
+      );
     });
   });
 

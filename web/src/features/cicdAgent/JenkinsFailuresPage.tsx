@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "react-router-dom";
 import { useAuth } from "../../api/AuthContext";
 import { apiGet } from "../../api/http";
 import type { StatePayload } from "../../types";
@@ -52,6 +53,20 @@ const FEEDBACK_TYPE_OPTIONS = [
 
 const DEVOPS_OWNER_ACCOUNT = "m00930";
 const RESPONSIBILITY_OWNER_ROLES = ["Code Owner", "DevOps"] as const;
+const URL_FILTER_KEYS = [
+  "date_from",
+  "date_to",
+  "job_type",
+  "normalized_stage",
+  "code_owner",
+  "owner_account",
+  "maca_project",
+  "maca_version",
+  "chip",
+  "responsibility_status",
+  "keyword",
+] as const satisfies ReadonlyArray<keyof FailureRecordFilters>;
+const DATE_PARAM_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 type SummaryGroupKey = (typeof SUMMARY_GROUP_OPTIONS)[number]["value"];
 type ResponsibilityOwnerRole = (typeof RESPONSIBILITY_OWNER_ROLES)[number];
@@ -69,6 +84,20 @@ function emptyFilters(): FailureRecordFilters {
     maca_version: "",
     chip: "",
   };
+}
+
+function filtersFromSearch(search: string): FailureRecordFilters {
+  const filters = emptyFilters();
+  const params = new URLSearchParams(search);
+  for (const key of URL_FILTER_KEYS) {
+    const value = params.get(key)?.trim() ?? "";
+    if (!value) continue;
+    if ((key === "date_from" || key === "date_to") && !DATE_PARAM_PATTERN.test(value)) {
+      continue;
+    }
+    filters[key] = value;
+  }
+  return filters;
 }
 
 function summaryFilterKey(groupBy: SummaryGroupKey): keyof FailureRecordFilters {
@@ -251,12 +280,20 @@ function errorText(error: unknown): string {
 
 export function JenkinsFailuresPage() {
   const { user } = useAuth();
+  const { search } = useLocation();
   const queryClient = useQueryClient();
-  const [filters, setFilters] = useState<FailureRecordFilters>(emptyFilters);
+  const [filters, setFilters] = useState<FailureRecordFilters>(() => filtersFromSearch(search));
   const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [summaryGroup, setSummaryGroup] = useState<SummaryGroupKey>("owner_role");
   const [summaryExpanded, setSummaryExpanded] = useState(false);
+
+  useEffect(() => {
+    setPage(1);
+    setSelectedId(null);
+    setSummaryExpanded(false);
+    setFilters(filtersFromSearch(search));
+  }, [search]);
 
   const activeFilters = useMemo<FailureRecordFilters>(
     () => Object.fromEntries(Object.entries(filters).filter(([, value]) => value)),
