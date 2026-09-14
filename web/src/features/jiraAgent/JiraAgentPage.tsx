@@ -101,6 +101,31 @@ async function readFiles(files: FileList | null) {
   return Promise.all(Array.from(files ?? []).map(fileToUpload));
 }
 
+/** Tool-use steps are folded into one collapsed group per consecutive run. */
+const TOOL_KINDS = new Set(["command", "file_change", "tool", "reasoning"]);
+
+interface TimelineItem {
+  key: string;
+  turnId: string;
+  tools: boolean;
+  events: AgentEvent[];
+}
+
+function groupTimeline(events: AgentEvent[]): TimelineItem[] {
+  const items: TimelineItem[] = [];
+  for (const event of events) {
+    const tools = TOOL_KINDS.has(event.kind);
+    const last = items[items.length - 1];
+    if (tools && last?.tools && last.turnId === event.turn_id) {
+      last.events.push(event);
+    } else {
+      // Keyed by the first event so an expanded group stays open while it grows.
+      items.push({ key: event.id, turnId: event.turn_id, tools, events: [event] });
+    }
+  }
+  return items;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Page
 // ─────────────────────────────────────────────────────────────
@@ -548,20 +573,24 @@ function ConversationBody({ id, onChanged }: { id: string; onChanged: () => void
     <>
       <div className="panel">
         <div className="panel-body jira-agent-timeline" data-testid="jira-agent-timeline">
-          {events.map((event) => {
-            const turn = turnsById.get(event.turn_id);
-            const separator = event.turn_id && event.turn_id !== lastTurnId && turn;
-            if (event.turn_id) lastTurnId = event.turn_id;
+          {groupTimeline(events).map((item) => {
+            const turn = turnsById.get(item.turnId);
+            const separator = item.turnId && item.turnId !== lastTurnId && turn;
+            if (item.turnId) lastTurnId = item.turnId;
             return (
-              <div key={event.id}>
+              <div key={item.key}>
                 {separator && <TurnSeparator turn={turn} />}
-                <EventRow
-                  event={event}
-                  turn={turn}
-                  files={detail.files}
-                  canWrite={conversation.can_write}
-                  onChanged={onChanged}
-                />
+                {item.tools ? (
+                  <ToolGroup events={item.events} />
+                ) : (
+                  <EventRow
+                    event={item.events[0]}
+                    turn={turn}
+                    files={detail.files}
+                    canWrite={conversation.can_write}
+                    onChanged={onChanged}
+                  />
+                )}
               </div>
             );
           })}
@@ -583,6 +612,49 @@ function TurnSeparator({ turn }: { turn: AgentTurn }) {
         第 {turn.seq} 轮 · {label} · {turn.created_by} · {turn.created_at}
       </span>
     </div>
+  );
+}
+
+function ToolGroup({ events }: { events: AgentEvent[] }) {
+  const count = (kind: string) => events.filter((event) => event.kind === kind).length;
+  const commands = events.filter((event) => event.kind === "command");
+  const running = commands.filter((event) => event.payload.status === "inProgress").length;
+  const nonZero = commands.filter(
+    (event) => event.payload.status !== "inProgress" && event.payload.exit_code !== 0,
+  ).length;
+  const lastCommand = commands[commands.length - 1];
+  const parts = [
+    commands.length ? `${commands.length} 条命令` : "",
+    count("file_change") ? `${count("file_change")} 次文件修改` : "",
+    count("tool") ? `${count("tool")} 次其他工具` : "",
+    count("reasoning") ? `${count("reasoning")} 段思考摘要` : "",
+  ].filter(Boolean);
+
+  return (
+    <details className="jira-agent-event tool-group" data-testid="jira-agent-tool-group">
+      <summary>
+        <span>工具调用 · {parts.join(" · ")}</span>
+        {running > 0 && <span className="pill warn">执行中</span>}
+        {nonZero > 0 && <span className="pill bad">{nonZero} 条非 0 退出</span>}
+        {lastCommand && (
+          <code className="jira-agent-command jira-agent-tool-group-last">
+            $ {String(lastCommand.payload.command ?? "")}
+          </code>
+        )}
+      </summary>
+      <div className="jira-agent-tool-group-body">
+        {events.map((event) => (
+          <EventRow
+            key={event.id}
+            event={event}
+            turn={undefined}
+            files={[]}
+            canWrite={false}
+            onChanged={() => undefined}
+          />
+        ))}
+      </div>
+    </details>
   );
 }
 

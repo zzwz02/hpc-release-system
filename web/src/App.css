@@ -2266,6 +2266,11 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .jira-agent-event.comment { background: var(--ok-bg); border-color: var(--ok-bd); color: var(--ok-fg); }
 .jira-agent-event.result { border-color: var(--accent-bd); box-shadow: inset 3px 0 0 var(--accent); }
 .jira-agent-command { font-size: 12px; word-break: break-all; }
+.jira-agent-event.tool-group { background: var(--surface-2); border-style: dashed; font-size: 12.5px; }
+.jira-agent-event.tool-group > summary { flex-wrap: nowrap; min-width: 0; }
+.jira-agent-event.tool-group > summary > span { flex: none; }
+.jira-agent-tool-group-last { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: normal; color: var(--muted); }
+.jira-agent-tool-group-body { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .jira-agent-pre { white-space: pre-wrap; word-break: break-word; }
 .jira-agent-output { margin: 6px 0 0; padding: 8px; max-height: 360px; overflow: auto; background: #0f172a; color: #e2e8f0; border-radius: var(--r-sm); font-size: 12px; white-space: pre-wrap; word-break: break-all; }
 .jira-agent-md { font-size: 13px; }

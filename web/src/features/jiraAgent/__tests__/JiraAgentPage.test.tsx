@@ -188,8 +188,13 @@ describe("JiraAgentPage", () => {
     await user.click(within(results).getByRole("button", { name: /MC3-7672/ }));
 
     expect(await screen.findByTestId("jira-agent-result")).toBeInTheDocument();
-    expect(screen.getByText("$ ./saxpy 16777217")).toBeInTheDocument();
-    expect(screen.getByText("exit 0")).toBeInTheDocument();
+    // tool use is folded into a collapsed group; messages and results stay visible
+    const toolGroup = screen.getByTestId("jira-agent-tool-group");
+    expect(toolGroup).not.toHaveAttribute("open");
+    expect(within(toolGroup).getByText("工具调用 · 1 条命令")).toBeInTheDocument();
+    expect(within(toolGroup).getAllByText("$ ./saxpy 16777217").length).toBeGreaterThan(0);
+    expect(within(toolGroup).getByText("exit 0")).toBeInTheDocument();
+    expect(screen.getByText("请修复")).toBeInTheDocument();
     expect(screen.getByText(/已在 JIRA 发布评论（#99）/)).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "artifacts/fix.patch" })[0]).toHaveAttribute(
       "href",
