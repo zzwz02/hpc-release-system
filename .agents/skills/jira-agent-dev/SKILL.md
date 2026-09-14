@@ -48,7 +48,11 @@ Runner 在 FastAPI lifespan 中启停（`settings.jira_agent_runner_enabled`）�
 - **对话状态**：`state` 由对话与最新轮次派生：closed / idle / queued / running / waiting_review（最新轮 completed）/ failed / cancelled / interrupted。
 - **运行阶段**：内存中 `ActiveTurn.phase` 为 preparing → starting → running → finishing。
   - 运行中（running）的消息走 `turn/steer`；preparing 阶段的消息合并进本轮输入；starting、finishing 阶段返回 409。
-  - 取消：running 调 `turn/interrupt`，preparing 或 starting 直接取消任务；超时从出队开始计时，中断后等待 60 秒宽限。
+  - 取消：
+    - running：调 `turn/interrupt`。
+    - preparing：直接取消任务，此时 B 上还没有 turn。
+    - starting：只记录停止原因，拿到 turnId 后立即 `turn/interrupt`。这时 `turn/start` 可能已到达 B，不能直接取消任务，否则 B 上的 turn 会继续跑。
+    - 超时从出队开始计时，中断后等待 60 秒宽限。
   - 启动恢复：残留的 running 标为 interrupted，不自动重跑有副作用的工作。
 
 ## Codex app-server 协议要点

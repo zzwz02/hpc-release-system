@@ -257,8 +257,12 @@ class JiraAgentRunner:
         active.stop_reason = reason
         if active.phase == "running" and active.client is not None:
             await self._interrupt(active)
-        elif active.phase in ("preparing", "starting") and active.task is not None:
+        elif active.phase == "preparing" and active.task is not None:
+            # Nothing is running on the app-server yet; cancelling is safe.
             active.task.cancel()
+        # "starting": turn/start may already have reached the app-server, so
+        # only mark the stop; _run_turn interrupts as soon as the turn id is
+        # known.  "finishing": the Codex turn is already over.
         return True
 
     async def _interrupt(self, active: ActiveTurn) -> None:
@@ -376,6 +380,9 @@ class JiraAgentRunner:
         except Exception as exc:
             logger.exception("JIRA agent turn %s failed", tid)
             error = _error_text(exc)
+            if active.stop_reason in _STOP_TEXT:
+                final_status = "cancelled"
+                error = f"{_STOP_TEXT[active.stop_reason]}（{error}）"
         finally:
             if active.client is not None:
                 await active.client.close()

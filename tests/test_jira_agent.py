@@ -60,6 +60,7 @@ class FakeCodex:
         self.files: dict[str, bytes] = {}
         self.thread_cwd: dict[str, str] = {}
         self.plans: list[str] = []
+        self.turn_start_delay = 0.0
         self.threads = 0
         self.turns = 0
         self._interrupts: dict[str, asyncio.Event] = {}
@@ -109,6 +110,8 @@ class FakeCodex:
                 continue
             method, params = message["method"], message.get("params") or {}
             self.requests.append((method, params))
+            if method == "turn/start" and self.turn_start_delay:
+                await asyncio.sleep(self.turn_start_delay)
             result, error = self._result(ws, method, params)
             reply = {"id": message["id"], **({"error": error} if error else {"result": result})}
             await ws.send(json.dumps(reply))
@@ -466,6 +469,21 @@ def test_queue_limit_merge_steer_and_cancel(env) -> None:
     prompt = env.fake.params("turn/start")[1]["input"][0]["text"]
     assert "第一条" in prompt and "第二条" in prompt
     assert env.fake.turns == 2  # the cancelled queued turn never started
+
+
+def test_cancel_while_turn_start_is_in_flight_interrupts_the_turn(env) -> None:
+    # turn/start has reached the app-server but its response (the turn id)
+    # has not come back yet: the turn must still be interrupted on server B.
+    env.fake.plans = ["hold"]
+    env.fake.turn_start_delay = 1.5
+    conversation = _handover(env)["conversation"]
+    _wait(env, conversation["id"], lambda d: d["conversation"]["phase"] == "starting")
+    assert "turn/start" in env.fake.methods()
+
+    assert env.client.post(f"/api/jira-agent/conversations/{conversation['id']}/cancel").status_code == 200
+    detail = _wait(env, conversation["id"], _done)
+    assert _latest(detail)["status"] == "cancelled"
+    assert env.fake.params("turn/interrupt") == [{"threadId": "thr_1", "turnId": "turn_1"}]
 
 
 def test_turn_timeout_is_counted_from_dequeue(env) -> None:
