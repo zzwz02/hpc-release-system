@@ -92,6 +92,8 @@ class AgentGroup:
     model: str
     turn_timeout_seconds: int
     max_concurrent: int
+    # JIRA group whose members' issues RM sees by default (membersOf()).
+    jira_members_group: str = ""
 
 
 def load_groups(conf_path: str | Path) -> dict[str, AgentGroup]:
@@ -122,6 +124,7 @@ def load_groups(conf_path: str | Path) -> dict[str, AgentGroup]:
             model=values.get("MODEL", "").strip(),
             turn_timeout_seconds=values.getint("TURN_TIMEOUT_SECONDS", fallback=7200),
             max_concurrent=max(1, values.getint("MAX_CONCURRENT", fallback=2)),
+            jira_members_group=values.get("JIRA_MEMBERS_GROUP", "").strip(),
         )
     return groups
 
@@ -135,6 +138,56 @@ def group_for_issue(groups: dict[str, AgentGroup], components: list[str]) -> Age
         if wanted & {c.casefold() for c in group.components}:
             return group
     return next(iter(groups.values()))
+
+
+# ─────────────────────────────────────────────────────────────
+# Issue search input
+# ─────────────────────────────────────────────────────────────
+
+# JIRA keys are "<PROJECT>-<number>". Project keys start with a letter; sites
+# may allow digits/underscores (e.g. MC3), so accept that superset and let a
+# JIRA lookup confirm the issue exists.  Browse URLs are deliberately not
+# recognised: business JIRA instances live at different addresses.
+ISSUE_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*-\d+$")
+
+
+def parse_issue_query(text: str) -> tuple[str, list[str] | str]:
+    """Classify the search box input.
+
+    - empty → ("mine", "")
+    - every token is an issue key → ("keys", [KEY, ...])
+    - anything else → ("jql", text); a bare key is never valid JQL, so there
+      is no ambiguity between the two.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return "mine", ""
+    keys: list[str] = []
+    for token in re.split(r"[\s,，;；]+", raw):
+        if not token:
+            continue
+        if not ISSUE_KEY_RE.match(token):
+            return "jql", raw
+        key = token.upper()
+        if key not in keys:
+            keys.append(key)
+    return "keys", keys
+
+
+def jql_string(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def default_issue_jql(*, username: str, is_rm: bool, groups: dict[str, AgentGroup]) -> str:
+    """Own not-closed issues; RM sees issues of the configured JIRA groups."""
+    member_groups = [g.jira_members_group for g in groups.values() if g.jira_members_group]
+    if is_rm and member_groups:
+        scope = " OR ".join(f"assignee in membersOf({jql_string(m)})" for m in member_groups)
+        if len(member_groups) > 1:
+            scope = f"({scope})"
+    else:
+        scope = f"assignee = {jql_string(username)}"
+    return f"{scope} AND status != Closed ORDER BY updated DESC"
 
 
 # ─────────────────────────────────────────────────────────────

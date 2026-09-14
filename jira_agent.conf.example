@@ -18,6 +18,10 @@ WORKSPACE_ROOT = /home/hpc-agent/hpc-jira-agent/workspaces
 # 该组负责的 JIRA component（逗号分隔），用于为工单选择数字员工
 COMPONENTS = PDE_HPC
 
+# 该组对应的 JIRA 用户组：RM 的默认工单列表为
+# assignee in membersOf(<组>) AND status != Closed；其他用户默认看自己的未关闭工单
+JIRA_MEMBERS_GROUP = pde_hpc
+
 # 可选：覆盖 B 上 codex 的默认模型
 MODEL =
 

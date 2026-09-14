@@ -173,6 +173,7 @@ class FakeJira:
     def __init__(self) -> None:
         self.assignee = "alice"
         self.comments: list[tuple[str, str]] = []
+        self.searches: list[str] = []
         self.fail_comment = False
 
     def get_issue(self, key: str) -> dict:
@@ -187,6 +188,13 @@ class FakeJira:
             "comments": [{"id": "1", "author": "rep", "created": "", "body": "可以使用 10.2.118.75"}],
             "attachments": [{"id": "10", "filename": "saxpy.cu", "size": 12, "mime_type": "text/plain", "content_url": "http://jira/secure/attachment/10/saxpy.cu"}],
         }
+
+    def search_issues(self, jql: str, *, max_results: int = 50) -> dict:
+        self.searches.append(jql)
+        if "bad" in jql:
+            raise jira.JiraQueryError("Error in JQL Query: bad")
+        issue = self.get_issue("MC3-7672")
+        return {"total": 1, "issues": [{k: issue[k] for k in ("key", "url", "summary", "issue_type", "status", "priority", "assignee", "components", "updated")}]}
 
     def download_attachment(self, url: str) -> bytes:
         return b"int main(){}"
@@ -208,7 +216,8 @@ USERS = {
 def _write_conf(path: Path, url: str, *, token: str = TOKEN, max_concurrent: int = 1, timeout: int = 600) -> None:
     path.write_text(
         f"[HPC]\nDISPLAY_NAME = HPC 数字员工\nCODEX_WS_URL = {url}\nCODEX_WS_TOKEN = {token}\n"
-        f"WORKSPACE_ROOT = /b/workspaces\nCOMPONENTS = PDE_HPC\nMAX_CONCURRENT = {max_concurrent}\n"
+        f"WORKSPACE_ROOT = /b/workspaces\nCOMPONENTS = PDE_HPC\nJIRA_MEMBERS_GROUP = pde_hpc\n"
+        f"MAX_CONCURRENT = {max_concurrent}\n"
         f"TURN_TIMEOUT_SECONDS = {timeout}\n",
         encoding="utf-8",
     )
@@ -230,6 +239,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     fake_jira = FakeJira()
     monkeypatch.setattr(jira, "get_issue", fake_jira.get_issue)
     monkeypatch.setattr(jira, "download_attachment", fake_jira.download_attachment)
+    monkeypatch.setattr(jira, "search_issues", fake_jira.search_issues)
     monkeypatch.setattr(jira, "add_comment", fake_jira.add_comment)
 
     current = {"user": USERS["alice"]}
@@ -351,6 +361,60 @@ def test_only_current_assignee_or_rm_can_hand_over(env) -> None:
     preview = env.client.get("/api/jira-agent/issues/MC3-1").json()
     assert preview["can_handover"] is True
     assert preview["open_conversation"]["id"] == conversation["id"]
+
+
+def test_issue_search_default_list_keys_and_jql(env) -> None:
+    mine = env.client.get("/api/jira-agent/issues", params={"q": ""}).json()
+    assert mine["mode"] == "mine"
+    assert mine["jql"] == 'assignee = "alice" AND status != Closed ORDER BY updated DESC'
+    assert mine["issues"][0]["can_handover"] is True
+
+    env.as_user("carol")  # RM: the configured HPC JIRA group
+    rm = env.client.get("/api/jira-agent/issues", params={"q": ""}).json()
+    assert rm["jql"] == 'assignee in membersOf("pde_hpc") AND status != Closed ORDER BY updated DESC'
+
+    env.as_user("alice")
+    conversation = _handover(env, "MC3-2")["conversation"]
+    keys = env.client.get(
+        "/api/jira-agent/issues", params={"q": "mc3-1, MC3-2 NOPE-1"}
+    ).json()
+    assert keys["mode"] == "keys"
+    assert keys["jql"] == ""
+    assert [issue["key"] for issue in keys["issues"]] == ["MC3-1", "MC3-2"]
+    assert keys["missing"] == ["NOPE-1"]
+    assert keys["issues"][0]["open_conversation"] is None
+    open_conversation = keys["issues"][1]["open_conversation"]
+    assert {k: open_conversation[k] for k in ("id", "owner", "owner_is_assignee")} == {
+        "id": conversation["id"], "owner": "alice", "owner_is_assignee": True,
+    }
+    assert open_conversation["state"] in {"queued", "running", "waiting_review"}
+
+    env.as_user("bob")  # not the owner: sees that a conversation exists, not its id
+    hidden = env.client.get("/api/jira-agent/issues", params={"q": "MC3-2"}).json()
+    assert hidden["issues"][0]["open_conversation"]["id"] == ""
+    assert hidden["issues"][0]["can_handover"] is False
+
+    jql = env.client.get("/api/jira-agent/issues", params={"q": "project = MC3 AND status = Open"}).json()
+    assert jql["mode"] == "jql"
+    assert env.jira.searches[-1] == "project = MC3 AND status = Open"
+
+    bad = env.client.get("/api/jira-agent/issues", params={"q": "bad jql"})
+    assert bad.status_code == 400
+    assert "Error in JQL Query" in bad.json()["error"]
+
+
+def test_parse_issue_query() -> None:
+    assert domain.parse_issue_query("  ") == ("mine", "")
+    assert domain.parse_issue_query("mc3-7672") == ("keys", ["MC3-7672"])
+    assert domain.parse_issue_query("PDE_HPC-12，MC3-1 MC3-1") == ("keys", ["PDE_HPC-12", "MC3-1"])
+    # browse URLs are JQL input (business JIRA runs at other addresses)
+    assert domain.parse_issue_query("http://jira:8080/browse/SPD-9") == ("jql", "http://jira:8080/browse/SPD-9")
+    assert domain.parse_issue_query("MC3") == ("jql", "MC3")
+    assert domain.parse_issue_query("key = MC3-1") == ("jql", "key = MC3-1")
+    assert domain.parse_issue_query("MC3-1 OR MC3-2") == ("jql", "MC3-1 OR MC3-2")
+    assert domain.default_issue_jql(username='a"b', is_rm=False, groups={}) == (
+        'assignee = "a\\"b" AND status != Closed ORDER BY updated DESC'
+    )
 
 
 def test_followup_resumes_the_same_thread_and_comments_again(env) -> None:

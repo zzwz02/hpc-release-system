@@ -1,9 +1,13 @@
 /**
- * JIRA agent — hand JIRA issues to the group's digital employee and follow
- * its work.  The agent itself runs on the group's Codex app-server; this page
- * manages conversations, messages, files and the execution timeline.
+ * JIRA agent — find JIRA issues, hand them to the group's digital employee
+ * and follow its work.  The agent itself runs on the group's Codex
+ * app-server; this page manages conversations, messages, files and the
+ * execution timeline.
+ *
+ * URL: ?issue=KEY[&conversation=ID|new].  "new" is an unsent hand-over
+ * draft; a bare ?conversation=ID (links in JIRA comments) resolves its issue.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { Markdown } from "../../components/Markdown";
@@ -12,7 +16,7 @@ import { toast } from "../../lib/toast";
 import {
   CLOSE_REASON_LABELS,
   CONCLUSION_LABELS,
-  JIRA_AGENT_CONVERSATIONS_KEY,
+  JIRA_AGENT_ISSUE_SEARCH_KEY,
   OWNERSHIP_LABELS,
   STATE_LABELS,
   cancelConversationTurn,
@@ -22,9 +26,11 @@ import {
   getConversationEvents,
   handoverIssue,
   jiraAgentConversationKey,
-  listConversations,
+  jiraAgentIssueKey,
+  jiraAgentIssueSearchKey,
   previewIssue,
   retryTurnComment,
+  searchIssues,
   sendConversationMessage,
   type AgentConversation,
   type AgentEvent,
@@ -33,7 +39,16 @@ import {
   type AgentTurn,
   type ConversationState,
   type IssuePreview,
+  type IssueSearchResponse,
 } from "./jiraAgentApi";
+
+const DRAFT = "new";
+
+const SEARCH_MODE_LABELS: Record<IssueSearchResponse["mode"], string> = {
+  mine: "默认列表（未关闭）",
+  keys: "按 JIRA 编号",
+  jql: "JQL",
+};
 
 const STATE_TONE: Record<ConversationState, string> = {
   idle: "",
@@ -92,14 +107,27 @@ async function readFiles(files: FileList | null) {
 
 export function JiraAgentPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const selectedId = searchParams.get("conversation") ?? "";
-  const listQuery = useQuery({
-    queryKey: JIRA_AGENT_CONVERSATIONS_KEY,
-    queryFn: listConversations,
-    refetchInterval: 5000,
-  });
+  const issueKey = searchParams.get("issue") ?? "";
+  const conversationParam = searchParams.get("conversation") ?? "";
 
-  const open = (id: string) => setSearchParams(id ? { conversation: id } : {});
+  const navigate = useCallback(
+    (issue: string, conversation = "", replace = false) => {
+      const next: Record<string, string> = {};
+      if (issue) next.issue = issue;
+      if (conversation) next.conversation = conversation;
+      setSearchParams(next, { replace });
+    },
+    [setSearchParams],
+  );
+
+  let main = <div className="panel empty">从左侧选择 JIRA 工单。</div>;
+  if (issueKey) {
+    main = (
+      <IssueView key={issueKey} issueKey={issueKey} conversationParam={conversationParam} onNavigate={navigate} />
+    );
+  } else if (conversationParam) {
+    main = <ConversationRedirect id={conversationParam} onNavigate={navigate} />;
+  }
 
   return (
     <section className="view active jira-agent" data-testid="jira-agent-page">
@@ -113,180 +141,340 @@ export function JiraAgentPage() {
       </div>
       <div className="jira-agent-layout">
         <aside className="jira-agent-sidebar">
-          <HandoverPanel onOpen={open} />
-          <div className="panel">
-            <div className="panel-head">
-              <strong>对话</strong>
-              <span className="muted">{listQuery.data?.conversations.length ?? 0}</span>
-            </div>
-            <div className="jira-agent-list">
-              {listQuery.isError && <p className="muted">加载失败：{errorMessage(listQuery.error)}</p>}
-              {listQuery.data?.conversations.length === 0 && <p className="muted">暂无对话</p>}
-              {listQuery.data?.conversations.map((conversation) => (
-                <button
-                  type="button"
-                  key={conversation.id}
-                  className={`jira-agent-list-item${conversation.id === selectedId ? " active" : ""}`}
-                  onClick={() => open(conversation.id)}
-                >
-                  <span className="jira-agent-list-top">
-                    <strong>{conversation.issue_key}</strong>
-                    <span className={`pill ${STATE_TONE[conversation.state]}`}>{STATE_LABELS[conversation.state]}</span>
-                  </span>
-                  <span className="jira-agent-list-summary">{conversation.issue_summary}</span>
-                  <span className="muted jira-agent-list-meta">
-                    owner {conversation.owner} · {conversation.updated_at}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
+          <IssueSearchPanel selectedKey={issueKey} onSelect={(key) => navigate(key)} />
         </aside>
-        <div className="jira-agent-main">
-          {selectedId ? (
-            <ConversationView key={selectedId} id={selectedId} onOpen={open} />
-          ) : (
-            <div className="panel empty">从左侧选择对话，或输入 JIRA 编号交给 agent。</div>
-          )}
-        </div>
+        <div className="jira-agent-main">{main}</div>
       </div>
     </section>
   );
 }
 
+/** Links in JIRA comments carry only the conversation id. */
+function ConversationRedirect({
+  id,
+  onNavigate,
+}: {
+  id: string;
+  onNavigate: (issue: string, conversation?: string, replace?: boolean) => void;
+}) {
+  const detailQuery = useQuery({
+    queryKey: jiraAgentConversationKey(id),
+    queryFn: () => getConversation(id),
+  });
+  const issueKey = detailQuery.data?.conversation.issue_key;
+  useEffect(() => {
+    if (issueKey) onNavigate(issueKey, id, true);
+  }, [issueKey, id, onNavigate]);
+  if (detailQuery.isError) {
+    return <div className="panel empty">加载对话失败：{errorMessage(detailQuery.error)}</div>;
+  }
+  return <div className="panel empty">加载中...</div>;
+}
+
 // ─────────────────────────────────────────────────────────────
-// Hand-over
+// Issue search
 // ─────────────────────────────────────────────────────────────
 
-function HandoverPanel({ onOpen }: { onOpen: (id: string) => void }) {
+function IssueSearchPanel({ selectedKey, onSelect }: { selectedKey: string; onSelect: (key: string) => void }) {
+  const [input, setInput] = useState("");
+  const [query, setQuery] = useState("");
+  const searchQuery = useQuery({
+    queryKey: jiraAgentIssueSearchKey(query),
+    queryFn: () => searchIssues(query),
+  });
+
+  function search() {
+    const next = input.trim();
+    if (next === query) void searchQuery.refetch();
+    else setQuery(next);
+  }
+
+  const result = searchQuery.data;
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <strong>JIRA 工单</strong>
+      </div>
+      <div className="panel-body jira-agent-search">
+        <div className="row">
+          <input
+            aria-label="JIRA 编号或 JQL"
+            placeholder="JIRA 编号（可多个）或 JQL，留空为默认列表"
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") search();
+            }}
+          />
+          <button type="button" className="btn sm" disabled={searchQuery.isFetching} onClick={search}>
+            查询
+          </button>
+        </div>
+        {searchQuery.isError && <p className="jira-agent-warning">{errorMessage(searchQuery.error)}</p>}
+        {result && (
+          <div className="jira-agent-query-hint muted">
+            <span>
+              {SEARCH_MODE_LABELS[result.mode]} · 共 {result.total} 个
+              {result.issues.length < result.total ? `，显示前 ${result.issues.length} 个` : ""}
+            </span>
+            {result.jql && <code>{result.jql}</code>}
+            {result.missing.length > 0 && (
+              <span className="jira-agent-warning">未找到或无权访问：{result.missing.join("、")}</span>
+            )}
+          </div>
+        )}
+        {result && result.issues.length > 0 && (
+          <div className="jira-agent-issue-results" data-testid="jira-agent-issue-results">
+            {result.issues.map((issue) => {
+              const open = issue.open_conversation;
+              return (
+                <button
+                  type="button"
+                  key={issue.key}
+                  className={`jira-agent-list-item${issue.key === selectedKey ? " active" : ""}`}
+                  onClick={() => onSelect(issue.key)}
+                >
+                  <span className="jira-agent-list-top">
+                    <strong>{issue.key}</strong>
+                    <span className="pill">{issue.status}</span>
+                  </span>
+                  <span className="jira-agent-list-summary">{issue.summary}</span>
+                  <span className="jira-agent-list-meta">
+                    <span className="muted">{issue.assignee?.display_name ?? "无 assignee"}</span>
+                    {open && (
+                      <span className={`pill ${open.id ? STATE_TONE[open.state] : ""}`}>
+                        agent · {open.id ? STATE_LABELS[open.state] : `${open.owner} 的对话`}
+                      </span>
+                    )}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {result && result.issues.length === 0 && !searchQuery.isFetching && <p className="muted">没有匹配的工单</p>}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Issue
+// ─────────────────────────────────────────────────────────────
+
+function IssueView({
+  issueKey,
+  conversationParam,
+  onNavigate,
+}: {
+  issueKey: string;
+  conversationParam: string;
+  onNavigate: (issue: string, conversation?: string, replace?: boolean) => void;
+}) {
   const queryClient = useQueryClient();
-  const [issueKey, setIssueKey] = useState("");
-  const [note, setNote] = useState("");
-  const [preview, setPreview] = useState<IssuePreview | null>(null);
-  const [loading, setLoading] = useState(false);
-  const fileInput = useRef<HTMLInputElement>(null);
+  const previewQuery = useQuery({
+    queryKey: jiraAgentIssueKey(issueKey),
+    queryFn: () => previewIssue(issueKey),
+  });
+  const preview = previewQuery.data;
+  const conversations = preview?.conversations ?? [];
+  const open = preview?.open_conversation ?? null;
 
-  async function lookup() {
-    if (!issueKey.trim()) return;
-    setLoading(true);
+  // Explicit selection wins; otherwise open the assignee's live conversation,
+  // else start from a hand-over draft.
+  let selectedId = conversationParam === DRAFT ? "" : conversationParam;
+  if (!conversationParam && open?.owner_is_assignee && conversations.some((c) => c.id === open.id)) {
+    selectedId = open.id;
+  }
+
+  const detailQuery = useQuery({
+    queryKey: jiraAgentConversationKey(selectedId),
+    queryFn: () => getConversation(selectedId),
+    enabled: Boolean(selectedId),
+  });
+  const conversation = selectedId ? detailQuery.data?.conversation : undefined;
+
+  const refresh = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: jiraAgentIssueKey(issueKey) });
+    void queryClient.invalidateQueries({ queryKey: JIRA_AGENT_ISSUE_SEARCH_KEY });
+    if (selectedId) void queryClient.invalidateQueries({ queryKey: jiraAgentConversationKey(selectedId) });
+  }, [queryClient, issueKey, selectedId]);
+
+  if (previewQuery.isError) {
+    return <div className="panel empty">加载 JIRA 工单失败：{errorMessage(previewQuery.error)}</div>;
+  }
+  if (!preview) {
+    return <div className="panel empty">加载中...</div>;
+  }
+
+  async function cancel() {
+    if (!(await confirmDialog({ body: "确认取消当前排队或运行中的这一轮？", danger: true, confirmText: "取消本轮" }))) return;
     try {
-      setPreview(await previewIssue(issueKey.trim()));
+      await cancelConversationTurn(selectedId);
+      toast.info("已请求取消");
+      refresh();
     } catch (error) {
-      setPreview(null);
       toast.error(errorMessage(error));
-    } finally {
-      setLoading(false);
     }
   }
 
-  async function submit(newConversation: boolean) {
-    if (!preview) return;
+  const issue = preview.issue;
+  const draft = !selectedId;
+  return (
+    <div className="jira-agent-conversation">
+      <div className="panel">
+        <div className="panel-body jira-agent-header">
+          <div className="jira-agent-header-top">
+            <div className="jira-agent-title-row">
+              <a href={issue.url} target="_blank" rel="noreferrer">
+                <strong>{issue.key}</strong>
+              </a>
+              <span>{issue.summary}</span>
+              {conversations.length > 0 && (
+                <select
+                  aria-label="对话"
+                  className="jira-agent-conversation-select"
+                  value={selectedId || DRAFT}
+                  onChange={(event) => onNavigate(issueKey, event.target.value)}
+                >
+                  {draft && <option value={DRAFT}>新对话（未交给 agent）</option>}
+                  {conversations.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.owner} · {item.created_at.slice(5, 16)} · {item.read_only ? "只读" : STATE_LABELS[item.state]}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+            {conversation ? (
+              <span className={`pill ${STATE_TONE[conversation.state]}`}>{stateText(conversation)}</span>
+            ) : (
+              draft && <span className="pill">未交给 agent</span>
+            )}
+          </div>
+          <div className="jira-agent-meta muted">
+            <span>
+              {issue.issue_type} · {issue.status} · {issue.priority}
+            </span>
+            <span>assignee：{issue.assignee?.display_name ?? "无"}</span>
+            <span>组件：{issue.components.join(", ") || "无"}</span>
+            <span>
+              附件 {issue.attachment_count} · 评论 {issue.comment_count}
+            </span>
+          </div>
+          {conversation && (
+            <div className="jira-agent-meta muted">
+              <span>owner：{conversation.owner}</span>
+              <span>交单人：{conversation.created_by}</span>
+              <span>数字员工：{conversation.agent_group}</span>
+              <span>Thread：{conversation.thread_id || "未创建"}</span>
+              <span>
+                B 工作目录：<code>{conversation.workspace}</code>
+              </span>
+            </div>
+          )}
+          {!preview.can_handover && (
+            <p className="jira-agent-warning">只有当前 JIRA assignee 或 RM 可以把工单交给 agent 或与 agent 对话。</p>
+          )}
+          {conversation?.read_only && (
+            <p className="jira-agent-warning">
+              {CLOSE_REASON_LABELS[conversation.close_reason] ?? "本对话已结束"}（只读）。
+            </p>
+          )}
+          {draft && open && preview.can_handover && (
+            <p className="jira-agent-warning">
+              {open.owner_is_assignee
+                ? `交给 agent 后，当前对话（${open.owner}）将结束并变为只读，新对话使用新的 Codex 会话和工作目录。`
+                : `现有对话属于 ${open.owner}（assignee 已变更），交给 agent 后旧对话结束并新建对话。`}
+            </p>
+          )}
+          {conversation && (
+            <div className="actions">
+              {conversation.can_write && (conversation.state === "queued" || conversation.state === "running") && (
+                <button type="button" className="btn sm danger" onClick={() => void cancel()}>
+                  取消本轮
+                </button>
+              )}
+              {preview.can_handover && (
+                <button type="button" className="btn sm" onClick={() => onNavigate(issueKey, DRAFT)}>
+                  新建对话
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {selectedId ? (
+        <ConversationBody id={selectedId} onChanged={refresh} />
+      ) : (
+        <HandoverComposer
+          preview={preview}
+          onCreated={(id) => {
+            refresh();
+            onNavigate(issueKey, id);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCreated: (id: string) => void }) {
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const disabled = !preview.can_handover;
+
+  async function submit() {
+    const open = preview.open_conversation;
     if (
-      newConversation
+      open
       && !(await confirmDialog({
-        title: "新建对话",
-        body: "当前对话将结束并变为只读（运行中会先中断），新对话使用新的 Codex 会话和工作目录。确认新建？",
-        confirmText: "新建对话",
+        title: "交给 agent",
+        body: open.owner_is_assignee
+          ? "当前对话将结束并变为只读（运行中会先中断），新对话使用新的 Codex 会话和工作目录。确认交给 agent？"
+          : `现有对话属于 ${open.owner}，将结束并新建对话。确认交给 agent？`,
+        confirmText: "交给 agent",
       }))
     ) {
       return;
     }
-    setLoading(true);
+    setBusy(true);
     try {
       const files = await readFiles(fileInput.current?.files ?? null);
       const result = await handoverIssue({
         issue_key: preview.issue.key,
-        note,
+        note: note.trim(),
         files,
-        new_conversation: newConversation,
+        new_conversation: true,
       });
-      toast.success(result.created ? "已交给 agent，进入排队" : "该 assignee 已有进行中的对话");
-      setNote("");
-      if (fileInput.current) fileInput.current.value = "";
-      setPreview(null);
-      setIssueKey("");
-      void queryClient.invalidateQueries({ queryKey: JIRA_AGENT_CONVERSATIONS_KEY });
-      onOpen(result.conversation.id);
+      toast.success("已交给 agent，进入排队");
+      onCreated(result.conversation.id);
     } catch (error) {
       toast.error(errorMessage(error));
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   }
 
-  const existing = preview?.open_conversation;
   return (
     <div className="panel">
-      <div className="panel-head">
-        <strong>交给 agent</strong>
-      </div>
-      <div className="panel-body jira-agent-handover">
-        <div className="row">
-          <input
-            aria-label="JIRA 编号"
-            placeholder="JIRA 编号，例如 MC3-7672"
-            value={issueKey}
-            onChange={(event) => setIssueKey(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void lookup();
-            }}
-          />
-          <button type="button" className="btn sm" disabled={loading || !issueKey.trim()} onClick={() => void lookup()}>
-            查询
+      <div className="panel-body jira-agent-composer">
+        <textarea
+          aria-label="交单说明"
+          rows={3}
+          placeholder="交单说明（可选），例如指定机器或者验收标准"
+          value={note}
+          disabled={disabled}
+          onChange={(event) => setNote(event.target.value)}
+        />
+        <div className="actions">
+          <input ref={fileInput} type="file" multiple aria-label="附加文件" disabled={disabled} />
+          <button type="button" className="btn primary" disabled={busy || disabled} onClick={() => void submit()}>
+            交给 agent
           </button>
         </div>
-        {preview && (
-          <div className="jira-agent-preview">
-            <div>
-              <a href={preview.issue.url} target="_blank" rel="noreferrer">
-                <strong>{preview.issue.key}</strong>
-              </a>{" "}
-              {preview.issue.summary}
-            </div>
-            <div className="muted">
-              {preview.issue.issue_type} · {preview.issue.status} · assignee{" "}
-              {preview.issue.assignee?.display_name ?? "无"} · {preview.issue.components.join(", ") || "无组件"} ·{" "}
-              附件 {preview.issue.attachment_count} · 评论 {preview.issue.comment_count}
-            </div>
-            {!preview.can_handover && (
-              <p className="jira-agent-warning">只有当前 JIRA assignee 或 RM 可以把工单交给 agent。</p>
-            )}
-            {preview.can_handover && (
-              <>
-                <textarea
-                  aria-label="交单说明"
-                  placeholder="交单说明（可选），例如指定机器或验收要求"
-                  rows={3}
-                  value={note}
-                  onChange={(event) => setNote(event.target.value)}
-                />
-                <input ref={fileInput} type="file" multiple aria-label="上传文件" />
-                {existing?.owner_is_assignee ? (
-                  <div className="actions">
-                    <span className="muted">该 assignee 已有进行中的对话。</span>
-                    <button type="button" className="btn sm primary" onClick={() => onOpen(existing.id)}>
-                      继续该对话
-                    </button>
-                    <button type="button" className="btn sm" disabled={loading} onClick={() => void submit(true)}>
-                      新建对话
-                    </button>
-                  </div>
-                ) : (
-                  <div className="actions">
-                    {existing && (
-                      <span className="muted">
-                        现有对话属于 {existing.owner}（assignee 已变更），交单后旧对话结束并新建对话。
-                      </span>
-                    )}
-                    <button type="button" className="btn sm primary" disabled={loading} onClick={() => void submit(false)}>
-                      交给 agent
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );
@@ -296,8 +484,7 @@ function HandoverPanel({ onOpen }: { onOpen: (id: string) => void }) {
 // Conversation
 // ─────────────────────────────────────────────────────────────
 
-function ConversationView({ id, onOpen }: { id: string; onOpen: (id: string) => void }) {
-  const queryClient = useQueryClient();
+function ConversationBody({ id, onChanged }: { id: string; onChanged: () => void }) {
   const detailQuery = useQuery({
     queryKey: jiraAgentConversationKey(id),
     queryFn: () => getConversation(id),
@@ -335,8 +522,7 @@ function ConversationView({ id, onOpen }: { id: string; onOpen: (id: string) => 
           || after?.comment_status !== before?.comment_status
           || after?.queue_position !== before?.queue_position
         ) {
-          void queryClient.invalidateQueries({ queryKey: jiraAgentConversationKey(id) });
-          void queryClient.invalidateQueries({ queryKey: JIRA_AGENT_CONVERSATIONS_KEY });
+          onChanged();
         }
       } catch {
         // Keep polling; transient errors are expected while the server restarts.
@@ -346,14 +532,9 @@ function ConversationView({ id, onOpen }: { id: string; onOpen: (id: string) => 
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [active, conversation, id, queryClient]);
+  }, [active, conversation, id, onChanged]);
 
   const turnsById = useMemo(() => new Map((detail?.turns ?? []).map((turn) => [turn.id, turn])), [detail]);
-
-  function refresh() {
-    void queryClient.invalidateQueries({ queryKey: jiraAgentConversationKey(id) });
-    void queryClient.invalidateQueries({ queryKey: JIRA_AGENT_CONVERSATIONS_KEY });
-  }
 
   if (detailQuery.isError) {
     return <div className="panel empty">加载对话失败：{errorMessage(detailQuery.error)}</div>;
@@ -362,100 +543,9 @@ function ConversationView({ id, onOpen }: { id: string; onOpen: (id: string) => 
     return <div className="panel empty">加载中...</div>;
   }
 
-  async function cancel() {
-    if (!(await confirmDialog({ body: "确认取消当前排队或运行中的这一轮？", danger: true, confirmText: "取消本轮" }))) return;
-    try {
-      await cancelConversationTurn(id);
-      toast.info("已请求取消");
-      refresh();
-    } catch (error) {
-      toast.error(errorMessage(error));
-    }
-  }
-
-  async function newConversation() {
-    if (
-      !(await confirmDialog({
-        title: "新建对话",
-        body: "当前对话将结束并变为只读（运行中会先中断），新对话使用新的 Codex 会话和工作目录。确认新建？",
-        confirmText: "新建对话",
-      }))
-    ) {
-      return;
-    }
-    try {
-      const result = await handoverIssue({ issue_key: conversation!.issue_key, new_conversation: true });
-      toast.success("已新建对话");
-      refresh();
-      onOpen(result.conversation.id);
-    } catch (error) {
-      toast.error(errorMessage(error));
-    }
-  }
-
   let lastTurnId = "";
   return (
-    <div className="jira-agent-conversation">
-      <div className="panel">
-        <div className="panel-body jira-agent-header">
-          <div className="jira-agent-header-top">
-            <div>
-              {conversation.browse_url ? (
-                <a href={conversation.browse_url} target="_blank" rel="noreferrer">
-                  <strong>{conversation.issue_key}</strong>
-                </a>
-              ) : (
-                <strong>{conversation.issue_key}</strong>
-              )}{" "}
-              {conversation.issue_summary}
-            </div>
-            <span className={`pill ${STATE_TONE[conversation.state]}`}>{stateText(conversation)}</span>
-          </div>
-          <div className="jira-agent-meta muted">
-            <span>owner：{conversation.owner}</span>
-            <span>交单人：{conversation.created_by}</span>
-            <span>数字员工：{conversation.agent_group}</span>
-            <span>Thread：{conversation.thread_id || "未创建"}</span>
-            <span>
-              B 工作目录：<code>{conversation.workspace}</code>
-            </span>
-          </div>
-          {detail.issue_conversations.length > 1 && (
-            <div className="jira-agent-history">
-              <span className="muted">该工单的对话：</span>
-              {detail.issue_conversations.map((item) => (
-                <button
-                  type="button"
-                  key={item.id}
-                  className={`btn sm ${item.id === id ? "primary" : "ghost"}`}
-                  onClick={() => onOpen(item.id)}
-                >
-                  {item.owner} · {item.created_at.slice(5, 16)}
-                  {item.status === "closed" ? "（只读）" : ""}
-                </button>
-              ))}
-            </div>
-          )}
-          {conversation.read_only && (
-            <p className="jira-agent-warning">
-              {CLOSE_REASON_LABELS[conversation.close_reason] ?? "本对话已结束"}（只读）。如需继续，请由当前 assignee 重新交给 agent。
-            </p>
-          )}
-          {conversation.can_write && (
-            <div className="actions">
-              {(conversation.state === "queued" || conversation.state === "running") && (
-                <button type="button" className="btn sm danger" onClick={() => void cancel()}>
-                  取消本轮
-                </button>
-              )}
-              <button type="button" className="btn sm" onClick={() => void newConversation()}>
-                新建对话
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-
+    <>
       <div className="panel">
         <div className="panel-body jira-agent-timeline" data-testid="jira-agent-timeline">
           {events.map((event) => {
@@ -470,7 +560,7 @@ function ConversationView({ id, onOpen }: { id: string; onOpen: (id: string) => 
                   turn={turn}
                   files={detail.files}
                   canWrite={conversation.can_write}
-                  onChanged={refresh}
+                  onChanged={onChanged}
                 />
               </div>
             );
@@ -480,8 +570,8 @@ function ConversationView({ id, onOpen }: { id: string; onOpen: (id: string) => 
       </div>
 
       {detail.files.length > 0 && <FilesPanel files={detail.files} />}
-      {conversation.can_write && <Composer conversation={conversation} onSent={refresh} />}
-    </div>
+      {conversation.can_write && <Composer conversation={conversation} onSent={onChanged} />}
+    </>
   );
 }
 

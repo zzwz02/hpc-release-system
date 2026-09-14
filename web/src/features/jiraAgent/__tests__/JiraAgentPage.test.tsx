@@ -1,14 +1,19 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiGet, apiPost } from "../../../api/http";
+import { confirmDialog } from "../../../lib/confirm";
 import { JiraAgentPage } from "../JiraAgentPage";
 
 vi.mock("../../../api/http", () => ({
   apiGet: vi.fn(),
   apiPost: vi.fn(),
+}));
+
+vi.mock("../../../lib/confirm", () => ({
+  confirmDialog: vi.fn(),
 }));
 
 const turn = {
@@ -55,6 +60,17 @@ const conversation = {
   browse_url: "http://jira/browse/MC3-7672",
 };
 
+const oldConversation = {
+  ...conversation,
+  id: "jac_0",
+  status: "closed",
+  close_reason: "new_conversation",
+  state: "closed",
+  read_only: true,
+  can_write: false,
+  created_at: "2026-09-13 09:00:00",
+};
+
 const result = {
   conclusion: "fixed_pending_review",
   issue_category: "结果错误",
@@ -90,8 +106,55 @@ const detail = {
       payload: { status: "posted", comment_id: "99" }, created_at: "", updated_at: "" },
   ],
   rev: 4,
-  issue_conversations: [{ id: "jac_1", owner: "alice", status: "open", close_reason: "", created_at: "2026-09-14 10:00:00" }],
+  issue_conversations: [],
 };
+
+const issue = {
+  key: "MC3-7672", url: "http://jira/browse/MC3-7672", summary: "saxpy 尾部元素错误", issue_type: "Bug",
+  status: "Reopened", priority: "High", assignee: { name: "alice", display_name: "Alice" },
+  components: ["PDE_HPC"],
+};
+
+function searchResponse(open: boolean) {
+  return {
+    mode: "mine",
+    jql: 'assignee = "alice" AND status != Closed ORDER BY updated DESC',
+    total: 1,
+    missing: [],
+    issues: [
+      {
+        ...issue, updated: "", can_handover: true,
+        open_conversation: open ? { id: "jac_1", owner: "alice", owner_is_assignee: true, state: "waiting_review" } : null,
+      },
+    ],
+  };
+}
+
+function previewResponse(open: boolean) {
+  return {
+    issue: { ...issue, attachment_count: 2, comment_count: 1 },
+    can_handover: true,
+    open_conversation: open ? { id: "jac_1", owner: "alice", owner_is_assignee: true } : null,
+    conversations: open ? [conversation, oldConversation] : [oldConversation],
+  };
+}
+
+function mockBackend({ open = true }: { open?: boolean } = {}) {
+  vi.mocked(apiGet).mockImplementation(async (path: string) => {
+    if (path.startsWith("/api/jira-agent/issues?")) return searchResponse(open);
+    if (path === "/api/jira-agent/issues/MC3-7672") return previewResponse(open);
+    if (path === "/api/jira-agent/conversations/jac_1") return detail;
+    if (path === "/api/jira-agent/conversations/jac_0") {
+      return { ...detail, conversation: oldConversation, events: [], files: [] };
+    }
+    throw new Error(`unexpected GET ${path}`);
+  });
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location">{location.search}</div>;
+}
 
 function renderPage(route = "/jira-agent") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -99,6 +162,7 @@ function renderPage(route = "/jira-agent") {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[route]}>
         <JiraAgentPage />
+        <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -107,48 +171,48 @@ function renderPage(route = "/jira-agent") {
 describe("JiraAgentPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(apiGet).mockImplementation(async (path: string) => {
-      if (path === "/api/jira-agent/conversations") return { conversations: [conversation] };
-      if (path === "/api/jira-agent/conversations/jac_1") return detail;
-      if (path.startsWith("/api/jira-agent/issues/")) {
-        return {
-          issue: {
-            key: "MC3-7672", url: "http://jira/browse/MC3-7672", summary: "saxpy 尾部元素错误", issue_type: "Bug",
-            status: "Open", priority: "High", assignee: { name: "alice", display_name: "Alice" },
-            components: ["PDE_HPC"], attachment_count: 2, comment_count: 1,
-          },
-          can_handover: true,
-          open_conversation: null,
-          conversations: [],
-        };
-      }
-      throw new Error(`unexpected GET ${path}`);
-    });
+    vi.mocked(confirmDialog).mockResolvedValue(true);
   });
 
-  it("lists conversations and renders the timeline with result and comment", async () => {
-    renderPage("/jira-agent?conversation=jac_1");
+  it("lists issues with agent state and opens the live conversation of a clicked issue", async () => {
+    mockBackend();
+    const user = userEvent.setup();
+    renderPage();
+
+    const results = await screen.findByTestId("jira-agent-issue-results");
+    expect(apiGet).toHaveBeenCalledWith("/api/jira-agent/issues?q=");
+    expect(screen.getByText(/assignee = "alice"/)).toBeInTheDocument();
+    expect(within(results).getByText("agent · 待 assignee 审阅")).toBeInTheDocument();
+    expect(screen.queryByText("对话", { selector: "strong" })).not.toBeInTheDocument();
+
+    await user.click(within(results).getByRole("button", { name: /MC3-7672/ }));
 
     expect(await screen.findByTestId("jira-agent-result")).toBeInTheDocument();
-    expect(screen.getAllByText("MC3-7672").length).toBeGreaterThan(0);
     expect(screen.getByText("$ ./saxpy 16777217")).toBeInTheDocument();
     expect(screen.getByText("exit 0")).toBeInTheDocument();
-    expect(screen.getAllByText("已修复，方案请审批").length).toBeGreaterThan(0);
     expect(screen.getByText(/已在 JIRA 发布评论（#99）/)).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "artifacts/fix.patch" })[0]).toHaveAttribute(
       "href",
       "/api/jira-agent/conversations/jac_1/files/jaf_1",
     );
+    // old conversations live in a dropdown next to the title
+    const select = screen.getByLabelText("对话") as HTMLSelectElement;
+    expect(select.value).toBe("jac_1");
+    expect(within(select).getAllByRole("option")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "发送" })).toBeInTheDocument();
   });
 
-  it("previews an issue and hands it over", async () => {
+  it("starts with a hand-over draft when the issue has no live conversation", async () => {
+    mockBackend({ open: false });
     vi.mocked(apiPost).mockResolvedValue({ created: true, conversation });
     const user = userEvent.setup();
-    renderPage();
+    renderPage("/jira-agent?issue=MC3-7672");
 
-    await user.type(screen.getByLabelText("JIRA 编号"), "MC3-7672");
-    await user.click(screen.getByRole("button", { name: "查询" }));
-    await user.type(await screen.findByLabelText("交单说明"), "用 A100");
+    const note = await screen.findByLabelText("交单说明");
+    expect(note).toHaveAttribute("placeholder", "交单说明（可选），例如指定机器或者验收标准");
+    expect(screen.queryByTestId("jira-agent-timeline")).not.toBeInTheDocument();
+
+    await user.type(note, "用 A100");
     await user.click(screen.getByRole("button", { name: "交给 agent" }));
 
     await waitFor(() => {
@@ -156,16 +220,37 @@ describe("JiraAgentPage", () => {
         issue_key: "MC3-7672",
         note: "用 A100",
         files: [],
-        new_conversation: false,
+        new_conversation: true,
       });
     });
-    expect(await screen.findByTestId("jira-agent-result")).toBeInTheDocument();
+    expect(confirmDialog).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(screen.getByTestId("location")).toHaveTextContent("conversation=jac_1");
+    });
+  });
+
+  it("new conversation opens a draft and only hands over after confirmation", async () => {
+    mockBackend();
+    vi.mocked(apiPost).mockResolvedValue({ created: true, conversation: { ...conversation, id: "jac_2" } });
+    const user = userEvent.setup();
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
+
+    await user.click(await screen.findByRole("button", { name: "新建对话" }));
+    expect(await screen.findByLabelText("交单说明")).toBeInTheDocument();
+    expect(apiPost).not.toHaveBeenCalled();
+    expect(screen.getByText(/当前对话（alice）将结束并变为只读/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "交给 agent" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(1));
+    expect(confirmDialog).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(apiPost).mock.calls[0][1]).toMatchObject({ new_conversation: true });
   });
 
   it("sends a follow-up message in the open conversation", async () => {
+    mockBackend();
     vi.mocked(apiPost).mockResolvedValue({ mode: "queued", conversation });
     const user = userEvent.setup();
-    renderPage("/jira-agent?conversation=jac_1");
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
 
     await user.type(await screen.findByLabelText("补充信息"), "补充 N=257 验证");
     await user.click(screen.getByRole("button", { name: "发送" }));
@@ -178,17 +263,23 @@ describe("JiraAgentPage", () => {
     });
   });
 
-  it("hides the composer for read-only conversations", async () => {
-    vi.mocked(apiGet).mockImplementation(async (path: string) => {
-      if (path === "/api/jira-agent/conversations") return { conversations: [] };
-      return {
-        ...detail,
-        conversation: { ...conversation, status: "closed", close_reason: "superseded", state: "closed", read_only: true, can_write: false },
-      };
-    });
+  it("shows an old conversation read-only from the dropdown", async () => {
+    mockBackend();
+    const user = userEvent.setup();
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
+
+    await user.selectOptions(await screen.findByLabelText("对话"), "jac_0");
+    expect(await screen.findByText(/已新建对话，本对话已结束/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("补充信息")).not.toBeInTheDocument();
+  });
+
+  it("resolves the issue for conversation links from JIRA comments", async () => {
+    mockBackend();
     renderPage("/jira-agent?conversation=jac_1");
 
-    expect(await screen.findByText(/JIRA assignee 已变更/)).toBeInTheDocument();
-    expect(screen.queryByLabelText("补充信息")).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId("location")).toHaveTextContent("issue=MC3-7672");
+    });
+    expect(await screen.findByTestId("jira-agent-result")).toBeInTheDocument();
   });
 });

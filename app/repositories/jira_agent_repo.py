@@ -78,6 +78,18 @@ def get_open_conversation(conn: sqlite3.Connection, issue_key: str) -> dict | No
     )
 
 
+def open_conversations_by_issue(conn: sqlite3.Connection, issue_keys: list[str]) -> dict[str, dict]:
+    if not issue_keys:
+        return {}
+    marks = ",".join("?" * len(issue_keys))
+    rows = _all(
+        conn,
+        f"SELECT * FROM jira_agent_conversations WHERE status = 'open' AND issue_key IN ({marks})",
+        tuple(issue_keys),
+    )
+    return {row["issue_key"]: row for row in rows}
+
+
 def list_conversations(
     conn: sqlite3.Connection,
     *,

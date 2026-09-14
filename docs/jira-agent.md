@@ -14,7 +14,16 @@ JIRA agent 是按组配置的“数字员工”。网站（服务器 A）负责�
 
 ## 使用流程
 
-1. JIRA assignee 或 RM 在 **JIRA agent** 页输入 JIRA 编号，查询后点 **交给 agent**。可以附交单说明和文件。
+1. 在 **JIRA agent** 页左侧查找工单，点击后右侧打开这张工单：
+   - 还没有对话时，底部是交单输入框。JIRA assignee 或 RM 填写交单说明（可选），可以附文件，然后点 **交给 agent**。
+   - 已有该 assignee 的进行中对话时，直接显示这个对话；历史对话在标题旁的下拉菜单里切换，只读查看。
+   - 点 **新建对话** 先进入交单草稿，不会立即交单；点 **交给 agent** 并确认后，当前对话结束，新建对话。
+   - JIRA 评论中的对话链接会自动打开对应工单和对话。
+
+   搜索框规则：
+   - 留空：默认列表。普通用户为自己名下未关闭的工单（`assignee = <本人> AND status != Closed`），RM 为本组 JIRA 用户组成员的未关闭工单（`assignee in membersOf(<JIRA_MEMBERS_GROUP>)`）。
+   - 填一个或多个 JIRA 编号（`项目KEY-数字`，空格或逗号分隔）：逐个读取，找不到的单独列出。不识别工单网址。
+   - 其他内容：作为 JQL 查询，JQL 写错时显示 JIRA 返回的错误。
 2. 网站按排队顺序执行：同步 issue.md、JIRA 附件和上传文件到 B 的工作目录，新建 Codex thread，按 AGENTS.md 与 skills 完成分类、归属判断、复现、分析和修复。
 3. 页面时间线实时显示 agent 消息、执行的命令（含退出码和输出）、文件修改和结构化结论。
 4. 本轮结束后，网站在 JIRA **只追加评论**：结论、证据、补丁和下一步建议。agent 不修改 assignee、状态或代码。
@@ -84,6 +93,7 @@ WantedBy=multi-user.target
    | `CODEX_WS_TOKEN` | 与 B 上 `ws-token` 文件内容一致 |
    | `WORKSPACE_ROOT` | B 上工作目录根的绝对路径，如 `/home/hpc-agent/hpc-jira-agent/workspaces` |
    | `COMPONENTS` | 该组负责的 JIRA component，用于选择数字员工 |
+   | `JIRA_MEMBERS_GROUP` | 该组的 JIRA 用户组（如 `pde_hpc`），RM 的默认工单列表按 `membersOf` 查询 |
    | `MAX_CONCURRENT`、`TURN_TIMEOUT_SECONDS` | 并发上限和每轮限时 |
 
 2. `jira.conf` 提供 JIRA 地址和 token，用于读取工单、下载附件、发布评论。

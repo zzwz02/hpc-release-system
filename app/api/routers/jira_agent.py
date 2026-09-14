@@ -42,6 +42,11 @@ async def health(user: dict = Depends(require_jira_agent_access)) -> dict:
     return {"groups": await jira_agent_runner.check_health()}
 
 
+@router.get("/issues")
+async def search_issues(q: str = "", user: dict = Depends(require_jira_agent_access)) -> dict:
+    return await service.search_issues(user, q)
+
+
 @router.get("/issues/{issue_key}")
 async def preview_issue(issue_key: str, user: dict = Depends(require_jira_agent_access)) -> dict:
     return await service.preview_issue(user, issue_key)

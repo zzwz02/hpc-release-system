@@ -31,6 +31,8 @@ from app.services.jira_agent_runner import open_db, runner
 
 MAX_UPLOAD_FILES = 10
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_SEARCH_RESULTS = 50
+MAX_SEARCH_KEYS = 20
 _ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*-\d+$")
 
 _CLOSE_TEXT = {
@@ -45,9 +47,6 @@ _CLOSE_TEXT = {
 
 def normalize_issue_key(issue_key: str) -> str:
     key = (issue_key or "").strip().upper()
-    match = re.search(r"/browse/([A-Za-z][A-Za-z0-9_]*-\d+)", issue_key or "")
-    if match:
-        key = match.group(1).upper()
     if not _ISSUE_KEY_RE.match(key):
         raise ValueError("请输入有效的 JIRA 编号，例如 MC3-7672")
     return key
@@ -285,6 +284,68 @@ async def preview_issue(user: dict, issue_key: str) -> dict:
         } if open_conversation else None,
         "conversations": history,
     }
+
+
+_SEARCH_ISSUE_FIELDS = (
+    "key", "url", "summary", "issue_type", "status", "priority", "assignee", "components", "updated",
+)
+
+
+async def search_issues(user: dict, query: str) -> dict:
+    """Search box: empty → default list, issue keys → those issues, else JQL.
+
+    The default list is the user's not-closed issues; RM sees the issues of
+    the configured JIRA member groups.  Searches run with the JIRA account in
+    jira.conf; hand-over is still limited to the assignee or RM.
+    """
+    mode, value = domain.parse_issue_query(query)
+    missing: list[str] = []
+    jql = ""
+    if mode == "keys":
+        keys = list(value)
+        if len(keys) > MAX_SEARCH_KEYS:
+            raise ValueError(f"一次最多查询 {MAX_SEARCH_KEYS} 个 JIRA 编号")
+        issues = []
+        for key in keys:
+            try:
+                issues.append(await fetch_issue(key))
+            except ApiError as exc:
+                if exc.status_code != 404:
+                    raise
+                missing.append(key)
+        total = len(issues)
+    else:
+        jql = str(value) if mode == "jql" else domain.default_issue_jql(
+            username=user["username"], is_rm=_is_rm(user), groups=runner_module.load_groups(),
+        )
+        try:
+            found = await asyncio.to_thread(jira.search_issues, jql, max_results=MAX_SEARCH_RESULTS)
+        except urllib.error.HTTPError as exc:
+            raise ApiError(502, f"JIRA 查询失败：HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            raise ApiError(502, f"无法连接 JIRA：{exc.reason}") from exc
+        issues, total = found["issues"], found["total"]
+
+    conn = open_db()
+    try:
+        open_by_key = repo.open_conversations_by_issue(conn, [issue["key"] for issue in issues])
+        results = []
+        for issue in issues:
+            assignee = assignee_name(issue)
+            conversation = open_by_key.get(issue["key"])
+            results.append({
+                **{field: issue.get(field) for field in _SEARCH_ISSUE_FIELDS},
+                "can_handover": can_act(user, issue) and bool(assignee),
+                "open_conversation": {
+                    "id": conversation["id"] if can_view(user, conversation) else "",
+                    "owner": conversation["owner"],
+                    "owner_is_assignee": _same_user(conversation["owner"], assignee),
+                    "state": _state(conversation, repo.latest_turn(conn, conversation["id"])),
+                } if conversation else None,
+            })
+    finally:
+        conn.close()
+    return {"mode": mode, "jql": jql, "total": total, "missing": missing, "issues": results}
 
 
 async def close_conversation(conn: sqlite3.Connection, conversation: dict, reason: str) -> None:

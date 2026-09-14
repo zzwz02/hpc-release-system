@@ -394,6 +394,51 @@ def get_issue(issue_key: str, *, conf_path: str | Path | None = None) -> dict:
     }
 
 
+class JiraQueryError(ValueError):
+    """JQL rejected by JIRA (HTTP 400); message carries JIRA's explanation."""
+
+
+_SEARCH_FIELDS = ["summary", "status", "assignee", "priority", "issuetype", "components", "updated"]
+
+
+def search_issues(
+    jql: str,
+    *,
+    max_results: int = 50,
+    conf_path: str | Path | None = None,
+) -> dict:
+    """Run a JQL search; returns {"total", "issues": [summary dicts]}."""
+    cfg = _require_config(conf_path)
+    try:
+        raw = _request(
+            cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"], "POST", "/rest/api/2/search",
+            {"jql": jql, "maxResults": max_results, "fields": _SEARCH_FIELDS},
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code != 400:
+            raise
+        try:
+            messages = json.loads(exc.read() or b"{}").get("errorMessages") or []
+        except ValueError:
+            messages = []
+        raise JiraQueryError("；".join(messages) or "JQL 查询无效") from exc
+    issues = []
+    for item in raw.get("issues") or []:
+        fields = item.get("fields") or {}
+        issues.append({
+            "key": item.get("key") or "",
+            "url": f"{cfg['JIRA_BASE_URL']}/browse/{item.get('key') or ''}",
+            "summary": fields.get("summary") or "",
+            "issue_type": (fields.get("issuetype") or {}).get("name", ""),
+            "status": (fields.get("status") or {}).get("name", ""),
+            "priority": (fields.get("priority") or {}).get("name", ""),
+            "assignee": _person(fields.get("assignee")),
+            "components": [c.get("name", "") for c in fields.get("components") or []],
+            "updated": fields.get("updated") or "",
+        })
+    return {"total": int(raw.get("total") or 0), "issues": issues}
+
+
 def download_attachment(
     content_url: str,
     *,

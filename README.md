@@ -82,6 +82,7 @@ JIRA agent 是按组配置的数字员工，第一阶段处理 HPC 组的 Bug �
 使用规则：
 
 - 只有当前 JIRA assignee 或 RM 可以把工单交给 agent 或与 agent 对话，每次写操作都实时核对 JIRA。页签可见角色以 `access_control.json` 的 `jira-agent` 为准。
+- 找单：留空显示自己名下未关闭的工单，RM 显示本组 JIRA 用户组（`JIRA_MEMBERS_GROUP`）成员的未关闭工单；输入 JIRA 编号只显示这些工单；其他输入按 JQL 查询。
 - agent **只在 JIRA 追加评论**（结论、证据、补丁、下一步建议），不改 assignee、状态或代码。assignee 读评论后决定 resolve、转交，或在网站补充信息让 agent 继续。
 - 一个对话对应一个 Codex thread 和 B 上一个工作目录，归属于交单时的 assignee。assignee 变更后旧对话只读，新 assignee 交单时新建对话；转回原 assignee 也不复用。同一 assignee 可以主动新建对话。
 - 网站侧持久排队，每组同时运行的轮次不超过 `MAX_CONCURRENT`；运行中的补充信息直接发给 agent，排队中的消息合并到这一轮。机器资源（如 GPU）由 B 上知识包约定的 `flock` 锁控制。

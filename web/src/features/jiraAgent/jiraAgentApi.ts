@@ -143,6 +143,42 @@ export interface IssuePreview {
   conversations: AgentConversation[];
 }
 
+export interface IssueSearchItem {
+  key: string;
+  url: string;
+  summary: string;
+  issue_type: string;
+  status: string;
+  priority: string;
+  assignee: { name: string; display_name: string } | null;
+  components: string[];
+  updated: string;
+  can_handover: boolean;
+  /** id is empty when the conversation belongs to someone the viewer cannot see. */
+  open_conversation: {
+    id: string;
+    owner: string;
+    owner_is_assignee: boolean;
+    state: ConversationState;
+  } | null;
+}
+
+export interface IssueSearchResponse {
+  mode: "mine" | "keys" | "jql";
+  jql: string;
+  total: number;
+  missing: string[];
+  issues: IssueSearchItem[];
+}
+
+export const JIRA_AGENT_ISSUE_SEARCH_KEY = ["jira-agent", "issues"] as const;
+export const jiraAgentIssueSearchKey = (query: string) => ["jira-agent", "issues", query] as const;
+export const jiraAgentIssueKey = (issueKey: string) => ["jira-agent", "issue", issueKey] as const;
+
+export function searchIssues(query: string) {
+  return apiGet<IssueSearchResponse>(`/api/jira-agent/issues?q=${encodeURIComponent(query)}`);
+}
+
 export interface UploadPayload {
   filename: string;
   content_base64: string;
