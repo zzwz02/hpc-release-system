@@ -49,6 +49,9 @@ vi.mock("../../features/cicdAgent/CicdAssistantPage", () => ({
 vi.mock("../../features/cicdAgent/CicdAssistantV2Page", () => ({
   CicdAssistantV2Page: () => <div data-testid="cicd-assistant-v2-page">cicd-assistant-v2</div>,
 }));
+vi.mock("../../features/jiraAgent/JiraAgentPage", () => ({
+  JiraAgentPage: () => <div data-testid="jira-agent-page">jira-agent</div>,
+}));
 vi.mock("../../features/wiki/WikiPage", () => ({
   WikiPage: () => <div>wiki</div>,
 }));
@@ -119,6 +122,7 @@ describe("AppRouter", () => {
     { view: "jenkins-failures", testId: "jenkins-failures-page" },
     { view: "cicd-assistant", testId: "cicd-assistant-page" },
     { view: "cicd-assistant-v2", testId: "cicd-assistant-v2-page" },
+    { view: "jira-agent", testId: "jira-agent-page" },
   ] satisfies Array<{ view: RouteView; testId: string }>) {
     const route = routeForView(view);
     it.each(ALL_ROLES)(`%s follows shared access for ${view}`, async (role) => {

@@ -1,0 +1,475 @@
+"""JIRA agent use cases: hand-over, follow-up messages, cancel and views.
+
+Rules:
+  - only the current JIRA assignee or RM may hand an issue to the agent or
+    talk to it; checked against live JIRA on every such write
+  - a conversation (one Codex thread + one workspace) belongs to the assignee
+    at hand-over time; an assignee change, or an explicit "new conversation",
+    closes the old one read-only — even if the issue later returns to them
+  - the agent only comments on JIRA; people decide what happens next
+"""
+from __future__ import annotations
+
+import asyncio
+import base64
+import binascii
+import re
+import sqlite3
+import urllib.error
+from pathlib import Path
+
+from app.api.errors import ApiError, AuthzError
+from app.config import settings
+from app.db.connection import transaction
+from app.domain import jira_agent as domain
+from app.integrations import jira
+from app.integrations.codex_app_server import CodexAppServerError
+from app.repositories import jira_agent_repo as repo
+from app.repositories.base import loads_json, new_id
+from app.services import jira_agent_runner as runner_module
+from app.services.jira_agent_runner import open_db, runner
+
+MAX_UPLOAD_FILES = 10
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+_ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*-\d+$")
+
+_CLOSE_TEXT = {
+    "superseded": "JIRA assignee 已变更，本对话已结束（只读）",
+    "new_conversation": "已新建对话，本对话已结束（只读）",
+}
+
+
+# ─────────────────────────────────────────────────────────────
+# JIRA and permissions
+# ─────────────────────────────────────────────────────────────
+
+def normalize_issue_key(issue_key: str) -> str:
+    key = (issue_key or "").strip().upper()
+    match = re.search(r"/browse/([A-Za-z][A-Za-z0-9_]*-\d+)", issue_key or "")
+    if match:
+        key = match.group(1).upper()
+    if not _ISSUE_KEY_RE.match(key):
+        raise ValueError("请输入有效的 JIRA 编号，例如 MC3-7672")
+    return key
+
+
+async def fetch_issue(issue_key: str) -> dict:
+    key = normalize_issue_key(issue_key)
+    try:
+        return await asyncio.to_thread(jira.get_issue, key)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403, 404):
+            raise ApiError(404, f"JIRA 工单 {key} 不存在或无权访问") from exc
+        raise ApiError(502, f"读取 JIRA 失败：HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise ApiError(502, f"无法连接 JIRA：{exc.reason}") from exc
+
+
+def _same_user(a: str, b: str) -> bool:
+    return bool(a) and bool(b) and a.casefold() == b.casefold()
+
+
+def _is_rm(user: dict) -> bool:
+    return user.get("role") == "RM"
+
+
+def assignee_name(issue: dict) -> str:
+    return (issue.get("assignee") or {}).get("name", "")
+
+
+def can_act(user: dict, issue: dict) -> bool:
+    return _is_rm(user) or _same_user(user.get("username", ""), assignee_name(issue))
+
+
+def check_actor(user: dict, issue: dict) -> None:
+    if not can_act(user, issue):
+        raise AuthzError("只有当前 JIRA assignee 或 RM 可以把工单交给 agent 或与 agent 对话")
+
+
+def can_view(user: dict, conversation: dict) -> bool:
+    username = user.get("username", "")
+    return (
+        _is_rm(user)
+        or _same_user(username, conversation["owner"])
+        or _same_user(username, conversation["created_by"])
+    )
+
+
+def _get_visible(conn: sqlite3.Connection, user: dict, conversation_id: str) -> dict:
+    conversation = repo.get_conversation(conn, conversation_id)
+    if conversation is None or not can_view(user, conversation):
+        raise ApiError(404, "对话不存在或无权访问")
+    return conversation
+
+
+# ─────────────────────────────────────────────────────────────
+# Uploads
+# ─────────────────────────────────────────────────────────────
+
+def _decode_uploads(files: list[dict] | None) -> list[tuple[str, bytes]]:
+    files = files or []
+    if len(files) > MAX_UPLOAD_FILES:
+        raise ValueError(f"一次最多上传 {MAX_UPLOAD_FILES} 个文件")
+    decoded = []
+    for item in files:
+        name = domain.safe_filename(item.get("filename") or "")
+        try:
+            data = base64.b64decode(item.get("content_base64") or "", validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError(f"文件 {name} 内容不是有效的 base64") from exc
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise ValueError(f"文件 {name} 超过 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB")
+        decoded.append((name, data))
+    return decoded
+
+
+def _store_upload(
+    conn: sqlite3.Connection, conversation_id: str, turn_id: str, name: str, data: bytes,
+    *, remote_path: str = "",
+) -> dict:
+    folder = Path(settings.jira_agent_data_dir) / conversation_id / "uploads"
+    folder.mkdir(parents=True, exist_ok=True)
+    local = folder / name
+    index = 1
+    while local.exists():
+        local = folder / f"{index}-{name}"
+        index += 1
+    local.write_bytes(data)
+    return repo.add_file(
+        conn, conversation_id=conversation_id, turn_id=turn_id, direction="input",
+        source="upload", name=name, size=len(data), local_path=str(local),
+        remote_path=remote_path,
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# Views
+# ─────────────────────────────────────────────────────────────
+
+def _turn_view(conn: sqlite3.Connection, turn: dict | None) -> dict | None:
+    if turn is None:
+        return None
+    view = dict(turn)
+    view["result"] = loads_json(view.pop("result_json"), None)
+    view["queue_position"] = (
+        repo.queue_position(conn, turn["id"]) if turn["status"] == "queued" else None
+    )
+    return view
+
+
+def _state(conversation: dict, latest: dict | None) -> str:
+    if conversation["status"] != "open":
+        return "closed"
+    if latest is None:
+        return "idle"
+    if latest["status"] == "completed":
+        return "waiting_review"
+    return latest["status"]
+
+
+def conversation_view(conn: sqlite3.Connection, user: dict, conversation: dict) -> dict:
+    latest = repo.latest_turn(conn, conversation["id"])
+    active = runner.active_for_conversation(conversation["id"])
+    return {
+        **conversation,
+        "state": _state(conversation, latest),
+        "phase": active.phase if active else "",
+        "latest_turn": _turn_view(conn, latest),
+        "read_only": conversation["status"] != "open",
+        "can_write": conversation["status"] == "open"
+        and (_is_rm(user) or _same_user(user.get("username", ""), conversation["owner"])),
+        "browse_url": jira.browse_url() + conversation["issue_key"] if jira.browse_url() else "",
+    }
+
+
+def _file_view(record: dict) -> dict:
+    view = {k: v for k, v in record.items() if k != "local_path"}
+    view["downloadable"] = bool(record["local_path"])
+    return view
+
+
+def list_conversations(user: dict) -> dict:
+    conn = open_db()
+    try:
+        rows = repo.list_conversations(conn, username=None if _is_rm(user) else user["username"])
+        return {"conversations": [conversation_view(conn, user, row) for row in rows]}
+    finally:
+        conn.close()
+
+
+def get_conversation_detail(user: dict, conversation_id: str) -> dict:
+    conn = open_db()
+    try:
+        conversation = _get_visible(conn, user, conversation_id)
+        history = [
+            {"id": row["id"], "owner": row["owner"], "status": row["status"],
+             "close_reason": row["close_reason"], "created_at": row["created_at"]}
+            for row in repo.list_conversations(conn, issue_key=conversation["issue_key"])
+            if can_view(user, row)
+        ]
+        return {
+            "conversation": conversation_view(conn, user, conversation),
+            "turns": [_turn_view(conn, turn) for turn in repo.list_turns(conn, conversation_id)],
+            "files": [_file_view(record) for record in repo.list_files(conn, conversation_id)],
+            "events": repo.list_events(conn, conversation_id),
+            "rev": repo.max_event_rev(conn, conversation_id),
+            "issue_conversations": history,
+        }
+    finally:
+        conn.close()
+
+
+def list_events(user: dict, conversation_id: str, after_rev: int) -> dict:
+    conn = open_db()
+    try:
+        conversation = _get_visible(conn, user, conversation_id)
+        return {
+            "conversation": conversation_view(conn, user, conversation),
+            "events": repo.list_events(conn, conversation_id, after_rev=after_rev),
+            "rev": repo.max_event_rev(conn, conversation_id),
+        }
+    finally:
+        conn.close()
+
+
+def file_for_download(user: dict, conversation_id: str, file_id: str) -> tuple[Path, str]:
+    conn = open_db()
+    try:
+        _get_visible(conn, user, conversation_id)
+        record = repo.get_file(conn, file_id)
+    finally:
+        conn.close()
+    if record is None or record["conversation_id"] != conversation_id or not record["local_path"]:
+        raise ApiError(404, "文件不存在或不可下载")
+    path = Path(record["local_path"])
+    if not path.is_file():
+        raise ApiError(404, "文件已不存在")
+    return path, record["name"]
+
+
+# ─────────────────────────────────────────────────────────────
+# Use cases
+# ─────────────────────────────────────────────────────────────
+
+async def preview_issue(user: dict, issue_key: str) -> dict:
+    issue = await fetch_issue(issue_key)
+    conn = open_db()
+    try:
+        open_conversation = repo.get_open_conversation(conn, issue["key"])
+        history = [
+            conversation_view(conn, user, row)
+            for row in repo.list_conversations(conn, issue_key=issue["key"])
+            if can_view(user, row)
+        ]
+    finally:
+        conn.close()
+    assignee = assignee_name(issue)
+    return {
+        "issue": {
+            "key": issue["key"],
+            "url": issue["url"],
+            "summary": issue["summary"],
+            "issue_type": issue["issue_type"],
+            "status": issue["status"],
+            "priority": issue["priority"],
+            "assignee": issue["assignee"],
+            "components": issue["components"],
+            "attachment_count": len(issue["attachments"]),
+            "comment_count": len(issue["comments"]),
+        },
+        "can_handover": can_act(user, issue) and bool(assignee),
+        "open_conversation": {
+            "id": open_conversation["id"],
+            "owner": open_conversation["owner"],
+            "owner_is_assignee": _same_user(open_conversation["owner"], assignee),
+        } if open_conversation else None,
+        "conversations": history,
+    }
+
+
+async def close_conversation(conn: sqlite3.Connection, conversation: dict, reason: str) -> None:
+    """Close read-only, cancel/interrupt its active turn, archive its thread."""
+    running_turn_id = ""
+    with transaction(conn):
+        if not repo.close_conversation(conn, conversation["id"], reason):
+            return
+        turn = repo.active_turn(conn, conversation["id"])
+        if turn is not None and not repo.cancel_queued_turn(conn, turn["id"], _CLOSE_TEXT[reason]):
+            running_turn_id = turn["id"]
+        repo.add_event(
+            conn, conversation_id=conversation["id"],
+            kind="status", payload={"status": "closed", "text": _CLOSE_TEXT[reason]},
+        )
+    if running_turn_id and not await runner.stop_turn(running_turn_id, "closed"):
+        with transaction(conn):
+            repo.update_turn(conn, running_turn_id, status="interrupted", error=_CLOSE_TEXT[reason])
+    runner.schedule_archive(conversation["id"])
+
+
+async def handover(user: dict, body: dict) -> dict:
+    issue = await fetch_issue(body.get("issue_key", ""))
+    check_actor(user, issue)
+    assignee = assignee_name(issue)
+    if not assignee:
+        raise ApiError(409, "工单没有 assignee，请先在 JIRA 指派负责人")
+    note = (body.get("note") or "").strip()
+    uploads = _decode_uploads(body.get("files"))
+    group = domain.group_for_issue(runner_module.load_groups(), issue["components"])
+
+    conn = open_db()
+    try:
+        existing = repo.get_open_conversation(conn, issue["key"])
+        if existing is not None:
+            same_owner = _same_user(existing["owner"], assignee)
+            if same_owner and not body.get("new_conversation"):
+                return {"created": False, "conversation": conversation_view(conn, user, existing)}
+            await close_conversation(conn, existing, "new_conversation" if same_owner else "superseded")
+
+        conversation_id = new_id("jac")
+        try:
+            with transaction(conn):
+                conversation = repo.create_conversation(
+                    conn,
+                    conversation_id=conversation_id,
+                    issue_key=issue["key"],
+                    issue_summary=issue["summary"],
+                    agent_group=group.name,
+                    owner=assignee,
+                    created_by=user["username"],
+                    workspace=domain.workspace_path(group, issue["key"], conversation_id),
+                )
+                turn = repo.create_turn(
+                    conn, conversation_id=conversation_id, trigger="handover",
+                    created_by=user["username"], input_text=note,
+                )
+                for name, data in uploads:
+                    _store_upload(conn, conversation_id, turn["id"], name, data)
+                repo.add_event(
+                    conn, conversation_id=conversation_id, turn_id=turn["id"], kind="user_message",
+                    payload={
+                        "author": user["username"],
+                        "text": note or f"把 {issue['key']} 交给 {group.display_name} 处理",
+                        "files": [name for name, _ in uploads],
+                        "mode": "handover",
+                    },
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ApiError(409, "该工单刚刚已被交给 agent，请刷新后查看") from exc
+        runner.wake()
+        return {"created": True, "conversation": conversation_view(conn, user, conversation)}
+    finally:
+        conn.close()
+
+
+async def send_message(user: dict, conversation_id: str, body: dict) -> dict:
+    text = (body.get("text") or "").strip()
+    uploads = _decode_uploads(body.get("files"))
+    if not text and not uploads:
+        raise ValueError("请输入补充信息或上传文件")
+
+    conn = open_db()
+    try:
+        conversation = _get_visible(conn, user, conversation_id)
+        if conversation["status"] != "open":
+            raise ApiError(409, "该对话已结束（只读），请重新把工单交给 agent 新建对话")
+        issue = await fetch_issue(conversation["issue_key"])
+        assignee = assignee_name(issue)
+        if not _same_user(assignee, conversation["owner"]):
+            await close_conversation(conn, conversation, "superseded")
+            raise ApiError(
+                409,
+                f"JIRA assignee 已变更为 {assignee or '无'}，本对话已结束；请由当前 assignee 交给 agent 新建对话",
+            )
+        check_actor(user, issue)
+
+        names = [name for name, _ in uploads]
+        active = runner.active_for_conversation(conversation_id)
+        if active is not None and active.phase == "running":
+            return await _steer(conn, user, conversation, active, text, uploads)
+        if active is not None and active.phase != "preparing":
+            raise ApiError(409, "agent 正在启动或收尾本轮，请几秒后再发送")
+
+        with transaction(conn):
+            turn = repo.active_turn(conn, conversation_id)
+            if turn is not None:
+                repo.append_turn_input(conn, turn["id"], text)
+                mode = "merged"
+            else:
+                turn = repo.create_turn(
+                    conn, conversation_id=conversation_id, trigger="followup",
+                    created_by=user["username"], input_text=text,
+                )
+                mode = "queued"
+            for name, data in uploads:
+                _store_upload(conn, conversation_id, turn["id"], name, data)
+            repo.add_event(
+                conn, conversation_id=conversation_id, turn_id=turn["id"], kind="user_message",
+                payload={"author": user["username"], "text": text, "files": names, "mode": mode},
+            )
+        runner.wake()
+        return {"mode": mode, "conversation": conversation_view(conn, user, conversation)}
+    finally:
+        conn.close()
+
+
+async def _steer(conn, user: dict, conversation: dict, active, text: str, uploads) -> dict:
+    remote = []
+    try:
+        for name, data in uploads:
+            rel = f"uploads/{new_id('up')}-{name}"
+            await runner.upload_to_active(active, f"{conversation['workspace']}/{rel}", data)
+            with transaction(conn):
+                _store_upload(conn, conversation["id"], active.turn_id, name, data, remote_path=rel)
+            remote.append(rel)
+        steer_text = text or "用户上传了补充文件，请查看。"
+        if remote:
+            steer_text += "\n新上传文件：\n" + "\n".join(f"- {rel}" for rel in remote)
+        await runner.steer(active, steer_text)
+    except CodexAppServerError as exc:
+        raise ApiError(409, f"补充信息未送达 agent（{exc}），请稍后重试") from exc
+    with transaction(conn):
+        repo.add_event(
+            conn, conversation_id=conversation["id"], turn_id=active.turn_id, kind="user_message",
+            payload={"author": user["username"], "text": text, "files": [n for n, _ in uploads], "mode": "steer"},
+        )
+    return {"mode": "steer", "conversation": conversation_view(conn, user, conversation)}
+
+
+async def cancel(user: dict, conversation_id: str) -> dict:
+    conn = open_db()
+    try:
+        conversation = _get_visible(conn, user, conversation_id)
+        if not (_is_rm(user) or _same_user(user["username"], conversation["owner"])):
+            raise AuthzError("只有对话 owner 或 RM 可以取消")
+        turn = repo.active_turn(conn, conversation_id)
+        if turn is None:
+            raise ApiError(409, "当前没有排队或运行中的轮次")
+        with transaction(conn):
+            cancelled = repo.cancel_queued_turn(conn, turn["id"], "已由用户取消排队")
+            if cancelled:
+                repo.add_event(
+                    conn, conversation_id=conversation_id, turn_id=turn["id"],
+                    kind="status", payload={"status": "cancelled", "text": "已由用户取消排队"},
+                )
+        if not cancelled and not await runner.stop_turn(turn["id"], "user"):
+            with transaction(conn):
+                repo.update_turn(conn, turn["id"], status="interrupted", error="已由用户中断")
+        return {"conversation": conversation_view(conn, user, conversation)}
+    finally:
+        conn.close()
+
+
+async def retry_comment(user: dict, turn_id: str) -> dict:
+    conn = open_db()
+    try:
+        turn = repo.get_turn(conn, turn_id)
+        if turn is None:
+            raise ApiError(404, "轮次不存在")
+        conversation = _get_visible(conn, user, turn["conversation_id"])
+        if not (_is_rm(user) or _same_user(user["username"], conversation["owner"])):
+            raise AuthzError("只有对话 owner 或 RM 可以重试发布评论")
+        if turn["comment_status"] != "failed":
+            raise ApiError(409, "该轮评论不需要重试")
+        return {"turn": _turn_view(conn, await runner_module.post_turn_comment(conn, turn_id))}
+    finally:
+        conn.close()

@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
+from urllib.parse import quote
 
 from app.config import settings
 from app.domain.cicd_config import CICD_PAYLOAD_CONFIG_LABELS
@@ -317,3 +318,106 @@ def create_issue(title: str, description: str | None = None, *, jira_config: dic
         raise RuntimeError(f"Jira 建单成功但未返回 key: {result}")
     logger.info("Jira issue created: %s — %s", key, title)
     return key
+
+
+# ─────────────────────────────────────────────────────────────
+# Issue snapshot / attachments / comments (JIRA agent)
+# ─────────────────────────────────────────────────────────────
+
+_ISSUE_FIELDS = (
+    "summary,issuetype,status,priority,project,assignee,reporter,components,"
+    "labels,description,attachment,comment,created,updated"
+)
+
+
+def _require_config(conf_path: str | Path | None = None) -> dict:
+    cfg = load_config(conf_path)
+    if cfg is None:
+        raise RuntimeError("未配置 jira.conf（需要 JIRA_BASE_URL 和 JIRA_TOKEN）")
+    return cfg
+
+
+def _person(value: dict | None) -> dict | None:
+    if not value:
+        return None
+    name = value.get("name") or value.get("key") or ""
+    return {"name": name, "display_name": value.get("displayName") or name}
+
+
+def get_issue(issue_key: str, *, conf_path: str | Path | None = None) -> dict:
+    """Return a normalised snapshot of one issue.
+
+    Raises urllib.error.HTTPError (e.g. 404) or URLError on failure.
+    """
+    cfg = _require_config(conf_path)
+    raw = _request(
+        cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"], "GET",
+        f"/rest/api/2/issue/{quote(issue_key)}?fields={_ISSUE_FIELDS}",
+    )
+    fields = raw.get("fields") or {}
+    key = raw.get("key") or issue_key
+    comments = (fields.get("comment") or {}).get("comments") or []
+    return {
+        "key": key,
+        "url": f"{cfg['JIRA_BASE_URL']}/browse/{key}",
+        "summary": fields.get("summary") or "",
+        "issue_type": (fields.get("issuetype") or {}).get("name", ""),
+        "status": (fields.get("status") or {}).get("name", ""),
+        "priority": (fields.get("priority") or {}).get("name", ""),
+        "project": (fields.get("project") or {}).get("name", ""),
+        "assignee": _person(fields.get("assignee")),
+        "reporter": _person(fields.get("reporter")),
+        "components": [c.get("name", "") for c in fields.get("components") or []],
+        "labels": list(fields.get("labels") or []),
+        "description": fields.get("description") or "",
+        "created": fields.get("created") or "",
+        "updated": fields.get("updated") or "",
+        "comments": [
+            {
+                "id": str(c.get("id", "")),
+                "author": (_person(c.get("author")) or {}).get("display_name", ""),
+                "created": c.get("created") or "",
+                "body": c.get("body") or "",
+            }
+            for c in comments
+        ],
+        "attachments": [
+            {
+                "id": str(a.get("id", "")),
+                "filename": a.get("filename") or "",
+                "size": int(a.get("size") or 0),
+                "mime_type": a.get("mimeType") or "",
+                "content_url": a.get("content") or "",
+            }
+            for a in fields.get("attachment") or []
+        ],
+    }
+
+
+def download_attachment(
+    content_url: str,
+    *,
+    max_bytes: int = 50 * 1024 * 1024,
+    conf_path: str | Path | None = None,
+) -> bytes:
+    """Download attachment bytes; only URLs under the configured JIRA base."""
+    cfg = _require_config(conf_path)
+    if not content_url.startswith(cfg["JIRA_BASE_URL"] + "/"):
+        raise ValueError("附件地址不属于配置的 JIRA")
+    req = urllib.request.Request(content_url, method="GET")
+    req.add_header("Authorization", f"Bearer {cfg['JIRA_TOKEN']}")
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        data = resp.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError(f"附件超过 {max_bytes // (1024 * 1024)}MB，未下载")
+    return data
+
+
+def add_comment(issue_key: str, body: str, *, conf_path: str | Path | None = None) -> str:
+    """Append a comment (wiki markup) and return its id.  Never edits others."""
+    cfg = _require_config(conf_path)
+    result = _request(
+        cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"], "POST",
+        f"/rest/api/2/issue/{quote(issue_key)}/comment", {"body": body},
+    )
+    return str(result.get("id") or "")

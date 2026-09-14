@@ -22,6 +22,7 @@ def test_shared_policy_contains_all_roles_and_critical_tab_rules() -> None:
     assert roles_for_tab("admin") == ("Admin",)
     assert roles_for_tab("jenkins-failures") == ("RM", "Owner", "SPD", "QA")
     assert roles_for_tab("cicd-assistant") == ("RM", "Owner", "SPD")
+    assert roles_for_tab("jira-agent") == ("RM", "Owner")
 
 
 def test_shared_capabilities_cover_operation_level_exceptions() -> None:

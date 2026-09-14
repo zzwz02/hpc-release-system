@@ -17,7 +17,7 @@
 
 这是职责摘要，不是权限实现。角色、页签与命名能力以 [access_control.json](shared/access_control.json) 为准；所有权、阶段、锁定与申请状态还会进一步限制操作。后端鉴权是最终边界，前端按钮仅用于展示。
 
-现有页面还包括开发 WIKI、Jenkins 失败查询、CICD 助手及其 V2 界面。完整导航见 [routeConfig.ts](web/src/routes/routeConfig.ts)。
+现有页面还包括开发 WIKI、Jenkins 失败查询、CICD 助手及其 V2 界面、JIRA agent。完整导航见 [routeConfig.ts](web/src/routes/routeConfig.ts)。
 
 ## 发布周期怎么运行
 
@@ -69,6 +69,28 @@ flowchart LR
 
 实现入口：[cicd_service.py](app/services/cicd_service.py)、[decision_sync.py](app/domain/decision_sync.py)、[identity.py](app/identity.py)。仓库身份匹配必须同时考虑仓库与分支；manifest XML 的存储路径与解析后的 Git 身份不能混为一谈。
 
+## JIRA agent（数字员工）
+
+JIRA agent 是按组配置的数字员工，第一阶段处理 HPC 组的 Bug 类工单：收集信息、分类、判断归属、复现、分析，属于本组且能修复时完成修复与验证。部署、配置和迁移步骤见 [JIRA agent 部署与使用](docs/jira-agent.md)，开发约束见 [jira-agent-dev 技能](.agents/skills/jira-agent-dev/SKILL.md)。
+
+| 位置 | 职责 |
+| --- | --- |
+| 服务器 A（本网站） | 对话、消息、文件、排队、执行记录、JIRA 评论；通过 WebSocket + token 连接 B |
+| 服务器 B（组的 `codex app-server`） | agent 本体；本组知识包（AGENTS.md、skills）、Codex 登录凭证、访问 C/D/E 的 SSH 凭证。B 上不部署适配服务 |
+| 服务器 C/D/E | 复现、构建、测试环境，由 B 上的执行用户登录 |
+
+使用规则：
+
+- 只有当前 JIRA assignee 或 RM 可以把工单交给 agent 或与 agent 对话，每次写操作都实时核对 JIRA。页签可见角色以 `access_control.json` 的 `jira-agent` 为准。
+- agent **只在 JIRA 追加评论**（结论、证据、补丁、下一步建议），不改 assignee、状态或代码。assignee 读评论后决定 resolve、转交，或在网站补充信息让 agent 继续。
+- 一个对话对应一个 Codex thread 和 B 上一个工作目录，归属于交单时的 assignee。assignee 变更后旧对话只读，新 assignee 交单时新建对话；转回原 assignee 也不复用。同一 assignee 可以主动新建对话。
+- 网站侧持久排队，每组同时运行的轮次不超过 `MAX_CONCURRENT`；运行中的补充信息直接发给 agent，排队中的消息合并到这一轮。机器资源（如 GPU）由 B 上知识包约定的 `flock` 锁控制。
+- 网站重启时，运行中的轮次标记为已中断，不自动重跑。
+
+实现入口：[jira_agent_service.py](app/services/jira_agent_service.py)（交单与对话规则）、[jira_agent_runner.py](app/services/jira_agent_runner.py)（排队与执行）、[codex_app_server.py](app/integrations/codex_app_server.py)（通用 Codex 协议客户端）、[jira_agent.py](app/domain/jira_agent.py)（结论 schema、提示词、评论格式）、[JiraAgentPage.tsx](web/src/features/jiraAgent/JiraAgentPage.tsx)，B 侧知识包与启动脚本在 [deploy/jira-agent/](deploy/jira-agent/)。
+
+后续阶段（尚未实现）：跟踪最终 root cause 与人工纠正的学习闭环、按 component 路由到其他组的数字员工、适配类与优化类任务。
+
 ## 数据与文档产物
 
 | 数据 | 存储与边界 |
@@ -82,6 +104,7 @@ flowchart LR
 | 用户、会话、审计 | `users`、`sessions`、`audit`；这些数据不应整体导出到文档或测试夹具 |
 | WIKI | `wiki_articles`、`wiki_images`，图片存于数据库 |
 | CICD 助手会话 | 独立 SQLite 库，由 `ASSISTANT_DATABASE_URL` 指定；不写入主业务库 |
+| JIRA agent | 独立 SQLite 库 `JIRA_AGENT_DATABASE_URL`（对话、轮次、时间线、文件索引）；上传文件与拉回的产物在 `JIRA_AGENT_DATA_DIR`；Codex thread 与工作目录在服务器 B |
 
 常规生成的四类产物为 `release_note`、`manual`、`ai4sci`、`data`。Manager Review CSV 单独生成；测试范围 CSV 按需导出，不是 artifacts 的一个 kind。最终锁定生成上述四类 final 产物，不会自动把 Manager Review 升格为最终审批记录。
 
@@ -95,10 +118,11 @@ app/services/          业务编排与事务；部分历史 SQL 尚未下沉
 app/domain/            阶段、决策、门槛、权限与解析规则
 app/repositories/      数据访问
 app/db/                主库与助手库连接、建表和兼容处理
-app/integrations/      LDAP / Gerrit / Jira / LLM 集成
+app/integrations/      LDAP / Gerrit / Jira / LLM / Codex app-server 集成
 web/src/               React 页面、HTTP 客户端、查询缓存和 UI 状态
 shared/                跨前后端权限、词表和集成默认配置
-.agents/skills/        开发与 C500/X201 文档工作流
+deploy/jira-agent/     JIRA agent 服务器 B 的启动脚本与 HPC 知识包
+.agents/skills/        开发、JIRA agent 开发与 C500/X201 文档工作流（.claude/skills 为指向它的软链接）
 ```
 
 - 权限：`shared/access_control.json` → Python `domain/permissions.py` / React `lib/accessControl.ts`。
@@ -106,7 +130,7 @@ shared/                跨前后端权限、词表和集成默认配置
 - 集成默认值：`shared/integrations.json` → `app/config.py`；浏览器只取得它所需的非敏感配置。
 - 时间：新写入使用 `app/timeutil.py` 的北京时间无时区字符串；deadline 精度为分钟，业务事件通常精确到秒，时间线为日期。**旧库仍可能有 UTC ISO 数据，不可假定迁移已完成，也不能对全部值统一加 8 小时。**
 - Markdown：页面中的 HTML 注入集中在 `web/src/components/Markdown.tsx` 的 DOMPurify 流程。
-- 刷新：全局查询默认永久新鲜、关闭自动重取；页面显式刷新或写后失效，QA AI 任务例外按秒轮询。进入页面并不保证重取已缓存数据。
+- 刷新：全局查询默认永久新鲜、关闭自动重取；页面显式刷新或写后失效，QA AI 任务与 JIRA agent 运行中的对话例外按秒轮询。进入页面并不保证重取已缓存数据。
 
 `server.py`、`index.html`、`release_system/` 保留为旧实现与测试兼容参考，日常功能开发不修改这些文件。它们的旧行为、注释和 historical golden 都不能推翻当前明确的业务实现。
 
@@ -154,6 +178,9 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 | `ASSISTANT_DATABASE_URL` | 助手会话库；当前仅支持 `sqlite:///` URL |
 | `ASSISTANT_HISTORY_LIMIT` / `ASSISTANT_SUMMARY_*` | 助手上下文窗口及滚动摘要配置 |
 | `HPC_DOCS_GERRIT_REMOTE` / `HPC_RELEASE_DATA_GERRIT_REMOTE` | 生成 Gerrit 提交计划的目标；不会自动发布 |
+| `JIRA_AGENT_CONF_PATH` | 各组数字员工配置（B 的地址、token、工作目录根、并发与限时），模板为 `jira_agent.conf.example` |
+| `JIRA_AGENT_DATABASE_URL` / `JIRA_AGENT_DATA_DIR` | JIRA agent 独立库与文件目录 |
+| `JIRA_AGENT_RUNNER_ENABLED` / `JIRA_AGENT_PUBLIC_BASE_URL` | 是否在进程内运行队列；JIRA 评论中网站链接的对外地址 |
 
 ## 只读检查、备份与验证
 

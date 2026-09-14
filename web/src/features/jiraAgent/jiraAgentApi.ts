@@ -1,0 +1,245 @@
+import { apiGet, apiPost } from "../../api/http";
+
+export const JIRA_AGENT_KEY = ["jira-agent"] as const;
+export const JIRA_AGENT_CONVERSATIONS_KEY = ["jira-agent", "conversations"] as const;
+export const jiraAgentConversationKey = (id: string) => ["jira-agent", "conversation", id] as const;
+
+export type TurnStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
+export type ConversationState =
+  | "idle"
+  | "queued"
+  | "running"
+  | "waiting_review"
+  | "failed"
+  | "cancelled"
+  | "interrupted"
+  | "closed";
+export type CommentStatus = "" | "pending" | "posted" | "failed";
+
+export interface AgentResult {
+  conclusion: string;
+  issue_category: string;
+  ownership: { belongs_to_us: string; target_group: string; reasoning: string };
+  summary: string;
+  root_cause: string;
+  reproduction: { reproduced: boolean; environment: string; steps: string[] };
+  evidence: { description: string; command: string; result: string }[];
+  fix: { description: string };
+  artifacts: string[];
+  next_steps: string[];
+  skills_used: string[];
+}
+
+export interface AgentTurn {
+  id: string;
+  conversation_id: string;
+  seq: number;
+  trigger: "handover" | "followup";
+  created_by: string;
+  input_text: string;
+  status: TurnStatus;
+  codex_turn_id: string;
+  result: AgentResult | null;
+  conclusion: string;
+  comment_status: CommentStatus;
+  comment_id: string;
+  comment_body: string;
+  comment_error: string;
+  error: string;
+  created_at: string;
+  started_at: string;
+  finished_at: string;
+  queue_position: number | null;
+}
+
+export interface AgentConversation {
+  id: string;
+  issue_key: string;
+  issue_summary: string;
+  agent_group: string;
+  owner: string;
+  created_by: string;
+  thread_id: string;
+  workspace: string;
+  status: "open" | "closed";
+  close_reason: "" | "superseded" | "new_conversation";
+  created_at: string;
+  updated_at: string;
+  closed_at: string;
+  state: ConversationState;
+  phase: string;
+  latest_turn: AgentTurn | null;
+  read_only: boolean;
+  can_write: boolean;
+  browse_url: string;
+}
+
+export interface AgentEvent {
+  id: string;
+  conversation_id: string;
+  turn_id: string;
+  seq: number;
+  rev: number;
+  item_id: string;
+  kind: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentFile {
+  id: string;
+  conversation_id: string;
+  turn_id: string;
+  direction: "input" | "output";
+  source: "jira" | "upload" | "artifact";
+  source_ref: string;
+  name: string;
+  size: number;
+  sha256: string;
+  remote_path: string;
+  created_at: string;
+  downloadable: boolean;
+}
+
+export interface IssueConversationRef {
+  id: string;
+  owner: string;
+  status: "open" | "closed";
+  close_reason: string;
+  created_at: string;
+}
+
+export interface ConversationDetail {
+  conversation: AgentConversation;
+  turns: AgentTurn[];
+  files: AgentFile[];
+  events: AgentEvent[];
+  rev: number;
+  issue_conversations: IssueConversationRef[];
+}
+
+export interface EventsResponse {
+  conversation: AgentConversation;
+  events: AgentEvent[];
+  rev: number;
+}
+
+export interface IssuePreview {
+  issue: {
+    key: string;
+    url: string;
+    summary: string;
+    issue_type: string;
+    status: string;
+    priority: string;
+    assignee: { name: string; display_name: string } | null;
+    components: string[];
+    attachment_count: number;
+    comment_count: number;
+  };
+  can_handover: boolean;
+  open_conversation: { id: string; owner: string; owner_is_assignee: boolean } | null;
+  conversations: AgentConversation[];
+}
+
+export interface UploadPayload {
+  filename: string;
+  content_base64: string;
+}
+
+export const CONCLUSION_LABELS: Record<string, string> = {
+  fixed_pending_review: "已修复，方案请审批",
+  cannot_reproduce: "无法复现",
+  needs_info: "需要补充信息",
+  needs_help: "无法完成，需要人工帮助",
+  not_our_group: "经分析需其他组负责",
+  analysis_done: "已完成分析",
+};
+
+export const OWNERSHIP_LABELS: Record<string, string> = {
+  yes: "属于本组",
+  no: "不属于本组",
+  unclear: "暂无法判断",
+};
+
+export const STATE_LABELS: Record<ConversationState, string> = {
+  idle: "未开始",
+  queued: "排队中",
+  running: "处理中",
+  waiting_review: "待 assignee 审阅",
+  failed: "失败",
+  cancelled: "已取消",
+  interrupted: "已中断",
+  closed: "已结束（只读）",
+};
+
+export const CLOSE_REASON_LABELS: Record<string, string> = {
+  superseded: "JIRA assignee 已变更，本对话已结束",
+  new_conversation: "已新建对话，本对话已结束",
+};
+
+export function listConversations() {
+  return apiGet<{ conversations: AgentConversation[] }>("/api/jira-agent/conversations");
+}
+
+export function previewIssue(issueKey: string) {
+  return apiGet<IssuePreview>(`/api/jira-agent/issues/${encodeURIComponent(issueKey)}`);
+}
+
+export function handoverIssue(body: {
+  issue_key: string;
+  note?: string;
+  files?: UploadPayload[];
+  new_conversation?: boolean;
+}) {
+  return apiPost<{ created: boolean; conversation: AgentConversation }>(
+    "/api/jira-agent/conversations",
+    body,
+  );
+}
+
+export function getConversation(id: string) {
+  return apiGet<ConversationDetail>(`/api/jira-agent/conversations/${encodeURIComponent(id)}`);
+}
+
+export function getConversationEvents(id: string, after: number) {
+  return apiGet<EventsResponse>(
+    `/api/jira-agent/conversations/${encodeURIComponent(id)}/events?after=${after}`,
+  );
+}
+
+export function sendConversationMessage(id: string, body: { text: string; files?: UploadPayload[] }) {
+  return apiPost<{ mode: "steer" | "merged" | "queued"; conversation: AgentConversation }>(
+    `/api/jira-agent/conversations/${encodeURIComponent(id)}/messages`,
+    body,
+  );
+}
+
+export function cancelConversationTurn(id: string) {
+  return apiPost<{ conversation: AgentConversation }>(
+    `/api/jira-agent/conversations/${encodeURIComponent(id)}/cancel`,
+    {},
+  );
+}
+
+export function retryTurnComment(turnId: string) {
+  return apiPost<{ turn: AgentTurn }>(
+    `/api/jira-agent/turns/${encodeURIComponent(turnId)}/comment/retry`,
+    {},
+  );
+}
+
+export function fileDownloadUrl(conversationId: string, fileId: string): string {
+  return `/api/jira-agent/conversations/${encodeURIComponent(conversationId)}/files/${encodeURIComponent(fileId)}`;
+}
+
+export async function fileToUpload(file: File): Promise<UploadPayload> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return { filename: file.name, content_base64: btoa(binary) };
+}

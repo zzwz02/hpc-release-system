@@ -78,6 +78,17 @@ class Settings(BaseSettings):
     assistant_summary_keep_messages: int = 12
     assistant_summary_max_chars: int = 4000
 
+    # --- JIRA Agent -------------------------------------------------------------
+    # Per-group digital employees.  jira_agent.conf holds each group's Codex
+    # app-server URL and token; knowledge, skills and execution credentials
+    # live on that group's app-server host, not on this website.
+    jira_agent_conf_path: Path = _PROJECT_ROOT / "jira_agent.conf"
+    jira_agent_database_url: str = f"sqlite:///{(_PROJECT_ROOT / 'jira_agent_tasks.db').as_posix()}"
+    jira_agent_data_dir: Path = _PROJECT_ROOT / "jira_agent_data"
+    jira_agent_runner_enabled: bool = True
+    # Browser-facing site origin used for links in JIRA comments (optional).
+    jira_agent_public_base_url: str = ""
+
     # --- Gerrit -----------------------------------------------------------------
     # One deploy-time override for the Gerrit SSH origin. Project paths come
     # from shared/integrations.json, which is also consumed by the frontend.

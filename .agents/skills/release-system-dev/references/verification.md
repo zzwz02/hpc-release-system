@@ -18,6 +18,9 @@ export ASSISTANT_DATABASE_URL="sqlite:///$verification_dir/assistant.db"
 export LDAP_CONF_PATH="$verification_dir/ldap-disabled.conf"
 export JIRA_CONF_PATH="$verification_dir/jira-disabled.conf"
 export QA_LLM_ENV_FILE="$verification_dir/llm-disabled.env"
+export JIRA_AGENT_DATABASE_URL="sqlite:///$verification_dir/jira_agent.db"
+export JIRA_AGENT_DATA_DIR="$verification_dir/jira_agent_data"
+export JIRA_AGENT_CONF_PATH="$verification_dir/jira_agent-disabled.conf"
 export NO_PROXY=localhost,127.0.0.1
 export no_proxy=localhost,127.0.0.1
 python -m pytest -q

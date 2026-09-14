@@ -12,6 +12,7 @@ description: Develop, debug, or review this HPC release collaboration repository
 - 发布决策、App、QA、审批/交付、最终产物：读 [workflows.md](references/workflows.md)，再看对应 domain、service 和测试。
 - 前端：读 [web/README-web.md](../../../web/README-web.md)。交互修改要验证实际页面和真实请求形状。
 - 测试、迁移、运行环境：读 [verification.md](references/verification.md)。文档修改只做相称的链接、语法和事实检查。
+- JIRA agent（对话、队列、Codex app-server 客户端、服务器 B 知识包）：读相邻的 [jira-agent-dev](../jira-agent-dev/SKILL.md) 技能。
 - C500/X201 RST 合并使用相邻的 `c500-manual-integrator` 技能，本技能不代替手册分类与版本规则。
 
 ## 修改落点与事实源
@@ -36,7 +37,7 @@ description: Develop, debug, or review this HPC release collaboration repository
 
 ## 前端与时间
 
-- 保持按需刷新，除 QA AI 任务进度外不自行新增周期轮询。注意 `staleTime: Infinity` 下 `refetchOnMount: true` 不保证重新请求。
+- 保持按需刷新，除 QA AI 任务进度和 JIRA agent 运行中的对话外不自行新增周期轮询。注意 `staleTime: Infinity` 下 `refetchOnMount: true` 不保证重新请求。
 - 设计缓存时同时考虑用户身份、release、查询参数与返回形状；账号切换、401、写操作需要合适的取消/清理/失效。共用查询键不能对应不同权限或字段集合。
 - 共享周期选择使用 `uiStore`；编辑表单保留未保存变更保护。密集列表采用可检索表格或主从布局，选中项目后详情应直接可见。
 - Markdown 使用统一 `Markdown.tsx` + DOMPurify，不增加任意 HTML 注入出口。

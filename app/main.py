@@ -22,6 +22,7 @@ from app.api.routers import (
     auth,
     cicd,
     cicd_agent,
+    jira_agent,
     qa,
     releases,
     state,
@@ -31,6 +32,7 @@ from app.config import settings
 from app.db.connection import connect
 from app.integrations.ldap import load_ldap_config
 from app.services import auth_service
+from app.services.jira_agent_runner import runner as jira_agent_runner
 
 
 @asynccontextmanager
@@ -49,7 +51,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     conn.close()
 
-    yield
+    # JIRA agent queue runner (in-process; keep uvicorn at a single worker).
+    if settings.jira_agent_runner_enabled:
+        await jira_agent_runner.start()
+    try:
+        yield
+    finally:
+        if settings.jira_agent_runner_enabled:
+            await jira_agent_runner.stop()
 
 
 def create_app() -> FastAPI:
@@ -65,6 +74,7 @@ def create_app() -> FastAPI:
     app.include_router(apps.router)
     app.include_router(cicd.router)
     app.include_router(cicd_agent.router)
+    app.include_router(jira_agent.router)
     app.include_router(qa.router)
     app.include_router(releases.router)
     app.include_router(wiki.router)

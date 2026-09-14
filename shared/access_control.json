@@ -10,6 +10,7 @@
     "jenkins-failures": ["RM", "Owner", "SPD", "QA"],
     "cicd-assistant": ["RM", "Owner", "SPD"],
     "cicd-assistant-v2": ["RM", "Owner", "SPD"],
+    "jira-agent": ["RM", "Owner"],
     "wiki": ["RM", "Owner"],
     "admin": ["Admin"]
   },

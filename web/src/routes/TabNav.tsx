@@ -64,6 +64,9 @@ export function TabNav() {
     if (["jenkins-failures", "cicd-assistant", "cicd-assistant-v2"].includes(view)) {
       void queryClient.invalidateQueries({ queryKey: ["cicd-agent"] });
     }
+    if (view === "jira-agent") {
+      void queryClient.invalidateQueries({ queryKey: ["jira-agent"] });
+    }
     if (view === "wiki") {
       void queryClient.invalidateQueries({ queryKey: ["wiki"] });
     }
