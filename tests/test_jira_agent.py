@@ -31,6 +31,11 @@ from app.repositories import jira_agent_repo as repo
 from app.services import jira_agent_runner
 
 TOKEN = "secret-token"
+KEY_PATH = "/home/agent/.ssh/id_ed25519"
+# ssh-keygen -l prints: 256 SHA256:lrNsVsx6+k+Hy/d+CeYkXjLtXLZxRxAKqM9wH/H/KuI hpc-jira-agent@B (ED25519)
+PUBKEY = b"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDbFODJI3urCdOwD3QXJpRYlnRjEo08FkDvSkoHHZI9U hpc-jira-agent@B\n"
+FINGERPRINT = "SHA256:lrNsVsx6+k+Hy/d+CeYkXjLtXLZxRxAKqM9wH/H/KuI"
+SYSTEM_MACHINE = "hpc@10.2.118.75"
 
 RESULT = {
     "conclusion": "fixed_pending_review",
@@ -38,6 +43,7 @@ RESULT = {
     "ownership": {"belongs_to_us": "yes", "target_group": "", "reasoning": "saxpy.cu 的线程块数量向下取整"},
     "summary": "修复尾部元素未计算",
     "root_cause": "blocks = n / 256 向下取整",
+    "machine": SYSTEM_MACHINE,
     "reproduction": {"reproduced": True, "environment": "A100", "steps": ["make", "./saxpy 16777217"]},
     "evidence": [{"description": "修复后验证", "command": "./saxpy 16777217", "result": "PASS exit=0"}],
     "fix": {"description": "改为向上取整"},
@@ -72,6 +78,11 @@ class FakeCodex:
         self.turns = 0
         self.turn_state: dict[str, dict] = {}  # turn id -> Turn as thread/turns/list returns it
         self.thread_turns: dict[str, list[str]] = {}
+        # command/exec: tty processes ask for a password (ssh-copy-id); other
+        # commands (the BatchMode check) exit with verify_exit.
+        self.ssh_password = "s3cret"
+        self.verify_exit = 0
+        self.processes: dict[str, dict] = {}
         self._subscriber: dict[str, object] = {}  # thread id -> connection receiving its notifications
         self._interrupts: dict[str, asyncio.Event] = {}
         self._ready = threading.Event()
@@ -129,6 +140,17 @@ class FakeCodex:
                 await asyncio.sleep(self.turn_start_delay)
             if method == "thread/resume" and self.resume_delay:
                 await asyncio.sleep(self.resume_delay)
+            if method == "command/exec" and params.get("tty"):
+                # answered when the process exits, like the real app-server,
+                # which kills it with exit 124 once timeoutMs has passed
+                process_id = params["processId"]
+                process = self.processes[process_id] = {"ws": ws, "id": message["id"], "input": b""}
+                await self._process_output(process_id, b"tester@host's password: ")
+                asyncio.get_running_loop().call_later(
+                    params["timeoutMs"] / 1000,
+                    lambda: asyncio.ensure_future(self._process_timeout(process_id, process)),
+                )
+                continue
             result, error = self._result(ws, method, params)
             reply = {"id": message["id"], **({"error": error} if error else {"result": result})}
             try:
@@ -182,7 +204,52 @@ class FakeCodex:
             return {}, None
         if method == "turn/steer":
             return {"turnId": params["expectedTurnId"]}, None
+        if method == "command/exec":  # one-shot: the BatchMode key-login check
+            stderr = "" if self.verify_exit == 0 else "Permission denied (publickey)."
+            return {"exitCode": self.verify_exit, "stdout": "", "stderr": stderr}, None
+        if method in ("command/exec/write", "command/exec/terminate"):
+            process_id = params["processId"]
+            process = self.processes.get(process_id)
+            if process is None:
+                return None, {"code": -32000, "message": "no such process"}
+            if method == "command/exec/terminate":
+                asyncio.ensure_future(self._process_exit(process_id, 1))
+            else:
+                process["input"] += base64.b64decode(params.get("deltaBase64") or "")
+                if b"\n" in process["input"]:
+                    typed = process["input"].split(b"\n")[0].decode()
+                    asyncio.ensure_future(self._process_finish(process_id, typed))
+            return {}, None
         return {}, None  # initialize, fs/createDirectory, thread/archive
+
+    async def _ws_send(self, ws, payload: dict) -> None:
+        try:
+            await ws.send(json.dumps(payload))
+        except ConnectionClosed:
+            pass
+
+    async def _process_output(self, process_id: str, data: bytes) -> None:
+        process = self.processes[process_id]
+        await self._ws_send(process["ws"], {"method": "command/exec/outputDelta", "params": {
+            "processId": process_id, "stream": "stdout", "deltaBase64": base64.b64encode(data).decode(), "capReached": False,
+        }})
+
+    async def _process_finish(self, process_id: str, typed: str) -> None:
+        if typed == self.ssh_password:
+            await self._process_output(process_id, b"\r\nNumber of key(s) added: 1\r\n")
+            await self._process_exit(process_id, 0)
+        else:
+            await self._process_output(process_id, b"\r\nPermission denied, please try again.\r\n")
+            await self._process_exit(process_id, 1)
+
+    async def _process_timeout(self, process_id: str, process: dict) -> None:
+        if self.processes.get(process_id) is process:  # still this (unfinished) process
+            await self._process_exit(process_id, 124)
+
+    async def _process_exit(self, process_id: str, code: int) -> None:
+        process = self.processes.pop(process_id, None)
+        if process is not None:
+            await self._ws_send(process["ws"], {"id": process["id"], "result": {"exitCode": code, "stdout": "", "stderr": ""}})
 
     async def _send(self, thread_id: str, payload: dict) -> None:
         ws = self._subscriber.get(thread_id)
@@ -289,6 +356,7 @@ def _write_conf(path: Path, url: str, *, token: str = TOKEN, max_concurrent: int
     path.write_text(
         f"[HPC]\nDISPLAY_NAME = HPC 数字员工\nCODEX_WS_URL = {url}\nCODEX_WS_TOKEN = {token}\n"
         f"WORKSPACE_ROOT = /b/workspaces\nCOMPONENTS = PDE_HPC\nJIRA_MEMBERS_GROUP = pde_hpc\n"
+        f"SSH_KEY_PATH = {KEY_PATH}\n"
         f"MAX_CONCURRENT = {max_concurrent}\n"
         f"TURN_TIMEOUT_SECONDS = {timeout}\n",
         encoding="utf-8",
@@ -313,6 +381,17 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(jira, "download_attachment", fake_jira.download_attachment)
     monkeypatch.setattr(jira, "search_issues", fake_jira.search_issues)
     monkeypatch.setattr(jira, "add_comment", fake_jira.add_comment)
+
+    fake.files[f"{KEY_PATH}.pub"] = PUBKEY
+    conn = connect_jira_agent(settings.jira_agent_database_url)
+    try:
+        with transaction(conn):
+            repo.create_machine(
+                conn, agent_group="HPC", ssh_target=SYSTEM_MACHINE, description="1×A100 40GB | CUDA 12",
+                created_by="carol",
+            )
+    finally:
+        conn.close()
 
     current = {"user": USERS["alice"]}
     app = create_app()
@@ -960,3 +1039,180 @@ def test_group_selection_and_comment_rendering(tmp_path: Path) -> None:
     assert "结论：经分析需其他组负责" in body
     assert "不属于本组（建议由 PyTorch 组 负责）" in body
     assert "不会修改 assignee" in body
+
+
+def test_ssh_target_and_public_key_fingerprint() -> None:
+    assert domain.parse_ssh_target(" hpc@10.2.118.75 ") == "hpc@10.2.118.75"
+    for bad in ("-oProxyCommand=x@h", "hpc@-oProxyCommand=x", "hpc@10.0.0.1:22", "a b@h", "hpc", "", "hpc@h;rm"):
+        with pytest.raises(ValueError):
+            domain.parse_ssh_target(bad)
+    assert domain.ssh_public_key_info(PUBKEY.decode()) == {
+        "type": "ssh-ed25519", "fingerprint": FINGERPRINT, "comment": "hpc-jira-agent@B",
+    }
+    with pytest.raises(ValueError):
+        domain.ssh_public_key_info("ssh-ed25519 not-base64!")
+
+
+# ─────────────────────────────────────────────────────────────
+# Execution machines
+# ─────────────────────────────────────────────────────────────
+
+def test_auto_machine_prompt_lists_system_machines_and_comment_names_used_machine(env) -> None:
+    conversation = _handover(env)["conversation"]
+    assert conversation["machine"] == ""
+    _wait(env, conversation["id"], _done)
+    turn_start = env.fake.params("turn/start")[0]
+    prompt = turn_start["input"][0]["text"]
+    assert "按工单需要从下列系统机器中选择一台" in prompt
+    assert f"| `{SYSTEM_MACHINE}` | 1×A100 40GB \\| CUDA 12 |" in prompt
+    assert "machine" in turn_start["outputSchema"]["required"]
+    [(_, body)] = env.jira.comments
+    assert f"*执行机器*：{SYSTEM_MACHINE}" in body
+
+    sent = env.client.post(f"/api/jira-agent/conversations/{conversation['id']}/messages", json={"text": "继续"})
+    assert sent.status_code == 200, sent.text
+    _wait(env, conversation["id"], lambda d: _latest(d)["seq"] == 2 and _done(d))
+    assert SYSTEM_MACHINE in env.fake.params("turn/start")[1]["input"][0]["text"]
+
+
+def test_rm_maintains_system_machines(env) -> None:
+    machines = env.client.get("/api/jira-agent/machines").json()
+    assert machines["can_manage"] is False
+    assert [m["ssh_target"] for m in machines["machines"]] == [SYSTEM_MACHINE]
+    assert machines["groups"] == [{"name": "HPC", "display_name": "HPC 数字员工"}]
+    body = {"agent_group": "HPC", "ssh_target": "hpc2@10.2.118.76", "description": "2×A100"}
+    assert env.client.post("/api/jira-agent/machines", json=body).status_code == 403
+
+    env.as_user("carol")
+    created = env.client.post("/api/jira-agent/machines", json=body)
+    assert created.status_code == 200, created.text
+    machine_id = created.json()["machine"]["id"]
+    assert env.client.post("/api/jira-agent/machines", json=body).status_code == 409
+    for bad in ("-oProxyCommand=x@h", "hpc@10.0.0.1:22", "hpc@h ost", "nohost"):
+        assert env.client.post("/api/jira-agent/machines", json={**body, "ssh_target": bad}).status_code == 400, bad
+    assert env.client.post("/api/jira-agent/machines", json={**body, "agent_group": "NOPE"}).status_code == 400
+    updated = env.client.put(
+        f"/api/jira-agent/machines/{machine_id}", json={"ssh_target": "hpc3@10.2.118.77", "description": "改"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["machine"]["ssh_target"] == "hpc3@10.2.118.77"
+
+    for machine in env.client.get("/api/jira-agent/machines").json()["machines"]:
+        assert env.client.delete(f"/api/jira-agent/machines/{machine['id']}").status_code == 200
+    assert env.client.delete(f"/api/jira-agent/machines/{machine_id}").status_code == 404
+
+    env.as_user("alice")  # the automatic choice needs a system machine
+    empty = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-1"})
+    assert empty.status_code == 409
+    assert "系统机器列表为空" in empty.json()["error"]
+
+
+def _key_session(env, session_id: str, predicate, timeout: float = 10.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while True:
+        response = env.client.get(f"/api/jira-agent/ssh-key-sessions/{session_id}")
+        assert response.status_code == 200, response.text
+        session = response.json()
+        if predicate(session):
+            return session
+        if time.monotonic() > deadline:
+            raise AssertionError(f"key session condition not reached: {session}")
+        time.sleep(0.05)
+
+
+def _finished(session: dict) -> bool:
+    return session["status"] not in ("running", "verifying")
+
+
+def _start_key_session(env, target: str) -> str:
+    response = env.client.post("/api/jira-agent/ssh-key-sessions", json={"agent_group": "HPC", "target": target})
+    assert response.status_code == 200, response.text
+    return response.json()["id"]
+
+
+def test_user_given_machine_needs_key_uploaded_from_b_and_verified(env) -> None:
+    target = "tester@10.0.0.9"
+    refused = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-1", "machine": target})
+    assert refused.status_code == 409
+    assert "上传到 tester@10.0.0.9" in refused.json()["error"]
+    bad = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-1", "machine": "-oProxyCommand=sh@x"})
+    assert bad.status_code == 400
+
+    info = env.client.get("/api/jira-agent/ssh-key-info", params={"group": "HPC"}).json()
+    assert (info["fingerprint"], info["comment"], info["verified_targets"]) == (FINGERPRINT, "hpc-jira-agent@B", [])
+
+    session_id = _start_key_session(env, target)
+    _key_session(env, session_id, lambda s: "password:" in s["output"])
+    [pty] = [params for params in env.fake.params("command/exec") if params.get("tty")]
+    assert pty["command"] == [
+        "ssh-copy-id", "-i", f"{KEY_PATH}.pub", "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ConnectTimeout=10", target,
+    ]
+    # the app-server enforces the limit; its default (10 s) is too short to type a password
+    assert pty["timeoutMs"] == 60_000
+    assert "disableTimeout" not in pty
+
+    env.as_user("bob")  # only the user who started it
+    assert env.client.get(f"/api/jira-agent/ssh-key-sessions/{session_id}").status_code == 404
+    assert env.client.post(
+        f"/api/jira-agent/ssh-key-sessions/{session_id}/input", json={"data": "x\n"},
+    ).status_code == 404
+    env.as_user("alice")
+    again = env.client.post("/api/jira-agent/ssh-key-sessions", json={"agent_group": "HPC", "target": target})
+    assert again.status_code == 409  # one live session per user
+
+    sent = env.client.post(f"/api/jira-agent/ssh-key-sessions/{session_id}/input", json={"data": "s3cret\n"})
+    assert sent.status_code == 200, sent.text
+    done = _key_session(env, session_id, _finished)
+    assert (done["status"], done["exit_code"]) == ("succeeded", 0), done
+    assert "Number of key(s) added" in done["output"]
+    [check] = [params for params in env.fake.params("command/exec") if not params.get("tty")]
+    assert check["command"][:3] == ["ssh", "-o", "BatchMode=yes"]
+    assert check["command"][-2:] == [target, "true"]
+    assert env.client.get("/api/jira-agent/ssh-key-info", params={"group": "HPC"}).json()["verified_targets"] == [target]
+
+    conversation = _handover(env, "MC3-1", machine=target)["conversation"]
+    assert conversation["machine"] == target
+    _wait(env, conversation["id"], _done)
+    prompt = env.fake.params("turn/start")[0]["input"][0]["text"]
+    assert f"用户指定的机器 `ssh {target}`" in prompt
+    assert SYSTEM_MACHINE not in prompt
+
+    # what was typed is only forwarded: not in any file the website wrote
+    stored = b"".join(path.read_bytes() for path in env.tmp.rglob("*") if path.is_file())
+    assert b"s3cret" not in stored
+
+    env.as_user("carol")  # the upload record belongs to the user who did it
+    other = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-2", "machine": target})
+    assert other.status_code == 409
+
+
+def test_key_upload_failures_and_timeouts_record_nothing(env, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import jira_agent_ssh_key
+
+    target = "tester@10.0.0.9"
+    env.fake.verify_exit = 255  # key copied, but server B still cannot log in with it
+    session_id = _start_key_session(env, target)
+    _key_session(env, session_id, lambda s: "password:" in s["output"])
+    env.client.post(f"/api/jira-agent/ssh-key-sessions/{session_id}/input", json={"data": "s3cret\n"})
+    failed = _key_session(env, session_id, _finished)
+    assert failed["status"] == "failed"
+    assert "免密登录" in failed["message"] and "Permission denied" in failed["message"]
+
+    env.fake.verify_exit = 0
+    session_id = _start_key_session(env, target)
+    _key_session(env, session_id, lambda s: "password:" in s["output"])
+    env.client.post(f"/api/jira-agent/ssh-key-sessions/{session_id}/input", json={"data": "wrong\n"})
+    wrong = _key_session(env, session_id, _finished)
+    assert (wrong["status"], wrong["exit_code"]) == ("failed", 1)
+    assert "退出码 1" in wrong["message"]
+
+    monkeypatch.setattr(jira_agent_ssh_key, "PROCESS_TIMEOUT_MS", 300)  # nobody types in time
+    session_id = _start_key_session(env, target)
+    timed_out = _key_session(env, session_id, _finished)
+    assert (timed_out["status"], timed_out["exit_code"]) == ("failed", 124)
+    assert "秒未完成" in timed_out["message"]
+    assert not env.fake.params("command/exec/terminate")  # killed by the app-server, not the website
+
+    assert env.client.get("/api/jira-agent/ssh-key-info", params={"group": "HPC"}).json()["verified_targets"] == []
+    assert len([params for params in env.fake.params("command/exec") if not params.get("tty")]) == 1

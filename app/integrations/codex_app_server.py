@@ -104,6 +104,16 @@ class CodexAppServerClient:
     async def request(
         self, method: str, params: dict, *, timeout: float | None = None
     ) -> dict:
+        request_id, future = await self._send_request(method, params)
+        try:
+            message = await asyncio.wait_for(future, timeout or self.request_timeout)
+        except asyncio.TimeoutError as exc:
+            raise CodexAppServerError(f"Codex RPC {method} 超时") from exc
+        finally:
+            self._pending.pop(request_id, None)
+        return self._unwrap(method, message)
+
+    async def _send_request(self, method: str, params: dict) -> tuple[int, asyncio.Future]:
         if self._closed_reason:
             raise CodexAppServerError(self._closed_reason)
         self._next_id += 1
@@ -112,11 +122,13 @@ class CodexAppServerClient:
         self._pending[request_id] = future
         try:
             await self._send({"id": request_id, "method": method, "params": params})
-            message = await asyncio.wait_for(future, timeout or self.request_timeout)
-        except asyncio.TimeoutError as exc:
-            raise CodexAppServerError(f"Codex RPC {method} 超时") from exc
-        finally:
+        except BaseException:
             self._pending.pop(request_id, None)
+            raise
+        return request_id, future
+
+    @staticmethod
+    def _unwrap(method: str, message: dict) -> dict:
         if "error" in message:
             error = message.get("error") or {}
             detail = error.get("message") if isinstance(error, dict) else error
@@ -285,3 +297,53 @@ class CodexAppServerClient:
             "fs/readFile", {"path": path}, timeout=max(self.request_timeout, 300)
         )
         return base64.b64decode(result.get("dataBase64") or "")
+
+    # ── commands on the app-server host ───────────────────────
+
+    async def exec_command(self, argv: list[str], *, timeout_ms: int) -> dict:
+        """Run a command to completion: {exitCode, stdout, stderr}."""
+        return await self.request(
+            "command/exec",
+            {"command": argv, "timeoutMs": timeout_ms},
+            timeout=timeout_ms / 1000 + 30,
+        )
+
+    async def start_process(
+        self, process_id: str, argv: list[str], *, timeout_ms: int, rows: int = 24, cols: int = 120
+    ) -> asyncio.Future:
+        """Start a PTY process; the returned future resolves to its exit code.
+
+        Output arrives as ``command/exec/outputDelta`` notifications and input
+        goes through ``write_process``; process ids are scoped to this
+        connection.  The app-server kills the process after ``timeout_ms``
+        (exit code 124), even if this client is gone; its default (10 s in
+        0.153) is too short for someone typing a password.
+        """
+        request_id, future = await self._send_request(
+            "command/exec",
+            {
+                "command": argv,
+                "processId": process_id,
+                "tty": True,
+                "timeoutMs": timeout_ms,
+                "size": {"rows": rows, "cols": cols},
+            },
+        )
+
+        async def exit_code() -> int:
+            try:
+                message = await future
+            finally:
+                self._pending.pop(request_id, None)
+            return int(self._unwrap("command/exec", message).get("exitCode", -1))
+
+        return asyncio.ensure_future(exit_code())
+
+    async def write_process(self, process_id: str, data: bytes) -> None:
+        await self.request(
+            "command/exec/write",
+            {"processId": process_id, "deltaBase64": base64.b64encode(data).decode("ascii")},
+        )
+
+    async def terminate_process(self, process_id: str) -> None:
+        await self.request("command/exec/terminate", {"processId": process_id})

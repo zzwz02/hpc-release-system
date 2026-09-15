@@ -2284,6 +2284,22 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .jira-agent-files table { width: 100%; font-size: 12px; }
 .jira-agent-composer { display: flex; flex-direction: column; gap: 8px; }
 .jira-agent-composer .actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.jira-agent-machine { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); }
+.jira-agent-machine legend { padding: 0 4px; font-size: 12.5px; color: var(--muted); }
+.jira-agent-machine .row { display: flex; gap: 6px; align-items: center; }
+.jira-agent-machine .row input { flex: 1; min-width: 0; }
+.jira-agent-check { display: flex; gap: 6px; align-items: center; font-size: 13px; }
+.jira-agent-key-warning ul { margin: 6px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.jira-agent-ok { margin: 4px 0; padding: 6px 10px; border-radius: var(--r-sm); background: var(--ok-bg); color: var(--ok-fg); border: 1px solid var(--ok-bd); }
+.jira-agent-terminal { min-height: 160px; max-height: 320px; }
+.jira-agent-terminal-input { display: flex; gap: 6px; }
+.jira-agent-terminal-input input { flex: 1; min-width: 0; }
+.jira-agent-machine-table { width: 100%; font-size: 12.5px; }
+.jira-agent-machine-table td { vertical-align: top; }
+.jira-agent-machine-table td.actions { white-space: nowrap; }
+.jira-agent-machine-table input { width: 100%; }
+.jira-agent-machine-form { display: flex; flex-wrap: wrap; gap: 6px; }
+.jira-agent-machine-form input { flex: 1 1 180px; min-width: 0; }
 @media (max-width: 900px) {
   .jira-agent-layout { grid-template-columns: 1fr; }
   .jira-agent-event.user { margin-left: 0; }

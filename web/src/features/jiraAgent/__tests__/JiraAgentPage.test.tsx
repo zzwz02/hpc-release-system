@@ -161,14 +161,37 @@ function handledResponse() {
 function previewResponse(open: boolean) {
   return {
     issue: { ...issue, attachment_count: 2, comment_count: 1 },
+    agent_group: "HPC",
     can_handover: true,
     open_conversation: open ? { id: "jac_1", owner: "alice", owner_is_assignee: true } : null,
     conversations: open ? [conversation, oldConversation] : [oldConversation],
   };
 }
 
-function mockBackend({ open = true }: { open?: boolean } = {}) {
+const machinesResponse = {
+  groups: [{ name: "HPC", display_name: "HPC 数字员工" }],
+  machines: [
+    {
+      id: "jam_1", agent_group: "HPC", ssh_target: "hpc@10.2.118.75", description: "1×A100 40GB",
+      created_by: "carol", created_at: "", updated_at: "",
+    },
+  ],
+  can_manage: false,
+};
+
+const keyInfoResponse = {
+  agent_group: "HPC",
+  display_name: "HPC 数字员工",
+  fingerprint: "SHA256:lrNsVsx6+k+Hy/d+CeYkXjLtXLZxRxAKqM9wH/H/KuI",
+  comment: "hpc-jira-agent@B",
+  path: "/home/agent/.ssh/id_ed25519.pub",
+  verified_targets: ["tester@10.0.0.9"],
+};
+
+function mockBackend({ open = true, rm = false }: { open?: boolean; rm?: boolean } = {}) {
   vi.mocked(apiGet).mockImplementation(async (path: string) => {
+    if (path === "/api/jira-agent/machines") return { ...machinesResponse, can_manage: rm };
+    if (path === "/api/jira-agent/ssh-key-info?group=HPC") return keyInfoResponse;
     if (path === "/api/jira-agent/issues?scope=handled") return handledResponse();
     if (path.startsWith("/api/jira-agent/issues?")) return searchResponse(open);
     if (path === "/api/jira-agent/issues/MC3-7672") return previewResponse(open);
@@ -277,11 +300,14 @@ describe("JiraAgentPage", () => {
     renderPage("/jira-agent?issue=MC3-7672");
 
     const note = await screen.findByLabelText("交单说明");
-    expect(note).toHaveAttribute("placeholder", "交单说明（可选），例如指定机器或者验收标准");
+    expect(note).toHaveAttribute("placeholder", "交单说明（可选），例如验收标准");
     expect(screen.queryByTestId("jira-agent-timeline")).not.toBeInTheDocument();
 
     await user.type(note, "用 A100");
-    await user.click(screen.getByRole("button", { name: "交给 agent" }));
+    expect(await screen.findByText("（本组 1 台）")).toBeInTheDocument();
+    const submit = screen.getByRole("button", { name: "交给 agent" });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await user.click(submit);
 
     await waitFor(() => {
       expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/conversations", {
@@ -289,6 +315,7 @@ describe("JiraAgentPage", () => {
         note: "用 A100",
         files: [],
         new_conversation: true,
+        machine: "",
       });
     });
     expect(confirmDialog).not.toHaveBeenCalled();
@@ -308,7 +335,9 @@ describe("JiraAgentPage", () => {
     expect(apiPost).not.toHaveBeenCalled();
     expect(screen.getByText(/当前对话（alice）将结束并变为只读/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "交给 agent" }));
+    const submit = screen.getByRole("button", { name: "交给 agent" });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await user.click(submit);
     await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(1));
     expect(confirmDialog).toHaveBeenCalledTimes(1);
     expect(vi.mocked(apiPost).mock.calls[0][1]).toMatchObject({ new_conversation: true });
@@ -368,6 +397,85 @@ describe("JiraAgentPage", () => {
     await user.selectOptions(await screen.findByLabelText("对话"), "jac_0");
     expect(await screen.findByText(/已新建对话，本对话已结束/)).toBeInTheDocument();
     expect(screen.queryByLabelText("补充信息")).not.toBeInTheDocument();
+  });
+
+  it("a user-given machine needs the SSH key uploaded, and the upload needs the risks confirmed", async () => {
+    mockBackend({ open: false });
+    vi.mocked(apiPost).mockImplementation(async (path: string) => {
+      if (path === "/api/jira-agent/ssh-key-sessions") {
+        return {
+          id: "jak_1", agent_group: "HPC", target: "other@10.0.0.8", fingerprint: keyInfoResponse.fingerprint,
+          status: "running", message: "", exit_code: null, output: "password: ", offset: 10,
+        };
+      }
+      if (path === "/api/jira-agent/conversations") return { created: true, conversation };
+      throw new Error(`unexpected POST ${path}`);
+    });
+    const user = userEvent.setup();
+    renderPage("/jira-agent?issue=MC3-7672");
+
+    await user.click(await screen.findByLabelText(/自填 user@host/));
+    const submit = screen.getByRole("button", { name: "交给 agent" });
+    await user.type(screen.getByLabelText("自填机器"), "other@10.0.0.8");
+    expect(submit).toBeDisabled();
+
+    await user.click(await screen.findByRole("button", { name: "上传 SSH 公钥" }));
+    const dialog = screen.getByRole("dialog", { name: "上传 SSH 公钥" });
+    expect(within(dialog).getByTestId("jira-agent-key-warning")).toHaveTextContent("请使用专用测试账号，不要使用个人账号");
+    expect(within(dialog).getByTestId("jira-agent-key-warning")).toHaveTextContent("免密登录");
+    const start = within(dialog).getByRole("button", { name: "开始上传" });
+    expect(start).toBeDisabled();
+    await user.click(within(dialog).getByRole("checkbox"));
+    await user.click(start);
+
+    expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/ssh-key-sessions", { agent_group: "HPC", target: "other@10.0.0.8" });
+    expect(await within(dialog).findByTestId("jira-agent-key-terminal")).toHaveTextContent("password:");
+    expect(within(dialog).getByLabelText("密码")).toHaveAttribute("type", "password");
+
+    // a target already verified for this user can be handed over directly
+    await user.click(within(dialog).getByRole("button", { name: "结束并关闭" }));
+    await user.clear(screen.getByLabelText("自填机器"));
+    await user.type(screen.getByLabelText("自填机器"), "tester@10.0.0.9");
+    expect(screen.getByText("已上传公钥并通过连接测试")).toBeInTheDocument();
+    await waitFor(() => expect(submit).toBeEnabled());
+    await user.click(submit);
+    await waitFor(() => {
+      expect(apiPost).toHaveBeenCalledWith(
+        "/api/jira-agent/conversations",
+        expect.objectContaining({ machine: "tester@10.0.0.9" }),
+      );
+    });
+  });
+
+  it("everyone can view the system machines, only RM can change them", async () => {
+    mockBackend({ open: false });
+    const user = userEvent.setup();
+    const { unmount } = renderPage();
+    await user.click(screen.getByRole("button", { name: "系统机器" }));
+    const table = await screen.findByTestId("jira-agent-machine-table");
+    expect(within(table).getByText("hpc@10.2.118.75")).toBeInTheDocument();
+    expect(within(table).queryByRole("button", { name: "删除" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("新机器")).not.toBeInTheDocument();
+    unmount();
+
+    mockUser("RM");
+    mockBackend({ open: false, rm: true });
+    vi.mocked(apiPost).mockResolvedValue({ machine: {} });
+    renderPage();
+    await user.click(screen.getByRole("button", { name: "系统机器" }));
+    expect(await screen.findByRole("button", { name: "删除" })).toBeInTheDocument();
+    const add = screen.getByRole("button", { name: "添加" });
+    await user.type(screen.getByLabelText("新机器"), "-oProxyCommand=x@h");
+    expect(add).toBeDisabled();
+    await user.clear(screen.getByLabelText("新机器"));
+    await user.type(screen.getByLabelText("新机器"), "hpc2@10.2.118.76");
+    await user.type(screen.getByLabelText("新机器说明"), "2×A100");
+    await user.click(add);
+    await waitFor(() => {
+      expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/machines", {
+        agent_group: "HPC", ssh_target: "hpc2@10.2.118.76", description: "2×A100",
+      });
+    });
   });
 
   it("resolves the issue for conversation links from JIRA comments", async () => {

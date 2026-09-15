@@ -497,6 +497,7 @@ class JiraAgentRunner:
 
         active.phase = "starting"
         turn = repo.get_turn(conn, tid)  # re-read: messages may have been merged
+        machine = conversation["machine"]
         prompt = domain.build_turn_prompt(
             trigger=turn["trigger"],
             seq=turn["seq"],
@@ -505,6 +506,9 @@ class JiraAgentRunner:
             created_by=turn["created_by"],
             input_text=turn["input_text"],
             uploaded=uploaded,
+            machine_text=domain.machine_instructions(
+                machine, [] if machine else repo.list_machines(conn, group.name)
+            ),
         )
         codex_turn = await active.client.start_turn(  # type: ignore[union-attr]
             active.thread_id, prompt, output_schema=domain.RESULT_SCHEMA, model=group.model

@@ -12,6 +12,11 @@ description: Develop, debug, or review the JIRA agent (per-group digital employe
 以下是用户明确定下的规则。新的明确需求可以调整，但不能在实现中顺手放宽：
 
 - **A/B 分工**：网站（A）只管理对话、消息、文件、排队、执行记录和 JIRA 评论，通过 WebSocket + capability token 直连组服务器 B 上的 `codex app-server`。**B 上不写适配服务**，只有启动命令、知识包、Codex `auth.json` 和访问 C/D/E 的 SSH 凭证。沙箱与审批策略由 B 的启动参数决定，A 在 `thread/start`、`turn/start` 中不传 sandbox/approval。
+- **执行机器**（交单时二选一，存于对话 `machine`，续办沿用）：
+  - 空 = agent 从本组系统机器列表（`jira_agent_machines`，仅 RM 维护，RM 提前在 B 上配好免密）按需自选，结论 `machine` 字段记录实际使用的机器；列表为空时交单 409。
+  - `user@host` = 用户自填，不进系统列表。必须先经上传公钥终端（`services/jira_agent_ssh_key.py`）：A 用 app-server 的 `command/exec`（tty）在 **B 上**跑 `ssh-copy-id -i <SSH_KEY_PATH>.pub`，成功后在 B 上 `ssh -o BatchMode=yes ... true`，通过才写 `jira_agent_ssh_keys`（网站用户 + 组 + 目标 + 公钥指纹）；交单时按当前公钥指纹校验。密码只经 `command/exec/write` 转发，不入库、不记日志、不进事件。
+  - 界面必须明确提醒：上传后 agent 可免密登录，公钥不随对话失效，要用专用测试账号而不是个人账号。
+  - `user@host` 的格式校验（`domain.parse_ssh_target`）保证不能以 `-` 开头、不带端口和空格，防止变成 ssh 参数。
 - **只评论**：agent 不改 assignee、不转单、不 resolve、不提交代码；网站把结构化结论渲染成评论追加到 JIRA，由 assignee 决定下一步（human-in-the-loop）。
 - **谁能操作**：只有当前 JIRA assignee 或 RM 能交单、发消息，每次写操作都实时读 JIRA 校验。查看权限为对话 owner、交单人或 RM。页签角色只来自 `shared/access_control.json` 的 `jira-agent`。
 - **找单**（`GET /api/jira-agent/issues?q=`，分类逻辑在 `domain.parse_issue_query`）：
@@ -26,7 +31,7 @@ description: Develop, debug, or review the JIRA agent (per-group digital employe
   - 同一 assignee 可显式新建对话（`new_conversation`）。
   - 同一工单同一时间最多一个 open 对话，数据库部分唯一索引兜底。
 - **跨组**：每组有自己的数字员工（`jira_agent.conf` 一个 section 对应一个 B），一个数字员工不跨组修复。当前只部署 HPC。
-- **排队**：app-server 本身会并行执行不同 thread 的 turn，所以队列和并发上限必须在 A 上：每组 `MAX_CONCURRENT`，FIFO。机器资源（GPU）由知识包约定的 `flock` 锁控制，A 不感知选机。
+- **排队**：app-server 本身会并行执行不同 thread 的 turn，所以队列和并发上限必须在 A 上：每组 `MAX_CONCURRENT`，FIFO。A 不做机器占用调度：只把系统机器列表或用户指定的机器写进每轮提示，GPU 并发由知识包约定的 `flock` 锁控制。
 
 ## 代码地图
 
@@ -35,6 +40,8 @@ description: Develop, debug, or review the JIRA agent (per-group digital employe
 | HTTP 契约、请求体 | [app/api/routers/jira_agent.py](../../../app/api/routers/jira_agent.py) |
 | 交单、续办、新建对话、assignee 变更、取消、评论重试、视图 | [app/services/jira_agent_service.py](../../../app/services/jira_agent_service.py) |
 | 调度循环、单轮执行、输入同步、事件记录、产物拉回、评论发布、健康检查 | [app/services/jira_agent_runner.py](../../../app/services/jira_agent_runner.py) |
+| 系统机器列表增删改、交单机器校验 | `jira_agent_service.py` 末尾（`_check_machine`、`*_machine`） |
+| 自填机器上传公钥终端（B 上 ssh-copy-id + BatchMode 验证） | [app/services/jira_agent_ssh_key.py](../../../app/services/jira_agent_ssh_key.py) |
 | 结论 JSON schema、组配置解析、工作目录路径、提示词、评论 wiki markup | [app/domain/jira_agent.py](../../../app/domain/jira_agent.py) |
 | Codex app-server 通用客户端（无 JIRA 逻辑） | [app/integrations/codex_app_server.py](../../../app/integrations/codex_app_server.py) |
 | JIRA 读单、下载附件、追加评论 | [app/integrations/jira.py](../../../app/integrations/jira.py) 末尾 |
@@ -46,7 +53,8 @@ Runner 在 FastAPI lifespan 中启停（`settings.jira_agent_runner_enabled`）�
 
 ## 数据模型与状态
 
-- **`jira_agent_conversations`**：`status` 为 open/closed，`close_reason` 为 superseded/new_conversation；另有 `thread_id`、`workspace`、`thread_archived`。
+- **`jira_agent_conversations`**：`status` 为 open/closed，`close_reason` 为 superseded/new_conversation；另有 `thread_id`、`workspace`、`thread_archived`、`machine`（空 = 从系统机器列表自选，否则自填 `user@host`，旧库由 `_ensure_column` 补列）。
+- **`jira_agent_machines`**：系统机器列表（组 + `ssh_target` 唯一 + 说明），仅 RM 增删改。**`jira_agent_ssh_keys`**：自填机器上传并验证过的记录（网站用户 + 组 + 目标 + 公钥指纹）；B 的密钥换了，指纹不同，需要重新上传。
 - **`jira_agent_turns`**：
   - `status` 取 queued / running / completed / failed / cancelled / interrupted。queued 行就是持久队列，按 rowid FIFO；每个对话最多一个 queued 或 running（部分唯一索引）。
   - `comment_status` 为空 / pending / posted / failed，失败只重试发布，不重跑模型。
@@ -85,6 +93,10 @@ Runner 在 FastAPI lifespan 中启停（`settings.jira_agent_runner_enabled`）�
 - **用到的方法**：
   - 线程与回合：`thread/start`（cwd、developerInstructions、model、serviceName）、`thread/resume`（excludeTurns）、`thread/turns/list`（最新在前）、`thread/archive`、`turn/start`（input、outputSchema、model）、`turn/steer`（必须带 `expectedTurnId`）、`turn/interrupt`。
   - 文件：`fs/createDirectory`、`fs/writeFile` / `fs/readFile`（`dataBase64`，绝对路径）。
+  - 命令（只有上传公钥终端使用）：`command/exec`。
+    - tty 模式需要客户端给 `processId`（只在本连接内有效）。输出走 `command/exec/outputDelta`（base64，PTY 输出都在 stdout），输入用 `command/exec/write`（`deltaBase64`），`command/exec/terminate` 结束进程（exitCode 1）。请求要到进程退出才返回 `exitCode`。
+    - **默认 10 秒超时**（0.153.4 实测：交互进程被杀，exit 124），不够人输密码。上传公钥终端带 `timeoutMs: 60000`（`jira_agent_ssh_key.PROCESS_TIMEOUT_MS`），超时由 app-server 执行，网站停了也会按时杀进程；网站不另设空闲或总时长限制，退出码 124 显示为超时。
+    - 非 tty 带 `timeoutMs` 时一次返回 stdout/stderr。
 - **读取的通知**：`item/started`、`item/completed`（agentMessage / commandExecution / fileChange / reasoning 等）、`turn/completed`（status 为 completed / interrupted / failed）、`error`（`willRetry` 为 false 才记录）。delta 类通知不用。
 - **结构化结论**：`outputSchema` 必须是 strict schema（每层 `additionalProperties: false`，所有属性 required）。最终 agentMessage 的文本就是 JSON；`parse_result` 兼容外层 ```json 包裹。
 - **不处理的服务端请求**：审批请求和 `item/tool/call` 客户端不处理，统一回错误并记事件。如果出现，说明 B 没按 `approval_policy=never` 启动。

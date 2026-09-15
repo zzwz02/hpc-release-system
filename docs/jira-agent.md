@@ -15,7 +15,9 @@ JIRA agent 是按组配置的“数字员工”。网站（服务器 A）负责�
 ## 使用流程
 
 1. 在 **JIRA agent** 页左侧查找工单，点击后右侧打开这张工单：
-   - 还没有对话时，底部是交单输入框。JIRA assignee 或 RM 填写交单说明（可选），可以附文件，然后点 **交给 agent**。
+   - 还没有对话时，底部是交单输入框。JIRA assignee 或 RM 填写交单说明（可选），可以附文件，选择执行机器，然后点 **交给 agent**。执行机器二选一，续办沿用：
+     - **agent 从系统机器列表自动选择**：agent 按工单需要从本组系统机器中选一台，结论和 JIRA 评论写明实际使用的机器。系统机器由 RM 在页面右上角 **系统机器** 中维护（`user@host` 和说明），RM 负责提前在 B 上配好到这些机器的免密登录。列表为空时不能选自动。
+     - **自填 `user@host`**：不加入系统机器列表。先点 **上传 SSH 公钥**，确认风险提示后在弹出的终端里输入该账号密码：网站经 app-server 在 **B 上** 运行 `ssh-copy-id`，把 B 执行账号的公钥追加到对方的 `~/.ssh/authorized_keys`，再从 B 用 BatchMode 测试免密登录，通过后才能交单。密码只转发给 ssh-copy-id，不保存、不记录。上传后 agent 可以免密登录该账号并执行命令，公钥不会随对话结束失效（删掉 authorized_keys 里注释为 B 公钥注释的那一行才能撤销），所以**必须使用专用测试账号，不要用个人账号**。
    - 已有该 assignee 的进行中对话时，直接显示这个对话；历史对话在标题旁的下拉菜单里切换，只读查看。
    - 点 **新建对话** 先进入交单草稿，不会立即交单；点 **交给 agent** 并确认后，当前对话结束，新建对话。
    - JIRA 评论中的对话链接会自动打开对应工单和对话。
@@ -57,7 +59,7 @@ JIRA agent 是按组配置的“数字员工”。网站（服务器 A）负责�
 以下以 hpc 执行用户在 B 上操作为例（MVP 阶段 A、B、C 同为 10.2.118.75，使用 zhawu 账号）。
 
 1. **Codex 登录**：`codex login`，生成 `~/.codex/auth.json`。凭证只存在于 B。
-2. **SSH 访问 C/D/E**：为 hpc 用户配置 `~/.ssh/config` 和密钥，保证 `ssh <机器>` 免交互登录。
+2. **SSH 访问 C/D/E**：为 hpc 用户生成密钥（`ssh-keygen -t ed25519 -C hpc-jira-agent@<B>`），同目录必须有 `.pub`（只有私钥时用 `ssh-keygen -y -f <私钥> > <私钥>.pub` 补出），并把私钥路径写进 A 的 `SSH_KEY_PATH`。系统机器列表中的机器由 RM 提前配好免密（`ssh -o BatchMode=yes <user@host> true` 能通过），再在页面 **系统机器** 中登记。自填机器用的 `ssh-copy-id` 在 B 上运行，B 需要安装它（openssh-client 自带）。
 3. **同步知识包**（在仓库检出目录执行）：
    ```bash
    PACK_DIR=$HOME/hpc-jira-agent deploy/jira-agent/sync-pack.sh
@@ -103,6 +105,7 @@ WantedBy=multi-user.target
    | `WORKSPACE_ROOT` | B 上工作目录根的绝对路径，如 `/home/hpc-agent/hpc-jira-agent/workspaces` |
    | `COMPONENTS` | 该组负责的 JIRA component，用于选择数字员工 |
    | `JIRA_MEMBERS_GROUP` | 该组的 JIRA 用户组（如 `pde_hpc`），RM 的默认工单列表按 `membersOf` 查询 |
+   | `SSH_KEY_PATH` | B 上执行账号的 SSH 私钥绝对路径，同目录须有 `.pub`；自填机器上传的就是这把公钥 |
    | `MAX_CONCURRENT`、`TURN_TIMEOUT_SECONDS` | 并发上限和每轮限时 |
 
 2. `jira.conf` 提供 JIRA 地址和 token，用于读取工单、下载附件、发布评论。

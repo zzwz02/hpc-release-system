@@ -22,6 +22,11 @@ COMPONENTS = PDE_HPC
 # assignee in membersOf(<组>) AND status != Closed；其他用户默认看自己的未关闭工单
 JIRA_MEMBERS_GROUP = pde_hpc
 
+# B 上执行账号的 SSH 私钥绝对路径，同目录下须有 <路径>.pub。
+# 交单自填 user@host 时，网站经 app-server 在 B 上运行 ssh-copy-id 上传这把公钥，
+# 并从 B 测试免密登录。公钥注释建议写成 hpc-jira-agent@<B>，方便对方识别和删除。
+SSH_KEY_PATH = /home/hpc-agent/.ssh/id_ed25519
+
 # 可选：覆盖 B 上 codex 的默认模型
 MODEL =
 

@@ -15,6 +15,8 @@ import { Markdown } from "../../components/Markdown";
 import { confirmDialog } from "../../lib/confirm";
 import { isRM } from "../../lib/roles";
 import { toast } from "../../lib/toast";
+import { MachineChoice } from "./MachineChoice";
+import { MachinesDialog } from "./MachinesDialog";
 import {
   CLOSE_REASON_LABELS,
   CONCLUSION_LABELS,
@@ -142,6 +144,7 @@ export function JiraAgentPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const issueKey = searchParams.get("issue") ?? "";
   const conversationParam = searchParams.get("conversation") ?? "";
+  const [showMachines, setShowMachines] = useState(false);
 
   const navigate = useCallback(
     (issue: string, conversation = "", replace = false) => {
@@ -171,7 +174,11 @@ export function JiraAgentPage() {
             JIRA assignee 或 RM 把工单交给本组数字员工；agent 分析、复现、修复后在 JIRA 评论结论，由 assignee 决定下一步。
           </p>
         </div>
+        <button type="button" className="btn sm" onClick={() => setShowMachines(true)}>
+          系统机器
+        </button>
       </div>
+      {showMachines && <MachinesDialog onClose={() => setShowMachines(false)} />}
       <div className="jira-agent-layout">
         <aside className="jira-agent-sidebar">
           <IssueSearchPanel selectedKey={issueKey} onSelect={(key, conversation) => navigate(key, conversation)} />
@@ -530,6 +537,9 @@ function IssueView({
               <span>owner：{conversation.owner}</span>
               <span>交单人：{conversation.created_by}</span>
               <span>数字员工：{conversation.agent_group}</span>
+              <span>
+                机器：{conversation.machine ? <code>{conversation.machine}</code> : "agent 从系统机器列表自动选择"}
+              </span>
               <span>Thread：{conversation.thread_id || "未创建"}</span>
               <span>
                 B 工作目录：<code>{conversation.workspace}</code>
@@ -592,6 +602,8 @@ function IssueView({
 function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCreated: (id: string) => void }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  // "" = the agent picks from the system list; null = the choice is not ready yet
+  const [machine, setMachine] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const recovering = Boolean(preview.open_conversation?.recovering);
   const disabled = !preview.can_handover;
@@ -618,6 +630,7 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
         note: note.trim(),
         files,
         new_conversation: true,
+        machine: machine ?? "",
       });
       toast.success("已交给 agent，进入排队");
       onCreated(result.conversation.id);
@@ -634,17 +647,18 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
         <textarea
           aria-label="交单说明"
           rows={3}
-          placeholder="交单说明（可选），例如指定机器或者验收标准"
+          placeholder="交单说明（可选），例如验收标准"
           value={note}
           disabled={disabled}
           onChange={(event) => setNote(event.target.value)}
         />
+        <MachineChoice agentGroup={preview.agent_group} disabled={disabled} onChange={setMachine} />
         <div className="actions">
           <input ref={fileInput} type="file" multiple aria-label="附加文件" disabled={disabled} />
           <button
             type="button"
             className="btn primary"
-            disabled={busy || disabled || recovering}
+            disabled={busy || disabled || recovering || machine === null}
             onClick={() => void submit()}
           >
             交给 agent
@@ -939,6 +953,14 @@ function ResultCard({ result, files }: { result: AgentResult; files: AgentFile[]
       <dl className="jira-agent-result-grid">
         <dt>问题分类</dt>
         <dd>{result.issue_category || "未分类"}</dd>
+        {result.machine && (
+          <>
+            <dt>执行机器</dt>
+            <dd>
+              <code>{result.machine}</code>
+            </dd>
+          </>
+        )}
         <dt>归属判断</dt>
         <dd>
           {OWNERSHIP_LABELS[ownership.belongs_to_us] ?? ownership.belongs_to_us}

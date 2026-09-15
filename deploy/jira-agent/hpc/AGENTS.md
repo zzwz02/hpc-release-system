@@ -30,12 +30,15 @@
 
 ## 执行机器与资源规则
 
-| 机器 | 地址 | 硬件 | 并发规则 |
-| --- | --- | --- | --- |
-| C（复现 / 测试） | 10.2.118.75（即本机，可直接执行，也可 `ssh 10.2.118.75`） | 1×NVIDIA A100 40GB，CUDA 工具链 | GPU 独占：同一时间只允许一个任务使用 GPU |
+执行机器由网站在每轮提示中给出，只能使用其中的机器，不要登录其他机器或账号：
+
+- **自动选择**：提示中列出本组系统机器（`user@host` 和说明）。按工单需要（GPU 型号、工具链、工单指定的环境等）选一台，在结论的 `machine` 字段写实际使用的 `user@host`，并在摘要或 `reproduction.environment` 中说明选择依据。
+- **用户指定**：只使用提示中的那台 `user@host`，也不要在本对话之外使用它。
+- 本轮不需要执行机（例如纯静态分析）时，`machine` 留空。
+- ssh 登录失败（连不上、要求密码）时，不要换其他机器或账号尝试，结论使用 `needs_help` 并附上错误输出。
 
 - 占用 GPU 的构建和测试命令必须用锁包裹，锁文件放在目标机上：
-  `mkdir -p /tmp/hpc-jira-agent-locks && flock -w 1800 /tmp/hpc-jira-agent-locks/<机器IP>-gpu<N>.lock <命令>`
+  `mkdir -p /tmp/hpc-jira-agent-locks && flock -w 1800 /tmp/hpc-jira-agent-locks/<机器地址>-gpu<N>.lock <命令>`
 - 等锁超时（flock 返回非 0 且命令没有执行）时，不要绕过锁，结论使用 `needs_help` 并说明“资源繁忙”。
 - 读文件、看日志、静态分析这类轻量操作不需要加锁。
 - 在远端机器上工作时，使用 `/tmp/hpc-jira-agent/<工作目录名>/`，结束时把需要审阅的日志和补丁拷回本地 `artifacts/`。

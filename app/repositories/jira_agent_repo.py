@@ -51,17 +51,18 @@ def create_conversation(
     owner: str,
     created_by: str,
     workspace: str,
+    machine: str = "",
 ) -> dict:
     now = beijing_timestamp()
     conn.execute(
         """
         INSERT INTO jira_agent_conversations
             (id, issue_key, issue_summary, agent_group, owner, created_by,
-             workspace, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             workspace, machine, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (conversation_id, issue_key, issue_summary, agent_group, owner,
-         created_by, workspace, now, now),
+         created_by, workspace, machine, now, now),
     )
     return get_conversation(conn, conversation_id)  # type: ignore[return-value]
 
@@ -528,4 +529,89 @@ def set_file_remote_path(conn: sqlite3.Connection, file_id: str, remote_path: st
     conn.execute(
         "UPDATE jira_agent_files SET remote_path = ? WHERE id = ?",
         (remote_path, file_id),
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# Execution machines
+# ─────────────────────────────────────────────────────────────
+
+def list_machines(conn: sqlite3.Connection, agent_group: str | None = None) -> list[dict]:
+    if agent_group is None:
+        return _all(conn, "SELECT * FROM jira_agent_machines ORDER BY agent_group, ssh_target")
+    return _all(
+        conn,
+        "SELECT * FROM jira_agent_machines WHERE agent_group = ? ORDER BY ssh_target",
+        (agent_group,),
+    )
+
+
+def get_machine(conn: sqlite3.Connection, machine_id: str) -> dict | None:
+    return _one(conn, "SELECT * FROM jira_agent_machines WHERE id = ?", (machine_id,))
+
+
+def create_machine(
+    conn: sqlite3.Connection, *, agent_group: str, ssh_target: str, description: str, created_by: str,
+) -> dict:
+    machine_id = new_id("jam")
+    now = beijing_timestamp()
+    conn.execute(
+        """
+        INSERT INTO jira_agent_machines
+            (id, agent_group, ssh_target, description, created_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (machine_id, agent_group, ssh_target, description, created_by, now, now),
+    )
+    return get_machine(conn, machine_id)  # type: ignore[return-value]
+
+
+def update_machine(conn: sqlite3.Connection, machine_id: str, *, ssh_target: str, description: str) -> bool:
+    cur = conn.execute(
+        "UPDATE jira_agent_machines SET ssh_target = ?, description = ?, updated_at = ? WHERE id = ?",
+        (ssh_target, description, beijing_timestamp(), machine_id),
+    )
+    return cur.rowcount == 1
+
+
+def delete_machine(conn: sqlite3.Connection, machine_id: str) -> bool:
+    cur = conn.execute("DELETE FROM jira_agent_machines WHERE id = ?", (machine_id,))
+    return cur.rowcount == 1
+
+
+def record_ssh_key(
+    conn: sqlite3.Connection, *, username: str, agent_group: str, ssh_target: str, key_fingerprint: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO jira_agent_ssh_keys
+            (id, username, agent_group, ssh_target, key_fingerprint, verified_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (username, agent_group, ssh_target, key_fingerprint)
+        DO UPDATE SET verified_at = excluded.verified_at
+        """,
+        (new_id("jak"), username, agent_group, ssh_target, key_fingerprint, beijing_timestamp()),
+    )
+
+
+def list_ssh_keys(
+    conn: sqlite3.Connection, *, username: str, agent_group: str, key_fingerprint: str,
+) -> list[dict]:
+    return _all(
+        conn,
+        """
+        SELECT * FROM jira_agent_ssh_keys
+        WHERE username = ? COLLATE NOCASE AND agent_group = ? AND key_fingerprint = ?
+        ORDER BY verified_at DESC
+        """,
+        (username, agent_group, key_fingerprint),
+    )
+
+
+def has_ssh_key(
+    conn: sqlite3.Connection, *, username: str, agent_group: str, ssh_target: str, key_fingerprint: str,
+) -> bool:
+    return any(
+        row["ssh_target"] == ssh_target
+        for row in list_ssh_keys(conn, username=username, agent_group=agent_group, key_fingerprint=key_fingerprint)
     )

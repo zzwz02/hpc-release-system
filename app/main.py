@@ -31,7 +31,7 @@ from app.api.routers import (
 from app.config import settings
 from app.db.connection import connect
 from app.integrations.ldap import load_ldap_config
-from app.services import auth_service
+from app.services import auth_service, jira_agent_ssh_key
 from app.services.jira_agent_runner import runner as jira_agent_runner
 
 
@@ -57,6 +57,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await jira_agent_ssh_key.sessions.stop()
         if settings.jira_agent_runner_enabled:
             await jira_agent_runner.stop()
 

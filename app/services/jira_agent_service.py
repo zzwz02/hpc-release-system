@@ -27,6 +27,7 @@ from app.integrations.codex_app_server import CodexAppServerError
 from app.repositories import jira_agent_repo as repo
 from app.repositories.base import loads_json, new_id
 from app.services import jira_agent_runner as runner_module
+from app.services import jira_agent_ssh_key
 from app.services.jira_agent_runner import open_db, runner
 
 MAX_UPLOAD_FILES = 10
@@ -264,7 +265,12 @@ async def preview_issue(user: dict, issue_key: str) -> dict:
     finally:
         conn.close()
     assignee = assignee_name(issue)
+    try:
+        agent_group = domain.group_for_issue(runner_module.load_groups(), issue["components"]).name
+    except RuntimeError:  # no digital employee configured
+        agent_group = ""
     return {
+        "agent_group": agent_group,
         "issue": {
             "key": issue["key"],
             "url": issue["url"],
@@ -452,6 +458,7 @@ async def handover(user: dict, body: dict) -> dict:
 
     conn = open_db()
     try:
+        machine = await _check_machine(conn, user, group, body.get("machine") or "")
         existing = repo.get_open_conversation(conn, issue["key"])
         if existing is not None:
             same_owner = _same_user(existing["owner"], assignee)
@@ -471,6 +478,7 @@ async def handover(user: dict, body: dict) -> dict:
                     owner=assignee,
                     created_by=user["username"],
                     workspace=domain.workspace_path(group, issue["key"], conversation_id),
+                    machine=machine,
                 )
                 turn = repo.create_turn(
                     conn, conversation_id=conversation_id, trigger="handover",
@@ -607,5 +615,104 @@ async def retry_comment(user: dict, turn_id: str) -> dict:
         if turn["comment_status"] != "failed":
             raise ApiError(409, "该轮评论不需要重试")
         return {"turn": _turn_view(conn, await runner_module.post_turn_comment(conn, turn_id))}
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# Execution machines
+# ─────────────────────────────────────────────────────────────
+
+MAX_MACHINE_DESCRIPTION = 500
+
+
+async def _check_machine(conn: sqlite3.Connection, user: dict, group: domain.AgentGroup, machine: str) -> str:
+    """Validate the hand-over machine choice; returns what the conversation stores.
+
+    "" lets the agent pick from the group's system machine list; a user-given
+    user@host needs server B's current key uploaded and verified by this user.
+    """
+    if not machine.strip():
+        if not repo.list_machines(conn, group.name):
+            raise ApiError(409, "系统机器列表为空，请联系 RM 添加机器，或自填 user@host")
+        return ""
+    target = domain.parse_ssh_target(machine)
+    if not await jira_agent_ssh_key.has_verified_key(user, group, target):
+        raise ApiError(409, f"请先把 SSH 公钥上传到 {target} 并通过连接测试，再交给 agent")
+    return target
+
+
+def _check_rm(user: dict) -> None:
+    if not _is_rm(user):
+        raise AuthzError("只有 RM 可以维护系统机器列表")
+
+
+def _machine_fields(body: dict) -> tuple[str, str]:
+    target = domain.parse_ssh_target(body.get("ssh_target") or "")
+    description = (body.get("description") or "").strip()
+    if len(description) > MAX_MACHINE_DESCRIPTION:
+        raise ValueError(f"说明不能超过 {MAX_MACHINE_DESCRIPTION} 字")
+    return target, description
+
+
+def list_machines(user: dict, group: str = "") -> dict:
+    groups = runner_module.load_groups()
+    conn = open_db()
+    try:
+        machines = repo.list_machines(conn, group or None)
+    finally:
+        conn.close()
+    return {
+        "groups": [{"name": g.name, "display_name": g.display_name} for g in groups.values()],
+        "machines": machines,
+        "can_manage": _is_rm(user),
+    }
+
+
+def create_machine(user: dict, body: dict) -> dict:
+    _check_rm(user)
+    group = (body.get("agent_group") or "").strip()
+    if group not in runner_module.load_groups():
+        raise ValueError("请选择已配置的数字员工组")
+    target, description = _machine_fields(body)
+    conn = open_db()
+    try:
+        try:
+            with transaction(conn):
+                machine = repo.create_machine(
+                    conn, agent_group=group, ssh_target=target, description=description,
+                    created_by=user["username"],
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ApiError(409, f"{group} 已有机器 {target}") from exc
+        return {"machine": machine}
+    finally:
+        conn.close()
+
+
+def update_machine(user: dict, machine_id: str, body: dict) -> dict:
+    _check_rm(user)
+    target, description = _machine_fields(body)
+    conn = open_db()
+    try:
+        try:
+            with transaction(conn):
+                if not repo.update_machine(conn, machine_id, ssh_target=target, description=description):
+                    raise ApiError(404, "机器不存在")
+        except sqlite3.IntegrityError as exc:
+            raise ApiError(409, f"已有机器 {target}") from exc
+        return {"machine": repo.get_machine(conn, machine_id)}
+    finally:
+        conn.close()
+
+
+def delete_machine(user: dict, machine_id: str) -> dict:
+    _check_rm(user)
+    conn = open_db()
+    try:
+        with transaction(conn):
+            if not repo.delete_machine(conn, machine_id):
+                raise ApiError(404, "机器不存在")
+        return {"ok": True}
     finally:
         conn.close()

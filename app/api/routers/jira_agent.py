@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.deps import require_tab_access
-from app.services import jira_agent_runner, jira_agent_service as service
+from app.services import jira_agent_runner, jira_agent_ssh_key, jira_agent_service as service
 
 router = APIRouter(prefix="/api/jira-agent")
 
@@ -30,11 +30,28 @@ class HandoverBody(BaseModel):
     note: str = ""
     files: list[UploadBody] = Field(default_factory=list)
     new_conversation: bool = False
+    # "" = the agent picks from the system machine list; else user@host
+    machine: str = ""
 
 
 class MessageBody(BaseModel):
     text: str = ""
     files: list[UploadBody] = Field(default_factory=list)
+
+
+class MachineBody(BaseModel):
+    agent_group: str = ""
+    ssh_target: str
+    description: str = ""
+
+
+class KeySessionBody(BaseModel):
+    agent_group: str
+    target: str
+
+
+class KeyInputBody(BaseModel):
+    data: str
 
 
 @router.get("/health")
@@ -109,3 +126,56 @@ async def download_file(
 ) -> FileResponse:
     path, name = service.file_for_download(user, conversation_id, file_id)
     return FileResponse(path, filename=name)
+
+
+# ── execution machines ────────────────────────────────────────
+
+@router.get("/machines")
+async def list_machines(group: str = "", user: dict = Depends(require_jira_agent_access)) -> dict:
+    return service.list_machines(user, group)
+
+
+@router.post("/machines")
+async def create_machine(body: MachineBody, user: dict = Depends(require_jira_agent_access)) -> dict:
+    return service.create_machine(user, body.model_dump())
+
+
+@router.put("/machines/{machine_id}")
+async def update_machine(
+    machine_id: str, body: MachineBody, user: dict = Depends(require_jira_agent_access),
+) -> dict:
+    return service.update_machine(user, machine_id, body.model_dump())
+
+
+@router.delete("/machines/{machine_id}")
+async def delete_machine(machine_id: str, user: dict = Depends(require_jira_agent_access)) -> dict:
+    return service.delete_machine(user, machine_id)
+
+
+@router.get("/ssh-key-info")
+async def ssh_key_info(group: str, user: dict = Depends(require_jira_agent_access)) -> dict:
+    return await jira_agent_ssh_key.key_info(user, group)
+
+
+@router.post("/ssh-key-sessions")
+async def start_key_session(body: KeySessionBody, user: dict = Depends(require_jira_agent_access)) -> dict:
+    return await jira_agent_ssh_key.sessions.start(user, body.agent_group, body.target)
+
+
+@router.get("/ssh-key-sessions/{session_id}")
+async def get_key_session(
+    session_id: str, after: int = 0, user: dict = Depends(require_jira_agent_access),
+) -> dict:
+    return jira_agent_ssh_key.sessions.get(user, session_id, after)
+
+
+@router.post("/ssh-key-sessions/{session_id}/input")
+async def key_session_input(
+    session_id: str, body: KeyInputBody, user: dict = Depends(require_jira_agent_access),
+) -> dict:
+    return await jira_agent_ssh_key.sessions.write(user, session_id, body.data)
+
+
+@router.post("/ssh-key-sessions/{session_id}/close")
+async def close_key_session(session_id: str, user: dict = Depends(require_jira_agent_access)) -> dict:
+    return await jira_agent_ssh_key.sessions.close(user, session_id)

@@ -77,7 +77,7 @@ JIRA agent 是按组配置的数字员工，第一阶段处理 HPC 组的 Bug �
 | --- | --- |
 | 服务器 A（本网站） | 对话、消息、文件、排队、执行记录、JIRA 评论；通过 WebSocket + token 连接 B |
 | 服务器 B（组的 `codex app-server`） | agent 本体；本组知识包（AGENTS.md、skills）、Codex 登录凭证、访问 C/D/E 的 SSH 凭证。B 上不部署适配服务 |
-| 服务器 C/D/E | 复现、构建、测试环境，由 B 上的执行用户登录 |
+| 服务器 C/D/E | 复现、构建、测试环境，由 B 上的执行用户登录。交单时选择：agent 从 RM 维护的系统机器列表中自选，或用户自填 `user@host`（先经网页终端从 B 上传公钥并测试免密登录） |
 
 使用规则：
 

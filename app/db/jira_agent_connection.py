@@ -165,6 +165,39 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_jira_agent_files_conversation
             ON jira_agent_files(conversation_id, created_at);
+
+        -- System machine list per group, maintained by RM.  SSH access from
+        -- server B is set up beforehand; the agent picks one per task.
+        CREATE TABLE IF NOT EXISTS jira_agent_machines (
+            id TEXT PRIMARY KEY,
+            agent_group TEXT NOT NULL,
+            ssh_target TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (agent_group, ssh_target)
+        );
+
+        -- user@host a website user put server B's public key on (password
+        -- terminal) with key login then verified from B.  Not system machines.
+        CREATE TABLE IF NOT EXISTS jira_agent_ssh_keys (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            agent_group TEXT NOT NULL,
+            ssh_target TEXT NOT NULL,
+            key_fingerprint TEXT NOT NULL,
+            verified_at TEXT NOT NULL,
+            UNIQUE (username, agent_group, ssh_target, key_fingerprint)
+        );
         """
     )
+    # '' = the agent picks from the system machine list; else user@host.
+    _ensure_column(conn, "jira_agent_conversations", "machine", "TEXT NOT NULL DEFAULT ''")
     conn.commit()
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")

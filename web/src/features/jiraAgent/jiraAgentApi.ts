@@ -1,4 +1,4 @@
-import { apiGet, apiPost } from "../../api/http";
+import { apiFetch, apiGet, apiPost } from "../../api/http";
 
 export const JIRA_AGENT_KEY = ["jira-agent"] as const;
 export const JIRA_AGENT_CONVERSATIONS_KEY = ["jira-agent", "conversations"] as const;
@@ -22,6 +22,8 @@ export interface AgentResult {
   ownership: { belongs_to_us: string; target_group: string; reasoning: string };
   summary: string;
   root_cause: string;
+  /** user@host the agent actually used; absent in results from before machines existed. */
+  machine?: string;
   reproduction: { reproduced: boolean; environment: string; steps: string[] };
   evidence: { description: string; command: string; result: string }[];
   fix: { description: string };
@@ -61,6 +63,8 @@ export interface AgentConversation {
   created_by: string;
   thread_id: string;
   workspace: string;
+  /** "" = the agent picks from the system machine list; else user@host. */
+  machine: string;
   status: "open" | "closed";
   close_reason: "" | "superseded" | "new_conversation";
   created_at: string;
@@ -138,6 +142,8 @@ export interface IssuePreview {
     attachment_count: number;
     comment_count: number;
   };
+  /** Digital employee group that would handle the issue ("" when none is configured). */
+  agent_group: string;
   can_handover: boolean;
   /** recovering: a restarted site is re-attaching to its running turn; closing it must wait. */
   open_conversation: { id: string; owner: string; owner_is_assignee: boolean; recovering?: boolean } | null;
@@ -246,6 +252,7 @@ export function handoverIssue(body: {
   note?: string;
   files?: UploadPayload[];
   new_conversation?: boolean;
+  machine?: string;
 }) {
   return apiPost<{ created: boolean; conversation: AgentConversation }>(
     "/api/jira-agent/conversations",
@@ -296,4 +303,94 @@ export async function fileToUpload(file: File): Promise<UploadPayload> {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
   return { filename: file.name, content_base64: btoa(binary) };
+}
+
+// ─────────────────────────────────────────────────────────────
+// Execution machines
+// ─────────────────────────────────────────────────────────────
+
+export interface AgentMachine {
+  id: string;
+  agent_group: string;
+  ssh_target: string;
+  description: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MachinesResponse {
+  groups: { name: string; display_name: string }[];
+  machines: AgentMachine[];
+  can_manage: boolean;
+}
+
+export interface SshKeyInfo {
+  agent_group: string;
+  display_name: string;
+  fingerprint: string;
+  comment: string;
+  path: string;
+  /** user@host this user already uploaded the current key to, with key login verified from server B. */
+  verified_targets: string[];
+}
+
+export type KeySessionStatus = "running" | "verifying" | "succeeded" | "failed" | "closed";
+
+export interface KeySession {
+  id: string;
+  agent_group: string;
+  target: string;
+  fingerprint: string;
+  status: KeySessionStatus;
+  message: string;
+  exit_code: number | null;
+  /** Terminal output after the requested offset. */
+  output: string;
+  offset: number;
+}
+
+export const JIRA_AGENT_MACHINES_KEY = ["jira-agent", "machines"] as const;
+export const jiraAgentSshKeyInfoKey = (group: string) => ["jira-agent", "ssh-key-info", group] as const;
+
+/** A system machine or a user-given ssh target: user@host, no port. */
+export const SSH_TARGET_RE = /^[A-Za-z_][A-Za-z0-9_.-]{0,31}@[A-Za-z0-9][A-Za-z0-9.-]*$/;
+
+export function listMachines() {
+  return apiGet<MachinesResponse>("/api/jira-agent/machines");
+}
+
+export function createMachine(body: { agent_group: string; ssh_target: string; description: string }) {
+  return apiPost<{ machine: AgentMachine }>("/api/jira-agent/machines", body);
+}
+
+export function updateMachine(id: string, body: { ssh_target: string; description: string }) {
+  return apiFetch<{ machine: AgentMachine }>(`/api/jira-agent/machines/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteMachine(id: string) {
+  return apiFetch<{ ok: boolean }>(`/api/jira-agent/machines/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export function getSshKeyInfo(group: string) {
+  return apiGet<SshKeyInfo>(`/api/jira-agent/ssh-key-info?group=${encodeURIComponent(group)}`);
+}
+
+export function startKeySession(body: { agent_group: string; target: string }) {
+  return apiPost<KeySession>("/api/jira-agent/ssh-key-sessions", body);
+}
+
+export function getKeySession(id: string, after: number) {
+  return apiGet<KeySession>(`/api/jira-agent/ssh-key-sessions/${encodeURIComponent(id)}?after=${after}`);
+}
+
+export function sendKeySessionInput(id: string, data: string) {
+  return apiPost<{ ok: boolean }>(`/api/jira-agent/ssh-key-sessions/${encodeURIComponent(id)}/input`, { data });
+}
+
+export function closeKeySession(id: string) {
+  return apiPost<KeySession>(`/api/jira-agent/ssh-key-sessions/${encodeURIComponent(id)}/close`, {});
 }
