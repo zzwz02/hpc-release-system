@@ -32,7 +32,8 @@ from app.services.jira_agent_runner import open_db, runner
 MAX_UPLOAD_FILES = 10
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_SEARCH_RESULTS = 50
-MAX_SEARCH_KEYS = 20
+MAX_HANDLED_RESULTS = 200
+HANDLED_JQL_CHUNK = 100
 _ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*-\d+$")
 
 _CLOSE_TEXT = {
@@ -291,8 +292,33 @@ _SEARCH_ISSUE_FIELDS = (
 )
 
 
+async def _jql_search(jql: str, *, max_results: int, validate: bool = True) -> dict:
+    try:
+        return await asyncio.to_thread(
+            jira.search_issues, jql, max_results=max_results, validate=validate,
+        )
+    except urllib.error.HTTPError as exc:
+        raise ApiError(502, f"JIRA 查询失败：HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise ApiError(502, f"无法连接 JIRA：{exc.reason}") from exc
+
+
+def _search_item(conn: sqlite3.Connection, user: dict, issue: dict, conversation: dict | None) -> dict:
+    assignee = assignee_name(issue)
+    return {
+        **{field: issue.get(field) for field in _SEARCH_ISSUE_FIELDS},
+        "can_handover": can_act(user, issue) and bool(assignee),
+        "open_conversation": {
+            "id": conversation["id"] if can_view(user, conversation) else "",
+            "owner": conversation["owner"],
+            "owner_is_assignee": _same_user(conversation["owner"], assignee),
+            "state": _state(conversation, repo.latest_turn(conn, conversation["id"])),
+        } if conversation else None,
+    }
+
+
 async def search_issues(user: dict, query: str) -> dict:
-    """Search box: empty → default list, issue keys → those issues, else JQL.
+    """Search box: empty → default list, one issue key → that issue, else JQL.
 
     The default list is the user's not-closed issues; RM sees the issues of
     the configured JIRA member groups.  Searches run with the JIRA account in
@@ -301,51 +327,82 @@ async def search_issues(user: dict, query: str) -> dict:
     mode, value = domain.parse_issue_query(query)
     missing: list[str] = []
     jql = ""
-    if mode == "keys":
-        keys = list(value)
-        if len(keys) > MAX_SEARCH_KEYS:
-            raise ValueError(f"一次最多查询 {MAX_SEARCH_KEYS} 个 JIRA 编号")
+    if mode == "key":
         issues = []
-        for key in keys:
-            try:
-                issues.append(await fetch_issue(key))
-            except ApiError as exc:
-                if exc.status_code != 404:
-                    raise
-                missing.append(key)
+        try:
+            issues.append(await fetch_issue(value))
+        except ApiError as exc:
+            if exc.status_code != 404:
+                raise
+            missing.append(value)
         total = len(issues)
     else:
-        jql = str(value) if mode == "jql" else domain.default_issue_jql(
+        jql = value if mode == "jql" else domain.default_issue_jql(
             username=user["username"], is_rm=_is_rm(user), groups=runner_module.load_groups(),
         )
-        try:
-            found = await asyncio.to_thread(jira.search_issues, jql, max_results=MAX_SEARCH_RESULTS)
-        except urllib.error.HTTPError as exc:
-            raise ApiError(502, f"JIRA 查询失败：HTTP {exc.code}") from exc
-        except urllib.error.URLError as exc:
-            raise ApiError(502, f"无法连接 JIRA：{exc.reason}") from exc
+        found = await _jql_search(jql, max_results=MAX_SEARCH_RESULTS)
         issues, total = found["issues"], found["total"]
 
     conn = open_db()
     try:
         open_by_key = repo.open_conversations_by_issue(conn, [issue["key"] for issue in issues])
-        results = []
-        for issue in issues:
-            assignee = assignee_name(issue)
-            conversation = open_by_key.get(issue["key"])
-            results.append({
-                **{field: issue.get(field) for field in _SEARCH_ISSUE_FIELDS},
-                "can_handover": can_act(user, issue) and bool(assignee),
-                "open_conversation": {
-                    "id": conversation["id"] if can_view(user, conversation) else "",
-                    "owner": conversation["owner"],
-                    "owner_is_assignee": _same_user(conversation["owner"], assignee),
-                    "state": _state(conversation, repo.latest_turn(conn, conversation["id"])),
-                } if conversation else None,
-            })
+        results = [_search_item(conn, user, issue, open_by_key.get(issue["key"])) for issue in issues]
     finally:
         conn.close()
     return {"mode": mode, "jql": jql, "total": total, "missing": missing, "issues": results}
+
+
+async def list_handled_issues(user: dict) -> dict:
+    """RM only: every issue ever handed to the agent, JIRA-closed ones included.
+
+    Current status/assignee come from JIRA; keys JIRA no longer returns
+    (deleted, moved, no permission) are listed in `missing`.
+    """
+    if not _is_rm(user):
+        raise AuthzError("只有 RM 可以查看 agent 处理过的全部工单")
+    conn = open_db()
+    try:
+        total, rows = repo.handled_issues(conn, limit=MAX_HANDLED_RESULTS)
+    finally:
+        conn.close()
+
+    keys = [row["issue_key"] for row in rows]
+    jira_by_key: dict[str, dict] = {}
+    for start in range(0, len(keys), HANDLED_JQL_CHUNK):
+        chunk = keys[start:start + HANDLED_JQL_CHUNK]
+        # Keys were validated at hand-over, so they are safe inside JQL.
+        found = await _jql_search(f"key in ({', '.join(chunk)})", max_results=len(chunk), validate=False)
+        jira_by_key.update({issue["key"]: issue for issue in found["issues"]})
+
+    conn = open_db()
+    try:
+        open_by_key = repo.open_conversations_by_issue(conn, keys)
+        results = []
+        missing = []
+        for row in rows:
+            key = row["issue_key"]
+            issue = jira_by_key.get(key)
+            if issue is None:
+                missing.append(key)
+                continue
+            latest = repo.list_conversations(conn, issue_key=key, limit=1)[0]
+            latest_turn = repo.latest_turn(conn, latest["id"])
+            results.append({
+                **_search_item(conn, user, issue, open_by_key.get(key)),
+                "agent": {
+                    "conversation_count": row["conversation_count"],
+                    "last_activity": row["last_activity"],
+                    "latest_conversation": {
+                        "id": latest["id"],
+                        "owner": latest["owner"],
+                        "state": _state(latest, latest_turn),
+                        "conclusion": latest_turn["conclusion"] if latest_turn else "",
+                    },
+                },
+            })
+    finally:
+        conn.close()
+    return {"mode": "handled", "jql": "", "total": total, "missing": missing, "issues": results}
 
 
 async def close_conversation(conn: sqlite3.Connection, conversation: dict, reason: str) -> None:

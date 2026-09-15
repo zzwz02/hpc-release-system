@@ -151,27 +151,23 @@ def group_for_issue(groups: dict[str, AgentGroup], components: list[str]) -> Age
 ISSUE_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*-\d+$")
 
 
-def parse_issue_query(text: str) -> tuple[str, list[str] | str]:
+def parse_issue_query(text: str) -> tuple[str, str]:
     """Classify the search box input.
 
     - empty → ("mine", "")
-    - every token is an issue key → ("keys", [KEY, ...])
+    - one issue key → ("key", KEY); several keys only → ValueError
     - anything else → ("jql", text); a bare key is never valid JQL, so there
       is no ambiguity between the two.
     """
     raw = (text or "").strip()
     if not raw:
         return "mine", ""
-    keys: list[str] = []
-    for token in re.split(r"[\s,，;；]+", raw):
-        if not token:
-            continue
-        if not ISSUE_KEY_RE.match(token):
-            return "jql", raw
-        key = token.upper()
-        if key not in keys:
-            keys.append(key)
-    return "keys", keys
+    tokens = [token for token in re.split(r"[\s,，;；]+", raw) if token]
+    if not all(ISSUE_KEY_RE.match(token) for token in tokens):
+        return "jql", raw
+    if len({token.upper() for token in tokens}) > 1:
+        raise ValueError("一次只能查询一个 JIRA 编号")
+    return "key", tokens[0].upper()
 
 
 def jql_string(value: str) -> str:

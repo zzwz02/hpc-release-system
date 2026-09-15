@@ -3,6 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useAuth } from "../../../api/AuthContext";
 import { apiGet, apiPost } from "../../../api/http";
 import { confirmDialog } from "../../../lib/confirm";
 import { JiraAgentPage } from "../JiraAgentPage";
@@ -15,6 +16,14 @@ vi.mock("../../../api/http", () => ({
 vi.mock("../../../lib/confirm", () => ({
   confirmDialog: vi.fn(),
 }));
+
+vi.mock("../../../api/AuthContext", () => ({
+  useAuth: vi.fn(),
+}));
+
+function mockUser(role: string) {
+  vi.mocked(useAuth).mockReturnValue({ user: { username: "alice", role } } as unknown as ReturnType<typeof useAuth>);
+}
 
 const turn = {
   id: "jat_1",
@@ -130,6 +139,25 @@ function searchResponse(open: boolean) {
   };
 }
 
+function handledResponse() {
+  return {
+    mode: "handled",
+    jql: "",
+    total: 2,
+    missing: ["MC3-1"],
+    issues: [
+      {
+        ...issue, status: "Closed", updated: "", can_handover: true, open_conversation: null,
+        agent: {
+          conversation_count: 2,
+          last_activity: "2026-09-13 09:30:00",
+          latest_conversation: { id: "jac_0", owner: "alice", state: "closed", conclusion: "cannot_reproduce" },
+        },
+      },
+    ],
+  };
+}
+
 function previewResponse(open: boolean) {
   return {
     issue: { ...issue, attachment_count: 2, comment_count: 1 },
@@ -141,6 +169,7 @@ function previewResponse(open: boolean) {
 
 function mockBackend({ open = true }: { open?: boolean } = {}) {
   vi.mocked(apiGet).mockImplementation(async (path: string) => {
+    if (path === "/api/jira-agent/issues?scope=handled") return handledResponse();
     if (path.startsWith("/api/jira-agent/issues?")) return searchResponse(open);
     if (path === "/api/jira-agent/issues/MC3-7672") return previewResponse(open);
     if (path === "/api/jira-agent/conversations/jac_1") return detail;
@@ -172,6 +201,40 @@ describe("JiraAgentPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(confirmDialog).mockResolvedValue(true);
+    mockUser("Owner");
+  });
+
+  it("only RM can switch to every issue the agent handled, including closed ones", async () => {
+    mockBackend({ open: false });
+    const user = userEvent.setup();
+    const { unmount } = renderPage();
+    await screen.findByTestId("jira-agent-issue-results");
+    expect(screen.queryByRole("button", { name: "agent 处理过" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("JIRA 编号或 JQL")).toHaveAttribute(
+      "placeholder",
+      "一个 JIRA 编号或 JQL，留空为默认列表",
+    );
+    unmount();
+
+    mockUser("RM");
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "agent 处理过" }));
+
+    const results = await screen.findByTestId("jira-agent-issue-results");
+    expect(apiGet).toHaveBeenCalledWith("/api/jira-agent/issues?scope=handled");
+    expect(within(results).getByText("Closed")).toBeInTheDocument();
+    expect(within(results).getByText("agent · 无法复现")).toBeInTheDocument();
+    expect(within(results).getByText(/2 个对话 · 最近 alice · 09-13 09:30/)).toBeInTheDocument();
+    expect(screen.getByText(/JIRA 中未找到或无权访问：MC3-1/)).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("过滤 agent 处理过的工单"), "nothing");
+    expect(await screen.findByText("没有匹配的工单")).toBeInTheDocument();
+    await user.clear(screen.getByLabelText("过滤 agent 处理过的工单"));
+
+    await user.click(await screen.findByRole("button", { name: /MC3-7672/ }));
+    await waitFor(() => {
+      expect(screen.getByTestId("location")).toHaveTextContent("issue=MC3-7672&conversation=jac_0");
+    });
   });
 
   it("lists issues with agent state and opens the live conversation of a clicked issue", async () => {

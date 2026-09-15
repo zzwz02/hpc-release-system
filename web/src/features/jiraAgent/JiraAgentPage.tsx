@@ -10,12 +10,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
+import { useAuth } from "../../api/AuthContext";
 import { Markdown } from "../../components/Markdown";
 import { confirmDialog } from "../../lib/confirm";
+import { isRM } from "../../lib/roles";
 import { toast } from "../../lib/toast";
 import {
   CLOSE_REASON_LABELS,
   CONCLUSION_LABELS,
+  JIRA_AGENT_HANDLED_ISSUES_KEY,
   JIRA_AGENT_ISSUE_SEARCH_KEY,
   OWNERSHIP_LABELS,
   STATE_LABELS,
@@ -28,6 +31,7 @@ import {
   jiraAgentConversationKey,
   jiraAgentIssueKey,
   jiraAgentIssueSearchKey,
+  listHandledIssues,
   previewIssue,
   retryTurnComment,
   searchIssues,
@@ -39,6 +43,7 @@ import {
   type AgentTurn,
   type ConversationState,
   type IssuePreview,
+  type IssueSearchItem,
   type IssueSearchResponse,
 } from "./jiraAgentApi";
 
@@ -46,8 +51,9 @@ const DRAFT = "new";
 
 const SEARCH_MODE_LABELS: Record<IssueSearchResponse["mode"], string> = {
   mine: "默认列表（未关闭）",
-  keys: "按 JIRA 编号",
+  key: "按 JIRA 编号",
   jql: "JQL",
+  handled: "agent 处理过（含已关闭）",
 };
 
 const STATE_TONE: Record<ConversationState, string> = {
@@ -166,7 +172,7 @@ export function JiraAgentPage() {
       </div>
       <div className="jira-agent-layout">
         <aside className="jira-agent-sidebar">
-          <IssueSearchPanel selectedKey={issueKey} onSelect={(key) => navigate(key)} />
+          <IssueSearchPanel selectedKey={issueKey} onSelect={(key, conversation) => navigate(key, conversation)} />
         </aside>
         <div className="jira-agent-main">{main}</div>
       </div>
@@ -200,7 +206,50 @@ function ConversationRedirect({
 // Issue search
 // ─────────────────────────────────────────────────────────────
 
-function IssueSearchPanel({ selectedKey, onSelect }: { selectedKey: string; onSelect: (key: string) => void }) {
+type SelectIssue = (key: string, conversation?: string) => void;
+
+/** RM can switch between the search box and every issue the agent has handled. */
+function IssueSearchPanel({ selectedKey, onSelect }: { selectedKey: string; onSelect: SelectIssue }) {
+  const { user } = useAuth();
+  const rm = isRM(user);
+  const [view, setView] = useState<"search" | "handled">("search");
+  const handled = rm && view === "handled";
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <strong>JIRA 工单</strong>
+        {rm && (
+          <div className="jira-agent-view-switch" role="group" aria-label="工单列表">
+            <button
+              type="button"
+              className={`btn sm${handled ? "" : " active"}`}
+              aria-pressed={!handled}
+              onClick={() => setView("search")}
+            >
+              查找
+            </button>
+            <button
+              type="button"
+              className={`btn sm${handled ? " active" : ""}`}
+              aria-pressed={handled}
+              onClick={() => setView("handled")}
+            >
+              agent 处理过
+            </button>
+          </div>
+        )}
+      </div>
+      {handled ? (
+        <HandledIssueList selectedKey={selectedKey} onSelect={onSelect} />
+      ) : (
+        <IssueSearch selectedKey={selectedKey} onSelect={onSelect} />
+      )}
+    </div>
+  );
+}
+
+function IssueSearch({ selectedKey, onSelect }: { selectedKey: string; onSelect: SelectIssue }) {
   const [input, setInput] = useState("");
   const [query, setQuery] = useState("");
   const searchQuery = useQuery({
@@ -216,69 +265,155 @@ function IssueSearchPanel({ selectedKey, onSelect }: { selectedKey: string; onSe
 
   const result = searchQuery.data;
   return (
-    <div className="panel">
-      <div className="panel-head">
-        <strong>JIRA 工单</strong>
+    <div className="panel-body jira-agent-search">
+      <div className="row">
+        <input
+          aria-label="JIRA 编号或 JQL"
+          placeholder="一个 JIRA 编号或 JQL，留空为默认列表"
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") search();
+          }}
+        />
+        <button type="button" className="btn sm" disabled={searchQuery.isFetching} onClick={search}>
+          查询
+        </button>
       </div>
-      <div className="panel-body jira-agent-search">
-        <div className="row">
-          <input
-            aria-label="JIRA 编号或 JQL"
-            placeholder="JIRA 编号（可多个）或 JQL，留空为默认列表"
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") search();
-            }}
-          />
-          <button type="button" className="btn sm" disabled={searchQuery.isFetching} onClick={search}>
-            查询
-          </button>
+      {searchQuery.isError && <p className="jira-agent-warning">{errorMessage(searchQuery.error)}</p>}
+      {result && (
+        <div className="jira-agent-query-hint muted">
+          <span>
+            {SEARCH_MODE_LABELS[result.mode]} · 共 {result.total} 个
+            {result.issues.length < result.total ? `，仅显示前 ${result.issues.length} 个` : ""}
+          </span>
+          {result.jql && <code>{result.jql}</code>}
+          {result.missing.length > 0 && (
+            <span className="jira-agent-warning">未找到或无权访问：{result.missing.join("、")}</span>
+          )}
         </div>
-        {searchQuery.isError && <p className="jira-agent-warning">{errorMessage(searchQuery.error)}</p>}
-        {result && (
-          <div className="jira-agent-query-hint muted">
-            <span>
-              {SEARCH_MODE_LABELS[result.mode]} · 共 {result.total} 个
-              {result.issues.length < result.total ? `，显示前 ${result.issues.length} 个` : ""}
-            </span>
-            {result.jql && <code>{result.jql}</code>}
-            {result.missing.length > 0 && (
-              <span className="jira-agent-warning">未找到或无权访问：{result.missing.join("、")}</span>
-            )}
-          </div>
-        )}
-        {result && result.issues.length > 0 && (
-          <div className="jira-agent-issue-results" data-testid="jira-agent-issue-results">
-            {result.issues.map((issue) => {
-              const open = issue.open_conversation;
-              return (
-                <button
-                  type="button"
-                  key={issue.key}
-                  className={`jira-agent-list-item${issue.key === selectedKey ? " active" : ""}`}
-                  onClick={() => onSelect(issue.key)}
-                >
-                  <span className="jira-agent-list-top">
-                    <strong>{issue.key}</strong>
-                    <span className="pill">{issue.status}</span>
-                  </span>
-                  <span className="jira-agent-list-summary">{issue.summary}</span>
-                  <span className="jira-agent-list-meta">
-                    <span className="muted">{issue.assignee?.display_name ?? "无 assignee"}</span>
-                    {open && (
-                      <span className={`pill ${open.id ? STATE_TONE[open.state] : ""}`}>
-                        agent · {open.id ? STATE_LABELS[open.state] : `${open.owner} 的对话`}
-                      </span>
-                    )}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-        {result && result.issues.length === 0 && !searchQuery.isFetching && <p className="muted">没有匹配的工单</p>}
+      )}
+      <IssueResults
+        issues={result?.issues}
+        empty={!searchQuery.isFetching}
+        selectedKey={selectedKey}
+        onSelect={onSelect}
+      />
+    </div>
+  );
+}
+
+function HandledIssueList({ selectedKey, onSelect }: { selectedKey: string; onSelect: SelectIssue }) {
+  const [filter, setFilter] = useState("");
+  const handledQuery = useQuery({
+    queryKey: JIRA_AGENT_HANDLED_ISSUES_KEY,
+    queryFn: listHandledIssues,
+  });
+  const result = handledQuery.data;
+  const needle = filter.trim().toLowerCase();
+  const issues = result?.issues.filter(
+    (issue) =>
+      !needle
+      || [issue.key, issue.summary, issue.status, issue.assignee?.display_name ?? "", issue.agent?.latest_conversation.owner ?? ""]
+        .some((value) => value.toLowerCase().includes(needle)),
+  );
+
+  return (
+    <div className="panel-body jira-agent-search">
+      <div className="row">
+        <input
+          aria-label="过滤 agent 处理过的工单"
+          placeholder="按编号、标题、状态或人员过滤"
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+        />
+        <button
+          type="button"
+          className="btn sm"
+          disabled={handledQuery.isFetching}
+          onClick={() => void handledQuery.refetch()}
+        >
+          刷新
+        </button>
       </div>
+      {handledQuery.isError && <p className="jira-agent-warning">{errorMessage(handledQuery.error)}</p>}
+      {result && (
+        <div className="jira-agent-query-hint muted">
+          <span>
+            {SEARCH_MODE_LABELS.handled} · 共 {result.total} 个
+            {needle ? `，匹配 ${issues?.length ?? 0} 个` : ""}
+            {!needle && result.issues.length + result.missing.length < result.total
+              ? `，显示最近 ${result.issues.length + result.missing.length} 个`
+              : ""}
+          </span>
+          {result.missing.length > 0 && (
+            <span className="jira-agent-warning">JIRA 中未找到或无权访问：{result.missing.join("、")}</span>
+          )}
+        </div>
+      )}
+      <IssueResults issues={issues} empty={!handledQuery.isFetching} selectedKey={selectedKey} onSelect={onSelect} />
+    </div>
+  );
+}
+
+function IssueResults({
+  issues,
+  empty,
+  selectedKey,
+  onSelect,
+}: {
+  issues: IssueSearchItem[] | undefined;
+  empty: boolean;
+  selectedKey: string;
+  onSelect: SelectIssue;
+}) {
+  if (!issues) return null;
+  if (issues.length === 0) return empty ? <p className="muted">没有匹配的工单</p> : null;
+  return (
+    <div className="jira-agent-issue-results" data-testid="jira-agent-issue-results">
+      {issues.map((issue) => {
+        const open = issue.open_conversation;
+        const agent = issue.agent;
+        const latest = agent?.latest_conversation;
+        let agentPill = null;
+        if (latest) {
+          const concluded = (latest.state === "closed" || latest.state === "waiting_review") && latest.conclusion;
+          agentPill = (
+            <span className={`pill ${STATE_TONE[latest.state]}`}>
+              agent · {concluded ? (CONCLUSION_LABELS[latest.conclusion] ?? latest.conclusion) : STATE_LABELS[latest.state]}
+            </span>
+          );
+        } else if (open) {
+          agentPill = (
+            <span className={`pill ${open.id ? STATE_TONE[open.state] : ""}`}>
+              agent · {open.id ? STATE_LABELS[open.state] : `${open.owner} 的对话`}
+            </span>
+          );
+        }
+        return (
+          <button
+            type="button"
+            key={issue.key}
+            className={`jira-agent-list-item${issue.key === selectedKey ? " active" : ""}`}
+            onClick={() => onSelect(issue.key, latest?.id)}
+          >
+            <span className="jira-agent-list-top">
+              <strong>{issue.key}</strong>
+              <span className="pill">{issue.status}</span>
+            </span>
+            <span className="jira-agent-list-summary">{issue.summary}</span>
+            <span className="jira-agent-list-meta">
+              <span className="muted">{issue.assignee?.display_name ?? "无 assignee"}</span>
+              {agentPill}
+            </span>
+            {agent && latest && (
+              <span className="jira-agent-list-meta muted">
+                {agent.conversation_count} 个对话 · 最近 {latest.owner} · {agent.last_activity.slice(5, 16)}
+              </span>
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 }

@@ -16,7 +16,8 @@ description: Develop, debug, or review the JIRA agent (per-group digital employe
 - **谁能操作**：只有当前 JIRA assignee 或 RM 能交单、发消息，每次写操作都实时读 JIRA 校验。查看权限为对话 owner、交单人或 RM。页签角色只来自 `shared/access_control.json` 的 `jira-agent`。
 - **找单**（`GET /api/jira-agent/issues?q=`，分类逻辑在 `domain.parse_issue_query`）：
   - 留空时，普通用户看 `assignee = "<网站用户名>" AND status != Closed`，RM 看 `assignee in membersOf("<JIRA_MEMBERS_GROUP>")`。不能用 `currentUser()`，它指向 jira.conf 的 token 账号。
-  - 每个词都匹配 `项目KEY-数字`（字母开头，允许数字和下划线）时逐个读单，找不到的列入 `missing`。
+  - 输入是一个 `项目KEY-数字`（字母开头，允许数字和下划线）时读这张单，找不到列入 `missing`；只由多个编号组成时报错“一次只能查询一个 JIRA 编号”（用户明确要求只支持一个）。
+  - RM 专用 `?scope=handled`（`service.list_handled_issues`）：数据库里所有交给过 agent 的工单，含 JIRA 已关闭的，按最近活动排序、最多 200 个；状态用 `key in (...)` 分批查 JIRA，必须带 `validateQuery=false`，否则任一编号不存在时整条 JQL 报 400。
   - 其他输入原样作为 JQL，JIRA 返回 400 时把 `errorMessages` 回给用户。
   - 不识别工单网址，因为业务 JIRA 地址与测试环境不同。
   - 搜索使用 jira.conf 账号的可见范围，交单仍校验 assignee 或 RM。

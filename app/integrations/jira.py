@@ -405,14 +405,19 @@ def search_issues(
     jql: str,
     *,
     max_results: int = 50,
+    validate: bool = True,
     conf_path: str | Path | None = None,
 ) -> dict:
-    """Run a JQL search; returns {"total", "issues": [summary dicts]}."""
+    """Run a JQL search; returns {"total", "issues": [summary dicts]}.
+
+    validate=False lets `key in (...)` skip keys that no longer exist instead
+    of failing the whole query.
+    """
     cfg = _require_config(conf_path)
     try:
         raw = _request(
             cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"], "POST", "/rest/api/2/search",
-            {"jql": jql, "maxResults": max_results, "fields": _SEARCH_FIELDS},
+            {"jql": jql, "maxResults": max_results, "fields": _SEARCH_FIELDS, "validateQuery": validate},
         )
     except urllib.error.HTTPError as exc:
         if exc.code != 400:

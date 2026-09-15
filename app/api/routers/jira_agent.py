@@ -43,7 +43,13 @@ async def health(user: dict = Depends(require_jira_agent_access)) -> dict:
 
 
 @router.get("/issues")
-async def search_issues(q: str = "", user: dict = Depends(require_jira_agent_access)) -> dict:
+async def search_issues(
+    q: str = "",
+    scope: str = "",
+    user: dict = Depends(require_jira_agent_access),
+) -> dict:
+    if scope == "handled":
+        return await service.list_handled_issues(user)
     return await service.search_issues(user, q)
 
 

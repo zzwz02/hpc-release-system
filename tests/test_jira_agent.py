@@ -174,6 +174,8 @@ class FakeJira:
         self.assignee = "alice"
         self.comments: list[tuple[str, str]] = []
         self.searches: list[str] = []
+        self.validate_flags: list[bool] = []
+        self.gone: set[str] = set()
         self.fail_comment = False
 
     def get_issue(self, key: str) -> dict:
@@ -189,12 +191,18 @@ class FakeJira:
             "attachments": [{"id": "10", "filename": "saxpy.cu", "size": 12, "mime_type": "text/plain", "content_url": "http://jira/secure/attachment/10/saxpy.cu"}],
         }
 
-    def search_issues(self, jql: str, *, max_results: int = 50) -> dict:
+    def search_issues(self, jql: str, *, max_results: int = 50, validate: bool = True) -> dict:
         self.searches.append(jql)
+        self.validate_flags.append(validate)
         if "bad" in jql:
             raise jira.JiraQueryError("Error in JQL Query: bad")
+        fields = ("key", "url", "summary", "issue_type", "status", "priority", "assignee", "components", "updated")
+        if jql.startswith("key in ("):
+            keys = [key for key in jql[len("key in ("):-1].split(", ") if key not in self.gone]
+            issues = [{**{k: self.get_issue(key)[k] for k in fields}, "status": "Closed"} for key in keys]
+            return {"total": len(issues), "issues": issues}
         issue = self.get_issue("MC3-7672")
-        return {"total": 1, "issues": [{k: issue[k] for k in ("key", "url", "summary", "issue_type", "status", "priority", "assignee", "components", "updated")}]}
+        return {"total": 1, "issues": [{k: issue[k] for k in fields}]}
 
     def download_attachment(self, url: str) -> bytes:
         return b"int main(){}"
@@ -375,15 +383,20 @@ def test_issue_search_default_list_keys_and_jql(env) -> None:
 
     env.as_user("alice")
     conversation = _handover(env, "MC3-2")["conversation"]
-    keys = env.client.get(
-        "/api/jira-agent/issues", params={"q": "mc3-1, MC3-2 NOPE-1"}
-    ).json()
-    assert keys["mode"] == "keys"
+    several = env.client.get("/api/jira-agent/issues", params={"q": "mc3-1, MC3-2"})
+    assert several.status_code == 400
+    assert "一次只能查询一个 JIRA 编号" in several.json()["error"]
+
+    missing = env.client.get("/api/jira-agent/issues", params={"q": "NOPE-1"}).json()
+    assert (missing["mode"], missing["issues"], missing["missing"]) == ("key", [], ["NOPE-1"])
+    assert env.client.get("/api/jira-agent/issues", params={"q": "mc3-1"}).json()["issues"][0]["open_conversation"] is None
+
+    keys = env.client.get("/api/jira-agent/issues", params={"q": " mc3-2 "}).json()
+    assert keys["mode"] == "key"
     assert keys["jql"] == ""
-    assert [issue["key"] for issue in keys["issues"]] == ["MC3-1", "MC3-2"]
-    assert keys["missing"] == ["NOPE-1"]
-    assert keys["issues"][0]["open_conversation"] is None
-    open_conversation = keys["issues"][1]["open_conversation"]
+    assert [issue["key"] for issue in keys["issues"]] == ["MC3-2"]
+    assert keys["missing"] == []
+    open_conversation = keys["issues"][0]["open_conversation"]
     assert {k: open_conversation[k] for k in ("id", "owner", "owner_is_assignee")} == {
         "id": conversation["id"], "owner": "alice", "owner_is_assignee": True,
     }
@@ -403,10 +416,35 @@ def test_issue_search_default_list_keys_and_jql(env) -> None:
     assert "Error in JQL Query" in bad.json()["error"]
 
 
+def test_rm_lists_every_handled_issue_including_closed(env) -> None:
+    first = _handover(env, "MC3-1")["conversation"]
+    _wait(env, first["id"], lambda d: _latest(d)["status"] == "completed")
+    second = _handover(env, "MC3-1", new_conversation=True)["conversation"]
+    _handover(env, "MC3-2")
+
+    assert env.client.get("/api/jira-agent/issues", params={"scope": "handled"}).status_code == 403
+
+    env.as_user("carol")
+    env.jira.gone.add("MC3-2")
+    handled = env.client.get("/api/jira-agent/issues", params={"scope": "handled"}).json()
+    assert (handled["mode"], handled["total"], handled["missing"]) == ("handled", 2, ["MC3-2"])
+    assert env.jira.searches[-1] in {"key in (MC3-1, MC3-2)", "key in (MC3-2, MC3-1)"}
+    assert env.jira.validate_flags[-1] is False
+    [item] = handled["issues"]
+    assert (item["key"], item["status"]) == ("MC3-1", "Closed")
+    assert item["open_conversation"]["id"] == second["id"]
+    assert item["agent"]["conversation_count"] == 2
+    latest = item["agent"]["latest_conversation"]
+    assert (latest["id"], latest["owner"]) == (second["id"], "alice")
+
+
 def test_parse_issue_query() -> None:
     assert domain.parse_issue_query("  ") == ("mine", "")
-    assert domain.parse_issue_query("mc3-7672") == ("keys", ["MC3-7672"])
-    assert domain.parse_issue_query("PDE_HPC-12，MC3-1 MC3-1") == ("keys", ["PDE_HPC-12", "MC3-1"])
+    assert domain.parse_issue_query("mc3-7672") == ("key", "MC3-7672")
+    assert domain.parse_issue_query("PDE_HPC-12，") == ("key", "PDE_HPC-12")
+    assert domain.parse_issue_query("MC3-1 mc3-1") == ("key", "MC3-1")
+    with pytest.raises(ValueError, match="一次只能查询一个 JIRA 编号"):
+        domain.parse_issue_query("PDE_HPC-12，MC3-1")
     # browse URLs are JQL input (business JIRA runs at other addresses)
     assert domain.parse_issue_query("http://jira:8080/browse/SPD-9") == ("jql", "http://jira:8080/browse/SPD-9")
     assert domain.parse_issue_query("MC3") == ("jql", "MC3")

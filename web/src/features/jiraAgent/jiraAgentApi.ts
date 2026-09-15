@@ -161,10 +161,21 @@ export interface IssueSearchItem {
     owner_is_assignee: boolean;
     state: ConversationState;
   } | null;
+  /** Only in the RM "handled" list. */
+  agent?: {
+    conversation_count: number;
+    last_activity: string;
+    latest_conversation: {
+      id: string;
+      owner: string;
+      state: ConversationState;
+      conclusion: string;
+    };
+  };
 }
 
 export interface IssueSearchResponse {
-  mode: "mine" | "keys" | "jql";
+  mode: "mine" | "key" | "jql" | "handled";
   jql: string;
   total: number;
   missing: string[];
@@ -173,10 +184,16 @@ export interface IssueSearchResponse {
 
 export const JIRA_AGENT_ISSUE_SEARCH_KEY = ["jira-agent", "issues"] as const;
 export const jiraAgentIssueSearchKey = (query: string) => ["jira-agent", "issues", query] as const;
+export const JIRA_AGENT_HANDLED_ISSUES_KEY = ["jira-agent", "issues", { scope: "handled" }] as const;
 export const jiraAgentIssueKey = (issueKey: string) => ["jira-agent", "issue", issueKey] as const;
 
 export function searchIssues(query: string) {
   return apiGet<IssueSearchResponse>(`/api/jira-agent/issues?q=${encodeURIComponent(query)}`);
+}
+
+/** RM only: every issue the agent has handled, JIRA-closed ones included. */
+export function listHandledIssues() {
+  return apiGet<IssueSearchResponse>("/api/jira-agent/issues?scope=handled");
 }
 
 export interface UploadPayload {

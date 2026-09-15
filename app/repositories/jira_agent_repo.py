@@ -117,6 +117,29 @@ def list_conversations(
     )
 
 
+def handled_issues(conn: sqlite3.Connection, *, limit: int) -> tuple[int, list[dict]]:
+    """Issues ever handed to the agent, most recent agent activity first.
+
+    Returns (total issue count, rows of issue_key / conversation_count /
+    last_activity for the first `limit` issues).
+    """
+    total = conn.execute(
+        "SELECT COUNT(DISTINCT issue_key) FROM jira_agent_conversations"
+    ).fetchone()[0]
+    rows = _all(
+        conn,
+        """
+        SELECT issue_key, COUNT(*) AS conversation_count, MAX(updated_at) AS last_activity
+        FROM jira_agent_conversations
+        GROUP BY issue_key
+        ORDER BY last_activity DESC, MAX(rowid) DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    return int(total), rows
+
+
 def touch_conversation(conn: sqlite3.Connection, conversation_id: str) -> None:
     conn.execute(
         "UPDATE jira_agent_conversations SET updated_at = ? WHERE id = ?",
