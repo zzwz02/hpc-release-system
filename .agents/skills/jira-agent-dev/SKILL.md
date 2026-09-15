@@ -53,14 +53,21 @@ Runner 在 FastAPI lifespan 中启停（`settings.jira_agent_runner_enabled`）�
 - **`jira_agent_events`**：时间线。`seq` 是显示顺序，`rev` 在每次插入或更新时递增，前端用 `?after=rev` 增量轮询；命令事件按 `item_id` 原地更新（started → completed）。
 - **`jira_agent_files`**：`source` 为 jira/upload/artifact；`remote_path` 是 B 工作目录内的相对路径，`local_path` 只对上传和拉回的产物存在。
 - **对话状态**：`state` 由对话与最新轮次派生：closed / idle / queued / running / waiting_review（最新轮 completed）/ failed / cancelled / interrupted。
-- **运行阶段**：内存中 `ActiveTurn.phase` 为 preparing → starting → running → finishing。
+- **运行阶段**：内存中 `ActiveTurn.phase` 为 preparing → starting → running → finishing；重启接管时为 recovering → running → finishing。
   - 运行中（running）的消息走 `turn/steer`；preparing 阶段的消息合并进本轮输入；starting、finishing 阶段返回 409。
   - 取消：
     - running：调 `turn/interrupt`。
     - preparing：直接取消任务，此时 B 上还没有 turn。
-    - starting：只记录停止原因，拿到 turnId 后立即 `turn/interrupt`。这时 `turn/start` 可能已到达 B，不能直接取消任务，否则 B 上的 turn 会继续跑。
-    - 超时从出队开始计时，中断后等待 60 秒宽限。
-  - 启动恢复：残留的 running 标为 interrupted，不自动重跑有副作用的工作。
+    - starting / recovering：只记录停止原因，拿到 turnId 后立即 `turn/interrupt`。这时 B 上可能已有 turn，不能直接取消任务，否则 B 上的 turn 会继续跑。
+    - 超时从出队（`started_at`）开始计时，跨重启不重置，中断后等待 60 秒宽限。
+  - 停止与启动恢复（`runner.start` → `_recover` → `_reattach`）：
+    - 网站停止时 preparing 的轮次重新排队，其余保持 running，不写 interrupted。
+    - 启动时对每个 running：没有 thread_id 就重新排队；否则 `thread/resume` + `thread/turns/list` 取最新一轮。没有 `codex_turn_id`（停在 starting）时，按 `startedAt >= started_at` 认领。
+    - 找到的 turn 仍 inProgress 且 thread 为 active：补录 items 后继续 `_consume`；已结束：补录 items 后按状态收尾（completed 照常拉产物、发评论，已拉回的产物不重复拉）；B 上没有这一轮：重新排队。
+    - 连不上 B 或 B 重启过（turn 为 interrupted）才标记 interrupted。启动时补发 `comment_status=pending` 的评论。
+  - 续办前 `_stop_leftover_turn`：resume 后 thread 仍 active 就先中断遗留的 turn，等它 `turn/completed` 后再 `turn/start`。
+  - recovering 期间结果未知：服务层 `_check_not_recovering` 让取消、发消息和关闭对话（新建对话、assignee 变更）返回 409，前端按 `phase` / `open_conversation.recovering` 禁用按钮。
+  - 已关闭对话不再执行：重新排队前有 `stop_reason` 就标 cancelled；`_recover` 对已关闭且没有 thread 的轮次直接取消；调度器跳过已关闭对话的 queued 轮次。
 
 ## Codex app-server 协议要点
 
@@ -68,9 +75,15 @@ Runner 在 FastAPI lifespan 中启停（`settings.jira_agent_runner_enabled`）�
 
 - **认证**：`--ws-auth capability-token` 时，客户端在握手请求头带 `Authorization: Bearer <token>`；token 错误返回 HTTP 401。非回环地址监听必须开认证。
 - **握手**：每个连接先 `initialize` 请求，再发 `initialized` 通知。
-- **通知路由**：thread 的通知只发给 start/resume 它的连接，因此一轮执行期间保持同一连接，steer/interrupt 也经过这条连接发送。
+- **通知路由**：thread 的通知只发给 start/resume 它的连接，因此一轮执行期间保持同一连接，steer/interrupt 也经过这条连接发送。`thread/status/changed` 例外，会广播给所有连接。
+- **断线与重启**（0.153.4 实测，升级后重测）：
+  - 客户端断开不影响 turn：thread 保持 `active`，turn 照常跑完，结果留在 `thread/turns/list`（`itemsView: "full"`）里。
+  - 新连接 `thread/resume` 后会收到这一轮剩余的通知，也能 `turn/interrupt`。
+  - 对 active thread 调 `turn/start` 不会新建 turn，返回正在跑的那一轮并把输入并进去（等同 steer）。
+  - `turn/interrupt` 立即结束 turn，但不杀已启动的 shell 命令。
+  - app-server 进程被杀后重启：thread 变为 `notLoaded`，resume 后为 `idle`，那一轮为 `interrupted`，之后可以正常开新一轮。有运行中的轮次时，SIGTERM 在 10 秒内没有退出。
 - **用到的方法**：
-  - 线程与回合：`thread/start`（cwd、developerInstructions、model、serviceName）、`thread/resume`（excludeTurns）、`thread/archive`、`turn/start`（input、outputSchema、model）、`turn/steer`（必须带 `expectedTurnId`）、`turn/interrupt`。
+  - 线程与回合：`thread/start`（cwd、developerInstructions、model、serviceName）、`thread/resume`（excludeTurns）、`thread/turns/list`（最新在前）、`thread/archive`、`turn/start`（input、outputSchema、model）、`turn/steer`（必须带 `expectedTurnId`）、`turn/interrupt`。
   - 文件：`fs/createDirectory`、`fs/writeFile` / `fs/readFile`（`dataBase64`，绝对路径）。
 - **读取的通知**：`item/started`、`item/completed`（agentMessage / commandExecution / fileChange / reasoning 等）、`turn/completed`（status 为 completed / interrupted / failed）、`error`（`willRetry` 为 false 才记录）。delta 类通知不用。
 - **结构化结论**：`outputSchema` 必须是 strict schema（每层 `additionalProperties: false`，所有属性 required）。最终 agentMessage 的文本就是 JSON；`parse_result` 兼容外层 ```json 包裹。

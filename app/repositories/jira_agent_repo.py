@@ -330,18 +330,32 @@ def queue_position(conn: sqlite3.Connection, turn_id: str) -> int:
     return int(row[0]) if row else 0
 
 
-def mark_running_interrupted(conn: sqlite3.Connection, *, error: str) -> list[dict]:
-    """Startup recovery: running turns from a previous process are not replayed."""
-    turns = _all(conn, "SELECT * FROM jira_agent_turns WHERE status = 'running'")
-    if turns:
-        conn.execute(
-            """
-            UPDATE jira_agent_turns SET status = 'interrupted', error = ?, finished_at = ?
-            WHERE status = 'running'
-            """,
-            (error, beijing_timestamp()),
-        )
-    return turns
+def running_turns(conn: sqlite3.Connection) -> list[dict]:
+    """Startup recovery: turns a previous process left running on the app-server."""
+    return _all(conn, "SELECT * FROM jira_agent_turns WHERE status = 'running' ORDER BY rowid")
+
+
+def requeue_turn(conn: sqlite3.Connection, turn_id: str) -> bool:
+    """Put a turn that never reached the app-server back at its queue position."""
+    cur = conn.execute(
+        """
+        UPDATE jira_agent_turns SET status = 'queued', started_at = ''
+        WHERE id = ? AND status = 'running'
+        """,
+        (turn_id,),
+    )
+    return cur.rowcount == 1
+
+
+def pending_comment_turns(conn: sqlite3.Connection) -> list[dict]:
+    return _all(
+        conn,
+        """
+        SELECT * FROM jira_agent_turns
+        WHERE status = 'completed' AND comment_status = 'pending'
+        ORDER BY rowid
+        """,
+    )
 
 
 # ─────────────────────────────────────────────────────────────

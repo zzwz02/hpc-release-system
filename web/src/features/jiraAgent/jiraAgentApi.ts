@@ -139,7 +139,8 @@ export interface IssuePreview {
     comment_count: number;
   };
   can_handover: boolean;
-  open_conversation: { id: string; owner: string; owner_is_assignee: boolean } | null;
+  /** recovering: a restarted site is re-attaching to its running turn; closing it must wait. */
+  open_conversation: { id: string; owner: string; owner_is_assignee: boolean; recovering?: boolean } | null;
   conversations: AgentConversation[];
 }
 

@@ -11,6 +11,7 @@ C/D/E) are a convention of the group's knowledge pack on the host, not here.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import hashlib
 import json
 import logging
@@ -28,7 +29,7 @@ from app.integrations import jira
 from app.integrations.codex_app_server import CodexAppServerClient, CodexAppServerError
 from app.repositories import jira_agent_repo as repo
 from app.repositories.base import dumps_json
-from app.timeutil import beijing_timestamp
+from app.timeutil import BEIJING_TZ, beijing_now, beijing_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,20 @@ def _error_text(exc: BaseException) -> str:
     return str(exc) or type(exc).__name__
 
 
+def _parse_timestamp(value: str) -> dt.datetime | None:
+    try:
+        return dt.datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def _deadline(turn: dict, group: domain.AgentGroup) -> float:
+    """Monotonic deadline of a turn; the limit counts from dequeue, also across restarts."""
+    started = _parse_timestamp(turn["started_at"])
+    elapsed = max(0.0, (beijing_now() - started).total_seconds()) if started else 0.0
+    return time.monotonic() + group.turn_timeout_seconds - elapsed
+
+
 def _event(conn, conversation_id: str, turn_id: str, kind: str, payload: dict, item_id: str = "") -> None:
     with transaction(conn):
         repo.add_event(
@@ -88,7 +103,7 @@ class ActiveTurn:
     conversation_id: str
     group: str
     workspace: str
-    # preparing → starting → running → finishing
+    # preparing → starting → running → finishing; after a restart: recovering → running → finishing
     phase: str = "preparing"
     client: CodexAppServerClient | None = None
     thread_id: str = ""
@@ -139,19 +154,70 @@ class JiraAgentRunner:
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._wakeup = asyncio.Event()
+        groups = load_groups()
         conn = open_db()
         try:
-            with transaction(conn):
-                for turn in repo.mark_running_interrupted(
-                    conn, error="网站重启，本轮已中断；发送消息可继续处理"
-                ):
-                    repo.add_event(
-                        conn, conversation_id=turn["conversation_id"], turn_id=turn["id"],
-                        kind="status", payload={"status": "interrupted", "text": "网站重启，本轮已中断"},
-                    )
+            for turn in repo.running_turns(conn):
+                self._recover(conn, turn, groups)
+            pending_comments = [turn["id"] for turn in repo.pending_comment_turns(conn)]
         finally:
             conn.close()
+        for turn_id in pending_comments:
+            self._spawn(self._post_pending_comment(turn_id))
         self._loop_task = asyncio.create_task(self._schedule_loop())
+
+    def _recover(self, conn, turn: dict, groups: dict[str, domain.AgentGroup]) -> None:
+        """Pick up a turn a previous process left running (see _reattach)."""
+        conversation = repo.get_conversation(conn, turn["conversation_id"])
+        cid, tid = conversation["id"], turn["id"]
+        group = groups.get(conversation["agent_group"])
+        closed = conversation["status"] != "open"
+        if group is None or (closed and not conversation["thread_id"]):
+            if group is None:
+                status = "interrupted"
+                error = f"网站重启后找不到数字员工组 {conversation['agent_group']}（jira_agent.conf）"
+            else:  # closed before any turn could reach the app-server
+                status, error = "cancelled", _STOP_TEXT["closed"]
+            with transaction(conn):
+                repo.update_turn(
+                    conn, tid, status=status, error=error, finished_at=beijing_timestamp()
+                )
+                repo.add_event(
+                    conn, conversation_id=cid, turn_id=tid,
+                    kind="status", payload={"status": status, "text": error},
+                )
+            return
+        if not conversation["thread_id"]:
+            # No thread yet, so no turn can have reached the app-server.
+            text = "网站重启，本轮尚未开始，已重新排队"
+            with transaction(conn):
+                if repo.requeue_turn(conn, tid):
+                    repo.add_event(
+                        conn, conversation_id=cid, turn_id=tid,
+                        kind="status", payload={"status": "queued", "text": text},
+                    )
+            return
+        active = ActiveTurn(
+            turn_id=tid, conversation_id=cid, group=group.name,
+            workspace=conversation["workspace"], phase="recovering",
+        )
+        if closed:
+            active.stop_reason = "closed"
+        self._active[tid] = active
+        active.task = asyncio.create_task(self._run_turn(active, group, recover=True))
+
+    async def _post_pending_comment(self, turn_id: str) -> None:
+        """A previous process stopped between finishing a turn and commenting."""
+        conn = open_db()
+        try:
+            await post_turn_comment(conn, turn_id)
+        finally:
+            conn.close()
+
+    def _spawn(self, coro) -> None:
+        task = asyncio.create_task(coro)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
 
     async def stop(self) -> None:
         tasks = [t for t in (self._loop_task, *(a.task for a in self._active.values())) if t]
@@ -212,11 +278,20 @@ class JiraAgentRunner:
                 for turn in repo.queued_turns(conn, group_name):
                     if running >= group.max_concurrent:
                         break
+                    conversation = repo.get_conversation(conn, turn["conversation_id"])
+                    if conversation["status"] != "open":  # closing cancels queued turns; stay safe
+                        with transaction(conn):
+                            if repo.cancel_queued_turn(conn, turn["id"], _STOP_TEXT["closed"]):
+                                repo.add_event(
+                                    conn, conversation_id=conversation["id"], turn_id=turn["id"],
+                                    kind="status",
+                                    payload={"status": "cancelled", "text": _STOP_TEXT["closed"]},
+                                )
+                        continue
                     with transaction(conn):
                         claimed = repo.claim_turn(conn, turn["id"])
                     if not claimed:
                         continue
-                    conversation = repo.get_conversation(conn, turn["conversation_id"])
                     active = ActiveTurn(
                         turn_id=turn["id"],
                         conversation_id=turn["conversation_id"],
@@ -260,9 +335,9 @@ class JiraAgentRunner:
         elif active.phase == "preparing" and active.task is not None:
             # Nothing is running on the app-server yet; cancelling is safe.
             active.task.cancel()
-        # "starting": turn/start may already have reached the app-server, so
-        # only mark the stop; _run_turn interrupts as soon as the turn id is
-        # known.  "finishing": the Codex turn is already over.
+        # "starting" / "recovering": a turn may already be running on the
+        # app-server, so only mark the stop; _run_turn interrupts as soon as
+        # the turn id is known.  "finishing": the Codex turn is already over.
         return True
 
     async def _interrupt(self, active: ActiveTurn) -> None:
@@ -274,9 +349,7 @@ class JiraAgentRunner:
     def schedule_archive(self, conversation_id: str) -> None:
         if self._loop is None:
             return
-        task = asyncio.create_task(self._archive_thread(conversation_id))
-        self._background.add(task)
-        task.add_done_callback(self._background.discard)
+        self._spawn(self._archive_thread(conversation_id))
 
     async def _archive_thread(self, conversation_id: str) -> None:
         """Best effort: archive a closed conversation's thread on the host."""
@@ -304,61 +377,32 @@ class JiraAgentRunner:
 
     # ── one turn ──────────────────────────────────────────────
 
-    async def _run_turn(self, active: ActiveTurn, group: domain.AgentGroup) -> None:
+    async def _run_turn(
+        self, active: ActiveTurn, group: domain.AgentGroup, *, recover: bool = False
+    ) -> None:
         conn = open_db()
-        started = time.monotonic()
         final_status, error = "failed", ""
         cancelled = False
         cid, tid = active.conversation_id, active.turn_id
         try:
             conversation = repo.get_conversation(conn, cid)
-            _event(conn, cid, tid, "status", {"status": "running", "text": f"开始执行（{group.display_name}）"})
-
+            deadline = _deadline(repo.get_turn(conn, tid), group)
+            if recover:
+                text, run = "网站已重启，正在重新连接 Codex 查看本轮", self._reattach
+            else:
+                text, run = f"开始执行（{group.display_name}）", self._start
+            _event(conn, cid, tid, "status", {"status": "running", "text": text})
             active.client = CodexAppServerClient(group.ws_url, group.ws_token)
             await active.client.connect()
-            issue = await asyncio.to_thread(jira.get_issue, conversation["issue_key"])
-            uploaded = await self._sync_inputs(conn, active, conversation, issue)
-
-            if conversation["thread_id"]:
-                await active.client.resume_thread(conversation["thread_id"], model=group.model)
-                active.thread_id = conversation["thread_id"]
-            else:
-                thread = await active.client.start_thread(
-                    cwd=conversation["workspace"],
-                    developer_instructions=domain.developer_instructions(
-                        group, conversation["issue_key"], conversation["workspace"]
-                    ),
-                    model=group.model,
-                    service_name="release-system-jira-agent",
-                )
-                active.thread_id = thread["id"]
-                with transaction(conn):
-                    repo.set_thread_id(conn, cid, thread["id"])
-
-            active.phase = "starting"
-            turn = repo.get_turn(conn, tid)  # re-read: messages may have been merged
-            prompt = domain.build_turn_prompt(
-                trigger=turn["trigger"],
-                seq=turn["seq"],
-                issue=issue,
-                owner=conversation["owner"],
-                created_by=turn["created_by"],
-                input_text=turn["input_text"],
-                uploaded=uploaded,
-            )
-            codex_turn = await active.client.start_turn(
-                active.thread_id, prompt, output_schema=domain.RESULT_SCHEMA, model=group.model
-            )
-            active.codex_turn_id = codex_turn["id"]
-            active.phase = "running"
-            with transaction(conn):
-                repo.update_turn(conn, tid, codex_turn_id=codex_turn["id"])
-            if active.stop_reason:
-                await self._interrupt(active)
-
-            status, turn_error, final_text = await self._consume(conn, active, group, started)
+            status, turn_error, final_text = await run(conn, active, group, conversation, deadline)
+            turn = repo.get_turn(conn, tid)
             active.phase = "finishing"
-            if status == "completed":
+            if status == "requeue" and active.stop_reason:
+                # Never started, but cancelled or closed meanwhile: do not run it.
+                final_status, error = "cancelled", _STOP_TEXT.get(active.stop_reason, "已中断")
+            elif status == "requeue":
+                final_status, error = "queued", turn_error
+            elif status == "completed":
                 result = domain.parse_result(final_text)
                 await self._finish_completed(conn, active, group, conversation, turn, result)
                 final_status = "completed"
@@ -367,6 +411,12 @@ class JiraAgentRunner:
                     final_status, error = "failed", f"超过 {group.turn_timeout_seconds} 秒限时，已中断"
                 elif active.stop_reason:
                     final_status, error = "cancelled", _STOP_TEXT.get(active.stop_reason, "已中断")
+                elif recover:
+                    final_status = "interrupted"
+                    error = (
+                        "网站重启期间 Codex 本轮已中断（app-server 可能重启过）；"
+                        "发送消息可继续处理"
+                    )
                 else:
                     final_status, error = "interrupted", "Codex 本轮被中断"
             else:
@@ -375,19 +425,34 @@ class JiraAgentRunner:
             cancelled = True
             if active.stop_reason:
                 final_status, error = "cancelled", _STOP_TEXT.get(active.stop_reason, "已中断")
+            elif active.phase == "preparing":
+                final_status, error = "queued", "网站停止，本轮尚未开始，重启后重新排队"
             else:
-                final_status, error = "interrupted", "网站停止，本轮已中断；发送消息可继续处理"
+                # The turn keeps running on the app-server without this
+                # connection; the next start re-attaches to it.
+                final_status, error = "running", "网站停止；本轮仍在 Codex 上运行，重启后重新接管"
         except Exception as exc:
             logger.exception("JIRA agent turn %s failed", tid)
             error = _error_text(exc)
             if active.stop_reason in _STOP_TEXT:
                 final_status = "cancelled"
                 error = f"{_STOP_TEXT[active.stop_reason]}（{error}）"
+            elif active.phase == "recovering":
+                final_status = "interrupted"
+                error = f"网站重启后未能重新接管本轮（{error}）；发送消息可继续处理"
         finally:
             if active.client is not None:
                 await active.client.close()
             try:
-                if final_status != "completed":
+                if final_status == "queued":
+                    with transaction(conn):
+                        if repo.requeue_turn(conn, tid):
+                            repo.add_event(conn, conversation_id=cid, turn_id=tid, kind="status",
+                                           payload={"status": "queued", "text": error})
+                elif final_status == "running":
+                    if repo.get_turn(conn, tid)["status"] == "running":
+                        _event(conn, cid, tid, "status", {"status": "running", "text": error})
+                elif final_status != "completed":
                     with transaction(conn):
                         repo.update_turn(
                             conn, tid, status=final_status, error=error, finished_at=beijing_timestamp()
@@ -403,6 +468,139 @@ class JiraAgentRunner:
                 self.wake()
         if cancelled:
             raise asyncio.CancelledError
+
+    async def _start(
+        self, conn, active: ActiveTurn, group: domain.AgentGroup, conversation: dict,
+        deadline: float,
+    ) -> tuple[str, str, str]:
+        """Sync inputs, start or resume the thread, start the turn and consume it."""
+        cid, tid = active.conversation_id, active.turn_id
+        issue = await asyncio.to_thread(jira.get_issue, conversation["issue_key"])
+        uploaded = await self._sync_inputs(conn, active, conversation, issue)
+
+        if conversation["thread_id"]:
+            active.thread_id = conversation["thread_id"]
+            thread = await active.client.resume_thread(active.thread_id, model=group.model)  # type: ignore[union-attr]
+            await self._stop_leftover_turn(conn, active, thread)
+        else:
+            thread = await active.client.start_thread(  # type: ignore[union-attr]
+                cwd=conversation["workspace"],
+                developer_instructions=domain.developer_instructions(
+                    group, conversation["issue_key"], conversation["workspace"]
+                ),
+                model=group.model,
+                service_name="release-system-jira-agent",
+            )
+            active.thread_id = thread["id"]
+            with transaction(conn):
+                repo.set_thread_id(conn, cid, thread["id"])
+
+        active.phase = "starting"
+        turn = repo.get_turn(conn, tid)  # re-read: messages may have been merged
+        prompt = domain.build_turn_prompt(
+            trigger=turn["trigger"],
+            seq=turn["seq"],
+            issue=issue,
+            owner=conversation["owner"],
+            created_by=turn["created_by"],
+            input_text=turn["input_text"],
+            uploaded=uploaded,
+        )
+        codex_turn = await active.client.start_turn(  # type: ignore[union-attr]
+            active.thread_id, prompt, output_schema=domain.RESULT_SCHEMA, model=group.model
+        )
+        active.codex_turn_id = codex_turn["id"]
+        active.phase = "running"
+        with transaction(conn):
+            repo.update_turn(conn, tid, codex_turn_id=codex_turn["id"])
+        if active.stop_reason:
+            await self._interrupt(active)
+        return await self._consume(conn, active, group, deadline)
+
+    async def _reattach(
+        self, conn, active: ActiveTurn, group: domain.AgentGroup, conversation: dict,
+        deadline: float,
+    ) -> tuple[str, str, str]:
+        """Resume the thread of a turn a previous process left running.
+
+        Verified against codex app-server 0.153: a turn keeps running when its
+        client disconnects, and a connection that resumes the thread receives
+        the rest of its notifications.  If the app-server itself restarted, the
+        turn is reported as interrupted.  Returns (status, error, final text);
+        status "requeue" means the turn never reached the app-server.
+        """
+        cid, tid = active.conversation_id, active.turn_id
+        turn = repo.get_turn(conn, tid)
+        active.thread_id = conversation["thread_id"]
+        thread = await active.client.resume_thread(active.thread_id, model=group.model)  # type: ignore[union-attr]
+        latest = await active.client.list_turns(active.thread_id)  # type: ignore[union-attr]
+        target = latest[0] if latest and self._is_this_turn(latest[0], turn) else None
+        if target is None:
+            return "requeue", "网站重启，本轮尚未在 Codex 上开始，已重新排队", ""
+        active.codex_turn_id = target["id"]
+        if turn["codex_turn_id"] != target["id"]:
+            with transaction(conn):
+                repo.update_turn(conn, tid, codex_turn_id=target["id"])
+
+        final_text = ""
+        for item in target.get("items") or []:  # backfill what happened while the site was down
+            text = self._record_item(conn, active, item, True)
+            if text is not None:
+                final_text = text
+        status = target.get("status")
+        thread_active = (thread.get("status") or {}).get("type") == "active"
+        if status != "inProgress" or not thread_active:
+            text = "本轮已在网站重启期间结束，正在收尾"
+            _event(conn, cid, tid, "status", {"status": "running", "text": text})
+            if status not in ("completed", "failed", "interrupted"):
+                status = "interrupted"  # left inProgress by an app-server that restarted
+            return status, ((target.get("error") or {}).get("message") or ""), final_text
+
+        active.phase = "running"
+        text = "已重新接管 Codex 上仍在运行的本轮"
+        _event(conn, cid, tid, "status", {"status": "running", "text": text})
+        if active.stop_reason:
+            await self._interrupt(active)
+        return await self._consume(conn, active, group, deadline, final_text)
+
+    @staticmethod
+    def _is_this_turn(codex_turn: dict, turn: dict) -> bool:
+        if turn["codex_turn_id"]:
+            return codex_turn.get("id") == turn["codex_turn_id"]
+        # Stopped while turn/start was in flight: the turn is ours if the
+        # app-server started it after this turn left the queue.
+        claimed = _parse_timestamp(turn["started_at"])
+        started_at = codex_turn.get("startedAt")
+        if not (claimed and started_at):
+            return False
+        return started_at >= claimed.replace(tzinfo=BEIJING_TZ).timestamp()
+
+    async def _stop_leftover_turn(self, conn, active: ActiveTurn, thread: dict) -> None:
+        """Interrupt a turn still running on the thread from an abandoned run.
+
+        turn/start on an active thread does not start a new turn: the
+        app-server merges the input into the running one.
+        """
+        if (thread.get("status") or {}).get("type") != "active":
+            return
+        client, cid, tid = active.client, active.conversation_id, active.turn_id
+        turns = await client.list_turns(active.thread_id, items_view="notLoaded")  # type: ignore[union-attr]
+        leftover = next((t for t in turns if t.get("status") == "inProgress"), None)
+        if leftover is None:
+            return
+        text = "Codex 上本对话还有未结束的上一轮，先中断它"
+        _event(conn, cid, tid, "status", {"status": "running", "text": text})
+        try:
+            await client.interrupt_turn(active.thread_id, leftover["id"])  # type: ignore[union-attr]
+        except CodexAppServerError as exc:  # it may have just finished
+            logger.warning("interrupt of leftover turn %s failed: %s", leftover["id"], exc)
+        deadline = time.monotonic() + _INTERRUPT_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            message = await client.next_event(timeout=_SCAN_SECONDS)  # type: ignore[union-attr]
+            if message and message.get("method") == "turn/completed":
+                if ((message.get("params") or {}).get("turn") or {}).get("id") == leftover["id"]:
+                    return
+        raise CodexAppServerError("Codex 上的上一轮未能在限时内中断，请稍后再发送")
 
     async def _sync_inputs(self, conn, active: ActiveTurn, conversation: dict, issue: dict) -> list[str]:
         """Write issue.md, new JIRA attachments and pending uploads to the workspace."""
@@ -459,12 +657,11 @@ class JiraAgentRunner:
         return rel
 
     async def _consume(
-        self, conn, active: ActiveTurn, group: domain.AgentGroup, started: float
+        self, conn, active: ActiveTurn, group: domain.AgentGroup, deadline: float,
+        final_text: str = "",
     ) -> tuple[str, str, str]:
         """Record notifications until turn/completed; returns (status, error, final text)."""
-        deadline = started + group.turn_timeout_seconds
         grace_deadline: float | None = None
-        final_text = ""
         cid, tid = active.conversation_id, active.turn_id
         while True:
             now = time.monotonic()
@@ -585,6 +782,11 @@ class JiraAgentRunner:
         local_dir = Path(settings.jira_agent_data_dir) / cid / tid
         records: list[dict] = []
         seen: set[str] = set()
+        pulled = {  # by a previous process that stopped while finishing
+            record["remote_path"]: record
+            for record in repo.list_files(conn, cid)
+            if record["turn_id"] == tid and record["source"] == "artifact"
+        }
         for path in result.get("artifacts") or []:
             remote = domain.resolve_workspace_path(workspace, path)
             if remote is None:
@@ -593,6 +795,9 @@ class JiraAgentRunner:
             if remote in seen:
                 continue
             seen.add(remote)
+            if posixpath.relpath(remote, workspace) in pulled:
+                records.append(pulled[posixpath.relpath(remote, workspace)])
+                continue
             try:
                 data = await active.client.read_file(remote)  # type: ignore[union-attr]
             except CodexAppServerError as exc:

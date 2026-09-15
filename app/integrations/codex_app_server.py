@@ -223,6 +223,17 @@ class CodexAppServerClient:
             params["model"] = model
         return (await self.request("thread/resume", params))["thread"]
 
+    async def list_turns(
+        self, thread_id: str, *, limit: int = 1, items_view: str = "full"
+    ) -> list[dict]:
+        """Newest turns first, with their persisted items."""
+        result = await self.request(
+            "thread/turns/list",
+            {"threadId": thread_id, "limit": limit, "itemsView": items_view},
+            timeout=max(self.request_timeout, 300),
+        )
+        return result.get("data") or []
+
     async def archive_thread(self, thread_id: str) -> None:
         await self.request("thread/archive", {"threadId": thread_id})
 

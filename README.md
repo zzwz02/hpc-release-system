@@ -86,7 +86,7 @@ JIRA agent 是按组配置的数字员工，第一阶段处理 HPC 组的 Bug �
 - agent **只在 JIRA 追加评论**（结论、证据、补丁、下一步建议），不改 assignee、状态或代码。assignee 读评论后决定 resolve、转交，或在网站补充信息让 agent 继续。
 - 一个对话对应一个 Codex thread 和 B 上一个工作目录，归属于交单时的 assignee。assignee 变更后旧对话只读，新 assignee 交单时新建对话；转回原 assignee 也不复用。同一 assignee 可以主动新建对话。
 - 网站侧持久排队，每组同时运行的轮次不超过 `MAX_CONCURRENT`；运行中的补充信息直接发给 agent，排队中的消息合并到这一轮。机器资源（如 GPU）由 B 上知识包约定的 `flock` 锁控制。
-- 网站重启时，运行中的轮次标记为已中断，不自动重跑。
+- 网站重启不丢轮次：Codex 的轮次不依赖网站连接，重启后网站重新连接 B，本轮仍在运行则继续接管，已结束则照常收尾并发评论，尚未开始则重新排队。只有 B 也重启过或连不上 B 时才标记为已中断，发送消息可继续。详见 [docs/jira-agent.md](docs/jira-agent.md)。
 
 实现入口：[jira_agent_service.py](app/services/jira_agent_service.py)（交单与对话规则）、[jira_agent_runner.py](app/services/jira_agent_runner.py)（排队与执行）、[codex_app_server.py](app/integrations/codex_app_server.py)（通用 Codex 协议客户端）、[jira_agent.py](app/domain/jira_agent.py)（结论 schema、提示词、评论格式）、[JiraAgentPage.tsx](web/src/features/jiraAgent/JiraAgentPage.tsx)，B 侧知识包与启动脚本在 [deploy/jira-agent/](deploy/jira-agent/)。
 

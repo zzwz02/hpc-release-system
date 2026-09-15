@@ -331,6 +331,35 @@ describe("JiraAgentPage", () => {
     });
   });
 
+  it("disables actions while a restarted site re-attaches to the running turn", async () => {
+    const recovering = { ...conversation, state: "running", phase: "recovering" };
+    mockBackend();
+    const base = vi.mocked(apiGet).getMockImplementation()!;
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === "/api/jira-agent/conversations/jac_1") return { ...detail, conversation: recovering };
+      if (path.startsWith("/api/jira-agent/conversations/jac_1/events")) {
+        return { conversation: recovering, events: [], rev: detail.rev };
+      }
+      if (path === "/api/jira-agent/issues/MC3-7672") {
+        return {
+          ...previewResponse(true),
+          open_conversation: { id: "jac_1", owner: "alice", owner_is_assignee: true, recovering: true },
+          conversations: [recovering, oldConversation],
+        };
+      }
+      return base(path);
+    });
+    const user = userEvent.setup();
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
+
+    expect(await screen.findByText("网站刚重启，正在重新接管本轮，几秒后可以操作")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "取消本轮" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "新建对话" })).toBeDisabled();
+    await user.type(screen.getByLabelText("补充信息"), "继续");
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
   it("shows an old conversation read-only from the dropdown", async () => {
     mockBackend();
     const user = userEvent.setup();

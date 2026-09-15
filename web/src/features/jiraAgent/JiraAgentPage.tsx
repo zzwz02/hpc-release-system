@@ -86,6 +86,8 @@ function isActive(conversation: AgentConversation | undefined): boolean {
   );
 }
 
+const RECOVERING_TEXT = "网站刚重启，正在重新接管本轮，几秒后可以操作";
+
 function stateText(conversation: AgentConversation): string {
   const turn = conversation.latest_turn;
   if (conversation.state === "queued" && turn?.queue_position != null) {
@@ -480,6 +482,7 @@ function IssueView({
 
   const issue = preview.issue;
   const draft = !selectedId;
+  const recovering = conversation?.phase === "recovering";
   return (
     <div className="jira-agent-conversation">
       <div className="panel">
@@ -548,15 +551,21 @@ function IssueView({
                 : `现有对话属于 ${open.owner}（assignee 已变更），交给 agent 后旧对话结束并新建对话。`}
             </p>
           )}
+          {recovering && <p className="jira-agent-warning">{RECOVERING_TEXT}</p>}
           {conversation && (
             <div className="actions">
               {conversation.can_write && (conversation.state === "queued" || conversation.state === "running") && (
-                <button type="button" className="btn sm danger" onClick={() => void cancel()}>
+                <button type="button" className="btn sm danger" disabled={recovering} onClick={() => void cancel()}>
                   取消本轮
                 </button>
               )}
               {preview.can_handover && (
-                <button type="button" className="btn sm" onClick={() => onNavigate(issueKey, DRAFT)}>
+                <button
+                  type="button"
+                  className="btn sm"
+                  disabled={recovering}
+                  onClick={() => onNavigate(issueKey, DRAFT)}
+                >
                   新建对话
                 </button>
               )}
@@ -584,6 +593,7 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const recovering = Boolean(preview.open_conversation?.recovering);
   const disabled = !preview.can_handover;
 
   async function submit() {
@@ -631,10 +641,16 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
         />
         <div className="actions">
           <input ref={fileInput} type="file" multiple aria-label="附加文件" disabled={disabled} />
-          <button type="button" className="btn primary" disabled={busy || disabled} onClick={() => void submit()}>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={busy || disabled || recovering}
+            onClick={() => void submit()}
+          >
             交给 agent
           </button>
         </div>
+        {recovering && <p className="jira-agent-warning">{RECOVERING_TEXT}</p>}
       </div>
     </div>
   );
@@ -1087,9 +1103,11 @@ function Composer({ conversation, onSent }: { conversation: AgentConversation; o
   const [busy, setBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
+  const recovering = conversation.phase === "recovering";
   let placeholder = "补充信息或新的要求，发送后开始新一轮（例如：继续）";
   if (conversation.state === "running") placeholder = "运行中补充信息，会直接发给 agent";
   if (conversation.state === "queued") placeholder = "会合并到排队中的这一轮";
+  if (recovering) placeholder = RECOVERING_TEXT;
 
   async function send() {
     setBusy(true);
@@ -1119,7 +1137,12 @@ function Composer({ conversation, onSent }: { conversation: AgentConversation; o
         />
         <div className="actions">
           <input ref={fileInput} type="file" multiple aria-label="附加文件" />
-          <button type="button" className="btn primary" disabled={busy || !text.trim()} onClick={() => void send()}>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={busy || recovering || !text.trim()}
+            onClick={() => void send()}
+          >
             发送
           </button>
         </div>

@@ -282,6 +282,7 @@ async def preview_issue(user: dict, issue_key: str) -> dict:
             "id": open_conversation["id"],
             "owner": open_conversation["owner"],
             "owner_is_assignee": _same_user(open_conversation["owner"], assignee),
+            "recovering": _is_recovering(open_conversation["id"]),
         } if open_conversation else None,
         "conversations": history,
     }
@@ -405,8 +406,23 @@ async def list_handled_issues(user: dict) -> dict:
     return {"mode": "handled", "jql": "", "total": total, "missing": missing, "issues": results}
 
 
+_RECOVERING_TEXT = "网站刚重启，正在重新接管本轮，请几秒后再试"
+
+
+def _is_recovering(conversation_id: str) -> bool:
+    active = runner.active_for_conversation(conversation_id)
+    return active is not None and active.phase == "recovering"
+
+
+def _check_not_recovering(conversation_id: str) -> None:
+    """While a restarted site re-attaches to a turn, its outcome is not known yet."""
+    if _is_recovering(conversation_id):
+        raise ApiError(409, _RECOVERING_TEXT)
+
+
 async def close_conversation(conn: sqlite3.Connection, conversation: dict, reason: str) -> None:
     """Close read-only, cancel/interrupt its active turn, archive its thread."""
+    _check_not_recovering(conversation["id"])
     running_turn_id = ""
     with transaction(conn):
         if not repo.close_conversation(conn, conversation["id"], reason):
@@ -490,6 +506,7 @@ async def send_message(user: dict, conversation_id: str, body: dict) -> dict:
         conversation = _get_visible(conn, user, conversation_id)
         if conversation["status"] != "open":
             raise ApiError(409, "该对话已结束（只读），请重新把工单交给 agent 新建对话")
+        _check_not_recovering(conversation_id)
         issue = await fetch_issue(conversation["issue_key"])
         assignee = assignee_name(issue)
         if not _same_user(assignee, conversation["owner"]):
@@ -559,6 +576,7 @@ async def cancel(user: dict, conversation_id: str) -> dict:
         conversation = _get_visible(conn, user, conversation_id)
         if not (_is_rm(user) or _same_user(user["username"], conversation["owner"])):
             raise AuthzError("只有对话 owner 或 RM 可以取消")
+        _check_not_recovering(conversation_id)
         turn = repo.active_turn(conn, conversation_id)
         if turn is None:
             raise ApiError(409, "当前没有排队或运行中的轮次")

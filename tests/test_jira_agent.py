@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 from websockets.asyncio.server import serve
+from websockets.exceptions import ConnectionClosed
 
 from app.config import settings
 from app.db.connection import transaction
@@ -52,7 +53,12 @@ PATCH = b"--- original/saxpy.cu\n+++ work/saxpy.cu\n-blocks = n / 256;\n+blocks 
 # ─────────────────────────────────────────────────────────────
 
 class FakeCodex:
-    """Minimal codex app-server: threads, turns, steer/interrupt, fs."""
+    """Minimal codex app-server: threads, turns, steer/interrupt, fs.
+
+    Like the real one, a turn keeps running when its connection closes, the
+    connection that last started/resumed a thread receives its notifications,
+    and turn/start on a thread with a running turn joins that turn.
+    """
 
     def __init__(self, token: str = TOKEN) -> None:
         self.token = token
@@ -61,8 +67,12 @@ class FakeCodex:
         self.thread_cwd: dict[str, str] = {}
         self.plans: list[str] = []
         self.turn_start_delay = 0.0
+        self.resume_delay = 0.0
         self.threads = 0
         self.turns = 0
+        self.turn_state: dict[str, dict] = {}  # turn id -> Turn as thread/turns/list returns it
+        self.thread_turns: dict[str, list[str]] = {}
+        self._subscriber: dict[str, object] = {}  # thread id -> connection receiving its notifications
         self._interrupts: dict[str, asyncio.Event] = {}
         self._ready = threading.Event()
         self._loop = asyncio.new_event_loop()
@@ -87,12 +97,17 @@ class FakeCodex:
     def params(self, method: str) -> list[dict]:
         return [params for name, params in self.requests if name == method]
 
+    def release(self) -> None:
+        """Let "gate" turns finish."""
+        self._loop.call_soon_threadsafe(self._release.set)
+
     def _run(self) -> None:
         asyncio.set_event_loop(self._loop)
         self._loop.run_until_complete(self._serve())
 
     async def _serve(self) -> None:
         self._stop = asyncio.Event()
+        self._release = asyncio.Event()
         async with serve(self._handler, "127.0.0.1", 0, process_request=self._auth) as server:
             self.port = next(iter(server.sockets)).getsockname()[1]
             self._ready.set()
@@ -112,18 +127,37 @@ class FakeCodex:
             self.requests.append((method, params))
             if method == "turn/start" and self.turn_start_delay:
                 await asyncio.sleep(self.turn_start_delay)
+            if method == "thread/resume" and self.resume_delay:
+                await asyncio.sleep(self.resume_delay)
             result, error = self._result(ws, method, params)
             reply = {"id": message["id"], **({"error": error} if error else {"result": result})}
-            await ws.send(json.dumps(reply))
+            try:
+                await ws.send(json.dumps(reply))
+            except ConnectionClosed:  # the client went away; the work carries on
+                return
+
+    def _running_turn(self, thread_id: str) -> str:
+        return next((t for t in self.thread_turns.get(thread_id, []) if self.turn_state[t]["status"] == "inProgress"), "")
 
     def _result(self, ws, method: str, params: dict):
         if method == "thread/start":
             self.threads += 1
             thread_id = f"thr_{self.threads}"
             self.thread_cwd[thread_id] = params["cwd"]
+            self.thread_turns[thread_id] = []
+            self._subscriber[thread_id] = ws
             return {"thread": {"id": thread_id, "cwd": params["cwd"]}}, None
         if method == "thread/resume":
-            return {"thread": {"id": params["threadId"]}}, None
+            thread_id = params["threadId"]
+            self._subscriber[thread_id] = ws
+            status = "active" if self._running_turn(thread_id) else "idle"
+            return {"thread": {"id": thread_id, "status": {"type": status, **({"activeFlags": []} if status == "active" else {})}}}, None
+        if method == "thread/turns/list":
+            ids = list(reversed(self.thread_turns.get(params["threadId"], [])))[: params.get("limit") or 25]
+            data = [dict(self.turn_state[t], items=list(self.turn_state[t]["items"])) for t in ids]
+            if params.get("itemsView") == "notLoaded":
+                data = [dict(turn, items=[]) for turn in data]
+            return {"data": data}, None
         if method == "fs/writeFile":
             self.files[params["path"]] = base64.b64decode(params["dataBase64"])
             return {}, None
@@ -132,11 +166,16 @@ class FakeCodex:
                 return None, {"code": -32000, "message": "No such file"}
             return {"dataBase64": base64.b64encode(self.files[params["path"]]).decode()}, None
         if method == "turn/start":
+            running = self._running_turn(params["threadId"])
+            if running:
+                return {"turn": {"id": running, "status": "inProgress", "items": []}}, None
             self.turns += 1
             turn_id = f"turn_{self.turns}"
             self._interrupts[turn_id] = asyncio.Event()
+            self.turn_state[turn_id] = {"id": turn_id, "status": "inProgress", "items": [], "error": None, "startedAt": int(time.time())}
+            self.thread_turns.setdefault(params["threadId"], []).append(turn_id)
             plan = self.plans.pop(0) if self.plans else "complete"
-            asyncio.get_running_loop().call_later(0.05, lambda: asyncio.ensure_future(self._play(ws, params, turn_id, plan)))
+            asyncio.get_running_loop().call_later(0.05, lambda: asyncio.ensure_future(self._play(params, turn_id, plan)))
             return {"turn": {"id": turn_id, "status": "inProgress", "items": []}}, None
         if method == "turn/interrupt":
             self._interrupts.setdefault(params["turnId"], asyncio.Event()).set()
@@ -145,11 +184,33 @@ class FakeCodex:
             return {"turnId": params["expectedTurnId"]}, None
         return {}, None  # initialize, fs/createDirectory, thread/archive
 
-    async def _play(self, ws, params: dict, turn_id: str, plan: str) -> None:
+    async def _send(self, thread_id: str, payload: dict) -> None:
+        ws = self._subscriber.get(thread_id)
+        if ws is None:
+            return
+        try:
+            await ws.send(json.dumps(payload))
+        except ConnectionClosed:
+            pass
+
+    async def _released(self, turn_id: str) -> bool:
+        """Wait for release() or turn/interrupt; True when released."""
+        interrupt = asyncio.ensure_future(self._interrupts[turn_id].wait())
+        release = asyncio.ensure_future(self._release.wait())
+        done, pending = await asyncio.wait({interrupt, release}, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        return interrupt not in done
+
+    async def _play(self, params: dict, turn_id: str, plan: str) -> None:
         thread_id = params["threadId"]
+        state = self.turn_state[turn_id]
 
         async def notify(method: str, extra: dict) -> None:
-            await ws.send(json.dumps({"method": method, "params": {"threadId": thread_id, "turnId": turn_id, **extra}}))
+            item = extra.get("item")
+            if item is not None:
+                state["items"] = [i for i in state["items"] if i["id"] != item["id"]] + [item]
+            await self._send(thread_id, {"method": method, "params": {"threadId": thread_id, "turnId": turn_id, **extra}})
 
         command = {
             "type": "commandExecution", "id": f"cmd_{turn_id}", "command": "./saxpy 16777217",
@@ -160,13 +221,16 @@ class FakeCodex:
         if plan == "hold":
             await self._interrupts[turn_id].wait()
             status = "interrupted"
+        elif plan == "gate" and not await self._released(turn_id):
+            status = "interrupted"
         else:
             await notify("item/completed", {"item": {**command, "status": "completed", "exitCode": 0, "aggregatedOutput": "PASS\n", "durationMs": 12}, "completedAtMs": 2})
             await notify("item/completed", {"item": {"type": "agentMessage", "id": f"note_{turn_id}", "text": "开始复现", "phase": "commentary"}, "completedAtMs": 3})
             self.files[f"{self.thread_cwd.get(thread_id, '/b')}/artifacts/fix.patch"] = PATCH
             await notify("item/completed", {"item": {"type": "agentMessage", "id": f"final_{turn_id}", "text": json.dumps(RESULT, ensure_ascii=False), "phase": "final_answer"}, "completedAtMs": 4})
             status = "completed"
-        await ws.send(json.dumps({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": status, "items": [], "error": None}}}))
+        state["status"] = status
+        await self._send(thread_id, {"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": status, "items": [], "error": None}}})
 
 
 class FakeJira:
@@ -257,10 +321,24 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     def as_user(name: str) -> None:
         current["user"] = USERS[name]
 
+    ns = SimpleNamespace(client=None, fake=fake, jira=fake_jira, conf=conf, tmp=tmp_path, as_user=as_user)
+
+    def start_site() -> None:
+        ns.client = TestClient(app, raise_server_exceptions=False)
+        ns.client.__enter__()
+
+    def stop_site() -> None:
+        """Stop the website like a service stop: the lifespan shutdown runs."""
+        client, ns.client = ns.client, None
+        if client is not None:
+            client.__exit__(None, None, None)
+
+    ns.start_site, ns.stop_site = start_site, stop_site
+    start_site()
     try:
-        with TestClient(app, raise_server_exceptions=False) as client:
-            yield SimpleNamespace(client=client, fake=fake, jira=fake_jira, conf=conf, tmp=tmp_path, as_user=as_user)
+        yield ns
     finally:
+        stop_site()
         fake.stop()
         reset_jira_agent_init_state()
 
@@ -653,6 +731,200 @@ def test_startup_marks_leftover_running_turns_interrupted(tmp_path: Path, monkey
     assert other["status"] == "failed"  # queued turn of an unconfigured group
     conn.close()
     reset_jira_agent_init_state()
+
+
+# ─────────────────────────────────────────────────────────────
+# Website restart recovery
+# ─────────────────────────────────────────────────────────────
+
+def _db_turn(turn_id: str) -> dict:
+    conn = connect_jira_agent(settings.jira_agent_database_url)
+    try:
+        return repo.get_turn(conn, turn_id)
+    finally:
+        conn.close()
+
+
+def _until(predicate, timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise AssertionError("condition not reached")
+        time.sleep(0.05)
+
+
+def _status_texts(detail: dict) -> list[str]:
+    return [event["payload"].get("text", "") for event in detail["events"] if event["kind"] == "status"]
+
+
+def _phase(name: str):
+    return lambda detail: detail["conversation"]["phase"] == name
+
+
+def test_site_restart_reattaches_turn_still_running_on_codex(env) -> None:
+    env.fake.plans = ["gate"]
+    conversation = _handover(env)["conversation"]
+    turn_id = _latest(_wait(env, conversation["id"], _phase("running")))["id"]
+
+    env.stop_site()
+    assert _db_turn(turn_id)["status"] == "running"  # left for the next start, not interrupted
+    env.start_site()
+    _wait(env, conversation["id"], _phase("running"))
+    env.fake.release()
+
+    detail = _wait(env, conversation["id"], _done)
+    turn = _latest(detail)
+    assert (turn["status"], turn["comment_status"]) == ("completed", "posted")
+    assert env.fake.turns == 1
+    assert len(env.jira.comments) == 1
+    assert [params["threadId"] for params in env.fake.params("thread/resume")] == ["thr_1"]
+    assert "已重新接管 Codex 上仍在运行的本轮" in _status_texts(detail)
+    assert [e["payload"]["status"] for e in detail["events"] if e["kind"] == "command"] == ["completed"]
+
+
+def test_site_restart_collects_turn_finished_while_site_was_down(env) -> None:
+    env.fake.plans = ["gate"]
+    conversation = _handover(env)["conversation"]
+    _wait(env, conversation["id"], _phase("running"))
+
+    env.stop_site()
+    env.fake.release()
+    _until(lambda: env.fake.turn_state["turn_1"]["status"] == "completed")
+    env.start_site()
+
+    detail = _wait(env, conversation["id"], _done)
+    turn = _latest(detail)
+    assert (turn["status"], turn["conclusion"], turn["comment_status"]) == (
+        "completed", "fixed_pending_review", "posted",
+    )
+    assert "本轮已在网站重启期间结束，正在收尾" in _status_texts(detail)
+    # the command finished while the site was down: backfilled from thread/turns/list
+    assert [e["payload"]["status"] for e in detail["events"] if e["kind"] == "command"] == ["completed"]
+    assert [f["name"] for f in detail["files"] if f["source"] == "artifact"] == ["fix.patch"]
+    assert env.fake.turns == 1
+    assert len(env.jira.comments) == 1
+
+
+def test_site_stopped_while_turn_start_in_flight_adopts_the_started_turn(env) -> None:
+    env.fake.plans = ["gate"]
+    env.fake.turn_start_delay = 1.0
+    conversation = _handover(env)["conversation"]
+    turn_id = _latest(_wait(env, conversation["id"], _phase("starting")))["id"]
+
+    env.stop_site()
+    _until(lambda: env.fake.turns == 1)  # turn/start still reached the app-server
+    assert _db_turn(turn_id)["codex_turn_id"] == ""
+    env.fake.turn_start_delay = 0
+    env.start_site()
+
+    _wait(env, conversation["id"], _phase("running"))
+    assert _db_turn(turn_id)["codex_turn_id"] == "turn_1"
+    env.fake.release()
+    assert _latest(_wait(env, conversation["id"], _done))["status"] == "completed"
+    assert env.fake.turns == 1
+
+
+def test_unreachable_codex_at_restart_then_followup_stops_leftover_turn(env) -> None:
+    env.fake.plans = ["gate", "complete"]
+    conversation = _handover(env)["conversation"]
+    _wait(env, conversation["id"], _phase("running"))
+
+    env.stop_site()
+    _write_conf(env.conf, env.fake.url, token="wrong")
+    env.start_site()
+    turn = _latest(_wait(env, conversation["id"], _done))
+    assert turn["status"] == "interrupted"
+    assert "未能重新接管" in turn["error"]
+
+    # turn_1 is still running on the app-server; a new turn/start would join it
+    _write_conf(env.conf, env.fake.url)
+    sent = env.client.post(f"/api/jira-agent/conversations/{conversation['id']}/messages", json={"text": "继续"})
+    assert sent.json()["mode"] == "queued"
+    detail = _wait(env, conversation["id"], lambda d: _latest(d)["seq"] == 2 and _done(d))
+    assert _latest(detail)["status"] == "completed"
+    assert env.fake.params("turn/interrupt") == [{"threadId": "thr_1", "turnId": "turn_1"}]
+    assert env.fake.turns == 2
+    assert "Codex 上本对话还有未结束的上一轮，先中断它" in _status_texts(detail)
+
+
+def test_startup_requeues_unstarted_turn_and_posts_pending_comment(env) -> None:
+    env.stop_site()
+    conn = connect_jira_agent(settings.jira_agent_database_url)
+    try:
+        with transaction(conn):
+            for cid, key in (("jac_new", "MC3-1"), ("jac_done", "MC3-2")):
+                repo.create_conversation(
+                    conn, conversation_id=cid, issue_key=key, issue_summary="", agent_group="HPC",
+                    owner="alice", created_by="alice", workspace=f"/b/workspaces/{cid}",
+                )
+            unstarted = repo.create_turn(conn, conversation_id="jac_new", trigger="handover", created_by="alice", input_text="")
+            assert repo.claim_turn(conn, unstarted["id"])  # stopped before a thread existed
+            finished = repo.create_turn(conn, conversation_id="jac_done", trigger="handover", created_by="alice", input_text="")
+            repo.update_turn(conn, finished["id"], status="completed", comment_status="pending", comment_body="结论")
+    finally:
+        conn.close()
+    env.start_site()
+
+    assert _latest(_wait(env, "jac_new", _done))["status"] == "completed"
+    assert env.fake.turns == 1
+    _until(lambda: _db_turn(finished["id"])["comment_status"] == "posted")
+    assert env.jira.comments.count(("MC3-2", "结论")) == 1
+
+
+def test_actions_are_refused_while_restarted_site_reattaches(env) -> None:
+    env.fake.plans = ["gate"]
+    cid = _handover(env)["conversation"]["id"]
+    _wait(env, cid, _phase("running"))
+
+    env.stop_site()
+    env.fake.resume_delay = 1.5  # keep the re-attach in progress
+    env.start_site()
+    _wait(env, cid, _phase("recovering"))
+    refused = [
+        env.client.post(f"/api/jira-agent/conversations/{cid}/cancel"),
+        env.client.post(f"/api/jira-agent/conversations/{cid}/messages", json={"text": "补充"}),
+        env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-7672", "new_conversation": True}),
+    ]
+    for response in refused:
+        assert response.status_code == 409, response.text
+        assert "正在重新接管" in response.text
+    assert _detail(env, cid)["conversation"]["status"] == "open"
+
+    _wait(env, cid, _phase("running"))  # once re-attached the actions work again
+    assert env.client.post(f"/api/jira-agent/conversations/{cid}/cancel").status_code == 200
+    turn = _latest(_wait(env, cid, _done))
+    assert turn["status"] == "cancelled"
+    assert env.fake.params("turn/interrupt") == [{"threadId": "thr_1", "turnId": "turn_1"}]
+    assert env.jira.comments == []
+
+
+def test_restart_does_not_run_turns_of_closed_conversations(env) -> None:
+    env.stop_site()
+    conn = connect_jira_agent(settings.jira_agent_database_url)
+    turns = {}
+    try:
+        with transaction(conn):
+            for cid, key in (("jac_a", "MC3-1"), ("jac_b", "MC3-2"), ("jac_c", "MC3-3")):
+                repo.create_conversation(
+                    conn, conversation_id=cid, issue_key=key, issue_summary="", agent_group="HPC",
+                    owner="alice", created_by="alice", workspace=f"/b/workspaces/{cid}",
+                )
+                turns[cid] = repo.create_turn(conn, conversation_id=cid, trigger="handover", created_by="alice", input_text="")["id"]
+            # a: closed, then the site crashed while turn/start had not reached the app-server
+            repo.set_thread_id(conn, "jac_a", "thr_gone")
+            assert repo.claim_turn(conn, turns["jac_a"])
+            # b: closed and crashed before a thread existed; c: closed with a turn still queued
+            assert repo.claim_turn(conn, turns["jac_b"])
+            for cid in turns:
+                repo.close_conversation(conn, cid, "superseded")
+    finally:
+        conn.close()
+    env.start_site()
+
+    for turn_id in turns.values():
+        _until(lambda turn_id=turn_id: _db_turn(turn_id)["status"] == "cancelled")
+    assert env.fake.params("turn/start") == []
+    assert env.jira.comments == []
 
 
 # ─────────────────────────────────────────────────────────────
