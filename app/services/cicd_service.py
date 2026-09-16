@@ -2683,7 +2683,7 @@ def cicd_first_new_app(
                 git_branch=stored_branch,
                 release_decision=target_decision,
                 owner=submitter,
-                doc_target=DOC_TARGET_DEFAULT,
+                doc_target=payload.get("doc_target", DOC_TARGET_DEFAULT),
             )
             action = "created"
             cicd_first_action = _CICD_FIRST_ACTION_CREATED
@@ -2709,6 +2709,17 @@ def cicd_first_new_app(
                     commit_id=app_info_commit_id,
                 )
                 snapshots_repo.save_snapshot(conn, rel["id"], app_id, snap)
+
+        # Preserve user classification after app_info attachment and on retries.
+        if "doc_target" in payload and "app_type" in payload:
+            for rel in releases_repo.list_release_rows(conn):
+                if rel.get("released_locked"):
+                    continue
+                snap = snapshots_repo.get_snapshot(conn, rel["id"], app_id)
+                if snap is not None:
+                    snap["doc_target"] = payload["doc_target"]
+                    snap["app_type"] = payload["app_type"].strip()
+                    snapshots_repo.save_snapshot(conn, rel["id"], app_id, snap)
 
         cicd_config = _cicd_first_config_values(payload, repo_type)
         apps_repo.update_cicd_config(

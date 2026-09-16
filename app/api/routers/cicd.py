@@ -527,6 +527,8 @@ async def post_cicd_apps_new(
     Auth: Owner or RM (CICD_CREATE_ROLES; Admin excluded — Ruling C).
 
     Request body fields:
+      doc_target         str   — manual (HPC) | ai4sci (required)
+      app_type           str   — user-supplied APP type (required, nonblank)
       official_name      str   — human-readable app name (required)
       repo_type          str   — 'git' | 'repo' | 'manifest' (advisory; dispatch
                                  by repo_name shape per identity.py)
@@ -561,6 +563,13 @@ async def post_cicd_apps_new(
     body: dict = await request.json()
     role = user["role"]
 
+    from app.domain.snapshots import DOC_TARGETS
+
+    if not isinstance(body.get("doc_target"), str) or body["doc_target"] not in DOC_TARGETS:
+        raise ValueError("请选择类型（HPC/AI4Sci）")
+    if not isinstance(body.get("app_type"), str) or not body["app_type"].strip():
+        raise ValueError("请填写 APP 类型")
+
     result = cicd_service.cicd_first_new_app(
         conn,
         official_name=body.get("official_name", ""),
@@ -573,6 +582,8 @@ async def post_cicd_apps_new(
         release_id=body.get("release_id", ""),
         release_decision=body.get("release_decision", "cicd_only"),
         payload={
+            "doc_target": body["doc_target"],
+            "app_type": body["app_type"].strip(),
             "app_name": body.get("app_name", ""),
             "app_version": body.get("app_version", ""),
             "build_product": body.get("build_product", []),

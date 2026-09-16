@@ -258,6 +258,8 @@ export function fetchCicdFirstDecisionPreview(body: {
 // ---------------------------------------------------------------------------
 
 export interface CicdFirstNewAppPayload {
+  doc_target: string;
+  app_type: string;
   release_id: string;
   /** Owner decision visible immediately while CICD approval/delivery is pending. */
   release_decision: "release" | "cicd_only";

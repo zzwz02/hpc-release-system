@@ -6,6 +6,8 @@
   "_params": "",
   "_role": "rm",
   "_body": {
+    "doc_target": "manual",
+    "app_type": "科学计算",
     "official_name": "W3CicdFirst",
     "repo_type": "git",
     "repo_name": "hpc_w3cicd",

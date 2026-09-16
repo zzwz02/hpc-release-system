@@ -39,6 +39,8 @@ import {
   CICD_REPO_TYPE_OPTIONS,
   CICD_TEST_TIMEOUT_DEFAULT,
   DOC_TARGET_DEFAULT,
+  DOC_TARGETS,
+  docTargetMetadata,
   cicdPayloadConfigLabels,
   crossesReleaseDecisionRuntimeBoundary,
   normalizeCicdCommunityArtifacts,
@@ -769,6 +771,9 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
   const [repoName, setRepoName] = useState(initialValues?.repoName ?? "");
   const [branch, setBranch] = useState(initialValues?.branch ?? "");
 
+  const [docTarget, setDocTarget] = useState("");
+  const [appType, setAppType] = useState("");
+
   type WizardStep = "form" | "fetching" | "preview" | "fetch-error" | "creating";
   const [step, setStep] = useState<WizardStep>("form");
   const [preview, setPreview] = useState<FetchPreviewResponse | null>(null);
@@ -856,6 +861,8 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
 
   async function handleFetch() {
     if (!officialName.trim()) { setFetchErrMsg("请填写官方名称"); return; }
+    if (!docTarget) { setFetchErrMsg("请选择类型（HPC/AI4Sci）"); return; }
+    if (!appType.trim()) { setFetchErrMsg("请填写 APP 类型"); return; }
     const submittedRepoName = repoName.trim();
     setRepoName(submittedRepoName);
     if (!submittedRepoName) { setFetchErrMsg("请填写仓库路径"); return; }
@@ -921,6 +928,8 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
         release_id: currentReleaseId,
         official_name: officialName.trim(),
         app_name: officialName.trim(),
+        doc_target: docTarget,
+        app_type: appType.trim(),
         owner_username: currentUsername,
         repo_type: repoType,
         repo_name: submittedRepoName,
@@ -953,6 +962,8 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
         release_id: currentReleaseId,
         official_name: officialName.trim(),
         app_name: officialName.trim(),
+        doc_target: docTarget,
+        app_type: appType.trim(),
         owner_username: currentUsername,
         repo_type: repoType,
         repo_name: submittedRepoName,
@@ -1112,6 +1123,17 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
             <label>官方名称 <span className="required">*</span>
               <input className="input" value={officialName} onChange={(e) => setOfficialName(e.target.value)}
                 data-testid="new-app-name" placeholder="例：AMBER" disabled={isFetching} />
+            </label>
+            <label>类型 <span className="required">*</span>
+              <select className="select" value={docTarget} required disabled={isFetching}
+                onChange={(e) => setDocTarget(e.target.value)} data-testid="new-app-doc-target">
+                <option value="">请选择 HPC/AI4Sci</option>
+                {DOC_TARGETS.map((target) => <option key={target} value={target}>{docTargetMetadata[target].label}</option>)}
+              </select>
+            </label>
+            <label>APP 类型 <span className="required">*</span>
+              <input className="input" value={appType} required disabled={isFetching}
+                onChange={(e) => setAppType(e.target.value)} data-testid="new-app-type" placeholder="请输入 APP 类型" />
             </label>
             <label>仓库类型
               <select className="select" value={repoType} disabled={isFetching} onChange={(e) => {

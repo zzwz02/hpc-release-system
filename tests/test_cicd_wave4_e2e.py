@@ -7,6 +7,8 @@ overrides.
 from __future__ import annotations
 
 import json
+
+import pytest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -30,6 +32,8 @@ _APP_ID = "w4e2eapp"
 _RESOLVED_URL = f"{settings.gerrit_hpc_base_url}/hpc_w4e2e"
 
 _CREATE_BODY = {
+    "doc_target": "ai4sci",
+    "app_type": "科学计算",
     "official_name": _OFFICIAL_NAME,
     "repo_type": "git",
     "repo_name": _SHORT_NAME,
@@ -221,6 +225,8 @@ class TestCicdFirstHttpLifecycle:
                 if item["app_id"] == app_id
             )
 
+        assert state["release"]["snapshots"][app_id]["doc_target"] == "ai4sci"
+        assert state["release"]["snapshots"][app_id]["app_type"] == "科学计算"
         assert state["release"]["snapshots"][app_id]["release_decision"] == "release"
         assert _payload(created["request"])["release_decision"] == "release"
         assert app["cicd_onboarding_status"] == "pending_create"
@@ -475,3 +481,19 @@ class TestDecisionSyncAndTime:
         assert "+" not in submitted_at
         assert submitted_at.endswith("Z") is False
         assert _task_table_count(temp_db) == 0
+
+
+@pytest.mark.parametrize("fields", [
+    {"doc_target": None}, {"doc_target": ""}, {"doc_target": "invalid"},
+    {"doc_target": []}, {"app_type": None}, {"app_type": ""}, {"app_type": "   "},
+])
+def test_http_create_requires_classification(db_path, tmp_dir, fields):
+    _seed_db(db_path, tmp_dir)
+    with _make_client(db_path) as client:
+        response = client.post("/api/cicd/apps/new", json={**_CREATE_BODY, **fields})
+        assert response.status_code == 400, response.text
+    conn = app_connect(db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM apps WHERE id = ?", (_APP_ID,)).fetchone()[0] == 0
+    finally:
+        conn.close()

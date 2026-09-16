@@ -837,6 +837,8 @@ class TestCicdFirstWithAppInfo:
 
         # New wizard payload: official_name + repo + app_info_parsed + context fields
         new_wizard_payload = {
+            "doc_target": "ai4sci",
+            "app_type": "科学计算",
             "official_name": _OFFICIAL_NAME,
             "repo_type": "git",
             "repo_name": _REPO_SHORT,
@@ -856,6 +858,11 @@ class TestCicdFirstWithAppInfo:
         app = _make_app(db_path)
         with TestClient(app, raise_server_exceptions=False) as client:
             resp = client.post("/api/cicd/apps/new", json=new_wizard_payload)
+            if resp.status_code == 200:
+                state = client.get(f"/api/state?release_id={release_id}").json()
+                snapshot = state["release"]["snapshots"][resp.json()["app_id"]]
+                assert snapshot["doc_target"] == "ai4sci"
+                assert snapshot["app_type"] == "科学计算"
 
         assert resp.status_code == 200, (
             f"Expected 200 with new wizard payload, got {resp.status_code}: {resp.text}"

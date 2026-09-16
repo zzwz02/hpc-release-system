@@ -633,6 +633,10 @@ test.describe("W3 App 工作台 sub-tabs", () => {
     // Step 1: fill identity (unique name per run)
     const uniq = Date.now();
     await page.fill('[data-testid="new-app-name"]', `e2e-w3-${uniq}`);
+    await expect(page.getByTestId("new-app-doc-target")).toHaveValue("");
+    await expect(page.getByTestId("new-app-type")).toHaveValue("");
+    await page.getByTestId("new-app-doc-target").selectOption("ai4sci");
+    await page.getByTestId("new-app-type").fill("科学计算");
     await page.fill('[data-testid="new-app-repo-name"]', `test/e2e-w3-${uniq}`);
     await page.fill('input[placeholder*="master"]', "main");
 
