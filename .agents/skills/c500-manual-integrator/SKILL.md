@@ -48,7 +48,7 @@ python .agents/skills/c500-manual-integrator/scripts/export_release_manual_artif
 4. 手册保留有依据的历史 App 和说明；某 App 不在当前产物中，可能是停止、缺项或尚未确认，不足以删除历史条目。清理历史内容须符合用户明确范围。
 5. HPC APP 条目通常保留中文介绍、版本、官方网址；AI4Sci 还保留镜像/二进制使用方法以及有来源的环境和测试说明。选定版本间用法有差异时标明适用版本，不能只保留归并时遇到的第一份用法。
 6. 分类按 [classification.md](references/classification.md) 与目标文档已有准确结构；不确定项在工作记录说明，不能用臆测补事实。
-7. 发布说明额外遵循 [release_notes.md](references/release_notes.md)：变更列表与完整发布列表分开，缺席不自动等于停止。
+7. 修改MACA/X201发布说明前阅读 [release_notes.md](references/release_notes.md)：按发布决策纳入条目；变更与完整列表分开；类型、模块、排序、模块跨行和新增/更新的芯片范围均按该参考执行。
 
 来源冲突先检查周期、final 状态、完整性与时间。目标 release 有明确非空事实时据其更新；不以空值覆盖已有可追溯内容。无法判定的冲突留下待核实项，不把“DB 永远覆盖 RST”作为机械规则。
 
