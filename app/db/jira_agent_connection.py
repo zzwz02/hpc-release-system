@@ -194,6 +194,8 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
     )
     # '' = the agent picks from the system machine list; else user@host.
     _ensure_column(conn, "jira_agent_conversations", "machine", "TEXT NOT NULL DEFAULT ''")
+    # what the agent is actually on: detected from its commands, then its result.
+    _ensure_column(conn, "jira_agent_conversations", "machine_used", "TEXT NOT NULL DEFAULT ''")
     conn.commit()
 
 

@@ -331,6 +331,14 @@ def queue_position(conn: sqlite3.Connection, turn_id: str) -> int:
     return int(row[0]) if row else 0
 
 
+def set_machine_used(conn: sqlite3.Connection, conversation_id: str, machine: str) -> None:
+    """Record the machine the agent works on, as soon as one of its commands shows it."""
+    conn.execute(
+        "UPDATE jira_agent_conversations SET machine_used = ? WHERE id = ?",
+        (machine, conversation_id),
+    )
+
+
 def running_turns(conn: sqlite3.Connection) -> list[dict]:
     """Startup recovery: turns a previous process left running on the app-server."""
     return _all(conn, "SELECT * FROM jira_agent_turns WHERE status = 'running' ORDER BY rowid")

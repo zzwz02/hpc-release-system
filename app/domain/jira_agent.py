@@ -227,6 +227,12 @@ def ssh_public_key_info(line: str) -> dict:
     return {"type": parts[0], "fingerprint": f"SHA256:{digest}", "comment": " ".join(parts[2:])}
 
 
+def detect_machine(command: str, targets: tuple[str, ...] | list[str]) -> str:
+    """The known user@host a command logs in to (ssh/scp/rsync), if any."""
+    text = command or ""
+    return next((target for target in targets if target and target in text), "")
+
+
 def _table_cell(text: str) -> str:
     return " ".join((text or "").split()).replace("|", "\\|") or "—"
 

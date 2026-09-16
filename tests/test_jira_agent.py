@@ -280,7 +280,8 @@ class FakeCodex:
             await self._send(thread_id, {"method": method, "params": {"threadId": thread_id, "turnId": turn_id, **extra}})
 
         command = {
-            "type": "commandExecution", "id": f"cmd_{turn_id}", "command": "./saxpy 16777217",
+            "type": "commandExecution", "id": f"cmd_{turn_id}",
+            "command": f"ssh {SYSTEM_MACHINE} 'make && ./saxpy 16777217'",
             "cwd": "/b", "status": "inProgress", "commandActions": [], "exitCode": None,
             "aggregatedOutput": None, "durationMs": None,
         }
@@ -1068,11 +1069,22 @@ def test_auto_machine_prompt_lists_system_machines_and_comment_names_used_machin
     assert "machine" in turn_start["outputSchema"]["required"]
     [(_, body)] = env.jira.comments
     assert f"*执行机器*：{SYSTEM_MACHINE}" in body
+    assert _detail(env, conversation["id"])["conversation"]["machine_used"] == SYSTEM_MACHINE
 
     sent = env.client.post(f"/api/jira-agent/conversations/{conversation['id']}/messages", json={"text": "继续"})
     assert sent.status_code == 200, sent.text
     _wait(env, conversation["id"], lambda d: _latest(d)["seq"] == 2 and _done(d))
     assert SYSTEM_MACHINE in env.fake.params("turn/start")[1]["input"][0]["text"]
+
+
+def test_machine_shows_up_while_the_turn_is_still_running(env) -> None:
+    env.fake.plans = ["hold"]
+    conversation = _handover(env)["conversation"]
+    # the first command logs in to a system machine: no need to wait for the result
+    detail = _wait(env, conversation["id"], lambda d: d["conversation"]["machine_used"] == SYSTEM_MACHINE)
+    assert _latest(detail)["status"] == "running"
+    assert env.client.post(f"/api/jira-agent/conversations/{conversation['id']}/cancel").status_code == 200
+    assert _latest(_wait(env, conversation["id"], _done))["status"] == "cancelled"
 
 
 def test_rm_maintains_system_machines(env) -> None:

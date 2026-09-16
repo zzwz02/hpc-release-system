@@ -56,6 +56,8 @@ const conversation = {
   created_by: "alice",
   thread_id: "thr_1",
   workspace: "/b/workspaces/MC3-7672-jac_1",
+  machine: "",
+  machine_used: "hpc@10.2.118.75",
   status: "open",
   close_reason: "",
   created_at: "2026-09-14 10:00:00",
@@ -281,6 +283,7 @@ describe("JiraAgentPage", () => {
     expect(within(toolGroup).getAllByText("$ ./saxpy 16777217").length).toBeGreaterThan(0);
     expect(within(toolGroup).getByText("exit 0")).toBeInTheDocument();
     expect(screen.getByText("请修复")).toBeInTheDocument();
+    expect(screen.getByText(/机器：/)).toHaveTextContent("机器：hpc@10.2.118.75（agent 选择）");
     expect(screen.getByText(/已在 JIRA 发布评论（#99）/)).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "artifacts/fix.patch" })[0]).toHaveAttribute(
       "href",

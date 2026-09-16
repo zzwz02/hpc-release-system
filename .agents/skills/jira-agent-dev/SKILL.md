@@ -138,6 +138,7 @@ export JIRA_AGENT_RUNNER_ENABLED=false   # 不需要队列时
 - **代理**：本机设置了 `ALL_PROXY` 等代理变量，`websockets` 会走代理。A 连接 B 时必须让 B 的地址命中 `NO_PROXY`，否则连接失败或误走代理。
 - **`pkill -f <模式>`**：模式会匹配执行它的 shell 自身，把 shell 杀掉。停止 app-server 用 `ss -ltnp` 找监听 PID 再 kill。
 - **JIRA 评论排序**：`/rest/api/2/issue/<key>/comment` 不保证按请求参数排序，回读最新评论时按 `created` 自行排序。
+- **测试里留下在飞的轮次**：`runner` 是模块级单例，`_active` / `_background` 跨测试共存。测试取消或中断一轮后必须等它真正结束（`_wait(..., _done)`），否则任务会跨到下一个测试的事件循环，teardown 报 “future belongs to a different loop”，残留的 `_active` 还会占满 `MAX_CONCURRENT`，让后面的轮次一直排队。
 - **测试单被“污染”**：MC3-7672 带有旧分支 agent 的修复附件和含根因的评论，agent 会读到，不能用它评估真实分析能力。
 - **共享 GPU**：执行机 GPU 常被其他用户任务占用。知识包要求独占时 agent 会停下并给出 `needs_help`，这是预期行为；需要放宽时由 assignee 在对话中明确授权。
 - **B 上的 Codex 配置**：B 上的 `~/.codex` 配置和用户级 skills 会带入 agent。正式部署使用专用 hpc 用户，避免混入个人配置。

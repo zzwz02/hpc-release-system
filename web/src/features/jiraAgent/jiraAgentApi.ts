@@ -65,6 +65,8 @@ export interface AgentConversation {
   workspace: string;
   /** "" = the agent picks from the system machine list; else user@host. */
   machine: string;
+  /** user@host the agent reported using; "" until a turn with a machine ends. */
+  machine_used: string;
   status: "open" | "closed";
   close_reason: "" | "superseded" | "new_conversation";
   created_at: string;

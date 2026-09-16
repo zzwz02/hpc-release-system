@@ -101,6 +101,22 @@ function stateText(conversation: AgentConversation): string {
   return STATE_LABELS[conversation.state];
 }
 
+/** The machine in use: the user's own, else the one the agent reported. */
+function machineText(conversation: AgentConversation) {
+  const machine = conversation.machine || conversation.machine_used;
+  if (!machine) {
+    return conversation.state === "running"
+      ? "处理中，agent 尚未登录机器"
+      : "待 agent 从系统机器列表选择";
+  }
+  return (
+    <>
+      <code>{machine}</code>
+      <span className="muted">（{conversation.machine ? "用户指定" : "agent 选择"}）</span>
+    </>
+  );
+}
+
 function mergeEvents(previous: AgentEvent[], incoming: AgentEvent[]): AgentEvent[] {
   const byId = new Map(previous.map((event) => [event.id, event]));
   for (const event of incoming) byId.set(event.id, event);
@@ -537,9 +553,7 @@ function IssueView({
               <span>owner：{conversation.owner}</span>
               <span>交单人：{conversation.created_by}</span>
               <span>数字员工：{conversation.agent_group}</span>
-              <span>
-                机器：{conversation.machine ? <code>{conversation.machine}</code> : "agent 从系统机器列表自动选择"}
-              </span>
+              <span>机器：{machineText(conversation)}</span>
               <span>Thread：{conversation.thread_id || "未创建"}</span>
               <span>
                 B 工作目录：<code>{conversation.workspace}</code>

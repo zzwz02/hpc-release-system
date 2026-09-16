@@ -110,6 +110,9 @@ class ActiveTurn:
     codex_turn_id: str = ""
     stop_reason: str = ""  # "", "user", "closed", "timeout"
     task: asyncio.Task | None = None
+    # machines this turn may use, and the one its commands show it on
+    machine_targets: tuple[str, ...] = ()
+    machine_used: str = ""
 
 
 async def post_turn_comment(conn, turn_id: str) -> dict:
@@ -386,6 +389,11 @@ class JiraAgentRunner:
         cid, tid = active.conversation_id, active.turn_id
         try:
             conversation = repo.get_conversation(conn, cid)
+            active.machine_targets = (
+                (conversation["machine"],) if conversation["machine"]
+                else tuple(m["ssh_target"] for m in repo.list_machines(conn, group.name))
+            )
+            active.machine_used = conversation["machine_used"]
             deadline = _deadline(repo.get_turn(conn, tid), group)
             if recover:
                 text, run = "网站已重启，正在重新连接 Codex 查看本轮", self._reattach
@@ -723,6 +731,9 @@ class JiraAgentRunner:
                 "duration_ms": item.get("durationMs"),
                 "output": _clip(item.get("aggregatedOutput") or "", _OUTPUT_LIMIT),
             }, item_id)
+            self._note_machine(conn, active, domain.detect_machine(
+                item.get("command") or "", active.machine_targets,
+            ))
         elif kind == "fileChange" and completed:
             _event(conn, cid, tid, "file_change", {
                 "status": item.get("status") or "",
@@ -750,6 +761,15 @@ class JiraAgentRunner:
                 "detail": _clip(json.dumps(detail, ensure_ascii=False), 2000),
             }, item_id)
         return None
+
+    @staticmethod
+    def _note_machine(conn, active: ActiveTurn, machine: str) -> None:
+        """Show the machine on the conversation while the turn is still running."""
+        if not machine or machine == active.machine_used:
+            return
+        active.machine_used = machine
+        with transaction(conn):
+            repo.set_machine_used(conn, active.conversation_id, machine)
 
     async def _finish_completed(
         self, conn, active: ActiveTurn, group: domain.AgentGroup,
@@ -779,6 +799,9 @@ class JiraAgentRunner:
                 conn, conversation_id=conversation["id"], turn_id=turn["id"],
                 kind="result", payload=result,
             )
+        reported = (result.get("machine") or "").strip()
+        if reported and reported != active.machine_used:
+            self._note_machine(conn, active, reported)
         await post_turn_comment(conn, turn["id"])
 
     async def _pull_artifacts(self, conn, active: ActiveTurn, conversation: dict, result: dict) -> list[dict]:
