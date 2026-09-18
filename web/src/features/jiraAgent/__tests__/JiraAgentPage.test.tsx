@@ -37,6 +37,7 @@ const turn = {
   result: null,
   conclusion: "fixed_pending_review",
   comment_status: "posted",
+  post_comment: true,
   comment_id: "99",
   comment_body: "h3. 结论",
   comment_error: "",
@@ -319,6 +320,7 @@ describe("JiraAgentPage", () => {
         files: [],
         new_conversation: true,
         machine: "",
+        post_comment: true,
       });
     });
     expect(confirmDialog).not.toHaveBeenCalled();
@@ -359,6 +361,27 @@ describe("JiraAgentPage", () => {
       expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/conversations/jac_1/messages", {
         text: "补充 N=257 验证",
         files: [],
+        post_comment: true,
+      });
+    });
+  });
+
+  it("can keep a follow-up turn's answer on the website instead of commenting on JIRA", async () => {
+    mockBackend();
+    vi.mocked(apiPost).mockResolvedValue({ mode: "queued", conversation });
+    const user = userEvent.setup();
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
+
+    await user.type(await screen.findByLabelText("补充信息"), "解释一下根因");
+    await user.click(screen.getByRole("checkbox", { name: /本轮结论发布到 JIRA 评论/ }));
+    expect(screen.getByText(/只在网页显示/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => {
+      expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/conversations/jac_1/messages", {
+        text: "解释一下根因",
+        files: [],
+        post_comment: false,
       });
     });
   });

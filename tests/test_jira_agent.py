@@ -770,6 +770,45 @@ def test_comment_failure_can_be_retried_without_rerunning(env) -> None:
     assert len(env.jira.comments) == 1
 
 
+def test_turn_can_keep_its_result_on_the_website_only(env) -> None:
+    conversation = _handover(env, post_comment=False)["conversation"]
+    detail = _wait(env, conversation["id"], _done)
+    turn = _latest(detail)
+    assert (turn["status"], turn["post_comment"], turn["comment_status"]) == ("completed", False, "")
+    assert turn["comment_body"]  # rendered anyway, shown on the website
+    assert env.jira.comments == []
+    kinds = [(event["kind"], event["payload"].get("status")) for event in detail["events"]]
+    assert ("jira_comment", "skipped") in kinds
+    assert detail["events"][0]["payload"]["post_comment"] is False
+    assert env.client.post(f"/api/jira-agent/turns/{turn['id']}/comment/retry").status_code == 409
+
+    # the choice is per turn: a follow-up without the flag comments as before
+    response = env.client.post(
+        f"/api/jira-agent/conversations/{conversation['id']}/messages", json={"text": "继续"},
+    )
+    assert response.status_code == 200, response.text
+    turn = _latest(_wait(env, conversation["id"], lambda d: _latest(d)["seq"] == 2 and _done(d)))
+    assert (turn["post_comment"], turn["comment_status"]) == (True, "posted")
+    assert len(env.jira.comments) == 1
+
+
+def test_latest_message_of_a_turn_decides_whether_it_comments(env) -> None:
+    env.fake.plans = ["gate"]
+    conversation = _handover(env)["conversation"]
+    _wait(env, conversation["id"], _phase("running"))
+
+    steer = env.client.post(
+        f"/api/jira-agent/conversations/{conversation['id']}/messages",
+        json={"text": "只在网页上回答", "post_comment": False},
+    )
+    assert steer.json()["mode"] == "steer"
+    env.fake.release()
+
+    turn = _latest(_wait(env, conversation["id"], _done))
+    assert (turn["status"], turn["post_comment"], turn["comment_status"]) == ("completed", False, "")
+    assert env.jira.comments == []
+
+
 def test_health_reports_bad_token(env) -> None:
     [group] = env.client.get("/api/jira-agent/health").json()["groups"]
     assert group["ok"] is True

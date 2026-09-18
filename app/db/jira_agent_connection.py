@@ -196,6 +196,9 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "jira_agent_conversations", "machine", "TEXT NOT NULL DEFAULT ''")
     # what the agent is actually on: detected from its commands, then its result.
     _ensure_column(conn, "jira_agent_conversations", "machine_used", "TEXT NOT NULL DEFAULT ''")
+    # 0 = keep this turn's result on the website only (no JIRA comment); the
+    # choice sent with the turn's latest message wins.
+    _ensure_column(conn, "jira_agent_turns", "post_comment", "INTEGER NOT NULL DEFAULT 1")
     conn.commit()
 
 

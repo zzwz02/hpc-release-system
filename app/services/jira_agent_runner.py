@@ -789,20 +789,28 @@ class JiraAgentRunner:
             conversation_url=conversation_url(conversation["id"]),
             patches=patches,
         )
+        # re-read: a message sent while the turn ran may have changed the choice
+        post = bool(repo.get_turn(conn, turn["id"])["post_comment"])
         with transaction(conn):
             repo.update_turn(
                 conn, turn["id"], status="completed", result_json=dumps_json(result),
-                conclusion=result["conclusion"], comment_status="pending",
+                conclusion=result["conclusion"], comment_status="pending" if post else "",
                 comment_body=body, finished_at=beijing_timestamp(),
             )
             repo.add_event(
                 conn, conversation_id=conversation["id"], turn_id=turn["id"],
                 kind="result", payload=result,
             )
+            if not post:
+                repo.add_event(
+                    conn, conversation_id=conversation["id"], turn_id=turn["id"],
+                    kind="jira_comment", payload={"status": "skipped"},
+                )
         reported = (result.get("machine") or "").strip()
         if reported and reported != active.machine_used:
             self._note_machine(conn, active, reported)
-        await post_turn_comment(conn, turn["id"])
+        if post:
+            await post_turn_comment(conn, turn["id"])
 
     async def _pull_artifacts(self, conn, active: ActiveTurn, conversation: dict, result: dict) -> list[dict]:
         cid, tid, workspace = conversation["id"], active.turn_id, conversation["workspace"]

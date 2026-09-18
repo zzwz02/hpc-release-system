@@ -152,6 +152,7 @@ def _turn_view(conn: sqlite3.Connection, turn: dict | None) -> dict | None:
         return None
     view = dict(turn)
     view["result"] = loads_json(view.pop("result_json"), None)
+    view["post_comment"] = bool(view["post_comment"])
     view["queue_position"] = (
         repo.queue_position(conn, turn["id"]) if turn["status"] == "queued" else None
     )
@@ -454,6 +455,7 @@ async def handover(user: dict, body: dict) -> dict:
         raise ApiError(409, "工单没有 assignee，请先在 JIRA 指派负责人")
     note = (body.get("note") or "").strip()
     uploads = _decode_uploads(body.get("files"))
+    post_comment = bool(body.get("post_comment", True))
     group = domain.group_for_issue(runner_module.load_groups(), issue["components"])
 
     conn = open_db()
@@ -482,7 +484,7 @@ async def handover(user: dict, body: dict) -> dict:
                 )
                 turn = repo.create_turn(
                     conn, conversation_id=conversation_id, trigger="handover",
-                    created_by=user["username"], input_text=note,
+                    created_by=user["username"], input_text=note, post_comment=post_comment,
                 )
                 for name, data in uploads:
                     _store_upload(conn, conversation_id, turn["id"], name, data)
@@ -493,6 +495,7 @@ async def handover(user: dict, body: dict) -> dict:
                         "text": note or f"把 {issue['key']} 交给 {group.display_name} 处理",
                         "files": [name for name, _ in uploads],
                         "mode": "handover",
+                        "post_comment": post_comment,
                     },
                 )
         except sqlite3.IntegrityError as exc:
@@ -506,6 +509,7 @@ async def handover(user: dict, body: dict) -> dict:
 async def send_message(user: dict, conversation_id: str, body: dict) -> dict:
     text = (body.get("text") or "").strip()
     uploads = _decode_uploads(body.get("files"))
+    post_comment = bool(body.get("post_comment", True))
     if not text and not uploads:
         raise ValueError("请输入补充信息或上传文件")
 
@@ -528,7 +532,7 @@ async def send_message(user: dict, conversation_id: str, body: dict) -> dict:
         names = [name for name, _ in uploads]
         active = runner.active_for_conversation(conversation_id)
         if active is not None and active.phase == "running":
-            return await _steer(conn, user, conversation, active, text, uploads)
+            return await _steer(conn, user, conversation, active, text, uploads, post_comment)
         if active is not None and active.phase != "preparing":
             raise ApiError(409, "agent 正在启动或收尾本轮，请几秒后再发送")
 
@@ -536,18 +540,22 @@ async def send_message(user: dict, conversation_id: str, body: dict) -> dict:
             turn = repo.active_turn(conn, conversation_id)
             if turn is not None:
                 repo.append_turn_input(conn, turn["id"], text)
+                repo.update_turn(conn, turn["id"], post_comment=int(post_comment))
                 mode = "merged"
             else:
                 turn = repo.create_turn(
                     conn, conversation_id=conversation_id, trigger="followup",
-                    created_by=user["username"], input_text=text,
+                    created_by=user["username"], input_text=text, post_comment=post_comment,
                 )
                 mode = "queued"
             for name, data in uploads:
                 _store_upload(conn, conversation_id, turn["id"], name, data)
             repo.add_event(
                 conn, conversation_id=conversation_id, turn_id=turn["id"], kind="user_message",
-                payload={"author": user["username"], "text": text, "files": names, "mode": mode},
+                payload={
+                    "author": user["username"], "text": text, "files": names,
+                    "mode": mode, "post_comment": post_comment,
+                },
             )
         runner.wake()
         return {"mode": mode, "conversation": conversation_view(conn, user, conversation)}
@@ -555,7 +563,9 @@ async def send_message(user: dict, conversation_id: str, body: dict) -> dict:
         conn.close()
 
 
-async def _steer(conn, user: dict, conversation: dict, active, text: str, uploads) -> dict:
+async def _steer(
+    conn, user: dict, conversation: dict, active, text: str, uploads, post_comment: bool,
+) -> dict:
     remote = []
     try:
         for name, data in uploads:
@@ -571,9 +581,13 @@ async def _steer(conn, user: dict, conversation: dict, active, text: str, upload
     except CodexAppServerError as exc:
         raise ApiError(409, f"补充信息未送达 agent（{exc}），请稍后重试") from exc
     with transaction(conn):
+        repo.update_turn(conn, active.turn_id, post_comment=int(post_comment))
         repo.add_event(
             conn, conversation_id=conversation["id"], turn_id=active.turn_id, kind="user_message",
-            payload={"author": user["username"], "text": text, "files": [n for n, _ in uploads], "mode": "steer"},
+            payload={
+                "author": user["username"], "text": text, "files": [n for n, _ in uploads],
+                "mode": "steer", "post_comment": post_comment,
+            },
         )
     return {"mode": "steer", "conversation": conversation_view(conn, user, conversation)}
 

@@ -44,6 +44,8 @@ export interface AgentTurn {
   result: AgentResult | null;
   conclusion: string;
   comment_status: CommentStatus;
+  // false = the result stays on the website; no JIRA comment
+  post_comment: boolean;
   comment_id: string;
   comment_body: string;
   comment_error: string;
@@ -255,6 +257,7 @@ export function handoverIssue(body: {
   files?: UploadPayload[];
   new_conversation?: boolean;
   machine?: string;
+  post_comment?: boolean;
 }) {
   return apiPost<{ created: boolean; conversation: AgentConversation }>(
     "/api/jira-agent/conversations",
@@ -272,7 +275,10 @@ export function getConversationEvents(id: string, after: number) {
   );
 }
 
-export function sendConversationMessage(id: string, body: { text: string; files?: UploadPayload[] }) {
+export function sendConversationMessage(
+  id: string,
+  body: { text: string; files?: UploadPayload[]; post_comment?: boolean },
+) {
   return apiPost<{ mode: "steer" | "merged" | "queued"; conversation: AgentConversation }>(
     `/api/jira-agent/conversations/${encodeURIComponent(id)}/messages`,
     body,

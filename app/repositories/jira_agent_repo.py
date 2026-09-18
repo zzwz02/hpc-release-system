@@ -19,6 +19,7 @@ _TURN_UPDATABLE = {
     "result_json",
     "conclusion",
     "comment_status",
+    "post_comment",
     "comment_id",
     "comment_body",
     "comment_error",
@@ -186,6 +187,7 @@ def create_turn(
     trigger: str,
     created_by: str,
     input_text: str,
+    post_comment: bool = True,
 ) -> dict:
     seq = conn.execute(
         "SELECT COALESCE(MAX(seq), 0) + 1 FROM jira_agent_turns WHERE conversation_id = ?",
@@ -195,10 +197,13 @@ def create_turn(
     conn.execute(
         """
         INSERT INTO jira_agent_turns
-            (id, conversation_id, seq, trigger, created_by, input_text, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            (id, conversation_id, seq, trigger, created_by, input_text, post_comment, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (turn_id, conversation_id, seq, trigger, created_by, input_text, beijing_timestamp()),
+        (
+            turn_id, conversation_id, seq, trigger, created_by, input_text,
+            int(post_comment), beijing_timestamp(),
+        ),
     )
     touch_conversation(conn, conversation_id)
     return get_turn(conn, turn_id)  # type: ignore[return-value]

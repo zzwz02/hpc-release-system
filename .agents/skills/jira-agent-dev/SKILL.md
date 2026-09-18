@@ -18,6 +18,7 @@ description: Develop, debug, or review the JIRA agent (per-group digital employe
   - 界面必须明确提醒：上传后 agent 可免密登录，公钥不随对话失效，要用专用测试账号而不是个人账号。
   - `user@host` 的格式校验（`domain.parse_ssh_target`）保证不能以 `-` 开头、不带端口和空格，防止变成 ssh 参数。
 - **只评论**：agent 不改 assignee、不转单、不 resolve、不提交代码；网站把结构化结论渲染成评论追加到 JIRA，由 assignee 决定下一步（human-in-the-loop）。
+  - 是否发评论按轮次由用户选（交单和发消息都带 `post_comment`，默认 true）。一轮内以最后一条消息为准（合并、steer 都会覆盖 `jira_agent_turns.post_comment`），runner 收尾时重新读取。不发时照样渲染 `comment_body` 并记 `jira_comment` 事件 `status: skipped`，`comment_status` 保持空，重试接口不接受。给 agent 的提示词和 outputSchema 不区分两种轮次。
 - **谁能操作**：只有当前 JIRA assignee 或 RM 能交单、发消息，每次写操作都实时读 JIRA 校验。查看权限为对话 owner、交单人或 RM。页签角色只来自 `shared/access_control.json` 的 `jira-agent`。
 - **找单**（`GET /api/jira-agent/issues?q=`，分类逻辑在 `domain.parse_issue_query`）：
   - 留空时，普通用户看 `assignee = "<网站用户名>" AND status != Closed`，RM 看 `assignee in membersOf("<JIRA_MEMBERS_GROUP>")`。不能用 `currentUser()`，它指向 jira.conf 的 token 账号。
@@ -57,7 +58,7 @@ Runner 在 FastAPI lifespan 中启停（`settings.jira_agent_runner_enabled`）�
 - **`jira_agent_machines`**：系统机器列表（组 + `ssh_target` 唯一 + 说明），仅 RM 增删改。**`jira_agent_ssh_keys`**：自填机器上传并验证过的记录（网站用户 + 组 + 目标 + 公钥指纹）；B 的密钥换了，指纹不同，需要重新上传。
 - **`jira_agent_turns`**：
   - `status` 取 queued / running / completed / failed / cancelled / interrupted。queued 行就是持久队列，按 rowid FIFO；每个对话最多一个 queued 或 running（部分唯一索引）。
-  - `comment_status` 为空 / pending / posted / failed，失败只重试发布，不重跑模型。
+  - `comment_status` 为空 / pending / posted / failed，失败只重试发布，不重跑模型。`post_comment`（默认 1，旧库由 `_ensure_column` 补列）为 0 的轮次完成后 `comment_status` 保持空。
 - **`jira_agent_events`**：时间线。`seq` 是显示顺序，`rev` 在每次插入或更新时递增，前端用 `?after=rev` 增量轮询；命令事件按 `item_id` 原地更新（started → completed）。
 - **`jira_agent_files`**：`source` 为 jira/upload/artifact；`remote_path` 是 B 工作目录内的相对路径，`local_path` 只对上传和拉回的产物存在。
 - **对话状态**：`state` 由对话与最新轮次派生：closed / idle / queued / running / waiting_review（最新轮 completed）/ failed / cancelled / interrupted。

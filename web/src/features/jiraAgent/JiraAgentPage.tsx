@@ -618,6 +618,7 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
   const [busy, setBusy] = useState(false);
   // "" = the agent picks from the system list; null = the choice is not ready yet
   const [machine, setMachine] = useState<string | null>(null);
+  const [postComment, setPostComment] = useState(true);
   const fileInput = useRef<HTMLInputElement>(null);
   const recovering = Boolean(preview.open_conversation?.recovering);
   const disabled = !preview.can_handover;
@@ -645,6 +646,7 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
         files,
         new_conversation: true,
         machine: machine ?? "",
+        post_comment: postComment,
       });
       toast.success("已交给 agent，进入排队");
       onCreated(result.conversation.id);
@@ -667,6 +669,7 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
           onChange={(event) => setNote(event.target.value)}
         />
         <MachineChoice agentGroup={preview.agent_group} disabled={disabled} onChange={setMachine} />
+        <PostCommentCheck checked={postComment} disabled={disabled} onChange={setPostComment} />
         <div className="actions">
           <input ref={fileInput} type="file" multiple aria-label="附加文件" disabled={disabled} />
           <button
@@ -867,6 +870,7 @@ function EventRow({
           <div className="jira-agent-event-head">
             <strong>{String(payload.author ?? "")}</strong>
             <span className="muted">{MODE_LABELS[String(payload.mode)] ?? ""} · {event.created_at}</span>
+            {payload.post_comment === false && <span className="pill">不发 JIRA</span>}
           </div>
           {text && <div className="jira-agent-pre">{text}</div>}
           {attached.length > 0 && <div className="muted">附件：{attached.join("、")}</div>}
@@ -1066,6 +1070,7 @@ function CommentEvent({
 }) {
   const [busy, setBusy] = useState(false);
   const posted = event.payload.status === "posted";
+  const skipped = event.payload.status === "skipped";
 
   async function retry() {
     if (!turn) return;
@@ -1083,13 +1088,13 @@ function CommentEvent({
   }
 
   return (
-    <div className={`jira-agent-event ${posted ? "comment" : "error"}`}>
-      {posted ? (
+    <div className={`jira-agent-event ${posted || skipped ? "comment" : "error"}`}>
+      {posted && (
         <span>已在 JIRA 发布评论（#{String(event.payload.comment_id ?? "")}），等待 assignee 决定下一步。</span>
-      ) : (
-        <span>JIRA 评论发布失败：{String(event.payload.error ?? "")}</span>
       )}
-      {!posted && canWrite && turn?.comment_status === "failed" && (
+      {skipped && <span>按发送时的选择，本轮结论只在网页显示，未发布到 JIRA。</span>}
+      {!posted && !skipped && <span>JIRA 评论发布失败：{String(event.payload.error ?? "")}</span>}
+      {!posted && !skipped && canWrite && turn?.comment_status === "failed" && (
         <button type="button" className="btn sm" disabled={busy} onClick={() => void retry()}>
           重试发布
         </button>
@@ -1101,6 +1106,34 @@ function CommentEvent({
         </details>
       )}
     </div>
+  );
+}
+
+function PostCommentCheck({
+  checked,
+  disabled = false,
+  hint = "",
+  onChange,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  hint?: string;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <label className="jira-agent-check">
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      本轮结论发布到 JIRA 评论
+      <span className="muted">
+        {!checked && "（只在网页显示）"}
+        {hint && ` · ${hint}`}
+      </span>
+    </label>
   );
 }
 
@@ -1137,6 +1170,7 @@ function FilesPanel({ files }: { files: AgentFile[] }) {
 function Composer({ conversation, onSent }: { conversation: AgentConversation; onSent: () => void }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [postComment, setPostComment] = useState(true);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const recovering = conversation.phase === "recovering";
@@ -1149,7 +1183,7 @@ function Composer({ conversation, onSent }: { conversation: AgentConversation; o
     setBusy(true);
     try {
       const files = await readFiles(fileInput.current?.files ?? null);
-      const response = await sendConversationMessage(conversation.id, { text, files });
+      const response = await sendConversationMessage(conversation.id, { text, files, post_comment: postComment });
       toast.success(MODE_LABELS[response.mode] ?? "已发送");
       setText("");
       if (fileInput.current) fileInput.current.value = "";
@@ -1170,6 +1204,11 @@ function Composer({ conversation, onSent }: { conversation: AgentConversation; o
           placeholder={placeholder}
           value={text}
           onChange={(event) => setText(event.target.value)}
+        />
+        <PostCommentCheck
+          checked={postComment}
+          onChange={setPostComment}
+          hint={conversation.state === "running" || conversation.state === "queued" ? "以本轮最后一次发送的选择为准" : ""}
         />
         <div className="actions">
           <input ref={fileInput} type="file" multiple aria-label="附加文件" />

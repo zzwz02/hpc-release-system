@@ -32,11 +32,15 @@ class HandoverBody(BaseModel):
     new_conversation: bool = False
     # "" = the agent picks from the system machine list; else user@host
     machine: str = ""
+    # False = the result stays on the website; nothing is posted to JIRA
+    post_comment: bool = True
 
 
 class MessageBody(BaseModel):
     text: str = ""
     files: list[UploadBody] = Field(default_factory=list)
+    # applies to the turn this message starts or joins; the latest message wins
+    post_comment: bool = True
 
 
 class MachineBody(BaseModel):
