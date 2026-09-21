@@ -98,16 +98,35 @@ def _mount_static(app: FastAPI) -> None:
 
     index_file = web_dist / "index.html"
 
+    def with_cache_headers(response, path: str):
+        """Cache fingerprinted assets forever, revalidate everything else.
+
+        Vite puts a content hash in every filename under /assets, so those are
+        safe to cache indefinitely.  index.html must NOT be cached: without an
+        explicit Cache-Control browsers fall back to heuristic caching, keep
+        serving the previous index.html after a deploy, and with it the old
+        bundle — the page looks unchanged until a hard refresh.
+        """
+        if path.startswith("assets/") and response.status_code == 200:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
+
     class SPAStaticFiles(StaticFiles):
         async def get_response(self, path, scope):
             try:
-                return await super().get_response(path, scope)
+                response = await super().get_response(path, scope)
             except StarletteHTTPException as exc:
                 # Missing file: rewrite client-side routes to index.html, but
-                # never mask API paths (those should 404 as JSON via the router).
-                if exc.status_code == 404 and not path.startswith("api"):
-                    return FileResponse(index_file)
+                # never mask API paths (those should 404 as JSON via the router)
+                # nor /assets/* — a deploy deletes the previous hashed chunks,
+                # and answering a stale tab's chunk request with HTML turns a
+                # clean 404 into an unreadable module-parse error.
+                if exc.status_code == 404 and not path.startswith(("api", "assets/")):
+                    return with_cache_headers(FileResponse(index_file), path)
                 raise
+            return with_cache_headers(response, path)
 
     # Mounted LAST so /api/* routers take priority; html=True serves index.html
     # at "/" and the subclass handles SPA deep-link fallback for everything else.

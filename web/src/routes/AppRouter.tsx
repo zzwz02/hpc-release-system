@@ -5,9 +5,10 @@
  * in Waves 2-3.  Each tab is wrapped in RequireRole so a URL-bar navigation
  * to a forbidden route shows a fallback instead of crashing.
  */
-import { Suspense, lazy } from "react";
+import { Suspense } from "react";
 import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
+import { lazyWithReload } from "../lib/lazyWithReload";
 import { RequireRole } from "./RequireRole";
 import {
   ROUTES,
@@ -38,7 +39,7 @@ import { JenkinsFailuresPage } from "../features/cicdAgent/JenkinsFailuresPage";
 import { WikiPage } from "../features/wiki/WikiPage";
 import { AdminPage } from "../features/admin/AdminPage";
 
-const CicdAssistantV2Page = lazy(() =>
+const CicdAssistantV2Page = lazyWithReload("cicd-assistant-v2", () =>
   import("../features/cicdAgent/CicdAssistantV2Page").then((module) => ({
     default: module.CicdAssistantV2Page,
   })),
