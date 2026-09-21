@@ -1129,6 +1129,35 @@ def preview_decision_sync(
 # App info apply / fetch (for POST /api/app-info, /fetch, /fetch-all)
 # ---------------------------------------------------------------------------
 
+class QaScopeExpansionPending(RuntimeError):
+    """A QA app_info update after app freeze needs QA to accept the changes.
+
+    Nothing is written when this is raised: the caller shows ``scope_additions``
+    plus ``changes`` and, if QA accepts, retries with
+    ``accept_scope_expansion=True``.  Only roles holding
+    ``app.app_info.expand_qa_scope`` reach this branch; for everyone else a
+    scope-expanding update after app freeze stays a hard error.
+    """
+
+    def __init__(
+        self,
+        scope_additions: list[str],
+        changes: list[dict[str, Any]],
+    ) -> None:
+        super().__init__("此次 app_info 更新会扩大 QA 范围，需要 QA 确认后才会生效")
+        self.scope_additions = list(scope_additions)
+        self.changes = list(changes)
+
+    def payload(self) -> dict[str, Any]:
+        """Confirmation response body shared by the app_info endpoints."""
+        return {
+            "requires_scope_confirmation": True,
+            "scope_additions": self.scope_additions,
+            "changes": self.changes,
+            "message": str(self),
+        }
+
+
 def _apply_app_info_core(
     conn: sqlite3.Connection,
     release_id: str,
@@ -1140,6 +1169,7 @@ def _apply_app_info_core(
     commit_id: str = "",
     uploaded_by: str = "",
     role: str = "Owner",
+    accept_scope_expansion: bool = False,
 ) -> dict[str, Any]:
     """Parse + apply an app_info payload to a snapshot — mirrors core.py:apply_app_info."""
     release = release_reads.get_release(conn, release_id)
@@ -1157,16 +1187,27 @@ def _apply_app_info_core(
     content_modified = snapshot_parsed is not None and bool(
         app_info_domain.diff_app_info(snapshot_parsed, parsed)
     )
+    accepted_scope_additions: list[str] = []
     if snapshot.get("release_decision") == "release" and not phase_policy.can(release, "expand_qa_scope"):
         current_parsed = (snapshot.get("app_info") or {}).get("parsed")
         if current_parsed is not None:
             additions = app_info_domain.qa_scope_additions(current_parsed, parsed)
             if additions:
-                raise RuntimeError(
-                    "已过 app 冻结 deadline，新 app_info 会扩大 QA 范围（"
-                    + "；".join(additions)
-                    + "）。如确需新增，请联系 RM 调整 app 冻结 deadline。"
-                )
+                # QA owns the test scope, so QA — and only QA — may take on an
+                # expansion after app freeze, but only after seeing the changes
+                # and accepting them explicitly.
+                if not has_capability(role, "app.app_info.expand_qa_scope"):
+                    raise RuntimeError(
+                        "已过 app 冻结 deadline，新 app_info 会扩大 QA 范围（"
+                        + "；".join(additions)
+                        + "）。如确需新增，请联系 QA。"
+                    )
+                if not accept_scope_expansion:
+                    raise QaScopeExpansionPending(
+                        additions,
+                        app_info_domain.diff_app_info(current_parsed, parsed),
+                    )
+                accepted_scope_additions = additions
     previous_id = releases_repo.previous_release_id(conn, release_id)
     old_parsed = None
     if previous_id:
@@ -1222,6 +1263,21 @@ def _apply_app_info_core(
             event="upload_app_info",
             detail=detail,
         )
+        if accepted_scope_additions:
+            log_audit(
+                conn,
+                f"{app_id} QA 接受 app 冻结后扩大的 QA 范围，共 {len(accepted_scope_additions)} 项",
+                ts=ts,
+                user=uploaded_by or "system",
+                role=role,
+                app_id=app_id,
+                release_id=release_id,
+                event="qa_accept_scope_expansion",
+                detail=[
+                    {"field": "qa_scope", "label": "QA 范围新增", "old": "", "new": item}
+                    for item in accepted_scope_additions
+                ],
+            )
         if was_confirmed and content_modified:
             log_audit(
                 conn,
@@ -1248,10 +1304,12 @@ def apply_app_info(
     source_type: str = "owner_upload",
     uploaded_by: str,
     role: str,
+    accept_scope_expansion: bool = False,
 ) -> dict:
     """Apply app_info JSON to a snapshot.
 
     Mirrors server.py:1200-1216. Returns {"snapshot": snapshot}.
+    Raises QaScopeExpansionPending when QA must accept a scope expansion first.
     """
     snapshot = _apply_app_info_core(
         conn,
@@ -1262,6 +1320,7 @@ def apply_app_info(
         source_type=source_type,
         uploaded_by=uploaded_by,
         role=role,
+        accept_scope_expansion=accept_scope_expansion,
     )
     return {"snapshot": snapshot}
 
@@ -1321,11 +1380,13 @@ def fetch_app_info(
     app_id: str,
     uploaded_by: str,
     role: str,
+    accept_scope_expansion: bool = False,
 ) -> dict:
     """Fetch app_info from Gerrit and apply it.
 
     Mirrors server.py:1218-1237.
     Returns {"snapshot": snapshot, "commit_id": commit_id, "source": source}.
+    Raises QaScopeExpansionPending when QA must accept a scope expansion first.
     """
     from app.config import settings
     from app.integrations.gerrit import fetch_app_info as gerrit_fetch
@@ -1353,6 +1414,7 @@ def fetch_app_info(
         commit_id=commit_id,
         uploaded_by=uploaded_by,
         role=role,
+        accept_scope_expansion=accept_scope_expansion,
     )
     return {
         "snapshot": snapshot,

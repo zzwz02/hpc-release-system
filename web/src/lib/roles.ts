@@ -96,6 +96,24 @@ export function canEdit(
   return false;
 }
 
+/**
+ * True when the user can update an app's Gerrit app_info (upload or fetch).
+ * Wider than canEdit: QA maintains app_info too, up to the doc deadline.
+ * Owner stays limited to owned apps; RM and QA may update any app.
+ */
+export function canUpdateAppInfo(
+  user: User | null | undefined,
+  snap: Snapshot | null | undefined,
+): boolean {
+  if (!user) return false;
+  if (!can(user.role, "app.app_info.update")) return false;
+  if (can(user.role, "app.edit.any")) return true;
+  if (can(user.role, "app.edit.owned")) {
+    return (snap?.owners ?? []).includes(user.username);
+  }
+  return true;
+}
+
 /** True when the user may edit RM-only App metadata fields. */
 export function canEditRmFields(user: User | null | undefined): boolean {
   return can(user?.role, "app.edit.rm_fields");

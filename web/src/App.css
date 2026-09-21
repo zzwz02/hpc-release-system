@@ -1962,6 +1962,47 @@ textarea.artifact {
 .app-info-fetch-errors { max-height: 240px; overflow: auto; }
 .confirm-card { width: min(440px, 100%); }
 .confirm-body { white-space: pre-line; line-height: 1.6; color: var(--ink-2); }
+/* Dialogs with a details box: only that box scrolls, so the message above it
+   and the action buttons below it stay in view. */
+.confirm-card-scroll {
+  width: min(560px, 100%); display: flex; flex-direction: column; overflow: hidden;
+}
+.confirm-card-scroll > h3, .confirm-card-scroll .dialog-actions { flex: none; }
+.confirm-card-scroll .dialog-body {
+  flex: 1 1 auto; display: flex; flex-direction: column; gap: 12px;
+  min-height: 0; overflow: hidden;
+}
+.confirm-card-scroll .confirm-body { flex: none; }
+.confirm-details {
+  flex: 1; min-height: 80px; overflow: auto;
+  white-space: pre-line; overflow-wrap: anywhere; line-height: 1.6;
+  font-size: 12.5px; color: var(--ink-2);
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: 10px 12px;
+}
+/* Details holding rendered content (an app_info diff) instead of plain text. */
+.confirm-details-rich { white-space: normal; font-size: 13px; background: var(--surface); padding: 10px; }
+
+/* ======================== app_info unified diff ======================== */
+.diff-list { display: grid; gap: 10px; }
+.diff-caption { font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.diff-block { border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden; }
+.diff-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 10px; background: var(--surface-2); border-bottom: 1px solid var(--border);
+  font-size: 12.5px; font-weight: 600; color: var(--ink-2);
+}
+.diff-field { font-weight: 500; color: var(--muted); font-size: 12px; }
+.diff-body { background: var(--surface); padding: 4px 0; }
+.diff-line {
+  display: flex; gap: 6px; padding: 0 10px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.diff-line .diff-sign { flex: none; width: 10px; text-align: center; opacity: .75; }
+.diff-line.context { color: var(--ink-2); }
+.diff-line.del { background: var(--bad-bg); color: var(--bad-fg); }
+.diff-line.add { background: var(--ok-bg); color: var(--ok-fg); }
 
 /* ============================ toasts ============================ */
 .toaster {

@@ -22,7 +22,7 @@ from fastapi.responses import StreamingResponse
 
 from app.deps import get_db, require_capability, require_login
 from app.services import app_service, release_reads
-from app.services.authz import require_owner_or_rm_with_owners
+from app.services.authz import require_app_info_update, require_owner_or_rm_with_owners
 
 router = APIRouter(tags=["apps"])
 
@@ -148,28 +148,34 @@ def api_app_info(
     user: dict = Depends(require_login),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """Apply owner-uploaded app_info to a snapshot.
+    """Apply an uploaded app_info to a snapshot.
 
-    Mirrors server.py:1200-1216.
-    Auth enforced inside apply_app_info (require_owner_or_rm on snapshot owners).
+    Mirrors server.py:1200-1216.  RM, the app's Owner and QA may upload until
+    the doc deadline.  When QA's upload would expand the QA scope after app
+    freeze, nothing is written and the body carries requires_scope_confirmation
+    plus the changes for QA to accept; QA then retries with
+    accept_scope_expansion.
     """
-    # Replicate require_owner_or_rm check from server.py:1203-1205
     release = release_reads.get_release(conn, body["release_id"])
     snap = release["snapshots"].get(body["app_id"], {})
     role = user["role"]
     username = user["username"]
-    require_owner_or_rm_with_owners(snap.get("owners"), username, role)
+    require_app_info_update(snap.get("owners"), username, role)
 
-    return app_service.apply_app_info(
-        conn,
-        release_id=body["release_id"],
-        app_id=body["app_id"],
-        app_info=body["app_info"],
-        source=body.get("source", "owner upload"),
-        source_type="owner_upload",
-        uploaded_by=username,
-        role=role,
-    )
+    try:
+        return app_service.apply_app_info(
+            conn,
+            release_id=body["release_id"],
+            app_id=body["app_id"],
+            app_info=body["app_info"],
+            source=body.get("source", "owner upload"),
+            source_type="owner_upload",
+            uploaded_by=username,
+            role=role,
+            accept_scope_expansion=bool(body.get("accept_scope_expansion")),
+        )
+    except app_service.QaScopeExpansionPending as pending:
+        return pending.payload()
 
 
 # ---------------------------------------------------------------------------
@@ -184,22 +190,26 @@ def api_app_info_fetch(
 ) -> dict:
     """Fetch app_info from Gerrit and apply it to a snapshot.
 
-    Mirrors server.py:1218-1237.
+    Mirrors server.py:1218-1237.  Same authorization and QA scope-confirmation
+    handshake as POST /api/app-info.
     """
-    # Replicate require_owner_or_rm check from server.py:1221-1224
     release = release_reads.get_release(conn, body["release_id"])
     snap = release["snapshots"].get(body["app_id"], {})
     role = user["role"]
     username = user["username"]
-    require_owner_or_rm_with_owners(snap.get("owners"), username, role)
+    require_app_info_update(snap.get("owners"), username, role)
 
-    return app_service.fetch_app_info(
-        conn,
-        release_id=body["release_id"],
-        app_id=body["app_id"],
-        uploaded_by=username,
-        role=role,
-    )
+    try:
+        return app_service.fetch_app_info(
+            conn,
+            release_id=body["release_id"],
+            app_id=body["app_id"],
+            uploaded_by=username,
+            role=role,
+            accept_scope_expansion=bool(body.get("accept_scope_expansion")),
+        )
+    except app_service.QaScopeExpansionPending as pending:
+        return pending.payload()
 
 
 # ---------------------------------------------------------------------------

@@ -21,6 +21,8 @@
     "app.edit.owned": ["Owner"],
     "app.edit.rm_fields": ["RM"],
     "app.owner.confirm": ["Owner"],
+    "app.app_info.update": ["RM", "Owner", "QA"],
+    "app.app_info.expand_qa_scope": ["QA"],
     "app.audit.view.any": ["RM", "Admin", "QA"],
     "app.audit.view.owned": ["Owner"],
     "qa.edit": ["RM", "QA"],

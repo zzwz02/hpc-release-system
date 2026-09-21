@@ -23,7 +23,7 @@ import {
   GERRIT_HPC_PROJECT,
   GERRIT_MANIFEST_REPO_URL,
 } from "../../../lib/git";
-import type { StatePayload, App, Snapshot, ReleaseDetail, ReleaseSummary, CicdRequest } from "../../../types";
+import type { StatePayload, App, Snapshot, ReleaseDetail, ReleasePhase, ReleaseSummary, CicdRequest } from "../../../types";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -2339,5 +2339,111 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
     expect(box.textContent).toContain("main");
     // Should NOT have shown the preview form (content unavailable)
     expect(screen.queryByTestId("new-app-preview")).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// QA app_info maintenance (until the doc deadline) + scope-expansion handshake
+// ---------------------------------------------------------------------------
+
+describe("AppWorkbenchPage QA app_info update", () => {
+  const qaUser = { username: "qa_user", role: "QA", display_name: "QA" };
+
+  function qaPayload(phase: ReleasePhase): StatePayload {
+    const payload = makePayload({ user: qaUser });
+    payload.release = { ...payload.release!, phase };
+    payload.releases = [{ ...payload.releases[0], phase }];
+    return payload;
+  }
+
+  function mockQaAuth(): void {
+    (useAuth as ReturnType<typeof vi.fn>).mockReturnValue({
+      user: qaUser,
+      ldapStatus: { enabled: false, uri: "" },
+      login: vi.fn(),
+      logout: vi.fn(),
+      clearUser: vi.fn(),
+    });
+  }
+
+  async function selectApp1(): Promise<void> {
+    await waitFor(() => screen.getByTestId("app-row-app1"));
+    fireEvent.click(screen.getByTestId("app-row-app1"));
+    await waitFor(() => screen.getByTestId("detail-panel"));
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal("alert", vi.fn());
+    mockQaAuth();
+  });
+
+  it("shows app_info actions to QA without the App edit mode", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(qaPayload("after_app_freeze"));
+    renderPage(makeQueryClient());
+    await selectApp1();
+
+    expect(screen.getByTestId("app-info-actions")).toBeTruthy();
+    expect(screen.queryByText("✎ 修改")).toBeNull();
+  });
+
+  it("hides app_info actions from QA after the doc deadline", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(qaPayload("after_doc_deadline"));
+    renderPage(makeQueryClient());
+    await selectApp1();
+
+    expect(screen.queryByTestId("app-info-actions")).toBeNull();
+  });
+
+  it("lists the changes and re-posts once QA accepts the QA scope expansion", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(qaPayload("after_app_freeze"));
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation((_url: string, body: { accept_scope_expansion?: boolean }) => {
+      if (body?.accept_scope_expansion) return Promise.resolve({ commit_id: "abc", source: "s" });
+      return Promise.resolve({
+        requires_scope_confirmation: true,
+        scope_additions: ["测试 sanity 新增芯片 N300"],
+        changes: [{ id: "1", type: "测试", field: "supported_chips", old_value: "C500", new_value: "C500,N300" }],
+        message: "此次 app_info 更新会扩大 QA 范围，需要确认后才会生效",
+      });
+    });
+    renderPage(makeQueryClient());
+    await selectApp1();
+    fireEvent.click(screen.getByText("从 Gerrit 拉取"));
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(2));
+    // Scope additions stay pinned in the body; the changes go to the scrollable
+    // details box, rendered as an app_info diff.
+    expect(confirmDialog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining("测试 sanity 新增芯片 N300"),
+        details: expect.anything(),
+      }),
+    );
+    const lastCall = vi.mocked(confirmDialog).mock.calls.at(-1)?.[0];
+    expect(lastCall?.body).not.toContain("supported_chips");
+    render(<>{lastCall?.details}</>);
+    expect(screen.getByTestId("app-info-diff").textContent).toContain("supported_chips");
+    expect(apiPost).toHaveBeenNthCalledWith(1, "/api/app-info/fetch", {
+      release_id: "rel-1", app_id: "app1", accept_scope_expansion: false,
+    });
+    expect(apiPost).toHaveBeenNthCalledWith(2, "/api/app-info/fetch", {
+      release_id: "rel-1", app_id: "app1", accept_scope_expansion: true,
+    });
+  });
+
+  it("keeps app_info unchanged when QA rejects the scope expansion", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(qaPayload("after_app_freeze"));
+    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({
+      requires_scope_confirmation: true,
+      scope_additions: ["测试 sanity 新增芯片 N300"],
+      changes: [],
+    });
+    // 1st dialog: confirm the Gerrit fetch; 2nd: reject the scope expansion.
+    vi.mocked(confirmDialog).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    renderPage(makeQueryClient());
+    await selectApp1();
+    fireEvent.click(screen.getByText("从 Gerrit 拉取"));
+
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith(expect.stringContaining("已取消")));
+    expect(apiPost).toHaveBeenCalledTimes(1);
   });
 });

@@ -25,13 +25,14 @@ import {
 import type { CicdFirstDecisionPreviewResponse, FetchPreviewResponse } from "../cicd/cicdApi";
 import { RefreshBar } from "../../components/RefreshBar";
 import { Markdown } from "../../components/Markdown";
+import { AppInfoDiffView } from "../../components/AppInfoDiffView";
 import { formatServerTime } from "../../lib/time";
 import { toast } from "../../lib/toast";
 import { confirmDialog } from "../../lib/confirm";
 import { apiGet, apiPost, apiPostNdjson } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
-import { isOwner, canCreateApp, canEdit, canEditRmFields } from "../../lib/roles";
+import { isOwner, canCreateApp, canEdit, canEditRmFields, canUpdateAppInfo } from "../../lib/roles";
 import { beforeAppFreeze, beforeDocDeadline, releaseLocked } from "../../lib/phase";
 import {
   CICD_COMMUNITY_ARTIFACT_OPTIONS,
@@ -64,7 +65,7 @@ import {
   docTargetOptions,
   qaStatusLabels,
 } from "../../lib/labels";
-import type { StatePayload, App, Snapshot, ReleaseSummary, ReleaseDetail, AppAuditEntry, SnapshotTestDoc, CicdRequest, ReleaseDecision } from "../../types";
+import type { StatePayload, App, Snapshot, ReleaseSummary, ReleaseDetail, AppAuditEntry, SnapshotTestDoc, CicdRequest, ReleaseDecision, AppInfoDiff } from "../../types";
 import {
   releaseSnap,
   isReleaseSnap,
@@ -184,10 +185,38 @@ function QaDot({ snap }: { snap: Snapshot }) {
   );
 }
 
-function formatAppInfoDiffValue(value: unknown): string {
-  if (value === undefined) return "—";
-  if (typeof value === "string") return value || "（空）";
-  return JSON.stringify(value, null, 2) ?? String(value);
+/**
+ * Backend answer when an app_info update after app freeze would grow the QA
+ * scope: nothing was written, QA must accept the listed changes first.
+ */
+interface AppInfoScopeConfirmation {
+  requires_scope_confirmation?: boolean;
+  scope_additions?: string[];
+  changes?: AppInfoDiff[];
+  message?: string;
+}
+
+/** Pinned dialog text: why we are asking, plus what the QA scope gains. */
+function scopeConfirmationBody(result: AppInfoScopeConfirmation): string {
+  const additions = (result.scope_additions ?? []).map((item) => `· ${item}`);
+  return [
+    result.message || "此次 app_info 更新会扩大 QA 范围，需要确认后才会生效。",
+    "",
+    "QA 范围新增：",
+    ...(additions.length ? additions : ["（无）"]),
+  ].join("\n");
+}
+
+/** Scrollable dialog content: every app_info change behind the scope additions. */
+function scopeConfirmationDetails(result: AppInfoScopeConfirmation) {
+  const changes = result.changes ?? [];
+  return (
+    <AppInfoDiffView
+      diffs={changes}
+      caption={`app_info 修改点（${changes.length} 项）：`}
+      emptyText="app_info 修改点：（无）"
+    />
+  );
 }
 
 function CicdPendingPill({ count }: { count: number }) {
@@ -1487,12 +1516,18 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
   const docDeadline = beforeDocDeadline(release);
   const beforeAppFreezeDeadline = beforeAppFreeze(release);
   const canEditDetail = !!(app && snap && canEdit(user, snap) && !locked);
+  // app_info stays maintainable by QA until the doc deadline, so QA gets the
+  // upload / fetch controls without the App edit mode the other roles use.
+  const canUpdateAppInfoNow = !!(app && snap && canUpdateAppInfo(user, snap) && !locked && docDeadline);
 
   // W3: two sub-tabs in the detail panel
   const [detailTab, setDetailTab] = useState<"docs" | "cicd">("docs");
 
   const [editMode, setEditMode] = useState(false);
   const canEditDocFields = editMode && docDeadline;
+  // Roles that edit the whole App keep the controls behind 「修改」; roles that
+  // may only touch app_info (QA) see them directly.
+  const showAppInfoActions = canUpdateAppInfoNow && (editMode || !canEditDetail);
   const [dirty, setDirty] = useState(false);
 
   // Form state (mirrors snapshot fields editable in legacy)
@@ -1936,12 +1971,27 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     if (!app || !release || !pendingFile) return;
     try {
       const text = await pendingFile.text();
-      await apiPost("/api/app-info", {
-        release_id: release.id,
-        app_id: app.id,
-        source: pendingFile.name,
-        app_info: text,
-      });
+      const post = (acceptScopeExpansion: boolean) =>
+        apiPost<AppInfoScopeConfirmation>("/api/app-info", {
+          release_id: release.id,
+          app_id: app.id,
+          source: pendingFile.name,
+          app_info: text,
+          accept_scope_expansion: acceptScopeExpansion,
+        });
+      const first = await post(false);
+      if (first?.requires_scope_confirmation) {
+        if (!(await confirmDialog({
+          title: "app_info 会扩大 QA 范围",
+          body: scopeConfirmationBody(first),
+          details: scopeConfirmationDetails(first),
+          confirmText: "接受并更新",
+        }))) {
+          toast.info("已取消，app_info 未更新。");
+          return;
+        }
+        await post(true);
+      }
       setPendingFile(null);
       setDirty(false);
       onSaved();
@@ -1974,10 +2024,29 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       failures: [],
     });
     try {
-      const result = await apiPost<{ commit_id?: string; source?: string }>("/api/app-info/fetch", {
-        release_id: release.id,
-        app_id: app.id,
-      });
+      const post = (acceptScopeExpansion: boolean) =>
+        apiPost<{ commit_id?: string; source?: string } & AppInfoScopeConfirmation>(
+          "/api/app-info/fetch",
+          {
+            release_id: release.id,
+            app_id: app.id,
+            accept_scope_expansion: acceptScopeExpansion,
+          },
+        );
+      let result = await post(false);
+      if (result?.requires_scope_confirmation) {
+        setFetchProgress(null);
+        if (!(await confirmDialog({
+          title: "app_info 会扩大 QA 范围",
+          body: scopeConfirmationBody(result),
+          details: scopeConfirmationDetails(result),
+          confirmText: "接受并更新",
+        }))) {
+          toast.info("已取消，app_info 未更新。");
+          return;
+        }
+        result = await post(true);
+      }
       setFetchProgress((p) => p && { ...p, completed: 1, ok: 1 });
       setDirty(false);
       onSaved();
@@ -2349,8 +2418,8 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
           </summary>
           <div className="section-body">
             <div className="src-line">app_info 来源：{appInfoSource(snap)}</div>
-            {canEditDocFields && (
-              <div className="row mb-12">
+            {showAppInfoActions && (
+              <div className="row mb-12" data-testid="app-info-actions">
                 <label className="btn ghost sm pointer">
                   选择 app_info.json
                   <input
@@ -2370,23 +2439,10 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
                 <button className="btn sm" onClick={() => void handleFetchAppInfo()}>从 Gerrit 拉取</button>
               </div>
             )}
-            {(snap.app_info_diffs ?? []).length > 0 && (
-              <div className="table">
-                <table>
-                  <thead><tr><th>类型</th><th>字段</th><th>旧值</th><th>新值</th></tr></thead>
-                  <tbody>
-                    {snap.app_info_diffs.map((d, i) => (
-                      <tr key={i}>
-                        <td>{d.type}</td>
-                        <td>{d.field}</td>
-                        <td className="cell-wrap"><div className="prewrap">{formatAppInfoDiffValue(d.old_value)}</div></td>
-                        <td className="cell-wrap"><div className="prewrap">{formatAppInfoDiffValue(d.new_value)}</div></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            <AppInfoDiffView
+              diffs={snap.app_info_diffs ?? []}
+              caption={`与上一版本的差异（${(snap.app_info_diffs ?? []).length} 项）`}
+            />
           </div>
         </details>
 

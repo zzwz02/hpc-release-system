@@ -50,6 +50,28 @@ def require_owner_or_rm_with_owners(
     raise AuthzError("Owner permission required")
 
 
+def require_app_info_update(
+    owners: list[str] | None,
+    username: str,
+    role: str,
+) -> None:
+    """Raise AuthzError if the user may not update an app's Gerrit app_info.
+
+    Wider than require_owner_or_rm_with_owners: QA also maintains app_info so
+    the QA scope stays current until the doc deadline.  Roles whose edit rights
+    are scoped to their own apps (Owner) stay scoped here too; roles with a
+    release-wide capability (RM, QA) may update any app.  Phase and lock gating
+    still happen in app_service.
+    """
+    if not has_capability(role, "app.app_info.update"):
+        raise AuthzError("app_info permission required")
+    scoped_to_owned = has_capability(role, "app.edit.owned") and not has_capability(
+        role, "app.edit.any"
+    )
+    if scoped_to_owned and username not in (owners or []):
+        raise AuthzError("Owner permission required")
+
+
 def require_app_audit_access(
     conn: sqlite3.Connection,
     app_id: str,

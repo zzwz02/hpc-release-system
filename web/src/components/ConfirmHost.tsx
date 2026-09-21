@@ -57,7 +57,7 @@ export function ConfirmHost() {
       }}
     >
       <div
-        className="dialog-card confirm-card"
+        className={`dialog-card confirm-card${req.details ? " confirm-card-scroll" : ""}`}
         role="alertdialog"
         aria-modal="true"
         data-testid="confirm-dialog"
@@ -65,6 +65,14 @@ export function ConfirmHost() {
         <h3>{req.title ?? (isPrompt ? "请输入" : "请确认")}</h3>
         <div className="dialog-body">
           {req.body && <p className="confirm-body">{req.body}</p>}
+          {req.details && (
+            <div
+              className={`confirm-details${typeof req.details === "string" ? "" : " confirm-details-rich"}`}
+              data-testid="confirm-details"
+            >
+              {req.details}
+            </div>
+          )}
           {isPrompt && (
             <input
               ref={inputRef}

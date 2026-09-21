@@ -12,6 +12,7 @@ import {
   canCreateApp,
   canEditWiki,
   canEdit,
+  canUpdateAppInfo,
   isOwnApp,
 } from "../roles";
 import type { User, Snapshot } from "../../types";
@@ -163,6 +164,23 @@ describe("canEdit (snapshot permission)", () => {
 
   it("null snap: Owner cannot edit (no owner list)", () => {
     expect(canEdit(makeUser("Owner", "u1"), null)).toBe(false);
+  });
+});
+
+describe("canUpdateAppInfo (app_info permission)", () => {
+  it("QA can update app_info of an app it does not own", () => {
+    expect(canUpdateAppInfo(makeUser("QA", "qa_user"), makeSnap(["owner1"]))).toBe(true);
+  });
+
+  it("RM can update any app_info, Owner only its own", () => {
+    expect(canUpdateAppInfo(makeUser("RM", "rm"), makeSnap(["owner1"]))).toBe(true);
+    expect(canUpdateAppInfo(makeUser("Owner", "owner1"), makeSnap(["owner1"]))).toBe(true);
+    expect(canUpdateAppInfo(makeUser("Owner", "owner1"), makeSnap(["owner2"]))).toBe(false);
+  });
+
+  it("Guest and anonymous cannot update app_info", () => {
+    expect(canUpdateAppInfo(makeUser("Guest", "guest"), makeSnap(["owner1"]))).toBe(false);
+    expect(canUpdateAppInfo(null, makeSnap(["owner1"]))).toBe(false);
   });
 });
 

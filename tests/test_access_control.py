@@ -29,6 +29,8 @@ def test_shared_capabilities_cover_operation_level_exceptions() -> None:
     assert roles_for_capability("wiki.edit") == ("RM",)
     assert roles_for_capability("artifact.generate") == ("RM", "Owner")
     assert roles_for_capability("cicd.delivery.return") == ("SPD",)
+    assert roles_for_capability("app.app_info.update") == ("RM", "Owner", "QA")
+    assert roles_for_capability("app.app_info.expand_qa_scope") == ("QA",)
     assert has_capability("RM", "cicd.request.approve")
     assert not has_capability("Admin", "cicd.request.approve")
     assert "app.edit.owned" in capabilities_for_role("Owner")

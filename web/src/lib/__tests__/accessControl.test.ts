@@ -25,5 +25,7 @@ describe("shared access control", () => {
     expect(can("Owner", "artifact.generate")).toBe(true);
     expect(can("Owner", "artifact.export.test_scope")).toBe(false);
     expect(can("SPD", "cicd.delivery.return")).toBe(true);
+    expect(rolesForCapability("app.app_info.update")).toEqual(["RM", "Owner", "QA"]);
+    expect(rolesForCapability("app.app_info.expand_qa_scope")).toEqual(["QA"]);
   });
 });

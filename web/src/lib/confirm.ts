@@ -8,9 +8,17 @@
  * shown at a time; concurrent requests queue in FIFO order.
  */
 
+import type { ReactNode } from "react";
+
 export interface ConfirmOptions {
   title?: string;
   body: string;
+  /**
+   * Long secondary content (a diff, a list) shown under *body* in its own
+   * scrollable box, so title, body and the buttons stay visible however long
+   * it is.  Text or rendered elements both work.
+   */
+  details?: string | ReactNode;
   confirmText?: string;
   cancelText?: string;
   /** Destructive action: confirm button renders as .btn.danger */
