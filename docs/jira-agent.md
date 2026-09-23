@@ -97,7 +97,7 @@ WantedBy=multi-user.target
 
 ## 配置网站 A
 
-1. 复制 `jira_agent.conf.example` 为 `jira_agent.conf`（已 gitignore），每个组一个 section：
+1. 在 `release_system.conf`（模板 `release_system.conf.example`，已 gitignore）中为每个组写一节 `[jira_agent:<组名>]`：
 
    | 键 | 说明 |
    | --- | --- |
@@ -109,19 +109,19 @@ WantedBy=multi-user.target
    | `SSH_KEY_PATH` | B 上执行账号的 SSH 私钥绝对路径，同目录须有 `.pub`；自填机器上传的就是这把公钥 |
    | `MAX_CONCURRENT`、`TURN_TIMEOUT_SECONDS` | 并发上限和每轮限时 |
 
-2. `jira.conf` 提供 JIRA 地址和 token，用于读取工单、下载附件、发布评论。
-3. 可选环境变量：
-   - `JIRA_AGENT_PUBLIC_BASE_URL`：网站对外地址，JIRA 评论中会附对话链接。
+2. 同一文件的 `[jira]` 节提供 JIRA 地址和 token，用于读取工单、下载附件、发布评论。
+3. 可选：在同一文件的 `[site]` 中填写 `PUBLIC_BASE_URL`（网站对外地址），JIRA 评论会附对话链接。
+4. 可选环境变量：
    - `JIRA_AGENT_DATABASE_URL`：默认 `sqlite:///jira_agent_tasks.db`。
    - `JIRA_AGENT_DATA_DIR`：上传文件和拉回产物的存放目录，默认 `jira_agent_data/`。
-4. 网站保持单 worker 运行（队列 runner 在进程内）。A 到 B 若经过 HTTP 代理，把 B 的地址加入 `NO_PROXY`。
-5. 打开 **JIRA agent** 页，或调用 `GET /api/jira-agent/health` 确认连通。
+5. 网站保持单 worker 运行（队列 runner 在进程内）。A 到 B 若经过 HTTP 代理，把 B 的地址加入 `NO_PROXY`。
+6. 打开 **JIRA agent** 页，或调用 `GET /api/jira-agent/health` 确认连通。
 
 ## 把 B 迁移到独立服务器
 
 只需要换启动用户和地址、token，以及 A 的配置：
 
 1. 在新 B 上创建 hpc 用户，完成上面“部署服务器 B”的 1–5 步（Codex 登录、SSH 凭证、同步知识包、生成 token、启动）。
-2. 修改 A 的 `jira_agent.conf`：`CODEX_WS_URL` 改为新 B 地址，`CODEX_WS_TOKEN` 改为新 token，`WORKSPACE_ROOT` 改为新用户的目录。
-3. 必要时把新 B 的地址加入 A 的 `NO_PROXY`，然后重启网站。
+2. 修改 A 的 `release_system.conf` 中该组的 `[jira_agent:<组名>]`：`CODEX_WS_URL` 改为新 B 地址，`CODEX_WS_TOKEN` 改为新 token，`WORKSPACE_ROOT` 改为新用户的目录。
+3. 必要时把新 B 的地址加入 A 的 `NO_PROXY`（改了 `NO_PROXY` 需重启网站；配置文件本身保存即生效）。
 4. 已有对话的 Codex thread 和工作目录保存在旧 B 上，迁移后需要为这些工单新建对话。

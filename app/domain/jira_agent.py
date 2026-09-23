@@ -1,6 +1,6 @@
 """JIRA agent rules: group config, result schema, prompts and comment rendering.
 
-Pure helpers (plus reading jira_agent.conf) shared by the service, the runner
+Pure helpers (including building groups from their config sections) shared by the service, the runner
 and tests.  Group knowledge and skills live on each group's app-server host;
 the text here only frames one JIRA turn and renders the structured result.
 """
@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import base64
 import binascii
-import configparser
 import hashlib
 import json
 import posixpath
 import re
 from dataclasses import dataclass
-from pathlib import Path
+
+from app import runtime_config
 
 CONCLUSIONS: dict[str, str] = {
     "fixed_pending_review": "已修复，方案请审批",
@@ -83,7 +83,7 @@ RESULT_SCHEMA: dict = _obj(
 
 
 # ─────────────────────────────────────────────────────────────
-# Group configuration (jira_agent.conf)
+# Group configuration ([jira_agent:<group>] in release_system.conf)
 # ─────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -104,38 +104,39 @@ class AgentGroup:
     ssh_key_path: str = ""
 
 
-def load_groups(conf_path: str | Path) -> dict[str, AgentGroup]:
-    """Parse jira_agent.conf: one INI section per group's digital employee."""
-    path = Path(conf_path)
-    if not path.exists():
-        return {}
-    parser = configparser.ConfigParser(interpolation=None)
-    parser.read(path, encoding="utf-8")
+def groups_from_sections(sections: dict[str, dict[str, str]]) -> dict[str, AgentGroup]:
+    """Build groups from the [jira_agent:<group>] sections, one per digital employee.
+
+    MODEL, COMPONENTS, JIRA_MEMBERS_GROUP and SSH_KEY_PATH are optional (empty
+    switches that feature off); every other key is required.
+    """
     groups: dict[str, AgentGroup] = {}
-    for section in parser.sections():
-        values = parser[section]
-        ws_url = values.get("CODEX_WS_URL", "").strip()
-        root = values.get("WORKSPACE_ROOT", "").strip().rstrip("/")
-        if not ws_url or not root.startswith("/"):
-            raise RuntimeError(
-                f"jira_agent.conf [{section}] 需要 CODEX_WS_URL 和绝对路径 WORKSPACE_ROOT"
-            )
-        ssh_key_path = values.get("SSH_KEY_PATH", "").strip()
+    for name, values in sections.items():
+        where = f"{runtime_config.AGENT_GROUP_PREFIX}{name}"
+        root = runtime_config.required(where, values, "WORKSPACE_ROOT").rstrip("/")
+        if not root.startswith("/"):
+            raise runtime_config.ConfigError(f"release_system.conf [{where}] WORKSPACE_ROOT 必须是绝对路径")
+        ssh_key_path = values.get("SSH_KEY_PATH", "")
         if ssh_key_path and not ssh_key_path.startswith("/"):
-            raise RuntimeError(f"jira_agent.conf [{section}] SSH_KEY_PATH 必须是服务器 B 上的绝对路径")
-        groups[section] = AgentGroup(
-            name=section,
-            display_name=values.get("DISPLAY_NAME", "").strip() or f"{section} 数字员工",
-            ws_url=ws_url,
-            ws_token=values.get("CODEX_WS_TOKEN", "").strip(),
+            raise runtime_config.ConfigError(
+                f"release_system.conf [{where}] SSH_KEY_PATH 必须是服务器 B 上的绝对路径"
+            )
+        max_concurrent = runtime_config.required_int(where, values, "MAX_CONCURRENT")
+        if max_concurrent < 1:
+            raise runtime_config.ConfigError(f"release_system.conf [{where}] MAX_CONCURRENT 至少为 1")
+        groups[name] = AgentGroup(
+            name=name,
+            display_name=runtime_config.required(where, values, "DISPLAY_NAME"),
+            ws_url=runtime_config.required(where, values, "CODEX_WS_URL"),
+            ws_token=runtime_config.required(where, values, "CODEX_WS_TOKEN"),
             workspace_root=root,
             components=tuple(
                 c.strip() for c in values.get("COMPONENTS", "").split(",") if c.strip()
             ),
-            model=values.get("MODEL", "").strip(),
-            turn_timeout_seconds=values.getint("TURN_TIMEOUT_SECONDS", fallback=7200),
-            max_concurrent=max(1, values.getint("MAX_CONCURRENT", fallback=2)),
-            jira_members_group=values.get("JIRA_MEMBERS_GROUP", "").strip(),
+            model=values.get("MODEL", ""),
+            turn_timeout_seconds=runtime_config.required_int(where, values, "TURN_TIMEOUT_SECONDS"),
+            max_concurrent=max_concurrent,
+            jira_members_group=values.get("JIRA_MEMBERS_GROUP", ""),
             ssh_key_path=ssh_key_path,
         )
     return groups
@@ -144,7 +145,7 @@ def load_groups(conf_path: str | Path) -> dict[str, AgentGroup]:
 def group_for_issue(groups: dict[str, AgentGroup], components: list[str]) -> AgentGroup:
     """Pick the digital employee whose components match; else the first group."""
     if not groups:
-        raise RuntimeError("未配置 JIRA agent（jira_agent.conf 中没有任何组）")
+        raise RuntimeError("未配置 JIRA agent（release_system.conf 中没有任何 [jira_agent:<组>]）")
     wanted = {c.casefold() for c in components}
     for group in groups.values():
         if wanted & {c.casefold() for c in group.components}:

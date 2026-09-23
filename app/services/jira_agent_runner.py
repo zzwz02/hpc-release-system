@@ -21,6 +21,7 @@ import urllib.error
 from dataclasses import dataclass
 from pathlib import Path
 
+from app import runtime_config
 from app.config import settings
 from app.db.connection import transaction
 from app.db.jira_agent_connection import connect_jira_agent
@@ -49,11 +50,11 @@ def open_db():
 
 
 def load_groups() -> dict[str, domain.AgentGroup]:
-    return domain.load_groups(settings.jira_agent_conf_path)
+    return domain.groups_from_sections(runtime_config.agent_group_sections())
 
 
 def conversation_url(conversation_id: str) -> str:
-    base = settings.jira_agent_public_base_url.rstrip("/")
+    base = runtime_config.section("site").get("PUBLIC_BASE_URL", "").rstrip("/")
     return f"{base}/jira-agent?conversation={conversation_id}" if base else ""
 
 
@@ -178,7 +179,7 @@ class JiraAgentRunner:
         if group is None or (closed and not conversation["thread_id"]):
             if group is None:
                 status = "interrupted"
-                error = f"网站重启后找不到数字员工组 {conversation['agent_group']}（jira_agent.conf）"
+                error = f"网站重启后找不到数字员工组 {conversation['agent_group']}（release_system.conf）"
             else:  # closed before any turn could reach the app-server
                 status, error = "cancelled", _STOP_TEXT["closed"]
             with transaction(conn):
@@ -268,7 +269,7 @@ class JiraAgentRunner:
                 group = groups.get(group_name)
                 if group is None:
                     for turn in repo.queued_turns(conn, group_name):
-                        error = f"未配置数字员工组 {group_name}（jira_agent.conf）"
+                        error = f"未配置数字员工组 {group_name}（release_system.conf）"
                         with transaction(conn):
                             if repo.cancel_queued_turn(conn, turn["id"], error):
                                 repo.update_turn(conn, turn["id"], status="failed")

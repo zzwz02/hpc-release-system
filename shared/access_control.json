@@ -31,7 +31,6 @@
     "artifact.view.internal": ["RM"],
     "artifact.export.test_scope": ["RM"],
     "artifact.generate.manager_review": ["RM"],
-    "artifact.plan.gerrit": ["RM"],
     "wiki.edit": ["RM"],
     "cicd.request.submit": ["RM", "Owner"],
     "cicd.request.approve": ["RM"],

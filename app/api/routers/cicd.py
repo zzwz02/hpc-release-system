@@ -257,10 +257,13 @@ async def post_approve(
     jira_id = body.get("jira_id", "")
 
     # Auto-create Jira issue when dispatching to SPD (mirrors server.py:1048-1076)
+    jira_error = ""
     if jira_auto_created and approval_mode == "dispatch_spd" and not jira_id:
         try:
             jcfg = jira_integration.load_config()
-            if jcfg:
+            if not jcfg:
+                jira_error = "未配置 JIRA：release_system.conf 的 [jira] 需要 JIRA_BASE_URL 和 JIRA_TOKEN"
+            else:
                 row = conn.execute(
                     "SELECT request_type, task_id, payload, submitter "
                     "FROM cicd_task_requests WHERE id=?",
@@ -290,7 +293,8 @@ async def post_approve(
                     )
         except Exception as je:
             logger.warning("Jira auto-create failed: %s", je)
-            # Do not block approval on Jira failure
+            # Do not block approval on Jira failure; tell the reviewer instead.
+            jira_error = str(je) or je.__class__.__name__
 
     req = cicd_service.approve_request(
         conn,
@@ -302,7 +306,10 @@ async def post_approve(
         jira_id=jira_id,
         jira_auto_created=jira_auto_created,
     )
-    return {"ok": True, "request": req}
+    response = {"ok": True, "request": req}
+    if jira_error:
+        response["jira_error"] = jira_error
+    return response
 
 
 @router.post("/requests/reject")

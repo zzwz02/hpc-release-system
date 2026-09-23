@@ -93,7 +93,7 @@ def _group(agent_group: str) -> domain.AgentGroup:
 async def public_key(group: domain.AgentGroup) -> dict:
     """Server B's public key (read from B): type, fingerprint, comment, path."""
     if not group.ssh_key_path:
-        raise ApiError(409, f"{group.display_name} 未配置 SSH_KEY_PATH（jira_agent.conf）")
+        raise ApiError(409, f"{group.display_name} 未配置 SSH_KEY_PATH（release_system.conf）")
     path = f"{group.ssh_key_path}.pub"
     try:
         async with CodexAppServerClient(

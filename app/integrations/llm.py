@@ -2,22 +2,17 @@
 
 Background QA jobs call this synchronous adapter from a worker thread.
 
-Reads settings at call time.  Environment variables take precedence; otherwise
-the project-root qa_llm.env file is used.  The file format is plain KEY=VALUE,
-optionally with Linux-style "export KEY=VALUE" lines.
+Reads the [qa_llm] section of release_system.conf at call time.
 
   QA_LLM_BASE_URL  e.g. http://10.x.x.x:8000/v1
   QA_LLM_API_KEY   bearer token (optional; sent only if set)
   QA_LLM_MODEL     model name passed in the payload
-  QA_LLM_ENV_FILE  optional custom config file path
 """
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
-from pathlib import Path
 
-from app.config import settings as app_settings
+from app import runtime_config
 
 
 class LLMConfigError(RuntimeError):
@@ -31,38 +26,9 @@ class LLMCallError(RuntimeError):
 LLM_CONFIG_KEYS = ("QA_LLM_BASE_URL", "QA_LLM_API_KEY", "QA_LLM_MODEL")
 
 
-def configured_env_file() -> Path:
-    custom = os.environ.get("QA_LLM_ENV_FILE", "").strip()
-    return Path(os.path.expandvars(custom)).expanduser() if custom else app_settings.qa_llm_env_file
-
-
-def read_env_file(path: str | Path) -> dict[str, str]:
-    env_path = Path(path)
-    if not env_path.exists():
-        return {}
-    values: dict[str, str] = {}
-    for raw in env_path.read_text(encoding="utf-8-sig").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export "):].strip()
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        if key not in LLM_CONFIG_KEYS:
-            continue
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1]
-        values[key] = value
-    return values
-
-
 def llm_settings() -> dict[str, str]:
-    file_values = read_env_file(configured_env_file())
-    return {key: os.environ.get(key) or file_values.get(key, "") for key in LLM_CONFIG_KEYS}
+    values = runtime_config.section("qa_llm")
+    return {key: values.get(key, "") for key in LLM_CONFIG_KEYS}
 
 
 def _stream_delta_content(chunk) -> str:
@@ -90,8 +56,7 @@ def chat_json(
     model = settings["QA_LLM_MODEL"]
     if not base or not model:
         raise LLMConfigError(
-            "未配置本地 LLM 服务：请设置环境变量 QA_LLM_BASE_URL 和 QA_LLM_MODEL，"
-            "或在项目根目录创建 qa_llm.env"
+            "未配置本地 LLM 服务：请在 release_system.conf 的 [qa_llm] 中填写 QA_LLM_BASE_URL 和 QA_LLM_MODEL"
         )
     key = settings["QA_LLM_API_KEY"]
     try:

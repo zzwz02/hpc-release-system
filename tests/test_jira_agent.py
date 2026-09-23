@@ -355,7 +355,8 @@ USERS = {
 
 def _write_conf(path: Path, url: str, *, token: str = TOKEN, max_concurrent: int = 1, timeout: int = 600) -> None:
     path.write_text(
-        f"[HPC]\nDISPLAY_NAME = HPC 数字员工\nCODEX_WS_URL = {url}\nCODEX_WS_TOKEN = {token}\n"
+        f"[site]\nPUBLIC_BASE_URL = http://site\n"
+        f"[jira_agent:HPC]\nDISPLAY_NAME = HPC 数字员工\nCODEX_WS_URL = {url}\nCODEX_WS_TOKEN = {token}\n"
         f"WORKSPACE_ROOT = /b/workspaces\nCOMPONENTS = PDE_HPC\nJIRA_MEMBERS_GROUP = pde_hpc\n"
         f"SSH_KEY_PATH = {KEY_PATH}\n"
         f"MAX_CONCURRENT = {max_concurrent}\n"
@@ -367,15 +368,14 @@ def _write_conf(path: Path, url: str, *, token: str = TOKEN, max_concurrent: int
 @pytest.fixture()
 def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     fake = FakeCodex().start()
-    conf = tmp_path / "jira_agent.conf"
+    conf = tmp_path / "release_system.conf"
     _write_conf(conf, fake.url)
     reset_jira_agent_init_state()
     monkeypatch.setattr(settings, "db_path", tmp_path / "main.db")
     monkeypatch.setattr(settings, "admin_password_file", tmp_path / "admin.local")
-    monkeypatch.setattr(settings, "jira_agent_conf_path", conf)
+    monkeypatch.setattr(settings, "runtime_conf_path", conf)
     monkeypatch.setattr(settings, "jira_agent_database_url", f"sqlite:///{(tmp_path / 'jira_agent.db').as_posix()}")
     monkeypatch.setattr(settings, "jira_agent_data_dir", tmp_path / "data")
-    monkeypatch.setattr(settings, "jira_agent_public_base_url", "http://site")
     monkeypatch.setattr(jira_agent_runner, "_SCAN_SECONDS", 0.1)
     fake_jira = FakeJira()
     monkeypatch.setattr(jira, "get_issue", fake_jira.get_issue)
@@ -822,7 +822,7 @@ def test_startup_marks_leftover_running_turns_interrupted(tmp_path: Path, monkey
     reset_jira_agent_init_state()
     url = f"sqlite:///{(tmp_path / 'jira_agent.db').as_posix()}"
     monkeypatch.setattr(settings, "jira_agent_database_url", url)
-    monkeypatch.setattr(settings, "jira_agent_conf_path", tmp_path / "missing.conf")
+    monkeypatch.setattr(settings, "runtime_conf_path", tmp_path / "missing.conf")
     conn = connect_jira_agent(url)
     with transaction(conn):
         repo.create_conversation(
@@ -1059,14 +1059,14 @@ def test_workspace_paths_cannot_escape() -> None:
     assert domain.safe_filename("../../etc/passwd") == "passwd"
 
 
-def test_group_selection_and_comment_rendering(tmp_path: Path) -> None:
-    conf = tmp_path / "jira_agent.conf"
-    conf.write_text(
-        "[HPC]\nCODEX_WS_URL = ws://b:1\nWORKSPACE_ROOT = /w\nCOMPONENTS = PDE_HPC\n"
-        "[PYTORCH]\nCODEX_WS_URL = ws://p:1\nWORKSPACE_ROOT = /p\nCOMPONENTS = PDE_PYTORCH\n",
-        encoding="utf-8",
-    )
-    groups = domain.load_groups(conf)
+def test_group_selection_and_comment_rendering() -> None:
+    required = {"CODEX_WS_TOKEN": "t", "TURN_TIMEOUT_SECONDS": "600", "MAX_CONCURRENT": "1"}
+    groups = domain.groups_from_sections({
+        "HPC": {**required, "DISPLAY_NAME": "HPC", "CODEX_WS_URL": "ws://b:1", "WORKSPACE_ROOT": "/w",
+                "COMPONENTS": "PDE_HPC"},
+        "PYTORCH": {**required, "DISPLAY_NAME": "PyTorch", "CODEX_WS_URL": "ws://p:1", "WORKSPACE_ROOT": "/p",
+                    "COMPONENTS": "PDE_PYTORCH"},
+    })
     assert domain.group_for_issue(groups, ["pde_pytorch"]).name == "PYTORCH"
     assert domain.group_for_issue(groups, ["OTHER"]).name == "HPC"
 

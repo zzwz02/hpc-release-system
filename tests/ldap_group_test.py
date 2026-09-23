@@ -9,9 +9,9 @@ Usage:
   python3 ldap_group_test.py m123456 --with-dn
   python3 ldap_group_test.py m123456 --names-only
   python3 ldap_group_test.py m123456 --json
-  python3 ldap_group_test.py m123456 --config ldap.conf
+  python3 ldap_group_test.py m123456 --config /path/to/release_system.conf
 
-The script reads the production LDAP config from ldap.conf by default, binds
+The script reads the [ldap] section of release_system.conf by default, binds
 with the read-only service account, searches the user, and prints groups from
 the memberOf attribute. It never prints bindpw.
 """
@@ -19,6 +19,7 @@ the memberOf attribute. It never prints bindpw.
 from __future__ import annotations
 
 import argparse
+import configparser
 import json
 import sys
 from pathlib import Path
@@ -43,49 +44,32 @@ except ImportError:
     )
 
 
-DEFAULT_CONFIG = {
-    "enabled": False,
-    "uri": "",
-    "base": "",
-    "binddn": "",
-    "bindpw": "",
-    "user_filter": "(&(objectClass=user)(sAMAccountName={uid}))",
-    "uid_attr": "sAMAccountName",
-    "name_attr": "displayName",
-    "timeout": "10",
-}
+LDAP_KEYS = ("URI", "BASE", "BINDDN", "BINDPW", "USER_FILTER", "UID_ATTR", "NAME_ATTR", "TIMEOUT")
 
 
 def load_config(path: str) -> dict[str, Any]:
+    """Read the [ldap] section; every key is required, as in the app."""
     cfg_path = Path(path)
     if not cfg_path.is_absolute():
         cfg_path = PROJECT_ROOT / cfg_path
     if not cfg_path.exists():
         sys.exit(f"[ERROR] 配置文件不存在：{cfg_path}")
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    parser.read(cfg_path, encoding="utf-8")
+    if not parser.has_section("ldap"):
+        sys.exit(f"[ERROR] {cfg_path} 中没有 [ldap] 节")
+    values = {key: value.strip() for key, value in parser["ldap"].items()}
 
-    cfg = dict(DEFAULT_CONFIG)
-    for lineno, raw in enumerate(cfg_path.read_text(encoding="utf-8").splitlines(), 1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            print(f"[WARN] 跳过第 {lineno} 行：缺少 '='", file=sys.stderr)
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip().lower()
-        if key == "enabled":
-            cfg["enabled"] = value.strip().lower() in ("true", "1", "yes")
-        else:
-            cfg[key] = value.strip()
-
-    try:
-        cfg["timeout"] = int(cfg.get("timeout") or 10)
-    except (TypeError, ValueError):
-        cfg["timeout"] = 10
-
-    missing = [key for key in ("uri", "base", "binddn", "bindpw") if not cfg.get(key)]
+    missing = [key for key in LDAP_KEYS if not values.get(key)]
     if missing:
-        sys.exit(f"[ERROR] ldap.conf 缺少必填项：{', '.join(missing)}")
+        sys.exit(f"[ERROR] [ldap] 缺少必填项：{', '.join(missing)}")
+    cfg: dict[str, Any] = {key.lower(): values[key] for key in LDAP_KEYS}
+    cfg["enabled"] = values.get("ENABLED", "").lower() in ("true", "1", "yes")
+    try:
+        cfg["timeout"] = int(cfg["timeout"])
+    except ValueError:
+        sys.exit(f"[ERROR] [ldap] TIMEOUT 必须是整数：{cfg['timeout']!r}")
     return cfg
 
 
@@ -195,8 +179,8 @@ def main() -> None:
     parser.add_argument("username", nargs="?", help="域账号，例如 m123456；不传则交互输入")
     parser.add_argument(
         "--config",
-        default="ldap.conf",
-        help="LDAP 配置文件路径；相对路径按脚本所在目录解析，默认 ldap.conf",
+        default="release_system.conf",
+        help="配置文件路径；相对路径按项目根目录解析，默认 release_system.conf",
     )
     parser.add_argument("--with-dn", action="store_true", help="同时输出每个组的完整 DN")
     parser.add_argument("--names-only", action="store_true", help="只输出组名，一行一个")
@@ -210,7 +194,7 @@ def main() -> None:
 
     cfg = load_config(args.config)
     if not cfg.get("enabled"):
-        print("[WARN] ldap.conf 中 enabled=false，仍继续执行查询。", file=sys.stderr)
+        print("[WARN] [ldap] 中 ENABLED=false，仍继续执行查询。", file=sys.stderr)
 
     result = query_groups(cfg, username)
     if args.json:

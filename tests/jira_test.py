@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-jira_test.py — Jira REST API 连通性与建单测试脚本（纯 stdlib，无需额外安装依赖）
+jira_test.py — Jira REST API 连通性与建单测试脚本（HTTP 只用 stdlib，从项目代码读取派单常量）
 
 用法：
   python3 jira_test.py                           # 完整测试（会真实创建 issue）
   python3 jira_test.py --dry-run                 # 只验证鉴权，不建单
   python3 jira_test.py --title "[New] App1 【新发布项目】"
-  python3 jira_test.py --config /path/to/other.conf
+  python3 jira_test.py --config /path/to/release_system.conf
 
-配置文件 jira.conf（与本脚本同目录，格式见 jira.conf.example）：
+读取 release_system.conf 的 [jira] 节（格式见 release_system.conf.example）：
   JIRA_BASE_URL     = http://jira.metax-tech.com
   JIRA_TOKEN        = <个人访问令牌 PAT>
-  JIRA_PROJECT      = SPD
   JIRA_ASSIGNEE     = m00930
   JIRA_PARENT_ISSUE = SPD-123   # 留空则创建顶级 Task；有值则创建子任务
+项目、Component、issue 类型和 ETA 字段与网站相同，取自 app/integrations/jira.py 的固定值。
 
 执行步骤：
-  1. 读取 jira.conf
+  1. 读取 release_system.conf 的 [jira] 节
   2. GET /rest/api/2/myself         — 验证鉴权和网络连通性
   3. GET /rest/api/2/project/{KEY}  — 发现该项目支持的 issue 类型
   4. POST /rest/api/2/issue         — 创建测试 issue（Task 或子任务）
@@ -26,6 +26,7 @@ jira_test.py — Jira REST API 连通性与建单测试脚本（纯 stdlib，无
 from __future__ import annotations
 
 import argparse
+import configparser
 import json
 import sys
 import urllib.error
@@ -33,36 +34,53 @@ import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.integrations.jira import (  # noqa: E402
+    DISPATCH_COMPONENT,
+    DISPATCH_ISSUE_TYPE,
+    DISPATCH_PROJECT,
+    DISPATCH_SUBTASK_TYPE,
+    ESTIMATED_ETA_FIELD,
+    EXPECTED_ETA_FIELD,
+)
+
 
 # ─────────────────────────────────────────────────────────────
 # 配置加载
 # ─────────────────────────────────────────────────────────────
 
-def load_config(path: str = "jira.conf") -> dict:
-    cfg_path = Path(__file__).parent / path
+def load_config(path: str = "release_system.conf") -> dict:
+    cfg_path = Path(path)
+    if not cfg_path.is_absolute():
+        cfg_path = PROJECT_ROOT / cfg_path
     if not cfg_path.exists():
         sys.exit(
             f"[ERROR] 配置文件不存在: {cfg_path}\n"
-            "请将 jira.conf.example 复制为 jira.conf 并填写真实值。"
+            "请将 release_system.conf.example 复制为 release_system.conf 并填写真实值。"
         )
-    config: dict = {}
-    with open(cfg_path, encoding="utf-8") as f:
-        for lineno, raw in enumerate(f, 1):
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
-                print(f"  [WARN] 第 {lineno} 行跳过（无 '='）: {line!r}")
-                continue
-            key, _, val = line.partition("=")
-            config[key.strip()] = val.strip()
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    parser.read(cfg_path, encoding="utf-8")
+    if not parser.has_section("jira"):
+        sys.exit(f"[ERROR] {cfg_path} 中没有 [jira] 节")
+    config = {key: value.strip() for key, value in parser["jira"].items()}
 
-    missing = [k for k in ("JIRA_BASE_URL", "JIRA_TOKEN", "JIRA_PROJECT") if not config.get(k)]
+    missing = [k for k in ("JIRA_BASE_URL", "JIRA_TOKEN") if not config.get(k)]
     if missing:
-        sys.exit(f"[ERROR] jira.conf 缺少必填项: {missing}")
+        sys.exit(f"[ERROR] [jira] 缺少必填项: {missing}")
 
     # 去除 base_url 末尾斜杠
     config["JIRA_BASE_URL"] = config["JIRA_BASE_URL"].rstrip("/")
+    # 与网站派单建单相同的固定值
+    config["JIRA_PROJECT"] = DISPATCH_PROJECT
+    config["JIRA_COMPONENT"] = DISPATCH_COMPONENT
+    config["JIRA_ISSUE_TYPE_TASK"] = DISPATCH_ISSUE_TYPE
+    config["JIRA_ISSUE_TYPE_SUBTASK"] = DISPATCH_SUBTASK_TYPE
+    config["JIRA_FIELD_EXPECTED_ETA"] = EXPECTED_ETA_FIELD
+    config["JIRA_FIELD_ESTIMATED_ETA"] = ESTIMATED_ETA_FIELD
     return config
 
 
@@ -124,16 +142,16 @@ def step_discover_issue_types(cfg: dict) -> dict:
 
 
 def step_discover_eta_fields(cfg: dict) -> dict:
-    """Step 3: 发现自定义 ETA 字段 ID。优先使用配置文件指定的值。"""
+    """Step 3: 确认 ETA 字段 ID（固定值来自 app/integrations/jira.py）。"""
     print("Step 3  查找自定义 ETA 字段 ...")
     result: dict = {}
     # Config override takes priority
     if cfg.get("JIRA_FIELD_EXPECTED_ETA"):
         result["expected_eta"] = cfg["JIRA_FIELD_EXPECTED_ETA"]
-        print(f"  (配置覆盖) Expected ETA = {result['expected_eta']}")
+        print(f"  (固定) Expected ETA = {result['expected_eta']}")
     if cfg.get("JIRA_FIELD_ESTIMATED_ETA"):
         result["estimated_eta"] = cfg["JIRA_FIELD_ESTIMATED_ETA"]
-        print(f"  (配置覆盖) Estimated ETA = {result['estimated_eta']}")
+        print(f"  (固定) Estimated ETA = {result['estimated_eta']}")
     if len(result) == 2:
         return result
     # Auto-discover via GET /rest/api/2/field
@@ -151,9 +169,7 @@ def step_discover_eta_fields(cfg: dict) -> dict:
     except Exception as e:
         print(f"  [WARN] 字段自动发现失败: {e}")
     if not result:
-        print("  [WARN] 未找到 ETA 字段。可在 jira.conf 手动配置")
-        print("         JIRA_FIELD_EXPECTED_ETA = customfield_XXXX")
-        print("         JIRA_FIELD_ESTIMATED_ETA = customfield_YYYY")
+        print("  [WARN] 未找到 ETA 字段，请核对 app/integrations/jira.py 的 *_ETA_FIELD")
     return result
 
 
@@ -173,7 +189,7 @@ def _pick_type(types: dict, candidates: list) -> str | None:
 def step_create_issue(cfg: dict, types: dict, title: str, dry_run: bool,
                       eta_fields: dict | None = None) -> str | None:
     parent_key = cfg.get("JIRA_PARENT_ISSUE", "").strip()
-    component  = cfg.get("JIRA_COMPONENT", "SPD_CICD")
+    component  = cfg["JIRA_COMPONENT"]
     eta_val    = (date.today() + timedelta(days=2)).strftime("%Y-%m-%d")
 
     if parent_key:
@@ -187,9 +203,9 @@ def step_create_issue(cfg: dict, types: dict, title: str, dry_run: bool,
             sys.exit(
                 f"[ERROR] 未找到子任务类型。\n"
                 f"  可用类型: {list(types.values())}\n"
-                "  请在 jira.conf 中添加 JIRA_ISSUE_TYPE_SUBTASK=<确切名称>"
+                "  请核对 app/integrations/jira.py 的 DISPATCH_SUBTASK_TYPE"
             )
-        # 允许配置覆盖
+        # 使用网站的固定类型名
         if cfg.get("JIRA_ISSUE_TYPE_SUBTASK"):
             type_name = cfg["JIRA_ISSUE_TYPE_SUBTASK"]
 
@@ -264,8 +280,8 @@ def main() -> None:
                         help="只验证鉴权和 issue 类型，不实际创建 issue")
     parser.add_argument("--title", default="[New] TestApp 【新发布项目】",
                         help='issue 标题（默认: "[New] TestApp 【新发布项目】"）')
-    parser.add_argument("--config", default="jira.conf",
-                        help="配置文件路径（默认: jira.conf，相对于脚本目录）")
+    parser.add_argument("--config", default="release_system.conf",
+                        help="配置文件路径（默认: release_system.conf，相对于项目根目录）")
     args = parser.parse_args()
 
     print("=" * 60)

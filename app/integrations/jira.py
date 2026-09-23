@@ -3,7 +3,7 @@
 Called after transaction commit (in thread pool, failure does not roll back).
 Used when RM approves with approval_mode='dispatch_spd' and jira_auto_created=1.
 
-Config is read from <project_root>/jira.conf (settings.jira_conf_path).
+Config is the [jira] section of release_system.conf (app/runtime_config.py).
 """
 from __future__ import annotations
 
@@ -13,48 +13,46 @@ import sqlite3
 import urllib.error
 import urllib.request
 from datetime import date, timedelta
-from pathlib import Path
 from urllib.parse import quote
 
-from app.config import settings
+from app import runtime_config
 from app.domain.cicd_config import CICD_PAYLOAD_CONFIG_LABELS
 
 logger = logging.getLogger(__name__)
+
+# CICD dispatch tickets always go to this project and component on
+# jira.metax-tech.com; issue types and ETA field ids are that instance's.
+DISPATCH_PROJECT = "SPD"
+DISPATCH_COMPONENT = "SPD_CICD"
+DISPATCH_ISSUE_TYPE = "Task"
+DISPATCH_SUBTASK_TYPE = "Sub-task"
+EXPECTED_ETA_FIELD = "customfield_10115"
+ESTIMATED_ETA_FIELD = "customfield_10116"
 
 
 # ─────────────────────────────────────────────────────────────
 # Config
 # ─────────────────────────────────────────────────────────────
 
-def _read_config(conf_path: str | Path | None = None) -> dict:
+def _read_config() -> dict:
     """Read non-secret and secret Jira settings without validating use cases."""
-    p = Path(conf_path) if conf_path else settings.jira_conf_path
-    if not p.exists():
-        return {}
-    cfg: dict = {}
-    with open(p, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            cfg[key.strip()] = val.strip()
+    cfg = runtime_config.section("jira")
     if cfg.get("JIRA_BASE_URL"):
         cfg["JIRA_BASE_URL"] = cfg["JIRA_BASE_URL"].rstrip("/")
     return cfg
 
 
-def load_config(conf_path: str | Path | None = None) -> dict | None:
-    """Load jira.conf.  Returns None if file missing or required keys absent."""
-    cfg = _read_config(conf_path)
+def load_config() -> dict | None:
+    """Load the [jira] section.  Returns None if required keys are absent."""
+    cfg = _read_config()
     if not cfg.get("JIRA_BASE_URL") or not cfg.get("JIRA_TOKEN"):
         return None
     return cfg
 
 
-def browse_url(conf_path: str | Path | None = None) -> str:
+def browse_url() -> str:
     """Return the safe, browser-facing Jira issue prefix (never a token)."""
-    base_url = str(_read_config(conf_path).get("JIRA_BASE_URL") or "").strip()
+    base_url = str(_read_config().get("JIRA_BASE_URL") or "").strip()
     return f"{base_url}/browse/" if base_url else ""
 
 
@@ -73,51 +71,6 @@ def _request(base_url: str, token: str, method: str, path: str,
     with urllib.request.urlopen(req, timeout=20) as resp:
         raw = resp.read()
         return json.loads(raw) if raw else {}
-
-
-# ─────────────────────────────────────────────────────────────
-# Field discovery
-# ─────────────────────────────────────────────────────────────
-
-def discover_eta_fields(cfg: dict) -> dict[str, str]:
-    """Return {'expected_eta': 'customfield_XXXX', 'estimated_eta': 'customfield_YYYY'}.
-
-    First checks config overrides (JIRA_FIELD_EXPECTED_ETA / JIRA_FIELD_ESTIMATED_ETA),
-    then falls back to GET /rest/api/2/field discovery by name.
-    Returns empty dict if discovery fails.
-    """
-    result: dict[str, str] = {}
-    if cfg.get("JIRA_FIELD_EXPECTED_ETA"):
-        result["expected_eta"] = cfg["JIRA_FIELD_EXPECTED_ETA"]
-    if cfg.get("JIRA_FIELD_ESTIMATED_ETA"):
-        result["estimated_eta"] = cfg["JIRA_FIELD_ESTIMATED_ETA"]
-    if len(result) == 2:
-        return result
-
-    try:
-        fields = _request(cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"], "GET", "/rest/api/2/field")
-        for f in fields:
-            name = (f.get("name") or "").lower()
-            fid = f.get("id", "")
-            if "expected_eta" not in result and "expected" in name and "eta" in name:
-                result["expected_eta"] = fid
-            elif "estimated_eta" not in result and "estimated" in name and "eta" in name:
-                result["estimated_eta"] = fid
-    except Exception as e:
-        logger.warning("Jira ETA field discovery failed: %s", e)
-
-    return result
-
-
-def _pick_type(types: dict[str, str], candidates: list[str]) -> str | None:
-    for c in candidates:
-        if c.lower() in types:
-            return types[c.lower()]
-    for kw in candidates:
-        for k, v in types.items():
-            if kw.lower() in k:
-                return v
-    return None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -254,61 +207,29 @@ def build_description(
 def create_issue(title: str, description: str | None = None, *, jira_config: dict) -> str:
     """Create a Jira issue and return its key (e.g. 'SPD-456').
 
-    Sets component to JIRA_COMPONENT (default 'SPD_CICD') and both ETA
-    fields to today + 2 days.
+    Files a DISPATCH_ISSUE_TYPE under DISPATCH_PROJECT / DISPATCH_COMPONENT, or
+    a DISPATCH_SUBTASK_TYPE when JIRA_PARENT_ISSUE is set, with both ETA
+    fields at today + 2 days.
 
     Raises urllib.error.HTTPError or RuntimeError on failure — callers must
     catch and log; do NOT let Jira errors roll back a DB transaction.
     """
     cfg = jira_config
-    project   = cfg.get("JIRA_PROJECT", "SPD")
-    parent_key = cfg.get("JIRA_PARENT_ISSUE", "").strip()
-    component  = cfg.get("JIRA_COMPONENT", "SPD_CICD")
+    parent_key = cfg.get("JIRA_PARENT_ISSUE", "")
     eta        = (date.today() + timedelta(days=2)).strftime("%Y-%m-%d")
 
-    eta_fields = discover_eta_fields(cfg)
-    exp_field  = eta_fields.get("expected_eta")
-    est_field  = eta_fields.get("estimated_eta")
-
-    # Fetch project issue types
-    proj = _request(cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"],
-                    "GET", f"/rest/api/2/project/{project}")
-    types = {it["name"].lower(): it["name"] for it in proj.get("issueTypes", [])}
-
+    fields: dict = {
+        "project":    {"key": DISPATCH_PROJECT},
+        "summary":    title,
+        "issuetype":  {"name": DISPATCH_SUBTASK_TYPE if parent_key else DISPATCH_ISSUE_TYPE},
+        "components": [{"name": DISPATCH_COMPONENT}],
+        EXPECTED_ETA_FIELD:  eta,
+        ESTIMATED_ETA_FIELD: eta,
+    }
     if parent_key:
-        type_name = (
-            _pick_type(types, ["子任务", "subtask", "sub-task", "sub task", "子问题"])
-            or next((v for k, v in types.items() if "task" in k), "Sub-task")
-        )
-        if cfg.get("JIRA_ISSUE_TYPE_SUBTASK"):
-            type_name = cfg["JIRA_ISSUE_TYPE_SUBTASK"]
-        fields: dict = {
-            "project":    {"key": project},
-            "summary":    title,
-            "issuetype":  {"name": type_name},
-            "parent":     {"key": parent_key},
-            "components": [{"name": component}],
-        }
-    else:
-        type_name = (
-            _pick_type(types, ["task", "任务", "story", "故事"])
-            or next(iter(types.values()), "Task")
-        )
-        if cfg.get("JIRA_ISSUE_TYPE_TASK"):
-            type_name = cfg["JIRA_ISSUE_TYPE_TASK"]
-        fields = {
-            "project":    {"key": project},
-            "summary":    title,
-            "issuetype":  {"name": type_name},
-            "components": [{"name": component}],
-        }
-
+        fields["parent"] = {"key": parent_key}
     if cfg.get("JIRA_ASSIGNEE"):
         fields["assignee"] = {"name": cfg["JIRA_ASSIGNEE"]}
-    if exp_field:
-        fields[exp_field] = eta
-    if est_field:
-        fields[est_field] = eta
     fields["description"] = description or f"由 CICD 发布系统自动创建（审批模式：下发给 SPD 执行交付）。\n\n摘要：{title}"
 
     result = _request(cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"],
@@ -330,10 +251,10 @@ _ISSUE_FIELDS = (
 )
 
 
-def _require_config(conf_path: str | Path | None = None) -> dict:
-    cfg = load_config(conf_path)
+def _require_config() -> dict:
+    cfg = load_config()
     if cfg is None:
-        raise RuntimeError("未配置 jira.conf（需要 JIRA_BASE_URL 和 JIRA_TOKEN）")
+        raise RuntimeError("未配置 JIRA：release_system.conf 的 [jira] 需要 JIRA_BASE_URL 和 JIRA_TOKEN")
     return cfg
 
 
@@ -344,12 +265,12 @@ def _person(value: dict | None) -> dict | None:
     return {"name": name, "display_name": value.get("displayName") or name}
 
 
-def get_issue(issue_key: str, *, conf_path: str | Path | None = None) -> dict:
+def get_issue(issue_key: str) -> dict:
     """Return a normalised snapshot of one issue.
 
     Raises urllib.error.HTTPError (e.g. 404) or URLError on failure.
     """
-    cfg = _require_config(conf_path)
+    cfg = _require_config()
     raw = _request(
         cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"], "GET",
         f"/rest/api/2/issue/{quote(issue_key)}?fields={_ISSUE_FIELDS}",
@@ -406,14 +327,13 @@ def search_issues(
     *,
     max_results: int = 50,
     validate: bool = True,
-    conf_path: str | Path | None = None,
 ) -> dict:
     """Run a JQL search; returns {"total", "issues": [summary dicts]}.
 
     validate=False lets `key in (...)` skip keys that no longer exist instead
     of failing the whole query.
     """
-    cfg = _require_config(conf_path)
+    cfg = _require_config()
     try:
         raw = _request(
             cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"], "POST", "/rest/api/2/search",
@@ -448,10 +368,9 @@ def download_attachment(
     content_url: str,
     *,
     max_bytes: int = 50 * 1024 * 1024,
-    conf_path: str | Path | None = None,
 ) -> bytes:
     """Download attachment bytes; only URLs under the configured JIRA base."""
-    cfg = _require_config(conf_path)
+    cfg = _require_config()
     if not content_url.startswith(cfg["JIRA_BASE_URL"] + "/"):
         raise ValueError("附件地址不属于配置的 JIRA")
     req = urllib.request.Request(content_url, method="GET")
@@ -463,9 +382,9 @@ def download_attachment(
     return data
 
 
-def add_comment(issue_key: str, body: str, *, conf_path: str | Path | None = None) -> str:
+def add_comment(issue_key: str, body: str) -> str:
     """Append a comment (wiki markup) and return its id.  Never edits others."""
-    cfg = _require_config(conf_path)
+    cfg = _require_config()
     result = _request(
         cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"], "POST",
         f"/rest/api/2/issue/{quote(issue_key)}/comment", {"body": body},

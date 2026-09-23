@@ -1,7 +1,8 @@
 """CICD Agent proxy routes.
 
 The browser stays same-origin with hpc_release_system while this router talks to
-the standalone CICD_Agent backend configured by settings.cicd_agent_base_url.
+the standalone CICD_Agent backend configured in the [cicd_agent] section of
+release_system.conf.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from app import runtime_config
 from app.config import settings
 from app.db.connection import transaction
 from app.deps import get_assistant_db, require_roles, require_tab_access
@@ -86,8 +88,12 @@ _ASSISTANT_SLOT_KEYS = {
 }
 
 
+def _agent_timeout_seconds() -> int:
+    return runtime_config.required_int("cicd_agent", runtime_config.section("cicd_agent"), "TIMEOUT_SECONDS")
+
+
 def _agent_url(path: str, query: str = "") -> str:
-    base = settings.cicd_agent_base_url.rstrip("/")
+    base = runtime_config.required("cicd_agent", runtime_config.section("cicd_agent"), "BASE_URL").rstrip("/")
     url = f"{base}{path}"
     return f"{url}?{query}" if query else url
 
@@ -117,15 +123,19 @@ def _request_agent_payload(
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"
 
+    try:
+        url, timeout_seconds = _agent_url(path, query), _agent_timeout_seconds()
+    except runtime_config.ConfigError as exc:
+        return 503, {"ok": False, "error": str(exc)}
     request = urllib.request.Request(
-        _agent_url(path, query),
+        url,
         data=data,
         headers=headers,
         method=method,
     )
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with opener.open(request, timeout=settings.cicd_agent_timeout_seconds) as response:
+        with opener.open(request, timeout=timeout_seconds) as response:
             payload = _decode_json(response.read())
             return response.status, payload
     except urllib.error.HTTPError as exc:
@@ -141,7 +151,7 @@ def _request_agent(method: str, path: str, *, query: str = "", body: Any = None)
 
 
 def _agent_stream_timeout_error() -> str:
-    return f"CICD Agent 请求超时（超过 {settings.cicd_agent_timeout_seconds} 秒）"
+    return f"CICD Agent 请求超时（超过 {_agent_timeout_seconds()} 秒）"
 
 
 def _agent_request_error(exc: httpx.RequestError) -> str:
@@ -150,12 +160,17 @@ def _agent_request_error(exc: httpx.RequestError) -> str:
 
 
 async def _request_agent_stream_events(path: str, *, body: Any) -> AsyncIterator[dict[str, Any]]:
-    timeout = httpx.Timeout(settings.cicd_agent_timeout_seconds)
+    try:
+        url, timeout_seconds = _agent_url(path), _agent_timeout_seconds()
+    except runtime_config.ConfigError as exc:
+        yield {"type": "error", "error": str(exc)}
+        return
+    timeout = httpx.Timeout(timeout_seconds)
     try:
         async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             async with client.stream(
                 "POST",
-                _agent_url(path),
+                url,
                 json=body,
                 headers={
                     "Accept": "application/x-ndjson",

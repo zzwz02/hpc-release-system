@@ -15,18 +15,15 @@ verification_dir=$(mktemp -d /tmp/release-system-check.XXXXXX)
 export DB_PATH="$verification_dir/main.db"
 export ADMIN_PASSWORD_FILE="$verification_dir/admin.local"
 export ASSISTANT_DATABASE_URL="sqlite:///$verification_dir/assistant.db"
-export LDAP_CONF_PATH="$verification_dir/ldap-disabled.conf"
-export JIRA_CONF_PATH="$verification_dir/jira-disabled.conf"
-export QA_LLM_ENV_FILE="$verification_dir/llm-disabled.env"
+export RUNTIME_CONF_PATH="$verification_dir/release_system.conf"
 export JIRA_AGENT_DATABASE_URL="sqlite:///$verification_dir/jira_agent.db"
 export JIRA_AGENT_DATA_DIR="$verification_dir/jira_agent_data"
-export JIRA_AGENT_CONF_PATH="$verification_dir/jira_agent-disabled.conf"
 export NO_PROXY=localhost,127.0.0.1
 export no_proxy=localhost,127.0.0.1
 python -m pytest -q
 ```
 
-上述文件路径仅用于本终端的隔离实例，不覆盖根 `.env`。需要业务场景时使用 fixture 创建测试数据；网络集成单元测试使用可控替身。显式授权的真实集成验证另行指定目标，不能让普通测试向 Jira/Gerrit 写入数据。
+上述文件路径仅用于本终端的隔离实例，不覆盖根 `.env`。`RUNTIME_CONF_PATH` 指向不存在的文件即关闭 LDAP/JIRA/LLM/JIRA agent 集成；pytest 的 conftest 已自动做同样的隔离。需要配置的用例在 `tmp_path` 写一份 `release_system.conf` 并 monkeypatch `settings.runtime_conf_path`，不要读取或修改仓库根的真实配置。需要业务场景时使用 fixture 创建测试数据；网络集成单元测试使用可控替身。显式授权的真实集成验证另行指定目标，不能让普通测试向 Jira/Gerrit 写入数据。
 
 ## 后端与契约
 

@@ -364,7 +364,7 @@ def test_interrupted_answer_marks_partial_content() -> None:
 
 
 def test_agent_stream_error_messages_are_human_readable(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cicd_agent.settings, "cicd_agent_timeout_seconds", 7)
+    monkeypatch.setattr(cicd_agent, "_agent_timeout_seconds", lambda: 7)
 
     assert cicd_agent._agent_stream_timeout_error() == "CICD Agent 请求超时（超过 7 秒）"
     assert (

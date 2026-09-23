@@ -129,7 +129,8 @@ deploy/jira-agent/     JIRA agent 服务器 B 的启动脚本与 HPC 知识包
 
 - 权限：`shared/access_control.json` → Python `domain/permissions.py` / React `lib/accessControl.ts`。
 - 稳定词表和字段描述：`shared/domain_metadata.json` → 后端 `domain/shared_metadata.py` 及前端对应 lib。
-- 集成默认值：`shared/integrations.json` → `app/config.py`；浏览器只取得它所需的非敏感配置。
+- Gerrit 路径：`shared/integrations.json` → `app/config.py` / 前端 `lib/git.ts`；浏览器只取得它所需的非敏感配置。
+- 运行时服务配置：`release_system.conf` → `app/runtime_config.py`，每次使用时现读。
 - 时间：新写入使用 `app/timeutil.py` 的北京时间无时区字符串；deadline 精度为分钟，业务事件通常精确到秒，时间线为日期。**旧库仍可能有 UTC ISO 数据，不可假定迁移已完成，也不能对全部值统一加 8 小时。**
 - Markdown：页面中的 HTML 注入集中在 `web/src/components/Markdown.tsx` 的 DOMPurify 流程。
 - 刷新：全局查询默认永久新鲜、关闭自动重取；页面显式刷新或写后失效，QA AI 任务与 JIRA agent 运行中的对话例外按秒轮询。进入页面并不保证重取已缓存数据。
@@ -168,21 +169,26 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 
 ## 集成配置
 
-`app/config.py` 使用环境变量和根目录 `.env`，环境变量优先；具体字段、默认值以代码为准。不要把真实配置文件内容粘贴进 README。
+LDAP、JIRA、QA 大模型、CICD Agent、网站对外地址和各组 JIRA 数字员工的配置统一放在根目录 `release_system.conf`（已 gitignore），分为 `[ldap]`、`[jira]`、`[qa_llm]`、`[cicd_agent]`、`[site]`、`[jira_agent:<组名>]` 几节。复制 `release_system.conf.example` 起步，各键说明见其中注释；键名一律大写，代码中没有默认值，也不再读取对应的环境变量。配置在每次使用时现读，修改后下一次使用即生效，重启后同样生效。旧的 `ldap.conf` / `jira.conf` / `qa_llm.env` / `jira_agent.conf` 已不再读取，升级时把其中内容搬到对应节即可。
+
+其余可调的值按用途各有一个位置，开发时的判断规则见 [release-system-dev 技能](.agents/skills/release-system-dev/SKILL.md) 的“配置落点”：
+
+- 环境变量：只放文件位置和少数开发参数（下表），由 `app/config.py` 的 `Settings` 从环境变量和根目录 `.env` 读取，环境变量优先，改后需重启。
+- `shared/*.json`：前后端共用的权限、词表和 Gerrit 路径，随代码版本化。
+- 代码常量：调优参数和固定业务规则，例如 Gerrit 批量拉取并发，以及派单 JIRA 的项目、Component、issue 类型和 ETA 字段（`app/integrations/jira.py`），改动走代码评审。
+
+不要把真实配置文件内容粘贴进 README。
 
 | 配置入口 | 作用 |
 | --- | --- |
 | `DB_PATH` / `ADMIN_PASSWORD_FILE` | 主业务库与 Admin 初始口令文件 |
-| `LDAP_CONF_PATH` / `JIRA_CONF_PATH` / `QA_LLM_ENV_FILE` | 对应集成配置文件路径；实际键由各加载器读取 |
+| `RUNTIME_CONF_PATH` | 上述统一配置文件路径，默认根目录 `release_system.conf` |
 | `GERRIT_SSH_BASE_URL` | 覆盖共享的 Gerrit SSH origin；前端格式化也使用它时需重新构建 |
-| `GERRIT_FETCH_MAX_WORKERS` | 批量 Gerrit 拉取并发，默认 4，运行时限制为 1–16 |
-| `CICD_AGENT_BASE_URL` / `CICD_AGENT_TIMEOUT_SECONDS` | Jenkins/CICD 助手服务地址与超时，浏览器经过同源后端代理 |
 | `ASSISTANT_DATABASE_URL` | 助手会话库；当前仅支持 `sqlite:///` URL |
 | `ASSISTANT_HISTORY_LIMIT` / `ASSISTANT_SUMMARY_*` | 助手上下文窗口及滚动摘要配置 |
-| `HPC_DOCS_GERRIT_REMOTE` / `HPC_RELEASE_DATA_GERRIT_REMOTE` | 生成 Gerrit 提交计划的目标；不会自动发布 |
-| `JIRA_AGENT_CONF_PATH` | 各组数字员工配置（B 的地址、token、工作目录根、并发与限时），模板为 `jira_agent.conf.example` |
 | `JIRA_AGENT_DATABASE_URL` / `JIRA_AGENT_DATA_DIR` | JIRA agent 独立库与文件目录 |
-| `JIRA_AGENT_RUNNER_ENABLED` / `JIRA_AGENT_PUBLIC_BASE_URL` | 是否在进程内运行队列；JIRA 评论中网站链接的对外地址 |
+| `JIRA_AGENT_RUNNER_ENABLED` | 是否在进程内运行 JIRA agent 队列 |
+| `HPC_ADMIN_PASSWORD` | 首次创建 Admin 时使用的口令 |
 
 ## 只读检查、备份与验证
 

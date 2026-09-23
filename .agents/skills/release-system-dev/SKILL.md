@@ -20,10 +20,31 @@ description: Develop, debug, or review this HPC release collaboration repository
 当前运行层为 `app/`、`web/`、`shared/`；离线工具在 `tools/`。日常变更保留 `server.py`、根 `index.html` 和 `release_system/` 为旧实现参考，不顺手重写它们。针对这些文件的明确用户要求另按任务处理。
 
 - Router 负责 HTTP 与依赖鉴权；service 编排业务和事务；repository 负责数据访问；纯判断放 domain。现有 service 中仍有 SQL，不把“已完成全部分层”当成事实。
-- 静态权限唯一来源为 `shared/access_control.json`；词表与字段描述为 `shared/domain_metadata.json`；集成默认配置为 `shared/integrations.json` 和 `app/config.py`。
+- 静态权限唯一来源为 `shared/access_control.json`；词表与字段描述为 `shared/domain_metadata.json`；Gerrit 路径为 `shared/integrations.json`；运行时服务配置见下节。
 - 修改常量、默认值、状态、身份或权限前，先全仓搜索同义定义。让消费者使用现有权威实现，不复制角色数组、状态谓词或仓库解析。
 - 所有权、阶段、锁定与申请状态由后端组合静态权限。读取模型已有 `allowed_actions` 时前端消费它；后端仍需重新鉴权，缓存中的动作列表不是写入凭证。
 - `app/identity.py` 处理仓库短路径、manifest 存储身份与 Git 解析。使用 App ID 做当前身份；涉及历史匹配同时检查仓库与分支，不能仅按 URL、名称或模型名合并。
+
+## 配置落点
+
+新增一个可调的值前，依次问：换一个部署环境它会变吗？前端也要用吗？按答案放到下面唯一一处，不在两处各放一份。
+
+| 放在哪 | 放什么 | 例子 |
+| --- | --- | --- |
+| `release_system.conf`（`app/runtime_config.py` 读取） | 随部署变化的外部连接、账号与密钥、按服务器能力调的参数 | JIRA 地址/token、LDAP、LLM、CICD Agent、`[jira_agent:<组>]`、`[site] PUBLIC_BASE_URL` |
+| 环境变量（`app/config.py` 的 `Settings`，可写 `.env`） | 文件在哪里，以及测试/隔离实例需要切换的开关 | 各库路径、`RUNTIME_CONF_PATH`、`JIRA_AGENT_RUNNER_ENABLED`、`ASSISTANT_*` |
+| `shared/*.json` | 前后端必须一致、需版本化的约定 | 权限矩阵、词表、Gerrit 项目路径 |
+| 所在模块顶部的常量 | 其余一切：调优参数、固定业务规则、固定外部实例的标识 | `GERRIT_FETCH_WORKERS`、派单 JIRA 的项目/Component/类型/ETA 字段 |
+
+`release_system.conf` 的规则：
+
+- 键名大写，节名小写；每个集成一节，按组的对象用 `[前缀:<名>]`。新增键同步更新 `release_system.conf.example`（`tests/test_runtime_config.py` 会解析它）和 README 的节列表。
+- 代码不替缺失的键补值：整节缺省表示该集成未配置；必填键用 `runtime_config.required()` / `required_int()` 读取，缺失时抛出指明节与键的 `ConfigError`；可选键为空只表示关闭对应功能，不能在代码里换成某个具体值。
+- 每次使用时调用 `runtime_config.section()` 现读，不在模块级、`app.state` 或启动时缓存，保证改文件即时生效。
+- 不为这些键再开环境变量覆盖，也不恢复旧的单独配置文件；密钥只出现在该文件中，不写入日志、接口返回或提交。
+- 配置错误要让使用者看得到：接口返回可读的错误或提示，不能只写日志后静默跳过。
+
+常量写在使用它的模块顶部、大写命名、注释说明取值理由，不建集中的常量文件，也不为它开放配置。确有部署差异再按上表移到 conf，而不是先加开关备用。
 
 ## 数据与外部调用
 

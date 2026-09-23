@@ -330,7 +330,7 @@ async def search_issues(user: dict, query: str) -> dict:
 
     The default list is the user's not-closed issues; RM sees the issues of
     the configured JIRA member groups.  Searches run with the JIRA account in
-    jira.conf; hand-over is still limited to the assignee or RM.
+    release_system.conf [jira]; hand-over is still limited to the assignee or RM.
     """
     mode, value = domain.parse_issue_query(query)
     missing: list[str] = []

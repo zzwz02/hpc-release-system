@@ -21,17 +21,17 @@ description: Develop, debug, or review the JIRA agent (per-group digital employe
   - 是否发评论按轮次由用户选（交单和发消息都带 `post_comment`，默认 true）。一轮内以最后一条消息为准（合并、steer 都会覆盖 `jira_agent_turns.post_comment`），runner 收尾时重新读取。不发时照样渲染 `comment_body` 并记 `jira_comment` 事件 `status: skipped`，`comment_status` 保持空，重试接口不接受。给 agent 的提示词和 outputSchema 不区分两种轮次。
 - **谁能操作**：只有当前 JIRA assignee 或 RM 能交单、发消息，每次写操作都实时读 JIRA 校验。查看权限为对话 owner、交单人或 RM。页签角色只来自 `shared/access_control.json` 的 `jira-agent`。
 - **找单**（`GET /api/jira-agent/issues?q=`，分类逻辑在 `domain.parse_issue_query`）：
-  - 留空时，普通用户看 `assignee = "<网站用户名>" AND status != Closed`，RM 看 `assignee in membersOf("<JIRA_MEMBERS_GROUP>")`。不能用 `currentUser()`，它指向 jira.conf 的 token 账号。
+  - 留空时，普通用户看 `assignee = "<网站用户名>" AND status != Closed`，RM 看 `assignee in membersOf("<JIRA_MEMBERS_GROUP>")`。不能用 `currentUser()`，它指向 release_system.conf `[jira]` 的 token 账号。
   - 输入是一个 `项目KEY-数字`（字母开头，允许数字和下划线）时读这张单，找不到列入 `missing`；只由多个编号组成时报错“一次只能查询一个 JIRA 编号”（用户明确要求只支持一个）。
   - RM 专用 `?scope=handled`（`service.list_handled_issues`）：数据库里所有交给过 agent 的工单，含 JIRA 已关闭的，按最近活动排序、最多 200 个；状态用 `key in (...)` 分批查 JIRA，必须带 `validateQuery=false`，否则任一编号不存在时整条 JQL 报 400。
   - 其他输入原样作为 JQL，JIRA 返回 400 时把 `errorMessages` 回给用户。
   - 不识别工单网址，因为业务 JIRA 地址与测试环境不同。
-  - 搜索使用 jira.conf 账号的可见范围，交单仍校验 assignee 或 RM。
+  - 搜索使用 `[jira]` 账号的可见范围，交单仍校验 assignee 或 RM。
 - **对话隔离**：一个对话 = 一个 Codex thread + B 上一个工作目录，owner 是交单时的 assignee（RM 代操作时 owner 仍是 assignee）。
   - assignee 变更后旧对话关闭为 `superseded`（只读）；A→B→A 转回也新建对话，不复活旧对话。
   - 同一 assignee 可显式新建对话（`new_conversation`）。
   - 同一工单同一时间最多一个 open 对话，数据库部分唯一索引兜底。
-- **跨组**：每组有自己的数字员工（`jira_agent.conf` 一个 section 对应一个 B），一个数字员工不跨组修复。当前只部署 HPC。
+- **跨组**：每组有自己的数字员工（`release_system.conf` 中一节 `[jira_agent:<组名>]` 对应一个 B），一个数字员工不跨组修复。当前只部署 HPC。
 - **排队**：app-server 本身会并行执行不同 thread 的 turn，所以队列和并发上限必须在 A 上：每组 `MAX_CONCURRENT`，FIFO。A 不做机器占用调度：只把系统机器列表或用户指定的机器写进每轮提示，GPU 并发由知识包约定的 `flock` 锁控制。
 
 ## 代码地图
@@ -130,7 +130,7 @@ export JIRA_AGENT_RUNNER_ENABLED=false   # 不需要队列时
 **真实端到端**（只在用户授权的工单上做，它会在 JIRA 追加评论）：
 
 1. 用 `deploy/jira-agent/start-app-server.sh` 启动 B，`curl http://<B>:<端口>/readyz` 就绪。
-2. 用业务库的一致性副本（SQLite backup API）作为 `DB_PATH` 启动网站，设置 `JIRA_AGENT_PUBLIC_BASE_URL`，并把 B 的地址加入 `NO_PROXY`。
+2. 用业务库的一致性副本（SQLite backup API）作为 `DB_PATH` 启动网站，在 `release_system.conf` 的 `[site]` 填写 `PUBLIC_BASE_URL`，并把 B 的地址加入 `NO_PROXY`。
 3. `GET /api/jira-agent/health` 确认连通后，交单（`POST /api/jira-agent/conversations`），轮询对话详情直到最新轮次结束，从 JIRA 回读评论，核对 status 和 assignee 未被修改。
 4. 续办验证同一 `thread_id`；页面截图用 Playwright，时间线面板有 `max-height`，整页截图时需要去掉。
 

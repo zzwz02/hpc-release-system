@@ -5,7 +5,6 @@ Endpoints (faithful port of server.py):
   GET  /api/test-scope.csv             — download test-scope CSV (plain text)
   POST /api/artifacts/generate         — regenerate draft artifacts
   POST /api/artifacts/manager-review   — generate manager-review CSV
-  POST /api/gerrit/plan                — return Gerrit push plan JSON
 """
 from __future__ import annotations
 
@@ -31,10 +30,6 @@ require_test_scope_export = require_capability(
 )
 require_manager_review = require_capability(
     "artifact.generate.manager_review",
-    message="RM role required",
-)
-require_gerrit_plan = require_capability(
-    "artifact.plan.gerrit",
     message="RM role required",
 )
 
@@ -181,34 +176,5 @@ async def post_manager_review(
 router.add_api_route(
     "/api/artifacts/manager-review",
     post_manager_review,
-    methods=["POST"],
-)
-
-
-# ---------------------------------------------------------------------------
-# POST /api/gerrit/plan
-# ---------------------------------------------------------------------------
-
-async def post_gerrit_plan(
-    request: Request,
-    user: dict = Depends(require_gerrit_plan),
-    conn: sqlite3.Connection = Depends(get_db),
-) -> dict:
-    """Return the Gerrit push plan for a locked release.
-
-    Mirrors server.py:744-747.
-    """
-    body = await request.json()
-    return artifact_service.gerrit_push_plan(
-        conn,
-        body["release_id"],
-        user=user["username"],
-        role=user["role"],
-    )
-
-
-router.add_api_route(
-    "/api/gerrit/plan",
-    post_gerrit_plan,
     methods=["POST"],
 )

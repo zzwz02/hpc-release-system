@@ -56,22 +56,12 @@ class Settings(BaseSettings):
     # --- Auth -------------------------------------------------------------------
     admin_password_file: Path = _PROJECT_ROOT / "admin_password.local"
 
-    # --- LDAP -------------------------------------------------------------------
-    ldap_conf_path: Path = _PROJECT_ROOT / "ldap.conf"
+    # --- Runtime service configuration -----------------------------------------
+    # LDAP, Jira, QA LLM, CICD Agent and JIRA agent groups all live in this one
+    # sectioned file (see app/runtime_config.py and release_system.conf.example).
+    runtime_conf_path: Path = _PROJECT_ROOT / "release_system.conf"
 
-    # --- Jira -------------------------------------------------------------------
-    jira_conf_path: Path = _PROJECT_ROOT / "jira.conf"
-
-    # --- QA LLM -----------------------------------------------------------------
-    # Path to the qa_llm.env file (overridable via QA_LLM_ENV_FILE env var).
-    # release_system/llm.py uses this file as the default config source.
-    qa_llm_env_file: Path = _PROJECT_ROOT / "qa_llm.env"
-
-    # --- CICD Agent -------------------------------------------------------------
-    # Jenkins failure diagnostics backend.  Frontend calls this service through
-    # same-origin /api/cicd-agent/* proxy endpoints.
-    cicd_agent_base_url: str = "http://10.2.118.76:8056"
-    cicd_agent_timeout_seconds: int = 90
+    # --- CICD Assistant ---------------------------------------------------------
     assistant_database_url: str = f"sqlite:///{(_PROJECT_ROOT / 'assistant_conversations.db').as_posix()}"
     assistant_history_limit: int = 12
     assistant_summary_trigger_messages: int = 20
@@ -79,24 +69,18 @@ class Settings(BaseSettings):
     assistant_summary_max_chars: int = 4000
 
     # --- JIRA Agent -------------------------------------------------------------
-    # Per-group digital employees.  jira_agent.conf holds each group's Codex
-    # app-server URL and token; knowledge, skills and execution credentials
-    # live on that group's app-server host, not on this website.
-    jira_agent_conf_path: Path = _PROJECT_ROOT / "jira_agent.conf"
+    # Per-group digital employees.  The [jira_agent:<group>] sections of
+    # runtime_conf_path hold each group's Codex app-server URL and token;
+    # knowledge, skills and execution credentials live on that group's
+    # app-server host, not on this website.
     jira_agent_database_url: str = f"sqlite:///{(_PROJECT_ROOT / 'jira_agent_tasks.db').as_posix()}"
     jira_agent_data_dir: Path = _PROJECT_ROOT / "jira_agent_data"
     jira_agent_runner_enabled: bool = True
-    # Browser-facing site origin used for links in JIRA comments (optional).
-    jira_agent_public_base_url: str = ""
 
     # --- Gerrit -----------------------------------------------------------------
     # One deploy-time override for the Gerrit SSH origin. Project paths come
     # from shared/integrations.json, which is also consumed by the frontend.
     gerrit_ssh_base_url: str = DEFAULT_GERRIT_SSH_BASE_URL
-
-    # Maximum Gerrit/manifest I/O operations issued concurrently by one bulk
-    # app_info fetch.  Database writes remain serial in the request thread.
-    gerrit_fetch_max_workers: int = 4
 
     @property
     def gerrit_hpc_project(self) -> str:
@@ -132,10 +116,6 @@ class Settings(BaseSettings):
     @property
     def manifest_repo_base(self) -> str:
         return self.hpc_gerrit_prefix
-
-    # --- Server -----------------------------------------------------------------
-    host: str = "0.0.0.0"
-    port: int = 8000
 
 
 # Singleton — import and use directly: `from app.config import settings`

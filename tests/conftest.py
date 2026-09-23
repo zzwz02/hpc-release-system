@@ -32,6 +32,19 @@ from release_system import core
 # Core infrastructure fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_runtime_config(tmp_path_factory):
+    """Keep tests off the real release_system.conf.
+
+    It points at a missing file, so integrations see an empty config.  Tests
+    that need config monkeypatch settings.runtime_conf_path to their own file.
+    """
+    original = settings.runtime_conf_path
+    settings.runtime_conf_path = tmp_path_factory.mktemp("runtime_config") / "missing.conf"
+    yield
+    settings.runtime_conf_path = original
+
+
 @pytest.fixture()
 def tmp_dir():
     """A temporary directory cleaned up after the test."""

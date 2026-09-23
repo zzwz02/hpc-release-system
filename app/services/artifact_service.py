@@ -14,7 +14,6 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import io
-import os
 import re
 import sqlite3
 from typing import Any
@@ -575,44 +574,3 @@ def get_test_scope_csv(
         writer.writerow(row)
     filename = f"test_scope_{release['name']}.csv"
     return out.getvalue(), filename
-
-
-def gerrit_push_plan(
-    conn: sqlite3.Connection,
-    release_id: str,
-    *,
-    user: str,
-    role: str,
-) -> dict:
-    """Return the Gerrit push plan for the given release.
-
-    Mirrors server.py:744-747 and core.py:gerrit_push_plan.
-    """
-    release = release_reads.get_release(conn, release_id)
-    if not release.get("released_locked"):
-        raise RuntimeError("Gerrit push 要求 release 已最终锁定")
-    docs_remote = os.environ.get("HPC_DOCS_GERRIT_REMOTE", "")
-    data_remote = os.environ.get("HPC_RELEASE_DATA_GERRIT_REMOTE", "")
-    if not docs_remote or not data_remote:
-        return {
-            "ready": False,
-            "reason": "Missing HPC_DOCS_GERRIT_REMOTE or HPC_RELEASE_DATA_GERRIT_REMOTE",
-            "required_env": ["HPC_DOCS_GERRIT_REMOTE", "HPC_RELEASE_DATA_GERRIT_REMOTE"],
-        }
-    branch = f"release-{release['name']}"
-    return {
-        "ready": True,
-        "docs_remote": docs_remote,
-        "data_remote": data_remote,
-        "branch": branch,
-        "commands": [
-            f"git clone {docs_remote} docs-worktree",
-            f"git -C docs-worktree checkout -b {branch}",
-            "copy generated Markdown artifacts into docs-worktree",
-            f"git -C docs-worktree push origin HEAD:refs/for/{branch}",
-            f"git clone {data_remote} release-data-worktree",
-            f"git -C release-data-worktree checkout -b {branch}",
-            "copy release_data.json into release-data-worktree",
-            f"git -C release-data-worktree push origin HEAD:refs/for/{branch}",
-        ],
-    }

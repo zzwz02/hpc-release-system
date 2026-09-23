@@ -70,6 +70,10 @@ from app.timeutil import beijing_timestamp
 # ---------------------------------------------------------------------------
 
 APP_REPO_IDENTITY_FIELDS = {"git_url", "git_branch"}
+# Gerrit/manifest I/O operations issued concurrently by one bulk app_info
+# fetch (callers may pass max_workers, capped at MAX_GERRIT_FETCH_WORKERS).
+# Database writes remain serial in the request thread.
+GERRIT_FETCH_WORKERS = 4
 MAX_GERRIT_FETCH_WORKERS = 16
 
 _AFTER_DOC_EDIT_MESSAGE = (
@@ -1392,8 +1396,6 @@ def prepare_fetch_all_app_infos(
     use the normal JSON error envelope and HTTP status.  Worker threads never
     receive or access ``conn``.
     """
-    from app.config import settings
-
     release = release_reads.get_release(conn, release_id)
     if release.get("released_locked"):
         raise RuntimeError("Release 已最终锁定，不可上传 app_info")
@@ -1403,9 +1405,7 @@ def prepare_fetch_all_app_infos(
         AppInfoFetchTask(app_id=app_id, app=_get_app_or_raise(conn, app_id))
         for app_id in sorted(release.get("snapshots", {}))
     )
-    configured_workers = (
-        settings.gerrit_fetch_max_workers if max_workers is None else max_workers
-    )
+    configured_workers = GERRIT_FETCH_WORKERS if max_workers is None else max_workers
     worker_count = max(1, min(int(configured_workers), MAX_GERRIT_FETCH_WORKERS))
     if tasks:
         worker_count = min(worker_count, len(tasks))
