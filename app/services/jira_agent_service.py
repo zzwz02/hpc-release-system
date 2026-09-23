@@ -460,7 +460,9 @@ async def handover(user: dict, body: dict) -> dict:
 
     conn = open_db()
     try:
-        machine = await _check_machine(conn, user, group, body.get("machine") or "")
+        machine = _check_machine(
+            conn, user, group, body.get("machine") or "", body.get("ssh_key_session_id") or "",
+        )
         existing = repo.get_open_conversation(conn, issue["key"])
         if existing is not None:
             same_owner = _same_user(existing["owner"], assignee)
@@ -640,19 +642,20 @@ async def retry_comment(user: dict, turn_id: str) -> dict:
 MAX_MACHINE_DESCRIPTION = 500
 
 
-async def _check_machine(conn: sqlite3.Connection, user: dict, group: domain.AgentGroup, machine: str) -> str:
+def _check_machine(
+    conn: sqlite3.Connection, user: dict, group: domain.AgentGroup, machine: str, key_session_id: str,
+) -> str:
     """Validate the hand-over machine choice; returns what the conversation stores.
 
     "" lets the agent pick from the group's system machine list; a user-given
-    user@host needs server B's current key uploaded and verified by this user.
+    user@host needs this user's key upload to it that just passed, spent here.
     """
     if not machine.strip():
         if not repo.list_machines(conn, group.name):
             raise ApiError(409, "系统机器列表为空，请联系 RM 添加机器，或自填 user@host")
         return ""
     target = domain.parse_ssh_target(machine)
-    if not await jira_agent_ssh_key.has_verified_key(user, group, target):
-        raise ApiError(409, f"请先把 SSH 公钥上传到 {target} 并通过连接测试，再交给 agent")
+    jira_agent_ssh_key.sessions.claim(user, key_session_id, group, target)
     return target
 
 

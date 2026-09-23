@@ -32,6 +32,8 @@ class HandoverBody(BaseModel):
     new_conversation: bool = False
     # "" = the agent picks from the system machine list; else user@host
     machine: str = ""
+    # the succeeded SSH key upload for a user@host machine; one per hand-over
+    ssh_key_session_id: str = ""
     # False = the result stays on the website; nothing is posted to JIRA
     post_comment: bool = True
 
@@ -158,7 +160,7 @@ async def delete_machine(machine_id: str, user: dict = Depends(require_jira_agen
 
 @router.get("/ssh-key-info")
 async def ssh_key_info(group: str, user: dict = Depends(require_jira_agent_access)) -> dict:
-    return await jira_agent_ssh_key.key_info(user, group)
+    return await jira_agent_ssh_key.key_info(group)
 
 
 @router.post("/ssh-key-sessions")

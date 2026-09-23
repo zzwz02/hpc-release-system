@@ -2,7 +2,8 @@
  * Password terminal that puts server B's SSH public key on a user-given
  * user@host.  ssh-copy-id runs on server B (codex app-server command/exec);
  * this dialog relays what the user types and polls the output.  After
- * ssh-copy-id succeeds the website checks key login from server B.
+ * ssh-copy-id succeeds the website checks key login from server B, and the
+ * succeeded session admits one hand-over (``onVerified``).
  */
 import { useEffect, useRef, useState } from "react";
 import {
@@ -31,10 +32,12 @@ const LIVE: KeySessionStatus[] = ["running", "verifying"];
 export function SshKeyUploadDialog({
   target,
   keyInfo,
+  onVerified,
   onClose,
 }: {
   target: string;
   keyInfo: SshKeyInfo;
+  onVerified: (sessionId: string) => void;
   onClose: () => void;
 }) {
   const [confirmed, setConfirmed] = useState(false);
@@ -46,6 +49,7 @@ export function SshKeyUploadDialog({
   const [busy, setBusy] = useState(false);
   const offsetRef = useRef(0);
   const outputRef = useRef<HTMLPreElement>(null);
+  const reportedRef = useRef(false);
 
   const status = session?.status;
   const live = Boolean(status && LIVE.includes(status));
@@ -69,6 +73,12 @@ export function SshKeyUploadDialog({
       window.clearInterval(timer);
     };
   }, [session]);
+
+  useEffect(() => {
+    if (session?.status !== "succeeded" || reportedRef.current) return;
+    reportedRef.current = true;  // a session admits one hand-over
+    onVerified(session.id);
+  }, [session, onVerified]);
 
   useEffect(() => {
     const element = outputRef.current;
@@ -134,6 +144,7 @@ export function SshKeyUploadDialog({
                     否则系统无法防止 agent 以后未经授权使用你的个人账号登录。
                   </li>
                   <li>密码只经网站转发给服务器 B 上的 ssh-copy-id，不会保存或记录。</li>
+                  <li>每次把工单交给自填机器都要重新确认并上传；公钥仍在对方机器上时 ssh-copy-id 会跳过，不再要求密码。</li>
                 </ul>
               </div>
               <label className="jira-agent-check">

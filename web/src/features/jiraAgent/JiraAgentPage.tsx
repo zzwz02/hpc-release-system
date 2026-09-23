@@ -17,6 +17,7 @@ import { isRM } from "../../lib/roles";
 import { toast } from "../../lib/toast";
 import { MachineChoice } from "./MachineChoice";
 import { MachinesDialog } from "./MachinesDialog";
+import { SshKeyUploadDialog } from "./SshKeyUploadDialog";
 import {
   CLOSE_REASON_LABELS,
   CONCLUSION_LABELS,
@@ -29,10 +30,12 @@ import {
   fileToUpload,
   getConversation,
   getConversationEvents,
+  getSshKeyInfo,
   handoverIssue,
   jiraAgentConversationKey,
   jiraAgentIssueKey,
   jiraAgentIssueSearchKey,
+  jiraAgentSshKeyInfoKey,
   listHandledIssues,
   previewIssue,
   retryTurnComment,
@@ -619,9 +622,16 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
   // "" = the agent picks from the system list; null = the choice is not ready yet
   const [machine, setMachine] = useState<string | null>(null);
   const [postComment, setPostComment] = useState(true);
+  // a user-given machine: the SSH key upload dialog that must pass before this hand-over
+  const [uploading, setUploading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const recovering = Boolean(preview.open_conversation?.recovering);
   const disabled = !preview.can_handover;
+  const keyQuery = useQuery({
+    queryKey: jiraAgentSshKeyInfoKey(preview.agent_group),
+    queryFn: () => getSshKeyInfo(preview.agent_group),
+    enabled: Boolean(machine),
+  });
 
   async function submit() {
     const open = preview.open_conversation;
@@ -637,6 +647,11 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
     ) {
       return;
     }
+    if (machine) setUploading(true);
+    else await handover("");
+  }
+
+  async function handover(sshKeySessionId: string) {
     setBusy(true);
     try {
       const files = await readFiles(fileInput.current?.files ?? null);
@@ -646,6 +661,7 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
         files,
         new_conversation: true,
         machine: machine ?? "",
+        ...(sshKeySessionId ? { ssh_key_session_id: sshKeySessionId } : {}),
         post_comment: postComment,
       });
       toast.success("已交给 agent，进入排队");
@@ -683,6 +699,17 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
         </div>
         {recovering && <p className="jira-agent-warning">{RECOVERING_TEXT}</p>}
       </div>
+      {uploading && machine && keyQuery.data && (
+        <SshKeyUploadDialog
+          target={machine}
+          keyInfo={keyQuery.data}
+          onVerified={(sessionId) => {
+            setUploading(false);
+            void handover(sessionId);
+          }}
+          onClose={() => setUploading(false)}
+        />
+      )}
     </div>
   );
 }

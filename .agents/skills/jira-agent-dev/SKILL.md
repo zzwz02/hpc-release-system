@@ -14,7 +14,7 @@ description: Develop, debug, or review the JIRA agent (per-group digital employe
 - **A/B 分工**：网站（A）只管理对话、消息、文件、排队、执行记录和 JIRA 评论，通过 WebSocket + capability token 直连组服务器 B 上的 `codex app-server`。**B 上不写适配服务**，只有启动命令、知识包、Codex `auth.json` 和访问 C/D/E 的 SSH 凭证。沙箱与审批策略由 B 的启动参数决定，A 在 `thread/start`、`turn/start` 中不传 sandbox/approval。
 - **执行机器**（交单时二选一，存于对话 `machine`，续办沿用）：
   - 空 = agent 从本组系统机器列表（`jira_agent_machines`，仅 RM 维护，RM 提前在 B 上配好免密）按需自选，结论 `machine` 字段记录实际使用的机器；列表为空时交单 409。
-  - `user@host` = 用户自填，不进系统列表。必须先经上传公钥终端（`services/jira_agent_ssh_key.py`）：A 用 app-server 的 `command/exec`（tty）在 **B 上**跑 `ssh-copy-id -i <SSH_KEY_PATH>.pub`，成功后在 B 上 `ssh -o BatchMode=yes ... true`，通过才写 `jira_agent_ssh_keys`（网站用户 + 组 + 目标 + 公钥指纹）；交单时按当前公钥指纹校验。密码只经 `command/exec/write` 转发，不入库、不记日志、不进事件。
+  - `user@host` = 用户自填，不进系统列表。**每次交单**都要先经上传公钥终端（`services/jira_agent_ssh_key.py`）：A 用 app-server 的 `command/exec`（tty）在 **B 上**跑 `ssh-copy-id -i <SSH_KEY_PATH>.pub`，成功后在 B 上 `ssh -o BatchMode=yes ... true`。通过的会话（内存中，10 分钟内有效）是一次性凭证：交单带 `ssh_key_session_id`，`sessions.claim` 核对用户、组、目标后作废，不记录机器是否验证过。密码只经 `command/exec/write` 转发，不入库、不记日志、不进事件。
   - 界面必须提醒用专用测试账号：上传后 agent 可免密登录，公钥不随对话失效。
   - `user@host` 的格式校验（`domain.parse_ssh_target`）保证不能以 `-` 开头、不带端口和空格，防止变成 ssh 参数。
 - **只评论**：agent 不改 assignee、不转单、不 resolve、不提交代码；网站把结构化结论渲染成评论追加到 JIRA，由 assignee 决定下一步（human-in-the-loop）。
@@ -54,7 +54,7 @@ Runner 在 FastAPI lifespan 中启停（`settings.jira_agent_runner_enabled`）�
 ## 数据模型与状态
 
 - **`jira_agent_conversations`**：`status` 为 open/closed，`close_reason` 为 superseded/new_conversation；另有 `thread_id`、`workspace`、`thread_archived`、`machine`（空 = 从系统机器列表自选，否则自填 `user@host`，旧库由 `_ensure_column` 补列）。
-- **`jira_agent_machines`**：系统机器列表（组 + `ssh_target` 唯一 + 说明），仅 RM 增删改。**`jira_agent_ssh_keys`**：自填机器上传并验证过的记录（网站用户 + 组 + 目标 + 公钥指纹）；B 的密钥换了，指纹不同，需要重新上传。
+- **`jira_agent_machines`**：系统机器列表（组 + `ssh_target` 唯一 + 说明），仅 RM 增删改。自填机器不入库，旧库的 `jira_agent_ssh_keys` 表在初始化时删除。
 - **`jira_agent_turns`**：
   - `status` 取 queued / running / completed / failed / cancelled / interrupted。queued 行就是持久队列，按 rowid FIFO；每个对话最多一个 queued 或 running（部分唯一索引）。
   - `comment_status` 为空 / pending / posted / failed，失败只重试发布，不重跑模型。`post_comment`（默认 1，旧库由 `_ensure_column` 补列）为 0 的轮次完成后 `comment_status` 保持空。

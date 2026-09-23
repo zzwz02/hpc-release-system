@@ -1181,16 +1181,25 @@ def _start_key_session(env, target: str) -> str:
     return response.json()["id"]
 
 
-def test_user_given_machine_needs_key_uploaded_from_b_and_verified(env) -> None:
+def _upload_key(env, target: str) -> str:
+    """Run one key upload that succeeds; returns the session id."""
+    session_id = _start_key_session(env, target)
+    _key_session(env, session_id, lambda s: "password:" in s["output"])
+    env.client.post(f"/api/jira-agent/ssh-key-sessions/{session_id}/input", json={"data": "s3cret\n"})
+    assert _key_session(env, session_id, _finished)["status"] == "succeeded"
+    return session_id
+
+
+def test_user_given_machine_needs_a_fresh_key_upload_for_each_handover(env) -> None:
     target = "tester@10.0.0.9"
     refused = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-1", "machine": target})
     assert refused.status_code == 409
-    assert "上传到 tester@10.0.0.9" in refused.json()["error"]
+    assert "上传 SSH 公钥到 tester@10.0.0.9" in refused.json()["error"]
     bad = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-1", "machine": "-oProxyCommand=sh@x"})
     assert bad.status_code == 400
 
     info = env.client.get("/api/jira-agent/ssh-key-info", params={"group": "HPC"}).json()
-    assert (info["fingerprint"], info["comment"], info["verified_targets"]) == (FINGERPRINT, "hpc-jira-agent@B", [])
+    assert (info["fingerprint"], info["comment"]) == (FINGERPRINT, "hpc-jira-agent@B")
 
     session_id = _start_key_session(env, target)
     _key_session(env, session_id, lambda s: "password:" in s["output"])
@@ -1220,9 +1229,21 @@ def test_user_given_machine_needs_key_uploaded_from_b_and_verified(env) -> None:
     [check] = [params for params in env.fake.params("command/exec") if not params.get("tty")]
     assert check["command"][:3] == ["ssh", "-o", "BatchMode=yes"]
     assert check["command"][-2:] == [target, "true"]
-    assert env.client.get("/api/jira-agent/ssh-key-info", params={"group": "HPC"}).json()["verified_targets"] == [target]
 
-    conversation = _handover(env, "MC3-1", machine=target)["conversation"]
+    env.as_user("carol")  # the upload belongs to the user who did it
+    other = env.client.post(
+        "/api/jira-agent/conversations",
+        json={"issue_key": "MC3-1", "machine": target, "ssh_key_session_id": session_id},
+    )
+    assert other.status_code == 409
+    env.as_user("alice")
+    elsewhere = env.client.post(
+        "/api/jira-agent/conversations",
+        json={"issue_key": "MC3-1", "machine": "tester@10.0.0.8", "ssh_key_session_id": session_id},
+    )
+    assert elsewhere.status_code == 409
+
+    conversation = _handover(env, "MC3-1", machine=target, ssh_key_session_id=session_id)["conversation"]
     assert conversation["machine"] == target
     _wait(env, conversation["id"], _done)
     prompt = env.fake.params("turn/start")[0]["input"][0]["text"]
@@ -1233,12 +1254,17 @@ def test_user_given_machine_needs_key_uploaded_from_b_and_verified(env) -> None:
     stored = b"".join(path.read_bytes() for path in env.tmp.rglob("*") if path.is_file())
     assert b"s3cret" not in stored
 
-    env.as_user("carol")  # the upload record belongs to the user who did it
-    other = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-2", "machine": target})
-    assert other.status_code == 409
+    # the upload admits one hand-over; the next one needs its own upload
+    reused = env.client.post(
+        "/api/jira-agent/conversations",
+        json={"issue_key": "MC3-2", "machine": target, "ssh_key_session_id": session_id},
+    )
+    assert reused.status_code == 409
+    second = _handover(env, "MC3-2", machine=target, ssh_key_session_id=_upload_key(env, target))
+    assert second["conversation"]["machine"] == target
 
 
-def test_key_upload_failures_and_timeouts_record_nothing(env, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_failed_or_timed_out_key_uploads_admit_no_handover(env, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.services import jira_agent_ssh_key
 
     target = "tester@10.0.0.9"
@@ -1249,6 +1275,11 @@ def test_key_upload_failures_and_timeouts_record_nothing(env, monkeypatch: pytes
     failed = _key_session(env, session_id, _finished)
     assert failed["status"] == "failed"
     assert "免密登录" in failed["message"] and "Permission denied" in failed["message"]
+    refused = env.client.post(
+        "/api/jira-agent/conversations",
+        json={"issue_key": "MC3-1", "machine": target, "ssh_key_session_id": session_id},
+    )
+    assert refused.status_code == 409
 
     env.fake.verify_exit = 0
     session_id = _start_key_session(env, target)
@@ -1265,5 +1296,23 @@ def test_key_upload_failures_and_timeouts_record_nothing(env, monkeypatch: pytes
     assert "秒未完成" in timed_out["message"]
     assert not env.fake.params("command/exec/terminate")  # killed by the app-server, not the website
 
-    assert env.client.get("/api/jira-agent/ssh-key-info", params={"group": "HPC"}).json()["verified_targets"] == []
     assert len([params for params in env.fake.params("command/exec") if not params.get("tty")]) == 1
+
+
+def test_old_database_loses_the_ssh_key_records_table(tmp_path: Path) -> None:
+    path = tmp_path / "old.db"
+    import sqlite3
+
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE jira_agent_ssh_keys (id TEXT PRIMARY KEY, username TEXT)")
+    old.execute("INSERT INTO jira_agent_ssh_keys VALUES ('jak_1', 'alice')")
+    old.commit()
+    old.close()
+    reset_jira_agent_init_state()
+
+    conn = connect_jira_agent(f"sqlite:///{path.as_posix()}")
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    conn.close()
+    reset_jira_agent_init_state()
+    assert "jira_agent_ssh_keys" not in tables
+    assert "jira_agent_conversations" in tables

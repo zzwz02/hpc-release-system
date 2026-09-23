@@ -188,7 +188,6 @@ const keyInfoResponse = {
   fingerprint: "SHA256:lrNsVsx6+k+Hy/d+CeYkXjLtXLZxRxAKqM9wH/H/KuI",
   comment: "hpc-jira-agent@B",
   path: "/home/agent/.ssh/id_ed25519.pub",
-  verified_targets: ["tester@10.0.0.9"],
 };
 
 function mockBackend({ open = true, rm = false }: { open?: boolean; rm?: boolean } = {}) {
@@ -425,15 +424,21 @@ describe("JiraAgentPage", () => {
     expect(screen.queryByLabelText("补充信息")).not.toBeInTheDocument();
   });
 
-  it("a user-given machine needs the SSH key uploaded, and the upload needs the risks confirmed", async () => {
+  it("every hand-over to a user-given machine uploads the SSH key after the risks are confirmed", async () => {
     mockBackend({ open: false });
-    vi.mocked(apiPost).mockImplementation(async (path: string) => {
-      if (path === "/api/jira-agent/ssh-key-sessions") {
-        return {
-          id: "jak_1", agent_group: "HPC", target: "other@10.0.0.8", fingerprint: keyInfoResponse.fingerprint,
-          status: "running", message: "", exit_code: null, output: "password: ", offset: 10,
-        };
+    const session = {
+      id: "jak_1", agent_group: "HPC", target: "tester@10.0.0.9", fingerprint: keyInfoResponse.fingerprint,
+      status: "running", message: "", exit_code: null, output: "password: ", offset: 10,
+    };
+    const backendGet = vi.mocked(apiGet).getMockImplementation()!;
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/jira-agent/ssh-key-sessions/jak_1")) {
+        return { ...session, status: "succeeded", message: "连接测试通过", output: "", offset: 10 };
       }
+      return backendGet(path);
+    });
+    vi.mocked(apiPost).mockImplementation(async (path: string) => {
+      if (path === "/api/jira-agent/ssh-key-sessions") return session;
       if (path === "/api/jira-agent/conversations") return { created: true, conversation };
       throw new Error(`unexpected POST ${path}`);
     });
@@ -442,10 +447,16 @@ describe("JiraAgentPage", () => {
 
     await user.click(await screen.findByLabelText(/自填 user@host/));
     const submit = screen.getByRole("button", { name: "交给 agent" });
-    await user.type(screen.getByLabelText("自填机器"), "other@10.0.0.8");
-    expect(submit).toBeDisabled();
+    await user.type(screen.getByLabelText("自填机器"), "tester@10.0.0.9");
+    expect(await screen.findByText(/每次交给 agent 时都会弹出风险提醒/)).toBeInTheDocument();
+    await waitFor(() => expect(submit).toBeEnabled());
 
-    await user.click(await screen.findByRole("button", { name: "上传 SSH 公钥" }));
+    // closing the dialog without a passed upload hands nothing over
+    await user.click(submit);
+    await user.click(within(screen.getByRole("dialog", { name: "上传 SSH 公钥" })).getByRole("button", { name: "关闭" }));
+    expect(apiPost).not.toHaveBeenCalledWith("/api/jira-agent/conversations", expect.anything());
+
+    await user.click(submit);
     const dialog = screen.getByRole("dialog", { name: "上传 SSH 公钥" });
     expect(within(dialog).getByTestId("jira-agent-key-warning")).toHaveTextContent("请使用专用测试账号，不要使用个人账号");
     expect(within(dialog).getByTestId("jira-agent-key-warning")).toHaveTextContent("免密登录");
@@ -454,23 +465,18 @@ describe("JiraAgentPage", () => {
     await user.click(within(dialog).getByRole("checkbox"));
     await user.click(start);
 
-    expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/ssh-key-sessions", { agent_group: "HPC", target: "other@10.0.0.8" });
-    expect(await within(dialog).findByTestId("jira-agent-key-terminal")).toHaveTextContent("password:");
+    expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/ssh-key-sessions", { agent_group: "HPC", target: "tester@10.0.0.9" });
     expect(within(dialog).getByLabelText("密码")).toHaveAttribute("type", "password");
-
-    // a target already verified for this user can be handed over directly
-    await user.click(within(dialog).getByRole("button", { name: "结束并关闭" }));
-    await user.clear(screen.getByLabelText("自填机器"));
-    await user.type(screen.getByLabelText("自填机器"), "tester@10.0.0.9");
-    expect(screen.getByText("已上传公钥并通过连接测试")).toBeInTheDocument();
-    await waitFor(() => expect(submit).toBeEnabled());
-    await user.click(submit);
-    await waitFor(() => {
-      expect(apiPost).toHaveBeenCalledWith(
-        "/api/jira-agent/conversations",
-        expect.objectContaining({ machine: "tester@10.0.0.9" }),
-      );
-    });
+    await waitFor(
+      () => {
+        expect(apiPost).toHaveBeenCalledWith(
+          "/api/jira-agent/conversations",
+          expect.objectContaining({ machine: "tester@10.0.0.9", ssh_key_session_id: "jak_1" }),
+        );
+      },
+      { timeout: 3000 },
+    );
+    expect(vi.mocked(apiPost).mock.calls.filter(([path]) => path === "/api/jira-agent/conversations")).toHaveLength(1);
   });
 
   it("everyone can view the system machines, only RM can change them", async () => {

@@ -178,18 +178,6 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL,
             UNIQUE (agent_group, ssh_target)
         );
-
-        -- user@host a website user put server B's public key on (password
-        -- terminal) with key login then verified from B.  Not system machines.
-        CREATE TABLE IF NOT EXISTS jira_agent_ssh_keys (
-            id TEXT PRIMARY KEY,
-            username TEXT NOT NULL,
-            agent_group TEXT NOT NULL,
-            ssh_target TEXT NOT NULL,
-            key_fingerprint TEXT NOT NULL,
-            verified_at TEXT NOT NULL,
-            UNIQUE (username, agent_group, ssh_target, key_fingerprint)
-        );
         """
     )
     # '' = the agent picks from the system machine list; else user@host.
@@ -199,6 +187,9 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
     # 0 = keep this turn's result on the website only (no JIRA comment); the
     # choice sent with the turn's latest message wins.
     _ensure_column(conn, "jira_agent_turns", "post_comment", "INTEGER NOT NULL DEFAULT 1")
+    # A user-given machine now needs a fresh key upload on every hand-over,
+    # so the old per-user "verified" records are gone.
+    conn.execute("DROP TABLE IF EXISTS jira_agent_ssh_keys")
     conn.commit()
 
 

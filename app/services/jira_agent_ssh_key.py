@@ -6,6 +6,10 @@ app-server (``command/exec``), then checks key login from B with BatchMode.
 B keeps running only codex app-server.  What the user types is forwarded to
 the PTY and never stored or logged.
 
+Every hand-over to a user-given machine needs a fresh upload: a succeeded
+session is a one-time pass that the hand-over claims (``claim``), so nothing
+about the machine is remembered between hand-overs.
+
 The app-server enforces the time limit (``PROCESS_TIMEOUT_MS``), so a
 session cannot outlive it even if the website stops.  Sessions live in this
 process (the website runs a single worker).
@@ -20,12 +24,10 @@ import time
 from dataclasses import dataclass, field
 
 from app.api.errors import ApiError
-from app.db.connection import transaction
 from app.domain import jira_agent as domain
 from app.integrations.codex_app_server import CodexAppServerClient, CodexAppServerError
-from app.repositories import jira_agent_repo as repo
 from app.repositories.base import new_id
-from app.services.jira_agent_runner import load_groups, open_db
+from app.services.jira_agent_runner import load_groups
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,7 @@ class KeySession:
     message: str = ""
     exit_code: int | None = None
     closed_by_user: bool = False
+    claimed: bool = False  # a succeeded session admits exactly one hand-over
     finished: float = 0.0
     task: asyncio.Task | None = None
 
@@ -108,39 +111,16 @@ async def public_key(group: domain.AgentGroup) -> dict:
     return {**info, "path": path}
 
 
-async def key_info(user: dict, agent_group: str) -> dict:
+async def key_info(agent_group: str) -> dict:
     group = _group(agent_group)
     key = await public_key(group)
-    conn = open_db()
-    try:
-        targets = [
-            row["ssh_target"]
-            for row in repo.list_ssh_keys(
-                conn, username=user["username"], agent_group=group.name, key_fingerprint=key["fingerprint"],
-            )
-        ]
-    finally:
-        conn.close()
     return {
         "agent_group": group.name,
         "display_name": group.display_name,
         "fingerprint": key["fingerprint"],
         "comment": key["comment"],
         "path": key["path"],
-        "verified_targets": targets,
     }
-
-
-async def has_verified_key(user: dict, group: domain.AgentGroup, target: str) -> bool:
-    key = await public_key(group)
-    conn = open_db()
-    try:
-        return repo.has_ssh_key(
-            conn, username=user["username"], agent_group=group.name,
-            ssh_target=target, key_fingerprint=key["fingerprint"],
-        )
-    finally:
-        conn.close()
 
 
 class KeySessionManager:
@@ -193,6 +173,21 @@ class KeySessionManager:
 
     def get(self, user: dict, session_id: str, after: int) -> dict:
         return self._own(user, session_id).view(after)
+
+    def claim(self, user: dict, session_id: str, group: domain.AgentGroup, target: str) -> None:
+        """Spend this user's succeeded upload of ``target`` on one hand-over."""
+        self._prune()
+        session = self._sessions.get(session_id)
+        if (
+            session is None
+            or session.username.casefold() != user["username"].casefold()
+            or session.group.name != group.name
+            or session.target != target
+            or session.status != "succeeded"
+            or session.claimed
+        ):
+            raise ApiError(409, f"每次交给自填机器前都要上传 SSH 公钥到 {target} 并通过连接测试")
+        session.claimed = True
 
     async def write(self, user: dict, session_id: str, data: str) -> dict:
         session = self._own(user, session_id)
@@ -270,15 +265,6 @@ class KeySessionManager:
                     timeout_ms=VERIFY_TIMEOUT_MS,
                 )
                 if result.get("exitCode") == 0:
-                    conn = open_db()
-                    try:
-                        with transaction(conn):
-                            repo.record_ssh_key(
-                                conn, username=session.username, agent_group=session.group.name,
-                                ssh_target=session.target, key_fingerprint=session.fingerprint,
-                            )
-                    finally:
-                        conn.close()
                     session.status = "succeeded"
                     session.message = f"连接测试通过：服务器 B 可以免密登录 {session.target}"
                 else:

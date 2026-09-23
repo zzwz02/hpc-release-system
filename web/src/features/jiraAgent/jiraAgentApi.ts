@@ -257,6 +257,8 @@ export function handoverIssue(body: {
   files?: UploadPayload[];
   new_conversation?: boolean;
   machine?: string;
+  /** The key upload to a user@host machine that just passed; each hand-over needs its own. */
+  ssh_key_session_id?: string;
   post_comment?: boolean;
 }) {
   return apiPost<{ created: boolean; conversation: AgentConversation }>(
@@ -339,8 +341,6 @@ export interface SshKeyInfo {
   fingerprint: string;
   comment: string;
   path: string;
-  /** user@host this user already uploaded the current key to, with key login verified from server B. */
-  verified_targets: string[];
 }
 
 export type KeySessionStatus = "running" | "verifying" | "succeeded" | "failed" | "closed";
