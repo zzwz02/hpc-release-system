@@ -81,6 +81,9 @@ def _xlsx_to_text(raw: bytes, *, max_rows_per_sheet: int = 2000) -> str:
     try:
         for name in workbook.sheetnames:
             sheet = workbook[name]
+            # Read-only mode trusts the sheet's stored <dimension>, which some
+            # exporters write as A1:A1; reset it so every row is read.
+            sheet.reset_dimensions()
             chunks.append(f"### Sheet: {name} ###")
             for index, row in enumerate(sheet.iter_rows(values_only=True)):
                 if index >= max_rows_per_sheet:
