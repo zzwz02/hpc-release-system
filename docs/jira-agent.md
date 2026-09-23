@@ -57,10 +57,10 @@ JIRA agent 是按组配置的“数字员工”。网站（服务器 A）负责�
 
 ## 部署服务器 B（HPC agent）
 
-以下以 hpc 执行用户在 B 上操作为例（MVP 阶段 A、B、C 同为 10.2.118.75，使用 zhawu 账号）。
+以下以 B 上的 hpc 执行用户为例。
 
 1. **Codex 登录**：`codex login`，生成 `~/.codex/auth.json`。凭证只存在于 B。
-2. **SSH 访问 C/D/E**：为 hpc 用户生成密钥（`ssh-keygen -t ed25519 -C hpc-jira-agent@<B>`），同目录必须有 `.pub`（只有私钥时用 `ssh-keygen -y -f <私钥> > <私钥>.pub` 补出），并把私钥路径写进 A 的 `SSH_KEY_PATH`。系统机器列表中的机器由 RM 提前配好免密（`ssh -o BatchMode=yes <user@host> true` 能通过），再在页面 **系统机器** 中登记。自填机器用的 `ssh-copy-id` 在 B 上运行，B 需要安装它（openssh-client 自带）。
+2. **SSH 访问 C/D/E**：为 hpc 用户生成密钥（`ssh-keygen -t ed25519 -C hpc-jira-agent@<B>`），同目录必须有 `.pub`（只有私钥时用 `ssh-keygen -y -f <私钥> > <私钥>.pub` 补出），并把私钥路径写进 A 的 `[jira_agent:<组名>] SSH_KEY_PATH`。系统机器列表中的机器由 RM 提前配好免密（`ssh -o BatchMode=yes <user@host> true` 能通过），再在页面 **系统机器** 中登记。自填机器用的 `ssh-copy-id` 在 B 上运行，B 需要安装它（openssh-client 自带）。
 3. **同步知识包**（在仓库检出目录执行）：
    ```bash
    PACK_DIR=$HOME/hpc-jira-agent deploy/jira-agent/sync-pack.sh
@@ -97,25 +97,11 @@ WantedBy=multi-user.target
 
 ## 配置网站 A
 
-1. 在 `release_system.conf`（模板 `release_system.conf.example`，已 gitignore）中为每个组写一节 `[jira_agent:<组名>]`：
-
-   | 键 | 说明 |
-   | --- | --- |
-   | `CODEX_WS_URL` | B 的地址，如 `ws://10.2.x.x:4510` |
-   | `CODEX_WS_TOKEN` | 与 B 上 `ws-token` 文件内容一致 |
-   | `WORKSPACE_ROOT` | B 上工作目录根的绝对路径，如 `/home/hpc-agent/hpc-jira-agent/workspaces` |
-   | `COMPONENTS` | 该组负责的 JIRA component，用于选择数字员工 |
-   | `JIRA_MEMBERS_GROUP` | 该组的 JIRA 用户组（如 `pde_hpc`），RM 的默认工单列表按 `membersOf` 查询 |
-   | `SSH_KEY_PATH` | B 上执行账号的 SSH 私钥绝对路径，同目录须有 `.pub`；自填机器上传的就是这把公钥 |
-   | `MAX_CONCURRENT`、`TURN_TIMEOUT_SECONDS` | 并发上限和每轮限时 |
-
-2. 同一文件的 `[jira]` 节提供 JIRA 地址和 token，用于读取工单、下载附件、发布评论。
-3. 可选：在同一文件的 `[site]` 中填写 `PUBLIC_BASE_URL`（网站对外地址），JIRA 评论会附对话链接。
-4. 可选环境变量：
-   - `JIRA_AGENT_DATABASE_URL`：默认 `sqlite:///jira_agent_tasks.db`。
-   - `JIRA_AGENT_DATA_DIR`：上传文件和拉回产物的存放目录，默认 `jira_agent_data/`。
-5. 网站保持单 worker 运行（队列 runner 在进程内）。A 到 B 若经过 HTTP 代理，把 B 的地址加入 `NO_PROXY`。
-6. 打开 **JIRA agent** 页，或调用 `GET /api/jira-agent/health` 确认连通。
+1. 在 `release_system.conf` 中为每个组写一节 `[jira_agent:<组名>]`，各键（B 的地址与 token、工作目录根、component、JIRA 用户组、SSH 私钥路径、并发与每轮限时）的含义和必填规则见 `release_system.conf.example`。`CODEX_WS_TOKEN` 与 B 上 `ws-token` 文件内容一致。
+2. 同一文件的 `[jira]` 提供 JIRA 地址和 token（读单、下载附件、发评论）；可选的 `[site] PUBLIC_BASE_URL` 让 JIRA 评论附对话链接。
+3. 可选环境变量：`JIRA_AGENT_DATABASE_URL`（默认 `sqlite:///jira_agent_tasks.db`）、`JIRA_AGENT_DATA_DIR`（上传文件和拉回产物，默认 `jira_agent_data/`）。
+4. 网站保持单 worker（队列 runner 在进程内）。A 到 B 若经过 HTTP 代理，把 B 的地址加入 `NO_PROXY`。
+5. 打开 **JIRA agent** 页，或调用 `GET /api/jira-agent/health` 确认连通。
 
 ## 把 B 迁移到独立服务器
 

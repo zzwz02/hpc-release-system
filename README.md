@@ -2,7 +2,7 @@
 
 用于管理 HPC / AI4Sci App 的发布范围、Owner 文档、Gerrit app_info、QA 结果、CICD 申请与交付，以及发布文档产物。当前运行入口是 `app/main.py`（FastAPI）和 `web/src/main.tsx`（React）。
 
-本文说明当前实现，规则以代码为准。需求建议见 [发布流程改进建议](docs/release-process-roadmap.md)，其中的拟建功能不代表已经上线。项目数据库可能是真实业务库，开发、测试和文档导出应使用下面说明的隔离方式。
+本文说明当前实现，规则以代码为准；拟建功能见 [发布流程改进建议](docs/release-process-roadmap.md)。仓库根的数据库可能是真实业务库，开发、测试和导出按下文隔离。
 
 ## 从哪里开始
 
@@ -17,7 +17,7 @@
 
 这是职责摘要，不是权限实现。角色、页签与命名能力以 [access_control.json](shared/access_control.json) 为准；所有权、阶段、锁定与申请状态还会进一步限制操作。后端鉴权是最终边界，前端按钮仅用于展示。
 
-现有页面还包括开发 WIKI、Jenkins 失败查询、CICD 助手及其 V2 界面、JIRA agent。完整导航见 [routeConfig.ts](web/src/routes/routeConfig.ts)。
+其他页面：开发 WIKI、Jenkins 失败查询、CICD 助手（旧版 V1 只保留直达地址）、JIRA agent。完整导航见 [routeConfig.ts](web/src/routes/routeConfig.ts)。
 
 ## 发布周期怎么运行
 
@@ -42,7 +42,7 @@ flowchart LR
 
 - 冻结前可以新增发布范围。冻结后不能升级为 `release`，已在发布范围内的 app_info 更新也不能扩大受控 QA 范围。
 - 文档截止前仍可维护文档、app_info 和 Owner 确认；截止后保留的操作包括符合规则的决策调整、CICD 配置、Gerrit 身份、QA 状态与日志。
-- 最终锁定阶段的领域操作表为空。各接口是否完整执行该表仍需结合调用链核查，不能把规则定义当成并发安全保证。
+- 最终锁定后阶段操作表为空，受阶段管控的修改全部拒绝。
 - 空 deadline 表示尚未设置截止时间。日期输入提交 `YYYY-MM-DD`，后端 deadline 归一化为该日 `23:59`。
 
 ## 三个概念必须区分
@@ -79,15 +79,7 @@ JIRA agent 是按组配置的数字员工，第一阶段处理 HPC 组的 Bug �
 | 服务器 B（组的 `codex app-server`） | agent 本体；本组知识包（AGENTS.md、skills）、Codex 登录凭证、访问 C/D/E 的 SSH 凭证。B 上不部署适配服务 |
 | 服务器 C/D/E | 复现、构建、测试环境，由 B 上的执行用户登录。交单时选择：agent 从 RM 维护的系统机器列表中自选，或用户自填 `user@host`（先经网页终端从 B 上传公钥并测试免密登录） |
 
-使用规则：
-
-- 只有当前 JIRA assignee 或 RM 可以把工单交给 agent 或与 agent 对话，每次写操作都实时核对 JIRA。页签可见角色以 `access_control.json` 的 `jira-agent` 为准。
-- 找单：留空显示自己名下未关闭的工单，RM 显示本组 JIRA 用户组（`JIRA_MEMBERS_GROUP`）成员的未关闭工单；输入一个 JIRA 编号只显示这张工单（一次只能输入一个）；其他输入按 JQL 查询。RM 还可以切到“agent 处理过”，查看所有交给过 agent 的工单，包括 JIRA 已关闭的。
-- agent **只在 JIRA 追加评论**（结论、证据、补丁、下一步建议），不改 assignee、状态或代码。assignee 读评论后决定 resolve、转交，或在网站补充信息让 agent 继续。
-- 交单和发消息时可以取消勾选“本轮结论发布到 JIRA 评论”，这一轮的结论只在网页显示，适合了解详情或让 agent 继续分析、由人来判断。按轮次生效，一轮内以最后一次发送的选择为准。
-- 一个对话对应一个 Codex thread 和 B 上一个工作目录，归属于交单时的 assignee。assignee 变更后旧对话只读，新 assignee 交单时新建对话；转回原 assignee 也不复用。同一 assignee 可以主动新建对话。
-- 网站侧持久排队，每组同时运行的轮次不超过 `MAX_CONCURRENT`；运行中的补充信息直接发给 agent，排队中的消息合并到这一轮。机器资源（如 GPU）由 B 上知识包约定的 `flock` 锁控制。
-- 网站重启不丢轮次：Codex 的轮次不依赖网站连接，重启后网站重新连接 B，本轮仍在运行则继续接管，已结束则照常收尾并发评论，尚未开始则重新排队。只有 B 也重启过或连不上 B 时才标记为已中断，发送消息可继续。详见 [docs/jira-agent.md](docs/jira-agent.md)。
+要点：只有当前 JIRA assignee 或 RM 能交单和发消息；agent **只在 JIRA 追加评论**，不改 assignee、状态或代码；每组并发由网站排队控制，网站重启不丢轮次。完整的找单、对话、排队与恢复规则见 [docs/jira-agent.md](docs/jira-agent.md)。
 
 实现入口：[jira_agent_service.py](app/services/jira_agent_service.py)（交单与对话规则）、[jira_agent_runner.py](app/services/jira_agent_runner.py)（排队与执行）、[codex_app_server.py](app/integrations/codex_app_server.py)（通用 Codex 协议客户端）、[jira_agent.py](app/domain/jira_agent.py)（结论 schema、提示词、评论格式）、[JiraAgentPage.tsx](web/src/features/jiraAgent/JiraAgentPage.tsx)，B 侧知识包与启动脚本在 [deploy/jira-agent/](deploy/jira-agent/)。
 
@@ -110,7 +102,7 @@ JIRA agent 是按组配置的数字员工，第一阶段处理 HPC 组的 Bug �
 
 常规生成的四类产物为 `release_note`、`manual`、`ai4sci`、`data`。Manager Review CSV 单独生成；测试范围 CSV 按需导出，不是 artifacts 的一个 kind。最终锁定生成上述四类 final 产物，不会自动把 Manager Review 升格为最终审批记录。
 
-生成文档是一个时间点的结果，不能假定后续编辑已同步到旧草稿。Gerrit plan 接口只返回计划与命令，**不执行 Git push**。C500/X201 RST 合并使用 [文档整合技能](.agents/skills/c500-manual-integrator/SKILL.md)，指定目标 release 后再导出，避免误取另一个周期的 final 产物。
+生成文档是一个时间点的结果，不能假定后续编辑已同步到旧草稿。C500/X201 RST 合并使用 [文档整合技能](.agents/skills/c500-manual-integrator/SKILL.md)，指定目标 release 后再导出，避免误取另一个周期的 final 产物。
 
 ## 代码结构与事实源
 
@@ -122,7 +114,7 @@ app/repositories/      数据访问
 app/db/                主库与助手库连接、建表和兼容处理
 app/integrations/      LDAP / Gerrit / Jira / LLM / Codex app-server 集成
 web/src/               React 页面、HTTP 客户端、查询缓存和 UI 状态
-shared/                跨前后端权限、词表和集成默认配置
+shared/                跨前后端权限、词表和 Gerrit 路径
 deploy/jira-agent/     JIRA agent 服务器 B 的启动脚本与 HPC 知识包
 .agents/skills/        开发、JIRA agent 开发与 C500/X201 文档工作流（.claude/skills 为指向它的软链接）
 ```
@@ -131,15 +123,13 @@ deploy/jira-agent/     JIRA agent 服务器 B 的启动脚本与 HPC 知识包
 - 稳定词表和字段描述：`shared/domain_metadata.json` → 后端 `domain/shared_metadata.py` 及前端对应 lib。
 - Gerrit 路径：`shared/integrations.json` → `app/config.py` / 前端 `lib/git.ts`；浏览器只取得它所需的非敏感配置。
 - 运行时服务配置：`release_system.conf` → `app/runtime_config.py`，每次使用时现读。
-- 时间：新写入使用 `app/timeutil.py` 的北京时间无时区字符串；deadline 精度为分钟，业务事件通常精确到秒，时间线为日期。**旧库仍可能有 UTC ISO 数据，不可假定迁移已完成，也不能对全部值统一加 8 小时。**
-- Markdown：页面中的 HTML 注入集中在 `web/src/components/Markdown.tsx` 的 DOMPurify 流程。
-- 刷新：全局查询默认永久新鲜、关闭自动重取；页面显式刷新或写后失效，QA AI 任务与 JIRA agent 运行中的对话例外按秒轮询。进入页面并不保证重取已缓存数据。
+- 时间：新写入为 `app/timeutil.py` 的北京时间无时区字符串；**旧库仍可能有 UTC ISO 数据**，不能对全部值统一加 8 小时。
 
-`server.py`、`index.html`、`release_system/` 保留为旧实现与测试兼容参考，日常功能开发不修改这些文件。它们的旧行为、注释和 historical golden 都不能推翻当前明确的业务实现。
+`server.py`、`index.html`、`release_system/` 是旧实现与测试兼容参考，日常开发不修改，其行为也不能推翻当前实现。开发约束见 [release-system-dev 技能](.agents/skills/release-system-dev/SKILL.md)。
 
 ## 安装和本地开发
 
-后端按 `pyproject.toml` 要求使用 Python 3.11+；前端需能安装 `web/package-lock.json` 中依赖的 Node/npm 环境。后端依赖暂未完整锁定版本，安装可重复性仍有改进空间。
+后端按 `pyproject.toml` 使用 Python 3.11+，依赖未锁定版本；前端依赖见 `web/package-lock.json`。
 
 ```bash
 python3 -m venv .venv
@@ -150,7 +140,7 @@ npm ci
 cd ..
 ```
 
-开发实例使用独立数据库，不让默认路径落到真实 `release_system.db`。下面启动一个空的本地实例，后续在界面导入测试数据：
+开发实例使用独立数据库，下面启动一个空实例，再在界面导入测试数据：
 
 ```bash
 export NO_PROXY=localhost,127.0.0.1
@@ -161,23 +151,17 @@ export ASSISTANT_DATABASE_URL=sqlite:////tmp/release-system-dev-assistant.db
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-另一个终端从 `web/` 运行 `npm run dev`，默认 Vite 端口为 5173，`/api` 代理到 8000。也可通过进程环境变量 `API_TARGET` 指定其他开发后端。浏览器开发详情见 [前端说明](web/README-web.md)。
+另一个终端从 `web/` 运行 `npm run dev`（5173，`/api` 代理到 8000），详见 [前端说明](web/README-web.md)。
 
-首次初始化会创建 `app/domain/authn.py` 中的固定开发账号，目前没有仅开发环境启用的开关。Admin 不存在时使用 `HPC_ADMIN_PASSWORD`、`ADMIN_PASSWORD_FILE` 指定文件，或生成随机口令。部署前应处理开发账号，不要把该初始化机制当作生产账号管理方案。当前会话也没有服务端过期策略。
+首次初始化会创建 `app/domain/authn.py` 中的固定开发账号（没有仅开发环境启用的开关），部署前应处理。Admin 不存在时依次使用 `HPC_ADMIN_PASSWORD`、`ADMIN_PASSWORD_FILE` 指定的文件或随机口令。会话没有服务端过期策略。
 
-生产形态由单个进程服务 API 和已构建的前端：在 `web/` 运行 `npm run build`，产物进入 `web_dist/`，再从仓库根启动 uvicorn。实际部署明确配置业务库路径；**保持单 worker**，QA 任务状态目前存于进程内存。构建、启动服务或连接生产实例都不是纯只读操作。
+生产形态由单个进程服务 API 和前端：在 `web/` 运行 `npm run build` 生成 `web_dist/`，再从仓库根启动 uvicorn。**保持单 worker**：QA 任务状态和 JIRA agent 队列都在进程内。
 
 ## 集成配置
 
-LDAP、JIRA、QA 大模型、CICD Agent、网站对外地址和各组 JIRA 数字员工的配置统一放在根目录 `release_system.conf`（已 gitignore），分为 `[ldap]`、`[jira]`、`[qa_llm]`、`[cicd_agent]`、`[site]`、`[jira_agent:<组名>]` 几节。复制 `release_system.conf.example` 起步，各键说明见其中注释；键名一律大写，代码中没有默认值，也不再读取对应的环境变量。配置在每次使用时现读，修改后下一次使用即生效，重启后同样生效。旧的 `ldap.conf` / `jira.conf` / `qa_llm.env` / `jira_agent.conf` 已不再读取，升级时把其中内容搬到对应节即可。
+LDAP、JIRA、QA 大模型、CICD Agent、网站对外地址和各组 JIRA 数字员工的配置统一放在根目录 `release_system.conf`（已 gitignore），分为 `[ldap]`、`[jira]`、`[qa_llm]`、`[cicd_agent]`、`[site]`、`[jira_agent:<组名>]` 几节。复制 `release_system.conf.example` 起步，各键含义与必填规则见其中注释。配置在每次使用时现读，修改后即时生效。旧的 `ldap.conf` / `jira.conf` / `qa_llm.env` / `jira_agent.conf` 已不再读取，升级时把内容搬到对应节。
 
-其余可调的值按用途各有一个位置，开发时的判断规则见 [release-system-dev 技能](.agents/skills/release-system-dev/SKILL.md) 的“配置落点”：
-
-- 环境变量：只放文件位置和少数开发参数（下表），由 `app/config.py` 的 `Settings` 从环境变量和根目录 `.env` 读取，环境变量优先，改后需重启。
-- `shared/*.json`：前后端共用的权限、词表和 Gerrit 路径，随代码版本化。
-- 代码常量：调优参数和固定业务规则，例如 Gerrit 批量拉取并发，以及派单 JIRA 的项目、Component、issue 类型和 ETA 字段（`app/integrations/jira.py`），改动走代码评审。
-
-不要把真实配置文件内容粘贴进 README。
+环境变量只放文件位置和少数开发参数（下表），由 `app/config.py` 的 `Settings` 从环境变量和根目录 `.env` 读取，改后需重启。前后端共用的约定在 `shared/*.json`；调优参数和固定业务规则（如派单 JIRA 的项目、Component、issue 类型和 ETA 字段）是代码常量。新增配置放在哪里见 [release-system-dev 技能](.agents/skills/release-system-dev/SKILL.md) 的“配置落点”。
 
 | 配置入口 | 作用 |
 | --- | --- |
@@ -192,7 +176,7 @@ LDAP、JIRA、QA 大模型、CICD Agent、网站对外地址和各组 JIRA 数�
 
 ## 只读检查、备份与验证
 
-检查真实库时用 SQLite URI `mode=ro` 和 `PRAGMA query_only=ON`，不要使用 `app.db.connection.connect()`：后者会建表、补默认账号并运行兼容迁移。`GET /api/state` 也可能回写缺失项，因此不能用于严格只读审计。
+检查真实库用 SQLite URI `mode=ro` 和 `PRAGMA query_only=ON`。不要用 `app.db.connection.connect()` 或 `GET /api/state`，它们会建表、补默认账号或回写缺失项。
 
 ```python
 import sqlite3
@@ -204,12 +188,10 @@ with sqlite3.connect(uri, uri=True) as conn:
     print(conn.execute("SELECT COUNT(*) FROM apps").fetchone()[0])
 ```
 
-在线备份使用 SQLite backup API 或 `sqlite3 ... .backup`，不要直接复制活跃 WAL 数据库的主文件。主库和助手库分别备份；备份包含敏感数据，不提交 Git。恢复、迁移和清理先在副本验证，明确要替换的库与服务后再执行。
+在线备份用 SQLite backup API 或 `sqlite3 ... .backup`，不要直接复制活跃 WAL 数据库的主文件；主库、助手库、JIRA agent 库分别备份，备份不提交 Git。恢复、迁移和清理先在副本验证。
 
-测试入口：后端 `python -m pytest -q`；前端 `npm run build`、`npm run lint`、`npm test`、`npm run test:e2e`。具体隔离参数、Playwright 的 5176 端口和 golden 注意事项见 [验证说明](.agents/skills/release-system-dev/references/verification.md) 与 [golden 说明](tests/golden/README.md)。测试数量和本机某次通过记录不作为固定规范。
+测试入口：后端 `python -m pytest -q`；前端 `npm run build`、`npm run lint`、`npm test`、`npm run test:e2e`。隔离参数与 E2E 端口见 [验证说明](.agents/skills/release-system-dev/references/verification.md)，golden 见 [golden 说明](tests/golden/README.md)。
 
 ## 文档维护
 
-README 负责产品、使用入口和运行方式；技能负责开发/文档整合时的执行约束；`references/` 保存按需读取的业务和验证细节。真实数据分析与功能建议单独放在 `docs/`，不把一时的业务数量、历史任务分工、特定模型名或机器路径记忆变成永久开发要求。
-
-已退休的阶段 briefs 和 `.agents/projects/` 记忆不作为运行依赖。它们的有效约束已迁入当前技能；历史上下文可从 Git 历史查看。
+README 负责产品、使用入口和运行方式；技能负责开发约束，`references/` 放按需读取的细节；部署手册与功能建议放 `docs/`。同一规则只写在一处，其他地方链接过去；不把一时的业务数量、特定模型名或机器路径写成永久要求。

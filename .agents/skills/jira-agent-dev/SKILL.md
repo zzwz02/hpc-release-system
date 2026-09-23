@@ -15,7 +15,7 @@ description: Develop, debug, or review the JIRA agent (per-group digital employe
 - **执行机器**（交单时二选一，存于对话 `machine`，续办沿用）：
   - 空 = agent 从本组系统机器列表（`jira_agent_machines`，仅 RM 维护，RM 提前在 B 上配好免密）按需自选，结论 `machine` 字段记录实际使用的机器；列表为空时交单 409。
   - `user@host` = 用户自填，不进系统列表。必须先经上传公钥终端（`services/jira_agent_ssh_key.py`）：A 用 app-server 的 `command/exec`（tty）在 **B 上**跑 `ssh-copy-id -i <SSH_KEY_PATH>.pub`，成功后在 B 上 `ssh -o BatchMode=yes ... true`，通过才写 `jira_agent_ssh_keys`（网站用户 + 组 + 目标 + 公钥指纹）；交单时按当前公钥指纹校验。密码只经 `command/exec/write` 转发，不入库、不记日志、不进事件。
-  - 界面必须明确提醒：上传后 agent 可免密登录，公钥不随对话失效，要用专用测试账号而不是个人账号。
+  - 界面必须提醒用专用测试账号：上传后 agent 可免密登录，公钥不随对话失效。
   - `user@host` 的格式校验（`domain.parse_ssh_target`）保证不能以 `-` 开头、不带端口和空格，防止变成 ssh 参数。
 - **只评论**：agent 不改 assignee、不转单、不 resolve、不提交代码；网站把结构化结论渲染成评论追加到 JIRA，由 assignee 决定下一步（human-in-the-loop）。
   - 是否发评论按轮次由用户选（交单和发消息都带 `post_comment`，默认 true）。一轮内以最后一条消息为准（合并、steer 都会覆盖 `jira_agent_turns.post_comment`），runner 收尾时重新读取。不发时照样渲染 `comment_body` 并记 `jira_comment` 事件 `status: skipped`，`comment_status` 保持空，重试接口不接受。给 agent 的提示词和 outputSchema 不区分两种轮次。
@@ -25,8 +25,7 @@ description: Develop, debug, or review the JIRA agent (per-group digital employe
   - 输入是一个 `项目KEY-数字`（字母开头，允许数字和下划线）时读这张单，找不到列入 `missing`；只由多个编号组成时报错“一次只能查询一个 JIRA 编号”（用户明确要求只支持一个）。
   - RM 专用 `?scope=handled`（`service.list_handled_issues`）：数据库里所有交给过 agent 的工单，含 JIRA 已关闭的，按最近活动排序、最多 200 个；状态用 `key in (...)` 分批查 JIRA，必须带 `validateQuery=false`，否则任一编号不存在时整条 JQL 报 400。
   - 其他输入原样作为 JQL，JIRA 返回 400 时把 `errorMessages` 回给用户。
-  - 不识别工单网址，因为业务 JIRA 地址与测试环境不同。
-  - 搜索使用 `[jira]` 账号的可见范围，交单仍校验 assignee 或 RM。
+  - 不识别工单网址（业务 JIRA 地址与测试环境不同）。搜索用 `[jira]` 账号的可见范围，交单仍校验 assignee 或 RM。
 - **对话隔离**：一个对话 = 一个 Codex thread + B 上一个工作目录，owner 是交单时的 assignee（RM 代操作时 owner 仍是 assignee）。
   - assignee 变更后旧对话关闭为 `superseded`（只读）；A→B→A 转回也新建对话，不复活旧对话。
   - 同一 assignee 可显式新建对话（`new_conversation`）。
@@ -118,14 +117,7 @@ Runner 在 FastAPI lifespan 中启停（`settings.jira_agent_runner_enabled`）�
 - 权限矩阵测试在 `tests/test_access_control.py` 和 `web/src/lib/__tests__/accessControl.test.ts`。
 - 前端：`web/src/features/jiraAgent/__tests__/JiraAgentPage.test.tsx`，外加 tsc、lint、build。
 
-**隔离**：启动应用的 lifespan 会运行 runner，并按默认路径在仓库根创建 `jira_agent_tasks.db`。跑全量测试或本地实例时，除 [verification.md](../release-system-dev/references/verification.md) 的变量外，还要设置：
-
-```bash
-export JIRA_AGENT_DATABASE_URL="sqlite:///$verification_dir/jira_agent.db"
-export JIRA_AGENT_DATA_DIR="$verification_dir/jira_agent_data"
-export JIRA_AGENT_CONF_PATH="$verification_dir/jira_agent-disabled.conf"
-export JIRA_AGENT_RUNNER_ENABLED=false   # 不需要队列时
-```
+**隔离**：lifespan 会运行 runner，并默认在仓库根创建 `jira_agent_tasks.db`；按 [verification.md](../release-system-dev/references/verification.md) 设置 `JIRA_AGENT_DATABASE_URL`、`JIRA_AGENT_DATA_DIR` 和 `RUNTIME_CONF_PATH`。测试中的组配置写进临时 `release_system.conf` 的 `[jira_agent:<组>]`。
 
 **真实端到端**（只在用户授权的工单上做，它会在 JIRA 追加评论）：
 

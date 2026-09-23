@@ -48,9 +48,7 @@ description: Develop, debug, or review this HPC release collaboration repository
 
 ## 数据与外部调用
 
-仓库根 `release_system.db` 可能是真实业务库。分析用标准 `sqlite3` 的 URI `mode=ro`，加 `PRAGMA query_only=ON`；避免读取认证密钥、口令哈希、会话 token。不要用应用 `connect()` 或 `/api/state` 做严格只读检查，它们可能写入数据。
-
-测试、迁移演练和故障复现使用临时库或一致性备份。自动化浏览器测试会写数据，不能连接真实业务实例。备份使用 SQLite backup API；助手库单独备份。只有任务范围包含真实数据变更时才执行对应迁移、清理或恢复。
+仓库根 `release_system.db` 可能是真实业务库：只读检查和测试隔离按 [verification.md](references/verification.md)，不读取认证密钥、口令哈希、会话 token。测试、迁移演练和故障复现用临时库或一致性备份；只有任务范围包含真实数据变更时才执行迁移、清理或恢复。
 
 新增写操作把读取最新状态、检查权限/锁定、条件更新及审计放在同一事务边界。考虑 SQLite 写锁和冲突处理；整份 JSON 写回应有版本校验，不能只因套了 `transaction()` 就认定不会丢失更新。保存冲突必须可见，禁止静默覆盖。
 
@@ -58,7 +56,7 @@ description: Develop, debug, or review this HPC release collaboration repository
 
 ## 前端与时间
 
-- 保持按需刷新，除 QA AI 任务进度和 JIRA agent 运行中的对话外不自行新增周期轮询。注意 `staleTime: Infinity` 下 `refetchOnMount: true` 不保证重新请求。
+- 保持按需刷新，不新增周期轮询；现有按秒轮询清单与缓存默认值见 [web/README-web.md](../../../web/README-web.md)。
 - 设计缓存时同时考虑用户身份、release、查询参数与返回形状；账号切换、401、写操作需要合适的取消/清理/失效。共用查询键不能对应不同权限或字段集合。
 - 共享周期选择使用 `uiStore`；编辑表单保留未保存变更保护。密集列表采用可检索表格或主从布局，选中项目后详情应直接可见。
 - Markdown 使用统一 `Markdown.tsx` + DOMPurify，不增加任意 HTML 注入出口。

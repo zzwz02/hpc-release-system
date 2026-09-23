@@ -15,8 +15,8 @@ description: 在 HPC 执行机器上复现、分析、修复并验证 HPC 组负
 
 - 优先使用附件自带的构建脚本（例如 Makefile）；文件名带 `.txt` 等后缀时复制成原名使用，不要修改原始附件。
 - 根据 GPU 架构选择编译参数（例如 A100 为 `sm_80` / `-arch=sm_80` / `CUDA_ARCH=80`），以附件脚本支持的方式传入。
-- 占用 GPU 的命令一律用 flock 包裹：
-  `flock -w 1800 /tmp/hpc-jira-agent-locks/<机器IP>-gpu0.lock ./app args`
+- 占用 GPU 的命令一律按 AGENTS.md 的锁规则包裹：
+  `mkdir -p /tmp/hpc-jira-agent-locks && flock -w 1800 /tmp/hpc-jira-agent-locks/<机器地址>-gpu<N>.lock ./app args`
 - 严格按工单要求的命令复现原始问题，保存完整输出：
   `... 2>&1 | tee artifacts/logs/before-<case>.log`，并记录退出码（`echo "exit=${PIPESTATUS[0]}"`）。
 - 无法复现时，记录尝试过的环境和命令，结论为 `cannot_reproduce`。

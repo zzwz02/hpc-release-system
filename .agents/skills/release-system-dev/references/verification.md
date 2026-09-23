@@ -4,11 +4,9 @@
 
 ## 保护真实数据
 
-仓库根 `release_system.db` 可能是正在使用的业务库。`app.db.connection.connect()` 会建表、补默认用户并运行兼容处理；启动应用 lifespan 也会调用它。只读分析使用标准 SQLite `mode=ro`，不能通过启动应用来“看一下库”。
+仓库根 `release_system.db` 可能是正在使用的业务库。`app.db.connection.connect()` 和应用 lifespan 会建表、补默认用户并运行兼容处理，只读分析用标准 SQLite `mode=ro`（示例见根 README），不能启动应用来“看一下库”。
 
-测试前检查 fixture 和 lifespan 的路径。有些 TestClient 用例只覆盖 `get_db`，不覆盖 lifespan 的 `settings.db_path`。因此先给进程设置独立主库、Admin 文件和助手库，再运行测试；不要假定所有测试天然隔离。
-
-从仓库根，在已激活 Python 环境的终端运行：
+有些 TestClient 用例只覆盖 `get_db`，不覆盖 lifespan 的 `settings.db_path`，所以先给进程设置独立的库与文件路径再跑测试：
 
 ```bash
 verification_dir=$(mktemp -d /tmp/release-system-check.XXXXXX)
@@ -23,7 +21,7 @@ export no_proxy=localhost,127.0.0.1
 python -m pytest -q
 ```
 
-上述文件路径仅用于本终端的隔离实例，不覆盖根 `.env`。`RUNTIME_CONF_PATH` 指向不存在的文件即关闭 LDAP/JIRA/LLM/JIRA agent 集成；pytest 的 conftest 已自动做同样的隔离。需要配置的用例在 `tmp_path` 写一份 `release_system.conf` 并 monkeypatch `settings.runtime_conf_path`，不要读取或修改仓库根的真实配置。需要业务场景时使用 fixture 创建测试数据；网络集成单元测试使用可控替身。显式授权的真实集成验证另行指定目标，不能让普通测试向 Jira/Gerrit 写入数据。
+`RUNTIME_CONF_PATH` 指向不存在的文件即关闭 LDAP/JIRA/LLM/JIRA agent 集成，pytest 的 conftest 也会自动这样隔离。本地启动实例且不需要 JIRA agent 队列时可再设 `JIRA_AGENT_RUNNER_ENABLED=false`；跑 pytest 时不要设，JIRA agent 测试依赖它。需要配置的用例在 `tmp_path` 写一份 `release_system.conf` 并 monkeypatch `settings.runtime_conf_path`，不要读取或修改仓库根的真实配置。需要业务场景时使用 fixture 创建测试数据；网络集成单元测试使用可控替身。显式授权的真实集成验证另行指定目标，不能让普通测试向 Jira/Gerrit 写入数据。
 
 ## 后端与契约
 
