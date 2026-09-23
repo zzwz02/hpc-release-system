@@ -168,8 +168,9 @@ class QaJobRegistry:
         }
         if job.get("error"):
             payload["error"] = job["error"]
-        if job.get("token_count") is not None:
-            payload["token_count"] = job.get("token_count", 0)
+        for key in ("token_count", "reasoning_count", "prompt_chars", "prompt_tokens_est", "usage"):
+            if job.get(key) is not None:
+                payload[key] = job[key]
         if job.get("result") is not None:
             payload["result"] = job["result"]
         return payload

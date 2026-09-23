@@ -192,16 +192,36 @@ def analyze_qa_log(
 
     _progress(progress, "building_prompt", "正在构造 LLM 分析上下文")
     user_payload = json.dumps({"inventory": inventory, "log": text}, ensure_ascii=False)
+    prompt_chars = len(_QA_ANALYSIS_SYSTEM) + len(user_payload)
+    # Rough estimate for mixed Chinese/English/TSV text; the server's real
+    # count (usage.prompt_tokens) replaces it once the stream reports usage.
+    prompt_tokens_est = prompt_chars // 3
+    llm_usage: dict[str, int] = {}
     if llm_call is None:
         from app.integrations.llm import chat_json
 
         def default_llm_call(system: str, payload: str) -> str:
-            def stream_progress(token_count: int) -> None:
+            def stream_progress(stats: dict[str, Any]) -> None:
+                content = stats.get("content_chunks", 0)
+                reasoning = stats.get("reasoning_chunks", 0)
+                usage = stats.get("usage")
+                if usage:
+                    llm_usage.update(usage)
+                if content:
+                    stage, message = "streaming_llm", f"正在接收 LLM 输出：已收到 {content} token"
+                    if reasoning:
+                        message += f"（思考 {reasoning}）"
+                elif reasoning:
+                    stage, message = "reasoning_llm", f"思考中：已收到 {reasoning}"
+                else:
+                    stage, message = "streaming_llm", "LLM 输出已结束"
                 _progress(
                     progress,
-                    "streaming_llm",
-                    f"正在接收 LLM 输出：已收到 {token_count} token",
-                    token_count=token_count,
+                    stage,
+                    message,
+                    token_count=content,
+                    reasoning_count=reasoning,
+                    usage=usage,
                 )
 
             return chat_json(system, payload, progress=stream_progress)
@@ -213,9 +233,21 @@ def analyze_qa_log(
     for attempt in range(1, max_llm_attempts + 1):
         try:
             suffix = f"（第 {attempt}/{max_llm_attempts} 次）" if max_llm_attempts > 1 else ""
-            _progress(progress, "waiting_llm", f"正在等待 LLM 返回结果{suffix}", token_count=0)
+            _progress(
+                progress,
+                "waiting_llm",
+                f"正在等待 LLM 返回结果{suffix}：已发送 {prompt_chars} 字符（约 {prompt_tokens_est} token）",
+                token_count=0,
+                reasoning_count=0,
+                prompt_chars=prompt_chars,
+                prompt_tokens_est=prompt_tokens_est,
+            )
             reply = llm_call(_QA_ANALYSIS_SYSTEM, user_payload)
-            _progress(progress, "parsing_llm", "正在解析 LLM 返回结果")
+            usage_text = (
+                f"（服务端统计：prompt {llm_usage['prompt_tokens']} / completion {llm_usage['completion_tokens']} token）"
+                if llm_usage else ""
+            )
+            _progress(progress, "parsing_llm", f"正在解析 LLM 返回结果{usage_text}")
             try:
                 parsed = json.loads(reply)
             except json.JSONDecodeError:
@@ -266,4 +298,11 @@ def analyze_qa_log(
             event="qa_analyze_log",
         )
     _progress(progress, "completed", "AI 分析完成")
-    return {"apps": apps_out, "log_truncated": truncated, "log_chars": len(raw)}
+    return {
+        "apps": apps_out,
+        "log_truncated": truncated,
+        "log_chars": len(raw),
+        "prompt_chars": prompt_chars,
+        "prompt_tokens_est": prompt_tokens_est,
+        "llm_usage": llm_usage or None,
+    }

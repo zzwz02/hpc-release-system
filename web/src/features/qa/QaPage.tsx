@@ -98,8 +98,21 @@ function AiProgress({ job }: AiProgressProps) {
   const updated = Number((job as unknown as Record<string, string>)["updated_at"] || 0);
   const endTime = job.status === "running" ? Date.now() / 1000 : updated;
   const elapsed = started && endTime ? Math.max(0, Math.round(endTime - started)) : 0;
-  const tokenCount = Number((job as unknown as Record<string, string>)["token_count"] || 0);
-  const tokenText = tokenCount ? `；已收到 ${tokenCount} token` : "";
+  const fields = job as unknown as Record<string, unknown>;
+  const tokenCount = Number(fields["token_count"] || 0);
+  const reasoningCount = Number(fields["reasoning_count"] || 0);
+  const promptChars = Number(fields["prompt_chars"] || 0);
+  const promptTokensEst = Number(fields["prompt_tokens_est"] || 0);
+  const usage = fields["usage"] as { prompt_tokens?: number; completion_tokens?: number } | null | undefined;
+  const tokenParts: string[] = [];
+  if (usage && usage.prompt_tokens != null) {
+    tokenParts.push(`服务端统计：发送 ${usage.prompt_tokens} / 接收 ${usage.completion_tokens ?? 0} token`);
+  } else if (promptChars) {
+    tokenParts.push(`已发送 ${promptChars} 字符（约 ${promptTokensEst} token）`);
+  }
+  if (reasoningCount) tokenParts.push(`思考 ${reasoningCount}`);
+  if (tokenCount) tokenParts.push(`已收到 ${tokenCount} token`);
+  const tokenText = tokenParts.map((part) => `；${part}`).join("");
 
   return (
     <div id="qaAiProgress" className={progressClass}>
