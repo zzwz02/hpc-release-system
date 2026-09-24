@@ -49,6 +49,7 @@ python .agents/skills/c500-manual-integrator/scripts/export_release_manual_artif
 5. HPC APP 条目通常保留中文介绍、版本、官方网址；AI4Sci 还保留镜像/二进制使用方法以及有来源的环境和测试说明。选定版本间用法有差异时标明适用版本，不能只保留归并时遇到的第一份用法。
 6. 分类按 [classification.md](references/classification.md) 与目标文档已有准确结构；不确定项在工作记录说明，不能用臆测补事实。
 7. 修改MACA/X201发布说明前阅读 [release_notes.md](references/release_notes.md)：按发布决策纳入条目；变更与完整列表分开；类型、模块、排序、模块跨行和新增/更新的芯片范围均按该参考执行。
+8. 每次处理这两份发布说明，都按 [release_notes.md](references/release_notes.md) 的“发布列表与数据库对比”，将两份文档最后的发布列表与数据库本期 release 条目对比并报告，X201-A 不参与对比。
 
 来源冲突先检查周期、final 状态、完整性与时间。目标 release 有明确非空事实时据其更新；不以空值覆盖已有可追溯内容。无法判定的冲突留下待核实项，不把“DB 永远覆盖 RST”作为机械规则。
 
