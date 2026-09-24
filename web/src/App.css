@@ -1097,10 +1097,8 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
 .cicd-agent-form-actions {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   gap: 8px;
-}
-.cicd-agent-form-error {
-  margin: 0;
 }
 .cicd-agent-responsibility-events {
   display: grid;
@@ -1959,6 +1957,12 @@ textarea.artifact {
 .dialog-head { border-bottom: 0; background: transparent; }
 .dialog-body { padding: 15px 18px; display: grid; gap: 12px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; padding: 13px 18px; border-top: 1px solid var(--border); }
+/* Error from the row's own action, shown beside its buttons so it stays in view. */
+.action-err {
+  flex: 0 1 auto; min-width: 0; max-width: 720px;
+  color: var(--bad-fg); font-size: 13px; line-height: 1.35;
+  overflow-wrap: anywhere;
+}
 .app-info-fetch-errors { max-height: 240px; overflow: auto; }
 .confirm-card { width: min(440px, 100%); }
 .confirm-body { white-space: pre-line; line-height: 1.6; color: var(--ink-2); }
@@ -2195,7 +2199,6 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .p-0 { padding: 0; } .p-14 { padding: 14px; } .p-1r { padding: 1rem; } .p-2r { padding: 2rem; }
 .p-6-8 { padding: 6px 8px; } .p-8-12 { padding: 8px 12px; } .p-12-16 { padding: 12px 16px; }
 .p-16 { padding: 16px; } .p-24-12 { padding: 24px 12px; } .p-44-12 { padding: 44px 12px; }
-.p-0-1r-1r { padding: 0 1rem 1rem; } .p-0-0-1r { padding: 0 0 1rem; }
 .nowrap { white-space: nowrap; } .prewrap { white-space: pre-wrap; }
 .ta-c { text-align: center; } .ta-l { text-align: left; } .ta-r { text-align: right; }
 .break-all { word-break: break-all; }

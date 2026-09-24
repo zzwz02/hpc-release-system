@@ -1036,6 +1036,7 @@ function FailureDetail({
               />
             </label>
             <FormActions
+              error={formError}
               submitting={submitting === "feedback"}
               submitLabel="提交反馈"
               onCancel={() => {
@@ -1123,6 +1124,7 @@ function FailureDetail({
               />
             </label>
             <FormActions
+              error={formError}
               submitting={submitting === "resolution"}
               submitLabel="保存处理"
               onCancel={() => {
@@ -1133,7 +1135,6 @@ function FailureDetail({
           </form>
         )}
 
-        {formError && <div className="error-banner cicd-agent-form-error">{formError}</div>}
 
         {(record.responsibility_events ?? []).length > 0 && (
           <div className="cicd-agent-responsibility-events">
@@ -1178,13 +1179,15 @@ function FailureDetail({
   );
 }
 
-function FormActions({ submitting, submitLabel, onCancel }: {
+function FormActions({ submitting, submitLabel, onCancel, error }: {
   submitting: boolean;
   submitLabel: string;
   onCancel: () => void;
+  error: string | null;
 }) {
   return (
     <div className="cicd-agent-form-actions">
+      {error && <span className="action-err" role="alert">{error}</span>}
       <button className="btn primary sm" type="submit" disabled={submitting}>
         {submitting ? "保存中..." : submitLabel}
       </button>

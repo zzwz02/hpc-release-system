@@ -13,7 +13,7 @@
  *  - Detail panel shows release decision select
  */
 
-import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
@@ -651,10 +651,12 @@ describe("AppWorkbenchPage F1 decision-sync dialog", () => {
         return Promise.resolve({
           decision: "stopped",
           forced: true,
-          scope: "all_unlocked",
+          scope: "later",
           releases: [
+            { release_id: "rel-1", release_name: "3.0", phase_label: "App 冻结前",
+              resulting_decision: "stopped", skipped: false, is_current: true },
             { release_id: "rel-2", release_name: "3.1", phase_label: "App 冻结后",
-              resulting_decision: "stopped", skipped: false },
+              resulting_decision: "stopped", skipped: false, is_current: false },
           ],
         });
       }
@@ -667,10 +669,51 @@ describe("AppWorkbenchPage F1 decision-sync dialog", () => {
     fireEvent.click(screen.getByText("保存"));
     await waitFor(() => screen.getByTestId("decision-sync-dialog"));
     expect(screen.getByTestId("decision-sync-dialog").textContent).toContain("必须同步 release 决策");
-    expect(screen.getByTestId("decision-sync-dialog").textContent).toContain("所有未锁定 release");
+    expect(screen.getByTestId("decision-sync-dialog").textContent).toContain("下列 1 个后续 release");
+    expect(screen.getByTestId("sync-row-rel-1").textContent).toContain("3.0（当前）");
+    expect(screen.getByTestId("sync-row-rel-1").textContent).toContain("调整为 stopped");
     expect(screen.queryByTestId("decision-sync-cicd-pending-note")).toBeNull();
     expect(screen.queryByTestId("sync-local-only")).toBeNull();
     expect(screen.getByTestId("sync-row-rel-2").textContent).toContain("调整为 stopped");
+  });
+
+  it("shows the blocked reason instead of the dialog when earlier releases still run", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
+    const reason = "更早的未锁定 release 2.9（release）仍需 CICD 运行，不能在 3.0 停止 CICD。";
+    const postMock = vi.fn((url: string, _body?: unknown) => {
+      if (url.includes("decision-sync/preview")) {
+        return Promise.resolve({
+          decision: "stopped",
+          forced: true,
+          scope: "later",
+          releases: [],
+          blocked_reason: reason,
+        });
+      }
+      return Promise.resolve({ snapshot: {}, missing_items: [] });
+    });
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(postMock);
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "stopped" } });
+    fireEvent.click(screen.getByText("保存"));
+    await waitFor(() => expect(screen.getByTestId("app-save-error").textContent).toBe(reason));
+    const saveError = screen.getByTestId("app-save-error");
+    const foot = saveError.closest(".detail-foot") as HTMLElement;
+    expect(foot).not.toBeNull();
+    // Buttons keep the right edge: nothing but buttons follows the message.
+    let next = saveError.nextElementSibling;
+    while (next) {
+      expect(next.tagName).toBe("BUTTON");
+      next = next.nextElementSibling;
+    }
+    expect(screen.queryByTestId("decision-sync-dialog")).toBeNull();
+    expect(postMock.mock.calls.find((c) => c[0] === "/api/apps/update")).toBeFalsy();
+
+    fireEvent.click(within(foot).getByText("取消"));
+    expect(screen.queryByTestId("app-save-error")).toBeNull();
+    expect(within(foot).getByText("✎ 修改")).toBeTruthy();
   });
 
   it("opens a forced sync dialog when stopped is raised to Running", async () => {
@@ -842,6 +885,38 @@ describe("AppWorkbenchPage F1 decision-sync dialog", () => {
       expect(updateCall).toBeTruthy();
       expect((updateCall![1] as { sync_decision: boolean }).sync_decision).toBe(false);
     });
+  });
+
+  it("saves directly when the preview lists only the current release", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payloadTwoReleases());
+    const postMock = vi.fn((url: string, _body?: unknown) => {
+      if (url.includes("decision-sync/preview")) {
+        return Promise.resolve({
+          decision: "cicd_only",
+          forced: false,
+          scope: "later",
+          releases: [
+            { release_id: "rel-1", release_name: "3.0", phase_label: "App 冻结前",
+              resulting_decision: "cicd_only", skipped: false, is_current: true },
+            { release_id: "rel-2", release_name: "3.1", phase_label: "已最终锁定",
+              resulting_decision: null, skipped: true, reason: "已最终锁定", is_current: false },
+          ],
+        });
+      }
+      return Promise.resolve({ snapshot: {}, missing_items: [] });
+    });
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(postMock);
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    fireEvent.change(screen.getByTestId("field-decision"), { target: { value: "cicd_only" } });
+    fireEvent.click(screen.getByText("保存"));
+    await waitFor(() => {
+      const updateCall = postMock.mock.calls.find((c) => c[0] === "/api/apps/update");
+      expect(updateCall).toBeTruthy();
+      expect((updateCall![1] as { sync_decision: boolean }).sync_decision).toBe(false);
+    });
+    expect(screen.queryByTestId("decision-sync-dialog")).toBeNull();
   });
 
   it("取消 aborts without posting an update", async () => {

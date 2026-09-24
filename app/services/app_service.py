@@ -37,6 +37,7 @@ from app.domain.cicd_config import (
 from app.domain.decisions import (
     DECISION_TO_CICD_STATUS,
     RELEASE_DECISIONS,
+    RUNNING_DECISIONS,
     normalize_release_decision,
 )
 from app.domain.snapshots import (
@@ -587,6 +588,10 @@ def update_snapshot(
     if requested_decision != current_decision:
         from app.services import cicd_service as _cicd_svc
 
+        if decision_sync_domain.is_running_downgrade(current_decision, requested_decision):
+            blocked_reason = _stop_blocked_reason(conn, release_id, app_id)
+            if blocked_reason:
+                raise RuntimeError(blocked_reason)
         if decision_sync_domain.crosses_runtime_boundary(current_decision, requested_decision):
             _cicd_svc.ensure_can_open_cicd_modify_request(conn, app_id)
         else:
@@ -921,7 +926,7 @@ def update_snapshot(
                 requested_decision,
                 user=actor,
                 role=role,
-                scope="all_unlocked" if forced_decision_sync else "later",
+                scope=_decision_sync_scope(current_decision, requested_decision),
                 defer_apply=False,
             )
             response["decision_sync"]["forced"] = forced_decision_sync
@@ -956,6 +961,49 @@ def update_snapshot(
 # Decision sync to related releases (R3 gating rule + dry-run preview)
 # ---------------------------------------------------------------------------
 
+def _decision_sync_scope(current_decision: str, requested_decision: str) -> str:
+    """Which releases a decision change syncs to.
+
+    Running -> Stopped only reaches later releases: earlier unlocked releases
+    that still need CICD block the change instead (see ``_stop_blocked_reason``).
+    Stopped -> Running still reaches every other unlocked release.
+    """
+    if decision_sync_domain.is_running_upgrade(current_decision, requested_decision):
+        return "all_unlocked"
+    return "later"
+
+
+def _stop_blocked_reason(conn: sqlite3.Connection, release_id: str, app_id: str) -> str:
+    """Why *app_id* cannot be stopped from *release_id*, or ``""`` if it can.
+
+    CICD status is global, so stopping it from a later release would break an
+    earlier unlocked release that still runs this app (release / cicd_only).
+    """
+    releases = release_reads.list_releases(conn)
+    idx = next((i for i, r in enumerate(releases) if r["id"] == release_id), None)
+    if idx is None:
+        return ""
+    running: list[str] = []
+    for r in releases[:idx]:
+        if r.get("released_locked"):
+            continue
+        snapshot = release_reads.get_release(conn, r["id"])["snapshots"].get(app_id)
+        if snapshot is None:
+            continue
+        decision = normalize_release_decision(snapshot.get("release_decision", "release"))
+        if decision in RUNNING_DECISIONS:
+            running.append(f"{r['name']}（{decision}）")
+    if not running:
+        return ""
+    current_name = releases[idx]["name"]
+    names = "、".join(running)
+    return (
+        f"更早的未锁定 release {names} 仍需 CICD 运行，不能在 {current_name} 停止 CICD。"
+        f"请先把 {current_name} 设为 cicd_only，待这些 release 最终锁定后再改为 stopped；"
+        f"若确实要让它们也停止，请从最早的 release 开始修改。"
+    )
+
+
 def sync_decision_to_later_releases(
     conn: sqlite3.Connection,
     from_release_id: str,
@@ -977,8 +1025,9 @@ def sync_decision_to_later_releases(
         to ``release`` on a release past app-freeze OR doc-deadline becomes
         ``cicd_only`` rather than being skipped.
       - ``scope="later"`` keeps the legacy optional behavior.
-      - ``scope="all_unlocked"`` is for Running/Stopped boundary changes and
-        visits every other release, including earlier ones.
+      - ``scope="all_unlocked"`` is for Stopped -> Running changes and visits
+        every other release, including earlier ones. Running -> Stopped uses
+        ``"later"`` (earlier running releases block it upstream).
 
     When ``defer_apply`` is true, the same target list is returned but snapshots
     are left unchanged so CICD delivery can apply every release at once.
@@ -1061,10 +1110,14 @@ def preview_decision_sync(
     """Dry-run of ``sync_decision_to_later_releases`` — NO writes.
 
     Returns ``{"decision": <normalized>, "releases": [row, ...], "forced": bool,
-    "scope": "later"|"all_unlocked"}`` where each row is one target release:
-    ``{release_id, release_name, phase_label, resulting_decision, skipped,
-    reason?}``. ``resulting_decision`` is ``None`` for skipped rows. Drives the
-    owner-choice dialog table before applying.
+    "scope": "later"|"all_unlocked"}`` where each row is one release in release
+    order: ``{release_id, release_name, phase_label, resulting_decision, skipped,
+    is_current, reason?}``. The edited release itself is included with
+    ``is_current=True`` so the dialog shows its change too; every other row is a
+    sync target. ``resulting_decision`` is ``None`` for skipped rows. Drives the
+    owner-choice dialog table before applying. A Running -> Stopped change that
+    earlier unlocked releases still depend on returns ``blocked_reason`` and no
+    rows; saving it would fail with the same message.
     """
     decision = normalize_release_decision(decision)
     releases = release_reads.list_releases(conn)
@@ -1078,14 +1131,34 @@ def preview_decision_sync(
         current_snapshot.get("release_decision", "release")
     )
     forced = decision_sync_domain.crosses_runtime_boundary(current_decision, decision)
-    scope = "all_unlocked" if forced else "later"
-    target_releases = (
-        [r for r in releases if r["id"] != release_id]
-        if scope == "all_unlocked"
-        else releases[idx + 1:]
-    )
-    for r in target_releases:
+    scope = _decision_sync_scope(current_decision, decision)
+    if decision_sync_domain.is_running_downgrade(current_decision, decision):
+        blocked_reason = _stop_blocked_reason(conn, release_id, app_id)
+        if blocked_reason:
+            return {
+                "decision": decision,
+                "releases": rows,
+                "forced": forced,
+                "scope": scope,
+                "blocked_reason": blocked_reason,
+            }
+    shown_releases = releases if scope == "all_unlocked" else releases[idx:]
+    for r in shown_releases:
         rid = r["id"]
+        if rid == release_id:
+            rows.append(
+                {
+                    "release_id": rid,
+                    "release_name": r["name"],
+                    "phase_label": decision_sync_domain.phase_label(
+                        phase_policy.current_phase(current_release)
+                    ),
+                    "resulting_decision": decision,
+                    "skipped": False,
+                    "is_current": True,
+                }
+            )
+            continue
         if r.get("released_locked"):
             rows.append(
                 {
@@ -1095,6 +1168,7 @@ def preview_decision_sync(
                     "resulting_decision": None,
                     "skipped": True,
                     "reason": "已最终锁定",
+                    "is_current": False,
                 }
             )
             continue
@@ -1109,6 +1183,7 @@ def preview_decision_sync(
                     "resulting_decision": None,
                     "skipped": True,
                     "reason": "本 release 无此 app",
+                    "is_current": False,
                 }
             )
             continue
@@ -1120,6 +1195,7 @@ def preview_decision_sync(
                 "phase_label": decision_sync_domain.phase_label(phase),
                 "resulting_decision": resulting,
                 "skipped": False,
+                "is_current": False,
             }
         )
     return {"decision": decision, "releases": rows, "forced": forced, "scope": scope}

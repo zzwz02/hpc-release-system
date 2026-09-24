@@ -17,7 +17,9 @@ Changed rule vs. ``core.sync_decision_to_later_releases``:
     * otherwise  →  apply the target decision verbatim.
   Locked releases and releases without the app are skipped.
   Optional owner-selected sync still targets later releases. Running/Stopped
-  boundary changes force sync to every other unlocked release.
+  boundary changes force sync: Stopped -> Running to every other unlocked
+  release; Running -> Stopped only to later releases, and is refused while an
+  earlier unlocked release still runs the app (it still needs CICD).
 """
 from __future__ import annotations
 

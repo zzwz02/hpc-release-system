@@ -123,7 +123,9 @@ def api_apps_decision_sync_preview(
 
     Body: {release_id, app_id, decision}. Returns
     {decision, releases:[{release_id, release_name, phase_label,
-    resulting_decision, skipped, reason?}], forced, scope}. No writes.
+    resulting_decision, skipped, is_current, reason?}], forced, scope,
+    blocked_reason?}. The edited release itself is included with
+    is_current=true. No writes.
 
     Auth mirrors /api/apps/update: RM, or an Owner of the app in this release.
     """

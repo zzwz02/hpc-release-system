@@ -109,6 +109,7 @@ interface DecisionSyncPreview {
   releases: DecisionSyncPreviewRow[];
   forced?: boolean;
   scope?: "later" | "all_unlocked";
+  blocked_reason?: string;
 }
 
 interface AppInfoFetchProgress {
@@ -1763,7 +1764,11 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
             app_id: app.id,
             decision: newDecision,
           });
-          const applicable = (preview.releases ?? []).filter((r) => !r.skipped);
+          if (preview.blocked_reason) {
+            setSaveErr(preview.blocked_reason);
+            return;
+          }
+          const applicable = (preview.releases ?? []).filter((r) => !r.skipped && !r.is_current);
           if (applicable.length > 0) {
             setSyncDialog({
               preview,
@@ -2194,7 +2199,6 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
             repoError={cicdRepoErr}
             onPatch={patch}
           />
-          {saveErr && <p className="lerr p-0-0-1r">{saveErr}</p>}
         </div>
       ) : (
       <div className="detail-body">
@@ -2553,8 +2557,6 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
             <ChangeLogTable entries={auditEntries} loading={auditLoading} />
           </div>
         </details>
-
-        {saveErr && <p className="lerr p-0-1r-1r">{saveErr}</p>}
       </div>
       )}
 
@@ -2572,20 +2574,26 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
           </button>
         )}
         <div className="spacer" />
+        {/* Messages stay left of every button so the buttons keep the right edge. */}
+        {editMode && activeSaveBlockedReason && (
+          <span className="foot-blocker" data-testid="app-save-blocked-reason">
+            {activeSaveBlockedReason}
+          </span>
+        )}
+        {saveErr && (
+          <span className="foot-blocker" role="alert" data-testid="app-save-error">
+            {saveErr}
+          </span>
+        )}
         {canRetryCreate && !editMode && app && snap && (
           <button className="btn primary" onClick={() => onRetryCreate(app, snap)} data-testid="retry-create-btn">重新申请</button>
         )}
         {canEditDetail && !canRetryCreate && !editMode && (
           <button className="btn primary" onClick={() => setEditMode(true)}>✎ 修改</button>
         )}
-        {editMode && activeSaveBlockedReason && (
-          <span className="foot-blocker" data-testid="app-save-blocked-reason">
-            {activeSaveBlockedReason}
-          </span>
-        )}
         {canEditDetail && editMode && canEditRmOnlyFields && (
           <>
-            <button className="btn" onClick={() => { setEditMode(false); setDirty(false); snap && app && setForm(snapshotToForm(snap, app)); }}>取消</button>
+            <button className="btn" onClick={() => { setEditMode(false); setDirty(false); setSaveErr(""); snap && app && setForm(snapshotToForm(snap, app)); }}>取消</button>
             <button
               className="btn primary"
               onClick={() => void handleSave(false)}
@@ -2598,7 +2606,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
         )}
         {canEditDetail && editMode && userIsOwner && (
           <>
-            <button className="btn" onClick={() => { setEditMode(false); setDirty(false); snap && app && setForm(snapshotToForm(snap, app)); }}>取消</button>
+            <button className="btn" onClick={() => { setEditMode(false); setDirty(false); setSaveErr(""); snap && app && setForm(snapshotToForm(snap, app)); }}>取消</button>
             <button
               className="btn good"
               onClick={() => void handleSave(true)}
@@ -2660,8 +2668,8 @@ function DecisionSyncDialog({
   preview, newDecision, forced, saving, onCancel, onLocalOnly, onSyncAll,
 }: DecisionSyncDialogProps) {
   const rows = preview.releases ?? [];
-  const applicable = rows.filter((r) => !r.skipped);
-  const targetLabel = forced ? "所有未锁定 release" : "后续 release";
+  const applicable = rows.filter((r) => !r.skipped && !r.is_current);
+  const targetLabel = preview.scope === "all_unlocked" ? "所有未锁定 release" : "后续 release";
   return (
     <div className="dialog-backdrop" data-testid="decision-sync-dialog">
       <div className="dialog-box minw-560 maxw-720">

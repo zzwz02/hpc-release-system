@@ -247,7 +247,6 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
               />
             </label>
           </div>
-          {createErr && <p className="lerr" data-testid="create-err">{createErr}</p>}
           <div className="row mt-13">
             <button
               className="btn primary"
@@ -257,6 +256,7 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
             >
               {creating ? "创建中…" : "从上版克隆新 Release"}
             </button>
+            {createErr && <span className="action-err" role="alert" data-testid="create-err">{createErr}</span>}
           </div>
           <p className="hint">
             两个 deadline 决定权限：app 冻结前可任意新增 / 调整 release 决策；冻结后只能把决策切到
@@ -303,7 +303,6 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
                   />
                 </label>
               </div>
-              {saveErr && <p className="lerr">{saveErr}</p>}
               <div className="row mt-13">
                 <button
                   className="btn"
@@ -320,6 +319,7 @@ function ReleaseCyclePane({ releases, currentRelease, onMutated }: ReleaseCycleP
                 >
                   导出测试范围 CSV
                 </button>
+                {saveErr && <span className="action-err" role="alert">{saveErr}</span>}
               </div>
             </>
           )}

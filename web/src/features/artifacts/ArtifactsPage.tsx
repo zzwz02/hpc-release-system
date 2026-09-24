@@ -284,7 +284,6 @@ function ManagerReviewPane({ releaseId, onGenerated }: ManagerReviewPaneProps) {
           </label>
         ))}
       </div>
-      {error && <p className="log danger-text mt-8">{error}</p>}
       <div className="row mt-13">
         <button
           className="btn primary"
@@ -293,6 +292,7 @@ function ManagerReviewPane({ releaseId, onGenerated }: ManagerReviewPaneProps) {
         >
           {generating ? "生成中…" : "生成并刷新 CSV"}
         </button>
+        {error && <span className="action-err" role="alert">{error}</span>}
       </div>
     </div>
   );
