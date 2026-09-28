@@ -19,6 +19,8 @@ _TURN_UPDATABLE = {
     "result_json",
     "conclusion",
     "comment_status",
+    "delivery_status",
+    "delivery_errors_json",
     "post_comment",
     "comment_id",
     "comment_body",
@@ -119,12 +121,8 @@ def list_conversations(
     )
 
 
-def handled_issues(conn: sqlite3.Connection, *, limit: int) -> tuple[int, list[dict]]:
-    """Issues ever handed to the agent, most recent agent activity first.
-
-    Returns (total issue count, rows of issue_key / conversation_count /
-    last_activity for the first `limit` issues).
-    """
+def handled_issues(conn: sqlite3.Connection) -> tuple[int, list[dict]]:
+    """All issues ever handed to the agent, most recent activity first."""
     total = conn.execute(
         "SELECT COUNT(DISTINCT issue_key) FROM jira_agent_conversations"
     ).fetchone()[0]
@@ -135,9 +133,7 @@ def handled_issues(conn: sqlite3.Connection, *, limit: int) -> tuple[int, list[d
         FROM jira_agent_conversations
         GROUP BY issue_key
         ORDER BY last_activity DESC, MAX(rowid) DESC
-        LIMIT ?
         """,
-        (limit,),
     )
     return int(total), rows
 
@@ -361,12 +357,34 @@ def requeue_turn(conn: sqlite3.Connection, turn_id: str) -> bool:
     return cur.rowcount == 1
 
 
+def claim_delivery(conn: sqlite3.Connection, turn_id: str) -> bool:
+    cursor = conn.execute(
+        """UPDATE jira_agent_turns SET delivery_status = 'collecting'
+           WHERE id = ? AND status = 'completed' AND delivery_status = 'incomplete'""",
+        (turn_id,),
+    )
+    return cursor.rowcount == 1
+
+
+def collecting_deliveries(conn: sqlite3.Connection) -> list[dict]:
+    return _all(conn, "SELECT * FROM jira_agent_turns WHERE delivery_status = 'collecting'")
+
+
+def update_artifact(conn: sqlite3.Connection, file_id: str, *, local_path: str, size: int, sha256: str) -> dict:
+    conn.execute(
+        "UPDATE jira_agent_files SET local_path = ?, size = ?, sha256 = ? WHERE id = ? AND source = 'artifact'",
+        (local_path, size, sha256, file_id),
+    )
+    return _one(conn, "SELECT * FROM jira_agent_files WHERE id = ?", (file_id,))
+
+
 def pending_comment_turns(conn: sqlite3.Connection) -> list[dict]:
     return _all(
         conn,
         """
         SELECT * FROM jira_agent_turns
         WHERE status = 'completed' AND comment_status = 'pending'
+          AND delivery_status IN ('', 'complete')
         ORDER BY rowid
         """,
     )

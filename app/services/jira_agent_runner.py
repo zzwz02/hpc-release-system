@@ -119,6 +119,9 @@ class ActiveTurn:
 async def post_turn_comment(conn, turn_id: str) -> dict:
     """Publish (or re-publish) a turn's rendered comment to JIRA."""
     turn = repo.get_turn(conn, turn_id)
+    if (not turn["post_comment"] or turn["comment_status"] not in ("pending", "failed")
+            or turn["delivery_status"] not in ("", "complete")):
+        return turn
     conversation = repo.get_conversation(conn, turn["conversation_id"])
     try:
         comment_id = await asyncio.to_thread(
@@ -161,6 +164,12 @@ class JiraAgentRunner:
         groups = load_groups()
         conn = open_db()
         try:
+            # Interrupted file transfers retain the completed analysis and can
+            # be retried explicitly without resuming a model turn.
+            for turn in repo.collecting_deliveries(conn):
+                self._delivery_state(conn, turn["conversation_id"], turn["id"], "incomplete", [
+                    {"path": "", "error": "网站在文件回收期间停止，请重试回收文件"},
+                ])
             for turn in repo.running_turns(conn):
                 self._recover(conn, turn, groups)
             pending_comments = [turn["id"] for turn in repo.pending_comment_turns(conn)]
@@ -432,7 +441,9 @@ class JiraAgentRunner:
                 error = turn_error or "Codex 本轮执行失败"
         except asyncio.CancelledError:
             cancelled = True
-            if active.stop_reason:
+            if repo.get_turn(conn, tid)["status"] == "completed":
+                final_status = "completed"
+            elif active.stop_reason:
                 final_status, error = "cancelled", _STOP_TEXT.get(active.stop_reason, "已中断")
             elif active.phase == "preparing":
                 final_status, error = "queued", "网站停止，本轮尚未开始，重启后重新排队"
@@ -484,7 +495,10 @@ class JiraAgentRunner:
     ) -> tuple[str, str, str]:
         """Sync inputs, start or resume the thread, start the turn and consume it."""
         cid, tid = active.conversation_id, active.turn_id
-        issue = await asyncio.to_thread(jira.get_issue, conversation["issue_key"])
+        issue = await asyncio.to_thread(
+            jira.get_issue_snapshot, conversation["issue_key"],
+            timeout_seconds=max(0, deadline - time.monotonic()),
+        )
         uploaded = await self._sync_inputs(conn, active, conversation, issue)
 
         if conversation["thread_id"]:
@@ -642,10 +656,18 @@ class JiraAgentRunner:
                     sha256=hashlib.sha256(data).hexdigest(), remote_path=rel,
                 )
             attachment_paths[att["id"]] = rel
+        markdown = domain.render_issue_markdown(issue, attachment_paths)
+        await client.write_file(f"{workspace}/issue.md", markdown.encode("utf-8"))  # type: ignore[union-attr]
+        snapshot = domain.build_issue_snapshot(issue, attachment_paths, markdown)
         await client.write_file(  # type: ignore[union-attr]
-            f"{workspace}/issue.md",
-            domain.render_issue_markdown(issue, attachment_paths).encode("utf-8"),
+            f"{workspace}/issue.json", json.dumps(snapshot, ensure_ascii=False).encode("utf-8"),
         )
+        acquisition = issue.get("acquisition") or {}
+        if acquisition.get("status") != "complete":
+            incomplete = [name for name, part in (acquisition.get("parts") or {}).items()
+                          if part.get("status") != "complete"]
+            _event(conn, cid, tid, "status", {"status": "running",
+                   "text": "工单材料采集不完整，已保留可用内容与缺失原因：" + ", ".join(incomplete)})
 
         uploaded: list[str] = []
         for record in repo.pending_uploads(conn, cid):
@@ -772,91 +794,135 @@ class JiraAgentRunner:
         with transaction(conn):
             repo.set_machine_used(conn, active.conversation_id, machine)
 
+    def _delivery_state(self, conn, cid: str, tid: str, status: str, errors: list[dict]) -> None:
+        labels = {
+            "collecting": "分析已完成，正在回收交付文件",
+            "incomplete": "分析已完成，交付不完整；可单独重试回收文件",
+            "complete": "交付文件已全部回收",
+        }
+        with transaction(conn):
+            repo.update_turn(conn, tid, delivery_status=status, delivery_errors_json=dumps_json(errors))
+            repo.touch_conversation(conn, cid)
+            repo.add_event(conn, conversation_id=cid, turn_id=tid, kind="delivery",
+                           item_id=f"delivery:{tid}", payload={"status": status, "errors": errors, "text": labels[status]})
+
     async def _finish_completed(
         self, conn, active: ActiveTurn, group: domain.AgentGroup,
         conversation: dict, turn: dict, result: dict,
     ) -> None:
-        artifacts = await self._pull_artifacts(conn, active, conversation, result)
-        patches = [
-            (record["name"], Path(record["local_path"]).read_text("utf-8", errors="replace"))
-            for record in artifacts
-            if record["name"].endswith((".patch", ".diff"))
-        ]
-        body = domain.render_jira_comment(
-            group=group,
-            result=result,
-            turn_seq=turn["seq"],
-            owner=conversation["owner"],
-            conversation_url=conversation_url(conversation["id"]),
-            patches=patches,
-        )
-        # re-read: a message sent while the turn ran may have changed the choice
-        post = bool(repo.get_turn(conn, turn["id"])["post_comment"])
+        # Persist the analysis before any file I/O; a transfer failure must not
+        # discard it or trigger a new model run on restart.
         with transaction(conn):
-            repo.update_turn(
-                conn, turn["id"], status="completed", result_json=dumps_json(result),
-                conclusion=result["conclusion"], comment_status="pending" if post else "",
-                comment_body=body, finished_at=beijing_timestamp(),
-            )
-            repo.add_event(
-                conn, conversation_id=conversation["id"], turn_id=turn["id"],
-                kind="result", payload=result,
-            )
-            if not post:
-                repo.add_event(
-                    conn, conversation_id=conversation["id"], turn_id=turn["id"],
-                    kind="jira_comment", payload={"status": "skipped"},
-                )
+            repo.update_turn(conn, turn["id"], status="completed", result_json=dumps_json(result),
+                             conclusion=result["conclusion"], delivery_status="collecting",
+                             finished_at=beijing_timestamp())
+            repo.add_event(conn, conversation_id=conversation["id"], turn_id=turn["id"],
+                           kind="result", item_id=f"result:{turn['id']}", payload=result)
+        self._delivery_state(conn, conversation["id"], turn["id"], "collecting", [])
         reported = (result.get("machine") or "").strip()
         if reported and reported != active.machine_used:
             self._note_machine(conn, active, reported)
-        if post:
+        await self.deliver_result(conn, active, group, conversation, turn, result)
+
+    async def retry_delivery(self, conn, group: domain.AgentGroup, conversation: dict, turn: dict) -> None:
+        active = ActiveTurn(turn_id=turn["id"], conversation_id=conversation["id"],
+                            group=group.name, workspace=conversation["workspace"], phase="finishing")
+        # File methods need no thread/start, thread/resume or turn/start.
+        active.client = CodexAppServerClient(group.ws_url, group.ws_token)
+        try:
+            try:
+                await active.client.connect()
+            except Exception as exc:
+                self._delivery_state(conn, conversation["id"], turn["id"], "incomplete",
+                                     [{"path": "", "error": _error_text(exc)}])
+                return
+            result = domain.parse_stored_result(turn["result_json"])
+            await self.deliver_result(conn, active, group, conversation, turn, result)
+        finally:
+            await active.client.close()
+            if repo.get_turn(conn, turn["id"])["delivery_status"] == "collecting":
+                self._delivery_state(conn, conversation["id"], turn["id"], "incomplete",
+                                     [{"path": "", "error": "文件回收中断，请重试"}])
+
+    async def deliver_result(self, conn, active: ActiveTurn, group: domain.AgentGroup,
+                             conversation: dict, turn: dict, result: dict) -> None:
+        try:
+            artifacts, errors = await self._pull_artifacts(conn, active, conversation, result)
+            patches = [(record["name"], Path(record["local_path"]).read_text("utf-8", errors="replace"))
+                       for record in artifacts if record["name"].endswith((".patch", ".diff"))]
+            body = domain.render_jira_comment(group=group, result=result, turn_seq=turn["seq"],
+                                             owner=conversation["owner"],
+                                             conversation_url=conversation_url(conversation["id"]), patches=patches)
+        except asyncio.CancelledError:
+            self._delivery_state(conn, conversation["id"], turn["id"], "incomplete",
+                                 [{"path": "", "error": "文件回收中断，请重试"}])
+            raise
+        except Exception as exc:
+            logger.exception("JIRA agent delivery %s failed", turn["id"])
+            self._delivery_state(conn, conversation["id"], turn["id"], "incomplete",
+                                 [{"path": "", "error": _error_text(exc)}])
+            return
+        post = bool(repo.get_turn(conn, turn["id"])["post_comment"])
+        # The status and comment gate are one transaction, so restart cannot
+        # publish a success comment for an incomplete delivery.
+        with transaction(conn):
+            repo.update_turn(conn, turn["id"], comment_status="pending" if post and not errors else "",
+                             comment_body=body, comment_error="")
+            self._delivery_state(conn, conversation["id"], turn["id"], "incomplete" if errors else "complete", errors)
+            if not post and not errors:
+                repo.add_event(conn, conversation_id=conversation["id"], turn_id=turn["id"], kind="jira_comment",
+                               item_id=f"comment-skipped:{turn['id']}", payload={"status": "skipped"})
+        if post and not errors:
             await post_turn_comment(conn, turn["id"])
 
-    async def _pull_artifacts(self, conn, active: ActiveTurn, conversation: dict, result: dict) -> list[dict]:
+    async def _pull_artifacts(self, conn, active: ActiveTurn, conversation: dict, result: dict) -> tuple[list[dict], list[dict]]:
         cid, tid, workspace = conversation["id"], active.turn_id, conversation["workspace"]
         local_dir = Path(settings.jira_agent_data_dir) / cid / tid
         records: list[dict] = []
+        errors: list[dict] = []
         seen: set[str] = set()
-        pulled = {  # by a previous process that stopped while finishing
-            record["remote_path"]: record
-            for record in repo.list_files(conn, cid)
-            if record["turn_id"] == tid and record["source"] == "artifact"
-        }
+        pulled = {record["remote_path"]: record for record in repo.list_files(conn, cid)
+                  if record["turn_id"] == tid and record["source"] == "artifact"}
         for path in result.get("artifacts") or []:
             remote = domain.resolve_workspace_path(workspace, path)
             if remote is None:
-                _event(conn, cid, tid, "error", {"text": f"产物路径不在工作目录内，已忽略：{path}"})
+                errors.append({"path": path, "error": "产物路径不在工作目录内"})
                 continue
             if remote in seen:
                 continue
             seen.add(remote)
-            if posixpath.relpath(remote, workspace) in pulled:
-                records.append(pulled[posixpath.relpath(remote, workspace)])
-                continue
+            relative = posixpath.relpath(remote, workspace)
+            previous = pulled.get(relative)
             try:
+                if previous:
+                    local = Path(previous["local_path"])
+                    if local.is_file() and hashlib.sha256(local.read_bytes()).hexdigest() == previous["sha256"]:
+                        records.append(previous)
+                        continue
                 data = await active.client.read_file(remote)  # type: ignore[union-attr]
-            except CodexAppServerError as exc:
-                _event(conn, cid, tid, "error", {"text": f"产物读取失败 {path}：{exc}"})
-                continue
-            if len(data) > _ARTIFACT_MAX_BYTES:
-                _event(conn, cid, tid, "error", {"text": f"产物 {path} 超过 10MB，未拉回网站"})
-                continue
-            local_dir.mkdir(parents=True, exist_ok=True)
-            name = domain.safe_filename(posixpath.basename(remote))
-            local = local_dir / name
-            index = 1
-            while local.exists():
-                local = local_dir / f"{index}-{name}"
-                index += 1
-            local.write_bytes(data)
-            with transaction(conn):
-                records.append(repo.add_file(
-                    conn, conversation_id=cid, turn_id=tid, direction="output", source="artifact",
-                    name=name, size=len(data), sha256=hashlib.sha256(data).hexdigest(),
-                    local_path=str(local), remote_path=posixpath.relpath(remote, workspace),
-                ))
-        return records
+                if len(data) > _ARTIFACT_MAX_BYTES:
+                    errors.append({"path": path, "error": "文件超过 10 MiB，请提供大小合规的交付文件"})
+                    continue
+                local_dir.mkdir(parents=True, exist_ok=True)
+                name = domain.safe_filename(posixpath.basename(remote))
+                local = local_dir / name
+                index = 1
+                while local.exists():
+                    local = local_dir / f"{index}-{name}"
+                    index += 1
+                local.write_bytes(data)
+                with transaction(conn):
+                    if previous:
+                        record = repo.update_artifact(conn, previous["id"], local_path=str(local), size=len(data),
+                                                      sha256=hashlib.sha256(data).hexdigest())
+                    else:
+                        record = repo.add_file(conn, conversation_id=cid, turn_id=tid, direction="output", source="artifact",
+                                               name=name, size=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                                               local_path=str(local), remote_path=relative)
+                    records.append(record)
+            except Exception as exc:
+                errors.append({"path": path, "error": f"产物回收失败：{_error_text(exc)}"})
+        return records, errors
 
 
 runner = JiraAgentRunner()

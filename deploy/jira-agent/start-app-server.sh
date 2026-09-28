@@ -12,17 +12,23 @@ PORT="${PORT:-4510}"
 PACK_DIR="${PACK_DIR:-$HOME/hpc-jira-agent}"
 TOKEN_FILE="${TOKEN_FILE:-$HOME/.config/hpc-jira-agent/ws-token}"
 CODEX_BIN="${CODEX_BIN:-codex}"
+export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 
 if [[ ! -s "$TOKEN_FILE" ]]; then
   echo "missing websocket token file: $TOKEN_FILE" >&2
   echo "generate one with: mkdir -p \"$(dirname "$TOKEN_FILE")\" && python3 -c 'import secrets;print(secrets.token_urlsafe(32),end=\"\")' > \"$TOKEN_FILE\" && chmod 600 \"$TOKEN_FILE\"" >&2
   exit 1
 fi
-if [[ ! -f "$PACK_DIR/AGENTS.md" ]]; then
+if [[ ! -f "$PACK_DIR/AGENTS.md" || ! -f "$PACK_DIR/.agents/skills/hpc-jira-agent/SKILL.md" ]]; then
   echo "missing knowledge pack: $PACK_DIR/AGENTS.md (run deploy/jira-agent/sync-pack.sh)" >&2
   exit 1
 fi
+if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+  echo "Codex executable not found: $CODEX_BIN (set CODEX_BIN to its absolute path)" >&2
+  exit 1
+fi
 mkdir -p "$PACK_DIR/workspaces"
+cd "$PACK_DIR"
 
 exec "$CODEX_BIN" app-server \
   --listen "ws://${BIND_IP}:${PORT}" \

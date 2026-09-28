@@ -19,6 +19,7 @@ import { MachineChoice } from "./MachineChoice";
 import { MachinesDialog } from "./MachinesDialog";
 import { SshKeyUploadDialog } from "./SshKeyUploadDialog";
 import {
+  ACTION_REQUIRED_LABELS,
   CLOSE_REASON_LABELS,
   CONCLUSION_LABELS,
   JIRA_AGENT_HANDLED_ISSUES_KEY,
@@ -39,6 +40,8 @@ import {
   listHandledIssues,
   previewIssue,
   retryTurnComment,
+  retryTurnDelivery,
+  resultState,
   searchIssues,
   sendConversationMessage,
   type AgentConversation,
@@ -66,6 +69,8 @@ const STATE_TONE: Record<ConversationState, string> = {
   queued: "warn",
   running: "accent",
   waiting_review: "ok",
+  delivering: "accent",
+  delivery_incomplete: "warn",
   failed: "bad",
   cancelled: "",
   interrupted: "warn",
@@ -87,6 +92,7 @@ function isActive(conversation: AgentConversation | undefined): boolean {
   return (
     conversation.state === "queued"
     || conversation.state === "running"
+    || conversation.state === "delivering"
     || conversation.latest_turn?.comment_status === "pending"
   );
 }
@@ -96,10 +102,13 @@ const RECOVERING_TEXT = "网站刚重启，正在重新接管本轮，几秒后�
 function stateText(conversation: AgentConversation): string {
   const turn = conversation.latest_turn;
   if (conversation.state === "queued" && turn?.queue_position != null) {
-    return turn.queue_position > 0 ? `排队中，前面还有 ${turn.queue_position} 轮` : "排队中，即将开始";
+    return turn.queue_position > 0 ? "排队中，前面还有 " + turn.queue_position + " 轮" : "排队中，即将开始";
   }
   if (conversation.state === "waiting_review" && turn?.conclusion) {
-    return `待审阅 · ${CONCLUSION_LABELS[turn.conclusion] ?? turn.conclusion}`;
+    const result = resultState(turn.conclusion, turn.result?.action_required);
+    const action = ACTION_REQUIRED_LABELS[result.action];
+    return "待审阅 · " + (CONCLUSION_LABELS[result.conclusion] ?? result.conclusion)
+      + (action ? " · " + action : "");
   }
   return STATE_LABELS[conversation.state];
 }
@@ -406,9 +415,13 @@ function IssueResults({
         let agentPill = null;
         if (latest) {
           const concluded = (latest.state === "closed" || latest.state === "waiting_review") && latest.conclusion;
+          const result = resultState(latest.conclusion, latest.action_required);
+          const action = ACTION_REQUIRED_LABELS[result.action];
           agentPill = (
-            <span className={`pill ${STATE_TONE[latest.state]}`}>
-              agent · {concluded ? (CONCLUSION_LABELS[latest.conclusion] ?? latest.conclusion) : STATE_LABELS[latest.state]}
+            <span className={"pill " + STATE_TONE[latest.state]}>
+              agent · {concluded
+                ? (CONCLUSION_LABELS[result.conclusion] ?? result.conclusion) + (action ? " · " + action : "")
+                : STATE_LABELS[latest.state]}
             </span>
           );
         } else if (open) {
@@ -590,7 +603,7 @@ function IssueView({
                 <button
                   type="button"
                   className="btn sm"
-                  disabled={recovering}
+                  disabled={recovering || conversation.state === "delivering"}
                   onClick={() => onNavigate(issueKey, DRAFT)}
                 >
                   新建对话
@@ -754,6 +767,7 @@ function ConversationBody({ id, onChanged }: { id: string; onChanged: () => void
           || after?.id !== before?.id
           || after?.status !== before?.status
           || after?.comment_status !== before?.comment_status
+          || after?.delivery_status !== before?.delivery_status
           || after?.queue_position !== before?.queue_position
         ) {
           onChanged();
@@ -797,6 +811,7 @@ function ConversationBody({ id, onChanged }: { id: string; onChanged: () => void
                     turn={turn}
                     files={detail.files}
                     canWrite={conversation.can_write}
+                    canRetry={conversation.can_write && conversation.latest_turn?.id === item.turnId}
                     onChanged={onChanged}
                   />
                 )}
@@ -859,6 +874,7 @@ function ToolGroup({ events }: { events: AgentEvent[] }) {
             turn={undefined}
             files={[]}
             canWrite={false}
+            canRetry={false}
             onChanged={() => undefined}
           />
         ))}
@@ -879,12 +895,14 @@ function EventRow({
   turn,
   files,
   canWrite,
+  canRetry,
   onChanged,
 }: {
   event: AgentEvent;
   turn: AgentTurn | undefined;
   files: AgentFile[];
   canWrite: boolean;
+  canRetry: boolean;
   onChanged: () => void;
 }) {
   const payload = event.payload;
@@ -949,7 +967,9 @@ function EventRow({
         </details>
       );
     case "result":
-      return <ResultCard result={payload as unknown as AgentResult} files={files.filter((f) => f.turn_id === event.turn_id && f.source === "artifact")} />;
+      return <ResultCard result={payload as unknown as AgentResult} files={files.filter((f) => f.turn_id === event.turn_id && f.source === "artifact")} pending={turn?.delivery_status === "incomplete" || turn?.delivery_status === "collecting"} />;
+    case "delivery":
+      return <DeliveryEvent turn={turn} canRetry={canRetry} onChanged={onChanged} />;
     case "jira_comment":
       return <CommentEvent event={event} turn={turn} canWrite={canWrite} onChanged={onChanged} />;
     case "error":
@@ -987,53 +1007,91 @@ function CommandEvent({ event }: { event: AgentEvent }) {
   );
 }
 
-function ResultCard({ result, files }: { result: AgentResult; files: AgentFile[] }) {
+function ResultCard({ result, files, pending }: { result: AgentResult; files: AgentFile[]; pending: boolean }) {
   const ownership = result.ownership ?? { belongs_to_us: "", target_group: "", reasoning: "" };
+  const state = resultState(result.conclusion, result.action_required);
+  const action = ACTION_REQUIRED_LABELS[state.action];
+  const assistance = result.assistance;
+  const showAssistance = (
+    (state.action === "needs_info" || state.action === "needs_help")
+    && assistance?.current_issue
+    && assistance.owner
+    && assistance.request
+  );
+  const showRoot = (
+    state.conclusion === "root_cause_confirmed"
+    || state.conclusion === "fix_prepared"
+    || state.conclusion === "fixed_pending_review"
+  ) && result.root_cause;
+  const showReproduction = (
+    state.conclusion === "cannot_reproduce"
+    || (
+      state.conclusion !== "insufficient_evidence"
+      && state.conclusion !== "not_our_group"
+      && Boolean(
+        result.reproduction?.reproduced
+        || result.reproduction?.environment
+        || result.reproduction?.steps?.length,
+      )
+    )
+  );
+  const showFix = (
+    state.conclusion === "fix_prepared"
+    || state.conclusion === "fixed_pending_review"
+  ) && result.fix?.description;
+  const patches = files.filter((file) => {
+    const name = (file.remote_path || file.name).toLowerCase();
+    return name.endsWith(".patch") || name.endsWith(".diff");
+  });
+  const artifacts = files.filter((file) => !patches.includes(file));
+  const review = state.action === "needs_review"
+    ? (
+      state.conclusion === "fix_prepared"
+        ? "审核候选修改和现有验证结果，并确认后续验证安排。"
+        : state.conclusion === "fixed_pending_review"
+          ? "审核候选修改、验证证据和补丁，决定是否合入。"
+          : "审核分析结论和证据。"
+    )
+    : "";
+
   return (
     <div className="jira-agent-event result" data-testid="jira-agent-result">
       <div className="jira-agent-event-head">
-        <strong>本轮结论</strong>
-        <span className="pill accent">{CONCLUSION_LABELS[result.conclusion] ?? result.conclusion}</span>
+        <strong>{pending ? "分析结论（文件交付尚未完成）" : "本轮结论"}</strong>
+        <span className="pill-group">
+          <span className="pill accent">{CONCLUSION_LABELS[state.conclusion] ?? state.conclusion}</span>
+          {action && <span className="pill warn">{action}</span>}
+        </span>
       </div>
       <dl className="jira-agent-result-grid">
         <dt>问题分类</dt>
         <dd>{result.issue_category || "未分类"}</dd>
-        {result.machine && (
-          <>
-            <dt>执行机器</dt>
-            <dd>
-              <code>{result.machine}</code>
-            </dd>
-          </>
-        )}
         <dt>归属判断</dt>
         <dd>
           {OWNERSHIP_LABELS[ownership.belongs_to_us] ?? ownership.belongs_to_us}
-          {ownership.target_group ? `（${ownership.target_group}）` : ""}
+          {ownership.target_group ? "（" + ownership.target_group + "）" : ""}
           {ownership.reasoning && <div className="muted">{ownership.reasoning}</div>}
         </dd>
-        {result.root_cause && (
+        {showAssistance && (
           <>
-            <dt>根因</dt>
-            <dd className="jira-agent-pre">{result.root_cause}</dd>
+            <dt>{state.action === "needs_info" ? "所需补充" : "所需协助"}</dt>
+            <dd>
+              <div>当前情况：{assistance.current_issue}</div>
+              <div>提供方/处理人：{assistance.owner}</div>
+              <div>{state.action === "needs_info" ? "需要内容" : "需要操作"}：{assistance.request}</div>
+            </dd>
           </>
         )}
-        <dt>复现</dt>
-        <dd>
-          {result.reproduction?.reproduced ? "已复现" : "未复现"}
-          {result.reproduction?.environment ? `（${result.reproduction.environment}）` : ""}
-          {result.reproduction?.steps?.length > 0 && (
-            <ol>
-              {result.reproduction.steps.map((step, index) => (
-                <li key={index}><code>{step}</code></li>
-              ))}
-            </ol>
-          )}
-        </dd>
-        {result.fix?.description && (
+        {review && (
           <>
-            <dt>修复说明</dt>
-            <dd className="jira-agent-pre">{result.fix.description}</dd>
+            <dt>待审核</dt>
+            <dd>{review}</dd>
+          </>
+        )}
+        {state.action === "needs_handoff" && ownership.target_group && (
+          <>
+            <dt>建议接手</dt>
+            <dd>{ownership.target_group}</dd>
           </>
         )}
         {result.next_steps?.length > 0 && (
@@ -1048,6 +1106,40 @@ function ResultCard({ result, files }: { result: AgentResult; files: AgentFile[]
             </dd>
           </>
         )}
+        {result.machine && (
+          <>
+            <dt>执行机器</dt>
+            <dd><code>{result.machine}</code></dd>
+          </>
+        )}
+        {showRoot && (
+          <>
+            <dt>根因</dt>
+            <dd className="jira-agent-pre">{result.root_cause}</dd>
+          </>
+        )}
+        {showReproduction && (
+          <>
+            <dt>复现结果</dt>
+            <dd>
+              {result.reproduction?.reproduced ? "已复现" : "未复现"}
+              {result.reproduction?.environment ? "（" + result.reproduction.environment + "）" : ""}
+              {result.reproduction?.steps?.length > 0 && (
+                <ol>
+                  {result.reproduction.steps.map((step, index) => (
+                    <li key={index}><code>{step}</code></li>
+                  ))}
+                </ol>
+              )}
+            </dd>
+          </>
+        )}
+        {showFix && (
+          <>
+            <dt>修复说明</dt>
+            <dd className="jira-agent-pre">{result.fix.description}</dd>
+          </>
+        )}
         {result.skills_used?.length > 0 && (
           <>
             <dt>使用的 skills</dt>
@@ -1055,6 +1147,31 @@ function ResultCard({ result, files }: { result: AgentResult; files: AgentFile[]
           </>
         )}
       </dl>
+      {(showFix || patches.length > 0) && (
+        <div className="jira-agent-patches">
+          <strong>修复补丁</strong>
+          {patches.length > 0 ? patches.map((file) => (
+            <div className="jira-agent-patch" key={file.id}>
+              <div className="jira-agent-patch-head">
+                <code>{file.remote_path || file.name}</code>
+                {file.downloadable && (
+                  <a href={fileDownloadUrl(file.conversation_id, file.id)}>下载完整补丁</a>
+                )}
+              </div>
+              {file.preview ? (
+                <>
+                  <pre className="jira-agent-output jira-agent-patch-preview">{file.preview}</pre>
+                  {file.preview_truncated && <span className="muted">仅显示前 64 KiB，请下载完整补丁查看其余内容。</span>}
+                </>
+              ) : (
+                <span className="muted">无法在网页内预览，请下载完整补丁。</span>
+              )}
+            </div>
+          )) : (
+            <span className="muted">本轮未交付 .patch/.diff 文件，当前只有修复说明。</span>
+          )}
+        </div>
+      )}
       {result.summary && <Markdown value={result.summary} className="md-view jira-agent-md" />}
       {result.evidence?.length > 0 && (
         <div className="jira-agent-evidence">
@@ -1063,23 +1180,61 @@ function ResultCard({ result, files }: { result: AgentResult; files: AgentFile[]
             <div key={index}>
               <div>{item.description}</div>
               <pre className="jira-agent-output">
-                {item.command ? `$ ${item.command}\n` : ""}
+                {item.command ? "$ " + item.command + "\n" : ""}
                 {item.result}
               </pre>
             </div>
           ))}
         </div>
       )}
-      {files.length > 0 && (
+      {artifacts.length > 0 && (
         <div className="jira-agent-artifacts">
           <strong>产物</strong>
-          {files.map((file) => (
+          {artifacts.map((file) => (
             <a key={file.id} href={fileDownloadUrl(file.conversation_id, file.id)}>
               {file.remote_path || file.name}
             </a>
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function DeliveryEvent({ turn, canRetry, onChanged }: {
+  turn: AgentTurn | undefined;
+  canRetry: boolean;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  if (!turn?.delivery_status) return null;
+  const incomplete = turn.delivery_status === "incomplete";
+  const collecting = turn.delivery_status === "collecting";
+
+  async function retry() {
+    if (!turn) return;
+    setBusy(true);
+    try {
+      const response = await retryTurnDelivery(turn.id);
+      if (response.turn.delivery_status === "complete") toast.success("交付文件已全部回收");
+      else toast.error("仍有文件未收齐，请查看失败清单");
+      onChanged();
+    } catch (error) {
+      toast.error(errorMessage(error));
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className={`jira-agent-event ${incomplete ? "error" : "status"}`} data-testid="jira-agent-delivery">
+      <strong>{incomplete ? "分析已完成，交付不完整" : collecting ? "正在回收交付文件" : "交付文件已全部回收"}</strong>
+      {incomplete && <p>{turn.post_comment ? "文件收齐前暂停发布 JIRA 评论。" : "本轮结论仅保留在网站。"}重试只回收文件，不重新运行分析。</p>}
+      {(turn.delivery_errors ?? []).length > 0 && (
+        <ul>{turn.delivery_errors.map((item, index) => <li key={`${item.path}-${index}`}><code>{item.path}</code>{item.path ? "：" : ""}{item.error}</li>)}</ul>
+      )}
+      {incomplete && canRetry && <button type="button" className="btn sm" disabled={busy} onClick={() => void retry()}>{busy ? "正在重试回收…" : "重试回收文件"}</button>}
     </div>
   );
 }
@@ -1201,10 +1356,12 @@ function Composer({ conversation, onSent }: { conversation: AgentConversation; o
   const fileInput = useRef<HTMLInputElement>(null);
 
   const recovering = conversation.phase === "recovering";
+  const delivering = conversation.state === "delivering";
   let placeholder = "补充信息或新的要求，发送后开始新一轮（例如：继续）";
   if (conversation.state === "running") placeholder = "运行中补充信息，会直接发给 agent";
   if (conversation.state === "queued") placeholder = "会合并到排队中的这一轮";
   if (recovering) placeholder = RECOVERING_TEXT;
+  if (delivering) placeholder = "正在回收文件，完成后可以继续发送";
 
   async function send() {
     setBusy(true);
@@ -1242,7 +1399,7 @@ function Composer({ conversation, onSent }: { conversation: AgentConversation; o
           <button
             type="button"
             className="btn primary"
-            disabled={busy || recovering || !text.trim()}
+            disabled={busy || recovering || delivering || !text.trim()}
             onClick={() => void send()}
           >
             发送

@@ -10,6 +10,8 @@ export type ConversationState =
   | "queued"
   | "running"
   | "waiting_review"
+  | "delivering"
+  | "delivery_incomplete"
   | "failed"
   | "cancelled"
   | "interrupted"
@@ -18,6 +20,9 @@ export type CommentStatus = "" | "pending" | "posted" | "failed";
 
 export interface AgentResult {
   conclusion: string;
+  /** Required on new results; absent on historical result JSON. */
+  action_required?: string;
+  assistance?: { current_issue: string; owner: string; request: string };
   issue_category: string;
   ownership: { belongs_to_us: string; target_group: string; reasoning: string };
   summary: string;
@@ -44,6 +49,8 @@ export interface AgentTurn {
   result: AgentResult | null;
   conclusion: string;
   comment_status: CommentStatus;
+  delivery_status: "" | "collecting" | "incomplete" | "complete";
+  delivery_errors: { path: string; error: string }[];
   // false = the result stays on the website; no JIRA comment
   post_comment: boolean;
   comment_id: string;
@@ -108,6 +115,8 @@ export interface AgentFile {
   remote_path: string;
   created_at: string;
   downloadable: boolean;
+  preview: string;
+  preview_truncated: boolean;
 }
 
 export interface IssueConversationRef {
@@ -181,6 +190,7 @@ export interface IssueSearchItem {
       owner: string;
       state: ConversationState;
       conclusion: string;
+      action_required?: string;
     };
   };
 }
@@ -213,13 +223,45 @@ export interface UploadPayload {
 }
 
 export const CONCLUSION_LABELS: Record<string, string> = {
-  fixed_pending_review: "已修复，方案请审批",
-  cannot_reproduce: "无法复现",
-  needs_info: "需要补充信息",
-  needs_help: "无法完成，需要人工帮助",
-  not_our_group: "经分析需其他组负责",
+  insufficient_evidence: "暂时无法判断",
+  reproduced: "问题已复现",
+  cannot_reproduce: "当前未复现",
+  scope_narrowed: "已定位到具体范围",
+  root_cause_confirmed: "已找到原因",
+  fix_prepared: "已有修复方案，待验证",
+  fixed_pending_review: "修复已验证，待审核",
   analysis_done: "已完成分析",
+  not_our_group: "建议由其他组处理",
 };
+
+export const ACTION_REQUIRED_LABELS: Record<string, string> = {
+  none: "",
+  needs_info: "需要补充",
+  needs_help: "需要协助",
+  needs_review: "需要审核",
+  needs_handoff: "需要转交",
+};
+
+const LEGACY_CONCLUSIONS: Record<string, string> = {
+  needs_info: "insufficient_evidence",
+  needs_help: "insufficient_evidence",
+};
+
+const LEGACY_ACTIONS: Record<string, string> = {
+  fixed_pending_review: "needs_review",
+  needs_info: "needs_info",
+  needs_help: "needs_help",
+  not_our_group: "needs_handoff",
+};
+
+export function resultState(conclusion: string, action?: string) {
+  return {
+    conclusion: LEGACY_CONCLUSIONS[conclusion] ?? conclusion,
+    action: action !== undefined && ACTION_REQUIRED_LABELS[action] !== undefined
+      ? action
+      : (LEGACY_ACTIONS[conclusion] ?? "none"),
+  };
+}
 
 export const OWNERSHIP_LABELS: Record<string, string> = {
   yes: "属于本组",
@@ -232,6 +274,8 @@ export const STATE_LABELS: Record<ConversationState, string> = {
   queued: "排队中",
   running: "处理中",
   waiting_review: "待 assignee 审阅",
+  delivering: "分析已完成，正在回收文件",
+  delivery_incomplete: "分析已完成，交付不完整",
   failed: "失败",
   cancelled: "已取消",
   interrupted: "已中断",
@@ -290,6 +334,13 @@ export function sendConversationMessage(
 export function cancelConversationTurn(id: string) {
   return apiPost<{ conversation: AgentConversation }>(
     `/api/jira-agent/conversations/${encodeURIComponent(id)}/cancel`,
+    {},
+  );
+}
+
+export function retryTurnDelivery(turnId: string) {
+  return apiPost<{ turn: AgentTurn }>(
+    `/api/jira-agent/turns/${encodeURIComponent(turnId)}/delivery/retry`,
     {},
   );
 }

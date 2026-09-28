@@ -10,9 +10,10 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time
 import urllib.error
 import urllib.request
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
 
 from app import runtime_config
@@ -61,15 +62,18 @@ def browse_url() -> str:
 # ─────────────────────────────────────────────────────────────
 
 def _request(base_url: str, token: str, method: str, path: str,
-             body: dict | None = None) -> dict:
+             body: dict | None = None, *, timeout: float = 20,
+             max_bytes: int | None = None) -> dict:
     url = base_url + path
     data = json.dumps(body, ensure_ascii=False).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Content-Type", "application/json; charset=utf-8")
     req.add_header("Accept", "application/json")
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        raw = resp.read()
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read(max_bytes + 1) if max_bytes is not None else resp.read()
+        if max_bytes is not None and len(raw) > max_bytes:
+            raise ValueError("Jira response exceeds snapshot size budget")
         return json.loads(raw) if raw else {}
 
 
@@ -275,12 +279,16 @@ def get_issue(issue_key: str) -> dict:
         cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"], "GET",
         f"/rest/api/2/issue/{quote(issue_key)}?fields={_ISSUE_FIELDS}",
     )
+    return _issue_data(raw, cfg["JIRA_BASE_URL"], issue_key)
+
+
+def _issue_data(raw: dict, base_url: str, issue_key: str) -> dict:
     fields = raw.get("fields") or {}
     key = raw.get("key") or issue_key
     comments = (fields.get("comment") or {}).get("comments") or []
     return {
         "key": key,
-        "url": f"{cfg['JIRA_BASE_URL']}/browse/{key}",
+        "url": f"{base_url}/browse/{key}",
         "summary": fields.get("summary") or "",
         "issue_type": (fields.get("issuetype") or {}).get("name", ""),
         "status": (fields.get("status") or {}).get("name", ""),
@@ -313,6 +321,128 @@ def get_issue(issue_key: str) -> dict:
             for a in fields.get("attachment") or []
         ],
     }
+
+
+def get_issue_snapshot(issue_key: str, *, timeout_seconds: float = 120) -> dict:
+    """Collect visible fields and all comment pages for one agent turn.
+
+    Unlike get_issue (also used for permission checks), this performs bounded
+    collection and reports partial coverage instead of silently dropping data.
+    """
+    cfg = _require_config()
+    started = datetime.now(timezone.utc).isoformat()
+    deadline = time.monotonic() + min(120, max(0, timeout_seconds))
+
+    def fetch(path: str):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Snapshot collection deadline exceeded")
+        return _request(cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"], "GET", path,
+                        timeout=min(20, remaining), max_bytes=8 * 1024 * 1024)
+
+    class Incomplete(ValueError):
+        pass
+
+    def failure(exc: Exception) -> str:
+        if isinstance(exc, Incomplete):
+            return str(exc)
+        if isinstance(exc, urllib.error.HTTPError):
+            return f"http_{exc.code}"
+        if isinstance(exc, TimeoutError):
+            return "collection_timeout"
+        return "invalid_response" if isinstance(exc, (ValueError, TypeError)) else "request_failed"
+
+    raw = fetch(f"/rest/api/2/issue/{quote(issue_key, safe='')}")
+    if not isinstance(raw, dict) or raw.get("key") != issue_key or not isinstance(raw.get("fields"), dict):
+        raise ValueError("Jira snapshot identity or fields are invalid")
+    fields = raw["fields"]
+    parts = {"issue": {"status": "complete"},
+             "description": {"status": "complete" if "description" in fields else "unavailable"},
+             "custom_fields": {"status": "complete"},
+             "attachment_metadata": {"status": "complete" if isinstance(fields.get("attachment"), list) else "unavailable"}}
+    definitions = []
+    try:
+        definitions = fetch("/rest/api/2/field")
+        if not isinstance(definitions, list) or any(not isinstance(item, dict) or not isinstance(item.get("id"), str) for item in definitions):
+            raise Incomplete("invalid_field_definitions")
+        parts["field_definitions"] = {"status": "complete"}
+    except (OSError, ValueError, TypeError) as exc:
+        definitions = []
+        parts["field_definitions"] = {"status": "unavailable", "error_code": failure(exc)}
+    names = {item["id"]: item for item in definitions}
+    custom = {
+        key: {"name": names.get(key, {}).get("name") or key, "value": value,
+              "raw": value, "schema": names.get(key, {}).get("schema")}
+        for key, value in fields.items() if key.startswith("customfield_")
+    }
+    parts["custom_fields"]["collected"] = len(custom)
+    comments = []
+    seen: set[str] = set()
+    pages = []
+    total = None
+    size = 0
+    try:
+        for _ in range(100):
+            offset = len(comments)
+            page = fetch(f"/rest/api/2/issue/{quote(issue_key, safe='')}/comment?startAt={offset}&maxResults=100")
+            if not isinstance(page, dict) or not isinstance(page.get("comments"), list):
+                raise Incomplete("invalid_comment_page")
+            items = page["comments"]
+            reported = page.get("total")
+            if type(reported) is not int or type(page.get("startAt")) is not int or page.get("startAt") != offset or reported < offset + len(items):
+                raise Incomplete("invalid_comment_offset_or_total")
+            if total is not None and reported != total:
+                raise Incomplete("comment_total_changed")
+            total = reported
+            ids = [str(item["id"]) for item in items if isinstance(item, dict)
+                   and type(item.get("id")) in (str, int) and str(item["id"])]
+            if len(ids) != len(items) or len(set(ids)) != len(ids) or seen.intersection(ids):
+                raise Incomplete("comment_ids_missing_or_repeated")
+            size += len(json.dumps(items, ensure_ascii=False).encode("utf-8"))
+            if size > 8 * 1024 * 1024:
+                raise Incomplete("comment_size_budget_exceeded")
+            seen.update(ids)
+            comments.extend(items)
+            pages.append({"startAt": offset, "count": len(items), "total": total})
+            if len(comments) == total:
+                parts["comments"] = {"status": "complete"}
+                break
+            if not items:
+                raise Incomplete("comment_page_ended_early")
+        else:
+            raise Incomplete("comment_page_budget_exceeded")
+    except (OSError, ValueError, TypeError) as exc:
+        parts["comments"] = {"status": "partial" if comments else "unavailable", "error_code": failure(exc)}
+        # An embedded page is useful evidence, but does not establish coverage.
+        embedded = fields.get("comment") or {}
+        fallback = embedded.get("comments") if isinstance(embedded, dict) else None
+        if not comments and isinstance(fallback, list):
+            for item in fallback:
+                if isinstance(item, dict) and type(item.get("id")) in (str, int) and str(item["id"]) and str(item["id"]) not in seen:
+                    seen.add(str(item["id"]))
+                    comments.append(item)
+            if comments:
+                parts["comments"].update(status="partial", fallback="issue_embedded_page")
+            if total is None and type(embedded.get("total")) is int:
+                total = embedded["total"]
+    parts["comments"].update(pages=pages, collected=len(comments), reported_total=total)
+    collected = {**raw, "fields": {**fields, "comment": {"comments": comments}}}
+    issue = _issue_data(collected, cfg["JIRA_BASE_URL"], issue_key)
+    issue["comments"] = [
+        {**comment, "updated": original.get("updated"), "visibility": original.get("visibility"),
+         "author_name": (_person(original.get("author")) or {}).get("name", ""),
+         "body_raw": original.get("body")}
+        for comment, original in zip(issue["comments"], comments)
+    ]
+    issue["comments"].sort(key=lambda item: (item.get("created") or "", item["id"]))
+    issue.update(raw_fields=fields, custom_fields=custom, field_definitions=definitions)
+    issue["acquisition"] = {
+        "status": "complete" if all(part["status"] == "complete" for part in parts.values()) else "partial",
+        "source": "website_jira_api", "scope": "currently_visible_api_data_not_an_atomic_snapshot",
+        "started_at": started, "finished_at": datetime.now(timezone.utc).isoformat(),
+        "parts": parts, "conflicts": [],
+    }
+    return issue
 
 
 class JiraQueryError(ValueError):

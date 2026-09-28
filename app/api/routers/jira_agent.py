@@ -119,6 +119,11 @@ async def cancel(conversation_id: str, user: dict = Depends(require_jira_agent_a
     return await service.cancel(user, conversation_id)
 
 
+@router.post("/turns/{turn_id}/delivery/retry")
+async def retry_delivery(turn_id: str, user: dict = Depends(require_jira_agent_access)) -> dict:
+    return await service.retry_delivery(user, turn_id)
+
+
 @router.post("/turns/{turn_id}/comment/retry")
 async def retry_comment(turn_id: str, user: dict = Depends(require_jira_agent_access)) -> dict:
     return await service.retry_comment(user, turn_id)

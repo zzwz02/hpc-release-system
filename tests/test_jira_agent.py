@@ -39,6 +39,8 @@ SYSTEM_MACHINE = "hpc@10.2.118.75"
 
 RESULT = {
     "conclusion": "fixed_pending_review",
+    "action_required": "needs_review",
+    "assistance": {"current_issue": "", "owner": "", "request": ""},
     "issue_category": "结果错误",
     "ownership": {"belongs_to_us": "yes", "target_group": "", "reasoning": "saxpy.cu 的线程块数量向下取整"},
     "summary": "修复尾部元素未计算",
@@ -47,8 +49,8 @@ RESULT = {
     "reproduction": {"reproduced": True, "environment": "A100", "steps": ["make", "./saxpy 16777217"]},
     "evidence": [{"description": "修复后验证", "command": "./saxpy 16777217", "result": "PASS exit=0"}],
     "fix": {"description": "改为向上取整"},
-    "artifacts": ["artifacts/fix.patch", "../../etc/passwd"],
-    "next_steps": ["审阅补丁后 resolve"],
+    "artifacts": ["artifacts/fix.patch"],
+    "next_steps": [],
     "skills_used": ["hpc-bug-repro"],
 }
 PATCH = b"--- original/saxpy.cu\n+++ work/saxpy.cu\n-blocks = n / 256;\n+blocks = (n + 255) / 256;\n"
@@ -74,6 +76,7 @@ class FakeCodex:
         self.plans: list[str] = []
         self.turn_start_delay = 0.0
         self.resume_delay = 0.0
+        self.read_delay = 0.0
         self.threads = 0
         self.turns = 0
         self.turn_state: dict[str, dict] = {}  # turn id -> Turn as thread/turns/list returns it
@@ -151,6 +154,8 @@ class FakeCodex:
                     lambda: asyncio.ensure_future(self._process_timeout(process_id, process)),
                 )
                 continue
+            if method == "fs/readFile" and self.read_delay:
+                await asyncio.sleep(self.read_delay)
             result, error = self._result(ws, method, params)
             reply = {"id": message["id"], **({"error": error} if error else {"result": result})}
             try:
@@ -323,6 +328,17 @@ class FakeJira:
             "attachments": [{"id": "10", "filename": "saxpy.cu", "size": 12, "mime_type": "text/plain", "content_url": "http://jira/secure/attachment/10/saxpy.cu"}],
         }
 
+    def get_issue_snapshot(self, key: str, *, timeout_seconds: float = 120) -> dict:
+        issue = self.get_issue(key)
+        issue.update(raw_fields={}, custom_fields={"customfield_1": {"name": "SDK", "value": "3.0", "raw": "3.0", "schema": None}}, field_definitions=[])
+        issue["acquisition"] = {"status": "complete", "source": "website_jira_api", "conflicts": [], "parts": {
+            "issue": {"status": "complete"}, "description": {"status": "complete"},
+            "custom_fields": {"status": "complete", "collected": 1},
+            "field_definitions": {"status": "complete"}, "attachment_metadata": {"status": "complete"},
+            "comments": {"status": "complete", "collected": len(issue["comments"]), "reported_total": len(issue["comments"])},
+        }}
+        return issue
+
     def search_issues(self, jql: str, *, max_results: int = 50, validate: bool = True) -> dict:
         self.searches.append(jql)
         self.validate_flags.append(validate)
@@ -379,6 +395,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(jira_agent_runner, "_SCAN_SECONDS", 0.1)
     fake_jira = FakeJira()
     monkeypatch.setattr(jira, "get_issue", fake_jira.get_issue)
+    monkeypatch.setattr(jira, "get_issue_snapshot", fake_jira.get_issue_snapshot)
     monkeypatch.setattr(jira, "download_attachment", fake_jira.download_attachment)
     monkeypatch.setattr(jira, "search_issues", fake_jira.search_issues)
     monkeypatch.setattr(jira, "add_comment", fake_jira.add_comment)
@@ -446,7 +463,10 @@ def _latest(detail: dict) -> dict:
 
 def _done(detail: dict) -> bool:
     turn = _latest(detail)
-    return turn["status"] not in ("queued", "running") and turn["comment_status"] != "pending"
+    return (turn["status"] not in ("queued", "running")
+            and turn["delivery_status"] != "collecting"
+            and turn["comment_status"] != "pending"
+            and not detail["conversation"]["phase"])
 
 
 def _handover(env, key: str = "MC3-7672", **extra) -> dict:
@@ -486,6 +506,11 @@ def test_handover_runs_codex_turn_records_timeline_and_comments(env) -> None:
     assert fake.files[f"{workspace}/attachments/saxpy.cu"] == b"int main(){}"
     assert fake.files[f"{workspace}/uploads/notes.txt"] == b"use A100"
     assert "attachments/saxpy.cu" in fake.files[f"{workspace}/issue.md"].decode()
+    snapshot = json.loads(fake.files[f"{workspace}/issue.json"])
+    assert snapshot["schema_version"] == 1
+    assert snapshot["issue"]["custom_fields"]["customfield_1"]["value"] == "3.0"
+    assert snapshot["issue"]["acquisition"]["parts"]["comments"]["status"] == "complete"
+    assert snapshot["issue"]["attachments"][0]["local_path"] == "attachments/saxpy.cu"
     assert detail["conversation"]["thread_id"] == "thr_1"
 
     kinds = [event["kind"] for event in detail["events"]]
@@ -495,15 +520,19 @@ def test_handover_runs_codex_turn_records_timeline_and_comments(env) -> None:
     assert command["payload"]["status"] == "completed"
     assert command["payload"]["exit_code"] == 0
     assert "PASS" in command["payload"]["output"]
-    assert any("不在工作目录内" in e["payload"].get("text", "") for e in detail["events"] if e["kind"] == "error")
+    assert turn["delivery_status"] == "complete"
+    assert turn["delivery_errors"] == []
 
     [(key, body)] = env.jira.comments
     assert key == "MC3-7672"
-    assert "结论：已修复，方案请审批" in body
+    assert "技术结论：修复已验证，待审核" in body
     assert "blocks = (n + 255) / 256;" in body
+    assert body.index("*修复说明*") < body.index("*修复补丁*") < body.index("*复现结果*") < body.index("*证据*")
     assert f"http://site/jira-agent?conversation={conversation['id']}" in body
 
     patch = next(f for f in detail["files"] if f["source"] == "artifact")
+    assert patch["preview"] == PATCH.decode()
+    assert patch["preview_truncated"] is False
     download = env.client.get(f"/api/jira-agent/conversations/{conversation['id']}/files/{patch['id']}")
     assert download.status_code == 200
     assert download.content == PATCH
@@ -573,6 +602,31 @@ def test_issue_search_default_list_keys_and_jql(env) -> None:
     assert bad.status_code == 400
     assert "Error in JQL Query" in bad.json()["error"]
 
+
+
+def test_handled_issue_repository_returns_more_than_200_issues(tmp_path: Path) -> None:
+    reset_jira_agent_init_state()
+    conn = connect_jira_agent(f"sqlite:///{(tmp_path / 'handled.db').as_posix()}")
+    try:
+        with transaction(conn):
+            for index in range(205):
+                repo.create_conversation(
+                    conn,
+                    conversation_id=f"jac_{index}",
+                    issue_key=f"MC3-{index}",
+                    issue_summary=f"Issue {index}",
+                    agent_group="HPC",
+                    owner="alice",
+                    created_by="alice",
+                    workspace=f"/b/workspaces/MC3-{index}",
+                )
+        total, rows = repo.handled_issues(conn)
+        assert total == 205
+        assert len(rows) == 205
+        assert {row["issue_key"] for row in rows} == {f"MC3-{index}" for index in range(205)}
+    finally:
+        conn.close()
+        reset_jira_agent_init_state()
 
 def test_rm_lists_every_handled_issue_including_closed(env) -> None:
     first = _handover(env, "MC3-1")["conversation"]
@@ -1072,13 +1126,110 @@ def test_group_selection_and_comment_rendering() -> None:
 
     body = domain.render_jira_comment(
         group=groups["HPC"],
-        result={**RESULT, "conclusion": "not_our_group",
-                "ownership": {"belongs_to_us": "no", "target_group": "PyTorch 组", "reasoning": "算子报错"}},
+        result={
+            **RESULT,
+            "conclusion": "not_our_group",
+            "action_required": "needs_handoff",
+            "ownership": {
+                "belongs_to_us": "no",
+                "target_group": "PyTorch 组",
+                "reasoning": "算子报错",
+            },
+            "next_steps": ["由 PyTorch 组按复现命令核对算子实现"],
+        },
         turn_seq=1, owner="alice", conversation_url="", patches=[],
     )
-    assert "结论：经分析需其他组负责" in body
+    assert "技术结论：建议由其他组处理" in body
     assert "不属于本组（建议由 PyTorch 组 负责）" in body
+    assert body.index("*归属判断*") < body.index("判断依据：") < body.index("*建议接手*")
+    assert body.index("*建议接手*") < body.index("*下一步建议*") < body.index("*执行机器*")
+    assert body.count("*下一步建议*") == 1
+    assert "*根因*" not in body
+    assert "*修复说明*" not in body
     assert "不会修改 assignee" in body
+
+    body = domain.render_jira_comment(
+        group=groups["HPC"],
+        result={
+            **RESULT,
+            "conclusion": "scope_narrowed",
+            "action_required": "needs_info",
+            "assistance": {
+                "current_issue": "只有异常版本耗时，无法计算回退幅度",
+                "owner": "工单 assignee",
+                "request": "提供正常版本的版本号、命令、输入和总耗时",
+            },
+            "fix": {"description": ""},
+        },
+        turn_seq=2, owner="alice", conversation_url="", patches=[],
+    )
+    assert "*所需补充*：" in body
+    assert "当前情况：只有异常版本耗时" in body
+    assert "提供方：工单 assignee" in body
+    assert "需要内容：提供正常版本的版本号、命令、输入和总耗时" in body
+    assert "*下一步建议*" not in body
+    assert "*根因*" not in body
+
+    body = domain.render_jira_comment(
+        group=groups["HPC"], result=RESULT, turn_seq=3, owner="alice", conversation_url="", patches=[]
+    )
+    assert "*修复补丁*：本轮未交付 .patch/.diff 文件，当前只有修复说明。" in body
+
+
+def test_result_status_validation_and_legacy_mapping() -> None:
+    valid = {
+        **RESULT,
+        "conclusion": "scope_narrowed",
+        "action_required": "needs_info",
+        "assistance": {
+            "current_issue": "只拿到异常版本耗时，无法判断回退幅度",
+            "owner": "工单 assignee",
+            "request": "提供一次正常版本记录，包含版本、输入、命令和总耗时",
+        },
+        "fix": {"description": ""},
+    }
+    assert domain.parse_result(json.dumps(valid, ensure_ascii=False)) == valid
+    legacy = {
+        key: value
+        for key, value in RESULT.items()
+        if key not in {"action_required", "assistance"}
+    }
+    legacy["conclusion"] = "needs_help"
+    assert domain.parse_stored_result(json.dumps(legacy)) == legacy
+    assert domain.result_state(legacy) == ("insufficient_evidence", "needs_help")
+    with pytest.raises(ValueError, match="conclusion"):
+        domain.parse_result(json.dumps(legacy))
+    invalid = {**valid, "conclusion": "cannot_reproduce"}
+    with pytest.raises(ValueError, match="不匹配"):
+        domain.parse_result(json.dumps(invalid))
+    invalid = {
+        **valid,
+        "assistance": {"current_issue": "", "owner": "", "request": ""},
+    }
+    with pytest.raises(ValueError, match="assistance"):
+        domain.parse_result(json.dumps(invalid))
+
+    handoff = {
+        **RESULT,
+        "conclusion": "not_our_group",
+        "action_required": "needs_handoff",
+        "assistance": {
+            "current_issue": "已定位到 SDK 组件",
+            "owner": "SDK 维护团队",
+            "request": "继续定位具体调用点",
+        },
+        "ownership": {
+            "belongs_to_us": "no",
+            "target_group": "SDK 维护团队",
+            "reasoning": "交叉验证表明问题跟随 SDK",
+        },
+        "fix": {"description": ""},
+        "next_steps": ["SDK 维护团队继续定位具体调用点"],
+    }
+    normalized = domain.parse_result(json.dumps(handoff, ensure_ascii=False))
+    assert normalized["assistance"] == {"current_issue": "", "owner": "", "request": ""}
+    assert normalized["ownership"] == handoff["ownership"]
+    assert normalized["next_steps"] == handoff["next_steps"]
 
 
 def test_ssh_target_and_public_key_fingerprint() -> None:
@@ -1316,3 +1467,140 @@ def test_old_database_loses_the_ssh_key_records_table(tmp_path: Path) -> None:
     reset_jira_agent_init_state()
     assert "jira_agent_ssh_keys" not in tables
     assert "jira_agent_conversations" in tables
+
+@pytest.mark.parametrize("post", [True, False])
+def test_missing_artifact_can_be_retried_without_running_model(env, monkeypatch, post):
+    monkeypatch.setitem(RESULT, "artifacts", ["artifacts/fix.patch", "artifacts/REPORT.md", "artifacts/fix.patch"])
+    conversation = _handover(env, post_comment=post)["conversation"]
+    cid, workspace = conversation["id"], conversation["workspace"]
+    detail = _wait(env, cid, _done)
+    turn = _latest(detail)
+    assert turn["status"] == "completed"
+    assert turn["conclusion"] == "fixed_pending_review"
+    assert turn["result"]["summary"] == RESULT["summary"]
+    assert turn["delivery_status"] == "incomplete"
+    assert detail["conversation"]["state"] == "delivery_incomplete"
+    assert turn["delivery_errors"][0]["path"] == "artifacts/REPORT.md"
+    assert turn["comment_status"] == "" and env.jira.comments == []
+    assert len([f for f in detail["files"] if f["source"] == "artifact"]) == 1
+    before = len(env.fake.params("turn/start"))
+    patch_reads = len([p for p in env.fake.params("fs/readFile") if p["path"].endswith("fix.patch")])
+    # Already collected files remain frozen, while the missing file is added.
+    env.fake.files[f"{workspace}/artifacts/REPORT.md"] = b"Verified report"
+    env.fake.files[f"{workspace}/artifacts/fix.patch"] = b"different later content"
+    response = env.client.post(f"/api/jira-agent/turns/{turn['id']}/delivery/retry")
+    assert response.status_code == 200, response.text
+    assert response.json()["turn"]["delivery_status"] == "complete"
+    detail = _detail(env, cid)
+    assert detail["conversation"]["state"] == "waiting_review"
+    assert _latest(detail)["delivery_errors"] == []
+    assert len(env.fake.params("turn/start")) == before
+    assert len([p for p in env.fake.params("fs/readFile") if p["path"].endswith("fix.patch")]) == patch_reads
+    assert len([f for f in detail["files"] if f["source"] == "artifact"]) == 2
+    assert len([e for e in detail["events"] if e["kind"] == "result"]) == 1
+    assert len([e for e in detail["events"] if e["kind"] == "delivery"]) == 1
+    assert len(env.jira.comments) == int(post)
+    if post:
+        assert "blocks = (n + 255) / 256;" in env.jira.comments[0][1]
+        assert "different later content" not in env.jira.comments[0][1]
+    assert env.client.post(f"/api/jira-agent/turns/{turn['id']}/delivery/retry").status_code == 409
+    assert len(env.jira.comments) == int(post)
+
+
+@pytest.mark.parametrize("kind", ["outside", "oversize"])
+def test_invalid_artifact_blocks_delivery_and_comment(env, monkeypatch, kind):
+    path = "../../etc/passwd" if kind == "outside" else "artifacts/fix.patch"
+    monkeypatch.setitem(RESULT, "artifacts", [path])
+    if kind == "oversize":
+        monkeypatch.setattr(jira_agent_runner, "_ARTIFACT_MAX_BYTES", 1)
+    conversation = _handover(env)["conversation"]
+    detail = _wait(env, conversation["id"], _done)
+    turn = _latest(detail)
+    assert turn["delivery_status"] == "incomplete"
+    assert turn["delivery_errors"][0]["path"] == path
+    assert ("不在工作目录内" if kind == "outside" else "超过 10 MiB") in turn["delivery_errors"][0]["error"]
+    assert not [f for f in detail["files"] if f["source"] == "artifact"]
+    assert env.jira.comments == []
+    assert env.client.post(f"/api/jira-agent/turns/{turn['id']}/comment/retry").status_code == 409
+    if kind == "outside":
+        assert not any("passwd" in params["path"] for params in env.fake.params("fs/readFile"))
+
+
+def test_delivery_retry_permissions_and_unavailable_server(env, monkeypatch):
+    monkeypatch.setitem(RESULT, "artifacts", ["artifacts/REPORT.md"])
+    conversation = _handover(env)["conversation"]
+    turn = _latest(_wait(env, conversation["id"], _done))
+    url = f"/api/jira-agent/turns/{turn['id']}/delivery/retry"
+    env.as_user("bob")
+    assert env.client.post(url).status_code == 404
+    env.as_user("carol")
+    env.jira.assignee = "bob"
+    assert env.client.post(url).status_code == 409
+    env.jira.assignee = "alice"
+    _write_conf(env.conf, env.fake.url, token="wrong-test-token")
+    response = env.client.post(url)
+    assert response.status_code == 200
+    assert response.json()["turn"]["delivery_status"] == "incomplete"
+    assert response.json()["turn"]["result"]["summary"] == RESULT["summary"]
+    assert len(env.fake.params("turn/start")) == 1
+    assert env.jira.comments == []
+
+
+def test_delivery_retry_excludes_parallel_retry_and_followup(env, monkeypatch):
+    monkeypatch.setitem(RESULT, "artifacts", ["artifacts/REPORT.md"])
+    conversation = _handover(env)["conversation"]
+    cid = conversation["id"]
+    turn = _latest(_wait(env, cid, _done))
+    env.fake.files[f"{conversation['workspace']}/artifacts/REPORT.md"] = b"Report"
+    env.fake.read_delay = 0.6
+    url = f"/api/jira-agent/turns/{turn['id']}/delivery/retry"
+    responses = []
+    worker = threading.Thread(target=lambda: responses.append(env.client.post(url)))
+    worker.start()
+    try:
+        _wait(env, cid, lambda d: d["conversation"]["state"] == "delivering")
+        assert env.client.post(url).status_code == 409
+        assert env.client.post(f"/api/jira-agent/conversations/{cid}/messages", json={"text": "continue"}).status_code == 409
+        assert env.client.post("/api/jira-agent/conversations", json={"issue_key": conversation["issue_key"], "new_conversation": True}).status_code == 409
+    finally:
+        worker.join(5)
+    assert not worker.is_alive()
+    assert responses[0].status_code == 200
+    assert responses[0].json()["turn"]["delivery_status"] == "complete"
+    assert len(env.jira.comments) == 1
+    assert len(env.fake.params("turn/start")) == 1
+
+
+def test_restart_retains_analysis_and_allows_delivery_retry(env, monkeypatch):
+    monkeypatch.setitem(RESULT, "artifacts", ["artifacts/REPORT.md"])
+    conversation = _handover(env)["conversation"]
+    turn = _latest(_wait(env, conversation["id"], _done))
+    env.stop_site()
+    conn = connect_jira_agent(settings.jira_agent_database_url)
+    try:
+        with transaction(conn):
+            repo.update_turn(conn, turn["id"], delivery_status="collecting")
+    finally:
+        conn.close()
+    env.start_site()
+    detail = _detail(env, conversation["id"])
+    assert _latest(detail)["delivery_status"] == "incomplete"
+    assert _latest(detail)["result"]["summary"] == RESULT["summary"]
+    assert len(env.fake.params("turn/start")) == 1
+    env.fake.files[f"{conversation['workspace']}/artifacts/REPORT.md"] = b"Report"
+    response = env.client.post(f"/api/jira-agent/turns/{turn['id']}/delivery/retry")
+    assert response.status_code == 200 and response.json()["turn"]["delivery_status"] == "complete"
+    assert len(env.jira.comments) == 1
+    assert len(env.fake.params("turn/start")) == 1
+
+
+def test_delivery_retry_refuses_old_round_after_followup(env, monkeypatch):
+    monkeypatch.setitem(RESULT, "artifacts", ["artifacts/REPORT.md"])
+    conversation = _handover(env)["conversation"]
+    turn = _latest(_wait(env, conversation["id"], _done))
+    monkeypatch.setitem(RESULT, "artifacts", [])
+    response = env.client.post(f"/api/jira-agent/conversations/{conversation['id']}/messages", json={"text": "new round", "post_comment": False})
+    assert response.status_code == 200
+    _wait(env, conversation["id"], lambda d: _latest(d)["seq"] == 2 and _done(d))
+    assert env.client.post(f"/api/jira-agent/turns/{turn['id']}/delivery/retry").status_code == 409
+    assert env.jira.comments == []

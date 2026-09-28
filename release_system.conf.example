@@ -96,4 +96,4 @@ MODEL =
 # 每轮最长执行时间（秒），从出队开始计算
 TURN_TIMEOUT_SECONDS = 7200
 # 该组 B 上同时运行的轮次数
-MAX_CONCURRENT = 2
+MAX_CONCURRENT = 5

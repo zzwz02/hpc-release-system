@@ -33,7 +33,6 @@ from app.services.jira_agent_runner import open_db, runner
 MAX_UPLOAD_FILES = 10
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_SEARCH_RESULTS = 50
-MAX_HANDLED_RESULTS = 200
 HANDLED_JQL_CHUNK = 100
 _ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*-\d+$")
 
@@ -153,6 +152,7 @@ def _turn_view(conn: sqlite3.Connection, turn: dict | None) -> dict | None:
     view = dict(turn)
     view["result"] = loads_json(view.pop("result_json"), None)
     view["post_comment"] = bool(view["post_comment"])
+    view["delivery_errors"] = loads_json(view.pop("delivery_errors_json"), [])
     view["queue_position"] = (
         repo.queue_position(conn, turn["id"]) if turn["status"] == "queued" else None
     )
@@ -165,6 +165,10 @@ def _state(conversation: dict, latest: dict | None) -> str:
     if latest is None:
         return "idle"
     if latest["status"] == "completed":
+        if latest["delivery_status"] == "collecting":
+            return "delivering"
+        if latest["delivery_status"] == "incomplete":
+            return "delivery_incomplete"
         return "waiting_review"
     return latest["status"]
 
@@ -187,6 +191,16 @@ def conversation_view(conn: sqlite3.Connection, user: dict, conversation: dict) 
 def _file_view(record: dict) -> dict:
     view = {k: v for k, v in record.items() if k != "local_path"}
     view["downloadable"] = bool(record["local_path"])
+    view["preview"] = ""
+    view["preview_truncated"] = False
+    name = (record["remote_path"] or record["name"]).lower()
+    if record["local_path"] and name.endswith((".patch", ".diff")):
+        path = Path(record["local_path"])
+        if path.is_file():
+            with path.open("rb") as stream:
+                data = stream.read(64 * 1024 + 1)
+            view["preview"] = data[:64 * 1024].decode("utf-8", errors="replace")
+            view["preview_truncated"] = len(data) > 64 * 1024
     return view
 
 
@@ -370,7 +384,7 @@ async def list_handled_issues(user: dict) -> dict:
         raise AuthzError("只有 RM 可以查看 agent 处理过的全部工单")
     conn = open_db()
     try:
-        total, rows = repo.handled_issues(conn, limit=MAX_HANDLED_RESULTS)
+        total, rows = repo.handled_issues(conn)
     finally:
         conn.close()
 
@@ -395,6 +409,10 @@ async def list_handled_issues(user: dict) -> dict:
                 continue
             latest = repo.list_conversations(conn, issue_key=key, limit=1)[0]
             latest_turn = repo.latest_turn(conn, latest["id"])
+            latest_result = loads_json(latest_turn["result_json"], {}) if latest_turn else {}
+            if latest_turn and not latest_result.get("conclusion"):
+                latest_result["conclusion"] = latest_turn["conclusion"]
+            conclusion, action = domain.result_state(latest_result)
             results.append({
                 **_search_item(conn, user, issue, open_by_key.get(key)),
                 "agent": {
@@ -404,7 +422,8 @@ async def list_handled_issues(user: dict) -> dict:
                         "id": latest["id"],
                         "owner": latest["owner"],
                         "state": _state(latest, latest_turn),
-                        "conclusion": latest_turn["conclusion"] if latest_turn else "",
+                        "conclusion": conclusion,
+                        "action_required": action,
                     },
                 },
             })
@@ -430,6 +449,7 @@ def _check_not_recovering(conversation_id: str) -> None:
 async def close_conversation(conn: sqlite3.Connection, conversation: dict, reason: str) -> None:
     """Close read-only, cancel/interrupt its active turn, archive its thread."""
     _check_not_recovering(conversation["id"])
+    _check_not_delivering(conn, conversation["id"])
     running_turn_id = ""
     with transaction(conn):
         if not repo.close_conversation(conn, conversation["id"], reason):
@@ -531,6 +551,7 @@ async def send_message(user: dict, conversation_id: str, body: dict) -> dict:
             )
         check_actor(user, issue)
 
+        _check_not_delivering(conn, conversation_id)
         names = [name for name, _ in uploads]
         active = runner.active_for_conversation(conversation_id)
         if active is not None and active.phase == "running":
@@ -619,6 +640,43 @@ async def cancel(user: dict, conversation_id: str) -> dict:
         conn.close()
 
 
+def _check_not_delivering(conn: sqlite3.Connection, conversation_id: str) -> None:
+    latest = repo.latest_turn(conn, conversation_id)
+    if latest and latest["delivery_status"] == "collecting":
+        raise ApiError(409, "正在回收本轮文件，请完成后再操作")
+
+
+async def retry_delivery(user: dict, turn_id: str) -> dict:
+    conn = open_db()
+    try:
+        turn = repo.get_turn(conn, turn_id)
+        if turn is None:
+            raise ApiError(404, "轮次不存在")
+        conversation = _get_visible(conn, user, turn["conversation_id"])
+        if conversation["status"] != "open":
+            raise ApiError(409, "对话已结束，不能重试交付")
+        issue = await fetch_issue(conversation["issue_key"])
+        check_actor(user, issue)
+        if not _same_user(assignee_name(issue), conversation["owner"]):
+            raise ApiError(409, "JIRA assignee 已变更，不能重试旧对话交付")
+        group = runner_module.load_groups().get(conversation["agent_group"])
+        if group is None:
+            raise ApiError(409, "数字员工组配置不可用")
+        with transaction(conn):
+            conversation = _get_visible(conn, user, conversation["id"])
+            latest = repo.latest_turn(conn, conversation["id"])
+            if (conversation["status"] != "open" or latest["id"] != turn_id
+                    or repo.active_turn(conn, conversation["id"]) or runner.active_for_conversation(conversation["id"])):
+                raise ApiError(409, "仅可重试当前对话最新一轮的交付，请等待当前操作结束")
+            if not repo.claim_delivery(conn, turn_id):
+                raise ApiError(409, "该轮交付无需重试或正在回收")
+            runner._delivery_state(conn, conversation["id"], turn_id, "collecting", [])
+        await runner.retry_delivery(conn, group, conversation, repo.get_turn(conn, turn_id))
+        return {"turn": _turn_view(conn, repo.get_turn(conn, turn_id))}
+    finally:
+        conn.close()
+
+
 async def retry_comment(user: dict, turn_id: str) -> dict:
     conn = open_db()
     try:
@@ -628,7 +686,7 @@ async def retry_comment(user: dict, turn_id: str) -> dict:
         conversation = _get_visible(conn, user, turn["conversation_id"])
         if not (_is_rm(user) or _same_user(user["username"], conversation["owner"])):
             raise AuthzError("只有对话 owner 或 RM 可以重试发布评论")
-        if turn["comment_status"] != "failed":
+        if turn["comment_status"] != "failed" or turn["delivery_status"] not in ("", "complete"):
             raise ApiError(409, "该轮评论不需要重试")
         return {"turn": _turn_view(conn, await runner_module.post_turn_comment(conn, turn_id))}
     finally:

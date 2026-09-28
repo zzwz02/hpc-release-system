@@ -187,8 +187,11 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
     # 0 = keep this turn's result on the website only (no JIRA comment); the
     # choice sent with the turn's latest message wins.
     _ensure_column(conn, "jira_agent_turns", "post_comment", "INTEGER NOT NULL DEFAULT 1")
-    # A user-given machine now needs a fresh key upload on every hand-over,
-    # so the old per-user "verified" records are gone.
+    # Analysis completion and file delivery are independent. Empty preserves
+    # the meaning of historical turns, whose delivery was not tracked.
+    _ensure_column(conn, "jira_agent_turns", "delivery_status", "TEXT NOT NULL DEFAULT '' CHECK (delivery_status IN ('', 'collecting', 'incomplete', 'complete'))")
+    _ensure_column(conn, "jira_agent_turns", "delivery_errors_json", "TEXT NOT NULL DEFAULT '[]'")
+    # A user-given machine needs a fresh key upload on every hand-over.
     conn.execute("DROP TABLE IF EXISTS jira_agent_ssh_keys")
     conn.commit()
 

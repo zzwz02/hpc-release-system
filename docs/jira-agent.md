@@ -28,10 +28,12 @@ JIRA agent 是按组配置的“数字员工”。网站（服务器 A）负责�
    - 其他内容：作为 JQL 查询，JQL 写错时显示 JIRA 返回的错误。
 
    RM 在列表标题旁可以切到 **agent 处理过**：列出所有交给过 agent 的工单（含 JIRA 已关闭的），按 agent 最近活动排序，显示当前 JIRA 状态、最近一次对话的结论和对话数，可按编号、标题、状态或人员过滤。点击打开该工单最近的对话。
-2. 网站按排队顺序执行：同步 issue.md、JIRA 附件和上传文件到 B 的工作目录，新建 Codex thread，按 AGENTS.md 与 skills 完成分类、归属判断、复现、分析和修复。
+2. 网站按排队顺序执行：同步 issue.json、issue.md、JIRA 附件和上传文件到 B 的工作目录，新建 Codex thread，按 AGENTS.md 与 skills 完成分类、归属判断、复现、分析和修复。
 3. 页面时间线实时显示 agent 消息、执行的命令（含退出码和输出）、文件修改和结构化结论。
-4. 本轮结束后，网站在 JIRA **只追加评论**：结论、证据、补丁和下一步建议。agent 不修改 assignee、状态或代码。
+4. 分析完成并成功回收全部交付文件后，网站按本轮设置在 JIRA **只追加评论**：结论、证据、补丁和下一步建议。agent 不修改 assignee、状态或代码。
    - 交单或发消息时取消勾选 **本轮结论发布到 JIRA 评论**，这一轮结论只在网页显示，不发评论（用于只想了解详情、让 agent 继续分析的场景）。选择按轮次生效：运行中或排队中再发消息，以这一轮最后一次发送的选择为准；下一轮重新选择。
+   - 分析完成但所列产物缺失、路径越界、超过 10 MiB 或读取失败时，页面显示 **交付不完整**，保留分析结论、已回收文件及逐文件错误，暂停评论发布。当前对话最新一轮可点 **重试回收文件**；只读取文件，不重新执行模型。已回收且校验完整的文件复用，全部成功后沿用原轮次的评论选择。
+   - 文件回收期间不能发起续办或替换当前对话；已发起后续轮次或关闭的历史对话不能重试旧轮次，避免读取被后续执行覆盖的工作文件。
 5. assignee 阅读评论后自行决定：接受修改并 resolve、转交，或在网站补充信息，让 agent 在同一对话中继续（新一轮沿用同一 thread 和工作目录）。
 
 对话规则：
@@ -50,10 +52,27 @@ JIRA agent 是按组配置的“数字员工”。网站（服务器 A）负责�
   - 本轮已在停机期间结束：照常读取结论、拉回产物、发 JIRA 评论；
   - 本轮还没在 B 上开始：重新排队；
   - 评论停在“发布中”：重启后补发。
+  - 分析已保存但文件回收中断：保留分析，标记“交付不完整”，由用户单独重试文件回收。
   只有 B 的 app-server 也重启过，或重启时连不上 B，才标记为“已中断”，发送消息可以继续。续办时如果 B 上还有未结束的上一轮，网站会先中断它。
 - 网站刚重启、正在重新接管某一轮时（通常几秒，连不上 B 时最多十几秒），这个对话的“取消本轮”“发送”“新建对话”暂时不可用，页面会提示，接管完成后恢复。已关闭对话的轮次不会被重新执行。
 - 中断（取消、超时）只结束 Codex 本轮，已经启动的 shell 命令会继续跑完（Codex 0.153 实测），强制停止 B 的 app-server 时子进程也会留下。
 - GPU 等机器资源由 B 上知识包约定的 `flock` 锁控制（见 AGENTS.md）。
+
+## 执行机与资源服务的权限
+
+网站每轮提示限制编译、测试和调试的执行机与账号；项目根 `AGENTS.md` 单独规定已授权源码/制品服务的只读访问。Gerrit 项目与 refs 查询、clone/fetch、镜像及 SDK 下载不把服务主机变为执行机，服务地址也不填入结果的 `machine` 字段。沿用已有授权和服务身份，下载链接或可用凭据不能扩大访问范围。
+
+Agent 只读取网站同步的 Jira 材料，不直接查询 Jira 用户、组件或关联工单。发布目录中的维护人属于线索；缺少账号核验依据时交付具体职责角色，由网站或人工补齐。
+
+## 发布目录与应用范围
+
+涉及发布应用的工单由 B 上主 skill 在最终归属判断前查询 HPC 应用发布目录，按应用名称/别名、仓库身份、应用版本与发布批次匹配。目录是应用维护范围的主要依据，故障责任仍需复现与定位证据支持；应用属于 HPC 不代表其依赖组件的缺陷也由 HPC 修复。
+
+应用存在但版本未匹配、多个候选、未查到或目录不可用时，记录已核验内容、查询范围及缺口，不能仅凭未命中判定外组。后续分析和源码修复模块复用当前对话的范围记录；目标变化或证据冲突时重新查询。查询流程与字段映射见[发布目录接入](../deploy/jira-agent/hpc/.agents/skills/hpc-jira-agent/modules/remote-experiment/references/release-catalog.md#应用范围判定)。
+
+发布目录查询对 `hpc-release.swlab.metax-tech.com` 单独直连，避免沿用模型出网代理；具体 HTTP 调用方法见上述接入说明。
+
+本接入通过部署 skill 复用现有只读接口，由 agent 执行；报告和既有 `ownership.reasoning`、`evidence`、`next_steps` 字段保存依据，不增加网站后台自动判定、数据库字段或适配服务。
 
 ## 部署服务器 B（HPC agent）
 
@@ -65,7 +84,7 @@ JIRA agent 是按组配置的“数字员工”。网站（服务器 A）负责�
    ```bash
    PACK_DIR=$HOME/hpc-jira-agent deploy/jira-agent/sync-pack.sh
    ```
-   知识包目录会被初始化为 git 仓库，Codex 以它为项目根，自动加载 AGENTS.md 和 `.agents/skills`。修改知识或 skills 时，改仓库中的 `deploy/jira-agent/hpc/`，评审后重新同步。
+   知识包目录会被初始化为 git 仓库，Codex 以它为项目根，自动加载 AGENTS.md 和 `.agents/skills`。修改知识或 skills 时，改仓库中的 `deploy/jira-agent/hpc/`，再重新同步。当前主入口为 `.agents/skills/hpc-jira-agent/SKILL.md`，按需调用工单材料、远端实验、问题分析和应用分析模块。
 4. **生成 WebSocket token**：
    ```bash
    mkdir -p ~/.config/hpc-jira-agent && chmod 700 ~/.config/hpc-jira-agent
@@ -103,6 +122,10 @@ WantedBy=multi-user.target
 4. 网站保持单 worker（队列 runner 在进程内）。A 到 B 若经过 HTTP 代理，把 B 的地址加入 `NO_PROXY`。
 5. 打开 **JIRA agent** 页，或调用 `GET /api/jira-agent/health` 确认连通。
 
+部署前可运行隔离回归 `tests/test_jira_agent_pack.py`；它验证网站生成的真实快照能被新 loader 读取，以及知识包首次安装完整。
+
+启动后使用 [Codex app-server 的 skills/list](https://learn.chatgpt.com/docs/app-server#skills)，指定测试工作目录和 `forceReload: true`，核对主入口可见且无加载错误。这不启动模型回合，也不会操作 Jira。随后由人工在网页选工单、新建对话，首次可取消勾选“本轮结论发布到 JIRA 评论”，核对分类、执行机、报告下载与续办，再决定是否测试评论发布。
+
 ## 把 B 迁移到独立服务器
 
 只需要换启动用户和地址、token，以及 A 的配置：
@@ -111,3 +134,17 @@ WantedBy=multi-user.target
 2. 修改 A 的 `release_system.conf` 中该组的 `[jira_agent:<组名>]`：`CODEX_WS_URL` 改为新 B 地址，`CODEX_WS_TOKEN` 改为新 token，`WORKSPACE_ROOT` 改为新用户的目录。
 3. 必要时把新 B 的地址加入 A 的 `NO_PROXY`（改了 `NO_PROXY` 需重启网站；配置文件本身保存即生效）。
 4. 已有对话的 Codex thread 和工作目录保存在旧 B 上，迁移后需要为这些工单新建对话。
+
+## 完整工单材料采集
+
+每轮准备由 `get_issue_snapshot` 读取当前账号可见的原始字段及自定义字段，并通过独立评论接口分页采集；负责人/权限校验继续使用轻量 `get_issue`。采集请求共享最多 120 秒预算，评论最多 100 页，并限制响应与累计评论大小。缺字段名称时保留字段 ID 和原值；分页失败、总数变化、重复 ID、提前空页或达到预算时保留已取内容并标记 partial/unavailable。
+
+网站生成版本为 1 的 `issue.json`，保留 `acquisition.parts`、自定义字段及原始评论，同时生成阅读版 `issue.md`。JSON 中记录 Markdown 的 SHA-256，防止断线/中断同步后混用两轮材料。skill 优先读取 JSON，只有不存在时使用旧 Markdown；无效 JSON 不静默降级。每轮重新采集，现有对话可在下一轮使用该能力，无需数据库迁移。
+
+回归入口为 `tests/test_jira_agent_snapshot.py`（真实本地 HTTP 采集到 skill 读取）、`tests/test_jira_agent_pack.py` 与 `tests/test_jira_agent.py`。JSON 格式细节见部署 skill 的 `modules/jira-evidence/references/input-acquisition.md`。
+
+## 文件交付状态与重试接口
+
+`jira_agent_turns.status=completed` 表示分析完成；`delivery_status` 独立记录 `collecting` / `incomplete` / `complete`，`delivery_errors_json` 保存文件路径和错误。旧库启动时增量补列，历史行保留空状态，不追溯更改已有结论或评论。API 的轮次视图提供 `delivery_status` 和 `delivery_errors`；对话派生状态增加 `delivering`、`delivery_incomplete`。
+
+`POST /api/jira-agent/turns/{turn_id}/delivery/retry` 仅允许有查看权限且仍为当前 Jira assignee 或 RM 的用户操作；对话须仍开放、归属未变，且该轮是最新的分析完成但交付不完整轮次。数据库条件更新防止并发回收，返回 `{turn: ...}`；文件仍未收齐时返回保留分析的 `incomplete` 轮次及错误。成功回收后才按 `post_comment` 决定是否发布评论；评论失败仍使用原评论重试接口。

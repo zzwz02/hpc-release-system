@@ -1,0 +1,192 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="880" viewBox="0 0 1800 880" role="img" aria-labelledby="title desc">
+  <title id="title">HPC Jira 数字员工执行架构</title>
+  <desc id="desc">HPC agent 在同一会话中按主流程调用材料读取、远端实验、问题分析和应用专项四个模块，输出报告、补丁与结构化结论。</desc>
+  <defs>
+    <filter id="shadow" x="-15%" y="-20%" width="130%" height="150%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#17324d" flood-opacity=".11"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M1 1 L9 5 L1 9" fill="none" stroke="#47779f" stroke-width="1.8"/>
+    </marker>
+    <marker id="back" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M1 1 L9 5 L1 9" fill="none" stroke="#7d5898" stroke-width="1.8"/>
+    </marker>
+  </defs>
+  <style>
+    text{font-family:"Noto Sans CJK SC","Microsoft YaHei","WenQuanYi Zen Hei",sans-serif;fill:#18344f}
+    .step{font-size:17px;font-weight:700}
+    .minor{font-size:13px;fill:#64798c}
+    .module{font-size:17px;font-weight:700}
+    .skill{font-size:14px;font-weight:700}
+    .duty{font-size:12px;fill:#63788b}
+    .flow{fill:none;stroke:#47779f;stroke-width:2.8;marker-end:url(#arrow)}
+    .feedback{fill:none;stroke:#7d5898;stroke-width:2.3;stroke-dasharray:8 6;marker-end:url(#back)}
+    .bind{fill:none;stroke:#9aabba;stroke-width:1.6;stroke-dasharray:5 5}
+  </style>
+
+  <rect width="1800" height="880" fill="#f6f8fb"/>
+
+  <g transform="translate(0,-20)">
+
+  <rect x="20" y="178" width="115" height="74" rx="14" fill="#19466d" filter="url(#shadow)"/>
+  <text x="77.5" y="207" text-anchor="middle" style="font-size:16px;font-weight:700;fill:#fff">总入口 Skill</text>
+  <text x="77.5" y="231" text-anchor="middle" style="font-size:12px;fill:#dcebf6">根 SKILL.md</text>
+
+  <rect x="170" y="178" width="185" height="74" rx="14" fill="#eaf3fc" stroke="#6b96bb" stroke-width="2" filter="url(#shadow)"/>
+  <text x="262" y="208" text-anchor="middle" class="step">读单与范围核对</text>
+  <text x="262" y="232" text-anchor="middle" class="minor">目标 · 范围 · 验收</text>
+
+  <rect x="435" y="178" width="205" height="74" rx="14" fill="#e8f7f3" stroke="#5b9f90" stroke-width="2" filter="url(#shadow)"/>
+  <text x="537" y="208" text-anchor="middle" class="step">准备与复现</text>
+  <text x="537" y="232" text-anchor="middle" class="minor">环境 · 命令 · 原始案例</text>
+
+  <rect x="720" y="178" width="225" height="74" rx="14" fill="#f2edfa" stroke="#9877b5" stroke-width="2" filter="url(#shadow)"/>
+  <text x="832" y="208" text-anchor="middle" class="step">诊断、对照与定位</text>
+  <text x="832" y="232" text-anchor="middle" class="minor">证据逐步更新判断</text>
+
+  <polygon points="1060,150 1155,215 1060,280 965,215" fill="#fff8e5" stroke="#cb9938" stroke-width="2.2" filter="url(#shadow)"/>
+  <text x="1060" y="209" text-anchor="middle" class="minor">归属与下一步</text>
+  <text x="1060" y="232" text-anchor="middle" class="minor">是否明确？</text>
+
+  <rect x="1215" y="148" width="250" height="74" rx="14" fill="#f9eef1" stroke="#c9828c" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1340" y="179" text-anchor="middle" class="step">外部责任域交接</text>
+  <text x="1340" y="203" text-anchor="middle" class="minor">环境 · 步骤 · 结果 · 判据</text>
+
+  <rect x="1215" y="270" width="250" height="74" rx="14" fill="#fff0e5" stroke="#d17f47" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1340" y="301" text-anchor="middle" class="step">本组处理与验证</text>
+  <text x="1340" y="325" text-anchor="middle" class="minor">修复 · 适配 · 优化 · 回验</text>
+
+  <rect x="1540" y="178" width="190" height="74" rx="14" fill="#eaf3fc" stroke="#6b96bb" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1635" y="208" text-anchor="middle" class="step">结果交付</text>
+  <text x="1635" y="232" text-anchor="middle" class="minor">报告 · 补丁 · JSON</text>
+
+  <path d="M135 215 H170" class="flow"/>
+  <path d="M355 215 H435" class="flow"/>
+  <path d="M640 215 H720" class="flow"/>
+  <path d="M945 215 H965" class="flow"/>
+  <path d="M1155 215 H1185 V185 H1215" class="flow"/>
+  <path d="M1155 215 H1185 V307 H1215" class="flow"/>
+  <path d="M1465 185 H1505 V215 H1540" class="flow"/>
+  <path d="M1465 307 H1505 V215" class="flow"/>
+
+  <path d="M1060 150 V108 H537 V178" class="feedback"/>
+  <text x="800" y="90" text-anchor="middle" class="minor">未明确：补充能够改变判断的实验；条件不足时交付当前定位结果</text>
+
+  <path d="M262 252 V364" class="bind"/>
+  <path d="M537 252 V364" class="bind"/>
+  <path d="M832 252 V364" class="bind"/>
+  <path d="M1340 344 V364" class="bind"/>
+
+  <g transform="translate(0,-60)">
+
+  <rect x="132" y="424" width="260" height="52" rx="26" fill="#dcecf9" stroke="#6b96bb"/>
+  <text x="262" y="456" style="font-size:16px" text-anchor="middle" class="module">jira-evidence · 材料与结果</text>
+  <path d="M262 476 V516" class="bind"/>
+  <rect x="142" y="516" width="240" height="68" rx="12" fill="#fff" stroke="#b9cddd"/>
+  <text x="262" y="544" text-anchor="middle" class="skill">load_issue.py · local</text>
+  <text x="262" y="566" text-anchor="middle" class="duty">本地快照、附件与采集完整性</text>
+  <path d="M262 584 V610" class="bind"/>
+  <rect x="142" y="610" width="240" height="68" rx="12" fill="#fff" stroke="#b9cddd"/>
+  <text x="262" y="638" text-anchor="middle" class="skill">result-delivery</text>
+  <text x="262" y="660" text-anchor="middle" class="duty">报告、补丁与结构化结论</text>
+
+  <rect x="402" y="424" width="330" height="52" rx="26" fill="#dff2ed" stroke="#5b9f90"/>
+  <text x="567" y="456" text-anchor="middle" class="module">remote-experiment</text>
+  <path d="M567 476 V738 M562 550 H572 M562 644 H572" class="bind"/>
+
+  <rect x="402" y="516" width="160" height="68" rx="12" fill="#fff" stroke="#b8d6ce"/>
+  <text x="482" y="544" text-anchor="middle" class="skill" style="font-size:12.5px">docker-pull</text>
+  <text x="482" y="566" text-anchor="middle" class="duty">获取并核对镜像</text>
+
+  <rect x="572" y="516" width="160" height="68" rx="12" fill="#fff" stroke="#b8d6ce"/>
+  <text x="652" y="544" text-anchor="middle" class="skill" style="font-size:12.5px">git-clone</text>
+  <text x="652" y="566" text-anchor="middle" class="duty">获取指定源码</text>
+
+  <rect x="402" y="610" width="160" height="68" rx="12" fill="#fff" stroke="#b8d6ce"/>
+  <text x="482" y="638" text-anchor="middle" class="skill" style="font-size:12.5px">metax-gpu-smi-tool</text>
+  <text x="482" y="660" text-anchor="middle" class="duty">核对 GPU 与驱动状态</text>
+
+  <rect x="572" y="610" width="160" height="68" rx="12" fill="#fff" stroke="#b8d6ce"/>
+  <text x="652" y="638" text-anchor="middle" class="skill" style="font-size:12.5px">remote-async-executor</text>
+  <text x="652" y="660" text-anchor="middle" class="duty">任务、日志与退出结果</text>
+
+  <rect x="402" y="704" width="330" height="68" rx="12" fill="#fff" stroke="#b8d6ce"/>
+  <text x="567" y="732" text-anchor="middle" class="skill" style="font-size:12.5px">metax-help-docs</text>
+  <text x="567" y="754" text-anchor="middle" class="duty">按当前问题查询内网官方文档</text>
+
+  <rect x="742" y="424" width="500" height="52" rx="26" fill="#ebe3f4" stroke="#9877b5"/>
+  <text x="992" y="456" text-anchor="middle" class="module">problem-analysis · 问题分析</text>
+  <path d="M992 476 V828 M982 547 H1002 M982 625 H1002 M982 703 H1002 M982 781 H1002" class="bind"/>
+
+  <rect x="742" y="516" width="240" height="62" rx="11" fill="#fff" stroke="#cbbddd"/>
+  <text x="862" y="542" text-anchor="middle" class="skill">build-runtime-analysis</text>
+  <text x="862" y="562" text-anchor="middle" class="duty">构建、加载与启动失败</text>
+
+  <rect x="1002" y="516" width="240" height="62" rx="11" fill="#fff" stroke="#cbbddd"/>
+  <text x="1122" y="542" text-anchor="middle" class="skill">crash-analysis</text>
+  <text x="1122" y="562" text-anchor="middle" class="duty">Crash、卡死与异常退出</text>
+
+  <rect x="742" y="594" width="240" height="62" rx="11" fill="#fff" stroke="#cbbddd"/>
+  <text x="862" y="620" text-anchor="middle" class="skill">kernel-trap-analysis</text>
+  <text x="862" y="640" text-anchor="middle" class="duty">Trap 与代码位置</text>
+
+  <rect x="1002" y="594" width="240" height="62" rx="11" fill="#fff" stroke="#cbbddd"/>
+  <text x="1122" y="620" text-anchor="middle" class="skill">correctness-analysis</text>
+  <text x="1122" y="640" text-anchor="middle" class="duty">计算错误与首个差异</text>
+
+  <rect x="742" y="672" width="240" height="62" rx="11" fill="#fff" stroke="#cbbddd"/>
+  <text x="862" y="698" text-anchor="middle" class="skill">performance-analysis</text>
+  <text x="862" y="718" text-anchor="middle" class="duty">耗时、吞吐与瓶颈范围</text>
+
+  <rect x="1002" y="672" width="240" height="62" rx="11" fill="#fff" stroke="#cbbddd"/>
+  <text x="1122" y="698" text-anchor="middle" class="skill">regression-analysis</text>
+  <text x="1122" y="718" text-anchor="middle" class="duty">受控 A/B 定位变化变量</text>
+
+  <rect x="742" y="750" width="240" height="62" rx="11" fill="#fff" stroke="#cbbddd"/>
+  <text x="862" y="776" text-anchor="middle" class="skill">gpu-sdk-regression-triage</text>
+  <text x="862" y="796" text-anchor="middle" class="duty">SDK 组件差异与因果证据</text>
+
+  <rect x="1002" y="750" width="240" height="62" rx="11" fill="#fff" stroke="#cbbddd"/>
+  <text x="1122" y="776" text-anchor="middle" class="skill">runtime-recompile-analysis</text>
+  <text x="1122" y="796" text-anchor="middle" class="duty">首次 JIT、重复编译与耗时</text>
+
+  <rect x="872" y="828" width="240" height="62" rx="11" fill="#fff" stroke="#cbbddd"/>
+  <text x="992" y="854" text-anchor="middle" class="skill">trace-report</text>
+  <text x="992" y="874" text-anchor="middle" class="duty">按需整理 Profiling 证据</text>
+
+  <rect x="1285" y="424" width="410" height="52" rx="26" fill="#f9e7d9" stroke="#d17f47"/>
+  <text x="1490" y="456" text-anchor="middle" class="module">application-analysis · HPC 应用处理</text>
+  <path d="M1495 476 V750 M1490 547 H1500 M1490 625 H1500 M1490 703 H1500" class="bind"/>
+
+  <rect x="1285" y="516" width="205" height="62" rx="11" fill="#fff" stroke="#e0b797"/>
+  <text x="1387" y="542" text-anchor="middle" class="skill">app-source-fix</text>
+  <text x="1387" y="562" text-anchor="middle" class="duty">候选补丁与原案例验证</text>
+
+  <rect x="1500" y="516" width="195" height="62" rx="11" fill="#fff" stroke="#e0b797"/>
+  <text x="1597" y="542" text-anchor="middle" class="skill">app-adaptation</text>
+  <text x="1597" y="562" text-anchor="middle" class="duty">应用与平台适配</text>
+
+  <rect x="1285" y="594" width="205" height="62" rx="11" fill="#fff" stroke="#e0b797"/>
+  <text x="1387" y="620" text-anchor="middle" class="skill">maca-porting-checkup</text>
+  <text x="1387" y="640" text-anchor="middle" class="duty">MACA 兼容检查</text>
+
+  <rect x="1500" y="594" width="195" height="62" rx="11" fill="#fff" stroke="#e0b797"/>
+  <text x="1597" y="620" text-anchor="middle" class="skill">hpc-opt-skill</text>
+  <text x="1597" y="640" text-anchor="middle" class="duty">通用 HPC 性能优化</text>
+
+  <rect x="1285" y="672" width="205" height="62" rx="11" fill="#fff" stroke="#e0b797"/>
+  <text x="1387" y="698" text-anchor="middle" class="skill">gromacs-opt-skill</text>
+  <text x="1387" y="718" text-anchor="middle" class="duty">GROMACS 应用方法</text>
+
+  <rect x="1500" y="672" width="195" height="62" rx="11" fill="#fff" stroke="#e0b797"/>
+  <text x="1597" y="698" text-anchor="middle" class="skill">openmm-opt-skill</text>
+  <text x="1597" y="718" text-anchor="middle" class="duty">OpenMM 应用方法</text>
+
+  <rect x="1375" y="750" width="240" height="62" rx="11" fill="#fff" stroke="#e0b797"/>
+  <text x="1495" y="776" text-anchor="middle" class="skill">cu-bridge</text>
+  <text x="1495" y="796" text-anchor="middle" class="duty">wrapper、工具链与映射诊断</text>
+
+  </g>
+
+  </g>
+</svg>

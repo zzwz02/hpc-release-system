@@ -23,7 +23,7 @@ description: Develop, debug, or review the JIRA agent (per-group digital employe
 - **找单**（`GET /api/jira-agent/issues?q=`，分类逻辑在 `domain.parse_issue_query`）：
   - 留空时，普通用户看 `assignee = "<网站用户名>" AND status != Closed`，RM 看 `assignee in membersOf("<JIRA_MEMBERS_GROUP>")`。不能用 `currentUser()`，它指向 release_system.conf `[jira]` 的 token 账号。
   - 输入是一个 `项目KEY-数字`（字母开头，允许数字和下划线）时读这张单，找不到列入 `missing`；只由多个编号组成时报错“一次只能查询一个 JIRA 编号”（用户明确要求只支持一个）。
-  - RM 专用 `?scope=handled`（`service.list_handled_issues`）：数据库里所有交给过 agent 的工单，含 JIRA 已关闭的，按最近活动排序、最多 200 个；状态用 `key in (...)` 分批查 JIRA，必须带 `validateQuery=false`，否则任一编号不存在时整条 JQL 报 400。
+  - RM 专用 `?scope=handled`（`service.list_handled_issues`）：数据库里所有交给过 agent 的工单，含 JIRA 已关闭的，按最近活动排序且不截断；状态用 `key in (...)` 分批查 JIRA，必须带 `validateQuery=false`，否则任一编号不存在时整条 JQL 报 400。
   - 其他输入原样作为 JQL，JIRA 返回 400 时把 `errorMessages` 回给用户。
   - 不识别工单网址（业务 JIRA 地址与测试环境不同）。搜索用 `[jira]` 账号的可见范围，交单仍校验 assignee 或 RM。
 - **对话隔离**：一个对话 = 一个 Codex thread + B 上一个工作目录，owner 是交单时的 assignee（RM 代操作时 owner 仍是 assignee）。
@@ -57,10 +57,11 @@ Runner 在 FastAPI lifespan 中启停（`settings.jira_agent_runner_enabled`）�
 - **`jira_agent_machines`**：系统机器列表（组 + `ssh_target` 唯一 + 说明），仅 RM 增删改。自填机器不入库，旧库的 `jira_agent_ssh_keys` 表在初始化时删除。
 - **`jira_agent_turns`**：
   - `status` 取 queued / running / completed / failed / cancelled / interrupted。queued 行就是持久队列，按 rowid FIFO；每个对话最多一个 queued 或 running（部分唯一索引）。
+  - `delivery_status` 为历史空值 / collecting / incomplete / complete；`delivery_errors_json` 保存回收错误。分析先保存为 completed，交付不完整时保留结果并暂停评论。`POST /turns/{id}/delivery/retry` 只回收文件，不重跑模型，且只允许当前开放对话的最新轮次；回收中禁止续办和关闭对话，启动时将遗留 collecting 标为 incomplete。
   - `comment_status` 为空 / pending / posted / failed，失败只重试发布，不重跑模型。`post_comment`（默认 1，旧库由 `_ensure_column` 补列）为 0 的轮次完成后 `comment_status` 保持空。
 - **`jira_agent_events`**：时间线。`seq` 是显示顺序，`rev` 在每次插入或更新时递增，前端用 `?after=rev` 增量轮询；命令事件按 `item_id` 原地更新（started → completed）。
 - **`jira_agent_files`**：`source` 为 jira/upload/artifact；`remote_path` 是 B 工作目录内的相对路径，`local_path` 只对上传和拉回的产物存在。
-- **对话状态**：`state` 由对话与最新轮次派生：closed / idle / queued / running / waiting_review（最新轮 completed）/ failed / cancelled / interrupted。
+- **对话状态**：`state` 由对话与最新轮次派生：closed / idle / queued / running / delivering（分析完成、正在回收文件）/ delivery_incomplete（分析完成、交付不完整）/ waiting_review（最新轮 completed 且文件已收齐或历史空状态）/ failed / cancelled / interrupted。
 - **运行阶段**：内存中 `ActiveTurn.phase` 为 preparing → starting → running → finishing；重启接管时为 recovering → running → finishing。
   - 运行中（running）的消息走 `turn/steer`；preparing 阶段的消息合并进本轮输入；starting、finishing 阶段返回 409。
   - 取消：

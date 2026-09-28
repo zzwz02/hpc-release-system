@@ -36,6 +36,8 @@ const turn = {
   codex_turn_id: "turn_1",
   result: null,
   conclusion: "fixed_pending_review",
+  delivery_status: "complete",
+  delivery_errors: [],
   comment_status: "posted",
   post_comment: true,
   comment_id: "99",
@@ -85,6 +87,8 @@ const oldConversation = {
 
 const result = {
   conclusion: "fixed_pending_review",
+  action_required: "needs_review",
+  assistance: { current_issue: "", owner: "", request: "" },
   issue_category: "结果错误",
   ownership: { belongs_to_us: "yes", target_group: "", reasoning: "应用代码问题" },
   summary: "修复尾部元素",
@@ -93,7 +97,7 @@ const result = {
   evidence: [{ description: "修复后", command: "./saxpy 16777217", result: "PASS" }],
   fix: { description: "向上取整" },
   artifacts: ["artifacts/fix.patch"],
-  next_steps: ["审阅补丁"],
+  next_steps: [],
   skills_used: ["hpc-bug-repro"],
 };
 
@@ -104,7 +108,7 @@ const detail = {
     {
       id: "jaf_1", conversation_id: "jac_1", turn_id: "jat_1", direction: "output", source: "artifact",
       source_ref: "", name: "fix.patch", size: 20, sha256: "", remote_path: "artifacts/fix.patch",
-      created_at: "", downloadable: true,
+      created_at: "", downloadable: true, preview: "--- a/saxpy.cu\n+++ b/saxpy.cu\n+fixed\n", preview_truncated: false,
     },
   ],
   events: [
@@ -229,6 +233,60 @@ describe("JiraAgentPage", () => {
     mockUser("Owner");
   });
 
+  it.each([true, false])("retries file delivery with the original comment choice %s", async (post) => {
+    mockBackend();
+    const base = vi.mocked(apiGet).getMockImplementation()!;
+    const current = {
+      turn: { ...turn, delivery_status: "incomplete", post_comment: post, comment_status: "",
+        delivery_errors: [{ path: "artifacts/report.md", error: "文件不存在" }] },
+    };
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === "/api/jira-agent/conversations/jac_1") return {
+        ...detail,
+        conversation: { ...conversation, state: current.turn.delivery_status === "complete" ? "waiting_review" : "delivery_incomplete", latest_turn: current.turn },
+        turns: [current.turn],
+        events: [...detail.events.filter((event) => event.kind !== "jira_comment"),
+          { ...detail.events[3], kind: "delivery", payload: {} }],
+      };
+      return base(path);
+    });
+    vi.mocked(apiPost).mockImplementation(async () => {
+      current.turn = { ...current.turn, delivery_status: "complete", delivery_errors: [] };
+      return { turn: current.turn };
+    });
+    const user = userEvent.setup();
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
+    const panel = await screen.findByTestId("jira-agent-delivery");
+    expect(within(panel).getByText("artifacts/report.md")).toBeInTheDocument();
+    expect(within(panel).getByText(/重试只回收文件，不重新运行分析/)).toBeInTheDocument();
+    expect(screen.getByText("分析结论（文件交付尚未完成）")).toBeInTheDocument();
+    if (post) expect(within(panel).getByText(/暂停发布 JIRA 评论/)).toBeInTheDocument();
+    else expect(within(panel).getByText(/本轮结论仅保留在网站/)).toBeInTheDocument();
+    await user.click(within(panel).getByRole("button", { name: "重试回收文件" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/turns/jat_1/delivery/retry", {}));
+    await waitFor(() => expect(within(panel).getByText("交付文件已全部回收")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "重试回收文件" })).not.toBeInTheDocument();
+    expect(apiPost).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables follow-up and new conversations during delivery", async () => {
+    mockBackend();
+    const base = vi.mocked(apiGet).getMockImplementation()!;
+    const collecting = { ...turn, delivery_status: "collecting", comment_status: "" };
+    const current = { ...conversation, state: "delivering", latest_turn: collecting };
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === "/api/jira-agent/conversations/jac_1") return { ...detail, conversation: current, turns: [collecting] };
+      if (path.startsWith("/api/jira-agent/conversations/jac_1/events")) return { conversation: current, events: [], rev: 4 };
+      return base(path);
+    });
+    const user = userEvent.setup();
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
+    await user.type(await screen.findByLabelText("补充信息"), "等回收后继续");
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "新建对话" })).toBeDisabled();
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
   it("only RM can switch to every issue the agent handled, including closed ones", async () => {
     mockBackend({ open: false });
     const user = userEvent.setup();
@@ -248,7 +306,7 @@ describe("JiraAgentPage", () => {
     const results = await screen.findByTestId("jira-agent-issue-results");
     expect(apiGet).toHaveBeenCalledWith("/api/jira-agent/issues?scope=handled");
     expect(within(results).getByText("Closed")).toBeInTheDocument();
-    expect(within(results).getByText("agent · 无法复现")).toBeInTheDocument();
+    expect(within(results).getByText("agent · 当前未复现")).toBeInTheDocument();
     expect(within(results).getByText(/2 个对话 · 最近 alice · 09-13 09:30/)).toBeInTheDocument();
     expect(screen.getByText(/JIRA 中未找到或无权访问：MC3-1/)).toBeInTheDocument();
 
@@ -275,7 +333,16 @@ describe("JiraAgentPage", () => {
 
     await user.click(within(results).getByRole("button", { name: /MC3-7672/ }));
 
-    expect(await screen.findByTestId("jira-agent-result")).toBeInTheDocument();
+    const resultCard = await screen.findByTestId("jira-agent-result");
+    expect(within(resultCard).getByText("修复已验证，待审核")).toBeInTheDocument();
+    expect(within(resultCard).getByText("需要审核")).toBeInTheDocument();
+    expect(within(resultCard).getByText("待审核")).toBeInTheDocument();
+    expect(within(resultCard).getByText("修复补丁")).toBeInTheDocument();
+    expect(within(resultCard).getByText(/--- a\/saxpy\.cu/)).toBeInTheDocument();
+    expect(within(resultCard).getByRole("link", { name: "下载完整补丁" })).toHaveAttribute(
+      "href",
+      "/api/jira-agent/conversations/jac_1/files/jaf_1",
+    );
     // tool use is folded into a collapsed group; messages and results stay visible
     const toolGroup = screen.getByTestId("jira-agent-tool-group");
     expect(toolGroup).not.toHaveAttribute("open");
@@ -285,7 +352,7 @@ describe("JiraAgentPage", () => {
     expect(screen.getByText("请修复")).toBeInTheDocument();
     expect(screen.getByText(/机器：/)).toHaveTextContent("机器：hpc@10.2.118.75（agent 选择）");
     expect(screen.getByText(/已在 JIRA 发布评论（#99）/)).toBeInTheDocument();
-    expect(screen.getAllByRole("link", { name: "artifacts/fix.patch" })[0]).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "fix.patch" })).toHaveAttribute(
       "href",
       "/api/jira-agent/conversations/jac_1/files/jaf_1",
     );

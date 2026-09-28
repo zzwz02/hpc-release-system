@@ -91,7 +91,7 @@ def test_example_file_parses_into_every_section(monkeypatch: pytest.MonkeyPatch)
     assert runtime_config.section("qa_llm")["QA_LLM_MODEL"]
     assert cicd_agent._agent_timeout_seconds() == 90
     [group] = domain.groups_from_sections(runtime_config.agent_group_sections()).values()
-    assert (group.name, group.max_concurrent, group.components) == ("HPC", 2, ("PDE_HPC",))
+    assert (group.name, group.max_concurrent, group.components) == ("HPC", 5, ("PDE_HPC",))
 
 
 def test_qa_llm_reads_only_the_file(conf: Path, monkeypatch: pytest.MonkeyPatch) -> None:

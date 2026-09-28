@@ -1,0 +1,50 @@
+# trace-report environment config template.
+# Run scripts/trace_report_env.py init-config --set KEY=VALUE ...
+# to generate LOCAL_WORKDIR/.trace-report/config/trace_report_env.yaml.
+# validate/export/mode/run use that local active config to build target commands.
+
+LOCAL_WORKDIR: "/mnt/data_hdd2/user/xwang/workspace/128_16_512/local"
+REMOTE_WORKDIR: "/mnt/data_hdd2/user/xwang/workspace/128_16_512/"
+
+# local: leave CONTAINER_NAME, SERVER_USER, and SERVER_HOST empty.
+# docker: set CONTAINER_NAME only.
+# ssh: set SERVER_USER and SERVER_HOST only.
+# ssh+docker: set all three.
+CONTAINER_NAME: "trace_py310_test"
+SERVER_USER: "opttest"
+SERVER_HOST: "10.0.180.12"
+
+MACA_VISIBLE_DEVICES: "0"
+AUTO_SELECT_DEVICE_TIMEOUT_SECONDS: "120"
+
+OP_EXEC_CMD: "./test_maca 0 1 2"
+
+HEURISTIC_BOUND_MODE: "coarse"
+COLLECT_TIMEOUT_SECONDS: "600"
+SKIP_MCPROFILER: "true"
+REQUIRE_MCPROFILER: "false"
+
+# CycleTrace options: sample mode empty means tool default A(all kernels).
+# Use CYCLE_TRACE_SAMPLE_MODE=C with CYCLE_TRACE_KERNEL_NAME to narrow large traces.
+# See reference/12-cycle-trace-options.md for A/B/C/D and PEU bitmap semantics.
+CYCLE_TRACE_TARGET_PEU: "1"
+CYCLE_TRACE_DPG_PAGE_NUM: "32"
+CYCLE_TRACE_TARGET_AP: "0"
+CYCLE_TRACE_DPC_ID: "0"
+CYCLE_TRACE_SAMPLE_MODE: ""
+CYCLE_TRACE_KERNEL_NAME: ""
+CYCLE_TRACE_KERNEL_REPEAT: ""
+CYCLE_TRACE_TOOLS_JSON: "/opt/maca/etc/tools.json"
+PROFILER_PORT: "50123"
+
+ENABLE_SOURCE_LATENCY: "false"
+MACA_SOURCE_FILE: ""
+MACA_LINEINFO_BINARY: ""
+MACA_LINEINFO_CYCLE_TRACE_EXEC_CMD: ""
+MACA_OBJDUMP_BIN: "/opt/maca/restricted/Tools/mxgpu_llvm/bin/mxobjdump"
+MACA_OBJDUMP_ARGS: "--source --print-code"
+MACA_LLVM_OBJDUMP_BIN: ""
+
+MC_TRACER_BIN: "/opt/maca/bin/mcTracer"
+CYCLE_TRACE_BIN: "/opt/maca-20260505/bin/cycle-trace-ng"
+MC_PROFILER_BIN: "/opt/maca/restricted/Tools/mcProfiler/mcProfiler-ubuntu18.04/mcProfiler"

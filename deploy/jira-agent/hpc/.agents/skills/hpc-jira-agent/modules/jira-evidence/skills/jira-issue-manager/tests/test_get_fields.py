@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+"""测试获取 Jira 字段列表接口。"""
+
+import argparse
+
+from common import add_common_args, run_script
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="测试获取 Jira 字段列表接口")
+    add_common_args(parser)
+    args = parser.parse_args()
+    return run_script(
+        "get_fields.py",
+        ["--base-url", args.base_url, "--token", args.access_token],
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

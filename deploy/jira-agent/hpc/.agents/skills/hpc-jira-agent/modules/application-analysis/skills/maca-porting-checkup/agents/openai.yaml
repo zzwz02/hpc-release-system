@@ -1,0 +1,4 @@
+interface:
+  display_name: "MACA 移植体检"
+  short_description: "评估 CUDA 应用的 MACA 移植风险"
+  default_prompt: "使用 $maca-porting-checkup 评估这个 CUDA 应用的 MACA 移植可行性。"

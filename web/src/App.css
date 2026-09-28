@@ -2279,7 +2279,11 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .jira-agent-result-grid dt { color: var(--muted); }
 .jira-agent-result-grid dd { margin: 0; }
 .jira-agent-result-grid ol { margin: 4px 0; padding-left: 20px; }
-.jira-agent-evidence, .jira-agent-artifacts { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.jira-agent-evidence, .jira-agent-artifacts, .jira-agent-patches { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.jira-agent-patches { padding: 8px 10px; border: 1px solid var(--accent-bd); border-radius: var(--r-sm); background: var(--accent-soft); }
+.jira-agent-patch { display: flex; flex-direction: column; gap: 4px; }
+.jira-agent-patch-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.jira-agent-patch-preview { margin-top: 0; max-height: 480px; white-space: pre; word-break: normal; }
 .jira-agent-files > summary { cursor: pointer; }
 .jira-agent-files table { width: 100%; font-size: 12px; }
 .jira-agent-composer { display: flex; flex-direction: column; gap: 8px; }
