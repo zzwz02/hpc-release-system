@@ -163,6 +163,9 @@ def base_snapshot(
         },
         "community": {
             "release_status": "",
+            "menu_level1": "",
+            "doc_url": "",
+            "description": "",
             "python_version": "",
             "framework_version": "",
         },

@@ -617,6 +617,16 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
 .detail-body .section-body { margin-top: 0; padding: 12px; }
 .detail-body .section .badge { margin-left: auto; }
 .detail-body .form { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.detail-body .community-doc-form {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  align-items: end;
+}
+.detail-body .community-doc-form .community-description-field {
+  align-self: stretch;
+}
+.detail-body .community-doc-form .community-description-field textarea {
+  min-height: 112px;
+}
 .detail-body .docfield, .detail-body .desc-field { display: block; margin-top: 12px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
 .detail-body .form + .docfield { grid-column: 1 / -1; }
 .detail-body .docfield textarea { margin-top: 5px; font-weight: 400; }

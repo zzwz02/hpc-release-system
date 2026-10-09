@@ -93,7 +93,10 @@
           "build_arches": "",
           "build_os": "",
           "community": {
+            "description": "",
+            "doc_url": "",
             "framework_version": "",
+            "menu_level1": "",
             "python_version": "",
             "release_status": ""
           },
@@ -138,7 +141,10 @@
           "build_arches": "",
           "build_os": "",
           "community": {
+            "description": "",
+            "doc_url": "",
             "framework_version": "",
+            "menu_level1": "",
             "python_version": "",
             "release_status": ""
           },
@@ -188,7 +194,10 @@
           "build_arches": "",
           "build_os": "",
           "community": {
+            "description": "",
+            "doc_url": "",
             "framework_version": "",
+            "menu_level1": "",
             "python_version": "",
             "release_status": ""
           },

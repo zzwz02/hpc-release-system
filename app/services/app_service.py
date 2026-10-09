@@ -110,8 +110,15 @@ def _require_app_update_phase_permissions(
         _require_phase_action(release, "edit_release_doc_fields", _AFTER_DOC_EDIT_MESSAGE)
 
 
-def _community_required(app: dict) -> bool:
-    return gates.community_fields_required(app)
+def _community_count(community: dict, key: str) -> int:
+    try:
+        return int(community.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _community_required(app: dict, snapshot: dict | None = None) -> bool:
+    return gates.community_fields_required(app, snapshot)
 
 
 def _missing_items_for(app: dict, snapshot: dict) -> list[dict[str, str]]:
@@ -663,10 +670,13 @@ def update_snapshot(
                 )
 
     def normalize_community_update(snapshot: dict) -> None:
-        if _community_required(app):
+        if _community_required(app, snapshot):
             return
         snap_update["community"] = {
             "release_status": "",
+            "menu_level1": "",
+            "doc_url": "",
+            "description": "",
             "python_version": "",
             "framework_version": "",
         }
@@ -782,9 +792,25 @@ def update_snapshot(
             snapshot.setdefault("doc", {}).update(doc_update)
 
         if "community" in snap_update:
-            comm_update = snap_update["community"]
+            comm_update = dict(snap_update["community"] or {})
+            current_community = snapshot.get("community") or {}
+            if current_community.get("derived_from_app_info"):
+                comm_update["release_status"] = current_community.get("release_status", "")
+                if (
+                    _community_count(current_community, "image_count") <= 0
+                    and _community_count(current_community, "pkg_count") <= 0
+                ):
+                    comm_update["menu_level1"] = ""
+                    comm_update["doc_url"] = ""
+                    comm_update["description"] = ""
+                if _community_count(current_community, "pkg_count") <= 0:
+                    comm_update["python_version"] = ""
+                    comm_update["framework_version"] = ""
             comm_labels = {
                 "release_status": "社区发布情况",
+                "menu_level1": "社区一级菜单",
+                "doc_url": "社区说明文档链接",
+                "description": "社区描述",
                 "python_version": "社区包 Python 版本",
                 "framework_version": "社区包框架及版本",
             }
@@ -1283,6 +1309,11 @@ def _apply_app_info_core(
         old_parsed = (snapshot.get("app_info") or {}).get("parsed")
     diffs = app_info_domain.diff_app_info(old_parsed, parsed) if old_parsed is not None else []
     ts = beijing_timestamp()
+    app = _get_app_or_raise(conn, app_id)
+    existing_community = snapshot.get("community") or {}
+    derived_community = app_info_domain.community_fields_from_app_info(parsed, existing_community)
+    derived_community_app_value = app_info_domain.community_artifacts_app_value(parsed)
+    previous_community_app_value = str(app.get("cicd_community_artifact") or "")
     snapshot["app_info"] = {
         "source": source,
         "source_type": source_type,
@@ -1300,9 +1331,13 @@ def _apply_app_info_core(
     snapshot["pytorch_labels"] = ",".join(parsed.get("pytorch_labels", []))
     snapshot["build_os"] = ",".join(parsed.get("build_os", []))
     snapshot["build_arches"] = ",".join(parsed.get("build_arches", []))
+    snapshot["community"] = derived_community
     app_info_domain.ensure_test_docs(snapshot, parsed, diffs)
     if was_confirmed and content_modified:
         snapshot["owner_confirmed"] = False
+    app_for_missing = dict(app)
+    app_for_missing["cicd_community_artifact"] = derived_community_app_value
+    snapshot["missing_items"] = _missing_items_for(app_for_missing, snapshot)
     # build_targets / test_targets are coarse list-of-dict aggregates; the
     # readable per-field diffs (version, chips, test_cmd*) cover the same ground.
     detail = [
@@ -1315,7 +1350,37 @@ def _apply_app_info_core(
         for d in diffs
         if d.get("field") not in ("build_targets", "test_targets")
     ]
+    community_changes = field_diff(
+        {"release_status": existing_community.get("release_status", "")},
+        {"release_status": derived_community.get("release_status", "")},
+        {"release_status": "社区发布情况（app_info 自动识别）"},
+    )
+    detail.extend(community_changes)
     with transaction(conn):
+        if previous_community_app_value != derived_community_app_value:
+            apps_repo.update_cicd_config(
+                conn,
+                app_id,
+                {"cicd_community_artifact": derived_community_app_value},
+            )
+            log_audit(
+                conn,
+                f"{app_id} 根据 app_info.json 自动更新开发者社区产物",
+                ts=ts,
+                user=uploaded_by or "system",
+                role=role,
+                app_id=app_id,
+                release_id=release_id,
+                event="sync_community_artifacts",
+                detail=[
+                    {
+                        "field": "cicd_community_artifact",
+                        "label": "开发者社区产物",
+                        "old": previous_community_app_value,
+                        "new": derived_community_app_value,
+                    }
+                ],
+            )
         snapshots_repo.save_snapshot(conn, release_id, app_id, snapshot)
         log_audit(
             conn,

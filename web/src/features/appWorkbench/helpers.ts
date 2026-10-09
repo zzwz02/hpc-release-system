@@ -237,6 +237,9 @@ export interface CopiedSnapshotFields {
   env_setup: string;
   limitations: string;
   community_release: string;
+  community_menu_level1: string;
+  community_doc_url: string;
+  community_description: string;
   community_python: string;
   community_framework: string;
   sanity_arm: boolean;
@@ -255,6 +258,9 @@ export function copiedScalarFields(s: Snapshot): CopiedSnapshotFields {
     env_setup: s.doc?.env_setup ?? "",
     limitations: s.doc?.limitations ?? "",
     community_release: s.community?.release_status ?? "",
+    community_menu_level1: s.community?.menu_level1 ?? "",
+    community_doc_url: s.community?.doc_url ?? "",
+    community_description: s.community?.description ?? "",
     community_python: s.community?.python_version ?? "",
     community_framework: s.community?.framework_version ?? "",
     sanity_arm: s.sanity?.arm_kylin ?? false,

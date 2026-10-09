@@ -1084,7 +1084,7 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
     expect(pane.textContent).toContain("App CICD 配置");
     expect(pane.textContent).toContain("Running");
     expect((screen.getByTestId("field-cicd-repo-type") as HTMLSelectElement).value).toBe("git");
-    expect(screen.getByLabelText("镜像")).toBeChecked();
+    expect(screen.queryByTestId("field-cicd-community-artifact")).not.toBeInTheDocument();
     expect((screen.getByTestId("field-cicd-build-image") as HTMLInputElement).value).toBe("gcc:12");
     expect((screen.getByTestId("field-cicd-timeout") as HTMLInputElement).value).toBe("40");
     expect((screen.getByTestId("field-cicd-notes") as HTMLInputElement).value).toBe("nightly only");
@@ -1404,7 +1404,6 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
     await clickCicdTab();
     fireEvent.change(screen.getByTestId("field-cicd-git-url"), { target: { value: "repo/app1-cicd" } });
     fireEvent.change(screen.getByTestId("field-cicd-git-branch"), { target: { value: "dev" } });
-    fireEvent.click(screen.getByLabelText("镜像"));
     fireEvent.change(screen.getByTestId("field-cicd-build-image"), { target: { value: "gcc:12" } });
     fireEvent.change(screen.getByTestId("field-cicd-timeout"), { target: { value: "60" } });
     fireEvent.change(screen.getByTestId("field-cicd-notes"), { target: { value: "manual fill" } });
@@ -1417,12 +1416,13 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
         payload: expect.objectContaining({
           repo_name: { old: "repo/app1", new: "repo/app1-cicd" },
           branch: { old: "main", new: "dev" },
-          community_artifact: { old: [], new: ["image"] },
           build_image: { old: "", new: "gcc:12" },
           test_timeout: { old: 40, new: 60 },
           notes: { old: "", new: "manual fill" },
         }),
       }));
+      const call = (apiPost as ReturnType<typeof vi.fn>).mock.calls.find((c) => c[0] === "/api/cicd/requests/submit");
+      expect((call?.[1] as { payload?: Record<string, unknown> }).payload).not.toHaveProperty("community_artifact");
     });
   });
 
@@ -1557,29 +1557,57 @@ describe("AppWorkbenchPage W2 App CICD config pane", () => {
     expect(screen.getByTestId("cicd-link-card").textContent).toContain("运行/停止由本 app 决策决定");
   });
 
-  it("disables community fields when developer community artifact is empty", async () => {
+  it("hides community document fields when app_info has no community artifacts", async () => {
     mockApiGetForAppCicd();
+    const qc = makeQueryClient();
+    renderPage(qc);
+    await enterEditOnApp1();
+    expect(screen.queryByLabelText("开发者社区发布情况")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("社区一级菜单")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("社区说明文档链接")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("社区描述")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("社区包支持 Python 版本")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("社区包支持框架及版本")).not.toBeInTheDocument();
+  });
+
+  it("shows derived community summary and package fields when pkg_count is present", async () => {
+    const payload = makePayload({
+      release: makeRelease({
+        app1: makeSnap("app1", {
+          official_name: "AlphaApp",
+          owners: ["alice"],
+          community: {
+            release_status: "镜像：2，二进制包：1",
+            menu_level1: "AI4Sci 应用",
+            doc_url: "https://docs.example.com/alpha",
+            description: "社区说明",
+            python_version: "",
+            framework_version: "",
+            image_count: 2,
+            pkg_count: 1,
+            image_aliases: ["ubuntu22.04_amd64", "kylin_arm64"],
+            pkg_aliases: ["ubuntu22.04_amd64"],
+            derived_from_app_info: true,
+          },
+        }),
+        app2: makeSnap("app2", { official_name: "BetaTool", release_decision: "cicd_only", owners: ["bob"] }),
+      }),
+    });
+    mockApiGetForAppCicd(payload);
     const qc = makeQueryClient();
     renderPage(qc);
     await enterEditOnApp1();
     expect(screen.getByLabelText("开发者社区发布情况")).toBeDisabled();
-    expect(screen.getByLabelText("社区包支持 Python 版本")).toBeDisabled();
-    expect(screen.getByLabelText("社区包支持框架及版本")).toBeDisabled();
-    expect(screen.getByText("CICD 中没有选择开发者社区产物，社区发布情况、Python 版本和框架版本暂不可填写。")).toBeInTheDocument();
-    expect(screen.getAllByText("不可填写：CICD 中没有选择开发者社区产物。")).toHaveLength(3);
-  });
-
-  it("enables community fields after developer community artifact is filled", async () => {
-    mockApiGetForAppCicd();
-    const qc = makeQueryClient();
-    renderPage(qc);
-    await enterEditOnApp1();
-    await clickCicdTab();
-    fireEvent.click(screen.getByLabelText("镜像"));
-    fireEvent.click(screen.getByTestId("detail-tab-docs"));
-    await waitFor(() => {
-      expect(screen.getByLabelText("开发者社区发布情况")).not.toBeDisabled();
-    });
+    expect(screen.getByLabelText("开发者社区发布情况")).toHaveValue("镜像：2，二进制包：1");
+    expect(screen.getByLabelText("社区一级菜单")).not.toBeDisabled();
+    expect(screen.getByLabelText("社区一级菜单")).toHaveValue("AI4Sci 应用");
+    expect(screen.getByLabelText("社区说明文档链接")).not.toBeDisabled();
+    expect(screen.getByLabelText("社区说明文档链接")).toHaveValue("https://docs.example.com/alpha");
+    expect(screen.getByLabelText("社区描述")).not.toBeDisabled();
+    expect(screen.getByLabelText("社区描述")).toHaveValue("社区说明");
+    expect(screen.getByLabelText("社区说明文档链接").closest("label")).toHaveClass("grid-span-all");
+    expect(screen.getByLabelText("社区描述").tagName).toBe("TEXTAREA");
+    expect(screen.getByLabelText("社区描述").closest("label")).toHaveClass("grid-span-all");
     expect(screen.getByLabelText("社区包支持 Python 版本")).not.toBeDisabled();
     expect(screen.getByLabelText("社区包支持框架及版本")).not.toBeDisabled();
   });
@@ -2210,7 +2238,7 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     expect(screen.getByPlaceholderText("xml地址，例如APP/openfoam/hpc_v2206_v0.xml")).toBeInTheDocument();
   });
 
-  it("shows release/cicd-only beside community artifacts and explains build-image ordering", async () => {
+  it("shows release/cicd-only beside build configuration and explains build-image ordering", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
     const qc = makeQueryClient();
     renderPage(qc);
@@ -2220,7 +2248,7 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     const decision = await screen.findByTestId("new-app-release-decision") as HTMLSelectElement;
     expect(Array.from(decision.options).map((option) => option.text)).toEqual(["release", "cicd-only"]);
     expect(decision.value).toBe("cicd_only");
-    expect(decision.closest(".new-app-community-decision-grid")?.textContent).toContain("开发者社区产物");
+    expect(decision.closest(".new-app-community-decision-grid")?.textContent).not.toContain("开发者社区产物");
     expect(screen.getByTestId("new-app-dialog").textContent).toContain("影响 SPD 编排 CICD 构建任务顺序");
   });
 

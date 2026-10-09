@@ -33,7 +33,8 @@ QA_RELEASE_REPORT_COLUMNS = [
     "类别", "名称", "Owner", "类型", "描述", "官方URL", "git_url", "git_branch",
     "对应官方版本", "OS", "Python version", "PyTorch version",
     "X86支持芯片系列", "ARM支持芯片类型", "对比",
-    "开发者社区发布情况", "开发者社区发布包支持python版本",
+    "开发者社区发布情况", "开发者社区一级菜单", "开发者社区说明文档链接",
+    "开发者社区描述", "开发者社区发布包支持python版本",
     "开发者社区发布包支持的底层框架及版本",
     "ARM / Kylin sanity", "Ubuntu / 兼容性 sanity", "CICD状态",
 ]
@@ -519,12 +520,27 @@ def _user_display_names(conn: sqlite3.Connection) -> dict[str, str]:
     }
 
 
-def _community_report_values(app: dict[str, Any], snapshot: dict[str, Any]) -> tuple[str, str, str]:
-    if not str(app.get("cicd_community_artifact") or "").strip():
-        return "", "", ""
+def _community_report_values(
+    app: dict[str, Any],
+    snapshot: dict[str, Any],
+) -> tuple[str, str, str, str, str, str]:
     community = snapshot.get("community") or {}
+    if community.get("derived_from_app_info"):
+        return (
+            community.get("release_status", ""),
+            community.get("menu_level1", ""),
+            community.get("doc_url", ""),
+            community.get("description", ""),
+            community.get("python_version", ""),
+            community.get("framework_version", ""),
+        )
+    if not str(app.get("cicd_community_artifact") or "").strip():
+        return "", "", "", "", "", ""
     return (
         community.get("release_status", ""),
+        community.get("menu_level1", ""),
+        community.get("doc_url", ""),
+        community.get("description", ""),
         community.get("python_version", ""),
         community.get("framework_version", ""),
     )
@@ -600,9 +616,14 @@ def get_qa_reports(
             x86_chips = ",".join(order_chips(snapshot.get("x86_chips", "")))
             arm_chips = ",".join(order_chips(snapshot.get("arm_chips", "")))
             display_compare = compare_value
-            community_release, community_python, community_framework = _community_report_values(
-                app, snapshot
-            )
+            (
+                community_release,
+                community_menu_level1,
+                community_doc_url,
+                community_description,
+                community_python,
+                community_framework,
+            ) = _community_report_values(app, snapshot)
             arm_kylin_sanity = "✔" if sanity.get("arm_kylin") else ""
             ubuntu_sanity = "✔" if sanity.get("ubuntu") else ""
         else:
@@ -610,6 +631,9 @@ def get_qa_reports(
             arm_chips = ""
             display_compare = compare_value
             community_release = ""
+            community_menu_level1 = ""
+            community_doc_url = ""
+            community_description = ""
             community_python = ""
             community_framework = ""
             arm_kylin_sanity = ""
@@ -638,6 +662,9 @@ def get_qa_reports(
             arm_chips,
             display_compare,
             community_release,
+            community_menu_level1,
+            community_doc_url,
+            community_description,
             community_python,
             community_framework,
             arm_kylin_sanity,

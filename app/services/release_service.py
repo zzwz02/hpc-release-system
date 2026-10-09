@@ -150,6 +150,9 @@ def import_initial_rows(
         snapshot["maca_version"] = (first.get("maca_version") or "").strip()
         snapshot["community"] = {
             "release_status": import_csv.csv_value(first, "开发者社区发布情况"),
+            "menu_level1": import_csv.csv_value(first, "开发者社区一级菜单"),
+            "doc_url": import_csv.csv_value(first, "开发者社区说明文档链接"),
+            "description": import_csv.csv_value(first, "开发者社区描述"),
             "python_version": import_csv.csv_value(first, "开发者社区发布包支持python版本"),
             "framework_version": import_csv.csv_value(first, "开发者社区发布包支持的底层框架及版本"),
         }

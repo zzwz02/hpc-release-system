@@ -2329,6 +2329,9 @@ def preview_cicd_app_info(
         "pytorch_label": ",".join(parsed.get("pytorch_labels", [])),
         "os": ",".join(parsed.get("build_os", [])),
         "arch": ",".join(parsed.get("build_arches", [])),
+        "community_release_status": parsed.get("community_artifacts", {}).get("release_status", ""),
+        "community_image_count": parsed.get("community_artifacts", {}).get("image_count", 0),
+        "community_pkg_count": parsed.get("community_artifacts", {}).get("pkg_count", 0),
         "commit_id": commit_id,
         "parsed": parsed,  # full blob — pass to cicd_first_new_app as app_info_parsed
     }
@@ -2510,6 +2513,10 @@ def _apply_parsed_app_info_to_snapshot(
     snapshot["pytorch_labels"] = ",".join(parsed.get("pytorch_labels", []))
     snapshot["build_os"] = ",".join(parsed.get("build_os", []))
     snapshot["build_arches"] = ",".join(parsed.get("build_arches", []))
+    snapshot["community"] = app_info_domain.community_fields_from_app_info(
+        parsed,
+        snapshot.get("community") or {},
+    )
     snapshot["owner_confirmed"] = True  # submitter confirmed by providing app_info
 
 
@@ -2721,7 +2728,12 @@ def cicd_first_new_app(
                     snap["type"] = payload["app_type"].strip()
                     snapshots_repo.save_snapshot(conn, rel["id"], app_id, snap)
 
-        cicd_config = _cicd_first_config_values(payload, repo_type)
+        config_payload = dict(payload)
+        if app_info_parsed:
+            derived_community = app_info_domain.community_artifacts_app_value(app_info_parsed)
+            config_payload["cicd_community_artifact"] = derived_community
+            config_payload["community_artifact"] = derived_community
+        cicd_config = _cicd_first_config_values(config_payload, repo_type)
         apps_repo.update_cicd_config(
             conn,
             app_id,

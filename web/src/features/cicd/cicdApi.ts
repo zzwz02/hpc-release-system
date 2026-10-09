@@ -207,6 +207,9 @@ export interface FetchPreviewResponse {
   pytorch_label?: string;
   os?: string;
   arch?: string;
+  community_release_status?: string;
+  community_image_count?: number;
+  community_pkg_count?: number;
   commit_id?: string;
   /** Full parsed blob — pass as app_info_parsed to POST /api/cicd/apps/new. */
   parsed?: Record<string, unknown>;

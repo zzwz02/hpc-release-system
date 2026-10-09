@@ -46,7 +46,7 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
             continue
         arch = str(cfg.get("arch") or env)
         chips = cfg.get("supported_chip") if isinstance(cfg.get("supported_chip"), list) else []
-        enabled = cfg.get("enabled") is not False
+        enabled = is_enabled_value(cfg.get("enabled"))
         if enabled:
             target = arm_chips if re.search(r"arm|aarch64", arch, re.I) else x86_chips
             target.update(str(chip).upper() for chip in chips)
@@ -68,7 +68,7 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
     def visitor(node: dict[str, Any], path: list[str]) -> None:
         if "test_cmd" not in node:
             return
-        if node.get("enabled") is False:
+        if not is_enabled_value(node.get("enabled")):
             return
         if str(node.get("test_period", "")).strip().lower() == "weekly":
             return
@@ -121,8 +121,99 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
         "build_targets": build_targets,
         "test_targets": test_targets,
         "tests": tests,
+        "community_artifacts": derive_community_artifacts(data),
         "raw": data,
     }
+
+
+def is_enabled_value(value: Any) -> bool:
+    """Treat only explicit false-like values as disabled.
+
+    app_info historically means missing ``enabled`` is enabled.  Boolean false
+    is authoritative; the string form is accepted for legacy hand-written files.
+    """
+    if value is False:
+        return False
+    return str(value).strip().lower() != "false"
+
+
+def _contains_ai4s(value: Any) -> bool:
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    return any(str(item or "").strip().lower() == "ai4s" for item in values)
+
+
+def derive_community_artifacts(raw: dict[str, Any] | None) -> dict[str, Any]:
+    """Derive developer-community artifacts from enabled app_build aliases."""
+    image_aliases: list[str] = []
+    pkg_aliases: list[str] = []
+    app_build = (raw or {}).get("app_build") or {}
+    build_items = app_build.items() if isinstance(app_build, dict) else []
+    for alias, cfg in build_items:
+        if not isinstance(cfg, dict) or not is_enabled_value(cfg.get("enabled")):
+            continue
+        pub = cfg.get("pub") or {}
+        if not isinstance(pub, dict):
+            continue
+        alias_text = str(alias)
+        if _contains_ai4s(pub.get("img")) and alias_text not in image_aliases:
+            image_aliases.append(alias_text)
+        if _contains_ai4s(pub.get("pkg")) and alias_text not in pkg_aliases:
+            pkg_aliases.append(alias_text)
+
+    image_count = len(image_aliases)
+    pkg_count = len(pkg_aliases)
+    parts: list[str] = []
+    if image_count:
+        parts.append(f"镜像：{image_count}")
+    if pkg_count:
+        parts.append(f"二进制包：{pkg_count}")
+    artifact_types: list[str] = []
+    if image_count:
+        artifact_types.append("image")
+    if pkg_count:
+        artifact_types.append("pkg")
+    return {
+        "release_status": "，".join(parts),
+        "image_count": image_count,
+        "pkg_count": pkg_count,
+        "image_aliases": image_aliases,
+        "pkg_aliases": pkg_aliases,
+        "artifact_types": artifact_types,
+    }
+
+
+def community_fields_from_app_info(
+    parsed_or_raw: dict[str, Any],
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build snapshot.community fields from app_info, preserving user notes."""
+    raw = parsed_or_raw.get("raw") if isinstance(parsed_or_raw, dict) else {}
+    if not isinstance(raw, dict):
+        raw = parsed_or_raw if isinstance(parsed_or_raw, dict) else {}
+    derived = derive_community_artifacts(raw)
+    has_artifacts = derived["image_count"] > 0 or derived["pkg_count"] > 0
+    keep_pkg_notes = derived["pkg_count"] > 0
+    existing = existing or {}
+    return {
+        "release_status": derived["release_status"],
+        "menu_level1": str(existing.get("menu_level1") or "") if has_artifacts else "",
+        "doc_url": str(existing.get("doc_url") or "") if has_artifacts else "",
+        "description": str(existing.get("description") or "") if has_artifacts else "",
+        "python_version": str(existing.get("python_version") or "") if keep_pkg_notes else "",
+        "framework_version": str(existing.get("framework_version") or "") if keep_pkg_notes else "",
+        "image_count": derived["image_count"],
+        "pkg_count": derived["pkg_count"],
+        "image_aliases": derived["image_aliases"],
+        "pkg_aliases": derived["pkg_aliases"],
+        "derived_from_app_info": True,
+    }
+
+
+def community_artifacts_app_value(parsed_or_raw: dict[str, Any]) -> str:
+    raw = parsed_or_raw.get("raw") if isinstance(parsed_or_raw, dict) else {}
+    if not isinstance(raw, dict):
+        raw = parsed_or_raw if isinstance(parsed_or_raw, dict) else {}
+    return ", ".join(derive_community_artifacts(raw)["artifact_types"])
 
 
 def diff_app_info(old: dict[str, Any] | None, new: dict[str, Any]) -> list[dict[str, Any]]:

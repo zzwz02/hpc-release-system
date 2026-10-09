@@ -558,7 +558,14 @@ describe("copiedScalarFields", () => {
       description: "desc",
       doc_target: "ai4sci",
       doc: { intro: "i", image_usage: "im", binary_usage: "bn", env_setup: "es", limitations: "lm" },
-      community: { release_status: "rs", python_version: "py", framework_version: "fw" },
+      community: {
+        release_status: "rs",
+        menu_level1: "m1",
+        doc_url: "https://docs.example.com/app",
+        description: "community desc",
+        python_version: "py",
+        framework_version: "fw",
+      },
       sanity: { arm_kylin: true, ubuntu: true },
     });
     const out = copiedScalarFields(src);
@@ -573,6 +580,9 @@ describe("copiedScalarFields", () => {
       env_setup: "es",
       limitations: "lm",
       community_release: "rs",
+      community_menu_level1: "m1",
+      community_doc_url: "https://docs.example.com/app",
+      community_description: "community desc",
       community_python: "py",
       community_framework: "fw",
       sanity_arm: true,

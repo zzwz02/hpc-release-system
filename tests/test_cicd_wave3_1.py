@@ -878,7 +878,7 @@ class TestCicdFirstWithAppInfo:
         assert body["request"]["task_id"] == body["app_id"]
         assert body["request"]["app_id"] == body["app_id"]
         request_payload = _json.loads(body["request"]["payload"])
-        assert request_payload["community_artifact"] == ["image", "pkg"]
+        assert request_payload["community_artifact"] == []
         assert request_payload["build_image"] == "pyg"
         assert request_payload["test_timeout"] == 55
         assert request_payload["notes"] == "依赖 pyg"

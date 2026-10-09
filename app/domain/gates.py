@@ -37,8 +37,21 @@ def missing_item_kind(item: Any) -> str:
     return "qa" if str(item).startswith("QA ") else "doc"
 
 
-def community_fields_required(app: dict[str, Any]) -> bool:
+def _community_count(community: dict[str, Any], key: str) -> int:
+    try:
+        return int(community.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def community_fields_required(
+    app: dict[str, Any],
+    snapshot: dict[str, Any] | None = None,
+) -> bool:
     """Community metadata is required for selected image/package artifacts."""
+    community = (snapshot or {}).get("community") or {}
+    if community.get("derived_from_app_info"):
+        return _community_count(community, "image_count") > 0 or _community_count(community, "pkg_count") > 0
     return bool(normalize_community_artifacts(app.get("cicd_community_artifact")))
 
 
@@ -64,13 +77,25 @@ def missing_items_for(app: dict[str, Any], snapshot: dict[str, Any]) -> list[dic
         add_doc("缺少类型（HPC/AI4Sci）")
     if not (snapshot.get("type") or "").strip():
         add_doc("缺少 App类型")
-    if community_fields_required(app):
+    if community_fields_required(app, snapshot):
         community = snapshot.get("community") or {}
-        required = {
-            "release_status": "开发者社区发布情况",
-            "python_version": "社区包支持 Python 版本",
-            "framework_version": "社区包支持框架及版本",
-        }
+        if community.get("derived_from_app_info"):
+            required = {
+                "menu_level1": "社区一级菜单",
+                "doc_url": "社区说明文档链接",
+                "description": "社区描述",
+            }
+            if _community_count(community, "pkg_count") > 0:
+                required.update({
+                    "python_version": "社区包支持 Python 版本",
+                    "framework_version": "社区包支持框架及版本",
+                })
+        else:
+            required = {
+                "release_status": "开发者社区发布情况",
+                "python_version": "社区包支持 Python 版本",
+                "framework_version": "社区包支持框架及版本",
+            }
         for key, label in required.items():
             if not (community.get(key) or "").strip():
                 add_doc(f"缺少{label}")

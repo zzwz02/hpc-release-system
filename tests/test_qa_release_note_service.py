@@ -5,7 +5,7 @@ import pytest
 from app.config import settings
 from app.domain import qa
 from app.domain.snapshots import normalize_doc_target
-from app.services import artifact_service, qa_service, release_service
+from app.services import app_service, artifact_service, qa_service, release_service
 from release_system import core
 from tests.conftest import seed_app, seed_snapshot
 
@@ -73,6 +73,9 @@ def test_qa_report_blanks_legacy_community_fields_without_cicd_artifact(release_
     row = dict(zip(report["columns"], report["rows"][0]))
 
     assert row["开发者社区发布情况"] == ""
+    assert row["开发者社区一级菜单"] == ""
+    assert row["开发者社区说明文档链接"] == ""
+    assert row["开发者社区描述"] == ""
     assert row["开发者社区发布包支持python版本"] == ""
     assert row["开发者社区发布包支持的底层框架及版本"] == ""
 
@@ -111,6 +114,9 @@ def test_qa_report_keeps_community_fields_when_cicd_artifact_is_selected(release
     def _community(snapshot: dict) -> None:
         snapshot["community"] = {
             "release_status": "已发布",
+            "menu_level1": "AI4Sci 应用",
+            "doc_url": "https://docs.example.com/app",
+            "description": "社区说明",
             "python_version": "Python 3.10",
             "framework_version": "PyTorch 2.1",
         }
@@ -121,8 +127,62 @@ def test_qa_report_keeps_community_fields_when_cicd_artifact_is_selected(release
     row = dict(zip(report["columns"], report["rows"][0]))
 
     assert row["开发者社区发布情况"] == "已发布"
+    assert row["开发者社区一级菜单"] == "AI4Sci 应用"
+    assert row["开发者社区说明文档链接"] == "https://docs.example.com/app"
+    assert row["开发者社区描述"] == "社区说明"
     assert row["开发者社区发布包支持python版本"] == "Python 3.10"
     assert row["开发者社区发布包支持的底层框架及版本"] == "PyTorch 2.1"
+
+
+def test_qa_report_uses_app_info_derived_community_summary(release_with_app):
+    conn, release_id, app_id = release_with_app
+    app_service.apply_app_info(
+        conn,
+        release_id=release_id,
+        app_id=app_id,
+        app_info={
+            "app_version": "1.0",
+            "app_name": "testapp",
+            "app_build": {
+                "ubuntu22.04_amd64": {
+                    "arch": "amd64",
+                    "supported_chip": ["c500"],
+                    "pub": {"img": ["ai4s"], "pkg": ["ai4s"]},
+                },
+                "kylin_arm64": {
+                    "arch": "arm64",
+                    "supported_chip": ["x201"],
+                    "pub": {"img": ["AI4S"]},
+                },
+            },
+            "app_test": {
+                "sanity": {
+                    "test_cmd": "testapp --version",
+                    "supported_chip": {"c500": ["ubuntu22.04_amd64"]},
+                }
+            },
+        },
+        uploaded_by="owner_test",
+        role="Owner",
+    )
+    core.update_snapshot(
+        conn,
+        release_id,
+        app_id,
+        lambda snapshot: snapshot["community"].update({
+            "menu_level1": "AI4Sci 应用",
+            "doc_url": "https://docs.example.com/testapp",
+            "description": "面向社区的发布说明",
+        }),
+    )
+
+    report = qa_service.get_qa_reports(conn, release_id)["release_report"]
+    row = dict(zip(report["columns"], report["rows"][0]))
+
+    assert row["开发者社区发布情况"] == "镜像：2，二进制包：1"
+    assert row["开发者社区一级菜单"] == "AI4Sci 应用"
+    assert row["开发者社区说明文档链接"] == "https://docs.example.com/testapp"
+    assert row["开发者社区描述"] == "面向社区的发布说明"
 
 
 def test_qa_report_hides_non_release_apps_without_compare(release_with_app):
@@ -174,6 +234,9 @@ def test_qa_report_keeps_changed_non_release_app_but_blanks_release_fields(relea
         "X86支持芯片系列",
         "ARM支持芯片类型",
         "开发者社区发布情况",
+        "开发者社区一级菜单",
+        "开发者社区说明文档链接",
+        "开发者社区描述",
         "开发者社区发布包支持python版本",
         "开发者社区发布包支持的底层框架及版本",
         "ARM / Kylin sanity",

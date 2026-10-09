@@ -108,8 +108,16 @@ export interface SnapshotDoc {
 
 export interface SnapshotCommunity {
   release_status: string;
+  menu_level1?: string;
+  doc_url?: string;
+  description?: string;
   python_version: string;
   framework_version: string;
+  image_count?: number;
+  pkg_count?: number;
+  image_aliases?: string[];
+  pkg_aliases?: string[];
+  derived_from_app_info?: boolean;
 }
 
 export interface SnapshotSanity {

@@ -35,7 +35,6 @@ import { useUiStore } from "../../store/uiStore";
 import { isOwner, canCreateApp, canEdit, canEditRmFields, canUpdateAppInfo } from "../../lib/roles";
 import { beforeAppFreeze, beforeDocDeadline, releaseLocked } from "../../lib/phase";
 import {
-  CICD_COMMUNITY_ARTIFACT_OPTIONS,
   CICD_REPO_TYPE_DEFAULT,
   CICD_REPO_TYPE_OPTIONS,
   CICD_TEST_TIMEOUT_DEFAULT,
@@ -44,7 +43,6 @@ import {
   docTargetMetadata,
   cicdPayloadConfigLabels,
   crossesReleaseDecisionRuntimeBoundary,
-  normalizeCicdCommunityArtifacts,
   normalizeCicdTestTimeout,
   normalizeDocTarget,
   appTypeOptionsForTarget,
@@ -261,20 +259,13 @@ function BuildImageLabel() {
   );
 }
 
-function communityArtifactList(value: string): string[] {
-  return normalizeCicdCommunityArtifacts(value);
-}
-
-function toggleCommunityArtifact(value: string, item: string): string {
-  const current = communityArtifactList(value);
-  const next = current.includes(item)
-    ? current.filter((v) => v !== item)
-    : [...current, item];
-  return next.join(", ");
-}
-
 function normalizeTimeoutText(value: string | number | null | undefined): string {
   return String(normalizeCicdTestTimeout(value));
+}
+
+function numberValue(value: unknown): number {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n : 0;
 }
 
 function crossesDecisionRuntimeBoundary(oldDecision: string, newDecision: string): boolean {
@@ -331,10 +322,6 @@ function cicdOnboardingClass(app: App): string {
 
 function sameScalarValue(a: unknown, b: unknown): boolean {
   return String(a ?? "").trim() === String(b ?? "").trim();
-}
-
-function sameListValue(a: string[], b: string[]): boolean {
-  return a.join(",") === b.join(",");
 }
 
 function cicdValueText(value: unknown, field?: string): string {
@@ -822,7 +809,6 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
   } | null>(null);
 
   const [cicdFirstDecision, setCicdFirstDecision] = useState<"release" | "cicd_only">("cicd_only");
-  const [newCicdCommunityArtifact, setNewCicdCommunityArtifact] = useState("");
   const [newCicdBuildImage, setNewCicdBuildImage] = useState("");
   const [newCicdTimeout, setNewCicdTimeout] = useState(String(CICD_TEST_TIMEOUT_DEFAULT));
   const [newCicdNotes, setNewCicdNotes] = useState("");
@@ -963,7 +949,6 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
         repo_name: submittedRepoName,
         branch: effectiveBranch,
         cicd_repo_type: repoType,
-        cicd_community_artifact: newCicdCommunityArtifact,
         cicd_build_image: newCicdBuildImage,
         cicd_test_timeout: newCicdTimeout,
         cicd_notes: newCicdNotes,
@@ -997,7 +982,6 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
         repo_name: submittedRepoName,
         branch: effectiveBranch,
         cicd_repo_type: repoType,
-        cicd_community_artifact: newCicdCommunityArtifact,
         cicd_build_image: newCicdBuildImage,
         cicd_test_timeout: newCicdTimeout,
         cicd_notes: newCicdNotes,
@@ -1050,6 +1034,9 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
                 <label>PyTorch label<input className="input" value={preview.pytorch_label || "—"} disabled /></label>
                 <label>OS<input className="input" value={preview.os || "—"} disabled /></label>
                 <label>架构<input className="input" value={preview.arch || "—"} disabled /></label>
+                {preview.community_release_status && (
+                  <label>开发者社区发布情况<input className="input" value={preview.community_release_status} disabled /></label>
+                )}
               </>)}
             </div>
             <NewAppDecisionPlan
@@ -1201,22 +1188,6 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
                 onChange={(e) => setBranch(e.target.value)} placeholder={`例：${GERRIT_MANIFEST_BRANCH}`} />
             </label>
             <div className="new-app-community-decision-grid">
-              <div>
-                <div className="field-label">开发者社区产物</div>
-                <div className="row gap-12 wrap">
-                  {CICD_COMMUNITY_ARTIFACT_OPTIONS.map(({ value, label }) => (
-                    <label key={value} className="check">
-                      <input
-                        type="checkbox"
-                        checked={communityArtifactList(newCicdCommunityArtifact).includes(value)}
-                        onChange={() => setNewCicdCommunityArtifact(toggleCommunityArtifact(newCicdCommunityArtifact, value))}
-                        disabled={isFetching}
-                      />{" "}
-                      {label}
-                    </label>
-                  ))}
-                </div>
-              </div>
               <label>Release 决策
                 <select
                   className="select"
@@ -1404,22 +1375,14 @@ function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit,
                 disabled={disabled}
                 data-testid="field-cicd-git-branch" />
             </label>
-            <div>
-              <div className="field-label">开发者社区产物</div>
-              <div className="row gap-12 wrap" data-testid="field-cicd-community-artifact">
-                {CICD_COMMUNITY_ARTIFACT_OPTIONS.map(({ value, label }) => (
-                  <label key={value} className="check">
-                    <input
-                      type="checkbox"
-                      checked={communityArtifactList(form.cicd_community_artifact).includes(value)}
-                      onChange={() => onPatch("cicd_community_artifact", toggleCommunityArtifact(form.cicd_community_artifact, value))}
-                      disabled={disabled}
-                    />{" "}
-                    {label}
-                  </label>
-                ))}
+            {form.community_release && (
+              <div>
+                <div className="field-label">开发者社区产物</div>
+                <div className="readfield" data-testid="field-cicd-community-artifact">
+                  {form.community_release}
+                </div>
               </div>
-            </div>
+            )}
             <label><BuildImageLabel />
               <input className="input" value={form.cicd_build_image}
                 onChange={(e) => onPatch("cicd_build_image", e.target.value)}
@@ -1488,7 +1451,6 @@ interface FormState {
   git_url: string;
   git_branch: string;
   cicd_repo_type: string;
-  cicd_community_artifact: string;
   cicd_build_image: string;
   cicd_test_timeout: string;
   cicd_notes: string;
@@ -1498,6 +1460,9 @@ interface FormState {
   env_setup: string;
   limitations: string;
   community_release: string;
+  community_menu_level1: string;
+  community_doc_url: string;
+  community_description: string;
   community_python: string;
   community_framework: string;
   sanity_arm: boolean;
@@ -1644,7 +1609,6 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       ),
       git_branch: a.git_branch ?? "",
       cicd_repo_type: a.cicd_repo_type || CICD_REPO_TYPE_DEFAULT,
-      cicd_community_artifact: a.cicd_community_artifact ?? "",
       cicd_build_image: a.cicd_build_image ?? "",
       cicd_test_timeout: normalizeTimeoutText(a.cicd_test_timeout),
       cicd_notes: a.cicd_notes ?? "",
@@ -1656,6 +1620,9 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       limitations: s.doc?.limitations ?? "",
       // community
       community_release: s.community?.release_status ?? "",
+      community_menu_level1: s.community?.menu_level1 ?? "",
+      community_doc_url: s.community?.doc_url ?? "",
+      community_description: s.community?.description ?? "",
       community_python: s.community?.python_version ?? "",
       community_framework: s.community?.framework_version ?? "",
       // sanity
@@ -1671,9 +1638,10 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       official_name: "", type: "", official_url: "", description: "",
       doc_target: DOC_TARGET_DEFAULT, owners: "", release_decision: "release",
       git_url: "", git_branch: "",
-      cicd_repo_type: CICD_REPO_TYPE_DEFAULT, cicd_community_artifact: "", cicd_build_image: "", cicd_test_timeout: String(CICD_TEST_TIMEOUT_DEFAULT), cicd_notes: "",
+      cicd_repo_type: CICD_REPO_TYPE_DEFAULT, cicd_build_image: "", cicd_test_timeout: String(CICD_TEST_TIMEOUT_DEFAULT), cicd_notes: "",
       intro: "", image_usage: "", binary_usage: "", env_setup: "", limitations: "",
-      community_release: "", community_python: "", community_framework: "",
+      community_release: "", community_menu_level1: "", community_doc_url: "", community_description: "",
+      community_python: "", community_framework: "",
       sanity_arm: false, sanity_ubuntu: false,
       test_docs: [],
     };
@@ -1706,6 +1674,9 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     if (!docDeadline) {
       return { release_decision: form.release_decision };
     }
+    const imageCount = numberValue(snap?.community?.image_count);
+    const pkgCount = numberValue(snap?.community?.pkg_count);
+    const hasCommunityArtifacts = imageCount > 0 || pkgCount > 0;
     const snapshotUpdate: Record<string, unknown> = {
       release_decision: form.release_decision,
       official_name: form.official_name,
@@ -1722,9 +1693,12 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
         limitations: form.limitations,
       },
       community: {
-        release_status: form.cicd_community_artifact.trim() ? form.community_release : "",
-        python_version: form.cicd_community_artifact.trim() ? form.community_python : "",
-        framework_version: form.cicd_community_artifact.trim() ? form.community_framework : "",
+        release_status: form.community_release,
+        menu_level1: hasCommunityArtifacts ? form.community_menu_level1 : "",
+        doc_url: hasCommunityArtifacts ? form.community_doc_url : "",
+        description: hasCommunityArtifacts ? form.community_description : "",
+        python_version: pkgCount > 0 ? form.community_python : "",
+        framework_version: pkgCount > 0 ? form.community_framework : "",
       },
       sanity: {
         arm_kylin: form.sanity_arm,
@@ -1810,11 +1784,6 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     }
     if (!sameScalarValue(app.git_branch, form.git_branch)) {
       diff.branch = { old: app.git_branch || "", new: form.git_branch.trim() };
-    }
-    const originalCommunity = communityArtifactList(app.cicd_community_artifact || "");
-    const nextCommunity = communityArtifactList(form.cicd_community_artifact);
-    if (!sameListValue(originalCommunity, nextCommunity)) {
-      diff.community_artifact = { old: originalCommunity, new: nextCommunity };
     }
     if (!sameScalarValue(app.cicd_build_image || "", form.cicd_build_image)) {
       diff.build_image = { old: app.cicd_build_image || "", new: form.cicd_build_image.trim() };
@@ -1914,7 +1883,6 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
           git_url: form.git_url,
           git_branch: form.git_branch,
           cicd_repo_type: form.cicd_repo_type,
-          cicd_community_artifact: form.cicd_community_artifact,
           cicd_build_image: form.cicd_build_image,
           cicd_test_timeout: form.cicd_test_timeout,
           cicd_notes: form.cicd_notes,
@@ -2076,7 +2044,10 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
   const rel = isReleaseSnap(snap);
   const todo = docsItems(snap);
   const descCount = appDescriptionCount(form.description);
-  const communityRequired = normalizeCicdCommunityArtifacts(form.cicd_community_artifact).length > 0;
+  const communityImageCount = numberValue(snap?.community?.image_count);
+  const communityPkgCount = numberValue(snap?.community?.pkg_count);
+  const communityHasArtifacts = communityImageCount > 0 || communityPkgCount > 0;
+  const communityPkgRequired = communityPkgCount > 0;
   const appOpenCicd = app
     ? (appCicdOpenRequests ?? []).filter((req) => requestMatchesApp(req, app))
     : [];
@@ -2444,31 +2415,42 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
         <details className="section" open>
           <summary><span className="chev">▶</span> 社区发布与 Sanity</summary>
           <div className="section-body">
-            {!communityRequired && (
-              <div className="banner mt-0">
-                CICD 中没有选择开发者社区产物，社区发布情况、Python 版本和框架版本暂不可填写。
+            {communityHasArtifacts && (
+              <div className="form community-doc-form">
+                <label>开发者社区发布情况
+                  <input className="input" aria-label="开发者社区发布情况" value={form.community_release} disabled />
+                </label>
+                <label>一级菜单
+                  <input className="input" aria-label="社区一级菜单" value={form.community_menu_level1}
+                    onChange={(e) => patch("community_menu_level1", e.target.value)}
+                    disabled={!canEditDocFields} />
+                </label>
+                {communityPkgRequired && (
+                  <>
+                    <label>社区包支持 Python 版本
+                      <input className="input" aria-label="社区包支持 Python 版本" value={form.community_python}
+                        onChange={(e) => patch("community_python", e.target.value)}
+                        disabled={!canEditDocFields} />
+                    </label>
+                    <label>社区包支持框架及版本
+                      <input className="input" aria-label="社区包支持框架及版本" value={form.community_framework}
+                        onChange={(e) => patch("community_framework", e.target.value)}
+                        disabled={!canEditDocFields} />
+                    </label>
+                  </>
+                )}
+                <label className="grid-span-all">说明文档链接
+                  <input className="input" aria-label="社区说明文档链接" value={form.community_doc_url}
+                    onChange={(e) => patch("community_doc_url", e.target.value)}
+                    disabled={!canEditDocFields} />
+                </label>
+                <label className="grid-span-all community-description-field">描述
+                  <textarea aria-label="社区描述" value={form.community_description}
+                    onChange={(e) => patch("community_description", e.target.value)}
+                    disabled={!canEditDocFields} />
+                </label>
               </div>
             )}
-            <div className="form">
-              <label>开发者社区发布情况
-                <input className="input" aria-label="开发者社区发布情况" value={form.community_release}
-                  onChange={(e) => patch("community_release", e.target.value)}
-                  disabled={!canEditDocFields || !communityRequired} />
-                {!communityRequired && <span className="field-help">不可填写：CICD 中没有选择开发者社区产物。</span>}
-              </label>
-              <label>社区包支持 Python 版本
-                <input className="input" aria-label="社区包支持 Python 版本" value={form.community_python}
-                  onChange={(e) => patch("community_python", e.target.value)}
-                  disabled={!canEditDocFields || !communityRequired} />
-                {!communityRequired && <span className="field-help">不可填写：CICD 中没有选择开发者社区产物。</span>}
-              </label>
-              <label>社区包支持框架及版本
-                <input className="input" aria-label="社区包支持框架及版本" value={form.community_framework}
-                  onChange={(e) => patch("community_framework", e.target.value)}
-                  disabled={!canEditDocFields || !communityRequired} />
-                {!communityRequired && <span className="field-help">不可填写：CICD 中没有选择开发者社区产物。</span>}
-              </label>
-            </div>
             {!userIsOwner && (
               <div className="row mt-11 gap-24 wrap">
                 <label className="check">
