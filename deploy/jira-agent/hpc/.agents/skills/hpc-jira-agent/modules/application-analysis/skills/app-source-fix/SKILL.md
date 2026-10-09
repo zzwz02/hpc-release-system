@@ -50,6 +50,6 @@ description: 在已确认属于 HPC 应用源码、构建或测试内容，且�
 
 ## 边界
 
-- Gerrit 服务为 `gerrit.sh.metax-internal.com:29418`，账号和 SSH key 使用本次运行环境已有的授权配置；不把私钥或临时凭据写入 Skill、仓库、镜像或 Jira。
+- Gerrit 服务为 `gerrit.sh.metax-internal.com:29418`，读取 HPC 内部源码使用 `fu_pde-hpc_bot` 账号和本次运行环境已有的授权 SSH key；不把私钥或临时凭据写入 Skill、仓库、镜像或 Jira。
 - 不执行 `git commit`、`git push`，不创建 Gerrit change。候选修复只交付 patch，由代码 owner 审核和提交。
 - 没有源码修改授权时仅完成只读定位与修复建议；缺少匹配源码、镜像或验证条件时明确记录缺口，不用未验证修改替代结论。

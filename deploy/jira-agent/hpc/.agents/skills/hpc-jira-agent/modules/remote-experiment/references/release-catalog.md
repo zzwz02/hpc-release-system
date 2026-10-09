@@ -62,13 +62,13 @@
 
 ## Gerrit 仓库核验
 
-当发布记录的 `git_url` 指向 HPC 内部仓库时，默认 Gerrit 入口为 `gerrit.sh.metax-internal.com:29418`、用户为 `xshi`，使用运行环境已有的已授权 SSH key。该身份沿用本部署已授权配置，仅用于当前任务所需 `PDE/HPC/` 仓库的服务读取，不保存私钥或明文下载令牌；认证失败时报告凭据或权限缺口，不换用其他账号。
+当发布记录的 `git_url` 指向 HPC 内部仓库时，默认 Gerrit 入口为 `gerrit.sh.metax-internal.com:29418`、用户为 `fu_pde-hpc_bot`，使用运行环境已有的已授权 SSH key。该身份沿用本部署已授权配置，仅用于当前任务所需 `PDE/HPC/` 仓库的服务读取，不保存私钥或明文下载令牌；认证失败时报告凭据或权限缺口，不换用其他账号。
 
 `git_url` 若是完整地址则保留原值；若仅为 `hpc_*` 等相对仓库名，将 `PDE/HPC/<git_url>` 作为候选路径，并通过 Gerrit 项目列表和 `git ls-remote` 核验，不能仅凭名称直接认定：
 
 ```bash
-ssh -p 29418 xshi@gerrit.sh.metax-internal.com gerrit ls-projects -p PDE/HPC/
-git ls-remote ssh://xshi@gerrit.sh.metax-internal.com:29418/PDE/HPC/<repo>.git <ref>
+ssh -p 29418 fu_pde-hpc_bot@gerrit.sh.metax-internal.com gerrit ls-projects -p PDE/HPC/
+git ls-remote ssh://fu_pde-hpc_bot@gerrit.sh.metax-internal.com:29418/PDE/HPC/<repo>.git <ref>
 ```
 
 上述 SSH 用于 Gerrit 服务查询，Git 传输仅用于 ls-remote、clone/fetch；不登录通用 shell、不在服务主机执行构建/实验，也不把该服务主机写入结论的 `machine` 字段。
