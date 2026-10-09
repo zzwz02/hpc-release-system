@@ -74,15 +74,12 @@ import {
   qaDotClass,
   qaDotTitle,
   docsItems,
-  docsOk,
-  qaOk,
+  missingItemText,
   APP_STATUS_FILTER_OPTIONS,
   matchesAppStatusFilter,
   type AppStatusFilter,
-  ownerProgress,
   appInfoSource,
   orderChips,
-  missingItemText,
   usersLabel,
   APP_DESCRIPTION_LIMIT,
   appDescriptionCount,
@@ -564,13 +561,11 @@ function AppListPanel({
                   <div className="sub">
                     {snap.type || "—"} · {usersLabel(snap.owners, displayNames)}
                   </div>
-                  {/* D: blocking status at a glance — decision + doc + QA pills */}
+                  {/* Release decision, QA and CICD status */}
                   <div className="app-status">
                     <DecisionPill decision={snap.release_decision} />
-                    {rel && (
-                      docMissing > 0
-                        ? <span className="pill warnp" title="文档信息待补充">文档待补 {docMissing}</span>
-                        : <span className="pill ok" title="文档信息齐全">文档 OK</span>
+                    {rel && docMissing > 0 && (
+                      <span className="pill warnp" title="文档信息待补充">文档待补 {docMissing}</span>
                     )}
                     {rel && <QaPill status={snap.qa_status} />}
                     {app.cicd_onboarding_status && (
@@ -772,6 +767,7 @@ function duplicateAppIdFromError(message: string): string {
 
 interface NewAppDialogProps {
   apps: App[];
+  appTypes: string[];
   release: ReleaseDetail | null;
   initialValues?: NewAppInitialValues | null;
   currentReleaseId: string;
@@ -794,7 +790,7 @@ interface RetryCreateInfo {
   reviewNote: string;
 }
 
-function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentUsername, onClose, onCreated }: NewAppDialogProps) {
+function NewAppDialog({ apps, appTypes, release, initialValues, currentReleaseId, currentUsername, onClose, onCreated }: NewAppDialogProps) {
   // ── Wizard state (CICD-first, step 1 → fetch → step 2 confirm) ──────────
   const [officialName, setOfficialName] = useState(initialValues?.officialName ?? "");
   const [repoType, setRepoType] = useState(initialValues?.repoType ?? CICD_REPO_TYPE_DEFAULT);
@@ -802,7 +798,11 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
   const [branch, setBranch] = useState(initialValues?.branch ?? "");
 
   const [docTarget, setDocTarget] = useState("");
-  const [appType, setAppType] = useState("");
+  const [appTypeChoice, setAppTypeChoice] = useState("");
+  const [customAppType, setCustomAppType] = useState("");
+  const appType = appTypeChoice === "other" ? customAppType.trim() : appTypeChoice.slice("existing:".length);
+  const existingAppTypes = [...new Set(appTypes.map((type) => type.trim()).filter((type) => type && type !== "其他"))]
+    .sort((a, b) => a.localeCompare(b, "zh-CN"));
 
   type WizardStep = "form" | "fetching" | "preview" | "fetch-error" | "creating";
   const [step, setStep] = useState<WizardStep>("form");
@@ -892,6 +892,7 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
   async function handleFetch() {
     if (!officialName.trim()) { setFetchErrMsg("请填写官方名称"); return; }
     if (!docTarget) { setFetchErrMsg("请选择类型（HPC/AI4Sci）"); return; }
+    if (!appTypeChoice) { setFetchErrMsg("请选择 APP 类型"); return; }
     if (!appType.trim()) { setFetchErrMsg("请填写 APP 类型"); return; }
     const submittedRepoName = repoName.trim();
     setRepoName(submittedRepoName);
@@ -1162,9 +1163,19 @@ function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentU
               </select>
             </label>
             <label>APP 类型 <span className="required">*</span>
-              <input className="input" value={appType} required disabled={isFetching}
-                onChange={(e) => setAppType(e.target.value)} data-testid="new-app-type" placeholder="请输入 APP 类型" />
+              <select className="select" value={appTypeChoice} required disabled={isFetching}
+                onChange={(e) => setAppTypeChoice(e.target.value)} data-testid="new-app-type">
+                <option value="">请选择 APP 类型</option>
+                {existingAppTypes.map((type) => <option key={type} value={`existing:${type}`}>{type}</option>)}
+                <option value="other">其他</option>
+              </select>
             </label>
+            {appTypeChoice === "other" && (
+              <label>自填 APP 类型 <span className="required">*</span>
+                <input className="input" value={customAppType} required disabled={isFetching}
+                  onChange={(e) => setCustomAppType(e.target.value)} data-testid="new-app-custom-type" placeholder="请输入 APP 类型" />
+              </label>
+            )}
             <label>仓库类型
               <select className="select" value={repoType} disabled={isFetching} onChange={(e) => {
                 const v = e.target.value;
@@ -1545,7 +1556,6 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     preview: DecisionSyncPreview;
     newDecision: string;
     forced: boolean;
-    confirmOwner: boolean;
     snapshotUpdate: Record<string, unknown>;
   } | null>(null);
   // F2: copy-from-version picker (null = closed)
@@ -1694,7 +1704,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     }
   }
 
-  function buildSnapshotUpdate(confirmOwner: boolean): Record<string, unknown> {
+  function buildSnapshotUpdate(): Record<string, unknown> {
     if (!docDeadline) {
       return { release_decision: form.release_decision };
     }
@@ -1724,11 +1734,10 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       },
       test_docs: form.test_docs,
     };
-    if (confirmOwner) snapshotUpdate["owner_confirmed"] = true;
     return snapshotUpdate;
   }
 
-  async function handleSave(confirmOwner: boolean) {
+  async function handleSave() {
     if (!app || !snap || !release) return;
     if (detailTab === "cicd") {
       await submitAppCicdChange();
@@ -1743,11 +1752,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       setSaveErr(`描述不能超过${APP_DESCRIPTION_LIMIT}字（当前 ${descCount}/${APP_DESCRIPTION_LIMIT}）`);
       return;
     }
-    if (userIsOwner && !confirmOwner) {
-      toast.info("Owner 修改必须通过「保存并提交 Owner 确认」提交。");
-      return;
-    }
-    const snapshotUpdate = buildSnapshotUpdate(confirmOwner);
+    const snapshotUpdate = buildSnapshotUpdate();
     const newDecision = form.release_decision;
 
     // F1: optional sync only matters when there are later releases. Running/
@@ -1774,7 +1779,6 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
               preview,
               newDecision,
               forced: preview.forced ?? forcedSync,
-              confirmOwner,
               snapshotUpdate,
             });
             return; // wait for the user's choice
@@ -1785,7 +1789,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       }
     }
 
-    await doSave(confirmOwner, snapshotUpdate, false);
+    await doSave(snapshotUpdate, false);
   }
 
   function buildAppCicdDiff(): Record<string, { old: unknown; new: unknown }> {
@@ -1894,7 +1898,6 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
   }
 
   async function doSave(
-    confirmOwner: boolean,
     snapshotUpdate: Record<string, unknown>,
     syncDecision: boolean,
   ) {
@@ -1902,7 +1905,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     setSaving(true);
     setSaveErr("");
     try {
-      const result = await apiPost<{ snapshot?: Snapshot; missing_items?: unknown[] }>("/api/apps/update", {
+      await apiPost("/api/apps/update", {
         release_id: release.id,
         app_id: app.id,
         app: {
@@ -1924,17 +1927,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
       void queryClient.invalidateQueries({ queryKey: ["cicd", "requests"] });
       onSaved();
 
-      if (confirmOwner) {
-        const missing = result.snapshot?.missing_items ?? result.missing_items ?? [];
-        const arr = Array.isArray(missing) ? missing : [];
-        let msg = "Owner 确认已提交。";
-        msg += arr.length
-          ? `仍有 ${arr.length} 个待办/门禁项：\n\n- ${(arr as (import("../../types").SnapshotMissingItem | string)[]).map(missingItemText).join("\n- ")}`
-          : "当前无待办/门禁项。";
-        toast.success(msg);
-      } else {
-        toast.success("保存成功");
-      }
+      toast.success("保存成功");
     } catch (e) {
       setSaveErr(e instanceof Error ? e.message : "保存失败");
     } finally {
@@ -2079,10 +2072,9 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
   }
 
   const rel = isReleaseSnap(snap);
-  const prog = ownerProgress(snap);
   const todo = docsItems(snap);
   const descCount = appDescriptionCount(form.description);
-  const communityRequired = form.cicd_community_artifact.trim().length > 0;
+  const communityRequired = normalizeCicdCommunityArtifacts(form.cicd_community_artifact).length > 0;
   const appOpenCicd = app
     ? (appCicdOpenRequests ?? []).filter((req) => requestMatchesApp(req, app))
     : [];
@@ -2159,12 +2151,12 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
             )}
             {snap.version && <span className="pill">版本 {snap.version}</span>}
             <span className="pill">{docTargetLabels[normalizeDocTarget(snap.doc_target)]}</span>
-            {rel && (todo.length ? <span className="pill warnp">待补 {todo.length} 项</span> : <span className="pill ok">信息齐全</span>)}
+            {rel && todo.length > 0 && <span className="pill warnp">待补 {todo.length} 项</span>}
             {rel && <QaPill status={snap.qa_status} />}
             <CicdPendingPill count={uniqueCicdRequestCount(appOpenCicd)} />
           </div>
         </div>
-        {userIsOwner && <div className="greet">你好 👋 完成清单后提交确认</div>}
+        {userIsOwner && <div className="greet">你好 👋 编辑信息后保存</div>}
       </div>
 
       {/* W3: Sub-tab navigation */}
@@ -2233,34 +2225,20 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
           </div>
         )}
 
-        {/* Todo checklist */}
         {rel && todo.length > 0 && (
-          <details className="section checklist compact" open>
+          <details className="section checklist compact" open data-testid="app-doc-missing-checklist">
             <summary>
-              <div className="checklist-h">
-                <h3>⚠️ 还需完成 {todo.length} 项</h3>
-                <span className="prog-label">填写完成度 {prog.pct}%</span>
-              </div>
-              <div className="bar"><span style={{ width: `${prog.pct}%` }} /></div>
+              <div className="checklist-h"><h3>⚠️ Doc 还需完成 {todo.length} 项</h3></div>
             </summary>
             <div className="checklist-items">
-              {todo.map((it, i) => (
+              {todo.map((item, i) => (
                 <div key={i} className="check-item">
                   <span className="box" />
-                  <span className="ct">{missingItemText(it)}</span>
+                  <span className="ct">{missingItemText(item)}</span>
                 </div>
               ))}
             </div>
           </details>
-        )}
-        {rel && todo.length === 0 && (
-          <div className="checklist done">
-            <div className="checklist-h">
-              <h3>✅ 发布信息已齐全</h3>
-              <span className="prog-label">填写完成度 {prog.pct}%</span>
-            </div>
-            <div className="bar"><span style={{ width: `${prog.pct}%` }} /></div>
-          </div>
         )}
         {!rel && (
           <div className="banner">本 app 本轮决策为 <b>{snap.release_decision}</b>，不进入文档生成与 QA，无需补充文档 / 测试说明。</div>
@@ -2502,11 +2480,6 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
         <details className="section" open>
           <summary>
             <span className="chev">▶</span> 文档字段（Markdown 格式）
-            {rel && (
-              (docsOk(snap) && qaOk(snap))
-                ? <span className="badge ok">可发布</span>
-                : <span className="badge warnp">未就绪</span>
-            )}
           </summary>
           <div className="section-body docfields-2col">
             {(["intro", "image_usage", "binary_usage", "env_setup", "limitations"] as const).map((key) => {
@@ -2591,33 +2564,16 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
         {canEditDetail && !canRetryCreate && !editMode && (
           <button className="btn primary" onClick={() => setEditMode(true)}>✎ 修改</button>
         )}
-        {canEditDetail && editMode && canEditRmOnlyFields && (
+        {canEditDetail && editMode && (canEditRmOnlyFields || userIsOwner) && (
           <>
             <button className="btn" onClick={() => { setEditMode(false); setDirty(false); setSaveErr(""); snap && app && setForm(snapshotToForm(snap, app)); }}>取消</button>
             <button
               className="btn primary"
-              onClick={() => void handleSave(false)}
+              onClick={() => void handleSave()}
               disabled={saving || !!activeSaveBlockedReason}
               title={activeSaveBlockedReason || undefined}
             >
               {detailTab === "cicd" ? "提交 CICD 变更申请" : "保存"}
-            </button>
-          </>
-        )}
-        {canEditDetail && editMode && userIsOwner && (
-          <>
-            <button className="btn" onClick={() => { setEditMode(false); setDirty(false); setSaveErr(""); snap && app && setForm(snapshotToForm(snap, app)); }}>取消</button>
-            <button
-              className="btn good"
-              onClick={() => void handleSave(true)}
-              disabled={saving || !!activeSaveBlockedReason}
-              title={detailTab === "cicd"
-                ? (activeSaveBlockedReason || "提交 CICD 变更申请，等待 RM 审批")
-                : activeSaveBlockedReason
-                ? activeSaveBlockedReason
-                : "保存当前内容，并确认本 app 的发布信息已补齐"}
-            >
-              {detailTab === "cicd" ? "提交 CICD 变更申请" : "✓ 保存并提交 Owner 确认"}
             </button>
           </>
         )}
@@ -2631,8 +2587,8 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
           forced={syncDialog.forced}
           saving={saving}
           onCancel={() => setSyncDialog(null)}
-          onLocalOnly={() => void doSave(syncDialog.confirmOwner, syncDialog.snapshotUpdate, false)}
-          onSyncAll={() => void doSave(syncDialog.confirmOwner, syncDialog.snapshotUpdate, true)}
+          onLocalOnly={() => void doSave(syncDialog.snapshotUpdate, false)}
+          onSyncAll={() => void doSave(syncDialog.snapshotUpdate, true)}
         />
       )}
 
@@ -3258,6 +3214,7 @@ export function AppWorkbenchPage() {
       {showNewApp && release && (
         <NewAppDialog
           apps={apps}
+          appTypes={data?.app_types ?? Object.values(release.snapshots).map((snap) => snap.type ?? "")}
           release={release}
           initialValues={newAppInitialValues}
           currentReleaseId={release.id}

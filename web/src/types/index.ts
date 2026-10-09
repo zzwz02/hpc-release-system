@@ -294,6 +294,7 @@ export interface AppAuditResponse {
 
 export interface StatePayload {
   apps: App[];
+  app_types?: string[];
   releases: ReleaseSummary[];
   release: ReleaseDetail | null;
   artifacts: ArtifactMeta[];

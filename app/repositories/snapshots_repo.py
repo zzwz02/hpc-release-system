@@ -65,6 +65,18 @@ def app_ids_in_release(conn: sqlite3.Connection, release_id: str) -> list[str]:
     ]
 
 
+def list_app_types(conn: sqlite3.Connection) -> list[str]:
+    """Return nonblank App types used across all release snapshots."""
+    rows = conn.execute(
+        """
+        SELECT DISTINCT json_extract(data_json, '$.type') AS app_type
+        FROM snapshots
+        WHERE json_type(data_json, '$.type') = 'text'
+        """
+    )
+    return sorted({row["app_type"].strip() for row in rows if row["app_type"].strip()})
+
+
 def list_snapshots_for_release(
     conn: sqlite3.Connection,
     release_id: str,

@@ -106,25 +106,11 @@ def _require_app_update_phase_permissions(
 
 
 def _community_required(app: dict) -> bool:
-    return bool((app.get("cicd_community_artifact") or "").strip())
+    return gates.community_fields_required(app)
 
 
 def _missing_items_for(app: dict, snapshot: dict) -> list[dict[str, str]]:
-    items = list(gates.missing_items_for(app, snapshot))
-    if normalize_release_decision(snapshot.get("release_decision")) != "release":
-        return items
-    if not _community_required(app):
-        return items
-    community = snapshot.get("community") or {}
-    required = {
-        "release_status": "社区发布情况",
-        "python_version": "社区包 Python 版本",
-        "framework_version": "社区包框架及版本",
-    }
-    for key, label in required.items():
-        if not (community.get(key) or "").strip():
-            items.append({"kind": "doc", "text": f"缺少{label}"})
-    return items
+    return gates.missing_items_for(app, snapshot)
 
 
 def _serialize_release(release: dict) -> dict:
@@ -315,6 +301,7 @@ def get_state(
     _cicd_svc.attach_cicd_release_pending_state(conn, apps, release_id)
     payload: dict = {
         "apps": apps,
+        "app_types": snapshots_repo.list_app_types(conn),
         "releases": [_serialize_release(r) for r in releases],
         "release": None,
         "artifacts": [],
@@ -547,9 +534,6 @@ def update_snapshot(
     app_owner_forbidden_keys = app_update_keys - app_owner_allowed_keys
 
     if has_capability(role, "app.edit.owned"):
-        owner_content_keys = set(snap_update) - {"release_decision", "owner_confirmed"}
-        if (app_update_keys or owner_content_keys) and snap_update.get("owner_confirmed") is not True:
-            raise AuthzError("Owner edits must be saved with Owner confirmation")
         if app_owner_forbidden_keys:
             raise AuthzError("Owner 只能修改 App CICD 配置和 Gerrit URL / Branch")
         if "owner_confirmed" in snap_update and snap_update["owner_confirmed"] is not True:

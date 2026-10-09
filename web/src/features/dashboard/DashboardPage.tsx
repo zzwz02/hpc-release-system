@@ -33,6 +33,7 @@ import { toast } from "../../lib/toast";
 import { confirmDialog } from "../../lib/confirm";
 import {
   APP_STATUS_FILTER_OPTIONS,
+  docsItems,
   matchesAppStatusFilter,
   type AppStatusFilter,
 } from "../appWorkbench/helpers";
@@ -70,16 +71,6 @@ function releaseSnap(
 
 function isReleaseSnap(snap: Snapshot | null | undefined): boolean {
   return snap?.release_decision === "release";
-}
-
-function docsItems(snap: Snapshot | null | undefined): unknown[] {
-  return (snap?.missing_items ?? []).filter((item) => {
-    const kind =
-      item && typeof item === "object" && "kind" in item
-        ? (item as { kind: string }).kind
-        : String(item || "").startsWith("QA ") ? "qa" : "doc";
-    return kind !== "qa";
-  });
 }
 
 function initials(name: string): string {
@@ -126,26 +117,6 @@ function compareAppRows(
   const db = releaseDecisionOrder[b.snap.release_decision] ?? 99;
   if (da !== db) return da - db;
   return displayName(a.snap).localeCompare(displayName(b.snap), "zh-CN");
-}
-
-function ownerProgress(snap: Snapshot): { done: number; total: number; pct: number } {
-  const doc = snap.doc ?? { intro: "", image_usage: "", binary_usage: "", env_setup: "", limitations: "" };
-  const t = (snap.test_docs ?? []).filter((d) => !(d as unknown as Record<string, unknown>)["obsolete"]);
-  const hasInfo = !!(snap.app_info && (snap.app_info as Record<string, unknown>)["source_type"]);
-  const checks = [
-    hasInfo,
-    !!(doc.intro ?? "").trim(),
-    !!(doc.image_usage ?? "").trim(),
-    !!(doc.binary_usage ?? "").trim(),
-    !!(doc.env_setup ?? "").trim(),
-    !!(doc.limitations ?? "").trim(),
-    hasInfo && t.length > 0 && t.every((d) => {
-      const td = d as unknown as Record<string, string>;
-      return (td["dataset"] ?? "").trim() && (td["content"] ?? "").trim() && (td["pass_criteria"] ?? "").trim();
-    }),
-  ];
-  const done = checks.filter(Boolean).length;
-  return { done, total: checks.length, pct: Math.round((done / checks.length) * 100) };
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +170,7 @@ function StatsRow({ payload, userIsOwner, username }: StatsRowProps) {
   const aiAll = byTarget(rows, "ai4sci");
   const hpcRel = byTarget(releaseRows, "manual");
   const aiRel = byTarget(releaseRows, "ai4sci");
-  const docIncomplete = releaseRows.filter((x) => docsItems(x.snap).length > 0).length;
+  const docIncomplete = releaseRows.filter((row) => docsItems(row.snap).length > 0).length;
 
   const qa = {
     not_checked: releaseRows.filter((x) => (x.snap.qa_status || QA_STATUS_DEFAULT) === "not_checked").length,
@@ -224,7 +195,6 @@ function StatsRow({ payload, userIsOwner, username }: StatsRowProps) {
         <div className="sub">HPC {hpcRel} · AI4S {aiRel}</div>
       </div>
 
-      {/* Doc incomplete count */}
       <div className={`stat ${docIncomplete ? "warn" : "ok"}`}>
         <div className="num">{docIncomplete}</div>
         <div className="lbl">Doc 未完成 App 数</div>
@@ -584,16 +554,14 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
                   {!userIsOwner && <th>Owner</th>}
                   <th>决策</th>
                   <th>QA</th>
-                  <th className="w-150">填写完成度</th>
-                  <th className="w-70">待办</th>
+                  <th>Doc</th>
                   <th className="w-40" aria-label="跳转" />
                 </tr>
               </thead>
               <tbody>
                 {gridRows.map(({ app, snap }) => {
                   const rel = isReleaseSnap(snap);
-                  const prog = ownerProgress(snap);
-                  const todoCount = docsItems(snap).length;
+                  const docMissing = docsItems(snap).length;
                   const ownersLabel = usersLabel(snap.owners, displayNames);
                   return (
                     <tr
@@ -613,22 +581,11 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
                       {!userIsOwner && <td className="muted">{ownersLabel}</td>}
                       <td><DecisionPill decision={snap.release_decision} /></td>
                       <td>{rel ? <QaPill status={snap.qa_status} /> : <span className="muted">—</span>}</td>
-                      <td>
-                        {rel ? (
-                          <span className="row2 gap-7 nowrap-flex">
-                            <span className="bar flex-1">
-                              <span style={{ width: `${prog.pct}%` }} />
-                            </span>
-                            <span className="prog-label">{prog.pct}%</span>
-                          </span>
-                        ) : <span className="muted">—</span>}
-                      </td>
-                      <td>
-                        {rel
-                          ? (todoCount > 0
-                              ? <span className="pill warnp">{todoCount}</span>
-                              : <span className="pill ok">齐全</span>)
-                          : <span className="muted">—</span>}
+                      <td>{rel
+                        ? docMissing > 0
+                          ? <span className="pill warnp">待补 {docMissing} 项</span>
+                          : <span className="pill ok">齐全</span>
+                        : <span className="muted">—</span>}
                       </td>
                       <td className="ov-jump ta-c">›</td>
                     </tr>

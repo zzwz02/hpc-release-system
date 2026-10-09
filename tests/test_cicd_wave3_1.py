@@ -815,8 +815,9 @@ class TestCicdFirstWithAppInfo:
 
     # --- HTTP contract: POST /api/cicd/apps/new with app_info_parsed ---
 
-    def test_http_create_with_app_info_parsed_gives_200(self, db_path, tmp_dir):
-        """POST /api/cicd/apps/new with app_info_parsed in body → 200."""
+    @pytest.mark.parametrize("with_app_info", [False, True])
+    def test_http_create_with_app_info_parsed_gives_200(self, db_path, tmp_dir, with_app_info):
+        """Both creation paths preserve the user classification in the canonical type."""
         import json as _json
         from fastapi.testclient import TestClient
         from app.db.connection import connect as app_connect
@@ -838,7 +839,7 @@ class TestCicdFirstWithAppInfo:
         # New wizard payload: official_name + repo + app_info_parsed + context fields
         new_wizard_payload = {
             "doc_target": "ai4sci",
-            "app_type": "科学计算",
+            "app_type": " 科学计算 ",
             "official_name": _OFFICIAL_NAME,
             "repo_type": "git",
             "repo_name": _REPO_SHORT,
@@ -848,12 +849,13 @@ class TestCicdFirstWithAppInfo:
             "cicd_build_image": "pyg",
             "cicd_test_timeout": "55",
             "cicd_notes": "依赖 pyg",
-            "app_info_parsed": preview["parsed"],
-            "app_info_commit_id": preview["commit_id"],
             # FE context fields used to bind the Owner decision to this cycle:
             "release_id": release_id,
             "owner_username": "rm",
         }
+        if with_app_info:
+            new_wizard_payload["app_info_parsed"] = {**preview["parsed"], "type": "Gerrit 类型"}
+            new_wizard_payload["app_info_commit_id"] = preview["commit_id"]
 
         app = _make_app(db_path)
         with TestClient(app, raise_server_exceptions=False) as client:
@@ -862,7 +864,8 @@ class TestCicdFirstWithAppInfo:
                 state = client.get(f"/api/state?release_id={release_id}").json()
                 snapshot = state["release"]["snapshots"][resp.json()["app_id"]]
                 assert snapshot["doc_target"] == "ai4sci"
-                assert snapshot["app_type"] == "科学计算"
+                assert snapshot["type"] == "科学计算"
+                assert "科学计算" in state["app_types"]
 
         assert resp.status_code == 200, (
             f"Expected 200 with new wizard payload, got {resp.status_code}: {resp.text}"

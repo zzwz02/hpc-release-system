@@ -2718,7 +2718,7 @@ def cicd_first_new_app(
                 snap = snapshots_repo.get_snapshot(conn, rel["id"], app_id)
                 if snap is not None:
                     snap["doc_target"] = payload["doc_target"]
-                    snap["app_type"] = payload["app_type"].strip()
+                    snap["type"] = payload["app_type"].strip()
                     snapshots_repo.save_snapshot(conn, rel["id"], app_id, snap)
 
         cicd_config = _cicd_first_config_values(payload, repo_type)

@@ -259,6 +259,23 @@ describe("DashboardPage stats row", () => {
     });
   });
 
+  it("shows doc incomplete count and per-app reminders independently of QA", async () => {
+    const payload = makePayload();
+    payload.release!.snapshots.app1.missing_items = [
+      { kind: "doc", text: "缺少 App类型" }, { kind: "qa", text: "QA 未测试" },
+    ];
+    payload.release!.snapshots.app2.missing_items = [{ kind: "doc", text: "缺少 App类型" }];
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    renderDashboard(makeQueryClient());
+    await screen.findByTestId("dashboard-app-table");
+    expect(screen.getByText("Doc 未完成 App 数").closest(".stat")?.querySelector(".num")).toHaveTextContent("1");
+    expect(screen.getByTestId("dashboard-app-row-app1")).toHaveTextContent("待补 1 项");
+    expect(screen.getByTestId("dashboard-app-row-app2")).not.toHaveTextContent("待补");
+    expect(screen.queryByText("填写完成度")).not.toBeInTheDocument();
+    expect(screen.queryByText("待办")).not.toBeInTheDocument();
+    expect(screen.getByText("QA", { selector: "th" })).toBeInTheDocument();
+  });
+
   it("shows release decision count", async () => {
     const payload = makePayload();
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);

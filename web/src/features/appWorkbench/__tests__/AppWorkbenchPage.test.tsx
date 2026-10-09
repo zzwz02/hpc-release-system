@@ -1931,6 +1931,62 @@ describe("AppWorkbenchPage lifecycle actions", () => {
     useUiStore.getState().setAppDetailDirty(false);
   });
 
+  it.each([
+    { missing: [{ kind: "qa", text: "QA 未测试" }], count: 0 },
+    { missing: [{ kind: "doc", text: "缺少 App类型" }, { kind: "qa", text: "QA 未测试" }], count: 1 },
+  ])("shows only doc reminders when there are $count doc items", async ({ missing, count }) => {
+    const payload = makePayload();
+    payload.release!.snapshots.app1.missing_items = missing;
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    renderPage(makeQueryClient());
+    fireEvent.click(await screen.findByTestId("app-row-app1"));
+    const page = screen.getByTestId("appworkbench-page");
+    if (count) {
+      expect(within(screen.getByTestId("app-row-app1")).getByText("文档待补 1")).toBeInTheDocument();
+      const checklist = screen.getByTestId("app-doc-missing-checklist");
+      expect(checklist).toHaveTextContent("Doc 还需完成 1 项");
+      expect(checklist).toHaveTextContent("缺少 App类型");
+      expect(checklist).not.toHaveTextContent("QA 未测试");
+    } else {
+      expect(screen.queryByTestId("app-doc-missing-checklist")).not.toBeInTheDocument();
+      expect(page.textContent).not.toMatch(/文档待补|还需完成/);
+    }
+    expect(page.textContent).not.toMatch(/填写完成度|Owner 未确认 doc/);
+    expect(within(page).getByText("文档字段（Markdown 格式）")).toBeInTheDocument();
+  });
+
+  it("does not show doc reminders for cicd-only apps", async () => {
+    const payload = makePayload();
+    payload.release!.snapshots.app2.missing_items = [{ kind: "doc", text: "缺少 App类型" }];
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    renderPage(makeQueryClient());
+    fireEvent.click(await screen.findByTestId("app-row-app2"));
+    expect(screen.queryByTestId("app-doc-missing-checklist")).not.toBeInTheDocument();
+    expect(screen.getByTestId("app-row-app2")).not.toHaveTextContent("文档待补");
+  });
+
+  it("owner can save without submitting document confirmation", async () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: { username: "alice", role: "Owner", display_name: "Alice" },
+      ldapStatus: { enabled: false, uri: "" },
+      login: vi.fn(), logout: vi.fn(), clearUser: vi.fn(),
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload({
+      user: { username: "alice", role: "Owner", display_name: "Alice" },
+    }));
+    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({
+      missing_items: [{ kind: "doc", text: "缺少基本介绍" }],
+    });
+    renderPage(makeQueryClient());
+    await enterEditOnApp1();
+    expect(screen.queryByText("✓ 保存并提交 Owner 确认")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("保存"));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("保存成功"));
+    expect(apiPost).toHaveBeenCalledWith("/api/apps/update", expect.objectContaining({
+      snapshot: expect.not.objectContaining({ owner_confirmed: expect.anything() }),
+    }));
+  });
+
   it("rejected CICD-first app shows re-apply button and opens prefilled wizard", async () => {
     const payload = makePayload();
     payload.apps[0] = {
@@ -1987,6 +2043,40 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     vi.stubGlobal("confirm", vi.fn(() => true));
     useUiStore.getState().setSelectedApp("");
     useUiStore.getState().setAppDetailDirty(false);
+  });
+
+  it("offers existing types without duplicates and only shows custom input for other", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload({
+      app_types: [" 分子动力学 ", "分子动力学", "", "  ", "其他", "科学计算"],
+    }));
+    renderPage(makeQueryClient());
+    fireEvent.click(await screen.findByTestId("new-app-btn"));
+
+    const select = screen.getByTestId("new-app-type") as HTMLSelectElement;
+    expect(Array.from(select.options).map((option) => option.text)).toEqual([
+      "请选择 APP 类型", "分子动力学", "科学计算", "其他",
+    ]);
+    expect(screen.queryByTestId("new-app-custom-type")).not.toBeInTheDocument();
+    fireEvent.change(select, { target: { value: "other" } });
+    expect(screen.getByTestId("new-app-custom-type")).toBeRequired();
+    fireEvent.change(screen.getByTestId("new-app-custom-type"), { target: { value: "自定义类型" } });
+    fireEvent.change(select, { target: { value: "existing:科学计算" } });
+    expect(screen.queryByTestId("new-app-custom-type")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "MyApp" } });
+    fireEvent.change(screen.getByTestId("new-app-doc-target"), { target: { value: "manual" } });
+    fireEvent.change(screen.getByTestId("new-app-repo-name"), { target: { value: "myrepo" } });
+    fireEvent.change(screen.getByLabelText(/分支 /), { target: { value: "main" } });
+    (apiPost as ReturnType<typeof vi.fn>).mockImplementation(async (url: string, body?: unknown) => {
+      if (url.includes("decision-preview")) return newAppDecisionPreviewForBody(body);
+      if (url.includes("fetch-preview")) throw new Error("Gerrit not reachable");
+      return { ok: true, app_id: "new-app", request_id: 1 };
+    });
+    fireEvent.click(screen.getByTestId("new-app-fetch"));
+    fireEvent.click(await screen.findByTestId("new-app-submit"));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/cicd/apps/new", expect.objectContaining({
+      app_type: "科学计算",
+    })));
   });
 
   it("shows CICD-first dialog when new-app button clicked", async () => {
@@ -2076,12 +2166,16 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     expect(screen.getByText("请选择类型（HPC/AI4Sci）")).toBeInTheDocument();
     expect(postMock).not.toHaveBeenCalled();
     fireEvent.change(screen.getByTestId("new-app-doc-target"), { target: { value: "manual" } });
-    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: "   " } });
+    fireEvent.click(screen.getByTestId("new-app-fetch"));
+    expect(screen.getByText("请选择 APP 类型", { selector: "p" })).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: "other" } });
+    fireEvent.change(screen.getByTestId("new-app-custom-type"), { target: { value: "   " } });
     fireEvent.click(screen.getByTestId("new-app-fetch"));
     expect(screen.getByText("请填写 APP 类型")).toBeInTheDocument();
     expect(postMock).not.toHaveBeenCalled();
     fireEvent.change(screen.getByTestId("new-app-doc-target"), { target: { value: "ai4sci" } });
-    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: " 科学计算 " } });
+    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: "other" } });
+    fireEvent.change(screen.getByTestId("new-app-custom-type"), { target: { value: " 科学计算 " } });
     const repoInput = screen.getByLabelText(/仓库名 /);
     fireEvent.change(repoInput, { target: { value: "myrepo" } });
     const branchInput = screen.getByLabelText(/分支 /);
@@ -2147,7 +2241,8 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
     await waitFor(() => screen.getByTestId("new-app-dialog"));
     fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "ErrApp" } });
     fireEvent.change(screen.getByTestId("new-app-doc-target"), { target: { value: "ai4sci" } });
-    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: " 科学计算 " } });
+    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: "other" } });
+    fireEvent.change(screen.getByTestId("new-app-custom-type"), { target: { value: " 科学计算 " } });
     fireEvent.change(screen.getByLabelText(/仓库名 /), { target: { value: "errrepo" } });
     fireEvent.change(screen.getByLabelText(/分支 /), { target: { value: "dev" } });
     fireEvent.click(screen.getByTestId("new-app-fetch"));
@@ -2182,7 +2277,8 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
 
     fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "bbb" } });
     fireEvent.change(screen.getByTestId("new-app-doc-target"), { target: { value: "ai4sci" } });
-    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: " 科学计算 " } });
+    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: "other" } });
+    fireEvent.change(screen.getByTestId("new-app-custom-type"), { target: { value: " 科学计算 " } });
     fireEvent.change(screen.getByLabelText(/仓库名 /), { target: { value: "hpc_aa" } });
     fireEvent.change(screen.getByLabelText(/分支 /), { target: { value: "main" } });
     fireEvent.click(screen.getByTestId("new-app-fetch"));
@@ -2239,7 +2335,8 @@ describe("AppWorkbenchPage W3 CICD-first new-app wizard", () => {
 
     fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "AlphaApp" } });
     fireEvent.change(screen.getByTestId("new-app-doc-target"), { target: { value: "ai4sci" } });
-    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: " 科学计算 " } });
+    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: "other" } });
+    fireEvent.change(screen.getByTestId("new-app-custom-type"), { target: { value: " 科学计算 " } });
     fireEvent.change(screen.getByLabelText(/仓库名 /), { target: { value: "hpc_aa" } });
     fireEvent.change(screen.getByLabelText(/分支 /), { target: { value: "main" } });
     fireEvent.click(screen.getByTestId("new-app-fetch"));
@@ -2288,7 +2385,8 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
     // Fill git-type repo (default)
     fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "TestApp" } });
     fireEvent.change(screen.getByTestId("new-app-doc-target"), { target: { value: "ai4sci" } });
-    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: " 科学计算 " } });
+    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: "other" } });
+    fireEvent.change(screen.getByTestId("new-app-custom-type"), { target: { value: " 科学计算 " } });
     fireEvent.change(screen.getByLabelText(/仓库名 /), {
       target: { value: "sw-metax-open/myapp" },
     });
@@ -2321,7 +2419,8 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
 
     fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "RepoApp" } });
     fireEvent.change(screen.getByTestId("new-app-doc-target"), { target: { value: "ai4sci" } });
-    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: " 科学计算 " } });
+    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: "other" } });
+    fireEvent.change(screen.getByTestId("new-app-custom-type"), { target: { value: " 科学计算 " } });
     // Switch to repo type
     fireEvent.change(screen.getByDisplayValue("git"), { target: { value: "repo" } });
     fireEvent.change(screen.getByLabelText(/仓库名 /), {
@@ -2363,7 +2462,8 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
 
     fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "PreviewApp" } });
     fireEvent.change(screen.getByTestId("new-app-doc-target"), { target: { value: "ai4sci" } });
-    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: " 科学计算 " } });
+    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: "other" } });
+    fireEvent.change(screen.getByTestId("new-app-custom-type"), { target: { value: " 科学计算 " } });
     fireEvent.change(screen.getByLabelText(/仓库名 /), {
       target: { value: "sw-metax-open/previewapp" },
     });
@@ -2398,7 +2498,8 @@ describe("AppWorkbenchPage W4 wizard derived-identity display", () => {
 
     fireEvent.change(screen.getByTestId("new-app-name"), { target: { value: "PartialApp" } });
     fireEvent.change(screen.getByTestId("new-app-doc-target"), { target: { value: "ai4sci" } });
-    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: " 科学计算 " } });
+    fireEvent.change(screen.getByTestId("new-app-type"), { target: { value: "other" } });
+    fireEvent.change(screen.getByTestId("new-app-custom-type"), { target: { value: " 科学计算 " } });
     fireEvent.change(screen.getByLabelText(/仓库名 /), {
       target: { value: "sw-metax-open/partialapp" },
     });

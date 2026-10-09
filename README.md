@@ -9,7 +9,7 @@
 | 使用者 | 日常入口与职责 |
 | --- | --- |
 | RM | 周期管理：初始化或克隆周期、设置 deadline、最终锁定；App 工作台：维护范围与信息；CICD：审批、交付处理；发布文档：导出和检查 |
-| Owner | App 工作台：维护本人负责的 App、文档与测试说明，确认信息，提交新增或 CICD 配置申请 |
+| Owner | App 工作台：维护和保存本人负责的 App、文档与测试说明，提交新增或 CICD 配置申请 |
 | QA | QA：查看测试范围与命令、批量标注结果、上传日志、使用 AI 分析建议；App 工作台：doc deadline 之前维护任意 App 的 app_info（从 Gerrit 拉取或上传） |
 | SPD | CICD：查看交付任务、确认交付或退回；Jenkins 失败查询和 CICD 助手辅助排查 |
 | Guest | 查看总览、App 和 QA 等矩阵允许的页面；不编辑业务数据 |
@@ -23,10 +23,12 @@
 
 1. 首次使用由 RM 导入 CSV。`import_initial_rows()` 只允许在尚无 release 时初始化；同一仓库与分支的行合并为一个 App，没有仓库或分支的行跳过。
 2. 后续周期由 RM 从最近一个 release 克隆。代码继承已有快照和 Owner 确认状态，重置 QA 状态、QA 备注、缺失项缓存及快照锁定标记；不会自动要求每个 Owner 重新确认。
-3. Owner / RM 在 App 工作台维护发布决策、说明与配置。新增 App 时必须选择类型（HPC/AI4Sci，默认留空）并填写 APP 类型；走 CICD-first 流程，没有直接 `/api/apps/new` 创建接口。
+3. Owner / RM 在 App 工作台维护发布决策、说明与配置。新增 App 时必须选择类型（HPC/AI4Sci，默认留空），APP 类型从所有周期中已有类型选择，选择“其他”时必须自填；走 CICD-first 流程，没有直接 `/api/apps/new` 创建接口。
 4. RM、该 App 的 Owner 和 QA 在 doc deadline 之前从 Gerrit 获取或上传 app_info，记录来源、commit 和同步时间，派生版本、芯片及测试说明。实际内容变化可能使 Owner 确认失效；重复拉取相同内容不会仅因拉取动作而取消确认。
 5. QA 使用范围表、命令表和日志记录结果。AI 分析返回建议，最终状态仍由 QA / RM 保存；分析成功不等于自动批准发布。
 6. RM 检查范围、缺项、QA、待处理 CICD 申请与产物，再最终锁定。需要修改时可以解锁，解锁会删除最终产物；目前没有独立的签字审批或不可覆盖的发布包版本库。
+
+总览展示 Doc 未完成 App 数和各 App 的 Doc 状态；App 工作台展示文档待补标记及具体缺项清单，均按下述文档完整性规则计算。Owner 使用普通“保存”，无需提交 doc 确认；“只看doc未完成”可筛选仍有文档缺项的 App。
 
 阶段由 [phases.py](app/domain/phases.py) 根据锁定标记和 deadline 计算，并非人工填写状态。
 
@@ -50,10 +52,12 @@ flowchart LR
 | 概念 | 当前实现 |
 | --- | --- |
 | 发布决策 | `release`：计划进入发布/文档/QA；`cicd_only`：仅 CICD；`stopped`：停止维护/发布。后两者不进入当前生成的发布文档 |
-| 文档收录资格 | `qualifies_for_docs()`：决策为 release、Owner 已确认、无文档类缺项。**QA 状态不是文档收录门槛** |
+| 文档收录资格 | `qualifies_for_docs()`：决策为 release、无文档类缺项，无需 Owner 确认。**QA 状态不是文档收录门槛** |
 | QA 发布资格 | `qualifies_for_final()`：文档条件成立，且 QA 为 `qa_passed` 或 `has_issues`。Manager Review 使用此资格；`has_issues` 可以通过此门槛，不代表问题已关闭 |
 
-规则见 [gates.py](app/domain/gates.py)、[qa.py](app/domain/qa.py) 和 [domain_metadata.json](shared/domain_metadata.json)。社区字段要求还由 [app_service.py](app/services/app_service.py) 的 `_missing_items_for()` 补充。
+文档完整性只检查类型（HPC/AI4Sci）和 App 类型。当 CICD 开发者社区产物选择了镜像或软件包时，还要求填写“开发者社区发布情况”“社区包支持 Python 版本”“社区包支持框架及版本”。文档正文、测试说明、描述、版本、芯片、app_info、Owner 和 Owner 确认均不作为文档完整性门槛。历史 Owner 确认状态仍可保留作记录。
+
+规则见 [gates.py](app/domain/gates.py)、[qa.py](app/domain/qa.py) 和 [domain_metadata.json](shared/domain_metadata.json)。
 
 **最终锁定不是“全部 App 已通过 QA”的审批证明。** 当前锁定生成逻辑采用文档收录条件，缺项 App 可被排除在生成文档之外；它会检查特定未完成的 CICD 决策同步，但没有完整的发布签核流程。对外发布前应显式核对完整计划范围和实际收录范围。
 

@@ -44,6 +44,11 @@ def normalize_doc_target(value: str | None) -> str:
     return _DOC_TARGET_ALIASES.get(target, DOC_TARGET_DEFAULT)
 
 
+def is_valid_doc_target(value: object) -> bool:
+    """Validate an explicitly selected HPC/AI4Sci target without defaulting blanks."""
+    return isinstance(value, str) and value.strip().lower() in _DOC_TARGET_ALIASES
+
+
 def app_description_count(value: str | None) -> int:
     text = (value or "").strip()
     count = 0

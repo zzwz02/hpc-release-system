@@ -1,6 +1,6 @@
 {
   "_golden_name": "get_state_owner",
-  "_note": "/api/state for Owner",
+  "_note": "/api/state for Owner; App type options and classification-only doc completeness, no Owner confirmation gate",
   "_method": "GET",
   "_path": "/api/state",
   "_params": "release_id=rel_d13b4cc2e9b4",
@@ -108,36 +108,7 @@
           "doc_target": "manual",
           "hpcc_chip": "x201",
           "maca_version": "20260511",
-          "missing_items": [
-            {
-              "kind": "doc",
-              "text": "缺少描述（30字内）"
-            },
-            {
-              "kind": "doc",
-              "text": "缺少可追溯 AppInfoSnapshot"
-            },
-            {
-              "kind": "doc",
-              "text": "缺少基本介绍"
-            },
-            {
-              "kind": "doc",
-              "text": "缺少镜像使用方法"
-            },
-            {
-              "kind": "doc",
-              "text": "缺少二进制包使用方法"
-            },
-            {
-              "kind": "doc",
-              "text": "缺少环境搭建"
-            },
-            {
-              "kind": "doc",
-              "text": "Owner 未确认 doc"
-            }
-          ],
+          "missing_items": [],
           "official_name": "GoldenAmber",
           "official_url": "",
           "owner_confirmed": false,
@@ -183,34 +154,6 @@
           "hpcc_chip": "",
           "maca_version": "20260511",
           "missing_items": [
-            {
-              "kind": "doc",
-              "text": "缺少描述（30字内）"
-            },
-            {
-              "kind": "doc",
-              "text": "缺少可追溯 AppInfoSnapshot"
-            },
-            {
-              "kind": "doc",
-              "text": "缺少基本介绍"
-            },
-            {
-              "kind": "doc",
-              "text": "缺少镜像使用方法"
-            },
-            {
-              "kind": "doc",
-              "text": "缺少二进制包使用方法"
-            },
-            {
-              "kind": "doc",
-              "text": "缺少环境搭建"
-            },
-            {
-              "kind": "doc",
-              "text": "Owner 未确认 doc"
-            },
             {
               "kind": "qa",
               "text": "QA 未测试"
@@ -261,38 +204,6 @@
           "hpcc_chip": "",
           "maca_version": "20260511",
           "missing_items": [
-            {
-              "kind": "doc",
-              "text": "缺少描述（30字内）"
-            },
-            {
-              "kind": "doc",
-              "text": "缺少可追溯 AppInfoSnapshot"
-            },
-            {
-              "kind": "doc",
-              "text": "缺少 X86支持芯片系列"
-            },
-            {
-              "kind": "doc",
-              "text": "缺少基本介绍"
-            },
-            {
-              "kind": "doc",
-              "text": "缺少镜像使用方法"
-            },
-            {
-              "kind": "doc",
-              "text": "缺少二进制包使用方法"
-            },
-            {
-              "kind": "doc",
-              "text": "缺少环境搭建"
-            },
-            {
-              "kind": "doc",
-              "text": "Owner 未确认 doc"
-            },
             {
               "kind": "qa",
               "text": "QA 未测试"
@@ -389,6 +300,10 @@
         "updated_at": "SCRUBBED_TIMESTAMP",
         "updated_by": ""
       }
+    ],
+    "app_types": [
+      "分子动力学",
+      "高性能计算"
     ]
   }
 }

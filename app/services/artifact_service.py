@@ -101,7 +101,7 @@ def _release_rows(
     """Rows for the release note.
 
     Preview and final Markdown both include only apps that currently qualify
-    (decision=release, owner-confirmed, no doc-gate items).  Unfinished apps
+    (decision=release, no doc-gate items).  Unfinished apps
     stay visible in missing_items, not generated Markdown.
     """
     apps = {app["id"]: app for app in apps_repo.list_apps(conn)}
