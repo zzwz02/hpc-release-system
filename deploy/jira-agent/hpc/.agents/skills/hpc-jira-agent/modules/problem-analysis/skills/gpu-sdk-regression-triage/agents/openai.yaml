@@ -1,0 +1,4 @@
+interface:
+  display_name: "GPU SDK 回退分析"
+  short_description: "对照正常与异常版本，定位 GPU SDK 卡死、计算错误和性能回退原因"
+  default_prompt: "使用 $gpu-sdk-regression-triage 对照正常与异常 GPU SDK 版本，定位回退原因并整理验证证据。"

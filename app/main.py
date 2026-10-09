@@ -22,6 +22,7 @@ from app.api.routers import (
     auth,
     cicd,
     cicd_agent,
+    jira_agent,
     qa,
     releases,
     state,
@@ -29,18 +30,12 @@ from app.api.routers import (
 )
 from app.config import settings
 from app.db.connection import connect
-from app.integrations.ldap import load_ldap_config
-from app.services import auth_service
+from app.services import auth_service, jira_agent_ssh_key
+from app.services.jira_agent_runner import runner as jira_agent_runner
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Load LDAP config once at startup — stored on app.state so routers can
-    # access it via request.app.state.ldap_config (mirrors server.py:1512-1515).
-    app.state.ldap_config = load_ldap_config(settings.ldap_conf_path)
-    if app.state.ldap_config.get("enabled"):
-        print(f"LDAP authentication enabled: {app.state.ldap_config['uri']}")
-
     # Initialise the DB (creates schema if it doesn't exist; idempotent).
     conn = connect(settings.db_path)
     auth_service.ensure_admin_user(
@@ -49,7 +44,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     conn.close()
 
-    yield
+    # JIRA agent queue runner (in-process; keep uvicorn at a single worker).
+    if settings.jira_agent_runner_enabled:
+        await jira_agent_runner.start()
+    try:
+        yield
+    finally:
+        await jira_agent_ssh_key.sessions.stop()
+        if settings.jira_agent_runner_enabled:
+            await jira_agent_runner.stop()
 
 
 def create_app() -> FastAPI:
@@ -65,6 +68,7 @@ def create_app() -> FastAPI:
     app.include_router(apps.router)
     app.include_router(cicd.router)
     app.include_router(cicd_agent.router)
+    app.include_router(jira_agent.router)
     app.include_router(qa.router)
     app.include_router(releases.router)
     app.include_router(wiki.router)

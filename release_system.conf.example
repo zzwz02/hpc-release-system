@@ -1,0 +1,99 @@
+# HPC 发布系统 — 运行时服务配置模板
+#
+# 复制为 release_system.conf 并填写真实值（该文件已加入 .gitignore，建议 chmod 600）。
+# 每次用到配置时现读文件：修改后下一次使用即生效，无需重启；重启后同样生效。
+# 旧的 ldap.conf / jira.conf / qa_llm.env / jira_agent.conf 已不再读取，内容请搬到对应节。
+#
+# 格式：INI。以 # 或 ; 开头的整行是注释；值中的 # 不会被当作注释。空值写成 "KEY ="。
+# 代码里没有任何默认值：整节缺省表示该集成未配置；节内标“可选”的键可留空（留空即不使用该功能），
+# 其余键必须填写，缺失时使用处会报错并指出缺少的键。
+
+
+# ── LDAP 域账号登录 ─────────────────────────────────────────────
+# 首次通过域账号登录的用户会自动创建，角色按 memberOf 组分配：
+#   dl.pde_sc* / dl.pde_sa* -> Owner；dl.sw_qa* -> QA；dl.sw_spd* -> SPD；其他 -> Guest。
+# 之后调整角色请以 Admin 身份进入「系统管理 → 成员管理」。
+# 域账号不存本地密码，每次登录实时验证；LDAP 不可用时域账号无法登录（内建账号不受影响）。
+# 整节缺省或 ENABLED = false 时不启用；启用后本节所有键都必须填写。
+[ldap]
+# true / false：是否启用域账号登录
+ENABLED = true
+# LDAP 服务器地址，支持 ldap:// 与 ldaps://
+URI = ldap://ad-ldap.metax-tech.com
+# 搜索基础 DN
+BASE = DC=metax-tech,DC=com
+# 只读服务账号，用于搜索用户 DN
+BINDDN = CN=sa_swlab-devps_bind,OU=CorpQAccount,DC=metax-tech,DC=com
+BINDPW = <service-account-password>
+# 用户搜索过滤器，{uid} 替换为用户输入的用户名；排除计算机账号
+USER_FILTER = (&(objectClass=user)(!(objectClass=computer))(sAMAccountName={uid}))
+# 用户名属性（AD 通常为 sAMAccountName）与显示名属性（AD 通常为 displayName）
+UID_ATTR = sAMAccountName
+NAME_ATTR = displayName
+# 连接与操作超时（秒）
+TIMEOUT = 10
+
+
+# ── JIRA ───────────────────────────────────────────────────────
+# CICD 派单建单，以及 JIRA agent 读取工单、下载附件、发布评论。
+# 派单建单的项目 SPD、Component SPD_CICD、issue 类型 Task / Sub-task 和两个 ETA 字段
+# 固定在代码里（app/integrations/jira.py，对应 jira.metax-tech.com）。
+[jira]
+# 必填：地址与 token
+JIRA_BASE_URL = http://jira.metax-tech.com
+JIRA_TOKEN = <personal-access-token>
+# 可选：指派人（Jira 用户名 / domain_id）
+JIRA_ASSIGNEE = m00930
+# 可选：父 issue key；有值则创建子任务，留空则创建顶级 Task
+JIRA_PARENT_ISSUE = SPD-1535
+
+
+# ── QA AI 分析大模型 ────────────────────────────────────────────
+# OpenAI 兼容接口（通常以 /v1 结尾），需要 python -m pip install openai。
+# 同名进程环境变量（QA_LLM_BASE_URL 等）优先于这里的值。QA_LLM_API_KEY 可选。
+[qa_llm]
+QA_LLM_BASE_URL = http://10.x.x.x:8000/v1
+QA_LLM_MODEL = your-model-name
+QA_LLM_API_KEY = <api-key>
+
+
+# ── CICD Agent（Jenkins 失败诊断助手） ─────────────────────────
+# 浏览器经同源 /api/cicd-agent/* 由后端代理访问。两个键都必须填写。
+[cicd_agent]
+BASE_URL = http://10.2.118.76:8056
+TIMEOUT_SECONDS = 90
+
+
+# ── 网站 ──────────────────────────────────────────────────────
+[site]
+# 可选：浏览器访问网站的对外地址；填写后 JIRA agent 的评论会附对话链接
+PUBLIC_BASE_URL = http://release.example.com:8000
+
+
+# ── JIRA 数字员工（每组一节：[jira_agent:<组名>]） ──────────────
+# 每节对应该组服务器 B 上的一个 codex app-server。网站只保存连接信息；
+# 组知识、skills、Codex 与 SSH 凭证都在服务器 B 上。部署说明见 docs/jira-agent.md。
+# COMPONENTS、JIRA_MEMBERS_GROUP、SSH_KEY_PATH、MODEL 可选，其余键必须填写。
+[jira_agent:HPC]
+DISPLAY_NAME = HPC 数字员工
+# B 上 codex app-server 的 WebSocket 地址，以及 capability token
+# （与 B 上 --ws-token-file 文件内容一致）
+CODEX_WS_URL = ws://127.0.0.1:4510
+CODEX_WS_TOKEN = <ws-token>
+# B 上的任务工作目录根，必须是绝对路径，位于知识包目录（PACK_DIR）之下
+WORKSPACE_ROOT = /home/hpc-agent/hpc-jira-agent/workspaces
+# 该组负责的 JIRA component（逗号分隔），用于为工单选择数字员工；都不匹配时用第一个组
+COMPONENTS = PDE_HPC
+# 该组对应的 JIRA 用户组：RM 的默认工单列表为
+# assignee in membersOf(<组>) AND status != Closed；其他用户默认看自己的未关闭工单
+JIRA_MEMBERS_GROUP = pde_hpc
+# B 上执行账号的 SSH 私钥绝对路径，同目录下须有 <路径>.pub。
+# 交单自填 user@host 时，网站经 app-server 在 B 上运行 ssh-copy-id 上传这把公钥，
+# 并从 B 测试免密登录。公钥注释建议写成 hpc-jira-agent@<B>，方便对方识别和删除。
+SSH_KEY_PATH = /home/hpc-agent/.ssh/id_ed25519
+# 覆盖 B 上 codex 的模型；留空则由 B 上的 codex 自行决定
+MODEL =
+# 每轮最长执行时间（秒），从出队开始计算
+TURN_TIMEOUT_SECONDS = 7200
+# 该组 B 上同时运行的轮次数
+MAX_CONCURRENT = 2

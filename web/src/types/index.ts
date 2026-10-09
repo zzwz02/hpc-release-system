@@ -427,6 +427,8 @@ export interface CicdSubmitResponse {
 export interface CicdApproveResponse {
   ok: boolean;
   request: CicdRequest;
+  /** Set when approval succeeded but the automatic Jira issue was not created. */
+  jira_error?: string;
 }
 
 export interface CicdRejectResponse {
@@ -667,10 +669,6 @@ export interface ArtifactGenerateResponse {
 export interface ArtifactManagerReviewResponse {
   artifact: string;
   bytes: number;
-}
-
-export interface GerritPlanResponse {
-  [key: string]: unknown;
 }
 
 // ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@
  *  - SPD sees the read-only CICD overview and delivery panes (no approval)
  *  - CICD workbench shows read-only CICD info and recent requests
  *  - PendingPane: renders pending requests with approve/reject buttons
+ *  - ApproveDialog: surfaces a failed automatic Jira creation
  *  - DeliveryPane: renders 待交付 pane
  *  - DeliveryPane: renders 已交付 pane (delivered=true)
  *  - markCicdVisited called on mount
@@ -72,6 +73,7 @@ vi.mock("../../../store/uiStore", () => {
 import { apiGet, apiPost } from "../../../api/http";
 import { useAuth } from "../../../api/AuthContext";
 import { promptDialog } from "../../../lib/confirm";
+import { toast } from "../../../lib/toast";
 // Access __setState from the mocked uiStore to manipulate mock state in tests.
 // The vi.mock factory above exports it; casting bypasses missing types.
 import * as _uiStoreMod from "../../../store/uiStore";
@@ -342,6 +344,38 @@ describe("CicdPage", () => {
 
     await waitFor(() => {
       expect(screen.getAllByText(/Bob Smith/).length).toBeGreaterThan(0);
+    });
+  });
+
+  it("ApproveDialog: tells RM when automatic Jira creation failed", async () => {
+    const pendingReq = makeRequest({ status: "pending" });
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [] });
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      if (url.includes("/api/cicd/requests")) return Promise.resolve({ requests: [pendingReq] });
+      return Promise.resolve({ deliveries: [] });
+    });
+    vi.mocked(apiPost).mockImplementation((url: string) =>
+      Promise.resolve(
+        url.includes("/api/cicd/requests/approve")
+          ? { ok: true, request: { ...pendingReq, status: "approved" }, jira_error: "未配置 JIRA" }
+          : { ok: true },
+      ),
+    );
+
+    renderCicd("RM");
+    await userEvent.click(await screen.findByText("待审批"));
+    await userEvent.click(await screen.findByRole("button", { name: "审批" }));
+    await userEvent.click(screen.getByLabelText(/下发 SPD/));
+    await userEvent.click(screen.getByLabelText(/自动创建/));
+    await userEvent.click(screen.getByRole("button", { name: "通过" }));
+
+    await waitFor(() => {
+      expect(apiPost).toHaveBeenCalledWith(
+        "/api/cicd/requests/approve",
+        expect.objectContaining({ approval_mode: "dispatch_spd", jira_auto_created: 1 }),
+      );
+      expect(toast.error).toHaveBeenCalledWith("已审批，但 JIRA 自动建单失败：未配置 JIRA");
     });
   });
 

@@ -314,13 +314,14 @@ function ApproveDialog({ req, tasks, onDone, onClose }: ApproveDialogProps) {
           jira_id = jiraIdManual.trim();
         }
       }
-      await approveCicdRequest({
+      const res = await approveCicdRequest({
         request_id: req.id,
         review_note: note.trim(),
         approval_mode: approvalMode,
         jira_id,
         jira_auto_created,
       });
+      if (res.jira_error) toast.error(`已审批，但 JIRA 自动建单失败：${res.jira_error}`);
       onDone();
       onClose();
     } catch (e) {

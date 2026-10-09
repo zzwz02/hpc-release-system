@@ -6,6 +6,8 @@ user DN, then user-password bind to verify credentials.
 """
 from __future__ import annotations
 
+from app import runtime_config
+
 try:
     from ldap3 import ALL as LDAP_ALL  # type: ignore[import-untyped]
     from ldap3 import SIMPLE as LDAP_SIMPLE
@@ -166,45 +168,39 @@ def groups_for_user(username: str, *, ldap_config: dict) -> list[str]:
     return _ldap_entry_values(entries[0], "memberOf")
 
 
-def load_ldap_config(conf_path) -> dict:
-    """Parse ldap.conf into a plain dict.
+_LDAP_TEXT_KEYS = ("URI", "BASE", "BINDDN", "BINDPW", "USER_FILTER", "UID_ATTR", "NAME_ATTR")
 
-    Handles multi-word values (e.g. passwords with '=') by splitting only on
-    the first '=' per line.  Returns a safe default (disabled) if the file is
-    missing or unreadable.
 
-    Ported from server.py:53-90.
+def _enabled(values: dict[str, str]) -> bool:
+    return values.get("ENABLED", "").lower() in ("true", "1", "yes")
+
+
+def ldap_config_from_values(values: dict[str, str]) -> dict:
+    """Turn the raw [ldap] section into a typed config dict.
+
+    An absent section or ENABLED = false means LDAP login is off; once enabled,
+    every key is required (ConfigError names the missing one).
     """
-    from pathlib import Path
-
-    defaults: dict = {
-        "enabled": False,
-        "uri": "",
-        "base": "",
-        "binddn": "",
-        "bindpw": "",
-        "user_filter": "(&(objectClass=user)(sAMAccountName={uid}))",
-        "uid_attr": "sAMAccountName",
-        "name_attr": "displayName",
-        "timeout": 10,
-    }
-    path = Path(conf_path)
-    if not path.exists():
-        return defaults
-    cfg = dict(defaults)
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, value = stripped.partition("=")
-        key = key.strip().lower()
-        value = value.strip()
-        if key == "enabled":
-            cfg["enabled"] = value.lower() in ("true", "1", "yes")
-        elif key in cfg:
-            cfg[key] = value
-    try:
-        cfg["timeout"] = int(cfg["timeout"])
-    except (ValueError, TypeError):
-        cfg["timeout"] = 10
+    if not _enabled(values):
+        return {"enabled": False}
+    cfg: dict = {"enabled": True}
+    for key in _LDAP_TEXT_KEYS:
+        cfg[key.lower()] = runtime_config.required("ldap", values, key)
+    cfg["timeout"] = runtime_config.required_int("ldap", values, "TIMEOUT")
     return cfg
+
+
+def current_ldap_config() -> dict:
+    """Read the [ldap] section of release_system.conf (on every call)."""
+    return ldap_config_from_values(runtime_config.section("ldap"))
+
+
+def ldap_status() -> dict:
+    """Login-page flag: whether LDAP is switched on, without validating the rest.
+
+    A misconfigured section still shows the LDAP login, whose attempt then
+    reports the missing key instead of silently hiding the option.
+    """
+    values = runtime_config.section("ldap")
+    enabled = _enabled(values)
+    return {"enabled": enabled, "uri": values.get("URI", "") if enabled else ""}

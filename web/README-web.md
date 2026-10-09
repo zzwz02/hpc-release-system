@@ -17,9 +17,9 @@ npm run dev
 API_TARGET=http://127.0.0.1:8001 npm run dev -- --host 127.0.0.1 --port 5173 --strictPort
 ```
 
-后端必须另行启动，并使用隔离数据库。不要让开发页面误连真实业务实例。npm 脚本为本机请求设置了 `NO_PROXY` / `no_proxy`；自定义命令也需要正确绕过本机代理。
+后端需另行用隔离数据库启动。npm 脚本已为本机请求设置 `NO_PROXY`，自定义命令也要绕过本机代理。
 
-`npm run build` 执行 TypeScript 检查和 Vite 构建，覆盖根目录 `web_dist/`；FastAPI 存在该目录时会提供静态资源与 SPA 深链接回退。构建会改变使用该目录的服务所展示的页面。
+`npm run build` 执行类型检查和 Vite 构建，覆盖根目录 `web_dist/`；FastAPI 从该目录提供页面与 SPA 深链接回退，所以构建会直接改变正在使用该目录的服务。
 
 ## 代码导航
 
@@ -33,13 +33,13 @@ API_TARGET=http://127.0.0.1:8001 npm run dev -- --host 127.0.0.1 --port 5173 --s
 | `src/store/uiStore.ts` | 共享周期选择、App 选择和编辑等 UI 状态 |
 | `src/components/` | Markdown、日期输入、刷新条、表格与通用反馈 |
 
-CICD 助手及 V2 页面调用 `/api/cicd-agent/*` 同源代理，服务地址由后端配置。V2 依赖 `@assistant-ui/react`，不能因为其他页面的单元测试通过就跳过完整类型检查和构建。
+CICD 助手页面调用 `/api/cicd-agent/*` 同源代理，服务地址在 `release_system.conf` 的 `[cicd_agent]`。V2 依赖 `@assistant-ui/react`，改动后需完整类型检查和构建。
 
 ## 缓存与数据契约
 
-全局 QueryClient 默认 `staleTime: Infinity`，关闭焦点、重连、挂载自动重取和轮询；部分页面有局部覆盖。页面进入不保证请求：`refetchOnMount: true` 对永久新鲜缓存通常不重取。显式刷新和写后失效负责让内容更新，`RefreshBar` 展示本段查询的 `dataUpdatedAt`。
+全局 QueryClient 默认 `staleTime: Infinity`，关闭焦点、重连、挂载自动重取和轮询。进入页面不保证请求：`refetchOnMount: true` 对永久新鲜缓存通常不重取。内容靠显式刷新和写后失效更新，`RefreshBar` 显示查询的 `dataUpdatedAt`。
 
-QA AI 任务进度按秒查询是现有轮询例外；批量 Gerrit 拉取使用 NDJSON 流，CICD 助手也有流式接口。不要用增加全局定时器来修复局部失效问题。
+现有按秒轮询只有这些：顶栏 CICD 通知角标（`TabNav`，所有已登录页面）、CICD 页的待审批/待交付列表与计数、QA AI 任务进度、JIRA agent 运行中对话的时间线和上传公钥终端。批量 Gerrit 拉取与 CICD 助手用流式接口。不要靠新增定时器修复局部失效问题。
 
 查询键应区分身份、周期、过滤参数与响应形状。当前 AuthContext 的退出/401 只重置用户，没有清空所有查询及 UI 状态；维护认证或缓存时应处理这个已知缺口，不能认为切换账号天然隔离。
 
@@ -57,14 +57,4 @@ HTTP 类型声明不会验证真实 JSON。改接口时对照 router/service、�
 
 ## 验证
 
-```bash
-npm run build
-npm run lint
-npm test
-```
-
-纯类型检查可用 `npx tsc --noEmit`，避免改动正在服务的构建产物。
-
-Playwright 配置固定访问 5176，**不会自动启动前后端**。用隔离库启动后端，再运行 `npm run dev -- --host 127.0.0.1 --port 5176 --strictPort`，最后 `npm run test:e2e`。如果隔离后端不是 8000，同步设置 `API_TARGET`。
-
-E2E 会实际写数据，先确认 5176 对应隔离实例；Admin 测试口令配置、后端 fixture 路径和网络限制见 [验证说明](../.agents/skills/release-system-dev/references/verification.md)。测试 helper 可能滞后于 API，出现失败应定位并报告，不能通过测试真实业务数据来绕过。
+`npm run build`、`npm run lint`、`npm test`；只做类型检查用 `npx tsc --noEmit`，不会改动正在服务的 `web_dist/`。E2E（Playwright 固定访问 5176，不自动启动前后端，会写数据）的启动步骤见 [验证说明](../.agents/skills/release-system-dev/references/verification.md)。

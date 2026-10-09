@@ -47,17 +47,13 @@ def get_me(
 # ---------------------------------------------------------------------------
 
 @router.get("/ldap/status")
-def get_ldap_status(request: Request) -> JSONResponse:
+def get_ldap_status() -> JSONResponse:
     """Return LDAP enabled flag and URI.
 
     Public endpoint — no auth required (mirrors server.py:331-334).
     Response: {"enabled": bool, "uri": str}
     """
-    cfg: dict = getattr(request.app.state, "ldap_config", {"enabled": False, "uri": ""})
-    return JSONResponse({
-        "enabled": bool(cfg.get("enabled")),
-        "uri": cfg.get("uri", ""),
-    })
+    return JSONResponse(ldap_integration.ldap_status())
 
 
 # ---------------------------------------------------------------------------
@@ -116,11 +112,10 @@ async def post_login_ldap(
         send_json({"ok": True}, cookies=[...])
     """
     body = await request.json()
-    ldap_config: dict = getattr(request.app.state, "ldap_config", {"enabled": False})
     uname, display, groups = ldap_integration.authenticate(
         body.get("username", ""),
         body.get("password", ""),
-        ldap_config=ldap_config,
+        ldap_config=ldap_integration.current_ldap_config(),
     )
     token = auth_service.login_ldap(conn, uname, display, groups)
     response = JSONResponse({"ok": True})

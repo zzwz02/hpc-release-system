@@ -10,6 +10,7 @@
     "jenkins-failures": ["RM", "Owner", "SPD", "QA"],
     "cicd-assistant": ["RM", "Owner", "SPD"],
     "cicd-assistant-v2": ["RM", "Owner", "SPD"],
+    "jira-agent": ["RM", "Owner"],
     "wiki": ["RM", "Owner"],
     "admin": ["Admin"]
   },
@@ -32,7 +33,6 @@
     "artifact.view.internal": ["RM"],
     "artifact.export.test_scope": ["RM"],
     "artifact.generate.manager_review": ["RM"],
-    "artifact.plan.gerrit": ["RM"],
     "wiki.edit": ["RM"],
     "cicd.request.submit": ["RM", "Owner"],
     "cicd.request.approve": ["RM"],

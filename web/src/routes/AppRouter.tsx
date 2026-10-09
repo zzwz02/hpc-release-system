@@ -5,7 +5,7 @@
  * in Waves 2-3.  Each tab is wrapped in RequireRole so a URL-bar navigation
  * to a forbidden route shows a fallback instead of crashing.
  */
-import { Suspense } from "react";
+import { lazy, Suspense } from "react";
 import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
 import { lazyWithReload } from "../lib/lazyWithReload";
@@ -45,6 +45,12 @@ const CicdAssistantV2Page = lazyWithReload("cicd-assistant-v2", () =>
   })),
 );
 
+const JiraAgentPage = lazy(() =>
+  import("../features/jiraAgent/JiraAgentPage").then((module) => ({
+    default: module.JiraAgentPage,
+  })),
+);
+
 const FEATURE_MAP: Record<string, React.ReactNode> = {
   dashboard: <DashboardPage />,
   init:      <ReleaseCyclePage />,
@@ -57,6 +63,11 @@ const FEATURE_MAP: Record<string, React.ReactNode> = {
   "cicd-assistant-v2": (
     <Suspense fallback={<section className="view active p-2r muted">加载 CICD助手 中...</section>}>
       <CicdAssistantV2Page />
+    </Suspense>
+  ),
+  "jira-agent": (
+    <Suspense fallback={<section className="view active p-2r muted">加载 JIRA agent 中...</section>}>
+      <JiraAgentPage />
     </Suspense>
   ),
   wiki:      <WikiPage />,

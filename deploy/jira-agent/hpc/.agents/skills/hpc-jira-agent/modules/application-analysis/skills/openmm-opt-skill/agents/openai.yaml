@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenMM MACA 优化"
+  short_description: "适配和优化 MACA 上的 OpenMM"
+  default_prompt: "使用 $openmm-opt-skill 适配和优化 MACA 上的 OpenMM。"
