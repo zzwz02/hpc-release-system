@@ -25,6 +25,7 @@ from app.domain import app_info as app_info_domain
 from app.domain import decision_sync as decision_sync_domain
 from app.domain import gates
 from app.domain import phases as phase_policy
+from app.domain.app_types import list_app_types
 from app.domain.qa import QA_STATUS_DEFAULT
 from app.domain.access_actions import snapshot_allowed_actions
 from app.domain.permissions import has_capability
@@ -301,7 +302,7 @@ def get_state(
     _cicd_svc.attach_cicd_release_pending_state(conn, apps, release_id)
     payload: dict = {
         "apps": apps,
-        "app_types": snapshots_repo.list_app_types(conn),
+        "app_types": list_app_types(),
         "releases": [_serialize_release(r) for r in releases],
         "release": None,
         "artifacts": [],

@@ -865,7 +865,8 @@ class TestCicdFirstWithAppInfo:
                 snapshot = state["release"]["snapshots"][resp.json()["app_id"]]
                 assert snapshot["doc_target"] == "ai4sci"
                 assert snapshot["type"] == "科学计算"
-                assert "科学计算" in state["app_types"]
+                assert "科学计算" not in state["app_types"]
+                assert "科学机器学习框架" in state["app_types"]
 
         assert resp.status_code == 200, (
             f"Expected 200 with new wizard payload, got {resp.status_code}: {resp.text}"

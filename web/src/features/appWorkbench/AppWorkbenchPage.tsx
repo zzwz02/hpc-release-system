@@ -47,6 +47,7 @@ import {
   normalizeCicdCommunityArtifacts,
   normalizeCicdTestTimeout,
   normalizeDocTarget,
+  appTypeOptionsForTarget,
 } from "../../lib/domainMetadata";
 import { displayName } from "../../lib/identity";
 import {
@@ -767,7 +768,6 @@ function duplicateAppIdFromError(message: string): string {
 
 interface NewAppDialogProps {
   apps: App[];
-  appTypes: string[];
   release: ReleaseDetail | null;
   initialValues?: NewAppInitialValues | null;
   currentReleaseId: string;
@@ -790,7 +790,7 @@ interface RetryCreateInfo {
   reviewNote: string;
 }
 
-function NewAppDialog({ apps, appTypes, release, initialValues, currentReleaseId, currentUsername, onClose, onCreated }: NewAppDialogProps) {
+function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentUsername, onClose, onCreated }: NewAppDialogProps) {
   // ── Wizard state (CICD-first, step 1 → fetch → step 2 confirm) ──────────
   const [officialName, setOfficialName] = useState(initialValues?.officialName ?? "");
   const [repoType, setRepoType] = useState(initialValues?.repoType ?? CICD_REPO_TYPE_DEFAULT);
@@ -799,10 +799,8 @@ function NewAppDialog({ apps, appTypes, release, initialValues, currentReleaseId
 
   const [docTarget, setDocTarget] = useState("");
   const [appTypeChoice, setAppTypeChoice] = useState("");
-  const [customAppType, setCustomAppType] = useState("");
-  const appType = appTypeChoice === "other" ? customAppType.trim() : appTypeChoice.slice("existing:".length);
-  const existingAppTypes = [...new Set(appTypes.map((type) => type.trim()).filter((type) => type && type !== "其他"))]
-    .sort((a, b) => a.localeCompare(b, "zh-CN"));
+  const appType = appTypeChoice.slice("existing:".length);
+  const existingAppTypes = appTypeOptionsForTarget(docTarget);
 
   type WizardStep = "form" | "fetching" | "preview" | "fetch-error" | "creating";
   const [step, setStep] = useState<WizardStep>("form");
@@ -893,7 +891,6 @@ function NewAppDialog({ apps, appTypes, release, initialValues, currentReleaseId
     if (!officialName.trim()) { setFetchErrMsg("请填写官方名称"); return; }
     if (!docTarget) { setFetchErrMsg("请选择类型（HPC/AI4Sci）"); return; }
     if (!appTypeChoice) { setFetchErrMsg("请选择 APP 类型"); return; }
-    if (!appType.trim()) { setFetchErrMsg("请填写 APP 类型"); return; }
     const submittedRepoName = repoName.trim();
     setRepoName(submittedRepoName);
     if (!submittedRepoName) { setFetchErrMsg("请填写仓库路径"); return; }
@@ -1157,25 +1154,24 @@ function NewAppDialog({ apps, appTypes, release, initialValues, currentReleaseId
             </label>
             <label>类型 <span className="required">*</span>
               <select className="select" value={docTarget} required disabled={isFetching}
-                onChange={(e) => setDocTarget(e.target.value)} data-testid="new-app-doc-target">
+                onChange={(e) => {
+                  const target = e.target.value;
+                  setDocTarget(target);
+                  if (!appTypeOptionsForTarget(target).includes(appType)) {
+                    setAppTypeChoice("");
+                  }
+                }} data-testid="new-app-doc-target">
                 <option value="">请选择 HPC/AI4Sci</option>
                 {DOC_TARGETS.map((target) => <option key={target} value={target}>{docTargetMetadata[target].label}</option>)}
               </select>
             </label>
             <label>APP 类型 <span className="required">*</span>
-              <select className="select" value={appTypeChoice} required disabled={isFetching}
+              <select className="select" value={appTypeChoice} required disabled={isFetching || !docTarget}
                 onChange={(e) => setAppTypeChoice(e.target.value)} data-testid="new-app-type">
                 <option value="">请选择 APP 类型</option>
                 {existingAppTypes.map((type) => <option key={type} value={`existing:${type}`}>{type}</option>)}
-                <option value="other">其他</option>
               </select>
             </label>
-            {appTypeChoice === "other" && (
-              <label>自填 APP 类型 <span className="required">*</span>
-                <input className="input" value={customAppType} required disabled={isFetching}
-                  onChange={(e) => setCustomAppType(e.target.value)} data-testid="new-app-custom-type" placeholder="请输入 APP 类型" />
-              </label>
-            )}
             <label>仓库类型
               <select className="select" value={repoType} disabled={isFetching} onChange={(e) => {
                 const v = e.target.value;
@@ -1544,6 +1540,8 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
 
   // Form state (mirrors snapshot fields editable in legacy)
   const [form, setForm] = useState<FormState>(() => snap ? snapshotToForm(snap, app!) : emptyForm());
+  const existingAppTypes = appTypeOptionsForTarget(form.doc_target);
+  const showCurrentAppType = !!form.type.trim() && !existingAppTypes.includes(form.type.trim());
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState("");
   const [cicdRepoErr, setCicdRepoErr] = useState("");
@@ -1711,7 +1709,7 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     const snapshotUpdate: Record<string, unknown> = {
       release_decision: form.release_decision,
       official_name: form.official_name,
-      type: form.type,
+      type: form.type.trim(),
       official_url: form.official_url,
       description: form.description,
       doc_target: form.doc_target,
@@ -1745,6 +1743,10 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
     }
     if (decisionChangeBlockedReason) {
       setSaveErr(decisionChangeBlockedReason);
+      return;
+    }
+    if (canEditDocFields && form.doc_target !== normalizeDocTarget(snap.doc_target) && !form.type.trim()) {
+      setSaveErr("请选择 App 类型");
       return;
     }
     const descCount = appDescriptionCount(form.description);
@@ -2269,17 +2271,27 @@ function DetailPanel({ app, snap, release, releases, user, displayNames: _displa
               </label>
               <label>类型
                 <select className="select" value={form.doc_target}
-                  onChange={(e) => patch("doc_target", e.target.value)}
-                  disabled={!canEditDocFields || !canEditRmOnlyFields}>
+                  onChange={(e) => {
+                    const target = e.target.value;
+                    patch("doc_target", target);
+                    if (!appTypeOptionsForTarget(target).includes(form.type.trim())) {
+                      patch("type", "");
+                    }
+                  }}
+                  disabled={!canEditDocFields || !canEditRmOnlyFields} data-testid="field-doc-target">
                   {docTargetOptions.map((v) => (
                     <option key={v} value={v}>{docTargetLabels[v]}</option>
                   ))}
                 </select>
               </label>
               <label>App 类型
-                <input className="input" value={form.type}
-                  onChange={(e) => patch("type", e.target.value)}
-                  disabled={!canEditDocFields} />
+                <select className="select" value={form.type.trim() ? `existing:${form.type.trim()}` : ""}
+                  onChange={(e) => patch("type", e.target.value.slice("existing:".length))}
+                  disabled={!canEditDocFields} data-testid="field-app-type">
+                  <option value="">请选择 App 类型</option>
+                  {existingAppTypes.map((type) => <option key={type} value={`existing:${type}`}>{type}</option>)}
+                  {showCurrentAppType && <option value={`existing:${form.type.trim()}`}>{form.type.trim()}（当前值）</option>}
+                </select>
               </label>
               <label>Gerrit 路径
                 <input className="input" value={formatCicdRepoPath(form.git_url, form.cicd_repo_type || CICD_REPO_TYPE_DEFAULT)}
@@ -3214,7 +3226,6 @@ export function AppWorkbenchPage() {
       {showNewApp && release && (
         <NewAppDialog
           apps={apps}
-          appTypes={data?.app_types ?? Object.values(release.snapshots).map((snap) => snap.type ?? "")}
           release={release}
           initialValues={newAppInitialValues}
           currentReleaseId={release.id}

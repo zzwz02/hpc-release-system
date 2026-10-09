@@ -16,7 +16,27 @@ import {
   qaStatusRequiresIssueNote,
   RELEASE_DECISIONS,
   releaseDecisionCicdStatus,
+  APP_TYPES_BY_DOC_TARGET,
+  appTypeOptionsForTarget,
 } from "../domainMetadata";
+
+describe("standard App categories", () => {
+  it("provides 23 unique categories in separate HPC and AI4Sci groups", () => {
+    const hpc = appTypeOptionsForTarget("HPC");
+    const ai = appTypeOptionsForTarget("ai4sci");
+    expect(hpc).toHaveLength(14);
+    expect(ai).toHaveLength(9);
+    expect(new Set([...hpc, ...ai]).size).toBe(23);
+    expect(hpc).toContain("第一性原理与电子结构");
+    expect(hpc).not.toContain("材料科学计算");
+    expect(ai).toContain("材料科学与机器学习势");
+    expect(ai).not.toContain("数学优化");
+    expect(APP_TYPES_BY_DOC_TARGET.manual).toEqual(hpc);
+    expect(appTypeOptionsForTarget("AI4SCI")).toEqual(ai);
+    expect(appTypeOptionsForTarget("")).toEqual([]);
+    expect(appTypeOptionsForTarget("unknown")).toEqual([]);
+  });
+});
 
 describe("release decision metadata", () => {
   it("provides the canonical order and CICD status mapping", () => {

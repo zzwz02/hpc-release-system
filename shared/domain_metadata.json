@@ -55,14 +55,49 @@
       "label": "HPC",
       "order": 0,
       "default": true,
-      "aliases": ["HPC", "hpc"]
+      "aliases": [
+        "HPC",
+        "hpc"
+      ]
     },
     "ai4sci": {
       "label": "AI4Sci",
       "order": 1,
       "default": false,
-      "aliases": ["AI4Sci", "AI4SCI"]
+      "aliases": [
+        "AI4Sci",
+        "AI4SCI"
+      ]
     }
+  },
+  "app_types": {
+    "manual": [
+      "分子模拟与分子对接",
+      "第一性原理与电子结构",
+      "计算流体力学",
+      "地球系统与气象海洋模拟",
+      "多物理场与工程仿真",
+      "量子计算与高能物理",
+      "生物信息与结构生物学",
+      "医学影像重建",
+      "数值计算库与求解器",
+      "数学优化",
+      "科学可视化与图像处理",
+      "并行计算框架与工具",
+      "性能基准测试",
+      "密码学与安全计算"
+    ],
+    "ai4sci": [
+      "蛋白质与生物分子",
+      "分子设计与药物发现",
+      "基因与组学",
+      "材料科学与机器学习势",
+      "气象与气候AI",
+      "医学影像AI",
+      "流体与工程智能建模",
+      "科学机器学习框架",
+      "AI基础框架与推理工具"
+    ]
   },
   "qa_statuses": {
     "not_checked": {
@@ -116,12 +151,17 @@
       "image": {
         "label": "镜像",
         "order": 0,
-        "aliases": ["镜像"]
+        "aliases": [
+          "镜像"
+        ]
       },
       "pkg": {
         "label": "软件包",
         "order": 1,
-        "aliases": ["package", "软件包"]
+        "aliases": [
+          "package",
+          "软件包"
+        ]
       }
     },
     "app_fields": {

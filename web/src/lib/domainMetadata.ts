@@ -59,6 +59,13 @@ export function normalizeDocTarget(value: string | null | undefined): DocTarget 
   return docTargetAliases.get((value ?? "").trim().toLowerCase()) ?? DOC_TARGET_DEFAULT;
 }
 
+export const APP_TYPES_BY_DOC_TARGET = metadata.app_types;
+
+export function appTypeOptionsForTarget(value: string | null | undefined): readonly string[] {
+  const target = docTargetAliases.get((value ?? "").trim().toLowerCase());
+  return target ? APP_TYPES_BY_DOC_TARGET[target] : [];
+}
+
 export const qaStatusMetadata = metadata.qa_statuses;
 export type QaStatus = keyof typeof qaStatusMetadata;
 export const QA_STATUSES = orderedKeys(qaStatusMetadata);
