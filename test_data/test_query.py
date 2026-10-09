@@ -14,6 +14,17 @@ from matplotlib.backends.backend_pdf import PdfPages
 date_range = 90
 today_date = datetime.date.today().strftime("%m%d")
 
+# 当前发布 (3.10.0, release_decision == 'release') 的 app 及分支 (预处理重命名后的名字)
+# 只关注 Haiyang Jiang / Xiajun Shi / Xiangrong Yi / Bokai Zhang / Chiyu Ma 负责的 app
+# 已停止发布: namd, lammps patch_4May2022 (重命名后为 maca)
+released_branches = {
+    'lammps': ['maca_stable_22Jul2025'],
+    'openmm': ['maca'],
+    'amber': ['maca'],
+    'quda': ['maca'],
+    'vkfft': ['maca'],
+}
+
 
 # =====================================================
 # 模块 1: 数据库交互与数据预处理
@@ -181,7 +192,7 @@ def generate_performance_dashboards(localhost, username, password, database, app
     outer_groups = df.groupby(['testgroup', 'branch'])
 
     for (testgroup, branch), outer_data in outer_groups:
-        if (branch == 'gmx2023-fep-gpu-maca' or branch == 'gmx2025-maca'):
+        if branch not in released_branches.get(testgroup, []):
             continue
 
         valid_inner_groups = filter_valid_testcases(outer_data)
@@ -231,7 +242,7 @@ if __name__ == "__main__":
     localhost = "hpcdb.swlab.metax-tech.com"
     database = "hpcdb"
 
-    app_names = ['gromacs', 'lammps', 'openmm', 'namd', 'amber', 'quda', 'vkfft']
+    app_names = list(released_branches)
     # app_names=['lammps']
     chip_serials = ['c500','x301']
 
