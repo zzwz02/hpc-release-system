@@ -47,6 +47,7 @@ import type {
 // Columns hidden by default in the release report (mirrors index.html:1253)
 const QA_RELEASE_REPORT_DEFAULT_HIDDEN = new Set([
   "描述", "官方URL", "OS", "Python version", "PyTorch version",
+  "开发者社区发布包支持python版本", "开发者社区发布包支持的底层框架及版本",
 ]);
 
 const CHIP_LEGEND =
