@@ -1301,6 +1301,240 @@ function ReportTable({
 }
 
 // ---------------------------------------------------------------------------
+// Developer-community artifacts pane
+// ---------------------------------------------------------------------------
+
+interface CommunityArtifactFile {
+  filename: string;
+  content: unknown;
+}
+
+interface CommunityArtifactsResponse {
+  sdkversion: string;
+  category: string;
+  files: CommunityArtifactFile[];
+}
+
+interface CommunityArtifactsPaneProps {
+  defaultSdkversion: string;
+}
+
+function CommunityArtifactsPane({ defaultSdkversion }: CommunityArtifactsPaneProps) {
+  const [sdkversion, setSdkversion] = useState(defaultSdkversion || "");
+  const [data, setData] = useState<CommunityArtifactsResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const previousDefaultRef = useRef(defaultSdkversion);
+
+  useEffect(() => {
+    const previousDefault = previousDefaultRef.current;
+    previousDefaultRef.current = defaultSdkversion;
+    setSdkversion((current) => {
+      if (!current || current === previousDefault) return defaultSdkversion || "";
+      return current;
+    });
+    setData(null);
+    setError("");
+  }, [defaultSdkversion]);
+
+  async function handleFetch() {
+    const version = sdkversion.trim();
+    if (!version) {
+      toast.info("请输入完整 SDK 版本号");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const result = await apiPost<CommunityArtifactsResponse>(
+        "/api/qa/community-artifacts",
+        { sdkversion: version, category: "ai4s" },
+      );
+      setData(result);
+      toast.success(`已获取 ${result.files.length} 个 JSON 文件`);
+    } catch (ex) {
+      const message = ex instanceof Error ? ex.message : String(ex);
+      setError(message);
+      toast.error("获取失败：" + message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleDownloadAll() {
+    if (!data?.files.length) return;
+    downloadCommunityArtifactsZip(data);
+  }
+
+  return (
+    <div className="panel community-artifacts-panel">
+      <div className="panel-head">
+        <h2>开发者社区产物</h2>
+        {data && <span className="count">{data.files.length} 个文件</span>}
+      </div>
+      <div className="panel-body">
+        <div className="community-artifact-toolbar">
+          <label className="community-version-field">
+            <span className="muted small">SDK 版本</span>
+            <input
+              className="input"
+              value={sdkversion}
+              placeholder="请输入具体版本"
+              onChange={(e) => setSdkversion(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !loading) void handleFetch();
+              }}
+            />
+          </label>
+          <button className="btn primary" disabled={loading} onClick={() => void handleFetch()}>
+            {loading ? "获取中…" : "获取最新产物"}
+          </button>
+          <button
+            className="btn"
+            disabled={!data?.files.length || loading}
+            onClick={handleDownloadAll}
+          >
+            下载全部
+          </button>
+        </div>
+
+        {error && <div className="lerr mt-9">加载失败：{error}</div>}
+        {!data && !loading && !error && (
+          <p className="muted small mt-9">暂无数据。</p>
+        )}
+        {loading && <p className="muted small mt-9">加载中…</p>}
+        {data && (
+          <div className="community-artifact-list">
+            {data.files.map((file) => (
+              <details key={file.filename} className="community-artifact-file" open>
+                <summary>
+                  <span>{file.filename}</span>
+                  <span className="badge">JSON</span>
+                </summary>
+                <pre>{JSON.stringify(file.content, null, 4)}</pre>
+              </details>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+let crcTable: Uint32Array | null = null;
+
+function getCrcTable(): Uint32Array {
+  if (crcTable) return crcTable;
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) {
+      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    table[n] = c >>> 0;
+  }
+  crcTable = table;
+  return table;
+}
+
+function crc32(bytes: Uint8Array): number {
+  const table = getCrcTable();
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc = table[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function createZipBlob(files: CommunityArtifactFile[]): Blob {
+  const encoder = new TextEncoder();
+  const chunks: Uint8Array[] = [];
+  const centralChunks: Uint8Array[] = [];
+  let offset = 0;
+
+  for (const file of files) {
+    const nameBytes = encoder.encode(file.filename);
+    const dataBytes = encoder.encode(`${JSON.stringify(file.content, null, 4)}\n`);
+    const crc = crc32(dataBytes);
+
+    const local = new Uint8Array(30 + nameBytes.length);
+    const localView = new DataView(local.buffer);
+    localView.setUint32(0, 0x04034b50, true);
+    localView.setUint16(4, 20, true);
+    localView.setUint16(6, 0x0800, true);
+    localView.setUint16(8, 0, true);
+    localView.setUint16(10, 0, true);
+    localView.setUint16(12, 0, true);
+    localView.setUint32(14, crc, true);
+    localView.setUint32(18, dataBytes.length, true);
+    localView.setUint32(22, dataBytes.length, true);
+    localView.setUint16(26, nameBytes.length, true);
+    localView.setUint16(28, 0, true);
+    local.set(nameBytes, 30);
+    chunks.push(local, dataBytes);
+
+    const central = new Uint8Array(46 + nameBytes.length);
+    const centralView = new DataView(central.buffer);
+    centralView.setUint32(0, 0x02014b50, true);
+    centralView.setUint16(4, 20, true);
+    centralView.setUint16(6, 20, true);
+    centralView.setUint16(8, 0x0800, true);
+    centralView.setUint16(10, 0, true);
+    centralView.setUint16(12, 0, true);
+    centralView.setUint16(14, 0, true);
+    centralView.setUint32(16, crc, true);
+    centralView.setUint32(20, dataBytes.length, true);
+    centralView.setUint32(24, dataBytes.length, true);
+    centralView.setUint16(28, nameBytes.length, true);
+    centralView.setUint16(30, 0, true);
+    centralView.setUint16(32, 0, true);
+    centralView.setUint16(34, 0, true);
+    centralView.setUint16(36, 0, true);
+    centralView.setUint32(38, 0, true);
+    centralView.setUint32(42, offset, true);
+    central.set(nameBytes, 46);
+    centralChunks.push(central);
+
+    offset += local.length + dataBytes.length;
+  }
+
+  const centralStart = offset;
+  const centralSize = centralChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const end = new Uint8Array(22);
+  const endView = new DataView(end.buffer);
+  endView.setUint32(0, 0x06054b50, true);
+  endView.setUint16(4, 0, true);
+  endView.setUint16(6, 0, true);
+  endView.setUint16(8, files.length, true);
+  endView.setUint16(10, files.length, true);
+  endView.setUint32(12, centralSize, true);
+  endView.setUint32(16, centralStart, true);
+  endView.setUint16(20, 0, true);
+
+  return new Blob(
+    [...chunks, ...centralChunks, end].map((chunk) => {
+      const copy = new Uint8Array(chunk.length);
+      copy.set(chunk);
+      return copy.buffer;
+    }),
+    { type: "application/zip" },
+  );
+}
+
+function downloadCommunityArtifactsZip(data: CommunityArtifactsResponse) {
+  const blob = createZipBlob(data.files);
+  const safeVersion = data.sdkversion.replace(/[^A-Za-z0-9_.-]/g, "_");
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `developer-community-artifacts_${safeVersion}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+// ---------------------------------------------------------------------------
 // Helpers shared within this file
 // ---------------------------------------------------------------------------
 
@@ -1340,7 +1574,7 @@ function usersLabel(
 // QaPage — top-level component
 // ---------------------------------------------------------------------------
 
-type QaSubtab = "mark" | "release" | "test";
+type QaSubtab = "mark" | "release" | "test" | "community";
 
 export function QaPage() {
   const { user } = useAuth();
@@ -1376,6 +1610,9 @@ export function QaPage() {
   }
 
   const canView = canViewQa(user ?? undefined);
+  const currentRelease = data
+    ? (data.releases ?? []).find((r) => r.id === (selectedReleaseId || data.release?.id)) ?? data.release
+    : null;
 
   if (!canView) {
     return (
@@ -1444,6 +1681,12 @@ export function QaPage() {
             >
               Test 命令
             </button>
+            <button
+              className={`subtab ${subtab === "community" ? "active" : ""}`}
+              onClick={() => setSubtab("community")}
+            >
+              开发者社区产物
+            </button>
           </div>
 
           {subtab === "mark" && (
@@ -1471,6 +1714,11 @@ export function QaPage() {
                 hint="由各 app 已上传的 app_info 生成的测试命令清单（输出对应 get_release_report_test_cmd.py）。"
                 releases={data.releases ?? []}
               />
+            </div>
+          )}
+          {subtab === "community" && (
+            <div id="qaCommunityArtifactsPane" className="qa-pane active">
+              <CommunityArtifactsPane defaultSdkversion={currentRelease?.maca_version ?? ""} />
             </div>
           )}
         </>

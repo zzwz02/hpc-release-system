@@ -23,6 +23,7 @@ from fastapi.responses import Response
 
 from app.config import settings
 from app.deps import get_db, require_capability, require_tab_access
+from app.services import community_artifacts_service
 from app.services import qa_service
 
 router = APIRouter(tags=["qa"])
@@ -122,6 +123,26 @@ def api_qa_reports(
     Mirrors server.py:435-443.
     """
     return qa_service.get_qa_reports(conn, release_id, compare_release_id)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/qa/community-artifacts
+# ---------------------------------------------------------------------------
+
+@router.post("/api/qa/community-artifacts")
+def api_qa_community_artifacts(
+    body: dict,
+    _user: dict = Depends(require_qa_tab_access),
+) -> dict:
+    """Return developer-community artifact JSON filenames and contents.
+
+    Each request shells out to hpcbox, so the QA page always sees the latest
+    qpub result and never relies on a server-side cache.
+    """
+    return community_artifacts_service.fetch_community_artifacts(
+        body.get("sdkversion", ""),
+        category=body.get("category", "ai4s"),
+    )
 
 
 # ---------------------------------------------------------------------------

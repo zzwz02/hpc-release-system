@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     # from shared/integrations.json, which is also consumed by the frontend.
     gerrit_ssh_base_url: str = DEFAULT_GERRIT_SSH_BASE_URL
 
+    # --- hpcbox -----------------------------------------------------------------
+    # Used by the QA page to fetch developer-community release artifacts.
+    hpcbox_bin: str = "/usr/bin/hpcbox"
+    hpcbox_timeout_seconds: int = 120
+
     @property
     def gerrit_hpc_project(self) -> str:
         return DEFAULT_GERRIT_HPC_PROJECT
