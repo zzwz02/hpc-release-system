@@ -86,20 +86,51 @@ def check_actor(user: dict, issue: dict) -> None:
         raise AuthzError("只有当前 JIRA assignee 或 RM 可以把工单交给 agent 或与 agent 对话")
 
 
-def can_view(user: dict, conversation: dict) -> bool:
+def can_view(user: dict, conversation: dict, reporter: str = "") -> bool:
     username = user.get("username", "")
     return (
         _is_rm(user)
         or _same_user(username, conversation["owner"])
         or _same_user(username, conversation["created_by"])
+        or (user.get("role") == "Owner" and _same_user(username, reporter))
     )
 
 
 def _get_visible(conn: sqlite3.Connection, user: dict, conversation_id: str) -> dict:
     conversation = repo.get_conversation(conn, conversation_id)
-    if conversation is None or not can_view(user, conversation):
+    if conversation is None:
         raise ApiError(404, "对话不存在或无权访问")
-    return conversation
+    if can_view(user, conversation):
+        return conversation
+    if user.get("role") == "Owner":
+        try:
+            issue = jira.get_issue(conversation["issue_key"])
+        except (urllib.error.HTTPError, urllib.error.URLError):
+            raise ApiError(404, "对话不存在或无权访问") from None
+        if can_view(user, conversation, (issue.get("reporter") or {}).get("name", "")):
+            return conversation
+    raise ApiError(404, "对话不存在或无权访问")
+
+
+async def _owner_can_view_issue(user: dict, issue: dict, conn: sqlite3.Connection) -> bool:
+    if _is_rm(user):
+        return True
+    if user.get("role") != "Owner":
+        return False
+    username = user["username"]
+    key = issue["key"]
+    if repo.has_owner_history(conn, key, username):
+        return True
+    reporter = (issue.get("reporter") or {}).get("name", "")
+    if _same_user(username, reporter) and repo.has_handled_issue(conn, key):
+        return True
+    if (issue.get("issue_type") != "Bug" or not _same_user(username, assignee_name(issue))
+            or issue.get("status") in ("Resolved", "Closed")):
+        return False
+    found = await _jql_search(domain.owner_issue_jql(
+        username, issue_key=key, reporter_group=jira.owner_qa_reporter_group(),
+    ), max_results=1)
+    return any(row["key"] == key for row in found["issues"])
 
 
 # ─────────────────────────────────────────────────────────────
@@ -176,14 +207,16 @@ def _state(conversation: dict, latest: dict | None) -> str:
 def conversation_view(conn: sqlite3.Connection, user: dict, conversation: dict) -> dict:
     latest = repo.latest_turn(conn, conversation["id"])
     active = runner.active_for_conversation(conversation["id"])
+    can_write = conversation["status"] == "open" and (
+        _is_rm(user) or _same_user(user.get("username", ""), conversation["owner"])
+    )
     return {
         **conversation,
         "state": _state(conversation, latest),
         "phase": active.phase if active else "",
         "latest_turn": _turn_view(conn, latest),
-        "read_only": conversation["status"] != "open",
-        "can_write": conversation["status"] == "open"
-        and (_is_rm(user) or _same_user(user.get("username", ""), conversation["owner"])),
+        "read_only": not can_write,
+        "can_write": can_write,
         "browse_url": jira.browse_url() + conversation["issue_key"] if jira.browse_url() else "",
     }
 
@@ -217,11 +250,12 @@ def get_conversation_detail(user: dict, conversation_id: str) -> dict:
     conn = open_db()
     try:
         conversation = _get_visible(conn, user, conversation_id)
+        reporter_access = not can_view(user, conversation)
         history = [
             {"id": row["id"], "owner": row["owner"], "status": row["status"],
              "close_reason": row["close_reason"], "created_at": row["created_at"]}
             for row in repo.list_conversations(conn, issue_key=conversation["issue_key"])
-            if can_view(user, row)
+            if reporter_access or can_view(user, row)
         ]
         return {
             "conversation": conversation_view(conn, user, conversation),
@@ -271,11 +305,16 @@ async def preview_issue(user: dict, issue_key: str) -> dict:
     issue = await fetch_issue(issue_key)
     conn = open_db()
     try:
+        if not await _owner_can_view_issue(user, issue, conn):
+            raise ApiError(404, "JIRA 工单不存在或无权访问")
+        reporter = (issue.get("reporter") or {}).get("name", "")
         open_conversation = repo.get_open_conversation(conn, issue["key"])
+        if open_conversation and not can_view(user, open_conversation, reporter):
+            open_conversation = None
         history = [
             conversation_view(conn, user, row)
             for row in repo.list_conversations(conn, issue_key=issue["key"])
-            if can_view(user, row)
+            if can_view(user, row, reporter)
         ]
     finally:
         conn.close()
@@ -310,7 +349,8 @@ async def preview_issue(user: dict, issue_key: str) -> dict:
 
 
 _SEARCH_ISSUE_FIELDS = (
-    "key", "url", "summary", "issue_type", "status", "priority", "assignee", "components", "updated",
+    "key", "url", "summary", "issue_type", "status", "priority", "assignee",
+    "reporter", "components", "created", "updated",
 )
 
 
@@ -327,15 +367,17 @@ async def _jql_search(jql: str, *, max_results: int, validate: bool = True) -> d
 
 def _search_item(conn: sqlite3.Connection, user: dict, issue: dict, conversation: dict | None) -> dict:
     assignee = assignee_name(issue)
+    reporter = (issue.get("reporter") or {}).get("name", "")
+    visible = conversation and can_view(user, conversation, reporter)
     return {
         **{field: issue.get(field) for field in _SEARCH_ISSUE_FIELDS},
         "can_handover": can_act(user, issue) and bool(assignee),
         "open_conversation": {
-            "id": conversation["id"] if can_view(user, conversation) else "",
+            "id": conversation["id"],
             "owner": conversation["owner"],
             "owner_is_assignee": _same_user(conversation["owner"], assignee),
             "state": _state(conversation, repo.latest_turn(conn, conversation["id"])),
-        } if conversation else None,
+        } if visible else None,
     }
 
 
@@ -346,6 +388,8 @@ async def search_issues(user: dict, query: str) -> dict:
     the configured JIRA member groups.  Searches run with the JIRA account in
     release_system.conf [jira]; hand-over is still limited to the assignee or RM.
     """
+    if not _is_rm(user) and query.strip():
+        raise AuthzError("只有 RM 可以搜索 JIRA 工单")
     mode, value = domain.parse_issue_query(query)
     missing: list[str] = []
     jql = ""
@@ -359,9 +403,16 @@ async def search_issues(user: dict, query: str) -> dict:
             missing.append(value)
         total = len(issues)
     else:
-        jql = value if mode == "jql" else domain.default_issue_jql(
-            username=user["username"], is_rm=_is_rm(user), groups=runner_module.load_groups(),
-        )
+        if mode == "jql":
+            jql = value
+        elif _is_rm(user):
+            jql = domain.default_issue_jql(
+                username=user["username"], is_rm=True, groups=runner_module.load_groups(),
+            )
+        else:
+            jql = domain.owner_issue_jql(
+                user["username"], reporter_group=jira.owner_qa_reporter_group(),
+            )
         found = await _jql_search(jql, max_results=MAX_SEARCH_RESULTS)
         issues, total = found["issues"], found["total"]
 
@@ -375,13 +426,7 @@ async def search_issues(user: dict, query: str) -> dict:
 
 
 async def list_handled_issues(user: dict) -> dict:
-    """RM only: every issue ever handed to the agent, JIRA-closed ones included.
-
-    Current status/assignee come from JIRA; keys JIRA no longer returns
-    (deleted, moved, no permission) are listed in `missing`.
-    """
-    if not _is_rm(user):
-        raise AuthzError("只有 RM 可以查看 agent 处理过的全部工单")
+    """RM sees all handled issues; Owner sees own conversations and own reported issues."""
     conn = open_db()
     try:
         total, rows = repo.handled_issues(conn)
@@ -392,7 +437,6 @@ async def list_handled_issues(user: dict) -> dict:
     jira_by_key: dict[str, dict] = {}
     for start in range(0, len(keys), HANDLED_JQL_CHUNK):
         chunk = keys[start:start + HANDLED_JQL_CHUNK]
-        # Keys were validated at hand-over, so they are safe inside JQL.
         found = await _jql_search(f"key in ({', '.join(chunk)})", max_results=len(chunk), validate=False)
         jira_by_key.update({issue["key"]: issue for issue in found["issues"]})
 
@@ -405,9 +449,15 @@ async def list_handled_issues(user: dict) -> dict:
             key = row["issue_key"]
             issue = jira_by_key.get(key)
             if issue is None:
-                missing.append(key)
+                if _is_rm(user) or repo.has_owner_history(conn, key, user["username"]):
+                    missing.append(key)
                 continue
-            latest = repo.list_conversations(conn, issue_key=key, limit=1)[0]
+            reporter = (issue.get("reporter") or {}).get("name", "")
+            history = repo.list_conversations(conn, issue_key=key, limit=1 if _is_rm(user) else 100000)
+            visible = [item for item in history if can_view(user, item, reporter)]
+            if not visible:
+                continue
+            latest = visible[0]
             latest_turn = repo.latest_turn(conn, latest["id"])
             latest_result = loads_json(latest_turn["result_json"], {}) if latest_turn else {}
             if latest_turn and not latest_result.get("conclusion"):
@@ -416,8 +466,8 @@ async def list_handled_issues(user: dict) -> dict:
             results.append({
                 **_search_item(conn, user, issue, open_by_key.get(key)),
                 "agent": {
-                    "conversation_count": row["conversation_count"],
-                    "last_activity": row["last_activity"],
+                    "conversation_count": row["conversation_count"] if _is_rm(user) else len(visible),
+                    "last_activity": row["last_activity"] if _is_rm(user) else visible[0]["updated_at"],
                     "latest_conversation": {
                         "id": latest["id"],
                         "owner": latest["owner"],
@@ -429,7 +479,11 @@ async def list_handled_issues(user: dict) -> dict:
             })
     finally:
         conn.close()
-    return {"mode": "handled", "jql": "", "total": total, "missing": missing, "issues": results}
+    return {
+        "mode": "handled", "jql": "",
+        "total": total if _is_rm(user) else len(results) + len(missing),
+        "missing": missing, "issues": results,
+    }
 
 
 _RECOVERING_TEXT = "网站刚重启，正在重新接管本轮，请几秒后再试"
@@ -469,6 +523,12 @@ async def close_conversation(conn: sqlite3.Connection, conversation: dict, reaso
 
 async def handover(user: dict, body: dict) -> dict:
     issue = await fetch_issue(body.get("issue_key", ""))
+    conn = open_db()
+    try:
+        if not await _owner_can_view_issue(user, issue, conn):
+            raise ApiError(404, "JIRA 工单不存在或无权访问")
+    finally:
+        conn.close()
     check_actor(user, issue)
     assignee = assignee_name(issue)
     if not assignee:

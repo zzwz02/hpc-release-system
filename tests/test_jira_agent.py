@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -314,6 +315,8 @@ class FakeJira:
         self.validate_flags: list[bool] = []
         self.gone: set[str] = set()
         self.fail_comment = False
+        self.issue_overrides: dict[str, dict] = {}
+        self.qa_reporters = {"qa"}
 
     def get_issue(self, key: str) -> dict:
         if key == "NOPE-1":
@@ -322,10 +325,11 @@ class FakeJira:
             "key": key, "url": f"http://jira/browse/{key}", "summary": "saxpy 尾部元素错误",
             "issue_type": "Bug", "status": "Open", "priority": "High", "project": "MACA 3.0",
             "assignee": {"name": self.assignee, "display_name": self.assignee} if self.assignee else None,
-            "reporter": {"name": "rep", "display_name": "rep"}, "components": ["PDE_HPC"], "labels": [],
+            "reporter": {"name": "qa", "display_name": "qa"}, "components": ["PDE_HPC"], "labels": [],
             "description": "./saxpy 16777217 应输出 PASS", "created": "", "updated": "",
-            "comments": [{"id": "1", "author": "rep", "created": "", "body": "可以使用 10.2.118.75"}],
+            "comments": [{"id": "1", "author": "qa", "created": "", "body": "可以使用 10.2.118.75"}],
             "attachments": [{"id": "10", "filename": "saxpy.cu", "size": 12, "mime_type": "text/plain", "content_url": "http://jira/secure/attachment/10/saxpy.cu"}],
+            **self.issue_overrides.get(key, {}),
         }
 
     def get_issue_snapshot(self, key: str, *, timeout_seconds: float = 120) -> dict:
@@ -344,12 +348,21 @@ class FakeJira:
         self.validate_flags.append(validate)
         if "bad" in jql:
             raise jira.JiraQueryError("Error in JQL Query: bad")
-        fields = ("key", "url", "summary", "issue_type", "status", "priority", "assignee", "components", "updated")
+        fields = ("key", "url", "summary", "issue_type", "status", "priority", "assignee", "reporter", "components", "created", "updated")
         if jql.startswith("key in ("):
             keys = [key for key in jql[len("key in ("):-1].split(", ") if key not in self.gone]
             issues = [{**{k: self.get_issue(key)[k] for k in fields}, "status": "Closed"} for key in keys]
             return {"total": len(issues), "issues": issues}
-        issue = self.get_issue("MC3-7672")
+        key_match = re.search(r"key = ([A-Z][A-Z0-9_]*-\d+)", jql)
+        issue = self.get_issue(key_match.group(1) if key_match else "MC3-7672")
+        if "reporter in membersOf" in jql:
+            assignee_match = re.search(r'assignee = "([^"]+)"', jql)
+            reporter = (issue["reporter"] or {}).get("name", "")
+            assignee = (issue["assignee"] or {}).get("name", "")
+            if (reporter not in self.qa_reporters or issue["issue_type"] != "Bug"
+                    or issue["status"] in ("Resolved", "Closed")
+                    or not assignee_match or assignee != assignee_match.group(1)):
+                return {"total": 0, "issues": []}
         return {"total": 1, "issues": [{k: issue[k] for k in fields}]}
 
     def download_attachment(self, url: str) -> bytes:
@@ -366,6 +379,8 @@ USERS = {
     "alice": {"username": "alice", "display_name": "Alice", "role": "Owner"},
     "bob": {"username": "bob", "display_name": "Bob", "role": "Owner"},
     "carol": {"username": "carol", "display_name": "Carol", "role": "RM"},
+    "dave": {"username": "dave", "display_name": "Dave", "role": "QA"},
+    "erin": {"username": "erin", "display_name": "Erin", "role": "Guest"},
 }
 
 
@@ -541,7 +556,7 @@ def test_handover_runs_codex_turn_records_timeline_and_comments(env) -> None:
 def test_only_current_assignee_or_rm_can_hand_over(env) -> None:
     env.as_user("bob")
     response = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-1"})
-    assert response.status_code == 403
+    assert response.status_code == 404
 
     env.as_user("carol")  # RM acts on behalf; owner stays the assignee
     conversation = _handover(env, "MC3-1")["conversation"]
@@ -559,49 +574,77 @@ def test_only_current_assignee_or_rm_can_hand_over(env) -> None:
 
 
 def test_issue_search_default_list_keys_and_jql(env) -> None:
-    mine = env.client.get("/api/jira-agent/issues", params={"q": ""}).json()
+    mine = env.client.get("/api/jira-agent/issues").json()
     assert mine["mode"] == "mine"
-    assert mine["jql"] == 'assignee = "alice" AND status != Closed ORDER BY updated DESC'
+    assert mine["jql"] == domain.owner_issue_jql("alice")
     assert mine["issues"][0]["can_handover"] is True
 
-    env.as_user("carol")  # RM: the configured HPC JIRA group
-    rm = env.client.get("/api/jira-agent/issues", params={"q": ""}).json()
+    for query in ("MC3-1", "project = MC3", "MC3-1, MC3-2"):
+        assert env.client.get("/api/jira-agent/issues", params={"q": query}).status_code == 403
+
+    env.as_user("carol")
+    rm = env.client.get("/api/jira-agent/issues").json()
     assert rm["jql"] == 'assignee in membersOf("pde_hpc") AND status != Closed ORDER BY updated DESC'
-
-    env.as_user("alice")
-    conversation = _handover(env, "MC3-2")["conversation"]
-    several = env.client.get("/api/jira-agent/issues", params={"q": "mc3-1, MC3-2"})
+    several = env.client.get("/api/jira-agent/issues", params={"q": "MC3-1, MC3-2"})
     assert several.status_code == 400
-    assert "一次只能查询一个 JIRA 编号" in several.json()["error"]
-
     missing = env.client.get("/api/jira-agent/issues", params={"q": "NOPE-1"}).json()
     assert (missing["mode"], missing["issues"], missing["missing"]) == ("key", [], ["NOPE-1"])
-    assert env.client.get("/api/jira-agent/issues", params={"q": "mc3-1"}).json()["issues"][0]["open_conversation"] is None
-
     keys = env.client.get("/api/jira-agent/issues", params={"q": " mc3-2 "}).json()
-    assert keys["mode"] == "key"
-    assert keys["jql"] == ""
-    assert [issue["key"] for issue in keys["issues"]] == ["MC3-2"]
-    assert keys["missing"] == []
-    open_conversation = keys["issues"][0]["open_conversation"]
-    assert {k: open_conversation[k] for k in ("id", "owner", "owner_is_assignee")} == {
-        "id": conversation["id"], "owner": "alice", "owner_is_assignee": True,
-    }
-    assert open_conversation["state"] in {"queued", "running", "waiting_review"}
-
-    env.as_user("bob")  # not the owner: sees that a conversation exists, not its id
-    hidden = env.client.get("/api/jira-agent/issues", params={"q": "MC3-2"}).json()
-    assert hidden["issues"][0]["open_conversation"]["id"] == ""
-    assert hidden["issues"][0]["can_handover"] is False
-
-    jql = env.client.get("/api/jira-agent/issues", params={"q": "project = MC3 AND status = Open"}).json()
+    assert (keys["mode"], keys["issues"][0]["key"]) == ("key", "MC3-2")
+    jql = env.client.get("/api/jira-agent/issues", params={"q": "project = MC3"}).json()
     assert jql["mode"] == "jql"
-    assert env.jira.searches[-1] == "project = MC3 AND status = Open"
-
+    assert env.jira.searches[-1] == "project = MC3"
     bad = env.client.get("/api/jira-agent/issues", params={"q": "bad jql"})
     assert bad.status_code == 400
     assert "Error in JQL Query" in bad.json()["error"]
 
+
+def test_owner_default_scope_and_handled_history(env) -> None:
+    env.jira.issue_overrides["MC3-10"] = {"reporter": {"name": "outsider"}, "assignee": {"name": "alice"}}
+    assert env.client.get("/api/jira-agent/issues/MC3-10").status_code == 404
+    assert env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-10"}).status_code == 404
+
+    env.jira.issue_overrides["MC3-11"] = {"reporter": {"name": "alice"}, "assignee": {"name": "bob"}}
+    assert env.client.get("/api/jira-agent/issues/MC3-11").status_code == 404
+    env.as_user("carol")
+    conversation = _handover(env, "MC3-11")["conversation"]
+
+    env.as_user("alice")
+    handled = env.client.get("/api/jira-agent/issues", params={"scope": "handled"}).json()
+    assert [item["key"] for item in handled["issues"]] == ["MC3-11"]
+    assert handled["issues"][0]["agent"]["latest_conversation"]["id"] == conversation["id"]
+    preview = env.client.get("/api/jira-agent/issues/MC3-11").json()
+    assert preview["can_handover"] is False
+    assert preview["conversations"][0]["read_only"] is True
+    detail = env.client.get(f"/api/jira-agent/conversations/{conversation['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["conversation"]["read_only"] is True
+    assert detail.json()["conversation"]["can_write"] is False
+    assert detail.json()["issue_conversations"][0]["id"] == conversation["id"]
+    assert env.client.post(f"/api/jira-agent/conversations/{conversation['id']}/messages", json={"text": "test"}).status_code == 403
+
+    env.as_user("bob")
+    assert env.client.get("/api/jira-agent/issues/MC3-10").status_code == 404
+
+
+def test_other_roles_cannot_access_jira_agent(env) -> None:
+    for username in ("dave", "erin"):
+        env.as_user(username)
+        assert env.client.get("/api/jira-agent/issues").status_code == 403
+        assert env.client.get("/api/jira-agent/issues", params={"scope": "handled"}).status_code == 403
+        assert env.client.get("/api/jira-agent/issues/MC3-1").status_code == 403
+
+
+def test_owner_qa_scope_requires_reporter_group_bug_and_open_status(env) -> None:
+    for key, change in (
+        ("MC3-20", {"reporter": {"name": "outsider"}}),
+        ("MC3-21", {"issue_type": "Task"}),
+        ("MC3-22", {"status": "Resolved"}),
+        ("MC3-23", {"assignee": {"name": "bob"}}),
+    ):
+        env.jira.issue_overrides[key] = change
+        assert env.client.get(f"/api/jira-agent/issues/{key}").status_code == 404
+    assert env.client.get("/api/jira-agent/issues/MC3-24").status_code == 200
 
 
 def test_handled_issue_repository_returns_more_than_200_issues(tmp_path: Path) -> None:
@@ -634,7 +677,9 @@ def test_rm_lists_every_handled_issue_including_closed(env) -> None:
     second = _handover(env, "MC3-1", new_conversation=True)["conversation"]
     _handover(env, "MC3-2")
 
-    assert env.client.get("/api/jira-agent/issues", params={"scope": "handled"}).status_code == 403
+    own = env.client.get("/api/jira-agent/issues", params={"scope": "handled"}).json()
+    assert own["total"] == 2
+    assert {item["key"] for item in own["issues"]} == {"MC3-1", "MC3-2"}
 
     env.as_user("carol")
     env.jira.gone.add("MC3-2")

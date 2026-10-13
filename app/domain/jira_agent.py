@@ -230,6 +230,22 @@ def jql_string(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+OWNER_QA_REPORTER_GROUP = "dl.sw_qa"
+
+
+def owner_issue_jql(
+    username: str, *, issue_key: str = "", reporter_group: str = OWNER_QA_REPORTER_GROUP,
+) -> str:
+    scope = (
+        f'type = Bug AND reporter in membersOf({jql_string(reporter_group)}) '
+        f'AND assignee = {jql_string(username)} '
+        'AND status not in (Resolved, Closed)'
+    )
+    if issue_key:
+        return f'key = {issue_key} AND {scope}'
+    return f'{scope} ORDER BY summary DESC, created DESC'
+
+
 def default_issue_jql(*, username: str, is_rm: bool, groups: dict[str, AgentGroup]) -> str:
     """Own not-closed issues; RM sees issues of the configured JIRA groups."""
     member_groups = [g.jira_members_group for g in groups.values() if g.jira_members_group]

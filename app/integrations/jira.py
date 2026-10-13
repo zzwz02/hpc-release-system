@@ -51,6 +51,10 @@ def load_config() -> dict | None:
     return cfg
 
 
+def owner_qa_reporter_group() -> str:
+    return str(_read_config().get("JIRA_AGENT_OWNER_QA_REPORTER_GROUP") or "").strip() or "dl.sw_qa"
+
+
 def browse_url() -> str:
     """Return the safe, browser-facing Jira issue prefix (never a token)."""
     base_url = str(_read_config().get("JIRA_BASE_URL") or "").strip()
@@ -449,7 +453,7 @@ class JiraQueryError(ValueError):
     """JQL rejected by JIRA (HTTP 400); message carries JIRA's explanation."""
 
 
-_SEARCH_FIELDS = ["summary", "status", "assignee", "priority", "issuetype", "components", "updated"]
+_SEARCH_FIELDS = ["summary", "status", "assignee", "reporter", "priority", "issuetype", "components", "created", "updated"]
 
 
 def search_issues(
@@ -488,7 +492,9 @@ def search_issues(
             "status": (fields.get("status") or {}).get("name", ""),
             "priority": (fields.get("priority") or {}).get("name", ""),
             "assignee": _person(fields.get("assignee")),
+            "reporter": _person(fields.get("reporter")),
             "components": [c.get("name", "") for c in fields.get("components") or []],
+            "created": fields.get("created") or "",
             "updated": fields.get("updated") or "",
         })
     return {"total": int(raw.get("total") or 0), "issues": issues}

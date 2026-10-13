@@ -138,6 +138,22 @@ def handled_issues(conn: sqlite3.Connection) -> tuple[int, list[dict]]:
     return int(total), rows
 
 
+def has_handled_issue(conn: sqlite3.Connection, issue_key: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM jira_agent_conversations WHERE issue_key = ? LIMIT 1",
+        (issue_key,),
+    ).fetchone() is not None
+
+
+def has_owner_history(conn: sqlite3.Connection, issue_key: str, username: str) -> bool:
+    return conn.execute(
+        """SELECT 1 FROM jira_agent_conversations
+           WHERE issue_key = ? AND (owner = ? COLLATE NOCASE OR created_by = ? COLLATE NOCASE)
+           LIMIT 1""",
+        (issue_key, username, username),
+    ).fetchone() is not None
+
+
 def touch_conversation(conn: sqlite3.Connection, conversation_id: str) -> None:
     conn.execute(
         "UPDATE jira_agent_conversations SET updated_at = ? WHERE id = ?",

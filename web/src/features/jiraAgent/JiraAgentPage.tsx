@@ -57,8 +57,13 @@ import {
 
 const DRAFT = "new";
 
+function useViewerKey() {
+  const { user } = useAuth();
+  return `${user?.username ?? ""}:${user?.role ?? ""}`;
+}
+
 const SEARCH_MODE_LABELS: Record<IssueSearchResponse["mode"], string> = {
-  mine: "默认列表（未关闭）",
+  mine: "默认列表",
   key: "按 JIRA 编号",
   jql: "JQL",
   handled: "agent 处理过（含已关闭）",
@@ -225,8 +230,9 @@ function ConversationRedirect({
   id: string;
   onNavigate: (issue: string, conversation?: string, replace?: boolean) => void;
 }) {
+  const viewer = useViewerKey();
   const detailQuery = useQuery({
-    queryKey: jiraAgentConversationKey(id),
+    queryKey: [...jiraAgentConversationKey(id), viewer],
     queryFn: () => getConversation(id),
   });
   const issueKey = detailQuery.data?.conversation.issue_key;
@@ -245,26 +251,25 @@ function ConversationRedirect({
 
 type SelectIssue = (key: string, conversation?: string) => void;
 
-/** RM can switch between the search box and every issue the agent has handled. */
+/** RM searches Jira; Owner sees assigned QA issues and their handled history. */
 function IssueSearchPanel({ selectedKey, onSelect }: { selectedKey: string; onSelect: SelectIssue }) {
   const { user } = useAuth();
   const rm = isRM(user);
   const [view, setView] = useState<"search" | "handled">("search");
-  const handled = rm && view === "handled";
+  const handled = view === "handled";
 
   return (
     <div className="panel">
       <div className="panel-head">
         <strong>JIRA 工单</strong>
-        {rm && (
-          <div className="jira-agent-view-switch" role="group" aria-label="工单列表">
+        <div className="jira-agent-view-switch" role="group" aria-label="工单列表">
             <button
               type="button"
               className={`btn sm${handled ? "" : " active"}`}
               aria-pressed={!handled}
               onClick={() => setView("search")}
             >
-              查找
+              {rm ? "查找" : "我的工单"}
             </button>
             <button
               type="button"
@@ -274,23 +279,23 @@ function IssueSearchPanel({ selectedKey, onSelect }: { selectedKey: string; onSe
             >
               agent 处理过
             </button>
-          </div>
-        )}
+        </div>
       </div>
       {handled ? (
         <HandledIssueList selectedKey={selectedKey} onSelect={onSelect} />
       ) : (
-        <IssueSearch selectedKey={selectedKey} onSelect={onSelect} />
+        <IssueSearch selectedKey={selectedKey} onSelect={onSelect} rm={rm} />
       )}
     </div>
   );
 }
 
-function IssueSearch({ selectedKey, onSelect }: { selectedKey: string; onSelect: SelectIssue }) {
+function IssueSearch({ selectedKey, onSelect, rm }: { selectedKey: string; onSelect: SelectIssue; rm: boolean }) {
   const [input, setInput] = useState("");
   const [query, setQuery] = useState("");
+  const viewer = useViewerKey();
   const searchQuery = useQuery({
-    queryKey: jiraAgentIssueSearchKey(query),
+    queryKey: [...jiraAgentIssueSearchKey(query), viewer],
     queryFn: () => searchIssues(query),
   });
 
@@ -303,20 +308,22 @@ function IssueSearch({ selectedKey, onSelect }: { selectedKey: string; onSelect:
   const result = searchQuery.data;
   return (
     <div className="panel-body jira-agent-search">
-      <div className="row">
-        <input
-          aria-label="JIRA 编号或 JQL"
-          placeholder="一个 JIRA 编号或 JQL，留空为默认列表"
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") search();
-          }}
-        />
-        <button type="button" className="btn sm" disabled={searchQuery.isFetching} onClick={search}>
-          查询
-        </button>
-      </div>
+      {rm && (
+        <div className="row">
+          <input
+            aria-label="JIRA 编号或 JQL"
+            placeholder="一个 JIRA 编号或 JQL，留空为默认列表"
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") search();
+            }}
+          />
+          <button type="button" className="btn sm" disabled={searchQuery.isFetching} onClick={search}>
+            查询
+          </button>
+        </div>
+      )}
       {searchQuery.isError && <p className="jira-agent-warning">{errorMessage(searchQuery.error)}</p>}
       {result && (
         <div className="jira-agent-query-hint muted">
@@ -341,9 +348,12 @@ function IssueSearch({ selectedKey, onSelect }: { selectedKey: string; onSelect:
 }
 
 function HandledIssueList({ selectedKey, onSelect }: { selectedKey: string; onSelect: SelectIssue }) {
+  const { user } = useAuth();
+  const rm = isRM(user);
   const [filter, setFilter] = useState("");
+  const viewer = useViewerKey();
   const handledQuery = useQuery({
-    queryKey: JIRA_AGENT_HANDLED_ISSUES_KEY,
+    queryKey: [...JIRA_AGENT_HANDLED_ISSUES_KEY, viewer],
     queryFn: listHandledIssues,
   });
   const result = handledQuery.data;
@@ -358,12 +368,14 @@ function HandledIssueList({ selectedKey, onSelect }: { selectedKey: string; onSe
   return (
     <div className="panel-body jira-agent-search">
       <div className="row">
-        <input
-          aria-label="过滤 agent 处理过的工单"
-          placeholder="按编号、标题、状态或人员过滤"
-          value={filter}
-          onChange={(event) => setFilter(event.target.value)}
-        />
+        {rm && (
+          <input
+            aria-label="过滤 agent 处理过的工单"
+            placeholder="按编号、标题、状态或人员过滤"
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+          />
+        )}
         <button
           type="button"
           className="btn sm"
@@ -473,8 +485,9 @@ function IssueView({
   onNavigate: (issue: string, conversation?: string, replace?: boolean) => void;
 }) {
   const queryClient = useQueryClient();
+  const viewer = useViewerKey();
   const previewQuery = useQuery({
-    queryKey: jiraAgentIssueKey(issueKey),
+    queryKey: [...jiraAgentIssueKey(issueKey), viewer],
     queryFn: () => previewIssue(issueKey),
   });
   const preview = previewQuery.data;
@@ -489,7 +502,7 @@ function IssueView({
   }
 
   const detailQuery = useQuery({
-    queryKey: jiraAgentConversationKey(selectedId),
+    queryKey: [...jiraAgentConversationKey(selectedId), viewer],
     queryFn: () => getConversation(selectedId),
     enabled: Boolean(selectedId),
   });
@@ -732,8 +745,9 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
 // ─────────────────────────────────────────────────────────────
 
 function ConversationBody({ id, onChanged }: { id: string; onChanged: () => void }) {
+  const viewer = useViewerKey();
   const detailQuery = useQuery({
-    queryKey: jiraAgentConversationKey(id),
+    queryKey: [...jiraAgentConversationKey(id), viewer],
     queryFn: () => getConversation(id),
   });
   const detail = detailQuery.data;

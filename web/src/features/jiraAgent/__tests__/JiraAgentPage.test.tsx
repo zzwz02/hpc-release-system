@@ -287,20 +287,24 @@ describe("JiraAgentPage", () => {
     expect(apiPost).not.toHaveBeenCalled();
   });
 
-  it("only RM can switch to every issue the agent handled, including closed ones", async () => {
+  it("shows Owner a scoped handled list without search, while RM retains search", async () => {
     mockBackend({ open: false });
     const user = userEvent.setup();
     const { unmount } = renderPage();
     await screen.findByTestId("jira-agent-issue-results");
-    expect(screen.queryByRole("button", { name: "agent 处理过" })).not.toBeInTheDocument();
-    expect(screen.getByLabelText("JIRA 编号或 JQL")).toHaveAttribute(
-      "placeholder",
-      "一个 JIRA 编号或 JQL，留空为默认列表",
-    );
+    expect(screen.getByRole("button", { name: "我的工单" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("JIRA 编号或 JQL")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "agent 处理过" }));
+    expect(apiGet).toHaveBeenCalledWith("/api/jira-agent/issues?scope=handled");
+    expect(screen.queryByLabelText("过滤 agent 处理过的工单")).not.toBeInTheDocument();
     unmount();
 
     mockUser("RM");
     renderPage();
+    expect(screen.getByLabelText("JIRA 编号或 JQL")).toHaveAttribute(
+      "placeholder",
+      "一个 JIRA 编号或 JQL，留空为默认列表",
+    );
     await user.click(await screen.findByRole("button", { name: "agent 处理过" }));
 
     const results = await screen.findByTestId("jira-agent-issue-results");
