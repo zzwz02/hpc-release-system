@@ -11,6 +11,7 @@
     "cicd-assistant": ["RM", "Owner", "SPD"],
     "cicd-assistant-v2": ["RM", "Owner", "SPD"],
     "jira-agent": ["RM", "Owner"],
+    "weekly-check": ["RM", "Owner"],
     "wiki": ["RM", "Owner"],
     "admin": ["Admin"]
   },
@@ -34,6 +35,7 @@
     "artifact.export.test_scope": ["RM"],
     "artifact.generate.manager_review": ["RM"],
     "wiki.edit": ["RM"],
+    "weekly-check.run": ["RM"],
     "cicd.request.submit": ["RM", "Owner"],
     "cicd.request.approve": ["RM"],
     "cicd.request.reject": ["RM"],

@@ -101,11 +101,11 @@ describe("TabNav", () => {
 
   // ── AI助手 group ───────────────────────────────────────────────────────────
 
-  it("collapses Jenkins失败查询 / CICD助手 / JIRA agent into one AI助手 tab", () => {
+  it("collapses the AI助手 routes into one tab", () => {
     renderTabNav("RM");
     const labels = linkLabels("nav.tabs a");
     expect(labels.filter((label) => label === "AI助手")).toHaveLength(1);
-    for (const label of ["Jenkins失败查询", "CICD助手", "CICD助手V1", "JIRA agent"]) {
+    for (const label of ["Jenkins失败查询", "CICD助手", "CICD助手V1", "JIRA agent", "周报分析"]) {
       expect(labels).not.toContain(label);
     }
     expect(screen.getByRole("link", { name: "AI助手" })).toHaveAttribute(
@@ -114,9 +114,9 @@ describe("TabNav", () => {
     );
   });
 
-  it("shows the three sub-tabs under AI助手 and marks the open one", () => {
+  it("shows the sub-tabs under AI助手 and marks the open one", () => {
     renderTabNav("RM", "/jira-agent?conversation=jac_1");
-    expect(linkLabels(".tab-subnav a")).toEqual(["Jenkins失败查询", "CICD助手", "JIRA agent"]);
+    expect(linkLabels(".tab-subnav a")).toEqual(["Jenkins失败查询", "CICD助手", "JIRA agent", "周报分析"]);
     expect(screen.getByRole("link", { name: "AI助手" })).toHaveClass("active");
     expect(screen.getByRole("link", { name: "JIRA agent" })).toHaveClass("active");
     expect(screen.getByRole("link", { name: "CICD助手" })).not.toHaveClass("active");
@@ -127,10 +127,10 @@ describe("TabNav", () => {
   });
 
   it.each(ALL_ROLES)("limits AI助手 sub-tabs to the routes %s may open", (role) => {
-    const allowed = (["jenkins-failures", "cicd-assistant-v2", "jira-agent"] as const)
+    const allowed = (["jenkins-failures", "cicd-assistant-v2", "jira-agent", "weekly-check"] as const)
       .map(routeForView)
       .filter((route) => route.roles.includes(role));
-    renderTabNav(role, routeForView("jenkins-failures").path);
+    renderTabNav(role, routeForView("weekly-check").path);
     expect(linkLabels(".tab-subnav a")).toEqual(allowed.map((route) => route.label));
     expect(screen.queryByRole("link", { name: "AI助手" }) !== null).toBe(allowed.length > 0);
   });

@@ -65,7 +65,7 @@ export function csvTextToBlob(text: string): Blob {
   });
 }
 
-function triggerBlobDownload(filename: string, blob: Blob): void {
+export function triggerBlobDownload(filename: string, blob: Blob): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

@@ -73,6 +73,9 @@ export function TabNav() {
     if (view === "jira-agent") {
       void queryClient.invalidateQueries({ queryKey: ["jira-agent"] });
     }
+    if (view === "weekly-check") {
+      void queryClient.invalidateQueries({ queryKey: ["weekly-check"] });
+    }
     if (view === "wiki") {
       void queryClient.invalidateQueries({ queryKey: ["wiki"] });
     }

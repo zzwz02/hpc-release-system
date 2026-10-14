@@ -17,7 +17,7 @@
 
 这是职责摘要，不是权限实现。角色、页签与命名能力以 [access_control.json](shared/access_control.json) 为准；所有权、阶段、锁定与申请状态还会进一步限制操作。后端鉴权是最终边界，前端按钮仅用于展示。
 
-其他页面：开发 WIKI，以及「AI助手」页签下的三个子页签 Jenkins 失败查询、CICD 助手（旧版 V1 只保留直达地址）、JIRA agent，各自的地址与权限不变。完整导航见 [routeConfig.ts](web/src/routes/routeConfig.ts)。
+其他页面：开发 WIKI，以及「AI助手」页签下的四个子页签 Jenkins 失败查询、CICD 助手（旧版 V1 只保留直达地址）、JIRA agent、周报分析，各有自己的地址与权限。完整导航见 [routeConfig.ts](web/src/routes/routeConfig.ts)。
 
 ## 发布周期怎么运行
 
@@ -91,6 +91,31 @@ JIRA agent 是按组配置的数字员工，第一阶段处理 HPC 组的 Bug �
 
 后续阶段（尚未实现）：跟踪最终 root cause 与人工纠正的学习闭环、按 component 路由到其他组的数字员工、适配类与优化类任务。
 
+## 周报分析
+
+RM 每周上传 PDE HPC Project Plan 周报（.xlsx，每人一页，A 列日期、B 列周报），网站给出每人的周报与 JIRA 问题清单，按 ISO 周留档，可导出 Markdown / CSV。规则沿用原本地脚本 `weekly_report_jira_check.py`：
+
+| 问题 | 判定 | 谁来判 |
+| --- | --- | --- |
+| 周报日期异常 | 最上面一条的年份早于 2025、晚于今天 7 天以上，或不是本页最新日期 | 代码 |
+| 周报未更新 | 最上面日期比报告日期早 3 天以上，或本周更新为空 | 代码 |
+| 未写JIRA / JIRA ID不完整 | 工作项没有 JIRA ID；只写了数字、缺项目前缀 | LLM 拆工作项 |
+| JIRA不存在 / JIRA无权限 | 接口返回 404 / 403（`[jira]` 的 token 无权浏览该项目） | 代码 |
+| JIRA未更新 | 单子 assignee 是本人，窗口内本人没改字段、没写 comment / worklog、也不是新建；Closed / Resolved 照查；一个工作项挂多个本人的单，更新其一即可 | 代码 |
+| 更新与周报不符 / 部分相符 | 本人在 JIRA 上的更新与周报描述对不上；拿不准按一致 | LLM |
+
+要点：
+
+- 报告日期默认取各页最上面日期的众数，可在分析前改；周由报告日期的 ISO 周决定（如 `2026-W41`）。日期有问题的页照常分析。
+- 周报页 ↔ 账号只来自 RM 在页面“手工对应”里维护的表（页名不分大小写），可按“页名,JIRA 用户名[,不检查]”批量导入。Project、Template 等不是个人的页和不检查的人（如组长）也在这里登记并勾选“不检查”。表里没有的页提示“找不到对应的用户”，只查是否写了 JIRA ID。
+- assignee 是别人的单子不查更新。
+- 每周只留最后一版：同一周再分析会覆盖，分析失败或被 RM 中止都不动旧版；上传和分析各写一条 `audit`。分析中可点“中止分析”，进行中的 LLM / JIRA 请求返回后停下，上传的周报保留到过期，可直接重新分析。
+- 周报文件不落盘：只在内存里解析，分析完成或上传 1 小时内没有分析就丢弃，库里只记文件名和大小。
+- 网站对 JIRA 只读（GET issue），不评论、不改单，也不自动通知任何人。
+- RM 和 Owner 能看各周结果；上传、分析和成员管理需要 `weekly-check.run` 能力（RM）。
+
+实现入口：[weekly_report.py](app/domain/weekly_report.py)（解析、日期规则、问题判定）、[weekly_report_prompts.py](app/domain/weekly_report_prompts.py)（两个 prompt）、[weekly_check_service.py](app/services/weekly_check_service.py)（一次检查、入库、导出）、[weekly_check_jobs.py](app/services/weekly_check_jobs.py)（内存中的上传与后台作业）、[WeeklyCheckPage.tsx](web/src/features/weeklyCheck/WeeklyCheckPage.tsx)。没有单独的配置节：JIRA 用 `[jira]`，大模型用 `[qa_llm]`；JIRA 更新窗口默认 192 小时，在上传周报后的分析窗口里可改。
+
 ## 数据与文档产物
 
 | 数据 | 存储与边界 |
@@ -103,6 +128,7 @@ JIRA agent 是按组配置的数字员工，第一阶段处理 HPC 组的 Bug �
 | 发布产物 | `artifacts` 以 `(release_id, kind)` 为键；同类草稿重新生成会覆盖，不是历史版本库 |
 | 用户、会话、审计 | `users`、`sessions`、`audit`；这些数据不应整体导出到文档或测试夹具 |
 | WIKI | `wiki_articles`、`wiki_images`，图片存于数据库 |
+| 周报分析 | `weekly_check_weeks`（每个 ISO 周一行，重新分析覆盖）、`weekly_check_findings`、`weekly_check_members`、`weekly_check_items`（LLM 拆分结果缓存）；周报 xlsx 不保存 |
 | CICD 助手会话 | 独立 SQLite 库，由 `ASSISTANT_DATABASE_URL` 指定；不写入主业务库 |
 | JIRA agent | 独立 SQLite 库 `JIRA_AGENT_DATABASE_URL`（对话、轮次、时间线、文件索引）；上传文件与拉回的产物在 `JIRA_AGENT_DATA_DIR`；Codex thread 与工作目录在服务器 B |
 
@@ -161,7 +187,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 
 首次初始化会创建 `app/domain/authn.py` 中的固定开发账号（没有仅开发环境启用的开关），部署前应处理。Admin 不存在时依次使用 `HPC_ADMIN_PASSWORD`、`ADMIN_PASSWORD_FILE` 指定的文件或随机口令。会话没有服务端过期策略。
 
-生产形态由单个进程服务 API 和前端：在 `web/` 运行 `npm run build` 生成 `web_dist/`，再从仓库根启动 uvicorn。**保持单 worker**：QA 任务状态和 JIRA agent 队列都在进程内。
+生产形态由单个进程服务 API 和前端：在 `web/` 运行 `npm run build` 生成 `web_dist/`，再从仓库根启动 uvicorn。**保持单 worker**：QA 任务状态、JIRA agent 队列以及周报分析的上传和作业都在进程内。
 
 ## 集成配置
 

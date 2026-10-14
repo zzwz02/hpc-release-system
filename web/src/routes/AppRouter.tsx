@@ -37,6 +37,7 @@ import { ArtifactsPage } from "../features/artifacts/ArtifactsPage";
 import { CicdPage } from "../features/cicd/CicdPage";
 import { CicdAssistantPage } from "../features/cicdAgent/CicdAssistantPage";
 import { JenkinsFailuresPage } from "../features/cicdAgent/JenkinsFailuresPage";
+import { WeeklyCheckPage } from "../features/weeklyCheck/WeeklyCheckPage";
 import { WikiPage } from "../features/wiki/WikiPage";
 import { AdminPage } from "../features/admin/AdminPage";
 
@@ -71,6 +72,7 @@ const FEATURE_MAP: Record<string, React.ReactNode> = {
       <JiraAgentPage />
     </Suspense>
   ),
+  "weekly-check": <WeeklyCheckPage />,
   wiki:      <WikiPage />,
   admin:     <AdminPage />,
 };

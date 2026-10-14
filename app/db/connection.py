@@ -361,6 +361,60 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
 
+    # Weekly report check (AI助手 → 周报分析).  One row per ISO week: analysing a
+    # week again replaces its row and findings.  weekly_check_items caches the
+    # LLM work-item split by report text.
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS weekly_check_weeks (
+            week_key TEXT PRIMARY KEY,
+            week_start TEXT NOT NULL,
+            week_end TEXT NOT NULL,
+            report_date TEXT NOT NULL,
+            xlsx_name TEXT NOT NULL DEFAULT '',
+            xlsx_size INTEGER NOT NULL DEFAULT 0,
+            uploaded_by TEXT NOT NULL DEFAULT '',
+            uploaded_at TEXT NOT NULL DEFAULT '',
+            analyzed_by TEXT NOT NULL DEFAULT '',
+            analyzed_at TEXT NOT NULL DEFAULT '',
+            active_hours INTEGER NOT NULL DEFAULT 0,
+            summary_json TEXT NOT NULL DEFAULT '{}'
+        );
+
+        CREATE TABLE IF NOT EXISTS weekly_check_findings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            week_key TEXT NOT NULL REFERENCES weekly_check_weeks(week_key) ON DELETE CASCADE,
+            person TEXT NOT NULL,
+            sheet_date TEXT NOT NULL DEFAULT '',
+            problem TEXT NOT NULL,
+            item TEXT NOT NULL DEFAULT '',
+            jira_key TEXT NOT NULL DEFAULT '',
+            jira_status TEXT NOT NULL DEFAULT '',
+            assignee TEXT NOT NULL DEFAULT '',
+            last_updated TEXT NOT NULL DEFAULT '',
+            last_updater TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT ''
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_weekly_check_findings_week
+            ON weekly_check_findings(week_key, person);
+
+        CREATE TABLE IF NOT EXISTS weekly_check_members (
+            sheet TEXT PRIMARY KEY,
+            jira_username TEXT NOT NULL DEFAULT '',
+            skip INTEGER NOT NULL DEFAULT 0,
+            note TEXT NOT NULL DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS weekly_check_items (
+            sheet TEXT NOT NULL,
+            text_sha256 TEXT NOT NULL,
+            items_json TEXT NOT NULL,
+            PRIMARY KEY (sheet, text_sha256)
+        );
+        """
+    )
+
     _ensure_default_user(conn)
 
     # --- Tolerant online-ALTER loop (idempotent) -----------------------------------

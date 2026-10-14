@@ -500,6 +500,106 @@ def search_issues(
     return {"total": int(raw.get("total") or 0), "issues": issues}
 
 
+# ─────────────────────────────────────────────────────────────
+# Issue activity (weekly report check) — read only
+# ─────────────────────────────────────────────────────────────
+
+_ACTIVITY_FIELDS = "summary,status,assignee,reporter,created,updated,comment,worklog"
+
+
+def _activity_time(value: object) -> datetime | None:
+    """Parse a JIRA timestamp such as 2026-10-09T15:23:11.000+0800."""
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(value, fmt)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _username(value: dict | None) -> str:
+    return (value or {}).get("name") or (value or {}).get("key") or ""
+
+
+def get_issue_activity(issue_key: str, since: datetime) -> dict:
+    """Return one issue's status, assignee and who touched it when.
+
+    ``events`` lists every creation, field change, comment (and comment edit)
+    and worklog of the whole history as {user, display, time}.  ``changes``,
+    ``comments`` and ``worklogs`` carry the content of those at or after
+    *since* (an aware datetime).  Only GET requests.  Raises
+    urllib.error.HTTPError (404 missing, 403 no browse permission) or URLError.
+    """
+    cfg = _require_config()
+    path = f"/rest/api/2/issue/{quote(issue_key, safe='')}"
+    raw = _request(
+        cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"], "GET",
+        f"{path}?fields={_ACTIVITY_FIELDS}&expand=changelog",
+    )
+    fields = raw.get("fields") or {}
+    embedded = fields.get("worklog") or {}
+    raw_worklogs = embedded.get("worklogs") or []
+    # The issue embeds only the first page of worklogs.
+    if int(embedded.get("total") or 0) > len(raw_worklogs):
+        raw_worklogs = _request(cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"], "GET", f"{path}/worklog").get("worklogs") or []
+
+    events: list[dict] = []
+
+    def touch(who: dict | None, when: object) -> datetime | None:
+        moment = _activity_time(when)
+        user = _username(who)
+        if user and moment:
+            events.append({"user": user, "display": (who or {}).get("displayName") or "", "time": moment})
+        return moment
+
+    touch(fields.get("reporter"), fields.get("created"))
+    changes: list[dict] = []
+    for history in (raw.get("changelog") or {}).get("histories") or []:
+        moment = touch(history.get("author"), history.get("created"))
+        if moment and moment >= since:
+            changes.append({
+                "user": _username(history.get("author")),
+                "time": moment,
+                "items": [
+                    {"field": item.get("field") or "", "from": item.get("fromString") or "", "to": item.get("toString") or ""}
+                    for item in history.get("items") or []
+                ],
+            })
+    comments: list[dict] = []
+    for comment in (fields.get("comment") or {}).get("comments") or []:
+        touch(comment.get("author"), comment.get("created"))
+        if comment.get("updated") != comment.get("created"):
+            touch(comment.get("updateAuthor"), comment.get("updated"))
+        moment = _activity_time(comment.get("updated") or comment.get("created"))
+        if moment and moment >= since:
+            comments.append({
+                "author": _username(comment.get("author")),
+                "update_author": _username(comment.get("updateAuthor")),
+                "time": moment,
+                "body": comment.get("body") or "",
+            })
+    worklogs: list[dict] = []
+    for worklog in raw_worklogs:
+        moment = touch(worklog.get("author"), worklog.get("created"))
+        if moment and moment >= since:
+            worklogs.append({
+                "author": _username(worklog.get("author")),
+                "time": moment,
+                "time_spent": worklog.get("timeSpent") or "",
+                "comment": worklog.get("comment") or "",
+            })
+    return {
+        "key": raw.get("key") or issue_key,
+        "summary": fields.get("summary") or "",
+        "status": (fields.get("status") or {}).get("name", ""),
+        "assignee": _person(fields.get("assignee")),
+        "events": events,
+        "changes": changes,
+        "comments": comments,
+        "worklogs": worklogs,
+    }
+
+
 def download_attachment(
     content_url: str,
     *,
