@@ -153,3 +153,52 @@ def test_ask_json_gives_up_after_the_last_attempt_and_never_retries_config(monke
     with pytest.raises(llm.LLMConfigError):
         llm.ask_json("s", "u", attempts=3, call=unconfigured)
     assert len(calls) == 3
+
+
+def test_meter_adds_up_streamed_chunks_and_reported_usage() -> None:
+    meter = llm.LlmMeter()
+    heard: list[dict] = []
+
+    def streaming_call(system: str, prompt: str, progress) -> str:
+        progress({"content_chunks": 0, "reasoning_chunks": 2, "usage": None})
+        progress({"content_chunks": 3, "reasoning_chunks": 2, "usage": None})
+        progress({"content_chunks": 5, "reasoning_chunks": 2, "usage": {"prompt_tokens": 40, "completion_tokens": 6}})
+        return "{}"
+
+    counted = meter.wrap(streaming_call, streaming=True, listener=heard.append)
+    counted("sys", "prompt")
+    counted("sys", "p")
+
+    assert meter.snapshot() == {
+        "calls": 2, "finished": 2, "sent_chars": 13, "received": 10, "reasoning": 4,
+        "prompt_tokens": 80, "completion_tokens": 12, "usage_calls": 2, "sent_tokens_est": 4,
+    }
+    # The listener hears running totals, not one call's own counts.
+    assert [entry["received"] for entry in heard] == [0, 3, 5, 5, 8, 10]
+
+
+def test_ask_json_counts_streamed_calls_on_the_given_meter(monkeypatch) -> None:
+    def create(**_kwargs):
+        return iter([
+            _chunk(reasoning="think"),
+            _chunk(content='{"ok": '),
+            _chunk(content="true}"),
+            _chunk(choices=False, usage=types.SimpleNamespace(prompt_tokens=120, completion_tokens=7)),
+        ])
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=create))
+
+    meter = llm.LlmMeter()
+    heard: list[dict] = []
+    replies: list[bool] = []
+    with mock.patch.dict(sys.modules, {"openai": types.SimpleNamespace(OpenAI=FakeOpenAI)}):
+        result = llm.ask_json("s", "u", meter=meter, progress=heard.append, on_reply=lambda: replies.append(True))
+
+    assert result == {"ok": True}
+    assert replies == [True]
+    totals = meter.snapshot()
+    assert (totals["calls"], totals["received"], totals["reasoning"]) == (1, 2, 1)
+    assert (totals["prompt_tokens"], totals["completion_tokens"], totals["usage_calls"]) == (120, 7, 1)
+    assert heard[-1]["received"] == 2

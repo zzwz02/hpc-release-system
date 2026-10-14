@@ -7,8 +7,9 @@ import { useAuth } from "../../../api/AuthContext";
 import { apiFetch, apiGet, apiPost } from "../../../api/http";
 import { confirmDialog } from "../../../lib/confirm";
 import { triggerBlobDownload } from "../../../lib/csv";
-import { WeeklyCheckPage } from "../WeeklyCheckPage";
-import { isoWeekKey, parseMemberRows } from "../weeklyCheckApi";
+import { WeeklyReportPage } from "../WeeklyReportPage";
+import { formatDuration, formatLlmProgress } from "../../../lib/llmProgress";
+import { isoWeekKey, parseMemberRows } from "../weeklyReportApi";
 
 vi.mock("../../../api/http", () => ({
   apiFetch: vi.fn(),
@@ -59,6 +60,11 @@ const week41 = {
     people_count: 3,
     consistency: true,
     window_start: "2026-10-02 18:00",
+    elapsed_seconds: 135,
+    llm: {
+      calls: 40, finished: 40, sent_chars: 90000, received: 9100, reasoning: 0,
+      prompt_tokens: 52310, completion_tokens: 8120, usage_calls: 40, sent_tokens_est: 30000,
+    },
     not_checked: ["Project"],
     unmapped_sheets: ["Carol"],
     people: [
@@ -118,14 +124,14 @@ function mockBackend(overrides: Record<string, unknown> = {}) {
       const value = overrides[path];
       return typeof value === "function" ? (value as () => unknown)() : value;
     }
-    if (path === "/api/weekly-check/weeks") return { weeks };
-    if (path === "/api/weekly-check/weeks/2026-W41") return { week: week41 };
-    if (path === "/api/weekly-check/weeks/2026-W41/findings") return { findings };
-    if (path === "/api/weekly-check/weeks/2026-W40") {
+    if (path === "/api/weekly-report/weeks") return { weeks };
+    if (path === "/api/weekly-report/weeks/2026-W41") return { week: week41 };
+    if (path === "/api/weekly-report/weeks/2026-W41/findings") return { findings };
+    if (path === "/api/weekly-report/weeks/2026-W40") {
       return { week: { ...week41, ...weeks[1], summary: { ...week41.summary, total: 0, by_problem: [], by_person: [] } } };
     }
-    if (path === "/api/weekly-check/weeks/2026-W40/findings") return { findings: [] };
-    if (path === "/api/weekly-check/members") {
+    if (path === "/api/weekly-report/weeks/2026-W40/findings") return { findings: [] };
+    if (path === "/api/weekly-report/members") {
       return { members: [{ sheet: "Alice", jira_username: "alice", skip: false, note: "" }], version: "v1" };
     }
     throw new Error(`unexpected GET ${path}`);
@@ -137,19 +143,19 @@ function LocationProbe() {
   return <div data-testid="location">{location.search}</div>;
 }
 
-function renderPage(route = "/weekly-check") {
+function renderPage(route = "/weekly-report") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[route]}>
-        <WeeklyCheckPage />
+        <WeeklyReportPage />
         <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
-describe("WeeklyCheckPage", () => {
+describe("WeeklyReportPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockUser("Owner");
@@ -159,7 +165,7 @@ describe("WeeklyCheckPage", () => {
   it("lists the weeks newest first and opens the newest one", async () => {
     renderPage();
 
-    const list = await screen.findByTestId("weekly-check-weeks");
+    const list = await screen.findByTestId("weekly-report-weeks");
     const items = await within(list).findAllByRole("button");
     expect(items.map((item) => item.textContent)).toEqual([
       "2026 W41（10月5日-10月11日）3 条问题",
@@ -167,13 +173,16 @@ describe("WeeklyCheckPage", () => {
     ]);
     expect(items[0]).toHaveAttribute("aria-current", "true");
 
-    const record = await screen.findByTestId("weekly-check-record");
+    const record = await screen.findByTestId("weekly-report-record");
     expect(record).toHaveTextContent("rm1 · PDE HPC Project Plan 20261010.xlsx · 2.0 MB · 2026-10-10 17:00:00");
-    expect(record).toHaveTextContent("rm2 · 2026-10-10 18:00:00");
+    expect(record).toHaveTextContent("rm2 · 2026-10-10 18:00:00 · 耗时 2 分 15 秒");
+    expect(screen.getByTestId("weekly-report-llm-totals")).toHaveTextContent(
+      "LLM 调用 40 次；服务端统计：发送 52,310 / 接收 8,120 token；已收到 9,100 token",
+    );
     expect(record).toHaveTextContent("3 人；JIRA 更新窗口 2026-10-02 18:00 起（192 小时）");
-    const summary = screen.getByTestId("weekly-check-summary");
+    const summary = screen.getByTestId("weekly-report-summary");
     expect(summary).toHaveTextContent("Carol：找不到对应的用户，只检查是否写了 JIRA ID");
-    const mapping = within(summary).getByTestId("weekly-check-mapping");
+    const mapping = within(summary).getByTestId("weekly-report-mapping");
     expect(within(mapping).getAllByRole("row", { hidden: true }).map((row) => row.textContent)).toEqual([
       "周报页姓名账号说明",
       "AliceAlice Lialice",
@@ -186,7 +195,7 @@ describe("WeeklyCheckPage", () => {
     const user = userEvent.setup();
     renderPage();
 
-    const table = await screen.findByTestId("weekly-check-findings");
+    const table = await screen.findByTestId("weekly-report-findings");
     expect(within(table).getAllByRole("row")).toHaveLength(4);
     expect(within(table).getByRole("link", { name: "PHS-1" })).toHaveAttribute("href", "http://jira/browse/PHS-1");
     expect(within(table).getByRole("link", { name: "MC3-10" })).toHaveAttribute("href", "http://jira/browse/MC3-10");
@@ -204,7 +213,7 @@ describe("WeeklyCheckPage", () => {
 
   it("opens the week named in the URL and switches weeks from the list", async () => {
     const user = userEvent.setup();
-    renderPage("/weekly-check?week=2026-W40");
+    renderPage("/weekly-report?week=2026-W40");
 
     expect(await screen.findByText("本周没有发现问题")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /2026 W41/ }));
@@ -221,7 +230,7 @@ describe("WeeklyCheckPage", () => {
     await user.click(await screen.findByRole("button", { name: "导出 CSV" }));
     await waitFor(() => expect(triggerBlobDownload).toHaveBeenCalledTimes(1));
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/weekly-check/weeks/2026-W41/export?format=csv", { credentials: "include" },
+      "/api/weekly-report/weeks/2026-W41/export?format=csv", { credentials: "include" },
     );
     expect(vi.mocked(triggerBlobDownload).mock.calls[0][0]).toBe("weekly_jira_check_2026-10-10.csv");
 
@@ -234,7 +243,7 @@ describe("WeeklyCheckPage", () => {
   it("hides upload and manual overrides from Owner", async () => {
     renderPage();
 
-    await screen.findByTestId("weekly-check-record");
+    await screen.findByTestId("weekly-report-record");
     expect(screen.queryByRole("button", { name: "上传周报" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "手工对应" })).not.toBeInTheDocument();
   });
@@ -244,24 +253,31 @@ describe("WeeklyCheckPage", () => {
     const user = userEvent.setup();
     let polls = 0;
     mockBackend({
-      "/api/weekly-check/jobs/job_1": () => {
+      "/api/weekly-report/jobs/job_1": () => {
         polls += 1;
         return polls === 1
-          ? { job_id: "job_1", status: "running", message: "已完成 Alice", done: 1, total: 26, week_key: "", error: "" }
+          ? {
+              job_id: "job_1", status: "running", message: "已完成 Alice", done: 1, total: 26, week_key: "", error: "",
+              elapsed_seconds: 12,
+              llm: {
+                calls: 5, finished: 3, sent_chars: 6000, received: 420, reasoning: 0,
+                prompt_tokens: 0, completion_tokens: 0, usage_calls: 0, sent_tokens_est: 2000,
+              },
+            }
           : { job_id: "job_1", status: "completed", message: "分析完成", done: 26, total: 26, week_key: "2026-W41", error: "" };
       },
     });
     vi.mocked(apiFetch).mockResolvedValue(preview);
     vi.mocked(apiPost).mockResolvedValue({ job_id: "job_1", status: "running", message: "", done: 0, total: 0, week_key: "", error: "" });
-    renderPage("/weekly-check?week=2026-W40");
+    renderPage("/weekly-report?week=2026-W40");
 
     await user.click(await screen.findByRole("button", { name: "上传周报" }));
     const file = new File(["xlsx"], "PDE HPC Project Plan 20261017.xlsx");
     await user.upload(screen.getByLabelText("周报文件"), file);
 
-    const shown = await screen.findByTestId("weekly-check-preview");
+    const shown = await screen.findByTestId("weekly-report-preview");
     expect(apiFetch).toHaveBeenCalledWith(
-      "/api/weekly-check/uploads?filename=PDE%20HPC%20Project%20Plan%2020261017.xlsx",
+      "/api/weekly-report/uploads?filename=PDE%20HPC%20Project%20Plan%2020261017.xlsx",
       { method: "POST", body: file, headers: { "Content-Type": "application/octet-stream" } },
     );
     expect(shown).toHaveTextContent("PDE HPC Project Plan 20261017.xlsx（3.0 MB）");
@@ -270,7 +286,7 @@ describe("WeeklyCheckPage", () => {
     expect(shown).toHaveTextContent("找不到对应的用户Carol");
     const dialog = screen.getByRole("dialog", { name: "上传周报" });
     expect(
-      within(within(dialog).getByTestId("weekly-check-mapping"))
+      within(within(dialog).getByTestId("weekly-report-mapping"))
         .getAllByRole("row", { hidden: true })
         .slice(1)
         .map((row) => row.textContent),
@@ -280,21 +296,24 @@ describe("WeeklyCheckPage", () => {
       "Project—不检查：手工对应里设置为不检查",
       "WuZhaoZhao Wuzhawu不检查：手工对应里设置为不检查",
     ]);
-    expect(screen.queryByTestId("weekly-check-overwrite")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("weekly-report-overwrite")).not.toBeInTheDocument();
 
     // Moving the report date into an analysed week warns about the overwrite.
-    const dateInput = screen.getByTestId("weekly-check-report-date");
+    const dateInput = screen.getByTestId("weekly-report-report-date");
     await user.clear(dateInput);
     await user.type(dateInput, "2026-10-10");
-    expect(screen.getByTestId("weekly-check-overwrite")).toHaveTextContent(
+    expect(screen.getByTestId("weekly-report-overwrite")).toHaveTextContent(
       "将覆盖 2026 W41（10月5日-10月11日） 的现有结果。",
     );
 
     await user.click(screen.getByRole("button", { name: "分析" }));
-    expect(apiPost).toHaveBeenCalledWith("/api/weekly-check/uploads/up_1/analyze", {
+    expect(apiPost).toHaveBeenCalledWith("/api/weekly-report/uploads/up_1/analyze", {
       report_date: "2026-10-10", active_hours: 192, consistency: true,
     });
-    expect(await screen.findByTestId("weekly-check-progress")).toHaveTextContent("第 1 人 / 共 26 人 · 已完成 Alice");
+    expect(await screen.findByTestId("weekly-report-progress")).toHaveTextContent("第 1 人 / 共 26 人 · 已完成 Alice");
+    expect(screen.getByTestId("weekly-report-llm-progress")).toHaveTextContent(
+      "已运行 12s；LLM 调用 5 次（进行中 2）；已发送 6,000 字符（约 2,000 token）；已收到 420 token",
+    );
 
     await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("?week=2026-W41"), { timeout: 4000 });
     expect(screen.queryByRole("dialog", { name: "上传周报" })).not.toBeInTheDocument();
@@ -305,7 +324,7 @@ describe("WeeklyCheckPage", () => {
     mockUser("RM");
     const user = userEvent.setup();
     mockBackend({
-      "/api/weekly-check/jobs/job_1": {
+      "/api/weekly-report/jobs/job_1": {
         job_id: "job_1", status: "failed", message: "分析失败", done: 3, total: 26, week_key: "", error: "未配置 LLM",
       },
     });
@@ -321,7 +340,7 @@ describe("WeeklyCheckPage", () => {
     expect(screen.getByRole("button", { name: "分析" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "关闭" }));
     await user.click(screen.getByRole("button", { name: "分析失败，点击查看" }));
-    expect(screen.getByTestId("weekly-check-preview")).toBeVisible();
+    expect(screen.getByTestId("weekly-report-preview")).toBeVisible();
   });
 
   it("lets RM stop a running analysis after confirming", async () => {
@@ -330,7 +349,7 @@ describe("WeeklyCheckPage", () => {
     const user = userEvent.setup();
     let cancelled = false;
     mockBackend({
-      "/api/weekly-check/jobs/job_1": () =>
+      "/api/weekly-report/jobs/job_1": () =>
         cancelled
           ? {
               job_id: "job_1", status: "cancelled", message: "分析已中止，已有结果没有改动", done: 3, total: 26,
@@ -354,12 +373,12 @@ describe("WeeklyCheckPage", () => {
     await user.click(await screen.findByRole("button", { name: "上传周报" }));
     await user.upload(screen.getByLabelText("周报文件"), new File(["xlsx"], "plan.xlsx"));
     await user.click(await screen.findByRole("button", { name: "分析" }));
-    expect(await screen.findByTestId("weekly-check-progress")).toHaveTextContent("第 3 人 / 共 26 人");
+    expect(await screen.findByTestId("weekly-report-progress")).toHaveTextContent("第 3 人 / 共 26 人");
 
     await user.click(screen.getByRole("button", { name: "中止分析" }));
 
     expect(confirmDialog).toHaveBeenCalledWith(expect.objectContaining({ confirmText: "中止分析", danger: true }));
-    expect(apiPost).toHaveBeenCalledWith("/api/weekly-check/jobs/job_1/cancel", {});
+    expect(apiPost).toHaveBeenCalledWith("/api/weekly-report/jobs/job_1/cancel", {});
     expect(await screen.findByText("分析已中止，已有结果没有改动；可以重新点“分析”。", {}, { timeout: 3000 })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /中止/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "分析" })).toBeEnabled();
@@ -372,7 +391,7 @@ describe("WeeklyCheckPage", () => {
     vi.mocked(confirmDialog).mockResolvedValue(false);
     const user = userEvent.setup();
     mockBackend({
-      "/api/weekly-check/jobs/job_1": {
+      "/api/weekly-report/jobs/job_1": {
         job_id: "job_1", status: "running", message: "已完成 Alice", done: 3, total: 26, week_key: "", error: "", stopping: false,
       },
     });
@@ -387,7 +406,7 @@ describe("WeeklyCheckPage", () => {
     await user.click(await screen.findByRole("button", { name: "分析" }));
     await user.click(await screen.findByRole("button", { name: "中止分析" }));
 
-    expect(apiPost).not.toHaveBeenCalledWith("/api/weekly-check/jobs/job_1/cancel", {});
+    expect(apiPost).not.toHaveBeenCalledWith("/api/weekly-report/jobs/job_1/cancel", {});
     expect(screen.getByRole("button", { name: "中止分析" })).toBeEnabled();
   });
 
@@ -398,7 +417,7 @@ describe("WeeklyCheckPage", () => {
     renderPage();
 
     await user.click(await screen.findByRole("button", { name: "手工对应" }));
-    const table = await screen.findByTestId("weekly-check-member-table");
+    const table = await screen.findByTestId("weekly-report-member-table");
     await waitFor(() => expect(within(table).getByLabelText("Alice 的 JIRA 用户名")).toHaveValue("alice"));
 
     // A different case updates the existing row; the third cell marks a sheet 不检查.
@@ -414,7 +433,7 @@ describe("WeeklyCheckPage", () => {
 
     await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
     const [path, options] = vi.mocked(apiFetch).mock.calls[0];
-    expect(path).toBe("/api/weekly-check/members");
+    expect(path).toBe("/api/weekly-report/members");
     expect(options?.method).toBe("PUT");
     expect(JSON.parse(String(options?.body))).toEqual({
       version: "v1",
@@ -438,6 +457,17 @@ describe("weekly check helpers", () => {
     expect(isoWeekKey("2026-01-01")).toBe("2026-W01");
     expect(isoWeekKey("2026-02-30")).toBe("");
     expect(isoWeekKey("10/10")).toBe("");
+  });
+
+  it("formats durations and LLM totals like the QA analysis", () => {
+    expect(formatDuration(59)).toBe("59s");
+    expect(formatDuration(125)).toBe("2 分 5 秒");
+    const llm = {
+      calls: 2, finished: 2, sent_chars: 300, received: 0, reasoning: 7,
+      prompt_tokens: 120, completion_tokens: 30, usage_calls: 2, sent_tokens_est: 100,
+    };
+    expect(formatLlmProgress(3, llm)).toBe("已运行 3s；LLM 调用 2 次；服务端统计：发送 120 / 接收 30 token；思考 7");
+    expect(formatLlmProgress(3, undefined)).toBe("已运行 3s");
   });
 
   it("parses pasted rows with commas or tabs, an optional 不检查 cell, and skips the header", () => {

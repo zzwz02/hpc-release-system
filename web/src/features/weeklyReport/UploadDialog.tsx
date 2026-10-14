@@ -7,6 +7,7 @@
 import { useState } from "react";
 import { DateInput } from "../../components/DateInput";
 import { confirmDialog } from "../../lib/confirm";
+import { formatLlmProgress } from "../../lib/llmProgress";
 import { toast } from "../../lib/toast";
 import {
   cancelJob,
@@ -17,7 +18,7 @@ import {
   type AnalysisJob,
   type UploadPreview,
   type WeekListItem,
-} from "./weeklyCheckApi";
+} from "./weeklyReportApi";
 
 export function MappingTable({
   rows,
@@ -25,8 +26,8 @@ export function MappingTable({
   rows: { sheet: string; username: string; display_name: string; note: string }[];
 }) {
   return (
-    <div className="table-scroll weekly-check-mapping-table">
-      <table data-testid="weekly-check-mapping">
+    <div className="table-scroll weekly-report-mapping-table">
+      <table data-testid="weekly-report-mapping">
         <thead>
           <tr>
             <th>周报页</th>
@@ -140,7 +141,7 @@ export function UploadDialog({
       <div className="dialog-card maxw-660">
         <h3>上传周报</h3>
         <div className="dialog-body">
-          <label className="weekly-check-field">
+          <label className="weekly-report-field">
             <span>周报文件（PDE HPC Project Plan .xlsx，不超过 20 MB；只在内存中解析，不保存）</span>
             <input
               type="file"
@@ -151,10 +152,10 @@ export function UploadDialog({
             />
           </label>
           {uploading && <p className="muted">正在上传并解析...</p>}
-          {error && <p className="weekly-check-warning" role="alert">{error}</p>}
+          {error && <p className="weekly-report-warning" role="alert">{error}</p>}
           {preview && (
             <>
-              <dl className="weekly-check-facts" data-testid="weekly-check-preview">
+              <dl className="weekly-report-facts" data-testid="weekly-report-preview">
                 <dt>文件</dt>
                 <dd>{preview.filename}（{formatFileSize(preview.size)}）</dd>
                 <dt>识别到的周</dt>
@@ -179,7 +180,7 @@ export function UploadDialog({
                   </>
                 )}
               </dl>
-              <details className="weekly-check-mapping">
+              <details className="weekly-report-mapping">
                 <summary>周报页与账号的对应（{preview.mapping.length} 页）</summary>
                 <MappingTable
                   rows={preview.mapping.map((row) => ({
@@ -188,18 +189,18 @@ export function UploadDialog({
                   }))}
                 />
               </details>
-              <div className="weekly-check-options">
-                <label className="weekly-check-field">
+              <div className="weekly-report-options">
+                <label className="weekly-report-field">
                   <span>报告日期</span>
                   <DateInput
                     value={reportDate}
                     onChange={setReportDate}
-                    testId="weekly-check-report-date"
+                    testId="weekly-report-report-date"
                     ariaLabel="报告日期"
                     size="sm"
                   />
                 </label>
-                <label className="weekly-check-field">
+                <label className="weekly-report-field">
                   <span>JIRA 更新窗口（小时）</span>
                   <input
                     className="input sm"
@@ -220,24 +221,24 @@ export function UploadDialog({
                   分析 JIRA 更新与周报是否一致
                 </label>
               </div>
-              {!weekKey && <p className="weekly-check-warning">报告日期格式应为 YYYY-MM-DD。</p>}
+              {!weekKey && <p className="weekly-report-warning">报告日期格式应为 YYYY-MM-DD。</p>}
               {existing && !jobId && (
-                <p className="weekly-check-warning" data-testid="weekly-check-overwrite">
+                <p className="weekly-report-warning" data-testid="weekly-report-overwrite">
                   将覆盖 {existing.label} 的现有结果。
                 </p>
               )}
             </>
           )}
           {jobId && (
-            <div className="weekly-check-progress" data-testid="weekly-check-progress">
+            <div className="weekly-report-progress" data-testid="weekly-report-progress">
               {failed ? (
-                <p className="weekly-check-warning" role="alert">
+                <p className="weekly-report-warning" role="alert">
                   分析失败：{failed}
                   <br />
                   已有结果没有改动，可以修正后重新点“分析”。
                 </p>
               ) : cancelled ? (
-                <p className="weekly-check-warning" role="status">
+                <p className="weekly-report-warning" role="status">
                   分析已中止，已有结果没有改动；可以重新点“分析”。
                 </p>
               ) : (
@@ -245,7 +246,7 @@ export function UploadDialog({
                   <div className="bar">
                     <span style={{ width: `${job?.total ? Math.round((job.done / job.total) * 100) : 0}%` }} />
                   </div>
-                  <div className="weekly-check-progress-row">
+                  <div className="weekly-report-progress-row">
                     <span className="muted">
                       {job?.total ? `第 ${job.done} 人 / 共 ${job.total} 人 · ` : ""}
                       {stopping && !job?.stopping ? "正在中止" : job?.message ?? "分析任务已提交"}
@@ -257,6 +258,11 @@ export function UploadDialog({
                     )}
                   </div>
                 </>
+              )}
+              {job && (
+                <span className="small muted" data-testid="weekly-report-llm-progress">
+                  {formatLlmProgress(job.elapsed_seconds, job.llm)}
+                </span>
               )}
             </div>
           )}

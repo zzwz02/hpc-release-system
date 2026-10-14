@@ -197,3 +197,19 @@ def test_ai_analysis_reads_log_body_from_database(temp_db_with_path):
 
     assert result["apps"][0]["qa_status"] == "qa_passed"
     assert result["log_chars"] == len(b"run_make_test PASS")
+    # Counted on the shared LLM meter, like every LLM feature.
+    assert (result["llm"]["calls"], result["llm"]["finished"]) == (1, 1)
+    assert result["llm"]["sent_chars"] > 0
+
+
+def test_qa_job_snapshot_reports_elapsed_time_and_llm_totals() -> None:
+    from app.services.qa_jobs import QaJobRegistry
+
+    totals = {"calls": 1, "finished": 0, "received": 12}
+    snapshot = QaJobRegistry._snapshot({
+        "job_id": "j", "release_id": "r", "status": "completed", "started_at": 100.0,
+        "finished_at": 142.4, "llm": totals,
+    })
+
+    assert snapshot["elapsed_seconds"] == 42
+    assert snapshot["llm"] == totals

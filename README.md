@@ -17,7 +17,7 @@
 
 这是职责摘要，不是权限实现。角色、页签与命名能力以 [access_control.json](shared/access_control.json) 为准；所有权、阶段、锁定与申请状态还会进一步限制操作。后端鉴权是最终边界，前端按钮仅用于展示。
 
-其他页面：开发 WIKI，以及「AI助手」页签下的四个子页签 Jenkins 失败查询、CICD 助手（旧版 V1 只保留直达地址）、JIRA agent、周报分析，各有自己的地址与权限。完整导航见 [routeConfig.ts](web/src/routes/routeConfig.ts)。
+其他页面：开发 WIKI，以及「AI助手」页签下的四个子页签 Jenkins 失败查询、CICD 助手（旧版 V1 只保留直达地址）、JIRA agent、周报，各有自己的地址与权限。完整导航见 [routeConfig.ts](web/src/routes/routeConfig.ts)。
 
 ## 发布周期怎么运行
 
@@ -91,7 +91,9 @@ JIRA agent 是按组配置的数字员工，第一阶段处理 HPC 组的 Bug �
 
 后续阶段（尚未实现）：跟踪最终 root cause 与人工纠正的学习闭环、按 component 路由到其他组的数字员工、适配类与优化类任务。
 
-## 周报分析
+## 周报
+
+现阶段是周报的 JIRA 更新检查；以后由 JIRA 数字员工按约定格式的 JIRA 更新自动生成周报，也放在这个页签。
 
 RM 每周上传 PDE HPC Project Plan 周报（.xlsx，每人一页，A 列日期、B 列周报），网站给出每人的周报与 JIRA 问题清单，按 ISO 周留档，可导出 Markdown / CSV。规则沿用原本地脚本 `weekly_report_jira_check.py`：
 
@@ -112,9 +114,9 @@ RM 每周上传 PDE HPC Project Plan 周报（.xlsx，每人一页，A 列日期
 - 每周只留最后一版：同一周再分析会覆盖，分析失败或被 RM 中止都不动旧版；上传和分析各写一条 `audit`。分析中可点“中止分析”，进行中的 LLM / JIRA 请求返回后停下，上传的周报保留到过期，可直接重新分析。
 - 周报文件不落盘：只在内存里解析，分析完成或上传 1 小时内没有分析就丢弃，库里只记文件名和大小。
 - 网站对 JIRA 只读（GET issue），不评论、不改单，也不自动通知任何人。
-- RM 和 Owner 能看各周结果；上传、分析和成员管理需要 `weekly-check.run` 能力（RM）。
+- RM 和 Owner 能看各周结果；上传、分析和成员管理需要 `weekly-report.run` 能力（RM）。
 
-实现入口：[weekly_report.py](app/domain/weekly_report.py)（解析、日期规则、问题判定）、[weekly_report_prompts.py](app/domain/weekly_report_prompts.py)（两个 prompt）、[weekly_check_service.py](app/services/weekly_check_service.py)（一次检查、入库、导出）、[weekly_check_jobs.py](app/services/weekly_check_jobs.py)（内存中的上传与后台作业）、[WeeklyCheckPage.tsx](web/src/features/weeklyCheck/WeeklyCheckPage.tsx)。没有单独的配置节：JIRA 用 `[jira]`，大模型用 `[llm]`；JIRA 更新窗口默认 192 小时，在上传周报后的分析窗口里可改。
+实现入口：[weekly_report.py](app/domain/weekly_report.py)（解析、日期规则、问题判定）、[weekly_report_prompts.py](app/domain/weekly_report_prompts.py)（两个 prompt）、[weekly_report_service.py](app/services/weekly_report_service.py)（一次检查、入库、导出）、[weekly_report_jobs.py](app/services/weekly_report_jobs.py)（内存中的上传与后台作业）、[WeeklyReportPage.tsx](web/src/features/weeklyReport/WeeklyReportPage.tsx)。没有单独的配置节：JIRA 用 `[jira]`，大模型用 `[llm]`；JIRA 更新窗口默认 192 小时，在上传周报后的分析窗口里可改。
 
 ## 数据与文档产物
 
@@ -128,7 +130,7 @@ RM 每周上传 PDE HPC Project Plan 周报（.xlsx，每人一页，A 列日期
 | 发布产物 | `artifacts` 以 `(release_id, kind)` 为键；同类草稿重新生成会覆盖，不是历史版本库 |
 | 用户、会话、审计 | `users`、`sessions`、`audit`；这些数据不应整体导出到文档或测试夹具 |
 | WIKI | `wiki_articles`、`wiki_images`，图片存于数据库 |
-| 周报分析 | `weekly_check_weeks`（每个 ISO 周一行，重新分析覆盖）、`weekly_check_findings`、`weekly_check_members`、`weekly_check_items`（LLM 拆分结果缓存）；周报 xlsx 不保存 |
+| 周报 | `weekly_report_weeks`（每个 ISO 周一行，重新分析覆盖）、`weekly_report_findings`、`weekly_report_members`、`weekly_report_items`（LLM 拆分结果缓存）；周报 xlsx 不保存 |
 | CICD 助手会话 | 独立 SQLite 库，由 `ASSISTANT_DATABASE_URL` 指定；不写入主业务库 |
 | JIRA agent | 独立 SQLite 库 `JIRA_AGENT_DATABASE_URL`（对话、轮次、时间线、文件索引）；上传文件与拉回的产物在 `JIRA_AGENT_DATA_DIR`；Codex thread 与工作目录在服务器 B |
 
@@ -187,11 +189,11 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 
 首次初始化会创建 `app/domain/authn.py` 中的固定开发账号（没有仅开发环境启用的开关），部署前应处理。Admin 不存在时依次使用 `HPC_ADMIN_PASSWORD`、`ADMIN_PASSWORD_FILE` 指定的文件或随机口令。会话没有服务端过期策略。
 
-生产形态由单个进程服务 API 和前端：在 `web/` 运行 `npm run build` 生成 `web_dist/`，再从仓库根启动 uvicorn。**保持单 worker**：QA 任务状态、JIRA agent 队列以及周报分析的上传和作业都在进程内。
+生产形态由单个进程服务 API 和前端：在 `web/` 运行 `npm run build` 生成 `web_dist/`，再从仓库根启动 uvicorn。**保持单 worker**：QA 任务状态、JIRA agent 队列以及周报的上传和作业都在进程内。
 
 ## 集成配置
 
-LDAP、JIRA、大模型、CICD Agent、网站对外地址和各组 JIRA 数字员工的配置统一放在根目录 `release_system.conf`（已 gitignore），分为 `[ldap]`、`[jira]`、`[llm]`、`[cicd_agent]`、`[site]`、`[jira_agent:<组名>]` 几节。大模型一节供 QA AI 分析和周报分析等所有功能共用，代码里统一经 [llm.py](app/integrations/llm.py) 的 `ask_json()` 调用；原来的 `[qa_llm]` 已改名为 `[llm]`，键名去掉 `QA_` 前缀，仍写旧节名时会提示如何改。复制 `release_system.conf.example` 起步，各键含义与必填规则见其中注释。配置在每次使用时现读，修改后即时生效。旧的 `ldap.conf` / `jira.conf` / `qa_llm.env` / `jira_agent.conf` 已不再读取，升级时把内容搬到对应节。
+LDAP、JIRA、大模型、CICD Agent、网站对外地址和各组 JIRA 数字员工的配置统一放在根目录 `release_system.conf`（已 gitignore），分为 `[ldap]`、`[jira]`、`[llm]`、`[cicd_agent]`、`[site]`、`[jira_agent:<组名>]` 几节。大模型一节供 QA AI 分析和周报等所有功能共用，代码里统一经 [llm.py](app/integrations/llm.py) 的 `ask_json()` 调用；原来的 `[qa_llm]` 已改名为 `[llm]`，键名去掉 `QA_` 前缀，仍写旧节名时会提示如何改。复制 `release_system.conf.example` 起步，各键含义与必填规则见其中注释。配置在每次使用时现读，修改后即时生效。旧的 `ldap.conf` / `jira.conf` / `qa_llm.env` / `jira_agent.conf` 已不再读取，升级时把内容搬到对应节。
 
 环境变量只放文件位置和少数开发参数（下表），由 `app/config.py` 的 `Settings` 从环境变量和根目录 `.env` 读取，改后需重启。前后端共用的约定在 `shared/*.json`；调优参数和固定业务规则（如派单 JIRA 的项目、Component、issue 类型和 ETA 字段）是代码常量。新增配置放在哪里见 [release-system-dev 技能](.agents/skills/release-system-dev/SKILL.md) 的“配置落点”。
 

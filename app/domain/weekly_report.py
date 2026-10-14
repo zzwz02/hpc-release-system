@@ -2,7 +2,7 @@
 
 Ported from the local weekly_report_jira_check.py; the rules are unchanged.
 Pure functions only: no DB, JIRA or LLM access.  The service
-(app/services/weekly_check_service.py) feeds JIRA activity and LLM replies in.
+(app/services/weekly_report_service.py) feeds JIRA activity and LLM replies in.
 
 Workbook layout: one sheet per person, column A the date, column B the text.
 The first dated row from the top is the newest week; its column B is
@@ -59,7 +59,7 @@ class SheetReport:
 
 
 def problem(kind: str, item: str, jira_key: str = "", **extra: str) -> dict[str, str]:
-    """One finding; keys match the weekly_check_findings columns."""
+    """One finding; keys match the weekly_report_findings columns."""
     return {
         "problem": kind,
         "item": item,

@@ -6,6 +6,7 @@ Do NOT emit UTC.  Ported from release_system/core.py:90-131 (§5.4).
 from __future__ import annotations
 
 import datetime as dt
+import time
 
 BEIJING_TZ = dt.timezone(dt.timedelta(hours=8))
 
@@ -74,3 +75,10 @@ def is_before(deadline: str | None, *, ref: dt.datetime | None = None) -> bool:
     if dl is None:
         return True
     return (ref or beijing_now()) < dl
+
+
+def elapsed_seconds(started: float, finished: float = 0) -> int:
+    """Whole seconds from *started* to *finished* (epoch seconds); to now while unfinished."""
+    if not started:
+        return 0
+    return max(0, round((finished or time.time()) - started))

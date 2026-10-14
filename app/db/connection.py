@@ -361,12 +361,12 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
 
-    # Weekly report check (AI助手 → 周报分析).  One row per ISO week: analysing a
-    # week again replaces its row and findings.  weekly_check_items caches the
+    # Weekly report check (AI助手 → 周报).  One row per ISO week: analysing a
+    # week again replaces its row and findings.  weekly_report_items caches the
     # LLM work-item split by report text.
     conn.executescript(
         """
-        CREATE TABLE IF NOT EXISTS weekly_check_weeks (
+        CREATE TABLE IF NOT EXISTS weekly_report_weeks (
             week_key TEXT PRIMARY KEY,
             week_start TEXT NOT NULL,
             week_end TEXT NOT NULL,
@@ -381,9 +381,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             summary_json TEXT NOT NULL DEFAULT '{}'
         );
 
-        CREATE TABLE IF NOT EXISTS weekly_check_findings (
+        CREATE TABLE IF NOT EXISTS weekly_report_findings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            week_key TEXT NOT NULL REFERENCES weekly_check_weeks(week_key) ON DELETE CASCADE,
+            week_key TEXT NOT NULL REFERENCES weekly_report_weeks(week_key) ON DELETE CASCADE,
             person TEXT NOT NULL,
             sheet_date TEXT NOT NULL DEFAULT '',
             problem TEXT NOT NULL,
@@ -396,17 +396,17 @@ def init_db(conn: sqlite3.Connection) -> None:
             note TEXT NOT NULL DEFAULT ''
         );
 
-        CREATE INDEX IF NOT EXISTS idx_weekly_check_findings_week
-            ON weekly_check_findings(week_key, person);
+        CREATE INDEX IF NOT EXISTS idx_weekly_report_findings_week
+            ON weekly_report_findings(week_key, person);
 
-        CREATE TABLE IF NOT EXISTS weekly_check_members (
+        CREATE TABLE IF NOT EXISTS weekly_report_members (
             sheet TEXT PRIMARY KEY,
             jira_username TEXT NOT NULL DEFAULT '',
             skip INTEGER NOT NULL DEFAULT 0,
             note TEXT NOT NULL DEFAULT ''
         );
 
-        CREATE TABLE IF NOT EXISTS weekly_check_items (
+        CREATE TABLE IF NOT EXISTS weekly_report_items (
             sheet TEXT NOT NULL,
             text_sha256 TEXT NOT NULL,
             items_json TEXT NOT NULL,

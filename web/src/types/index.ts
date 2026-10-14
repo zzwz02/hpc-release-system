@@ -16,6 +16,7 @@ import type {
   ReleaseDecision as SharedReleaseDecision,
   ReleasePhase as SharedReleasePhase,
 } from "../lib/domainMetadata";
+import type { LlmTotals } from "../lib/llmProgress";
 
 // ---------------------------------------------------------------------------
 // Auth / User
@@ -512,6 +513,10 @@ export interface QaAnalysisJob {
   summary: string;
   error: string | null;
   progress: number | null;
+  /** Seconds since the job started, worked out by the server. */
+  elapsed_seconds?: number;
+  /** LLM usage so far, counted like every LLM feature (lib/llmProgress). */
+  llm?: LlmTotals | null;
 }
 
 // ---------------------------------------------------------------------------

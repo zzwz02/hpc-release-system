@@ -17,8 +17,9 @@ from typing import Any
 from app.db.connection import connect
 from app.domain import weekly_report as wr
 from app.repositories.audit_repo import log_audit
-from app.services import weekly_check_service
-from app.timeutil import beijing_timestamp
+from app.integrations import llm
+from app.services import weekly_report_service
+from app.timeutil import beijing_timestamp, elapsed_seconds
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 # An upload nobody analyses is dropped after this long; so is a finished job.
@@ -26,7 +27,7 @@ UPLOAD_TTL_SECONDS = 3600
 JOB_TTL_SECONDS = 3600
 
 
-class WeeklyCheckRegistry:
+class WeeklyReportRegistry:
     """Thread-safe store of pending uploads and analysis jobs."""
 
     def __init__(self) -> None:
@@ -56,7 +57,7 @@ class WeeklyCheckRegistry:
         if len(content) > MAX_UPLOAD_BYTES:
             raise ValueError(f"文件超过 {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
         reports, undated = wr.read_reports(content)
-        preview = weekly_check_service.preview(conn, reports, undated)
+        preview = weekly_report_service.preview(conn, reports, undated)
         if not preview["people_count"]:
             raise ValueError("周报里没有需要检查的人员页")
         upload = {
@@ -75,7 +76,7 @@ class WeeklyCheckRegistry:
             self._uploads[upload["upload_id"]] = upload
         log_audit(
             conn, f"上传周报 {name}（{len(content)} 字节）",
-            ts=upload["uploaded_at"], user=user, role=role, event="weekly_check_upload",
+            ts=upload["uploaded_at"], user=user, role=role, event="weekly_report_upload",
             detail={"filename": name, "size": len(content), "report_date": preview["report_date"]},
         )
         conn.commit()
@@ -104,7 +105,7 @@ class WeeklyCheckRegistry:
         options = {
             "report_date": wr.parse_report_date(report_date) if report_date else None,
             "active_hours": (
-                weekly_check_service.validate_active_hours(active_hours)
+                weekly_report_service.validate_active_hours(active_hours)
                 if active_hours not in (None, "") else None
             ),
             "consistency": consistency,
@@ -120,6 +121,7 @@ class WeeklyCheckRegistry:
             job = {
                 "job_id": secrets.token_urlsafe(12),
                 "stop": threading.Event(),
+                "meter": llm.LlmMeter(),
                 "upload_id": upload_id,
                 "user": user,
                 "status": "running",
@@ -166,6 +168,8 @@ class WeeklyCheckRegistry:
             for key in ("job_id", "status", "message", "done", "total", "week_key", "error", "started_at", "finished_at")
         }
         view["stopping"] = job["stop"].is_set() and job["status"] == "running"
+        view["elapsed_seconds"] = elapsed_seconds(job["started_at"], job["finished_at"])
+        view["llm"] = job["meter"].snapshot()
         return view
 
     def _update(self, job_id: str, **updates: object) -> None:
@@ -189,17 +193,17 @@ class WeeklyCheckRegistry:
             conn = connect(db_path)
 
             with self._lock:
-                stop = self._jobs[job_id]["stop"]
+                stop, meter = self._jobs[job_id]["stop"], self._jobs[job_id]["meter"]
 
             def progress(done: int, total: int, message: str) -> None:
                 if not stop.is_set():
                     self._update(job_id, done=done, total=total, message=message)
 
-            result = weekly_check_service.run_check(
+            result = weekly_report_service.run_check(
                 conn, upload["reports"], progress=progress, undated=upload["undated"],
-                should_stop=stop.is_set, **options,
+                should_stop=stop.is_set, meter=meter, **options,
             )
-            week = weekly_check_service.store_week(
+            week = weekly_report_service.store_week(
                 conn, result,
                 xlsx_name=upload["filename"], xlsx_size=upload["size"],
                 uploaded_by=upload["uploaded_by"], uploaded_at=upload["uploaded_at"],
@@ -212,7 +216,7 @@ class WeeklyCheckRegistry:
                 job_id, status="completed", message="分析完成",
                 week_key=week["week_key"], finished_at=time.time(),
             )
-        except weekly_check_service.CheckCancelled:
+        except weekly_report_service.CheckCancelled:
             # As after a failure: the previous version stays, the upload is kept.
             self._update(
                 job_id, status="cancelled", message="分析已中止，已有结果没有改动",
@@ -250,4 +254,4 @@ class WeeklyCheckRegistry:
                     del self._jobs[job_id]
 
 
-registry = WeeklyCheckRegistry()
+registry = WeeklyReportRegistry()

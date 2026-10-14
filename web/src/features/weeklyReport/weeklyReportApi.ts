@@ -1,11 +1,12 @@
 import { apiFetch, apiGet, apiPost } from "../../api/http";
 import { triggerBlobDownload } from "../../lib/csv";
+import type { LlmTotals } from "../../lib/llmProgress";
 
-export const WEEKLY_CHECK_KEY = ["weekly-check"] as const;
-export const weeklyCheckWeeksKey = (viewer: string) => ["weekly-check", "weeks", viewer] as const;
-export const weeklyCheckWeekKey = (weekKey: string, viewer: string) =>
-  ["weekly-check", "week", weekKey, viewer] as const;
-export const WEEKLY_CHECK_MEMBERS_KEY = ["weekly-check", "members"] as const;
+export const WEEKLY_CHECK_KEY = ["weekly-report"] as const;
+export const weeklyReportWeeksKey = (viewer: string) => ["weekly-report", "weeks", viewer] as const;
+export const weeklyReportWeekKey = (weekKey: string, viewer: string) =>
+  ["weekly-report", "week", weekKey, viewer] as const;
+export const WEEKLY_CHECK_MEMBERS_KEY = ["weekly-report", "members"] as const;
 
 export interface WeekListItem {
   week_key: string;
@@ -45,6 +46,9 @@ export interface WeekSummary {
   not_checked: string[];
   unmapped_sheets: string[];
   people: WeekPerson[];
+  /** Absent on weeks analysed before these were recorded. */
+  elapsed_seconds?: number;
+  llm?: LlmTotals;
 }
 
 export interface WeekDetail extends WeekListItem {
@@ -102,6 +106,8 @@ export interface AnalysisJob {
   total: number;
   week_key: string;
   error: string;
+  elapsed_seconds: number;
+  llm: LlmTotals;
 }
 
 export interface Member {
@@ -117,11 +123,11 @@ export interface MembersResponse {
 }
 
 export async function listWeeks(): Promise<WeekListItem[]> {
-  return (await apiGet<{ weeks: WeekListItem[] }>("/api/weekly-check/weeks")).weeks;
+  return (await apiGet<{ weeks: WeekListItem[] }>("/api/weekly-report/weeks")).weeks;
 }
 
 export async function getWeek(weekKey: string): Promise<{ week: WeekDetail; findings: Finding[] }> {
-  const base = `/api/weekly-check/weeks/${encodeURIComponent(weekKey)}`;
+  const base = `/api/weekly-report/weeks/${encodeURIComponent(weekKey)}`;
   const [detail, list] = await Promise.all([
     apiGet<{ week: WeekDetail }>(base),
     apiGet<{ findings: Finding[] }>(`${base}/findings`),
@@ -131,7 +137,7 @@ export async function getWeek(weekKey: string): Promise<{ week: WeekDetail; find
 
 /** The workbook goes up as the raw request body; the server never stores it. */
 export function uploadReport(file: File): Promise<UploadPreview> {
-  return apiFetch<UploadPreview>(`/api/weekly-check/uploads?filename=${encodeURIComponent(file.name)}`, {
+  return apiFetch<UploadPreview>(`/api/weekly-report/uploads?filename=${encodeURIComponent(file.name)}`, {
     method: "POST",
     body: file,
     headers: { "Content-Type": "application/octet-stream" },
@@ -142,23 +148,23 @@ export function startAnalysis(
   uploadId: string,
   options: { report_date: string; active_hours: number; consistency: boolean },
 ): Promise<AnalysisJob> {
-  return apiPost<AnalysisJob>(`/api/weekly-check/uploads/${encodeURIComponent(uploadId)}/analyze`, options);
+  return apiPost<AnalysisJob>(`/api/weekly-report/uploads/${encodeURIComponent(uploadId)}/analyze`, options);
 }
 
 export function getJob(jobId: string): Promise<AnalysisJob> {
-  return apiGet<AnalysisJob>(`/api/weekly-check/jobs/${encodeURIComponent(jobId)}`);
+  return apiGet<AnalysisJob>(`/api/weekly-report/jobs/${encodeURIComponent(jobId)}`);
 }
 
 export function cancelJob(jobId: string): Promise<AnalysisJob> {
-  return apiPost<AnalysisJob>(`/api/weekly-check/jobs/${encodeURIComponent(jobId)}/cancel`, {});
+  return apiPost<AnalysisJob>(`/api/weekly-report/jobs/${encodeURIComponent(jobId)}/cancel`, {});
 }
 
 export function getMembers(): Promise<MembersResponse> {
-  return apiGet<MembersResponse>("/api/weekly-check/members");
+  return apiGet<MembersResponse>("/api/weekly-report/members");
 }
 
 export function saveMembers(members: Member[], version: string): Promise<MembersResponse> {
-  return apiFetch<MembersResponse>("/api/weekly-check/members", {
+  return apiFetch<MembersResponse>("/api/weekly-report/members", {
     method: "PUT",
     body: JSON.stringify({ members, version }),
   });
@@ -167,7 +173,7 @@ export function saveMembers(members: Member[], version: string): Promise<Members
 /** Download an export as the server wrote it (the CSV keeps its BOM). */
 export async function downloadExport(week: WeekDetail, format: "md" | "csv"): Promise<void> {
   const res = await fetch(
-    `/api/weekly-check/weeks/${encodeURIComponent(week.week_key)}/export?format=${format}`,
+    `/api/weekly-report/weeks/${encodeURIComponent(week.week_key)}/export?format=${format}`,
     { credentials: "include" },
   );
   if (!res.ok) {

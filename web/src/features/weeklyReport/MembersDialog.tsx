@@ -8,7 +8,7 @@ import {
   parseMemberRows,
   saveMembers,
   type Member,
-} from "./weeklyCheckApi";
+} from "./weeklyReportApi";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -66,9 +66,9 @@ export function MembersDialog({ onClose }: { onClose: () => void }) {
             周报页对应哪个 JIRA 用户名只看这张表，页名不分大小写。Project、Template 这类不是个人的页登记后勾选“不检查”。
             周报里有、这里没有的页会提示“找不到对应的用户”，只检查是否写了 JIRA ID。
           </p>
-          {membersQuery.isError && <p className="weekly-check-warning">{errorMessage(membersQuery.error)}</p>}
+          {membersQuery.isError && <p className="weekly-report-warning">{errorMessage(membersQuery.error)}</p>}
           <div className="table-wrap">
-            <table className="weekly-check-member-table" data-testid="weekly-check-member-table">
+            <table className="weekly-report-member-table" data-testid="weekly-report-member-table">
               <thead>
                 <tr>
                   <th>周报页名</th>
@@ -143,7 +143,7 @@ export function MembersDialog({ onClose }: { onClose: () => void }) {
               添加一行
             </button>
           </div>
-          <label className="weekly-check-field">
+          <label className="weekly-report-field">
             <span>批量导入：每行“页名,JIRA 用户名”，不检查的页写“页名,,不检查”；已有的页名会被更新</span>
             <textarea
               aria-label="批量导入手工对应"

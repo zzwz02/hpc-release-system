@@ -28,7 +28,7 @@ API_TARGET=http://127.0.0.1:8001 npm run dev -- --host 127.0.0.1 --port 5173 --s
 | `src/api/` | 同源请求、登录 API 与 AuthContext；401 进入未登录状态 |
 | `src/main.tsx` | React、QueryClient 和 AuthProvider 的全局装配 |
 | `src/routes/` | 页签、路由与角色访问；`routeConfig.ts` 中同一 `group` 的路由合并为一个页签并显示为子页签（AI助手）；Admin 非管理页深链接重定向到 `/admin` |
-| `src/features/` | 周期、总览、App、QA、文档、CICD、Jenkins、助手、JIRA agent、周报分析、WIKI、管理页面 |
+| `src/features/` | 周期、总览、App、QA、文档、CICD、Jenkins、助手、JIRA agent、周报、WIKI、管理页面 |
 | `src/lib/` | 权限、时间、阶段、字段词表和格式化 |
 | `src/store/uiStore.ts` | 共享周期选择、App 选择和编辑等 UI 状态 |
 | `src/components/` | Markdown、日期输入、刷新条、表格与通用反馈 |
@@ -39,7 +39,7 @@ CICD 助手页面调用 `/api/cicd-agent/*` 同源代理，服务地址在 `rele
 
 全局 QueryClient 默认 `staleTime: Infinity`，关闭焦点、重连、挂载自动重取和轮询。进入页面不保证请求：`refetchOnMount: true` 对永久新鲜缓存通常不重取。内容靠显式刷新和写后失效更新，`RefreshBar` 显示查询的 `dataUpdatedAt`。
 
-现有按秒轮询只有这些：顶栏 CICD 通知角标（`TabNav`，所有已登录页面）、CICD 页的待审批/待交付列表与计数、QA AI 任务进度、JIRA agent 运行中对话的时间线和上传公钥终端、周报分析运行中的作业进度。批量 Gerrit 拉取与 CICD 助手用流式接口。不要靠新增定时器修复局部失效问题。
+现有按秒轮询只有这些：顶栏 CICD 通知角标（`TabNav`，所有已登录页面）、CICD 页的待审批/待交付列表与计数、QA AI 任务进度、JIRA agent 运行中对话的时间线和上传公钥终端、周报检查运行中的作业进度。批量 Gerrit 拉取与 CICD 助手用流式接口。不要靠新增定时器修复局部失效问题。
 
 查询键应区分身份、周期、过滤参数与响应形状。当前 AuthContext 的退出/401 只重置用户，没有清空所有查询及 UI 状态；维护认证或缓存时应处理这个已知缺口，不能认为切换账号天然隔离。
 

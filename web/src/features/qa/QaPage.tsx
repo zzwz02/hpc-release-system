@@ -23,6 +23,7 @@ import { RefreshBar } from "../../components/RefreshBar";
 import { apiGet, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
+import { formatLlmProgress } from "../../lib/llmProgress";
 import { canEditQa, canViewQa } from "../../lib/roles";
 import { displayName } from "../../lib/identity";
 import { formatGerritUrl } from "../../lib/git";
@@ -95,25 +96,7 @@ function AiProgress({ job }: AiProgressProps) {
   const message = (job as unknown as Record<string, string>)["error"] ||
     (job as unknown as Record<string, string>)["message"] || "等待进度更新";
   const stage = (job as unknown as Record<string, string>)["stage"] || job.status || "";
-  const started = Number((job as unknown as Record<string, string>)["started_at"] || 0);
-  const updated = Number((job as unknown as Record<string, string>)["updated_at"] || 0);
-  const endTime = job.status === "running" ? Date.now() / 1000 : updated;
-  const elapsed = started && endTime ? Math.max(0, Math.round(endTime - started)) : 0;
-  const fields = job as unknown as Record<string, unknown>;
-  const tokenCount = Number(fields["token_count"] || 0);
-  const reasoningCount = Number(fields["reasoning_count"] || 0);
-  const promptChars = Number(fields["prompt_chars"] || 0);
-  const promptTokensEst = Number(fields["prompt_tokens_est"] || 0);
-  const usage = fields["usage"] as { prompt_tokens?: number; completion_tokens?: number } | null | undefined;
-  const tokenParts: string[] = [];
-  if (usage && usage.prompt_tokens != null) {
-    tokenParts.push(`服务端统计：发送 ${usage.prompt_tokens} / 接收 ${usage.completion_tokens ?? 0} token`);
-  } else if (promptChars) {
-    tokenParts.push(`已发送 ${promptChars} 字符（约 ${promptTokensEst} token）`);
-  }
-  if (reasoningCount) tokenParts.push(`思考 ${reasoningCount}`);
-  if (tokenCount) tokenParts.push(`已收到 ${tokenCount} token`);
-  const tokenText = tokenParts.map((part) => `；${part}`).join("");
+  const usageText = formatLlmProgress(job.elapsed_seconds ?? 0, job.llm);
 
   return (
     <div id="qaAiProgress" className={progressClass}>
@@ -123,7 +106,7 @@ function AiProgress({ job }: AiProgressProps) {
         <span className="stage">{stage}</span>
       </div>
       <div className="small muted mt-4">
-        已运行 {elapsed}s{tokenText}；进度会在当前提示中更新。
+        {usageText}；进度会在当前提示中更新。
       </div>
     </div>
   );

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from app.db.connection import connect
 from app.domain.permissions import has_capability
+from app.timeutil import elapsed_seconds
 
 # ---------------------------------------------------------------------------
 # Module-level singleton (mirrors server.py:38-40)
@@ -83,7 +84,7 @@ class QaJobRegistry:
             "started_at": now,
             "updated_at": now,
             "finished_at": 0,
-            "token_count": 0,
+            "llm": None,
             "result": None,
             "error": "",
         }
@@ -165,12 +166,12 @@ class QaJobRegistry:
             "started_at": job.get("started_at", 0),
             "updated_at": job.get("updated_at", 0),
             "finished_at": job.get("finished_at", 0),
+            "elapsed_seconds": elapsed_seconds(job.get("started_at", 0), job.get("finished_at", 0)),
         }
         if job.get("error"):
             payload["error"] = job["error"]
-        for key in ("token_count", "reasoning_count", "prompt_chars", "prompt_tokens_est", "usage"):
-            if job.get(key) is not None:
-                payload[key] = job[key]
+        if job.get("llm") is not None:
+            payload["llm"] = job["llm"]
         if job.get("result") is not None:
             payload["result"] = job["result"]
         return payload

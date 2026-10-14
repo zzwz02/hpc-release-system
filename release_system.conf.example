@@ -50,7 +50,7 @@ JIRA_ASSIGNEE = m00930
 JIRA_PARENT_ISSUE = SPD-1535
 
 
-# ── 大模型（QA AI 分析、周报分析等所有调用大模型的功能共用） ─────────
+# ── 大模型（QA AI 分析、周报等所有调用大模型的功能共用） ─────────
 # OpenAI 兼容接口（通常以 /v1 结尾），需要 python -m pip install openai。
 # 只读这里，不读环境变量。LLM_API_KEY 可选。原来的 [qa_llm] 节改名为本节，键名去掉 QA_ 前缀。
 [llm]

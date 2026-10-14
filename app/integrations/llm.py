@@ -1,6 +1,6 @@
 """LLM integration — the one way site features call the LLM.
 
-Every feature that asks the LLM something (QA log analysis, 周报分析, ...)
+Every feature that asks the LLM something (QA log analysis, 周报, ...)
 goes through ask_json(): one OpenAI-compatible endpoint, streamed, the reply
 parsed as one JSON object, a failed or unparseable reply asked again.
 Callers run it from a worker thread; it blocks.
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -26,6 +27,9 @@ SECTION = "llm"
 # say what to rename.
 OLD_SECTION = "qa_llm"
 LLM_CONFIG_KEYS = ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
+# Rough characters per token for mixed Chinese / English / table text; the
+# server's own count replaces the estimate once a call reports usage.
+SENT_CHARS_PER_TOKEN = 3
 
 
 class LLMConfigError(RuntimeError):
@@ -150,6 +154,77 @@ def chat_json(
         raise LLMCallError(f"LLM 流式返回失败：{str(exc)[:400]}") from exc
 
 
+class LlmMeter:
+    """Running totals of one job's LLM calls, read by its progress display.
+
+    Every feature counts the same way, so their displays read alike.  Calls
+    may run on several threads at once; every update takes the lock.
+    ``prompt_tokens`` / ``completion_tokens`` add up what the server reports
+    when a call ends; ``received`` counts streamed chunks (about one token
+    each) as they arrive, so it moves while calls are still under way.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._values = {
+            "calls": 0, "finished": 0, "sent_chars": 0, "received": 0, "reasoning": 0,
+            "prompt_tokens": 0, "completion_tokens": 0, "usage_calls": 0,
+        }
+
+    def snapshot(self) -> dict[str, int]:
+        """The totals, plus ``sent_tokens_est``: tokens sent, guessed from characters
+        until the server reports them."""
+        with self._lock:
+            values = dict(self._values)
+        values["sent_tokens_est"] = values["sent_chars"] // SENT_CHARS_PER_TOKEN
+        return values
+
+    def _add(self, **amounts: int) -> None:
+        with self._lock:
+            for key, amount in amounts.items():
+                self._values[key] += amount
+
+    def wrap(
+        self,
+        call: Callable[..., str],
+        *,
+        streaming: bool,
+        listener: Callable[[dict[str, int]], None] | None = None,
+    ) -> Callable[[str, str], str]:
+        """Count *call*; a streaming call (chat_json) also reports chunks and usage.
+
+        *listener* receives the totals after every streamed chunk.
+        """
+        def counted(system: str, prompt: str) -> str:
+            self._add(calls=1, sent_chars=len(system) + len(prompt))
+            seen = {"content_chunks": 0, "reasoning_chunks": 0}
+            usage: dict[str, int] = {}
+
+            def on_chunk(stats: dict[str, Any]) -> None:
+                # Stats are cumulative per call; add only what is new.
+                self._add(
+                    received=stats.get("content_chunks", 0) - seen["content_chunks"],
+                    reasoning=stats.get("reasoning_chunks", 0) - seen["reasoning_chunks"],
+                )
+                seen.update(content_chunks=stats.get("content_chunks", 0), reasoning_chunks=stats.get("reasoning_chunks", 0))
+                if stats.get("usage"):
+                    usage.update(stats["usage"])
+                if listener:
+                    listener(self.snapshot())
+
+            try:
+                return call(system, prompt, progress=on_chunk) if streaming else call(system, prompt)
+            finally:
+                self._add(finished=1)
+                if usage:
+                    self._add(
+                        prompt_tokens=usage.get("prompt_tokens", 0),
+                        completion_tokens=usage.get("completion_tokens", 0),
+                        usage_calls=1,
+                    )
+        return counted
+
+
 def parse_json_object(reply: str) -> dict[str, Any]:
     """The JSON object in a reply, tolerating a code fence or text around it."""
     text = reply.strip()
@@ -174,8 +249,10 @@ def ask_json(
     *,
     attempts: int = 2,
     timeout: int = 180,
-    progress: Callable[[dict[str, Any]], None] | None = None,
+    meter: LlmMeter | None = None,
+    progress: Callable[[dict[str, int]], None] | None = None,
     on_attempt: Callable[[int, int], None] | None = None,
+    on_reply: Callable[[], None] | None = None,
     on_retry: Callable[[Exception], None] | None = None,
     call: Callable[[str, str], str] | None = None,
 ) -> dict[str, Any]:
@@ -183,19 +260,32 @@ def ask_json(
 
     A call that fails or answers something unparseable is made again, up to
     *attempts* times in all, after a short pause; a configuration error is
-    raised at once.  ``progress`` streams chunk stats (see chat_json);
-    ``on_attempt(n, attempts)`` runs before each call and ``on_retry(error)``
-    before a retry.  *call* replaces the endpoint (tests, offline runs).
+    raised at once.  Every call is counted on *meter* (see LlmMeter), and
+    ``progress`` receives its totals after each streamed chunk.
+    ``on_attempt(n, attempts)`` runs before each call, ``on_reply()`` when a
+    reply has arrived and ``on_retry(error)`` before a retry.  *call* replaces
+    the endpoint (tests, offline runs) and is not streamed.
     """
-    call = call or (lambda system_text, user_text: chat_json(
-        system_text, user_text, timeout=timeout, progress=progress,
-    ))
+    meter = meter or LlmMeter()
+    if call is None:
+        call = meter.wrap(
+            lambda system_text, user_text, progress: chat_json(
+                system_text, user_text, timeout=timeout, progress=progress,
+            ),
+            streaming=True,
+            listener=progress,
+        )
+    else:
+        call = meter.wrap(call, streaming=False)
     attempts = max(1, attempts)
     for attempt in range(1, attempts + 1):
         if on_attempt:
             on_attempt(attempt, attempts)
         try:
-            return parse_json_object(call(system, user))
+            reply = call(system, user)
+            if on_reply:
+                on_reply()
+            return parse_json_object(reply)
         except LLMConfigError:
             raise
         except Exception as exc:

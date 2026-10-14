@@ -1,5 +1,6 @@
 /**
- * 周报分析 — weekly report × JIRA check (AI助手 sub-tab).
+ * 周报 — the weekly reports' JIRA update check (AI助手 sub-tab); generating
+ * the reports from JIRA is meant to join it later.
  *
  * Left: analysed weeks, newest first.  Right: one week's record, summary and
  * findings with export.  RM uploads the weekly .xlsx, starts the analysis
@@ -10,6 +11,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../../api/AuthContext";
 import { can } from "../../lib/accessControl";
+import { formatDuration, formatLlmProgress } from "../../lib/llmProgress";
 import { toast } from "../../lib/toast";
 import { MembersDialog } from "./MembersDialog";
 import { MappingTable, UploadDialog } from "./UploadDialog";
@@ -19,12 +21,12 @@ import {
   getJob,
   getWeek,
   listWeeks,
-  weeklyCheckWeekKey,
-  weeklyCheckWeeksKey,
+  weeklyReportWeekKey,
+  weeklyReportWeeksKey,
   type Finding,
   type WeekDetail,
   type WeekListItem,
-} from "./weeklyCheckApi";
+} from "./weeklyReportApi";
 
 const JIRA_KEY_RE = /^[A-Z][A-Z0-9]+-\d+$/;
 
@@ -32,17 +34,17 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function WeeklyCheckPage() {
+export function WeeklyReportPage() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const viewer = `${user?.username ?? ""}:${user?.role ?? ""}`;
-  const canRun = can(user?.role, "weekly-check.run");
+  const canRun = can(user?.role, "weekly-report.run");
   const [searchParams, setSearchParams] = useSearchParams();
   const [upload, setUpload] = useState({ mounted: false, open: false });
   const [showMembers, setShowMembers] = useState(false);
   const [jobId, setJobId] = useState("");
 
-  const weeksQuery = useQuery({ queryKey: weeklyCheckWeeksKey(viewer), queryFn: listWeeks });
+  const weeksQuery = useQuery({ queryKey: weeklyReportWeeksKey(viewer), queryFn: listWeeks });
   const weeks = useMemo(() => weeksQuery.data ?? [], [weeksQuery.data]);
   const selectedKey = searchParams.get("week") || weeks[0]?.week_key || "";
   const selectWeek = useCallback(
@@ -52,7 +54,7 @@ export function WeeklyCheckPage() {
 
   // The analysis runs in the background; its progress is polled while it runs.
   const jobQuery = useQuery({
-    queryKey: ["weekly-check", "job", jobId],
+    queryKey: ["weekly-report", "job", jobId],
     queryFn: () => getJob(jobId),
     enabled: Boolean(jobId),
     refetchInterval: (query) => (!query.state.data || query.state.data.status === "running" ? 1000 : false),
@@ -63,23 +65,23 @@ export function WeeklyCheckPage() {
     if (!finishedWeek) return;
     setJobId("");
     setUpload({ mounted: false, open: false });
-    void queryClient.invalidateQueries({ queryKey: ["weekly-check", "weeks"] });
-    void queryClient.invalidateQueries({ queryKey: ["weekly-check", "week"] });
+    void queryClient.invalidateQueries({ queryKey: ["weekly-report", "weeks"] });
+    void queryClient.invalidateQueries({ queryKey: ["weekly-report", "week"] });
     selectWeek(finishedWeek);
     toast.success(`${finishedWeek} 分析完成`);
   }, [finishedWeek, queryClient, selectWeek]);
 
   return (
-    <section className="view active weekly-check" data-testid="weekly-check-page">
+    <section className="view active weekly-report" data-testid="weekly-report-page">
       <div className="page-toolbar">
         <div>
-          <h2 className="weekly-check-title">周报分析</h2>
+          <h2 className="weekly-report-title">周报</h2>
           <p className="hint">
             检查每人的周报是否写了 JIRA ID、对应的 JIRA 本周有没有更新。网站对 JIRA 只读，不自动通知任何人。
           </p>
         </div>
       </div>
-      <div className="weekly-check-layout">
+      <div className="weekly-report-layout">
         <aside className="panel">
           <div className="panel-head">
             <strong>周列表</strong>
@@ -102,7 +104,7 @@ export function WeeklyCheckPage() {
           {job && job.status !== "completed" && !upload.open && (
             <button
               type="button"
-              className="weekly-check-job"
+              className="weekly-report-job"
               onClick={() => setUpload({ mounted: true, open: true })}
             >
               {job.status === "failed"
@@ -111,10 +113,10 @@ export function WeeklyCheckPage() {
                   ? "分析已中止，点击查看"
                   : job.stopping
                     ? "正在中止分析…"
-                    : `正在分析：第 ${job.done} 人 / 共 ${job.total} 人`}
+                    : `正在分析：第 ${job.done} 人 / 共 ${job.total} 人 · 已运行 ${formatDuration(job.elapsed_seconds ?? 0)}`}
             </button>
           )}
-          {weeksQuery.isError && <p className="weekly-check-warning">{errorMessage(weeksQuery.error)}</p>}
+          {weeksQuery.isError && <p className="weekly-report-warning">{errorMessage(weeksQuery.error)}</p>}
           <WeekList weeks={weeks} selectedKey={selectedKey} onSelect={selectWeek} />
           {weeksQuery.data && weeks.length === 0 && (
             <div className="empty">
@@ -122,7 +124,7 @@ export function WeeklyCheckPage() {
             </div>
           )}
         </aside>
-        <div className="weekly-check-main">
+        <div className="weekly-report-main">
           {selectedKey ? (
             <WeekView key={selectedKey} weekKey={selectedKey} viewer={viewer} />
           ) : (
@@ -155,12 +157,12 @@ function WeekList({
   onSelect: (weekKey: string) => void;
 }) {
   return (
-    <div className="weekly-check-weeks" data-testid="weekly-check-weeks">
+    <div className="weekly-report-weeks" data-testid="weekly-report-weeks">
       {weeks.map((week) => (
         <button
           key={week.week_key}
           type="button"
-          className={`weekly-check-week${week.week_key === selectedKey ? " active" : ""}`}
+          className={`weekly-report-week${week.week_key === selectedKey ? " active" : ""}`}
           aria-current={week.week_key === selectedKey}
           onClick={() => onSelect(week.week_key)}
         >
@@ -174,7 +176,7 @@ function WeekList({
 
 function WeekView({ weekKey, viewer }: { weekKey: string; viewer: string }) {
   const weekQuery = useQuery({
-    queryKey: weeklyCheckWeekKey(weekKey, viewer),
+    queryKey: weeklyReportWeekKey(weekKey, viewer),
     queryFn: () => getWeek(weekKey),
   });
   const [person, setPerson] = useState("");
@@ -201,13 +203,13 @@ function WeekView({ weekKey, viewer }: { weekKey: string; viewer: string }) {
   }
 
   return (
-    <div className="weekly-check-week-view">
+    <div className="weekly-report-week-view">
       <div className="panel">
         <div className="panel-head">
           <strong>{week.label}</strong>
           <span className="muted small">报告日期 {week.report_date}</span>
         </div>
-        <dl className="panel-body weekly-check-facts" data-testid="weekly-check-record">
+        <dl className="panel-body weekly-report-facts" data-testid="weekly-report-record">
           <dt>上传</dt>
           <dd>
             {week.uploaded_by} · {week.xlsx_name} · {formatFileSize(week.xlsx_size)} · {week.uploaded_at}
@@ -215,6 +217,12 @@ function WeekView({ weekKey, viewer }: { weekKey: string; viewer: string }) {
           <dt>分析</dt>
           <dd>
             {week.analyzed_by} · {week.analyzed_at}
+            {summary.elapsed_seconds != null && ` · 耗时 ${formatDuration(summary.elapsed_seconds)}`}
+            {summary.llm && (
+              <div className="hint" data-testid="weekly-report-llm-totals">
+                {formatLlmProgress(undefined, summary.llm)}
+              </div>
+            )}
           </dd>
           <dt>范围</dt>
           <dd>
@@ -229,7 +237,7 @@ function WeekView({ weekKey, viewer }: { weekKey: string; viewer: string }) {
           <strong>汇总</strong>
           <span className="count">{summary.total}</span>
         </div>
-        <div className="panel-body weekly-check-summary" data-testid="weekly-check-summary">
+        <div className="panel-body weekly-report-summary" data-testid="weekly-report-summary">
           <div>
             <div className="hint">按问题类型（点击筛选）</div>
             <div className="pill-group">
@@ -237,7 +245,7 @@ function WeekView({ weekKey, viewer }: { weekKey: string; viewer: string }) {
                 <button
                   key={entry.problem}
                   type="button"
-                  className={`weekly-check-chip${problem === entry.problem ? " active" : ""}`}
+                  className={`weekly-report-chip${problem === entry.problem ? " active" : ""}`}
                   aria-pressed={problem === entry.problem}
                   onClick={() => setProblem(problem === entry.problem ? "" : entry.problem)}
                 >
@@ -255,7 +263,7 @@ function WeekView({ weekKey, viewer }: { weekKey: string; viewer: string }) {
                   <button
                     key={entry.person}
                     type="button"
-                    className={`weekly-check-chip${person === entry.person ? " active" : ""}`}
+                    className={`weekly-report-chip${person === entry.person ? " active" : ""}`}
                     aria-pressed={person === entry.person}
                     onClick={() => setPerson(person === entry.person ? "" : entry.person)}
                   >
@@ -268,7 +276,7 @@ function WeekView({ weekKey, viewer }: { weekKey: string; viewer: string }) {
           {notes.length > 0 && (
             <div>
               <div className="hint">备注</div>
-              <ul className="weekly-check-notes">
+              <ul className="weekly-report-notes">
                 {notes.map((entry) => (
                   <li key={entry.sheet}>
                     {entry.sheet}：{entry.note}
@@ -277,7 +285,7 @@ function WeekView({ weekKey, viewer }: { weekKey: string; viewer: string }) {
               </ul>
             </div>
           )}
-          <details className="weekly-check-mapping">
+          <details className="weekly-report-mapping">
             <summary>周报页与账号的对应（{summary.people.length} 人）</summary>
             <MappingTable rows={summary.people} />
           </details>
@@ -285,7 +293,7 @@ function WeekView({ weekKey, viewer }: { weekKey: string; viewer: string }) {
       </div>
 
       <div className="panel">
-        <div className="panel-head weekly-check-table-head">
+        <div className="panel-head weekly-report-table-head">
           <strong>问题清单</strong>
           <span className="muted small">
             {shown.length === findings.length ? `${findings.length} 条` : `${shown.length} / ${findings.length} 条`}
@@ -342,8 +350,8 @@ function JiraKeys({ value, browseUrl }: { value: string; browseUrl: string }) {
 
 function FindingsTable({ findings, week }: { findings: Finding[]; week: WeekDetail }) {
   return (
-    <div className="table-scroll weekly-check-table-wrap">
-      <table className="weekly-check-table" data-testid="weekly-check-findings">
+    <div className="table-scroll weekly-report-table-wrap">
+      <table className="weekly-report-table" data-testid="weekly-report-findings">
         <thead>
           <tr>
             <th>姓名</th>

@@ -6,7 +6,7 @@ person's update into work items, looks the referenced JIRA issues up
 read-only, optionally asks the LLM whether the JIRA updates match the report,
 and stores one version per ISO week.
 
-Uploads and background jobs live in app/services/weekly_check_jobs.py.
+Uploads and background jobs live in app/services/weekly_report_jobs.py.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import io
 import re
 import sqlite3
 import threading
+import time
 import urllib.error
 from collections.abc import Callable
 from typing import Any
@@ -26,7 +27,7 @@ from app.db.connection import transaction
 from app.domain import weekly_report as wr
 from app.domain import weekly_report_prompts as prompts
 from app.integrations import jira, llm
-from app.repositories import users_repo, weekly_check_repo
+from app.repositories import users_repo, weekly_report_repo
 from app.repositories.audit_repo import log_audit
 from app.repositories.base import dumps_json
 from app.timeutil import BEIJING_TZ, beijing_timestamp
@@ -36,7 +37,7 @@ from app.timeutil import BEIJING_TZ, beijing_timestamp
 DEFAULT_ACTIVE_HOURS = 192
 MAX_ACTIVE_HOURS = 24 * 60
 # Which account a sheet belongs to, and which sheets are not checked, comes
-# only from the manual table (weekly_check_members), matched by sheet name
+# only from the manual table (weekly_report_members), matched by sheet name
 # ignoring case.  Sheets that are not a person (Project, Template, ...) and
 # the leads' sheets are rows there marked "不检查".
 # People checked at the same time; each costs one LLM call per work item at
@@ -86,7 +87,7 @@ def _members_version(members: list[dict[str, Any]]) -> str:
 
 
 def get_members(conn: sqlite3.Connection) -> dict[str, Any]:
-    members = weekly_check_repo.list_members(conn)
+    members = weekly_report_repo.list_members(conn)
     return {"members": members, "version": _members_version(members)}
 
 
@@ -119,13 +120,13 @@ def save_members(
             "note": str(raw.get("note") or "").strip(),
         })
     with transaction(conn):
-        current = weekly_check_repo.list_members(conn)
+        current = weekly_report_repo.list_members(conn)
         if _members_version(current) != version:
             raise ValueError("成员表已被其他人修改，请刷新后重新编辑")
-        weekly_check_repo.replace_members(conn, cleaned)
+        weekly_report_repo.replace_members(conn, cleaned)
         log_audit(
-            conn, f"更新周报分析成员表（{len(cleaned)} 人）",
-            ts=beijing_timestamp(), user=user, role=role, event="weekly_check_members",
+            conn, f"更新周报手工对应（{len(cleaned)} 行）",
+            ts=beijing_timestamp(), user=user, role=role, event="weekly_report_members",
             detail={"before": current, "after": cleaned},
         )
     return get_members(conn)
@@ -187,7 +188,7 @@ def _display_names(conn: sqlite3.Connection) -> dict[str, str]:
 
 def _select(conn: sqlite3.Connection, reports: list[wr.SheetReport], undated: tuple[str, ...]) -> dict[str, Any]:
     return select_people(
-        reports, weekly_check_repo.list_members(conn), _display_names(conn), undated,
+        reports, weekly_report_repo.list_members(conn), _display_names(conn), undated,
     )
 
 
@@ -203,7 +204,7 @@ def preview(
     return {
         "report_date": report_date.isoformat() if report_date else "",
         "week": week,
-        "week_exists": bool(week and weekly_check_repo.get_week(conn, week["week_key"])),
+        "week_exists": bool(week and weekly_report_repo.get_week(conn, week["week_key"])),
         "people_count": len(selection["people"]),
         "mapping": selection["mapping"],
         "unmapped_sheets": selection["unmapped"],
@@ -340,13 +341,17 @@ def run_check(
     fetch_activity: FetchActivity | None = None,
     progress: Progress | None = None,
     should_stop: Callable[[], bool] = lambda: False,
+    meter: llm.LlmMeter | None = None,
 ) -> dict[str, Any]:
     """Check every person in *reports*; returns the week, summary and findings.
 
     Nothing about the week is stored here (see store_week); only the work-item
     split cache is written, so a failed check does not repeat finished splits.
-    Raises CheckCancelled soon after *should_stop* turns true.
+    Raises CheckCancelled soon after *should_stop* turns true.  *meter*
+    collects LLM call counts and tokens while the check runs.
     """
+    started = time.monotonic()
+    meter = meter or llm.LlmMeter()
     hours = DEFAULT_ACTIVE_HOURS if active_hours is None else validate_active_hours(active_hours)
     selection = _select(conn, reports, undated)
     people = selection["people"]
@@ -359,7 +364,9 @@ def run_check(
 
     if llm_call is None:
         llm.require_config()
-        llm_call = llm.chat_json
+        llm_call = meter.wrap(llm.chat_json, streaming=True)
+    else:
+        llm_call = meter.wrap(llm_call, streaming=False)
     if fetch_activity is None:
         if jira.load_config() is None:
             raise RuntimeError("未配置 JIRA：release_system.conf 的 [jira] 需要 JIRA_BASE_URL 和 JIRA_TOKEN")
@@ -383,12 +390,12 @@ def run_check(
         progress(0, total, f"开始分析 {total} 人")
 
     results: dict[str, dict[str, Any]] = {}
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=PERSON_WORKERS, thread_name_prefix="weekly-check")
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=PERSON_WORKERS, thread_name_prefix="weekly-report")
     try:
         futures = {}
         for person in people:
             report = person["report"]
-            cached = weekly_check_repo.get_cached_items(conn, report.sheet, wr.text_sha256(report.text))
+            cached = weekly_report_repo.get_cached_items(conn, report.sheet, wr.text_sha256(report.text))
             future = executor.submit(
                 check_person, report, person["username"],
                 report_date=report_date, today=now.date(), since=since, consistency=consistency,
@@ -409,7 +416,7 @@ def run_check(
                 result = future.result()
                 results[report.sheet] = result
                 if result["to_cache"] is not None:
-                    weekly_check_repo.put_cached_items(
+                    weekly_report_repo.put_cached_items(
                         conn, report.sheet, wr.text_sha256(report.text), result["to_cache"],
                     )
                     conn.commit()
@@ -427,6 +434,8 @@ def run_check(
     ]
     summary = wr.summarize(findings)
     summary.update(
+        elapsed_seconds=round(time.monotonic() - started),
+        llm=meter.snapshot(),
         people_count=total,
         consistency=consistency,
         window_start=since.strftime("%Y-%m-%d %H:%M"),
@@ -480,13 +489,13 @@ def store_week(
         "summary": result["summary"],
     }
     with transaction(conn):
-        replaced = weekly_check_repo.get_week(conn, week["week_key"])
-        weekly_check_repo.replace_week(conn, week, result["findings"])
+        replaced = weekly_report_repo.get_week(conn, week["week_key"])
+        weekly_report_repo.replace_week(conn, week, result["findings"])
         log_audit(
             conn,
-            f"周报分析 {week['week_key']}：{result['summary']['total']} 条问题"
+            f"周报检查 {week['week_key']}：{result['summary']['total']} 条问题"
             + ("（覆盖上一版）" if replaced else ""),
-            ts=week["analyzed_at"], user=analyzed_by, role=role, event="weekly_check_analyze",
+            ts=week["analyzed_at"], user=analyzed_by, role=role, event="weekly_report_analyze",
             detail={
                 key: week[key]
                 for key in ("week_key", "report_date", "xlsx_name", "xlsx_size", "uploaded_by", "uploaded_at", "active_hours")
@@ -507,12 +516,12 @@ def _week_view(week: dict[str, Any]) -> dict[str, Any]:
 def list_weeks(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [
         {key: view[key] for key in ("week_key", "label", "week_start", "week_end", "finding_count")}
-        for view in map(_week_view, weekly_check_repo.list_weeks(conn))
+        for view in map(_week_view, weekly_report_repo.list_weeks(conn))
     ]
 
 
 def get_week(conn: sqlite3.Connection, week_key: str) -> dict[str, Any] | None:
-    week = weekly_check_repo.get_week(conn, week_key)
+    week = weekly_report_repo.get_week(conn, week_key)
     if week is None:
         return None
     return {**_week_view(week), "jira_browse_url": jira.browse_url(), "problem_types": list(wr.PROBLEM_TYPES)}
@@ -525,9 +534,9 @@ def list_findings(
     person: str = "",
     problem: str = "",
 ) -> list[dict[str, Any]] | None:
-    if weekly_check_repo.get_week(conn, week_key) is None:
+    if weekly_report_repo.get_week(conn, week_key) is None:
         return None
-    return weekly_check_repo.list_findings(conn, week_key, person=person, problem=problem)
+    return weekly_report_repo.list_findings(conn, week_key, person=person, problem=problem)
 
 
 def export_csv(findings: list[dict[str, Any]]) -> str:

@@ -516,7 +516,15 @@ describe("QaPage AI job poll", () => {
       error: null,
       progress: null,
     };
-    const statusResponse = { ...startJobResponse, status: "running" };
+    const statusResponse = {
+      ...startJobResponse,
+      status: "running",
+      elapsed_seconds: 7,
+      llm: {
+        calls: 1, finished: 0, sent_chars: 3000, sent_tokens_est: 1000, received: 25, reasoning: 0,
+        prompt_tokens: 0, completion_tokens: 0, usage_calls: 0,
+      },
+    };
 
     // Log upload present so analyze button is enabled
     const payload = makePayload({
@@ -563,6 +571,37 @@ describe("QaPage AI job poll", () => {
 
     expect(apiGet).toHaveBeenCalledWith(
       expect.stringContaining("/api/qa/analyze-log/status"),
+    );
+  });
+
+  it("shows the job's elapsed time and LLM usage with the shared formatter", async () => {
+    uiStoreMod.__setState({
+      selectedReleaseId: "rel-1",
+      qaEditMode: true,
+      qaEditReleaseId: "rel-1",
+      qaAiJob: {
+        job_id: "job-1", release_id: "rel-1", status: "running", started_at: "1000", finished_at: null,
+        summary: "", error: null, progress: null, message: "正在接收 LLM 输出：已收到 25 token",
+        elapsed_seconds: 7,
+        llm: {
+          calls: 1, finished: 0, sent_chars: 3000, sent_tokens_est: 1000, received: 25, reasoning: 0,
+          prompt_tokens: 0, completion_tokens: 0, usage_calls: 0,
+        },
+      } as never,
+      qaAiSuggestions: {},
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
+      if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
+      return Promise.resolve(makePayload({}));
+    });
+
+    renderQaPage(makeQClient());
+
+    // Same LLM usage line as every LLM feature (lib/llmProgress).
+    await waitFor(() =>
+      expect(document.getElementById("qaAiProgress")?.textContent).toContain(
+        "已运行 7s；LLM 调用 1 次（进行中 1）；已发送 3,000 字符（约 1,000 token）；已收到 25 token",
+      ),
     );
   });
 

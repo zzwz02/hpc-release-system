@@ -1,17 +1,17 @@
-"""Weekly report check router (AI助手 → 周报分析).
+"""Weekly report router (AI助手 → 周报): the JIRA update check of the weekly reports.
 
 Roles that can open the tab (RM, Owner) read the stored weeks; uploading,
-analysing and the member table need the weekly-check.run capability (RM).
+analysing and the member table need the weekly-report.run capability (RM).
 
-  POST /api/weekly-check/uploads?filename=      — raw .xlsx body, parsed in memory
-  POST /api/weekly-check/uploads/{id}/analyze   — start the background analysis
-  GET  /api/weekly-check/jobs/{id}              — analysis progress
-  POST /api/weekly-check/jobs/{id}/cancel       — stop a running analysis
-  GET  /api/weekly-check/weeks                  — analysed weeks, newest first
-  GET  /api/weekly-check/weeks/{week_key}       — one week's record and summary
-  GET  /api/weekly-check/weeks/{week_key}/findings
-  GET  /api/weekly-check/weeks/{week_key}/export?format=md|csv
-  GET/PUT /api/weekly-check/members             — sheet ↔ JIRA username table
+  POST /api/weekly-report/uploads?filename=      — raw .xlsx body, parsed in memory
+  POST /api/weekly-report/uploads/{id}/analyze   — start the background analysis
+  GET  /api/weekly-report/jobs/{id}              — analysis progress
+  POST /api/weekly-report/jobs/{id}/cancel       — stop a running analysis
+  GET  /api/weekly-report/weeks                  — analysed weeks, newest first
+  GET  /api/weekly-report/weeks/{week_key}       — one week's record and summary
+  GET  /api/weekly-report/weeks/{week_key}/findings
+  GET  /api/weekly-report/weeks/{week_key}/export?format=md|csv
+  GET/PUT /api/weekly-report/members             — sheet ↔ JIRA username table
 """
 from __future__ import annotations
 
@@ -25,12 +25,12 @@ from pydantic import BaseModel
 from app.api.errors import ApiError
 from app.config import settings
 from app.deps import get_db, require_capability, require_tab_access
-from app.services import weekly_check_service
-from app.services.weekly_check_jobs import MAX_UPLOAD_BYTES, registry
+from app.services import weekly_report_service
+from app.services.weekly_report_jobs import MAX_UPLOAD_BYTES, registry
 
-router = APIRouter(prefix="/api/weekly-check", tags=["weekly-check"])
-require_view = require_tab_access("weekly-check", message="无权访问周报分析")
-require_run = require_capability("weekly-check.run", message="只有 RM 可以上传、分析周报和管理成员表")
+router = APIRouter(prefix="/api/weekly-report", tags=["weekly-report"])
+require_view = require_tab_access("weekly-report", message="无权访问周报")
+require_run = require_capability("weekly-report.run", message="只有 RM 可以上传、分析周报和管理成员表")
 
 
 class AnalyzeBody(BaseModel):
@@ -112,13 +112,13 @@ def list_weeks(
     _user: dict = Depends(require_view),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    return {"weeks": weekly_check_service.list_weeks(conn)}
+    return {"weeks": weekly_report_service.list_weeks(conn)}
 
 
 def _week_or_404(conn: sqlite3.Connection, week_key: str) -> dict:
-    week = weekly_check_service.get_week(conn, week_key)
+    week = weekly_report_service.get_week(conn, week_key)
     if week is None:
-        raise ApiError(404, f"没有 {week_key} 的周报分析结果")
+        raise ApiError(404, f"没有 {week_key} 的周报检查结果")
     return week
 
 
@@ -140,7 +140,7 @@ def list_findings(
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     _week_or_404(conn, week_key)
-    findings = weekly_check_service.list_findings(conn, week_key, person=person, problem=problem)
+    findings = weekly_report_service.list_findings(conn, week_key, person=person, problem=problem)
     return {"findings": findings}
 
 
@@ -154,12 +154,12 @@ def export_week(
     if format not in ("md", "csv"):
         raise ValueError("format 只能是 md 或 csv")
     week = _week_or_404(conn, week_key)
-    findings = weekly_check_service.list_findings(conn, week_key) or []
+    findings = weekly_report_service.list_findings(conn, week_key) or []
     if format == "csv":
-        text, media_type = weekly_check_service.export_csv(findings), "text/csv"
+        text, media_type = weekly_report_service.export_csv(findings), "text/csv"
     else:
-        text, media_type = weekly_check_service.export_markdown(week, findings), "text/markdown"
-    filename = weekly_check_service.export_filename(week, format)
+        text, media_type = weekly_report_service.export_markdown(week, findings), "text/markdown"
+    filename = weekly_report_service.export_filename(week, format)
     return Response(
         content=text.encode("utf-8"),
         media_type=f"{media_type}; charset=utf-8",
@@ -172,7 +172,7 @@ def get_members(
     _user: dict = Depends(require_run),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    return weekly_check_service.get_members(conn)
+    return weekly_report_service.get_members(conn)
 
 
 @router.put("/members")
@@ -181,6 +181,6 @@ def put_members(
     user: dict = Depends(require_run),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    return weekly_check_service.save_members(
+    return weekly_report_service.save_members(
         conn, body.members, version=body.version, user=user["username"], role=user["role"],
     )

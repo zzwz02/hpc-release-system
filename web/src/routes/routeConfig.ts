@@ -48,7 +48,7 @@ export const ROUTES: RouteConfig[] = [
   { path: "/cicd-assistant",   view: "cicd-assistant",   label: "CICD助手V1",     roles: rolesForTab("cicd-assistant"), showInNav: false, group: "ai-assistant" },
   { path: "/cicd-assistant-v2", view: "cicd-assistant-v2", label: "CICD助手",      roles: rolesForTab("cicd-assistant-v2"), group: "ai-assistant" },
   { path: "/jira-agent", view: "jira-agent", label: "JIRA agent", roles: rolesForTab("jira-agent"), group: "ai-assistant" },
-  { path: "/weekly-check", view: "weekly-check", label: "周报分析", roles: rolesForTab("weekly-check"), group: "ai-assistant" },
+  { path: "/weekly-report", view: "weekly-report", label: "周报", roles: rolesForTab("weekly-report"), group: "ai-assistant" },
   { path: "/wiki",      view: "wiki",      label: "开发 WIKI",  roles: rolesForTab("wiki") },
   { path: "/admin",     view: "admin",     label: "系统管理",   roles: rolesForTab("admin") },
 ];

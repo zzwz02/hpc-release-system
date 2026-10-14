@@ -18,8 +18,8 @@ from app.domain import weekly_report as wr
 from app.domain.permissions import ALL_ROLES, roles_for_capability, roles_for_tab
 from app.integrations import jira
 from app.main import create_app
-from app.repositories import users_repo, weekly_check_repo
-from app.services import weekly_check_jobs, weekly_check_service
+from app.repositories import users_repo, weekly_report_repo
+from app.services import weekly_report_jobs, weekly_report_service
 
 TZ = dt.timezone(dt.timedelta(hours=8))
 NOW = dt.datetime(2026, 10, 10, 18, 0, tzinfo=TZ)
@@ -343,7 +343,7 @@ def set_members(conn, members: list[dict], *, project_row: bool = True) -> None:
     """Store a manual table; the workbooks here carry a "Project" sheet, marked 不检查."""
     if project_row and not any(member["sheet"].lower() == "project" for member in members):
         members = [*members, {"sheet": "Project", "skip": True}]
-    weekly_check_repo.replace_members(conn, [
+    weekly_report_repo.replace_members(conn, [
         {"jira_username": "", "skip": False, "note": "", **member} for member in members
     ])
     conn.commit()
@@ -369,7 +369,7 @@ ITEMS = {
 
 def run(conn, llm: FakeLlm, issues: dict, **options) -> dict:
     reports, _undated = wr.read_reports(workbook_bytes(SHEETS))
-    return weekly_check_service.run_check(
+    return weekly_report_service.run_check(
         conn, reports, now=NOW, llm_call=llm, fetch_activity=fake_fetch(issues), **options,
     )
 
@@ -454,7 +454,7 @@ def test_run_check_fails_as_a_whole_when_jira_or_the_split_fails(conn) -> None:
 
     reports, _undated = wr.read_reports(workbook_bytes({"Carol": [(dt.datetime(2026, 10, 10), "1. 新内容")]}))
     with pytest.raises(RuntimeError, match="Carol：LLM 拆分工作项失败"):
-        weekly_check_service.run_check(conn, reports, now=NOW, llm_call=broken, fetch_activity=fake_fetch({}))
+        weekly_report_service.run_check(conn, reports, now=NOW, llm_call=broken, fetch_activity=fake_fetch({}))
 
 
 def test_run_check_stops_on_request_without_finishing_everyone(conn) -> None:
@@ -467,13 +467,26 @@ def test_run_check_stops_on_request_without_finishing_everyone(conn) -> None:
         return llm(system, prompt)
 
     reports, _undated = wr.read_reports(workbook_bytes(SHEETS))
-    with pytest.raises(weekly_check_service.CheckCancelled):
-        weekly_check_service.run_check(
+    with pytest.raises(weekly_report_service.CheckCancelled):
+        weekly_report_service.run_check(
             conn, reports, now=NOW, llm_call=counting_llm, fetch_activity=fake_fetch({}),
             should_stop=lambda: len(calls) >= 1,
         )
     # The call under way finished; no further LLM call was made.
     assert len(calls) == 1
+
+
+def test_run_check_reports_llm_totals_and_elapsed_time(conn) -> None:
+    set_members(conn, [{"sheet": "Alice", "jira_username": "alice"}, {"sheet": "Boss", "skip": True}])
+    issues = {"PHS-1": activity("PHS-1", comments=[("alice", NOW, "完成")])}
+
+    result = run(conn, FakeLlm(ITEMS), issues)
+
+    totals = result["summary"]["llm"]
+    # Two splits (Alice, bob) and one consistency check, none of them streamed.
+    assert (totals["calls"], totals["finished"], totals["received"]) == (3, 3, 0)
+    assert totals["sent_chars"] > 0
+    assert isinstance(result["summary"]["elapsed_seconds"], int)
 
 
 def test_a_failed_consistency_check_is_noted_not_fatal(conn) -> None:
@@ -520,7 +533,7 @@ def test_sheets_map_only_through_the_manual_table_ignoring_case(conn) -> None:
     }
     reports, undated = wr.read_reports(workbook_bytes(sheets))
 
-    preview = weekly_check_service.preview(conn, reports, undated)
+    preview = weekly_report_service.preview(conn, reports, undated)
 
     assert [(row["sheet"], row["username"], row["display_name"], row["status"], row["reason"]) for row in preview["mapping"]] == [
         ("Alice", "", "", "check", "找不到对应的用户"),
@@ -534,7 +547,7 @@ def test_sheets_map_only_through_the_manual_table_ignoring_case(conn) -> None:
     # The skipped sheet without dates is not reported as undated.
     assert preview["undated_sheets"] == ["Intern"]
 
-    result = weekly_check_service.run_check(
+    result = weekly_report_service.run_check(
         conn, reports, undated=tuple(undated), now=NOW, llm_call=FakeLlm(ITEMS),
         fetch_activity=fake_fetch({"MC3-9": activity("MC3-9", assignee="m00859", events=[("m00859", NOW)])}),
         consistency=False,
@@ -553,48 +566,48 @@ def test_store_week_keeps_only_the_last_version(conn) -> None:
     issues = {"PHS-1": activity("PHS-1", comments=[("alice", NOW, "完成")])}
 
     def store(result: dict, name: str, uploader: str, analyst: str) -> None:
-        weekly_check_service.store_week(
+        weekly_report_service.store_week(
             conn, result, xlsx_name=name, xlsx_size=2048,
             uploaded_by=uploader, uploaded_at="2026-10-10 17:00:00", analyzed_by=analyst, role="RM",
         )
 
     store(run(conn, FakeLlm(ITEMS), issues), "first.xlsx", "rm1", "rm1")
-    assert len(weekly_check_service.list_findings(conn, "2026-W41") or []) == 2
+    assert len(weekly_report_service.list_findings(conn, "2026-W41") or []) == 2
     store(run(conn, FakeLlm(ITEMS), issues, consistency=False), "second.xlsx", "rm1", "rm2")
 
-    weeks = weekly_check_service.list_weeks(conn)
+    weeks = weekly_report_service.list_weeks(conn)
     assert weeks == [{
         "week_key": "2026-W41", "label": "2026 W41（10月5日-10月11日）",
         "week_start": "2026-10-05", "week_end": "2026-10-11", "finding_count": 2,
     }]
-    week = weekly_check_service.get_week(conn, "2026-W41")
+    week = weekly_report_service.get_week(conn, "2026-W41")
     assert (week["xlsx_name"], week["uploaded_by"], week["analyzed_by"]) == ("second.xlsx", "rm1", "rm2")
-    assert len(weekly_check_service.list_findings(conn, "2026-W41") or []) == 2
-    assert weekly_check_service.list_findings(conn, "2026-W41", problem=wr.T_BAD_ID) == [
+    assert len(weekly_report_service.list_findings(conn, "2026-W41") or []) == 2
+    assert weekly_report_service.list_findings(conn, "2026-W41", problem=wr.T_BAD_ID) == [
         {**row, "id": row["id"]}
-        for row in weekly_check_service.list_findings(conn, "2026-W41") or []
+        for row in weekly_report_service.list_findings(conn, "2026-W41") or []
         if row["problem"] == wr.T_BAD_ID
     ]
     events = [row["event"] for row in conn.execute("SELECT event FROM audit ORDER BY id")]
-    assert events == ["weekly_check_analyze", "weekly_check_analyze"]
+    assert events == ["weekly_report_analyze", "weekly_report_analyze"]
 
 
 def test_exports_match_the_script_layout(conn) -> None:
     set_members(conn, [{"sheet": "Alice", "jira_username": "alice"}, {"sheet": "Boss", "skip": True}])
     old = SINCE - dt.timedelta(days=2)
     issues = {"PHS-1": activity("PHS-1", events=[("alice", old)])}
-    weekly_check_service.store_week(
+    weekly_report_service.store_week(
         conn, run(conn, FakeLlm(ITEMS), issues), xlsx_name="plan.xlsx", xlsx_size=1,
         uploaded_by="rm", uploaded_at="2026-10-10 17:00:00", analyzed_by="rm", role="RM",
     )
-    week = weekly_check_service.get_week(conn, "2026-W41")
-    findings = weekly_check_service.list_findings(conn, "2026-W41") or []
+    week = weekly_report_service.get_week(conn, "2026-W41")
+    findings = weekly_report_service.list_findings(conn, "2026-W41") or []
 
-    csv_text = weekly_check_service.export_csv(findings)
+    csv_text = weekly_report_service.export_csv(findings)
     assert csv_text.startswith("﻿姓名,周报日期,问题,工作项,JIRA,JIRA状态,assignee,最后更新时间,最后更新人,说明\r\n")
     assert "Alice,2026-10-10,JIRA未更新,调优,PHS-1,In Progress,Alice,2026-09-30 18:00,Alice,\r\n" in csv_text
 
-    assert weekly_check_service.export_markdown(week, findings) == (
+    assert weekly_report_service.export_markdown(week, findings) == (
         "# 周报 JIRA 检查 2026-10-10\n"
         "\n"
         "本期周报日期 2026-10-10；JIRA 更新窗口 2026-10-02 18:00 起（192 小时）；"
@@ -619,12 +632,12 @@ def test_exports_match_the_script_layout(conn) -> None:
         "| bob | 2026-10-10 | 1 |  |  |  |  |  |  |  |  |  |\n"
         "\n"
     )
-    assert weekly_check_service.export_filename(week, "csv") == "weekly_jira_check_2026-10-10.csv"
+    assert weekly_report_service.export_filename(week, "csv") == "weekly_jira_check_2026-10-10.csv"
 
 
 def test_members_save_validates_and_detects_concurrent_edits(conn) -> None:
-    current = weekly_check_service.get_members(conn)
-    saved = weekly_check_service.save_members(
+    current = weekly_report_service.get_members(conn)
+    saved = weekly_report_service.save_members(
         conn,
         [{"sheet": " Alice ", "jira_username": " alice ", "skip": False, "note": ""}, {"sheet": "Boss", "skip": True}],
         version=current["version"], user="rm", role="RM",
@@ -634,20 +647,20 @@ def test_members_save_validates_and_detects_concurrent_edits(conn) -> None:
         {"sheet": "Boss", "jira_username": "", "skip": True, "note": ""},
     ]
     with pytest.raises(ValueError, match="已被其他人修改"):
-        weekly_check_service.save_members(conn, [], version=current["version"], user="rm2", role="RM")
+        weekly_report_service.save_members(conn, [], version=current["version"], user="rm2", role="RM")
     with pytest.raises(ValueError, match="周报页名重复"):
-        weekly_check_service.save_members(
+        weekly_report_service.save_members(
             conn, [{"sheet": "A"}, {"sheet": "a"}], version=saved["version"], user="rm", role="RM",
         )
-    assert len(weekly_check_service.get_members(conn)["members"]) == 2
+    assert len(weekly_report_service.get_members(conn)["members"]) == 2
 
 
 def test_update_window_defaults_to_192_hours_and_is_checked() -> None:
-    assert weekly_check_service.DEFAULT_ACTIVE_HOURS == 192
-    assert weekly_check_service.validate_active_hours("48") == 48
+    assert weekly_report_service.DEFAULT_ACTIVE_HOURS == 192
+    assert weekly_report_service.validate_active_hours("48") == 48
     for bad in ("soon", 0, 24 * 60 + 1):
         with pytest.raises(ValueError, match="更新窗口"):
-            weekly_check_service.validate_active_hours(bad)
+            weekly_report_service.validate_active_hours(bad)
 
 
 # ---------------------------------------------------------------------------
@@ -657,10 +670,10 @@ def test_update_window_defaults_to_192_hours_and_is_checked() -> None:
 @pytest.fixture()
 def site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(settings, "db_path", tmp_path / "main.db")
-    monkeypatch.setattr(weekly_check_jobs, "registry", weekly_check_jobs.WeeklyCheckRegistry())
-    from app.api.routers import weekly_check as router_module
+    monkeypatch.setattr(weekly_report_jobs, "registry", weekly_report_jobs.WeeklyReportRegistry())
+    from app.api.routers import weekly_report as router_module
 
-    monkeypatch.setattr(router_module, "registry", weekly_check_jobs.registry)
+    monkeypatch.setattr(router_module, "registry", weekly_report_jobs.registry)
     current = {"role": "RM", "username": "rm"}
     app = create_app()
     app.dependency_overrides[require_login] = lambda: {
@@ -677,7 +690,7 @@ def site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def upload(client: TestClient, content: bytes, filename: str = "PDE HPC Project Plan 20261010.xlsx"):
     return client.post(
-        "/api/weekly-check/uploads", params={"filename": filename}, content=content,
+        "/api/weekly-report/uploads", params={"filename": filename}, content=content,
         headers={"Content-Type": "application/octet-stream"},
     )
 
@@ -685,7 +698,7 @@ def upload(client: TestClient, content: bytes, filename: str = "PDE HPC Project 
 def wait_for_job(client: TestClient, job_id: str) -> dict:
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        job = client.get(f"/api/weekly-check/jobs/{job_id}").json()
+        job = client.get(f"/api/weekly-report/jobs/{job_id}").json()
         if job["status"] != "running":
             return job
         time.sleep(0.02)
@@ -695,25 +708,25 @@ def wait_for_job(client: TestClient, job_id: str) -> dict:
 @pytest.mark.parametrize("role", ALL_ROLES)
 def test_api_role_gates(site: TestClient, role: str) -> None:
     site.as_user(role)
-    can_view = role in roles_for_tab("weekly-check")
-    can_run = role in roles_for_capability("weekly-check.run")
+    can_view = role in roles_for_tab("weekly-report")
+    can_run = role in roles_for_capability("weekly-report.run")
 
-    assert site.get("/api/weekly-check/weeks").status_code == (200 if can_view else 403)
-    assert site.get("/api/weekly-check/weeks/2026-W41").status_code == (404 if can_view else 403)
-    assert site.get("/api/weekly-check/weeks/2026-W41/findings").status_code == (404 if can_view else 403)
-    assert site.get("/api/weekly-check/weeks/2026-W41/export").status_code == (404 if can_view else 403)
-    assert site.get("/api/weekly-check/members").status_code == (200 if can_run else 403)
-    assert site.put("/api/weekly-check/members", json={"members": [], "version": "x"}).status_code == (
+    assert site.get("/api/weekly-report/weeks").status_code == (200 if can_view else 403)
+    assert site.get("/api/weekly-report/weeks/2026-W41").status_code == (404 if can_view else 403)
+    assert site.get("/api/weekly-report/weeks/2026-W41/findings").status_code == (404 if can_view else 403)
+    assert site.get("/api/weekly-report/weeks/2026-W41/export").status_code == (404 if can_view else 403)
+    assert site.get("/api/weekly-report/members").status_code == (200 if can_run else 403)
+    assert site.put("/api/weekly-report/members", json={"members": [], "version": "x"}).status_code == (
         400 if can_run else 403
     )
     assert upload(site, b"").status_code == (400 if can_run else 403)
-    assert site.post("/api/weekly-check/uploads/none/analyze", json={}).status_code == (400 if can_run else 403)
-    assert site.get("/api/weekly-check/jobs/none").status_code == (404 if can_run else 403)
+    assert site.post("/api/weekly-report/uploads/none/analyze", json={}).status_code == (400 if can_run else 403)
+    assert site.get("/api/weekly-report/jobs/none").status_code == (404 if can_run else 403)
 
 
 def test_permissions_match_the_design() -> None:
-    assert roles_for_tab("weekly-check") == ("RM", "Owner")
-    assert roles_for_capability("weekly-check.run") == ("RM",)
+    assert roles_for_tab("weekly-report") == ("RM", "Owner")
+    assert roles_for_capability("weekly-report.run") == ("RM",)
 
 
 def test_upload_analyze_view_and_export_flow(site: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -732,8 +745,8 @@ def test_upload_analyze_view_and_export_flow(site: TestClient, monkeypatch: pyte
         lambda key, since: activity(key, events=[("alice", since - dt.timedelta(days=1))]),
     )
 
-    members = site.get("/api/weekly-check/members").json()
-    saved = site.put("/api/weekly-check/members", json={
+    members = site.get("/api/weekly-report/members").json()
+    saved = site.put("/api/weekly-report/members", json={
         "version": members["version"],
         "members": [
             {"sheet": "Alice", "jira_username": "alice"},
@@ -765,40 +778,40 @@ def test_upload_analyze_view_and_export_flow(site: TestClient, monkeypatch: pyte
 
     site.as_user("RM", "rm2")
     assert site.post(
-        f"/api/weekly-check/uploads/{preview['upload_id']}/analyze", json={"report_date": "10/10"},
+        f"/api/weekly-report/uploads/{preview['upload_id']}/analyze", json={"report_date": "10/10"},
     ).status_code == 400
-    started = site.post(f"/api/weekly-check/uploads/{preview['upload_id']}/analyze", json={"consistency": False})
+    started = site.post(f"/api/weekly-report/uploads/{preview['upload_id']}/analyze", json={"consistency": False})
     assert started.status_code == 200
     job = wait_for_job(site, started.json()["job_id"])
     assert (job["status"], job["week_key"], job["done"], job["total"]) == ("completed", "2026-W41", 2, 2)
     # The parsed workbook is gone once its week is stored.
-    again = site.post(f"/api/weekly-check/uploads/{preview['upload_id']}/analyze", json={})
+    again = site.post(f"/api/weekly-report/uploads/{preview['upload_id']}/analyze", json={})
     assert again.status_code == 400 and "请重新上传" in again.json()["error"]
     assert upload(site, content).json()["week_exists"] is True
 
     site.as_user("Owner")
-    assert site.get("/api/weekly-check/weeks").json()["weeks"][0]["finding_count"] == 3
-    week = site.get("/api/weekly-check/weeks/2026-W41").json()["week"]
+    assert site.get("/api/weekly-report/weeks").json()["weeks"][0]["finding_count"] == 3
+    week = site.get("/api/weekly-report/weeks/2026-W41").json()["week"]
     assert (week["uploaded_by"], week["analyzed_by"], week["xlsx_size"]) == ("rm", "rm2", len(content))
     assert week["jira_browse_url"] == "http://jira/browse/"
     assert week["problem_types"][0] == wr.T_BAD_DATE
-    findings = site.get("/api/weekly-check/weeks/2026-W41/findings", params={"person": "Alice"}).json()["findings"]
+    findings = site.get("/api/weekly-report/weeks/2026-W41/findings", params={"person": "Alice"}).json()["findings"]
     assert [row["problem"] for row in findings] == [wr.T_NOT_UPDATED, wr.T_NO_JIRA, wr.T_BAD_ID]
     assert site.get(
-        "/api/weekly-check/weeks/2026-W41/findings", params={"problem": wr.T_NO_JIRA},
+        "/api/weekly-report/weeks/2026-W41/findings", params={"problem": wr.T_NO_JIRA},
     ).json()["findings"][0]["item"] == "调研新方案"
 
-    exported = site.get("/api/weekly-check/weeks/2026-W41/export", params={"format": "csv"})
+    exported = site.get("/api/weekly-report/weeks/2026-W41/export", params={"format": "csv"})
     assert exported.content.startswith(b"\xef\xbb\xbf\xe5\xa7\x93\xe5\x90\x8d,")
     assert "weekly_jira_check_2026-10-10.csv" in exported.headers["content-disposition"]
-    markdown = site.get("/api/weekly-check/weeks/2026-W41/export").text
+    markdown = site.get("/api/weekly-report/weeks/2026-W41/export").text
     assert markdown.startswith("# 周报 JIRA 检查 2026-10-10\n")
-    assert site.get("/api/weekly-check/weeks/2026-W41/export", params={"format": "pdf"}).status_code == 400
+    assert site.get("/api/weekly-report/weeks/2026-W41/export", params={"format": "pdf"}).status_code == 400
 
     with connect(settings.db_path) as audit_conn:
-        events = [row["event"] for row in audit_conn.execute("SELECT event FROM audit WHERE event LIKE 'weekly_check_%' ORDER BY id")]
+        events = [row["event"] for row in audit_conn.execute("SELECT event FROM audit WHERE event LIKE 'weekly_report_%' ORDER BY id")]
     assert events == [
-        "weekly_check_members", "weekly_check_upload", "weekly_check_analyze", "weekly_check_upload",
+        "weekly_report_members", "weekly_report_upload", "weekly_report_analyze", "weekly_report_upload",
     ]
     # Nothing was written under the data directories: the workbook only lived in memory.
     assert not list(tmp_path.rglob("*.xlsx"))
@@ -806,15 +819,15 @@ def test_upload_analyze_view_and_export_flow(site: TestClient, monkeypatch: pyte
 
 def test_failed_analysis_keeps_the_previous_version_and_the_upload(site: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     preview = upload(site, workbook_bytes(SHEETS)).json()
-    started = site.post(f"/api/weekly-check/uploads/{preview['upload_id']}/analyze", json={}).json()
+    started = site.post(f"/api/weekly-report/uploads/{preview['upload_id']}/analyze", json={}).json()
 
     job = wait_for_job(site, started["job_id"])
 
     assert job["status"] == "failed"
     assert "未配置 LLM" in job["error"]
-    assert site.get("/api/weekly-check/weeks").json() == {"weeks": []}
+    assert site.get("/api/weekly-report/weeks").json() == {"weeks": []}
     # The upload survives a failed run, so the analysis can be started again.
-    retry = site.post(f"/api/weekly-check/uploads/{preview['upload_id']}/analyze", json={})
+    retry = site.post(f"/api/weekly-report/uploads/{preview['upload_id']}/analyze", json={})
     assert retry.status_code == 200
 
 
@@ -839,41 +852,44 @@ def test_a_running_analysis_can_be_stopped(site: TestClient, monkeypatch: pytest
 
     monkeypatch.setattr(llm, "chat_json", slow_llm)
     monkeypatch.setattr(jira, "get_issue_activity", lambda key, since: activity(key))
-    members = site.get("/api/weekly-check/members").json()
-    site.put("/api/weekly-check/members", json={
+    members = site.get("/api/weekly-report/members").json()
+    site.put("/api/weekly-report/members", json={
         "version": members["version"],
         "members": [{"sheet": "Alice", "jira_username": "alice"}, {"sheet": "Boss", "skip": True},
                     {"sheet": "Project", "skip": True}],
     })
     preview = upload(site, workbook_bytes(SHEETS)).json()
-    job = site.post(f"/api/weekly-check/uploads/{preview['upload_id']}/analyze", json={}).json()
+    job = site.post(f"/api/weekly-report/uploads/{preview['upload_id']}/analyze", json={}).json()
     assert entered.wait(5)
 
     site.as_user("Owner")
-    assert site.post(f"/api/weekly-check/jobs/{job['job_id']}/cancel").status_code == 403
+    assert site.post(f"/api/weekly-report/jobs/{job['job_id']}/cancel").status_code == 403
     site.as_user("RM")
-    stopping = site.post(f"/api/weekly-check/jobs/{job['job_id']}/cancel").json()
+    stopping = site.post(f"/api/weekly-report/jobs/{job['job_id']}/cancel").json()
     assert (stopping["status"], stopping["stopping"]) == ("running", True)
+    # Splits are under way (Alice's, maybe bob's too): started, none finished.
+    assert stopping["llm"]["calls"] >= 1 and stopping["llm"]["finished"] == 0
+    assert stopping["elapsed_seconds"] >= 0
     release.set()
 
     final = wait_for_job(site, job["job_id"])
     assert (final["status"], final["message"]) == ("cancelled", "分析已中止，已有结果没有改动")
-    assert site.get("/api/weekly-check/weeks").json() == {"weeks": []}
-    assert site.post(f"/api/weekly-check/jobs/{job['job_id']}/cancel").json()["error"] == "分析已经结束，无需中止"
-    assert site.post("/api/weekly-check/jobs/unknown/cancel").status_code == 404
+    assert site.get("/api/weekly-report/weeks").json() == {"weeks": []}
+    assert site.post(f"/api/weekly-report/jobs/{job['job_id']}/cancel").json()["error"] == "分析已经结束，无需中止"
+    assert site.post("/api/weekly-report/jobs/unknown/cancel").status_code == 404
     # The upload survives the stop, so the analysis can be started again.
-    again = site.post(f"/api/weekly-check/uploads/{preview['upload_id']}/analyze", json={})
+    again = site.post(f"/api/weekly-report/uploads/{preview['upload_id']}/analyze", json={})
     assert again.status_code == 200
     assert wait_for_job(site, again.json()["job_id"])["status"] == "completed"
 
 
 def test_uploads_expire_and_oversized_files_are_refused(site: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     preview = upload(site, workbook_bytes(SHEETS)).json()
-    monkeypatch.setattr(weekly_check_jobs, "UPLOAD_TTL_SECONDS", -1)
-    expired = site.post(f"/api/weekly-check/uploads/{preview['upload_id']}/analyze", json={})
+    monkeypatch.setattr(weekly_report_jobs, "UPLOAD_TTL_SECONDS", -1)
+    expired = site.post(f"/api/weekly-report/uploads/{preview['upload_id']}/analyze", json={})
     assert expired.status_code == 400 and "上传已失效" in expired.json()["error"]
 
-    from app.api.routers import weekly_check as router_module
+    from app.api.routers import weekly_report as router_module
 
     monkeypatch.setattr(router_module, "MAX_UPLOAD_BYTES", 10)
     assert upload(site, workbook_bytes(SHEETS)).status_code == 413

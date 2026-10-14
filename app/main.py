@@ -26,7 +26,7 @@ from app.api.routers import (
     qa,
     releases,
     state,
-    weekly_check,
+    weekly_report,
     wiki,
 )
 from app.config import settings
@@ -72,7 +72,7 @@ def create_app() -> FastAPI:
     app.include_router(jira_agent.router)
     app.include_router(qa.router)
     app.include_router(releases.router)
-    app.include_router(weekly_check.router)
+    app.include_router(weekly_report.router)
     app.include_router(wiki.router)
     app.include_router(artifacts.router)
     app.include_router(admin.router)
