@@ -8,11 +8,13 @@
 
 `REPORT.md` 写清问题分类、归属、当前结论、关键对照、实际环境、修复与验证、未确认项和下一步。组件相关性不等于机制根因；只有通过针对性验证和原案例全部验收，才能给出 `fixed_pending_review`，补丁仍由 owner 审核提交。
 
-交接材料给出原始现象、缩小范围的关键实验、主受理团队、完整可执行的命令、输入、环境、实际结果和判据。主受理是路由决定，不是已经证明最终缺陷归属；跨组件未二分时说明协同团队。没有网站材料核验的账号时写明确职责角色，不猜测账号或直接查询 Jira。
+交接材料给出原始现象、缩小范围的关键实验、主受理团队，以及按[外组交接要求](../../problem-analysis/SKILL.md#外组交接)准备的复现材料：必要代码或输入、环境、构建与运行命令、预期和实际结果及其与原问题的关系。主受理是路由决定，不是已经证明最终缺陷归属；跨组件未二分时说明协同团队。没有网站材料核验的账号时写明确职责角色，不猜测账号或直接查询 Jira。
+
+交接前按[公共收敛要求](../../problem-analysis/SKILL.md#实验决策与收敛)核对结束条件。`summary` 简述定位结果、复现材料及尚未完成的原因，区分有效独立案例、已验证的缩减原案和诊断材料；报告给出文件位置与验证结果，复现文件列入 `artifacts`。
 
 工单涉及发布应用时，报告分别写明目录查询结果、应用范围依据与故障技术归因；`ownership.reasoning` 概述这两层判断，`evidence` 仅记录实际查询/实验，范围缺口按下文填写 `action_required` 和 `assistance`。沿用规定的 JSON 字段，不增加自定义 `application_scope` 顶层字段。
 
-未执行步骤注明原因，诊断改动注明“仅用于定位”。环境、版本、镜像 digest、源码 commit、实际加载组件按已确认事实填写；不能用主机 IP 或 good/bad 标签代替版本。缺少条件时保留已经达到的技术结论，并用 `action_required` 和 `assistance` 说明实际缺口。
+未执行步骤注明原因。缩减输入和诊断改动注明“仅用于定位”，不计入 `fix` 或修复补丁，也不替代原案例验收。修复轮次的 `.patch` / `.diff` 只包含候选修复，诊断改动随复现材料说明。环境、版本、镜像 digest、源码 commit、实际加载组件按已确认事实填写；不能用主机 IP 或 good/bad 标签代替版本。缺少条件时保留已经达到的技术结论，并用 `action_required` 和 `assistance` 说明实际缺口。
 
 ## 分析路径
 
@@ -77,7 +79,7 @@
 | `fix_prepared` | 已形成候选修复，但验证尚未完成 |
 | `fixed_pending_review` | 候选修复已通过针对性测试和原案例验收，等待人工审核 |
 | `analysis_done` | 已完成本轮要求的分析，不涉及修复 |
-| `not_our_group` | 证据支持由其他组处理，并已给出主受理团队与复核方法 |
+| `not_our_group` | 仅兼容历史结果；新结果保留实际技术深度，用 `needs_handoff` 表达转交 |
 
 `action_required` 取值：
 
@@ -87,7 +89,7 @@
 | `needs_info` | 需要提供已有材料、输入、日志、版本或判据 |
 | `needs_help` | 需要处理资源、权限、SSH、工具或必须由人工执行的操作 |
 | `needs_review` | 需要 owner 审核结论、候选修改或验证证据 |
-| `needs_handoff` | 需要转交；`ownership.belongs_to_us=no` 并填写 `target_group` |
+| `needs_handoff` | 已满足公共收敛与交接要求，需要外组接手；`ownership.belongs_to_us=no` 并填写 `target_group` |
 
 允许组合：
 
@@ -96,7 +98,7 @@
 | `insufficient_evidence` | `needs_info` / `needs_help` |
 | `reproduced` | `none` / `needs_info` / `needs_help` |
 | `cannot_reproduce` | `none` |
-| `scope_narrowed` | `none` / `needs_info` / `needs_help` |
+| `scope_narrowed` | `none` / `needs_info` / `needs_help` / `needs_handoff` |
 | `root_cause_confirmed` | `none` / `needs_help` / `needs_review` / `needs_handoff` |
 | `fix_prepared` | `needs_info` / `needs_help` / `needs_review` |
 | `fixed_pending_review` | `needs_review` |
@@ -107,7 +109,7 @@
 
 需要补充或协助时，`assistance` 三项都要具体：`current_issue` 写当前卡在哪里，`owner` 写能提供材料或完成操作的人/角色，`request` 写可直接执行或提供的内容。使用具体版本、文件、命令、输入和指标，避免“补齐环境”“提供基线”“请协助处理”“进一步定位”“完成闭环”等无法直接行动的表述。例如：“请提供一次正常版本的测试记录，包含版本、输入、命令和总耗时”。
 
-`next_steps` 只写结论成立后仍要继续的技术动作，最多两项。`needs_info` / `needs_help` 通常留空，避免重复 `assistance`；没有后续动作时不为凑字段编写建议。网站会依据这两个状态按需显示“所需补充”“所需协助”“待审核”或“建议接手”，空内容不会生成标题。
+`next_steps` 只写满足本轮结束条件后仍需开展的技术动作，最多两项；不把本轮仍可完成的定位工作留给接手方。`needs_info` / `needs_help` 通常留空，避免重复 `assistance`；没有后续动作时不为凑字段编写建议。网站会依据这两个状态按需显示“所需补充”“所需协助”“待审核”或“建议接手”，空内容不会生成标题。
 
 ## 文件回收
 

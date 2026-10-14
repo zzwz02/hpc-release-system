@@ -40,7 +40,7 @@ ALLOWED_ACTIONS: dict[str, set[str]] = {
     "insufficient_evidence": {"needs_info", "needs_help"},
     "reproduced": {"none", "needs_info", "needs_help"},
     "cannot_reproduce": {"none"},
-    "scope_narrowed": {"none", "needs_info", "needs_help"},
+    "scope_narrowed": {"none", "needs_info", "needs_help", "needs_handoff"},
     "root_cause_confirmed": {"none", "needs_help", "needs_review", "needs_handoff"},
     "fix_prepared": {"needs_info", "needs_help", "needs_review"},
     "fixed_pending_review": {"needs_review"},
@@ -85,7 +85,8 @@ _STR_LIST = {"type": "array", "items": _STR}
 
 RESULT_SCHEMA: dict = _obj(
     {
-        "conclusion": {"type": "string", "enum": list(CONCLUSIONS)},
+        # Keep historical routing conclusions readable, but request technical depth in new turns.
+        "conclusion": {"type": "string", "enum": [key for key in CONCLUSIONS if key != "not_our_group"]},
         "action_required": {"type": "string", "enum": list(ACTIONS_REQUIRED)},
         "assistance": _obj(
             {
@@ -432,13 +433,13 @@ owner（当前 assignee）：{owner}；交单人：{created_by}
 新上传文件：
 {files}
 
-请优先读取 issue.json（旧目录兼容 issue.md）和附件，检查 acquisition 的完整性，再按 AGENTS.md 的工作流完成分类、归属判断、复现和分析；属于本组且可以修复时完成修复与验证；不属于本组或处理不了时整理交接材料。结束时输出结构化结论。{machine}"""
+请优先读取 issue.json（旧目录兼容 issue.md）和附件，检查 acquisition 的完整性，再按 AGENTS.md 和相关 skill 完成分类、复现、定位及修复或交接要求；分析结束条件以 skill 为准，受阻时说明已确认范围和具体限制。结束时分别表达技术结论与所需行动。{machine}"""
     return f"""第 {seq} 轮：assignee 的补充要求
 {note}
 新上传文件：
 {files}
 
-issue.json 和 issue.md 已刷新；检查 acquisition 中的完整性和缺失原因，不能把未采集到视为不存在。请在当前工作基础上继续，结束时输出本轮的结构化结论。{machine}"""
+issue.json 和 issue.md 已刷新；检查 acquisition 中的完整性和缺失原因，不能把未采集到视为不存在。请在当前工作基础上继续，读取当前相关 skill 的收敛与交接要求，再完成本轮并输出结构化结论。{machine}"""
 
 
 def parse_result(text: str) -> dict:
@@ -548,13 +549,21 @@ def render_jira_comment(
 
     ownership = result.get("ownership") or {}
     belongs = ownership.get("belongs_to_us", "")
-    ownership_label = OWNERSHIP.get(belongs, belongs or "未判断")
-    if belongs == "no" and ownership.get("target_group"):
-        ownership_label += f"（建议由 {ownership['target_group']} 负责）"
+    target = (ownership.get("target_group") or "").strip()
+    reasoning = (ownership.get("reasoning") or "").strip()
+    handoff = action == "needs_handoff" and bool(target)
     lines.append(f"*问题分类*：{result.get('issue_category') or '未分类'}")
-    lines.append(f"*归属判断*：{ownership_label}")
-    if ownership.get("reasoning"):
-        lines.append(f"判断依据：{_clip(ownership['reasoning'], 2000)}")
+    if handoff:
+        lines.append(f"*建议接手*：{target}")
+        if reasoning:
+            lines.append(f"*归属判断*：{_clip(reasoning, 2000)}")
+    else:
+        ownership_label = OWNERSHIP.get(belongs, belongs or "未判断")
+        if belongs == "no" and target:
+            ownership_label += f"（建议由 {target} 负责）"
+        lines.append(f"*归属判断*：{ownership_label}")
+        if reasoning:
+            lines.append(f"判断依据：{_clip(reasoning, 2000)}")
 
     assistance = result.get("assistance") or {}
     if action in {"needs_info", "needs_help"} and all(
@@ -575,8 +584,6 @@ def render_jira_comment(
             "fixed_pending_review": "请 owner 审核候选修改、验证证据和补丁，决定是否合入。",
         }.get(conclusion, "请 owner 审核分析结论和证据。")
         lines.append(f"*待审核*：{review}")
-    if action == "needs_handoff" and ownership.get("target_group"):
-        lines.append(f"*建议接手*：{ownership['target_group']}")
 
     next_steps = result.get("next_steps") or []
     if next_steps:
@@ -605,7 +612,7 @@ def render_jira_comment(
             lines += ["*修复补丁*：本轮未交付 .patch/.diff 文件，当前只有修复说明。", ""]
 
     repro = result.get("reproduction") or {}
-    show_repro = conclusion not in {"insufficient_evidence", "not_our_group"} and (
+    show_repro = conclusion == "cannot_reproduce" or (
         repro.get("reproduced") or repro.get("environment") or repro.get("steps")
     )
     if show_repro:

@@ -1185,9 +1185,12 @@ def test_group_selection_and_comment_rendering() -> None:
         turn_seq=1, owner="alice", conversation_url="", patches=[],
     )
     assert "技术结论：建议由其他组处理" in body
-    assert "不属于本组（建议由 PyTorch 组 负责）" in body
-    assert body.index("*归属判断*") < body.index("判断依据：") < body.index("*建议接手*")
-    assert body.index("*建议接手*") < body.index("*下一步建议*") < body.index("*执行机器*")
+    assert "*建议接手*：PyTorch 组" in body
+    assert "*归属判断*：算子报错" in body
+    assert "不属于本组" not in body
+    assert "（建议由 PyTorch 组 负责）" not in body
+    assert body.index("*建议接手*") < body.index("*归属判断*") < body.index("*下一步建议*")
+    assert body.index("*下一步建议*") < body.index("*执行机器*")
     assert body.count("*下一步建议*") == 1
     assert "*根因*" not in body
     assert "*修复说明*" not in body
@@ -1275,6 +1278,60 @@ def test_result_status_validation_and_legacy_mapping() -> None:
     assert normalized["assistance"] == {"current_issue": "", "owner": "", "request": ""}
     assert normalized["ownership"] == handoff["ownership"]
     assert normalized["next_steps"] == handoff["next_steps"]
+
+
+
+@pytest.mark.parametrize("conclusion", ["scope_narrowed", "not_our_group"])
+def test_handoff_preserves_technical_depth_and_reproduction(conclusion) -> None:
+    result = {
+        **RESULT,
+        "conclusion": conclusion,
+        "action_required": "needs_handoff",
+        "ownership": {
+            "belongs_to_us": "no", "target_group": "SDK 维护团队",
+            "reasoning": "已确认外部调用路径，内部机制尚未确认",
+        },
+        "summary": "独立案例已复现同一异常，详见 artifacts/repro.cpp",
+        "root_cause": "",
+        "fix": {"description": ""},
+        "reproduction": {"reproduced": True, "environment": "正常与异常 SDK", "steps": ["./repro --check"]},
+        "artifacts": ["artifacts/repro.cpp"],
+    }
+    parsed = domain.parse_result(json.dumps(result, ensure_ascii=False))
+    assert parsed["conclusion"] == conclusion
+    assert domain.result_state(parsed) == (conclusion, "needs_handoff")
+    group = domain.AgentGroup("HPC", "HPC", "ws://b:1", "t", "/w", (), "", 600, 1)
+    body = domain.render_jira_comment(
+        group=group, result=parsed, turn_seq=1, owner="alice", conversation_url="", patches=[],
+    )
+    assert f"技术结论：{domain.CONCLUSIONS[conclusion]}" in body
+    assert "*建议接手*：SDK 维护团队" in body
+    assert "*复现结果*：已复现（正常与异常 SDK）" in body
+    assert "./repro --check" in body
+    assert "*根因*" not in body
+    assert "*修复补丁*" not in body
+
+    empty = {**parsed, "reproduction": {"reproduced": False, "environment": "", "steps": []}}
+    body = domain.render_jira_comment(
+        group=group, result=empty, turn_seq=1, owner="alice", conversation_url="", patches=[],
+    )
+    assert "*复现结果*" not in body
+    for ownership in [
+        {**parsed["ownership"], "belongs_to_us": "yes"},
+        {**parsed["ownership"], "target_group": ""},
+    ]:
+        with pytest.raises(ValueError, match="needs_handoff"):
+            domain.parse_result(json.dumps({**parsed, "ownership": ownership}))
+
+
+def test_new_result_schema_requests_depth_and_keeps_legacy_readable() -> None:
+    conclusions = domain.RESULT_SCHEMA["properties"]["conclusion"]["enum"]
+    assert "scope_narrowed" in conclusions
+    assert "not_our_group" not in conclusions
+    historical = {**RESULT, "conclusion": "not_our_group"}
+    historical.pop("action_required")
+    stored = domain.parse_stored_result(json.dumps(historical))
+    assert domain.result_state(stored) == ("not_our_group", "needs_handoff")
 
 
 def test_ssh_target_and_public_key_fingerprint() -> None:

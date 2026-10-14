@@ -233,6 +233,37 @@ describe("JiraAgentPage", () => {
     mockUser("Owner");
   });
 
+  it.each(["scope_narrowed", "not_our_group"])("keeps reproduction visible for %s handoffs", async (conclusion) => {
+    mockBackend();
+    const base = vi.mocked(apiGet).getMockImplementation()!;
+    const handoff = {
+      ...result,
+      conclusion,
+      action_required: "needs_handoff",
+      ownership: { belongs_to_us: "no", target_group: "SDK 维护团队", reasoning: "外部调用路径已确认，内部机制未确认" },
+      root_cause: "",
+      fix: { description: "" },
+      reproduction: { reproduced: true, environment: "正常与异常 SDK", steps: ["./repro --check"] },
+      summary: "独立案例已复现同一异常",
+    };
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === "/api/jira-agent/conversations/jac_1") return {
+        ...detail,
+        events: detail.events.map((event) => event.kind === "result" ? { ...event, payload: handoff } : event),
+      };
+      return base(path);
+    });
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
+    const card = within(await screen.findByTestId("jira-agent-result"));
+    expect(card.getByText("需要转交")).toBeInTheDocument();
+    expect(card.getByText(conclusion === "scope_narrowed" ? "已定位到具体范围" : "建议由其他组处理")).toBeInTheDocument();
+    expect(card.getByText("SDK 维护团队")).toBeInTheDocument();
+    expect(card.getByText("复现结果")).toBeInTheDocument();
+    expect(card.getByText("./repro --check")).toBeInTheDocument();
+    expect(card.queryByText("根因")).not.toBeInTheDocument();
+    expect(card.queryByText("修复补丁")).not.toBeInTheDocument();
+  });
+
   it.each([true, false])("retries file delivery with the original comment choice %s", async (post) => {
     mockBackend();
     const base = vi.mocked(apiGet).getMockImplementation()!;

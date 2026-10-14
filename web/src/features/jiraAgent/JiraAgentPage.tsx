@@ -1024,6 +1024,8 @@ function CommandEvent({ event }: { event: AgentEvent }) {
 function ResultCard({ result, files, pending }: { result: AgentResult; files: AgentFile[]; pending: boolean }) {
   const ownership = result.ownership ?? { belongs_to_us: "", target_group: "", reasoning: "" };
   const state = resultState(result.conclusion, result.action_required);
+  const handoff = state.action === "needs_handoff" && ownership.target_group?.trim();
+  const reasoning = ownership.reasoning?.trim();
   const action = ACTION_REQUIRED_LABELS[state.action];
   const assistance = result.assistance;
   const showAssistance = (
@@ -1039,24 +1041,18 @@ function ResultCard({ result, files, pending }: { result: AgentResult; files: Ag
   ) && result.root_cause;
   const showReproduction = (
     state.conclusion === "cannot_reproduce"
-    || (
-      state.conclusion !== "insufficient_evidence"
-      && state.conclusion !== "not_our_group"
-      && Boolean(
-        result.reproduction?.reproduced
-        || result.reproduction?.environment
-        || result.reproduction?.steps?.length,
-      )
+    || Boolean(
+      result.reproduction?.reproduced
+      || result.reproduction?.environment
+      || result.reproduction?.steps?.length,
     )
   );
-  const showFix = (
-    state.conclusion === "fix_prepared"
-    || state.conclusion === "fixed_pending_review"
-  ) && result.fix?.description;
-  const patches = files.filter((file) => {
+  const repair = state.conclusion === "fix_prepared" || state.conclusion === "fixed_pending_review";
+  const showFix = repair && result.fix?.description;
+  const patches = repair ? files.filter((file) => {
     const name = (file.remote_path || file.name).toLowerCase();
     return name.endsWith(".patch") || name.endsWith(".diff");
-  });
+  }) : [];
   const artifacts = files.filter((file) => !patches.includes(file));
   const review = state.action === "needs_review"
     ? (
@@ -1080,12 +1076,26 @@ function ResultCard({ result, files, pending }: { result: AgentResult; files: Ag
       <dl className="jira-agent-result-grid">
         <dt>问题分类</dt>
         <dd>{result.issue_category || "未分类"}</dd>
-        <dt>归属判断</dt>
-        <dd>
-          {OWNERSHIP_LABELS[ownership.belongs_to_us] ?? ownership.belongs_to_us}
-          {ownership.target_group ? "（" + ownership.target_group + "）" : ""}
-          {ownership.reasoning && <div className="muted">{ownership.reasoning}</div>}
-        </dd>
+        {handoff && (
+          <>
+            <dt>建议接手</dt>
+            <dd>{handoff}</dd>
+          </>
+        )}
+        {(!handoff || reasoning) && (
+          <>
+            <dt>归属判断</dt>
+            <dd>
+              {handoff ? reasoning : (
+                <>
+                  {OWNERSHIP_LABELS[ownership.belongs_to_us] ?? ownership.belongs_to_us}
+                  {ownership.target_group ? "（" + ownership.target_group + "）" : ""}
+                  {reasoning && <div className="muted">{reasoning}</div>}
+                </>
+              )}
+            </dd>
+          </>
+        )}
         {showAssistance && (
           <>
             <dt>{state.action === "needs_info" ? "所需补充" : "所需协助"}</dt>
@@ -1100,12 +1110,6 @@ function ResultCard({ result, files, pending }: { result: AgentResult; files: Ag
           <>
             <dt>待审核</dt>
             <dd>{review}</dd>
-          </>
-        )}
-        {state.action === "needs_handoff" && ownership.target_group && (
-          <>
-            <dt>建议接手</dt>
-            <dd>{ownership.target_group}</dd>
           </>
         )}
         {result.next_steps?.length > 0 && (
