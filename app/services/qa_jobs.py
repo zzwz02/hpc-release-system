@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 from app.db.connection import connect
-from app.domain.permissions import has_capability
+from app.integrations import llm
 from app.timeutil import elapsed_seconds
 
 # ---------------------------------------------------------------------------
@@ -73,8 +73,10 @@ class QaJobRegistry:
         self.cleanup_stale()
         job_id = secrets.token_urlsafe(12)
         now = self._now()
+        stop = llm.CancelToken()
         job: dict = {
             "job_id": job_id,
+            "stop": stop,
             "release_id": release_id,
             "user": user,
             "role": role,
@@ -89,31 +91,54 @@ class QaJobRegistry:
             "error": "",
         }
         with self._lock:
+            # One analysis per release at a time, whoever started it.
+            busy = self._running(release_id)
+            if busy:
+                raise ValueError(f"该发布周期的 AI 分析正在进行中（{busy['user']} 发起），可查看进度或中止")
             self._jobs[job_id] = job
         thread = threading.Thread(
             target=self._run_job,
-            args=(job_id, release_id, db_path),
+            args=(job_id, release_id, db_path, stop),
             daemon=True,
         )
         thread.start()
         return self._snapshot(job)
 
-    def poll_job(self, job_id: str, *, user: str, role: str) -> dict | None:
+    def poll_job(self, job_id: str) -> dict | None:
         """Return a job snapshot or None if unknown/expired.
 
-        Mirrors server.py:get_qa_analysis_job (286-294).
-        Raises AuthzError if caller isn't RM and doesn't own the job.
+        Everyone who may run analyses (qa.edit) sees every job, not only their own.
         """
-        from app.api.errors import AuthzError
-
         self.cleanup_stale()
         with self._lock:
             job = self._jobs.get(job_id)
-            if not job:
+            return self._snapshot(job) if job else None
+
+    def running_job(self, release_id: str) -> dict | None:
+        """The release's analysis still running, if any: what a reopened page picks up."""
+        self.cleanup_stale()
+        with self._lock:
+            job = self._running(release_id)
+            return self._snapshot(job) if job else None
+
+    def cancel_job(self, job_id: str) -> dict | None:
+        """Stop a running analysis: its LLM connection is cut and it ends right away."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
                 return None
-            if not has_capability(role, "qa.analysis.view.any") and job.get("user") != user:
-                raise AuthzError("无权查看该 AI 分析任务")
+            if job["status"] != "running":
+                raise ValueError("AI 分析已经结束，无需中止")
+            job["stop"].cancel()
+            job.update(message="正在中止：断开 LLM 请求", updated_at=self._now())
             return self._snapshot(job)
+
+    def _running(self, release_id: str) -> dict | None:
+        """Call with the lock held."""
+        return next(
+            (job for job in self._jobs.values() if job["release_id"] == release_id and job["status"] == "running"),
+            None,
+        )
 
     def cleanup_stale(self) -> None:
         """Remove completed/failed jobs older than TTL.
@@ -167,6 +192,8 @@ class QaJobRegistry:
             "updated_at": job.get("updated_at", 0),
             "finished_at": job.get("finished_at", 0),
             "elapsed_seconds": elapsed_seconds(job.get("started_at", 0), job.get("finished_at", 0)),
+            "user": job.get("user", ""),
+            "stopping": bool(job.get("stop") and job["stop"].cancelled and job["status"] == "running"),
         }
         if job.get("error"):
             payload["error"] = job["error"]
@@ -176,7 +203,7 @@ class QaJobRegistry:
             payload["result"] = job["result"]
         return payload
 
-    def _run_job(self, job_id: str, release_id: str, db_path: Path) -> None:
+    def _run_job(self, job_id: str, release_id: str, db_path: Path, stop: llm.CancelToken) -> None:
         """Background thread: open own conn, run LLM analysis, update registry.
 
         Mirrors server.py:_run_qa_analysis_job (226-257).
@@ -191,7 +218,9 @@ class QaJobRegistry:
 
             from app.services.qa_analysis_service import analyze_qa_log
 
-            result = analyze_qa_log(conn, release_id, progress=progress)
+            with self._lock:
+                started_by = self._jobs[job_id]["user"]
+            result = analyze_qa_log(conn, release_id, progress=progress, cancel=stop, analyzed_by=started_by)
             self._update(
                 job_id,
                 status="completed",
@@ -200,7 +229,22 @@ class QaJobRegistry:
                 result=result,
                 finished_at=self._now(),
             )
+        except llm.LLMCancelled:
+            self._update(
+                job_id,
+                status="cancelled",
+                stage="cancelled",
+                message="AI 分析已中止",
+                finished_at=self._now(),
+            )
         except Exception as exc:
+            if stop.cancelled:
+                # Stopped before the LLM call began (log still being read).
+                self._update(
+                    job_id, status="cancelled", stage="cancelled", message="AI 分析已中止",
+                    finished_at=self._now(),
+                )
+                return
             self._update(
                 job_id,
                 status="failed",

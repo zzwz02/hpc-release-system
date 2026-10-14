@@ -36,6 +36,10 @@ vi.mock("../../../api/http", () => ({
   apiPost: vi.fn(),
 }));
 
+vi.mock("../../../lib/confirm", () => ({
+  confirmDialog: vi.fn(),
+}));
+
 vi.mock("../../../api/AuthContext", () => ({
   useAuth: vi.fn(),
 }));
@@ -86,6 +90,7 @@ vi.mock("../../../store/uiStore", () => {
 });
 
 import { apiGet, apiPost } from "../../../api/http";
+import { confirmDialog } from "../../../lib/confirm";
 import { useAuth } from "../../../api/AuthContext";
 import { useUiStore } from "../../../store/uiStore";
 
@@ -784,4 +789,99 @@ describe("QaPage subtab navigation", () => {
     expect(optionTexts).toEqual(["— 不对比 —", "2.9"]);
   });
 
+});
+
+
+// ---------------------------------------------------------------------------
+// Following an analysis across refreshes, stopping it, saved AI suggestions
+// ---------------------------------------------------------------------------
+
+describe("QaPage AI analysis after a refresh", () => {
+  const runningJob = {
+    job_id: "job-7", release_id: "rel-1", status: "running", started_at: "1000", finished_at: null,
+    summary: "", error: null, progress: null, message: "正在等待 LLM 返回结果", user: "rm",
+    elapsed_seconds: 30, stopping: false,
+  };
+
+  function routeGets(extra: Record<string, unknown>) {
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
+      for (const [prefix, value] of Object.entries(extra)) {
+        if (path.startsWith(prefix)) return Promise.resolve(value);
+      }
+      if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
+      return Promise.resolve(makePayload({}));
+    });
+  }
+
+  it("asks the server for the release's running analysis and follows it", async () => {
+    uiStoreMod.__setState({
+      selectedReleaseId: "rel-1", qaEditMode: false, qaEditReleaseId: "rel-1", qaAiJob: null, qaAiSuggestions: {},
+    });
+    routeGets({
+      "/api/qa/analyze-log/current": { job: runningJob },
+      "/api/qa/analyze-log/status": runningJob,
+      "/api/qa/ai-suggestions": { suggestions: null },
+    });
+
+    renderQaPage(makeQClient());
+
+    await waitFor(() =>
+      expect(apiGet).toHaveBeenCalledWith("/api/qa/analyze-log/current?release_id=rel-1"),
+    );
+    await waitFor(() => expect(uiStoreMod.useUiStore.getState().qaAiJob).toMatchObject({ job_id: "job-7" }));
+  });
+
+  it("shows who started a running analysis and lets QA stop it", async () => {
+    uiStoreMod.__setState({
+      selectedReleaseId: "rel-1", qaEditMode: false, qaEditReleaseId: "rel-1", qaAiJob: runningJob,
+      qaAiSuggestions: {},
+    });
+    routeGets({
+      "/api/qa/analyze-log/status": runningJob,
+      "/api/qa/ai-suggestions": { suggestions: null },
+    });
+    vi.mocked(confirmDialog).mockResolvedValue(true);
+    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ...runningJob, stopping: true });
+
+    renderQaPage(makeQClient());
+
+    await waitFor(() => expect(document.getElementById("qaAiProgress")?.textContent).toContain("rm 发起"));
+    fireEvent.click(screen.getByRole("button", { name: "中止分析" }));
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/qa/analyze-log/cancel", { job_id: "job-7" }),
+    );
+    expect(confirmDialog).toHaveBeenCalledWith(expect.objectContaining({ confirmText: "中止分析", danger: true }));
+  });
+
+  it("reloads saved AI suggestions, still marked as AI 建议, and can discard them", async () => {
+    uiStoreMod.__setState({
+      selectedReleaseId: "rel-1", qaEditMode: false, qaEditReleaseId: "rel-1", qaAiJob: null, qaAiSuggestions: {},
+    });
+    routeGets({
+      "/api/qa/analyze-log/current": { job: null },
+      "/api/qa/ai-suggestions": {
+        suggestions: {
+          log_filename: "qa.log", analyzed_by: "qa_user", analyzed_at: "2026-10-14 15:00:00",
+          result: { apps: [{ app_id: "app-a", qa_status: "has_issues", qa_issue_note: "用例失败", test_results: [] }] },
+        },
+      },
+    });
+    vi.mocked(confirmDialog).mockResolvedValue(true);
+    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
+
+    renderQaPage(makeQClient());
+
+    const banner = await screen.findByTestId("qa-ai-saved");
+    expect(banner.textContent).toContain("AI 建议");
+    expect(banner.textContent).toContain("qa.log，有 1 个 app 的建议待核对");
+    expect(uiStoreMod.useUiStore.getState().qaAiSuggestions).toEqual({
+      "app-a": { qa_status: "has_issues", qa_issue_note: "用例失败", test_results: [] },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "丢弃 AI 建议" }));
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/qa/ai-suggestions/discard", { release_id: "rel-1" }),
+    );
+    await waitFor(() => expect(uiStoreMod.useUiStore.getState().qaAiSuggestions).toEqual({}));
+  });
 });

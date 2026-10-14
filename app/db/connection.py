@@ -216,6 +216,16 @@ def init_db(conn: sqlite3.Connection) -> None:
             uploaded_by TEXT NOT NULL
         );
 
+        -- The latest AI analysis of a release's QA log, kept until it is
+        -- reviewed (QA statuses saved), discarded, or the log is replaced.
+        CREATE TABLE IF NOT EXISTS qa_ai_suggestions (
+            release_id TEXT PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE,
+            log_filename TEXT NOT NULL DEFAULT '',
+            result_json TEXT NOT NULL,
+            analyzed_by TEXT NOT NULL DEFAULT '',
+            analyzed_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS audit (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts TEXT NOT NULL,

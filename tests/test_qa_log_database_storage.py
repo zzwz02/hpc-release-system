@@ -213,3 +213,133 @@ def test_qa_job_snapshot_reports_elapsed_time_and_llm_totals() -> None:
 
     assert snapshot["elapsed_seconds"] == 42
     assert snapshot["llm"] == totals
+
+
+def test_a_running_analysis_is_shared_single_and_stoppable(temp_db_with_path, tmp_path, monkeypatch) -> None:
+    import threading
+    import time
+
+    from app.integrations import llm
+    from app.services import qa_jobs
+
+    conn, db_path = temp_db_with_path
+    release_id = seed_release(conn, tmp_path=db_path.parent)
+    qa_service.upload_qa_log(
+        conn, release_id, content_b64=base64.b64encode(b"run_make_test PASS").decode("ascii"),
+        filename="qa.log", user="qa", role="QA",
+    )
+    conf = tmp_path / "release_system.conf"
+    conf.write_text("[llm]\nLLM_BASE_URL = http://llm/v1\nLLM_MODEL = m\n", encoding="utf-8")
+    monkeypatch.setattr(settings, "runtime_conf_path", conf)
+    monkeypatch.setattr(settings, "db_path", db_path)
+    monkeypatch.setattr(qa_jobs, "_registry", qa_jobs.QaJobRegistry())
+
+    entered = threading.Event()
+
+    def hanging_llm(_system: str, _user: str, cancel=None, **_kwargs) -> str:
+        # Like a streamed reply that never ends unless its connection is cut.
+        entered.set()
+        cut = threading.Event()
+        cancel.on_cancel(cut.set)
+        if not cut.wait(30):
+            raise AssertionError("the call was never cut")
+        raise llm.LLMCancelled("LLM 调用已中止")
+
+    monkeypatch.setattr(llm, "chat_json", hanging_llm)
+    users = {
+        "rm": {"username": "rm", "display_name": "rm", "role": "RM"},
+        "qa": {"username": "qa", "display_name": "qa", "role": "QA"},
+        "owner": {"username": "owner", "display_name": "owner", "role": "Owner"},
+    }
+    current = {"user": users["rm"]}
+    app = create_app()
+    app.dependency_overrides[require_login] = lambda: current["user"]
+    client = TestClient(app, raise_server_exceptions=False)
+
+    job = client.post("/api/qa/analyze-log/start", json={"release_id": release_id}).json()
+    assert entered.wait(5)
+
+    # QA sees the analysis RM started, both directly and as the release's running one.
+    current["user"] = users["qa"]
+    assert client.get(f"/api/qa/analyze-log/status?job_id={job['job_id']}").json()["user"] == "rm"
+    running = client.get(f"/api/qa/analyze-log/current?release_id={release_id}").json()["job"]
+    assert (running["job_id"], running["status"], running["user"]) == (job["job_id"], "running", "rm")
+    # Only one analysis per release at a time, whoever asks.
+    refused = client.post("/api/qa/analyze-log/start", json={"release_id": release_id})
+    assert refused.status_code == 400
+    assert refused.json()["error"] == "该发布周期的 AI 分析正在进行中（rm 发起），可查看进度或中止"
+    # Roles without QA editing can neither see nor stop it.
+    current["user"] = users["owner"]
+    assert client.post("/api/qa/analyze-log/cancel", json={"job_id": job["job_id"]}).status_code == 403
+    assert client.get(f"/api/qa/analyze-log/current?release_id={release_id}").status_code == 403
+
+    # QA stops RM's analysis; the hanging call is cut, not waited for.
+    current["user"] = users["qa"]
+    started = time.monotonic()
+    stopping = client.post("/api/qa/analyze-log/cancel", json={"job_id": job["job_id"]}).json()
+    assert stopping["stopping"] is True
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        state = client.get(f"/api/qa/analyze-log/status?job_id={job['job_id']}").json()
+        if state["status"] != "running":
+            break
+        time.sleep(0.02)
+    assert (state["status"], state["message"]) == ("cancelled", "AI 分析已中止")
+    assert time.monotonic() - started < 3
+    assert client.get(f"/api/qa/analyze-log/current?release_id={release_id}").json() == {"job": None}
+    assert client.post("/api/qa/analyze-log/cancel", json={"job_id": job["job_id"]}).json()["error"] == "AI 分析已经结束，无需中止"
+    assert client.post("/api/qa/analyze-log/cancel", json={"job_id": "unknown"}).status_code == 404
+
+
+def test_ai_suggestions_are_kept_until_reviewed_discarded_or_the_log_changes(temp_db_with_path, monkeypatch) -> None:
+    conn, db_path = temp_db_with_path
+    release_id = seed_release(conn, tmp_path=db_path.parent)
+    app_id = next(iter(conn.execute("SELECT id FROM apps")))["id"]
+
+    def upload(body: bytes) -> None:
+        qa_service.upload_qa_log(
+            conn, release_id, content_b64=base64.b64encode(body).decode("ascii"),
+            filename="qa.log", user="qa", role="QA",
+        )
+
+    def analyse() -> None:
+        analyze_qa_log(
+            conn, release_id, analyzed_by="qa",
+            llm_call=lambda _s, _p: json.dumps({"apps": [
+                {"app_id": app_id, "qa_status": "has_issues", "qa_issue_note": "用例失败", "tests": []},
+            ]}),
+        )
+
+    upload(b"run_make_test FAIL")
+    analyse()
+    saved = qa_service.get_ai_suggestions(conn, release_id)
+    assert (saved["log_filename"], saved["analyzed_by"]) == ("qa.log", "qa")
+    assert saved["result"]["apps"][0]["qa_issue_note"] == "用例失败"
+
+    # A new log makes the old suggestions meaningless.
+    upload(b"run_make_test PASS")
+    assert qa_service.get_ai_suggestions(conn, release_id) is None
+
+    # Saving QA statuses is the review: the suggestions are done with.
+    analyse()
+    qa_service.set_qa_status_batch(
+        conn, release_id, [{"app_id": app_id, "status": "has_issues", "issue_note": "用例失败"}], user="qa", role="QA",
+    )
+    assert qa_service.get_ai_suggestions(conn, release_id) is None
+
+    # Over the API: QA and RM read them, Owner does not; discarding is audited.
+    analyse()
+    monkeypatch.setattr(settings, "db_path", db_path)
+    current = {"user": {"username": "rm", "display_name": "rm", "role": "RM"}}
+    app = create_app()
+    app.dependency_overrides[require_login] = lambda: current["user"]
+    client = TestClient(app, raise_server_exceptions=False)
+    assert client.get(f"/api/qa/ai-suggestions?release_id={release_id}").json()["suggestions"]["analyzed_by"] == "qa"
+    current["user"] = {"username": "o", "display_name": "o", "role": "Owner"}
+    assert client.get(f"/api/qa/ai-suggestions?release_id={release_id}").status_code == 403
+    assert client.post("/api/qa/ai-suggestions/discard", json={"release_id": release_id}).status_code == 403
+    current["user"] = {"username": "qa", "display_name": "qa", "role": "QA"}
+    assert client.post("/api/qa/ai-suggestions/discard", json={"release_id": release_id}).json() == {"ok": True}
+    assert client.get(f"/api/qa/ai-suggestions?release_id={release_id}").json() == {"suggestions": None}
+    events = [row["event"] for row in conn.execute("SELECT event FROM audit WHERE event = 'qa_discard_ai_suggestions'")]
+    assert events == ["qa_discard_ai_suggestions"]

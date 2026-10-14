@@ -722,6 +722,7 @@ def test_api_role_gates(site: TestClient, role: str) -> None:
     assert upload(site, b"").status_code == (400 if can_run else 403)
     assert site.post("/api/weekly-report/uploads/none/analyze", json={}).status_code == (400 if can_run else 403)
     assert site.get("/api/weekly-report/jobs/none").status_code == (404 if can_run else 403)
+    assert site.get("/api/weekly-report/jobs").status_code == (200 if can_run else 403)
 
 
 def test_permissions_match_the_design() -> None:
@@ -843,14 +844,21 @@ def test_a_running_analysis_can_be_stopped(site: TestClient, monkeypatch: pytest
     monkeypatch.setattr(settings, "runtime_conf_path", conf)
     from app.integrations import llm
 
-    entered, release = threading.Event(), threading.Event()
+    entered = threading.Event()
+    hang = {"on": True}
 
-    def slow_llm(system: str, prompt: str, **_kwargs) -> str:
-        entered.set()
-        release.wait(5)
+    def hanging_llm(system: str, prompt: str, cancel=None, **_kwargs) -> str:
+        # Like a streamed reply that never ends unless its connection is cut.
+        if hang["on"]:
+            entered.set()
+            cut = threading.Event()
+            cancel.on_cancel(cut.set)
+            if not cut.wait(30):
+                raise AssertionError("the call was never cut")
+            raise llm.LLMCancelled("LLM 调用已中止")
         return FakeLlm(ITEMS)(system, prompt)
 
-    monkeypatch.setattr(llm, "chat_json", slow_llm)
+    monkeypatch.setattr(llm, "chat_json", hanging_llm)
     monkeypatch.setattr(jira, "get_issue_activity", lambda key, since: activity(key))
     members = site.get("/api/weekly-report/members").json()
     site.put("/api/weekly-report/members", json={
@@ -862,22 +870,47 @@ def test_a_running_analysis_can_be_stopped(site: TestClient, monkeypatch: pytest
     job = site.post(f"/api/weekly-report/uploads/{preview['upload_id']}/analyze", json={}).json()
     assert entered.wait(5)
 
+    # A page reopened mid-analysis finds it again.
+    [running] = site.get("/api/weekly-report/jobs").json()["jobs"]
+    assert {key: running[key] for key in ("job_id", "status", "week_key", "week_label", "filename", "user")} == {
+        "job_id": job["job_id"], "status": "running", "week_key": "2026-W41",
+        "week_label": "2026 W41（10月5日-10月11日）", "filename": "PDE HPC Project Plan 20261010.xlsx", "user": "rm",
+    }
+    # The same week cannot be analysed twice at once, even from a fresh upload.
+    site.as_user("RM", "rm2")
+    second = upload(site, workbook_bytes(SHEETS)).json()
+    refused = site.post(f"/api/weekly-report/uploads/{second['upload_id']}/analyze", json={})
+    assert refused.status_code == 400
+    assert refused.json()["error"] == "2026 W41（10月5日-10月11日） 正在分析中（rm 发起），请等它结束或先中止"
+    # Another week can still be analysed.
+    assert site.post(
+        f"/api/weekly-report/uploads/{second['upload_id']}/analyze", json={"report_date": "2026-10-17"},
+    ).status_code == 200
+    site.as_user("RM")
+    assert {item["week_key"] for item in site.get("/api/weekly-report/jobs").json()["jobs"]} == {"2026-W41", "2026-W42"}
+
     site.as_user("Owner")
     assert site.post(f"/api/weekly-report/jobs/{job['job_id']}/cancel").status_code == 403
     site.as_user("RM")
+    started = time.monotonic()
     stopping = site.post(f"/api/weekly-report/jobs/{job['job_id']}/cancel").json()
-    assert (stopping["status"], stopping["stopping"]) == ("running", True)
+    assert stopping["stopping"] is True
     # Splits are under way (Alice's, maybe bob's too): started, none finished.
     assert stopping["llm"]["calls"] >= 1 and stopping["llm"]["finished"] == 0
-    assert stopping["elapsed_seconds"] >= 0
-    release.set()
 
     final = wait_for_job(site, job["job_id"])
+    for other in site.get("/api/weekly-report/jobs").json()["jobs"]:
+        site.post(f"/api/weekly-report/jobs/{other['job_id']}/cancel")
+        wait_for_job(site, other["job_id"])
+    assert site.get("/api/weekly-report/jobs").json() == {"jobs": []}
+    # The hanging calls were cut, not waited for.
+    assert time.monotonic() - started < 3
     assert (final["status"], final["message"]) == ("cancelled", "分析已中止，已有结果没有改动")
     assert site.get("/api/weekly-report/weeks").json() == {"weeks": []}
     assert site.post(f"/api/weekly-report/jobs/{job['job_id']}/cancel").json()["error"] == "分析已经结束，无需中止"
     assert site.post("/api/weekly-report/jobs/unknown/cancel").status_code == 404
     # The upload survives the stop, so the analysis can be started again.
+    hang["on"] = False
     again = site.post(f"/api/weekly-report/uploads/{preview['upload_id']}/analyze", json={})
     assert again.status_code == 200
     assert wait_for_job(site, again.json()["job_id"])["status"] == "completed"

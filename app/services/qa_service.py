@@ -126,6 +126,8 @@ def set_qa_status_batch(
                 event="qa_set_status",
                 detail=detail,
             )
+        # Saving the statuses is the review of any AI suggestions.
+        qa_repo.delete_ai_suggestions(conn, release_id)
     updated = {app_id: snapshot for app_id, snapshot, *_ in prepared}
     return {"ok": True, "updated": len(updated)}
 
@@ -154,6 +156,8 @@ def upload_qa_log(
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", filename) or "qa_log"
     ts = beijing_timestamp()
     with transaction(conn):
+        # Suggestions drawn from the previous log no longer apply.
+        qa_repo.delete_ai_suggestions(conn, release_id)
         qa_repo.upsert_qa_log(
             conn,
             release_id,
@@ -717,14 +721,36 @@ def get_qa_reports(
 # QA analyze-log (synchronous) — POST /api/qa/analyze-log
 # ---------------------------------------------------------------------------
 
+def get_ai_suggestions(conn: sqlite3.Connection, release_id: str) -> dict | None:
+    """The release's saved AI suggestions still waiting for review, or None."""
+    return qa_repo.get_ai_suggestions(conn, release_id)
+
+
+def discard_ai_suggestions(conn: sqlite3.Connection, release_id: str, *, user: str, role: str) -> dict:
+    """Drop the release's AI suggestions without applying them."""
+    with transaction(conn):
+        if qa_repo.delete_ai_suggestions(conn, release_id):
+            log_audit(
+                conn, "丢弃 QA AI 建议", ts=beijing_timestamp(), user=user, role=role,
+                release_id=release_id, event="qa_discard_ai_suggestions",
+            )
+    return {"ok": True}
+
+
 def analyze_qa_log_sync(
     conn: sqlite3.Connection,
     release_id: str,
+    *,
+    user: str = "",
 ) -> dict:
     """Run LLM analysis synchronously against the DB-backed log body."""
     from app.services.qa_analysis_service import analyze_qa_log
+    from app.services.qa_jobs import get_registry
 
-    return analyze_qa_log(conn, release_id)
+    busy = get_registry().running_job(release_id)
+    if busy:
+        raise ValueError(f"该发布周期的 AI 分析正在进行中（{busy['user']} 发起），可查看进度或中止")
+    return analyze_qa_log(conn, release_id, analyzed_by=user)
 
 
 # ---------------------------------------------------------------------------
@@ -752,17 +778,25 @@ def start_qa_analysis_job(
 # QA analyze-log/status — GET /api/qa/analyze-log/status
 # ---------------------------------------------------------------------------
 
-def get_qa_analysis_status(
-    job_id: str,
-    *,
-    user: str,
-    role: str,
-) -> dict | None:
+def get_qa_analysis_status(job_id: str) -> dict | None:
     """Return job status snapshot or None if unknown/expired.
 
-    Mirrors server.py:344-355.  AuthzError raised inside poll_job if caller
-    isn't RM and doesn't own the job.
+    Mirrors server.py:344-355, except that every QA editor sees every job.
     """
     from app.services.qa_jobs import get_registry
 
-    return get_registry().poll_job(job_id, user=user, role=role)
+    return get_registry().poll_job(job_id)
+
+
+def get_running_qa_analysis(release_id: str) -> dict | None:
+    """The release's AI analysis still running, if any."""
+    from app.services.qa_jobs import get_registry
+
+    return get_registry().running_job(release_id)
+
+
+def cancel_qa_analysis(job_id: str) -> dict | None:
+    """Stop a running AI analysis, whoever started it; None when unknown/expired."""
+    from app.services.qa_jobs import get_registry
+
+    return get_registry().cancel_job(job_id)

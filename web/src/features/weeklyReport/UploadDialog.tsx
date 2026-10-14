@@ -84,7 +84,7 @@ export function UploadDialog({
   async function stop() {
     const ok = await confirmDialog({
       title: "中止分析",
-      body: "中止后本次分析不会保存，已有结果不变；进行中的 LLM / JIRA 请求返回后才会停下。确认中止？",
+      body: "会立即断开进行中的 LLM 请求并停止，本次分析不会保存，已有结果不变。确认中止？",
       confirmText: "中止分析",
       danger: true,
     });
@@ -231,6 +231,13 @@ export function UploadDialog({
           )}
           {jobId && (
             <div className="weekly-report-progress" data-testid="weekly-report-progress">
+              {job && !preview && (
+                <span className="muted">
+                  {job.filename}
+                  {job.week_label ? ` · ${job.week_label}` : ""}
+                  {job.user ? ` · ${job.user} 发起` : ""}
+                </span>
+              )}
               {failed ? (
                 <p className="weekly-report-warning" role="alert">
                   分析失败：{failed}

@@ -31,6 +31,7 @@ import { formatServerTime } from "../../lib/time";
 import { downloadCsv } from "../../lib/csv";
 import { qaStatusLabels, qaStatusOptions } from "../../lib/labels";
 import { qaStatusRequiresIssueNote } from "../../lib/domainMetadata";
+import { confirmDialog } from "../../lib/confirm";
 import { toast } from "../../lib/toast";
 import type {
   StatePayload,
@@ -81,15 +82,19 @@ async function fetchQaReports(
 
 interface AiProgressProps {
   job: QaAnalysisJob;
+  /** Present while the job runs and the viewer may stop it. */
+  onStop?: () => void;
 }
 
-function AiProgress({ job }: AiProgressProps) {
+function AiProgress({ job, onStop }: AiProgressProps) {
   const statusLabel =
     job.status === "completed" ? "完成" :
-    job.status === "failed" ? "失败" : "进行中";
+    job.status === "failed" ? "失败" :
+    job.status === "cancelled" ? "已中止" : "进行中";
   const pillClass =
     job.status === "completed" ? "pill ok" :
-    job.status === "failed" ? "pill bad" : "pill accent";
+    job.status === "failed" ? "pill bad" :
+    job.status === "cancelled" ? "pill" : "pill accent";
   const progressClass =
     job.status === "completed" ? "qa-ai-progress ok" :
     job.status === "failed" ? "qa-ai-progress bad" : "qa-ai-progress";
@@ -104,6 +109,12 @@ function AiProgress({ job }: AiProgressProps) {
         <span className={pillClass}>{statusLabel}</span>
         <b>{message}</b>
         <span className="stage">{stage}</span>
+        {job.user && <span className="muted small">{job.user} 发起</span>}
+        {onStop && job.status === "running" && (
+          <button type="button" className="btn sm danger" disabled={job.stopping} onClick={onStop}>
+            {job.stopping ? "正在中止…" : "中止分析"}
+          </button>
+        )}
       </div>
       <div className="small muted mt-4">
         {usageText}；进度会在当前提示中更新。
@@ -137,6 +148,30 @@ function qaTestResultLabel(status?: string): string {
 // ---------------------------------------------------------------------------
 // QA annotation pane (subtab 1)
 // ---------------------------------------------------------------------------
+
+type AiResult = {
+  apps?: Array<{ app_id: string; qa_status?: string; qa_issue_note?: string; test_results?: unknown[] }>;
+  log_truncated?: boolean;
+};
+
+function suggestionsFrom(result: AiResult | undefined) {
+  const suggestions: Record<string, { qa_status: string; qa_issue_note: string; test_results: unknown[] }> = {};
+  for (const item of result?.apps ?? []) {
+    suggestions[item.app_id] = {
+      qa_status: item.qa_status || "not_checked",
+      qa_issue_note: item.qa_issue_note || "",
+      test_results: item.test_results || [],
+    };
+  }
+  return suggestions;
+}
+
+interface SavedSuggestions {
+  log_filename: string;
+  analyzed_by: string;
+  analyzed_at: string;
+  result: AiResult;
+}
 
 interface QaMarkPaneProps {
   payload: StatePayload;
@@ -195,6 +230,20 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editMode, aiSuggestions]);
 
+  // The last AI analysis's suggestions, saved on the server until reviewed.
+  const canRunAnalysis = canEditQa(user ?? undefined);
+  const savedQuery = useQuery({
+    queryKey: ["qa-ai-suggestions", releaseId, user?.username ?? ""],
+    queryFn: () =>
+      apiGet<{ suggestions: SavedSuggestions | null }>(
+        `/api/qa/ai-suggestions?release_id=${encodeURIComponent(releaseId)}`,
+      ).then((data) => data?.suggestions ?? null),
+    enabled: Boolean(releaseId) && canRunAnalysis,
+    refetchOnMount: "always",
+  });
+  const saved = savedQuery.data ?? null;
+  const refetchSaved = savedQuery.refetch;
+
   // ── AI poll ───────────────────────────────────────────────────────────────
   // Refs so the interval callback always sees current values without re-creation
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -240,20 +289,15 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
           if (job.status === "running") return; // keep polling
 
           stopPoll();
-          if (job.status === "completed") {
-            // Apply suggestions to store and enter edit mode
-            const res = (job as unknown as Record<string, unknown>)["result"] as
-              | { apps?: Array<{ app_id: string; qa_status?: string; qa_issue_note?: string; test_results?: unknown[] }> }
-              | undefined;
-            const suggestions: Record<string, { qa_status: string; qa_issue_note: string; test_results: unknown[] }> = {};
-            for (const item of (res?.apps ?? [])) {
-              suggestions[item.app_id] = {
-                qa_status: item.qa_status || "not_checked",
-                qa_issue_note: item.qa_issue_note || "",
-                test_results: item.test_results || [],
-              };
-            }
+          if (job.status === "cancelled") {
+            toast.info("AI 分析已中止");
+          } else if (job.status === "completed") {
+            // Apply suggestions to store and enter edit mode; the server has
+            // already saved them, so a refresh does not lose them.
+            const res = (job as unknown as Record<string, unknown>)["result"] as AiResult | undefined;
+            const suggestions = suggestionsFrom(res);
             uiStore.setQaAiSuggestions(suggestions);
+            void refetchSaved();
             uiStore.setQaEditMode(true);
             const n = Object.keys(suggestions).length;
             const truncNote = (res as Record<string, unknown> | undefined)?.["log_truncated"]
@@ -284,8 +328,86 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
         }
       }, 1000);
     },
-    [releaseId, stopPoll, uiStore],
+    [releaseId, stopPoll, uiStore, refetchSaved],
   );
+
+  // ── Pick up after a refresh or a visit to another page ──────────────────
+  // The analysis runs on the server; a page opened while it runs follows it
+  // again, and the last analysis's suggestions are saved until reviewed.
+  useEffect(() => {
+    if (saved && Object.keys(useUiStore.getState().qaAiSuggestions).length === 0) {
+      uiStore.setQaAiSuggestions(suggestionsFrom(saved.result));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saved]);
+
+  useEffect(() => {
+    if (!releaseId || !canRunAnalysis) return;
+    const stored = useUiStore.getState().qaAiJob;
+    if (stored?.status === "running" && stored.job_id && stored.release_id === releaseId) {
+      startPoll(stored.job_id);
+      return;
+    }
+    let ignore = false;
+    apiGet<{ job: QaAnalysisJob | null }>(
+      `/api/qa/analyze-log/current?release_id=${encodeURIComponent(releaseId)}`,
+    )
+      .then((data) => {
+        if (ignore || !data?.job) return;
+        uiStore.setQaAiJob(data.job);
+        startPoll(data.job.job_id);
+      })
+      .catch(() => {
+        /* nothing to pick up */
+      });
+    return () => {
+      ignore = true;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [releaseId, canRunAnalysis]);
+
+  async function handleStopAnalysis() {
+    const jobId = aiJob?.job_id;
+    if (!jobId) return;
+    const ok = await confirmDialog({
+      title: "中止 AI 分析",
+      body: "会立即断开进行中的 LLM 请求并停止，本次分析不会生成建议。确认中止？",
+      confirmText: "中止分析",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const job = await apiPost<QaAnalysisJob>("/api/qa/analyze-log/cancel", { job_id: jobId });
+      uiStore.setQaAiJob(job);
+    } catch (ex) {
+      toast.error("中止失败：" + (ex instanceof Error ? ex.message : String(ex)));
+    }
+  }
+
+  async function discardSaved() {
+    try {
+      await apiPost("/api/qa/ai-suggestions/discard", { release_id: releaseId });
+    } finally {
+      void refetchSaved();
+    }
+  }
+
+  async function handleDiscardSuggestions() {
+    const ok = await confirmDialog({
+      title: "丢弃 AI 建议",
+      body: "丢弃后需要重新分析才能再得到这些建议。确认丢弃？",
+      confirmText: "丢弃",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await discardSaved();
+      uiStore.clearQaAiSuggestions();
+      toast.success("已丢弃 AI 建议");
+    } catch (ex) {
+      toast.error("丢弃失败：" + (ex instanceof Error ? ex.message : String(ex)));
+    }
+  }
 
   // ── Handlers ─────────────────────────────────────────────────────────────
 
@@ -310,6 +432,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
       });
       uiStore.setQaAiJob(null);
       uiStore.clearQaAiSuggestions();
+      void refetchSaved();
       onStateRefresh();
       toast.success("QA log 上传成功");
     } catch (ex) {
@@ -328,6 +451,15 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
       uiStore.setQaAiJob(job);
       startPoll(job.job_id);
     } catch (ex) {
+      const running = await apiGet<{ job: QaAnalysisJob | null }>(
+        `/api/qa/analyze-log/current?release_id=${encodeURIComponent(releaseId)}`,
+      ).catch(() => null);
+      if (running?.job) {
+        uiStore.setQaAiJob(running.job);
+        startPoll(running.job.job_id);
+        toast.info(ex instanceof Error ? ex.message : String(ex));
+        return;
+      }
       uiStore.setQaAiJob({
         job_id: "",
         release_id: releaseId,
@@ -347,10 +479,11 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
   }
 
   function handleCancel() {
-    stopPoll();
     uiStore.setQaEditMode(false);
-    uiStore.clearQaAiSuggestions();
-    uiStore.setQaAiJob(null);
+    // Saved AI suggestions stay (they come back on the next edit) until
+    // reviewed or discarded; a running analysis keeps running.
+    if (!saved) uiStore.clearQaAiSuggestions();
+    if (aiJob?.status !== "running") uiStore.setQaAiJob(null);
   }
 
   async function handleSave() {
@@ -372,6 +505,8 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
       });
 
     if (!items.length) {
+      // Nothing differs: the suggestions were reviewed and match what is saved.
+      if (saved) await discardSaved().catch(() => undefined);
       uiStore.setQaEditMode(false);
       uiStore.clearQaAiSuggestions();
       uiStore.setQaAiJob(null);
@@ -391,6 +526,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
       uiStore.setQaEditMode(false);
       uiStore.clearQaAiSuggestions();
       uiStore.setQaAiJob(null);
+      void refetchSaved();
       onStateRefresh();
       toast.success("QA 状态已保存");
     } catch (ex) {
@@ -496,13 +632,30 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
             </form>
           )}
 
-          {aiJob && <AiProgress job={aiJob} />}
+          {aiJob && (
+            <AiProgress job={aiJob} onStop={canRunAnalysis ? () => void handleStopAnalysis() : undefined} />
+          )}
         </div>
       </div>
 
+      {saved && (
+        <div className="banner mt-14 row" data-testid="qa-ai-saved">
+          <span>
+            <span className="pill ai">AI 建议</span> {saved.analyzed_by || "AI"} 于 {formatServerTime(saved.analyzed_at)}
+            分析了 {saved.log_filename}，有 {Object.keys(suggestionsFrom(saved.result)).length} 个 app 的建议待核对
+            {editMode ? "：核对后点「保存 QA 状态」。" : "：点「修改」查看，核对后保存。"}
+          </span>
+          {writable && (
+            <button type="button" className="btn ghost sm" onClick={() => void handleDiscardSuggestions()}>
+              丢弃 AI 建议
+            </button>
+          )}
+        </div>
+      )}
+
       {editMode && (
         <div className="banner warnp mt-14">
-          编辑中 · 刷新前请先保存或取消。上传 log、AI 分析、改 QA 状态都在保存后才会生效。
+          编辑中 · 刷新前请先保存或取消。QA 状态在保存后才生效；上传的 log 和 AI 分析结果会立即保存。
         </div>
       )}
 

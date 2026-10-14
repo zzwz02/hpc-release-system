@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import socket
 import threading
 import time
 from collections.abc import Callable
@@ -38,6 +39,72 @@ class LLMConfigError(RuntimeError):
 
 class LLMCallError(RuntimeError):
     """Endpoint returned an error or unparseable body."""
+
+
+class LLMCancelled(RuntimeError):
+    """The call was stopped on request (CancelToken); never retried."""
+
+
+class CancelToken:
+    """Stops LLM calls on request by cutting their connections.
+
+    A call registers how to close its connection while it runs; cancel()
+    runs every registered closer at once, from any thread, so a call blocked
+    on the network fails right away instead of finishing first.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._cancelled = False
+        self._closers: list[Callable[[], None]] = []
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    def cancel(self) -> None:
+        with self._lock:
+            if self._cancelled:
+                return
+            self._cancelled = True
+            closers, self._closers = self._closers, []
+        for closer in closers:
+            _quietly(closer)
+
+    def on_cancel(self, closer: Callable[[], None]) -> Callable[[], None]:
+        """Run *closer* on cancel (now, if already cancelled); returns the unregister function."""
+        with self._lock:
+            if not self._cancelled:
+                self._closers.append(closer)
+
+                def unregister() -> None:
+                    with self._lock:
+                        if closer in self._closers:
+                            self._closers.remove(closer)
+                return unregister
+        _quietly(closer)
+        return lambda: None
+
+
+def _quietly(action: Callable[[], None]) -> None:
+    try:
+        action()
+    except Exception:
+        pass
+
+
+def _cut_stream(stream: Any) -> None:
+    """Shut the streaming reply's socket down, then close the stream.
+
+    A plain close does not wake a thread blocked reading the socket;
+    shutdown does, and it tells the server at once that nobody is listening.
+    """
+    response = getattr(stream, "response", None)
+    network = (getattr(response, "extensions", None) or {}).get("network_stream")
+    sock = network.get_extra_info("socket") if network is not None else None
+    if sock is not None:
+        _quietly(lambda: sock.shutdown(socket.SHUT_RDWR))
+    _quietly(stream.close)
 
 
 def llm_settings() -> dict[str, str]:
@@ -88,12 +155,16 @@ def chat_json(
     *,
     timeout: int = 180,
     progress: Callable[[dict[str, Any]], None] | None = None,
+    cancel: CancelToken | None = None,
 ) -> str:
     """Stream one reply in JSON mode and return its raw text (see ask_json).
 
     ``progress`` receives a stats dict after each chunk: ``content_chunks``,
     ``reasoning_chunks`` and, once the server reports it, ``usage``
-    ({prompt_tokens, completion_tokens})."""
+    ({prompt_tokens, completion_tokens}).  Cancelling *cancel* cuts the
+    connection and raises LLMCancelled."""
+    if cancel is not None and cancel.cancelled:
+        raise LLMCancelled("LLM 调用已中止")
     settings = require_config()
     base = settings["LLM_BASE_URL"].rstrip("/")
     model = settings["LLM_MODEL"]
@@ -104,6 +175,29 @@ def chat_json(
         raise LLMConfigError("服务器未安装 OpenAI Python SDK：请运行 python -m pip install openai") from exc
 
     client = OpenAI(base_url=base, api_key=key or "not-needed", timeout=timeout)
+    releases: list[Callable[[], None]] = []
+    if cancel is not None:
+        releases.append(cancel.on_cancel(lambda: client.close()))
+    try:
+        return _stream_reply(client, model, system, user, progress, cancel, releases)
+    finally:
+        for release in releases:
+            release()
+        _quietly(lambda: client.close())
+
+
+def _stream_reply(
+    client: Any,
+    model: str,
+    system: str,
+    user: str,
+    progress: Callable[[dict[str, Any]], None] | None,
+    cancel: CancelToken | None,
+    releases: list[Callable[[], None]],
+) -> str:
+    def stopped(exc: Exception) -> bool:
+        return cancel is not None and cancel.cancelled
+
     request = {
         "model": model,
         "messages": [
@@ -123,10 +217,14 @@ def chat_json(
                 raise
             stream = client.chat.completions.create(**request)
     except Exception as exc:
+        if stopped(exc):
+            raise LLMCancelled("LLM 调用已中止") from exc
         status = getattr(exc, "status_code", None)
         if status:
             raise LLMCallError(f"LLM HTTP {status}: {str(exc)[:400]}") from exc
         raise LLMCallError(f"LLM 调用失败：{str(exc)[:400]}") from exc
+    if cancel is not None:
+        releases.append(cancel.on_cancel(lambda: _cut_stream(stream)))
 
     chunks: list[str] = []
     stats: dict[str, Any] = {"content_chunks": 0, "reasoning_chunks": 0, "usage": None}
@@ -148,9 +246,11 @@ def chat_json(
         if not content:
             raise ValueError("empty content")
         return content
-    except (AttributeError, IndexError, TypeError, ValueError) as exc:
-        raise LLMCallError(f"LLM 返回格式异常：{str(chunks)[:400]}") from exc
     except Exception as exc:
+        if stopped(exc):
+            raise LLMCancelled("LLM 调用已中止") from exc
+        if isinstance(exc, (AttributeError, IndexError, TypeError, ValueError)):
+            raise LLMCallError(f"LLM 返回格式异常：{str(chunks)[:400]}") from exc
         raise LLMCallError(f"LLM 流式返回失败：{str(exc)[:400]}") from exc
 
 
@@ -255,6 +355,7 @@ def ask_json(
     on_reply: Callable[[], None] | None = None,
     on_retry: Callable[[Exception], None] | None = None,
     call: Callable[[str, str], str] | None = None,
+    cancel: CancelToken | None = None,
 ) -> dict[str, Any]:
     """Ask the LLM and return the JSON object it answers with.
 
@@ -264,13 +365,14 @@ def ask_json(
     ``progress`` receives its totals after each streamed chunk.
     ``on_attempt(n, attempts)`` runs before each call, ``on_reply()`` when a
     reply has arrived and ``on_retry(error)`` before a retry.  *call* replaces
-    the endpoint (tests, offline runs) and is not streamed.
+    the endpoint (tests, offline runs) and is not streamed.  Cancelling
+    *cancel* cuts the call under way and raises LLMCancelled, without retry.
     """
     meter = meter or LlmMeter()
     if call is None:
         call = meter.wrap(
             lambda system_text, user_text, progress: chat_json(
-                system_text, user_text, timeout=timeout, progress=progress,
+                system_text, user_text, timeout=timeout, progress=progress, cancel=cancel,
             ),
             streaming=True,
             listener=progress,
@@ -279,6 +381,8 @@ def ask_json(
         call = meter.wrap(call, streaming=False)
     attempts = max(1, attempts)
     for attempt in range(1, attempts + 1):
+        if cancel is not None and cancel.cancelled:
+            raise LLMCancelled("LLM 调用已中止")
         if on_attempt:
             on_attempt(attempt, attempts)
         try:
@@ -286,9 +390,11 @@ def ask_json(
             if on_reply:
                 on_reply()
             return parse_json_object(reply)
-        except LLMConfigError:
+        except (LLMConfigError, LLMCancelled):
             raise
         except Exception as exc:
+            if cancel is not None and cancel.cancelled:
+                raise LLMCancelled("LLM 调用已中止") from exc
             if attempt >= attempts:
                 raise
             if on_retry:

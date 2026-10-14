@@ -158,8 +158,15 @@ def analyze_qa_log(
     max_log_chars: int = 200_000,
     progress: Callable[..., None] | None = None,
     max_llm_attempts: int = 2,
+    cancel: llm.CancelToken | None = None,
+    analyzed_by: str = "",
 ) -> dict[str, Any]:
-    """Analyze the uploaded log without materializing it on the filesystem."""
+    """Analyze the uploaded log without materializing it on the filesystem.
+
+    Cancelling *cancel* cuts the LLM call under way (llm.LLMCancelled).
+    The result is saved as the release's AI suggestions as soon as it is
+    ready, so a refreshed or reopened page still has it to review.
+    """
     _progress(progress, "checking_log", "正在检查已上传的 QA log")
     metadata = qa_repo.get_qa_log(conn, release_id)
     if not metadata:
@@ -230,6 +237,7 @@ def analyze_qa_log(
         meter=meter,
         progress=stream_progress,
         call=llm_call,
+        cancel=cancel,
         on_attempt=on_attempt,
         on_reply=on_reply,
         on_retry=lambda exc: _progress(
@@ -255,8 +263,17 @@ def analyze_qa_log(
             }
         )
 
+    result = {
+        "apps": apps_out,
+        "log_truncated": truncated,
+        "log_chars": len(raw),
+        "llm": meter.snapshot(),
+    }
     ts = beijing_timestamp()
     with transaction(conn):
+        qa_repo.save_ai_suggestions(
+            conn, release_id, log_filename=filename, result=result, analyzed_by=analyzed_by, analyzed_at=ts,
+        )
         log_audit(
             conn,
             f"QA AI 分析 log：{filename}",
@@ -267,9 +284,4 @@ def analyze_qa_log(
             event="qa_analyze_log",
         )
     _progress(progress, "completed", "AI 分析完成")
-    return {
-        "apps": apps_out,
-        "log_truncated": truncated,
-        "log_chars": len(raw),
-        "llm": meter.snapshot(),
-    }
+    return result

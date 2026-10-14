@@ -7,7 +7,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from app.repositories.base import row_to_dict
+from app.repositories.base import dumps_json, loads_json, row_to_dict
 
 # ---------------------------------------------------------------------------
 # Reads
@@ -72,3 +72,46 @@ def upsert_qa_log(
 def delete_qa_log(conn: sqlite3.Connection, release_id: str) -> None:
     """Delete the QA log record for a release."""
     conn.execute("DELETE FROM qa_logs WHERE release_id = ?", (release_id,))
+
+
+# ---------------------------------------------------------------------------
+# AI suggestions (qa_ai_suggestions)
+# ---------------------------------------------------------------------------
+
+def get_ai_suggestions(conn: sqlite3.Connection, release_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT log_filename, result_json, analyzed_by, analyzed_at FROM qa_ai_suggestions WHERE release_id = ?",
+        (release_id,),
+    ).fetchone()
+    if not row:
+        return None
+    saved = row_to_dict(row)
+    saved["result"] = loads_json(saved.pop("result_json"), {})
+    return saved
+
+
+def save_ai_suggestions(
+    conn: sqlite3.Connection,
+    release_id: str,
+    *,
+    log_filename: str,
+    result: dict[str, Any],
+    analyzed_by: str,
+    analyzed_at: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO qa_ai_suggestions(release_id, log_filename, result_json, analyzed_by, analyzed_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(release_id) DO UPDATE SET
+          log_filename=excluded.log_filename,
+          result_json=excluded.result_json,
+          analyzed_by=excluded.analyzed_by,
+          analyzed_at=excluded.analyzed_at
+        """,
+        (release_id, log_filename, dumps_json(result), analyzed_by, analyzed_at),
+    )
+
+
+def delete_ai_suggestions(conn: sqlite3.Connection, release_id: str) -> int:
+    return conn.execute("DELETE FROM qa_ai_suggestions WHERE release_id = ?", (release_id,)).rowcount

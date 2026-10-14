@@ -5,6 +5,7 @@ analysing and the member table need the weekly-report.run capability (RM).
 
   POST /api/weekly-report/uploads?filename=      — raw .xlsx body, parsed in memory
   POST /api/weekly-report/uploads/{id}/analyze   — start the background analysis
+  GET  /api/weekly-report/jobs                   — analyses still running
   GET  /api/weekly-report/jobs/{id}              — analysis progress
   POST /api/weekly-report/jobs/{id}/cancel       — stop a running analysis
   GET  /api/weekly-report/weeks                  — analysed weeks, newest first
@@ -89,6 +90,11 @@ def analyze_upload(
         role=user["role"],
         db_path=settings.db_path,
     )
+
+
+@router.get("/jobs")
+def running_jobs(_user: dict = Depends(require_run)) -> dict:
+    return {"jobs": registry.running_jobs()}
 
 
 @router.get("/jobs/{job_id}")

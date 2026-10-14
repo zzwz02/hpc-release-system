@@ -517,6 +517,10 @@ export interface QaAnalysisJob {
   elapsed_seconds?: number;
   /** LLM usage so far, counted like every LLM feature (lib/llmProgress). */
   llm?: LlmTotals | null;
+  /** Who started it; every QA editor may watch and stop it. */
+  user?: string;
+  /** A stop was requested and the job is ending. */
+  stopping?: boolean;
 }
 
 // ---------------------------------------------------------------------------

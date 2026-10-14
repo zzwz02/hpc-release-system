@@ -68,6 +68,7 @@ class WeeklyReportRegistry:
             "uploaded_at": beijing_timestamp(),
             "reports": reports,
             "undated": tuple(undated),
+            "report_date": preview["report_date"],
             "created": time.time(),
             "job_id": "",
         }
@@ -101,7 +102,11 @@ class WeeklyReportRegistry:
         role: str,
         db_path: Path,
     ) -> dict[str, Any]:
-        """Validate the options, then analyse the upload in a background thread."""
+        """Validate the options, then analyse the upload in a background thread.
+
+        One analysis per week at a time: a second one for a week still being
+        analysed is refused, whoever started it and from whichever upload.
+        """
         options = {
             "report_date": wr.parse_report_date(report_date) if report_date else None,
             "active_hours": (
@@ -118,9 +123,20 @@ class WeeklyReportRegistry:
                 raise ValueError("上传已失效（超过 1 小时未分析，或已分析完成），请重新上传")
             if upload["job_id"] and self._jobs.get(upload["job_id"], {}).get("status") == "running":
                 raise ValueError("这份周报正在分析中")
+            # The week is fixed here, from the date chosen or the one the upload found.
+            if options["report_date"] is None and upload["report_date"]:
+                options["report_date"] = wr.parse_report_date(upload["report_date"])
+            week = wr.week_of(options["report_date"]) if options["report_date"] else None
+            busy = week and next(
+                (other for other in self._jobs.values()
+                 if other["status"] == "running" and other["week_key"] == week["week_key"]),
+                None,
+            )
+            if busy:
+                raise ValueError(f"{week['label']} 正在分析中（{busy['user']} 发起），请等它结束或先中止")
             job = {
                 "job_id": secrets.token_urlsafe(12),
-                "stop": threading.Event(),
+                "stop": llm.CancelToken(),
                 "meter": llm.LlmMeter(),
                 "upload_id": upload_id,
                 "user": user,
@@ -128,7 +144,9 @@ class WeeklyReportRegistry:
                 "message": "分析任务已提交",
                 "done": 0,
                 "total": 0,
-                "week_key": "",
+                "week_key": week["week_key"] if week else "",
+                "week_label": week["label"] if week else "",
+                "filename": upload["filename"],
                 "error": "",
                 "started_at": now,
                 "updated_at": now,
@@ -143,16 +161,23 @@ class WeeklyReportRegistry:
         ).start()
         return self._job_view(job)
 
+    def running_jobs(self) -> list[dict[str, Any]]:
+        """Analyses still running, oldest first: what a page reopened mid-analysis picks up."""
+        self._cleanup()
+        with self._lock:
+            running = [job for job in self._jobs.values() if job["status"] == "running"]
+            return [self._job_view(job) for job in sorted(running, key=lambda job: job["started_at"])]
+
     def cancel_job(self, job_id: str) -> dict[str, Any] | None:
-        """Ask a running analysis to stop; it ends once the calls under way return."""
+        """Stop a running analysis: its LLM connections are cut and it ends right away."""
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
                 return None
             if job["status"] != "running":
                 raise ValueError("分析已经结束，无需中止")
-            job["stop"].set()
-            job.update(message="正在中止：等进行中的 LLM / JIRA 请求返回", updated_at=time.time())
+            job["stop"].cancel()
+            job.update(message="正在中止：断开进行中的 LLM 请求", updated_at=time.time())
             return self._job_view(job)
 
     def poll_job(self, job_id: str) -> dict[str, Any] | None:
@@ -165,9 +190,12 @@ class WeeklyReportRegistry:
     def _job_view(job: dict[str, Any]) -> dict[str, Any]:
         view = {
             key: job[key]
-            for key in ("job_id", "status", "message", "done", "total", "week_key", "error", "started_at", "finished_at")
+            for key in (
+                "job_id", "status", "message", "done", "total", "week_key", "week_label", "filename", "user",
+                "error", "started_at", "finished_at",
+            )
         }
-        view["stopping"] = job["stop"].is_set() and job["status"] == "running"
+        view["stopping"] = job["stop"].cancelled and job["status"] == "running"
         view["elapsed_seconds"] = elapsed_seconds(job["started_at"], job["finished_at"])
         view["llm"] = job["meter"].snapshot()
         return view
@@ -196,12 +224,12 @@ class WeeklyReportRegistry:
                 stop, meter = self._jobs[job_id]["stop"], self._jobs[job_id]["meter"]
 
             def progress(done: int, total: int, message: str) -> None:
-                if not stop.is_set():
+                if not stop.cancelled:
                     self._update(job_id, done=done, total=total, message=message)
 
             result = weekly_report_service.run_check(
                 conn, upload["reports"], progress=progress, undated=upload["undated"],
-                should_stop=stop.is_set, meter=meter, **options,
+                should_stop=lambda: stop.cancelled, cancel=stop, meter=meter, **options,
             )
             week = weekly_report_service.store_week(
                 conn, result,

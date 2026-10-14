@@ -11,6 +11,7 @@ Uploads and background jobs live in app/services/weekly_report_jobs.py.
 from __future__ import annotations
 
 import concurrent.futures
+import functools
 import csv
 import datetime as dt
 import hashlib
@@ -59,8 +60,11 @@ CSV_COLUMNS = (
     ("note", "说明"),
 )
 
-class CheckCancelled(Exception):
-    """The check was stopped on request; nothing about the week was stored."""
+class CheckCancelled(llm.LLMCancelled):
+    """The check was stopped on request; nothing about the week was stored.
+
+    A kind of LLMCancelled, so llm.ask_json never retries a call it stopped.
+    """
 
 
 LlmCall = Callable[[str, str], str]
@@ -342,13 +346,16 @@ def run_check(
     progress: Progress | None = None,
     should_stop: Callable[[], bool] = lambda: False,
     meter: llm.LlmMeter | None = None,
+    cancel: llm.CancelToken | None = None,
 ) -> dict[str, Any]:
     """Check every person in *reports*; returns the week, summary and findings.
 
     Nothing about the week is stored here (see store_week); only the work-item
     split cache is written, so a failed check does not repeat finished splits.
-    Raises CheckCancelled soon after *should_stop* turns true.  *meter*
-    collects LLM call counts and tokens while the check runs.
+    Raises CheckCancelled soon after *should_stop* turns true, without
+    waiting for the calls under way; cancelling *cancel* as well cuts their
+    LLM connections at once.  *meter* collects LLM call counts and tokens
+    while the check runs.
     """
     started = time.monotonic()
     meter = meter or llm.LlmMeter()
@@ -364,7 +371,7 @@ def run_check(
 
     if llm_call is None:
         llm.require_config()
-        llm_call = meter.wrap(llm.chat_json, streaming=True)
+        llm_call = meter.wrap(functools.partial(llm.chat_json, cancel=cancel), streaming=True)
     else:
         llm_call = meter.wrap(llm_call, streaming=False)
     if fetch_activity is None:
@@ -373,8 +380,8 @@ def run_check(
         fetch_activity = jira.get_issue_activity
 
     def stoppable(call):
-        # A stop request ends a person at their next LLM or JIRA call; the
-        # call already under way is left to finish.
+        # A stop request ends a person at their next LLM or JIRA call; an LLM
+        # call under way is cut through *cancel*.
         def wrapper(*args, **kwargs):
             if should_stop():
                 raise CheckCancelled("分析已中止")
@@ -405,7 +412,7 @@ def run_check(
         pending = set(futures)
         while pending:
             done, pending = concurrent.futures.wait(
-                pending, timeout=0.5, return_when=concurrent.futures.FIRST_COMPLETED,
+                pending, timeout=0.2, return_when=concurrent.futures.FIRST_COMPLETED,
             )
             # Checked before the results: a person cut short by the stop fails
             # with an error that is not worth reporting.
@@ -423,9 +430,10 @@ def run_check(
                 if progress:
                     progress(len(results), total, f"已完成 {report.sheet}")
     finally:
-        # People not started yet are dropped; those under way stop at their
-        # next call once should_stop() is true.
-        executor.shutdown(wait=True, cancel_futures=True)
+        # People not started yet are dropped.  After a stop the workers are
+        # not waited for: their LLM connections are cut, and a JIRA request
+        # under way (seconds at most) ends on its own; they touch no database.
+        executor.shutdown(wait=not should_stop(), cancel_futures=True)
 
     findings = [
         {"person": person["report"].sheet, "sheet_date": person["report"].date.isoformat(), **found}

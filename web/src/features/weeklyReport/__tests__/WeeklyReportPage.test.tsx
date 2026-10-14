@@ -125,6 +125,7 @@ function mockBackend(overrides: Record<string, unknown> = {}) {
       return typeof value === "function" ? (value as () => unknown)() : value;
     }
     if (path === "/api/weekly-report/weeks") return { weeks };
+    if (path === "/api/weekly-report/jobs") return { jobs: [] };
     if (path === "/api/weekly-report/weeks/2026-W41") return { week: week41 };
     if (path === "/api/weekly-report/weeks/2026-W41/findings") return { findings };
     if (path === "/api/weekly-report/weeks/2026-W40") {
@@ -341,6 +342,45 @@ describe("WeeklyReportPage", () => {
     await user.click(screen.getByRole("button", { name: "关闭" }));
     await user.click(screen.getByRole("button", { name: "分析失败，点击查看" }));
     expect(screen.getByTestId("weekly-report-preview")).toBeVisible();
+  });
+
+  it("picks a running analysis back up after the page was reopened", async () => {
+    mockUser("RM");
+    vi.mocked(confirmDialog).mockResolvedValue(true);
+    const user = userEvent.setup();
+    const running = {
+      job_id: "job_9", status: "running", message: "已完成 Alice", done: 3, total: 26, error: "", stopping: false,
+      week_key: "2026-W42", week_label: "2026 W42（10月12日-10月18日）",
+      filename: "PDE HPC Project Plan 20261017.xlsx", user: "rm2", elapsed_seconds: 40,
+      llm: {
+        calls: 4, finished: 3, sent_chars: 6000, sent_tokens_est: 2000, received: 300, reasoning: 0,
+        prompt_tokens: 0, completion_tokens: 0, usage_calls: 0,
+      },
+    };
+    mockBackend({
+      "/api/weekly-report/jobs": { jobs: [running] },
+      "/api/weekly-report/jobs/job_9": running,
+    });
+    vi.mocked(apiPost).mockResolvedValue({ ...running, stopping: true });
+    renderPage();
+
+    const banner = await screen.findByRole("button", {
+      name: "正在分析 2026 W42（10月12日-10月18日）：第 3 人 / 共 26 人 · 已运行 40s",
+    });
+    await user.click(banner);
+
+    const progress = screen.getByTestId("weekly-report-progress");
+    expect(progress).toHaveTextContent(
+      "PDE HPC Project Plan 20261017.xlsx · 2026 W42（10月12日-10月18日） · rm2 发起",
+    );
+    await user.click(screen.getByRole("button", { name: "中止分析" }));
+    expect(apiPost).toHaveBeenCalledWith("/api/weekly-report/jobs/job_9/cancel", {});
+  });
+
+  it("does not look for running analyses for read-only roles", async () => {
+    renderPage();
+    await screen.findByTestId("weekly-report-record");
+    expect(apiGet).not.toHaveBeenCalledWith("/api/weekly-report/jobs");
   });
 
   it("lets RM stop a running analysis after confirming", async () => {

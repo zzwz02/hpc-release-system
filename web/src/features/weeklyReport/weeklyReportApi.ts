@@ -104,7 +104,12 @@ export interface AnalysisJob {
   message: string;
   done: number;
   total: number;
+  /** The week being analysed, fixed when the analysis starts. */
   week_key: string;
+  week_label: string;
+  filename: string;
+  /** Who started it. */
+  user: string;
   error: string;
   elapsed_seconds: number;
   llm: LlmTotals;
@@ -153,6 +158,11 @@ export function startAnalysis(
 
 export function getJob(jobId: string): Promise<AnalysisJob> {
   return apiGet<AnalysisJob>(`/api/weekly-report/jobs/${encodeURIComponent(jobId)}`);
+}
+
+/** Analyses still running, oldest first (RM only): a reopened page picks them up. */
+export async function listRunningJobs(): Promise<AnalysisJob[]> {
+  return (await apiGet<{ jobs: AnalysisJob[] }>("/api/weekly-report/jobs")).jobs;
 }
 
 export function cancelJob(jobId: string): Promise<AnalysisJob> {

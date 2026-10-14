@@ -6,7 +6,7 @@
  * findings with export.  RM uploads the weekly .xlsx, starts the analysis
  * and sets manual sheet ↔ account overrides; Owner only reads.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../../api/AuthContext";
@@ -20,6 +20,7 @@ import {
   formatFileSize,
   getJob,
   getWeek,
+  listRunningJobs,
   listWeeks,
   weeklyReportWeekKey,
   weeklyReportWeeksKey,
@@ -52,6 +53,22 @@ export function WeeklyReportPage() {
     [setSearchParams],
   );
 
+  // An analysis keeps running on the server when the page is refreshed or
+  // left; on the way back the page picks it up again (once per job).
+  const runningQuery = useQuery({
+    queryKey: ["weekly-report", "jobs", viewer],
+    queryFn: listRunningJobs,
+    enabled: canRun,
+    refetchOnMount: "always",
+  });
+  const pickedUp = useRef(new Set<string>());
+  useEffect(() => {
+    const running = runningQuery.data?.find((item) => !pickedUp.current.has(item.job_id));
+    if (jobId || !running) return;
+    pickedUp.current.add(running.job_id);
+    setJobId(running.job_id);
+  }, [jobId, runningQuery.data]);
+
   // The analysis runs in the background; its progress is polled while it runs.
   const jobQuery = useQuery({
     queryKey: ["weekly-report", "job", jobId],
@@ -60,6 +77,10 @@ export function WeeklyReportPage() {
     refetchInterval: (query) => (!query.state.data || query.state.data.status === "running" ? 1000 : false),
   });
   const job = jobId ? jobQuery.data : undefined;
+  const startJob = useCallback((id: string) => {
+    if (id) pickedUp.current.add(id);
+    setJobId(id);
+  }, []);
   const finishedWeek = job?.status === "completed" ? job.week_key : "";
   useEffect(() => {
     if (!finishedWeek) return;
@@ -113,7 +134,7 @@ export function WeeklyReportPage() {
                   ? "分析已中止，点击查看"
                   : job.stopping
                     ? "正在中止分析…"
-                    : `正在分析：第 ${job.done} 人 / 共 ${job.total} 人 · 已运行 ${formatDuration(job.elapsed_seconds ?? 0)}`}
+                    : `正在分析${job.week_label ? ` ${job.week_label}` : ""}：第 ${job.done} 人 / 共 ${job.total} 人 · 已运行 ${formatDuration(job.elapsed_seconds ?? 0)}`}
             </button>
           )}
           {weeksQuery.isError && <p className="weekly-report-warning">{errorMessage(weeksQuery.error)}</p>}
@@ -138,7 +159,7 @@ export function WeeklyReportPage() {
           weeks={weeks}
           jobId={jobId}
           job={job}
-          onStarted={setJobId}
+          onStarted={startJob}
           onClose={() => setUpload({ mounted: Boolean(jobId), open: false })}
         />
       )}

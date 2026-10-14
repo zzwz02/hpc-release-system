@@ -202,3 +202,69 @@ def test_ask_json_counts_streamed_calls_on_the_given_meter(monkeypatch) -> None:
     assert (totals["calls"], totals["received"], totals["reasoning"]) == (1, 2, 1)
     assert (totals["prompt_tokens"], totals["completion_tokens"], totals["usage_calls"]) == (120, 7, 1)
     assert heard[-1]["received"] == 2
+
+
+def test_cancel_cuts_a_streamed_reply_that_is_still_coming() -> None:
+    import threading
+    import time
+
+    reading = threading.Event()
+
+    class EndlessStream:
+        """Yields one chunk, then blocks like a socket read until closed."""
+
+        def __init__(self) -> None:
+            self.closed = threading.Event()
+
+        def __iter__(self):
+            yield _chunk(reasoning="think")
+            reading.set()
+            if not self.closed.wait(30):
+                raise AssertionError("never cut")
+            raise OSError("connection closed")
+
+        def close(self) -> None:
+            self.closed.set()
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=lambda **_: EndlessStream()))
+
+        def close(self) -> None:
+            pass
+
+    token = llm.CancelToken()
+    outcome: dict = {}
+
+    def run() -> None:
+        try:
+            llm.chat_json("s", "u", cancel=token)
+        except Exception as exc:  # noqa: BLE001 - recorded for the assertion
+            outcome["error"] = exc
+
+    with mock.patch.dict(sys.modules, {"openai": types.SimpleNamespace(OpenAI=FakeOpenAI)}):
+        worker = threading.Thread(target=run)
+        worker.start()
+        assert reading.wait(5)
+        started = time.monotonic()
+        token.cancel()
+        worker.join(5)
+
+    assert time.monotonic() - started < 1
+    assert isinstance(outcome["error"], llm.LLMCancelled)
+    # Once cancelled, nothing new starts and ask_json does not retry.
+    with pytest.raises(llm.LLMCancelled):
+        llm.chat_json("s", "u", cancel=token)
+    with pytest.raises(llm.LLMCancelled):
+        llm.ask_json("s", "u", cancel=token, call=lambda _s, _u: "{}")
+
+
+def test_cancel_token_runs_late_closers_at_once_and_forgets_released_ones() -> None:
+    token = llm.CancelToken()
+    closed: list[str] = []
+    release = token.on_cancel(lambda: closed.append("released"))
+    release()
+    token.on_cancel(lambda: closed.append("kept"))
+    token.cancel()
+    token.on_cancel(lambda: closed.append("late"))
+    assert closed == ["kept", "late"]

@@ -21,6 +21,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 
+from app.api.errors import ApiError
 from app.config import settings
 from app.deps import get_db, require_capability, require_tab_access
 from app.services import community_artifacts_service
@@ -54,7 +55,7 @@ require_qa_analysis = require_capability(
 @router.get("/api/qa/analyze-log/status")
 def api_qa_analyze_log_status(
     job_id: str = Query(default=""),
-    user: dict = Depends(require_qa_analysis_status),
+    _user: dict = Depends(require_qa_analysis_status),
 ) -> dict:
     """Poll an async LLM analysis job.
 
@@ -63,11 +64,7 @@ def api_qa_analyze_log_status(
     """
     if not job_id:
         raise ValueError("job_id is required")
-    job = qa_service.get_qa_analysis_status(
-        job_id,
-        user=user["username"],
-        role=user["role"],
-    )
+    job = qa_service.get_qa_analysis_status(job_id)
     if not job:
         # Old server: self.send_json({"error": "..."}, status=404)
         return Response(
@@ -193,6 +190,67 @@ def api_qa_upload_log(
 
 
 # ---------------------------------------------------------------------------
+# GET /api/qa/analyze-log/current — the release's analysis still running
+# ---------------------------------------------------------------------------
+
+@router.get("/api/qa/analyze-log/current")
+def api_qa_analyze_log_current(
+    release_id: str = Query(default=""),
+    _user: dict = Depends(require_qa_analysis_status),
+) -> dict:
+    """Let a reopened QA page pick up an analysis still running for the release."""
+    if not release_id:
+        raise ValueError("release_id is required")
+    return {"job": qa_service.get_running_qa_analysis(release_id)}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/qa/analyze-log/cancel — stop a running analysis, whoever started it
+# ---------------------------------------------------------------------------
+
+@router.post("/api/qa/analyze-log/cancel")
+def api_qa_analyze_log_cancel(
+    body: dict,
+    _user: dict = Depends(require_qa_analysis),
+) -> dict:
+    job_id = body.get("job_id", "")
+    if not job_id:
+        raise ValueError("job_id is required")
+    job = qa_service.cancel_qa_analysis(job_id)
+    if job is None:
+        raise ApiError(404, "AI 分析任务不存在或已过期")
+    return job
+
+
+# ---------------------------------------------------------------------------
+# GET /api/qa/ai-suggestions, POST /api/qa/ai-suggestions/discard
+# ---------------------------------------------------------------------------
+
+@router.get("/api/qa/ai-suggestions")
+def api_qa_ai_suggestions(
+    release_id: str = Query(default=""),
+    _user: dict = Depends(require_qa_analysis_status),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    """The release's last AI analysis still waiting for review; null when none."""
+    if not release_id:
+        raise ValueError("release_id is required")
+    return {"suggestions": qa_service.get_ai_suggestions(conn, release_id)}
+
+
+@router.post("/api/qa/ai-suggestions/discard")
+def api_qa_ai_suggestions_discard(
+    body: dict,
+    user: dict = Depends(require_qa_analysis),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    release_id = body.get("release_id", "")
+    if not release_id:
+        raise ValueError("release_id is required")
+    return qa_service.discard_ai_suggestions(conn, release_id, user=user["username"], role=user["role"])
+
+
+# ---------------------------------------------------------------------------
 # POST /api/qa/analyze-log  (synchronous — blocks until done)
 # ---------------------------------------------------------------------------
 
@@ -206,7 +264,7 @@ def api_qa_analyze_log(
 
     Mirrors server.py:973-982.
     """
-    return qa_service.analyze_qa_log_sync(conn, body["release_id"])
+    return qa_service.analyze_qa_log_sync(conn, body["release_id"], user=user["username"])
 
 
 # ---------------------------------------------------------------------------
