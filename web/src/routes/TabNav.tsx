@@ -5,16 +5,19 @@
  * Tabs whose roles don't include the current user's role are hidden (not
  * disabled) — identical to the legacy `el.hidden = !allowed` behavior.
  *
+ * Routes sharing a group (AI助手) render as one tab; while one of them is
+ * open, a second row lists the group's sub-tabs the role may open.
+ *
  * The CICD tab shows a notification badge (red dot) when count > 0.
  * Mirrors legacy cicdBadge logic (index.html:3940).
  * Badge clears when CicdPage mounts (markCicdVisited + invalidateQueries).
  */
-import { NavLink, useNavigate } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../api/AuthContext";
 import { useUiStore } from "../store/uiStore";
 import { confirmDialog } from "../lib/confirm";
-import { ROUTES, type Role } from "./routeConfig";
+import { navEntriesForRole, pathMatches, type Role } from "./routeConfig";
 import {
   CICD_NOTIFICATIONS_KEY,
   fetchCicdNotifications,
@@ -24,6 +27,7 @@ export function TabNav() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const role = user?.role as Role | undefined;
 
   // R2: staleTime:Infinity, no focus-refetch.  Badge refreshes via
@@ -43,9 +47,11 @@ export function TabNav() {
   // (cicd_repo.py:456).  Badge shows whenever count > 0.
   const cicdBadge = (notifData?.count ?? 0) > 0;
 
-  const visibleRoutes = role
-    ? ROUTES.filter((r) => r.roles.includes(role) && r.showInNav !== false)
-    : [];
+  const entries = role ? navEntriesForRole(role) : [];
+  const activeGroup = entries.find(
+    (entry) => entry.children.length > 0
+      && entry.paths.some((path) => pathMatches(pathname, path)),
+  );
 
   // F3: when the App 工作台 detail form has unsaved edits, confirm before
   // navigating to another tab. Reads the shared store at click time so it
@@ -97,37 +103,59 @@ export function TabNav() {
   }
 
   return (
-    <nav className="tabs">
-      {ROUTES.map((route) => {
-        const visible = role ? route.roles.includes(role) && route.showInNav !== false : false;
-        if (!visible) return null;
-        return (
-          <NavLink
-            key={route.view}
-            to={route.path}
-            className={({ isActive }) =>
-              isActive ? "tab active" : "tab"
-            }
-            end={route.path === "/"}
-            onClick={(e) => {
-              handleNavClick(e, route.view, route.path);
-            }}
-          >
-            {route.view === "cicd" && cicdBadge ? (
-              <>
+    <>
+      <nav className="tabs">
+        {entries.map((entry) => {
+          const { route } = entry;
+          const groupActive = entry === activeGroup;
+          return (
+            <NavLink
+              key={entry.key}
+              to={route.path}
+              className={({ isActive }) =>
+                isActive || groupActive ? "tab active" : "tab"
+              }
+              end={route.path === "/"}
+              onClick={(e) => {
+                handleNavClick(e, route.view, route.path);
+              }}
+            >
+              {route.view === "cicd" && cicdBadge ? (
+                <>
+                  {entry.label}
+                  <span className="badge-dot" />
+                </>
+              ) : (
+                entry.label
+              )}
+            </NavLink>
+          );
+        })}
+        {/* Keep a hidden placeholder so the nav retains height when empty */}
+        {entries.length === 0 && (
+          <span className="tab invisible">&nbsp;</span>
+        )}
+      </nav>
+      {activeGroup && (
+        <nav className="tab-subnav" aria-label={activeGroup.label}>
+          <div className="subtabs">
+            {activeGroup.children.map((route) => (
+              <NavLink
+                key={route.view}
+                to={route.path}
+                className={({ isActive }) =>
+                  isActive ? "subtab active" : "subtab"
+                }
+                onClick={(e) => {
+                  handleNavClick(e, route.view, route.path);
+                }}
+              >
                 {route.label}
-                <span className="badge-dot" />
-              </>
-            ) : (
-              route.label
-            )}
-          </NavLink>
-        );
-      })}
-      {/* Keep a hidden placeholder so the nav retains height when empty */}
-      {visibleRoutes.length === 0 && (
-        <span className="tab invisible">&nbsp;</span>
+              </NavLink>
+            ))}
+          </div>
+        </nav>
       )}
-    </nav>
+    </>
   );
 }

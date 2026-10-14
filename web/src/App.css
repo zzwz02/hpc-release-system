@@ -715,6 +715,11 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
 }
 .subtab:hover, .cicd-subtab:hover { color: var(--text); }
 .subtab.active, .cicd-subtab.active { background: var(--surface); color: var(--accent); box-shadow: var(--shadow-sm); }
+/* Second-level row under the top tabs for grouped routes (AI助手). Sits outside
+   .page so full-height views keep their height. */
+.tab-subnav { flex-shrink: 0; padding: 10px 24px 0; }
+.tab-subnav .subtabs { margin-bottom: 0; }
+.tab-subnav .subtab, .tab-subnav .subtab:hover { text-decoration: none; }
 
 .community-artifact-toolbar {
   display: flex; align-items: flex-end; gap: 9px; flex-wrap: wrap;

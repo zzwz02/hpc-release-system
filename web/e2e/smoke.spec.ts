@@ -26,7 +26,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { test, expect, type Page } from "@playwright/test";
-import { ROUTES, routeForView, type Role } from "../src/routes/routeConfig";
+import { navEntriesForRole, routeForView, type Role } from "../src/routes/routeConfig";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -465,9 +465,7 @@ test.describe("Role-gating", () => {
     test(`${role} sees exactly the configured tabs`, async ({ page }) => {
       await login(page, username);
       const visibleTabs = await page.locator("nav.tabs a").allTextContents();
-      const expectedTabs = ROUTES
-        .filter((route) => route.roles.includes(role))
-        .map((route) => route.label);
+      const expectedTabs = navEntriesForRole(role).map((entry) => entry.label);
       expect(visibleTabs).toEqual(expectedTabs);
     });
   }
@@ -502,9 +500,7 @@ test.describe("Admin role-gating (ruling C)", () => {
     await page.waitForLoadState("networkidle", { timeout: 10_000 });
 
     const visibleTabs = await page.locator("nav.tabs a").allTextContents();
-    const expectedTabs = ROUTES
-      .filter((route) => route.roles.includes("Admin"))
-      .map((route) => route.label);
+    const expectedTabs = navEntriesForRole("Admin").map((entry) => entry.label);
     expect(visibleTabs).toEqual(expectedTabs);
   });
 

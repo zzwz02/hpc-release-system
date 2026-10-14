@@ -4,6 +4,7 @@
  * Covers:
  *  - Renders visible tab links for the current role
  *  - Hides tabs for roles not allowed
+ *  - Grouped routes (AI助手) collapse into one tab with role-gated sub-tabs
  *  - CICD badge-dot renders when notification count > 0
  *  - CICD badge-dot absent when count === 0
  *  - Badge reads .count from CicdNotificationsResponse (not a non-existent field)
@@ -18,6 +19,7 @@ import { TabNav } from "../TabNav";
 import {
   ALL_ROLES,
   ROUTES,
+  navEntriesForRole,
   routeForView,
   type Role,
 } from "../routeConfig";
@@ -42,7 +44,7 @@ import { useAuth } from "../../api/AuthContext";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function renderTabNav(role: Role) {
+function renderTabNav(role: Role, initialPath = "/") {
   vi.mocked(useAuth).mockReturnValue({
     user: { username: "alice", display_name: "Alice", role },
     ldapStatus: { enabled: false, uri: "" },
@@ -57,11 +59,15 @@ function renderTabNav(role: Role) {
 
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialPath]}>
         <TabNav />
       </MemoryRouter>
     </QueryClientProvider>,
   );
+}
+
+function linkLabels(selector: string): Array<string | null> {
+  return Array.from(document.querySelectorAll(selector)).map((link) => link.textContent);
 }
 
 // ---------------------------------------------------------------------------
@@ -76,20 +82,63 @@ describe("TabNav", () => {
 
   it.each(ALL_ROLES)("renders exactly the configured tabs for %s", async (role) => {
     renderTabNav(role);
+    const entries = navEntriesForRole(role);
     await waitFor(() => {
-      expect(screen.getAllByRole("link")).toHaveLength(
-        ROUTES.filter((route) => route.roles.includes(role) && route.showInNav !== false).length,
-      );
+      expect(screen.getAllByRole("link")).toHaveLength(entries.length);
     });
 
     const visiblePaths = new Set(
       screen.getAllByRole("link").map((link) => link.getAttribute("href")),
     );
-    for (const route of ROUTES) {
+    for (const route of ROUTES.filter((candidate) => !candidate.group)) {
       expect(visiblePaths.has(route.path)).toBe(
         route.roles.includes(role) && route.showInNav !== false,
       );
     }
+    // Outside a group no sub-tab row is rendered.
+    expect(document.querySelector(".tab-subnav")).toBeNull();
+  });
+
+  // ── AI助手 group ───────────────────────────────────────────────────────────
+
+  it("collapses Jenkins失败查询 / CICD助手 / JIRA agent into one AI助手 tab", () => {
+    renderTabNav("RM");
+    const labels = linkLabels("nav.tabs a");
+    expect(labels.filter((label) => label === "AI助手")).toHaveLength(1);
+    for (const label of ["Jenkins失败查询", "CICD助手", "CICD助手V1", "JIRA agent"]) {
+      expect(labels).not.toContain(label);
+    }
+    expect(screen.getByRole("link", { name: "AI助手" })).toHaveAttribute(
+      "href",
+      routeForView("jenkins-failures").path,
+    );
+  });
+
+  it("shows the three sub-tabs under AI助手 and marks the open one", () => {
+    renderTabNav("RM", "/jira-agent?conversation=jac_1");
+    expect(linkLabels(".tab-subnav a")).toEqual(["Jenkins失败查询", "CICD助手", "JIRA agent"]);
+    expect(screen.getByRole("link", { name: "AI助手" })).toHaveClass("active");
+    expect(screen.getByRole("link", { name: "JIRA agent" })).toHaveClass("active");
+    expect(screen.getByRole("link", { name: "CICD助手" })).not.toHaveClass("active");
+    expect(screen.getByRole("link", { name: "CICD助手" })).toHaveAttribute(
+      "href",
+      routeForView("cicd-assistant-v2").path,
+    );
+  });
+
+  it.each(ALL_ROLES)("limits AI助手 sub-tabs to the routes %s may open", (role) => {
+    const allowed = (["jenkins-failures", "cicd-assistant-v2", "jira-agent"] as const)
+      .map(routeForView)
+      .filter((route) => route.roles.includes(role));
+    renderTabNav(role, routeForView("jenkins-failures").path);
+    expect(linkLabels(".tab-subnav a")).toEqual(allowed.map((route) => route.label));
+    expect(screen.queryByRole("link", { name: "AI助手" }) !== null).toBe(allowed.length > 0);
+  });
+
+  it("keeps AI助手 active on the nav-hidden CICD助手V1 route", () => {
+    renderTabNav("RM", routeForView("cicd-assistant").path);
+    expect(screen.getByRole("link", { name: "AI助手" })).toHaveClass("active");
+    expect(document.querySelector(".tab-subnav a.active")).toBeNull();
   });
 
   // ── Badge: count > 0 → dot renders ────────────────────────────────────────

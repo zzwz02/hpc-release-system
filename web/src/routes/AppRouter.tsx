@@ -13,6 +13,7 @@ import { RequireRole } from "./RequireRole";
 import {
   ROUTES,
   canAccessRoute,
+  pathMatches,
   routeForView,
   type Role,
 } from "./routeConfig";
@@ -73,10 +74,6 @@ const FEATURE_MAP: Record<string, React.ReactNode> = {
   wiki:      <WikiPage />,
   admin:     <AdminPage />,
 };
-
-function pathMatches(pathname: string, routePath: string): boolean {
-  return pathname === routePath || pathname.startsWith(`${routePath}/`);
-}
 
 export function AppRouter() {
   const { user } = useAuth();

@@ -27,7 +27,7 @@ API_TARGET=http://127.0.0.1:8001 npm run dev -- --host 127.0.0.1 --port 5173 --s
 | --- | --- |
 | `src/api/` | 同源请求、登录 API 与 AuthContext；401 进入未登录状态 |
 | `src/main.tsx` | React、QueryClient 和 AuthProvider 的全局装配 |
-| `src/routes/` | 页签、路由与角色访问；Admin 非管理页深链接重定向到 `/admin` |
+| `src/routes/` | 页签、路由与角色访问；`routeConfig.ts` 中同一 `group` 的路由合并为一个页签并显示为子页签（AI助手）；Admin 非管理页深链接重定向到 `/admin` |
 | `src/features/` | 周期、总览、App、QA、文档、CICD、Jenkins、助手、WIKI、管理页面 |
 | `src/lib/` | 权限、时间、阶段、字段词表和格式化 |
 | `src/store/uiStore.ts` | 共享周期选择、App 选择和编辑等 UI 状态 |
