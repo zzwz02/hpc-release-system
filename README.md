@@ -114,7 +114,7 @@ RM 每周上传 PDE HPC Project Plan 周报（.xlsx，每人一页，A 列日期
 - 网站对 JIRA 只读（GET issue），不评论、不改单，也不自动通知任何人。
 - RM 和 Owner 能看各周结果；上传、分析和成员管理需要 `weekly-check.run` 能力（RM）。
 
-实现入口：[weekly_report.py](app/domain/weekly_report.py)（解析、日期规则、问题判定）、[weekly_report_prompts.py](app/domain/weekly_report_prompts.py)（两个 prompt）、[weekly_check_service.py](app/services/weekly_check_service.py)（一次检查、入库、导出）、[weekly_check_jobs.py](app/services/weekly_check_jobs.py)（内存中的上传与后台作业）、[WeeklyCheckPage.tsx](web/src/features/weeklyCheck/WeeklyCheckPage.tsx)。没有单独的配置节：JIRA 用 `[jira]`，大模型用 `[qa_llm]`；JIRA 更新窗口默认 192 小时，在上传周报后的分析窗口里可改。
+实现入口：[weekly_report.py](app/domain/weekly_report.py)（解析、日期规则、问题判定）、[weekly_report_prompts.py](app/domain/weekly_report_prompts.py)（两个 prompt）、[weekly_check_service.py](app/services/weekly_check_service.py)（一次检查、入库、导出）、[weekly_check_jobs.py](app/services/weekly_check_jobs.py)（内存中的上传与后台作业）、[WeeklyCheckPage.tsx](web/src/features/weeklyCheck/WeeklyCheckPage.tsx)。没有单独的配置节：JIRA 用 `[jira]`，大模型用 `[llm]`；JIRA 更新窗口默认 192 小时，在上传周报后的分析窗口里可改。
 
 ## 数据与文档产物
 
@@ -191,7 +191,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 
 ## 集成配置
 
-LDAP、JIRA、QA 大模型、CICD Agent、网站对外地址和各组 JIRA 数字员工的配置统一放在根目录 `release_system.conf`（已 gitignore），分为 `[ldap]`、`[jira]`、`[qa_llm]`、`[cicd_agent]`、`[site]`、`[jira_agent:<组名>]` 几节。复制 `release_system.conf.example` 起步，各键含义与必填规则见其中注释。配置在每次使用时现读，修改后即时生效。旧的 `ldap.conf` / `jira.conf` / `qa_llm.env` / `jira_agent.conf` 已不再读取，升级时把内容搬到对应节。
+LDAP、JIRA、大模型、CICD Agent、网站对外地址和各组 JIRA 数字员工的配置统一放在根目录 `release_system.conf`（已 gitignore），分为 `[ldap]`、`[jira]`、`[llm]`、`[cicd_agent]`、`[site]`、`[jira_agent:<组名>]` 几节。大模型一节供 QA AI 分析和周报分析等所有功能共用，代码里统一经 [llm.py](app/integrations/llm.py) 的 `ask_json()` 调用；原来的 `[qa_llm]` 已改名为 `[llm]`，键名去掉 `QA_` 前缀，仍写旧节名时会提示如何改。复制 `release_system.conf.example` 起步，各键含义与必填规则见其中注释。配置在每次使用时现读，修改后即时生效。旧的 `ldap.conf` / `jira.conf` / `qa_llm.env` / `jira_agent.conf` 已不再读取，升级时把内容搬到对应节。
 
 环境变量只放文件位置和少数开发参数（下表），由 `app/config.py` 的 `Settings` 从环境变量和根目录 `.env` 读取，改后需重启。前后端共用的约定在 `shared/*.json`；调优参数和固定业务规则（如派单 JIRA 的项目、Component、issue 类型和 ETA 字段）是代码常量。新增配置放在哪里见 [release-system-dev 技能](.agents/skills/release-system-dev/SKILL.md) 的“配置落点”。
 

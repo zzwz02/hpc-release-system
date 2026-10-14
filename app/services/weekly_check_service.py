@@ -15,7 +15,6 @@ import csv
 import datetime as dt
 import hashlib
 import io
-import json
 import re
 import sqlite3
 import threading
@@ -26,7 +25,7 @@ from typing import Any
 from app.db.connection import transaction
 from app.domain import weekly_report as wr
 from app.domain import weekly_report_prompts as prompts
-from app.integrations import jira
+from app.integrations import jira, llm
 from app.repositories import users_repo, weekly_check_repo
 from app.repositories.audit_repo import log_audit
 from app.repositories.base import dumps_json
@@ -43,7 +42,7 @@ MAX_ACTIVE_HOURS = 24 * 60
 # People checked at the same time; each costs one LLM call per work item at
 # most plus one JIRA request per issue.
 PERSON_WORKERS = 4
-# A reply that is not JSON is asked for once more.
+# A failed or unparseable LLM reply is asked for once more (llm.ask_json).
 LLM_ATTEMPTS = 2
 
 CSV_COLUMNS = (
@@ -217,25 +216,12 @@ def preview(
 # One person
 # ---------------------------------------------------------------------------
 
-def _llm_json(llm_call: LlmCall, prompt: str) -> dict[str, Any]:
-    """Ask the LLM and return the JSON object in its reply; one retry on a non-JSON reply."""
-    last_error: Exception | None = None
-    for _attempt in range(LLM_ATTEMPTS):
-        content = llm_call(prompts.SYSTEM, prompt)
-        match = re.search(r"\{.*\}", content, re.S)
-        if match:
-            try:
-                value = json.loads(match.group(0))
-                if isinstance(value, dict):
-                    return value
-            except ValueError as exc:
-                last_error = exc
-        last_error = last_error or RuntimeError(f"LLM 输出不是 JSON：{content[:300]}")
-    raise last_error  # type: ignore[misc]
+def _ask(llm_call: LlmCall, prompt: str) -> dict[str, Any]:
+    return llm.ask_json(prompts.SYSTEM, prompt, attempts=LLM_ATTEMPTS, call=llm_call)
 
 
 def extract_items(llm_call: LlmCall, text: str) -> list[dict[str, Any]]:
-    items = _llm_json(llm_call, prompts.LLM_PROMPT % text).get("items", [])
+    items = _ask(llm_call, prompts.LLM_PROMPT % text).get("items", [])
     return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
 
 
@@ -252,8 +238,6 @@ def check_person(
     fetch_issue: Callable[[str], dict[str, Any] | str],
 ) -> dict[str, Any]:
     """Check one sheet: its problems, work items, a remark, and the split to cache."""
-    from app.integrations.llm import LLMConfigError
-
     problems = wr.date_problems(report, report_date=report_date, today=today)
     result: dict[str, Any] = {"problems": problems, "items": [], "note": "", "to_cache": None}
     if not report.text:
@@ -261,7 +245,7 @@ def check_person(
     if cached_items is None:
         try:
             items = extract_items(llm_call, report.text)
-        except LLMConfigError:
+        except llm.LLMConfigError:
             raise
         except Exception as exc:
             raise RuntimeError(f"{report.sheet}：LLM 拆分工作项失败：{exc}") from exc
@@ -288,8 +272,8 @@ def check_person(
         title = str(item.get("title") or "")
         jira_text = "\n\n".join(wr.jira_update_text(activity, username, since) for activity in updated)
         try:
-            verdict = _llm_json(llm_call, prompts.CONSIST_PROMPT % (title, item.get("summary") or title, jira_text))
-        except LLMConfigError:
+            verdict = _ask(llm_call, prompts.CONSIST_PROMPT % (title, item.get("summary") or title, jira_text))
+        except llm.LLMConfigError:
             raise
         except Exception as exc:
             # A failed consistency check leaves the other checks standing.
@@ -374,12 +358,8 @@ def run_check(
         raise ValueError("各页的日期都不正常，无法确定报告日期，请手工指定")
 
     if llm_call is None:
-        from app.integrations.llm import chat_json, llm_settings
-
-        llm = llm_settings()
-        if not llm["QA_LLM_BASE_URL"] or not llm["QA_LLM_MODEL"]:
-            raise RuntimeError("未配置 LLM：请在 release_system.conf 的 [qa_llm] 中填写 QA_LLM_BASE_URL 和 QA_LLM_MODEL")
-        llm_call = chat_json
+        llm.require_config()
+        llm_call = llm.chat_json
     if fetch_activity is None:
         if jira.load_config() is None:
             raise RuntimeError("未配置 JIRA：release_system.conf 的 [jira] 需要 JIRA_BASE_URL 和 JIRA_TOKEN")

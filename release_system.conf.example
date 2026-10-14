@@ -50,13 +50,13 @@ JIRA_ASSIGNEE = m00930
 JIRA_PARENT_ISSUE = SPD-1535
 
 
-# ── QA AI 分析大模型 ────────────────────────────────────────────
+# ── 大模型（QA AI 分析、周报分析等所有调用大模型的功能共用） ─────────
 # OpenAI 兼容接口（通常以 /v1 结尾），需要 python -m pip install openai。
-# 同名进程环境变量（QA_LLM_BASE_URL 等）优先于这里的值。QA_LLM_API_KEY 可选。
-[qa_llm]
-QA_LLM_BASE_URL = http://10.x.x.x:8000/v1
-QA_LLM_MODEL = your-model-name
-QA_LLM_API_KEY = <api-key>
+# 只读这里，不读环境变量。LLM_API_KEY 可选。原来的 [qa_llm] 节改名为本节，键名去掉 QA_ 前缀。
+[llm]
+LLM_BASE_URL = http://10.x.x.x:8000/v1
+LLM_MODEL = your-model-name
+LLM_API_KEY = <api-key>
 
 
 # ── CICD Agent（Jenkins 失败诊断助手） ─────────────────────────

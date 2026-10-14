@@ -1,6 +1,6 @@
 """Runtime service configuration — one sectioned INI file, release_system.conf.
 
-Sections: [ldap] [jira] [qa_llm] [cicd_agent] [site] and one
+Sections: [ldap] [jira] [llm] [cicd_agent] [site] and one
 [jira_agent:<group>] per JIRA agent digital employee; release_system.conf.example documents every
 key.  Accessors re-read the file on every call (it is a few KB), so an edit
 applies on the next use without a restart.

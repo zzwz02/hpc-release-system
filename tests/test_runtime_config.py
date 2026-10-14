@@ -29,7 +29,7 @@ def test_sections_keep_key_case_and_missing_file_is_empty(conf: Path) -> None:
     )
 
     assert runtime_config.section("jira") == {"JIRA_BASE_URL": "http://jira/", "JIRA_TOKEN": "a=b%c"}
-    assert runtime_config.section("qa_llm") == {}
+    assert runtime_config.section("llm") == {}
 
 
 def test_agent_groups_are_collected_by_prefix(conf: Path) -> None:
@@ -88,22 +88,22 @@ def test_example_file_parses_into_every_section(monkeypatch: pytest.MonkeyPatch)
 
     assert ldap.current_ldap_config()["uri"].startswith("ldap://")
     assert runtime_config.section("jira")["JIRA_BASE_URL"]
-    assert runtime_config.section("qa_llm")["QA_LLM_MODEL"]
+    assert runtime_config.section("llm")["LLM_MODEL"]
     assert cicd_agent._agent_timeout_seconds() == 90
     [group] = domain.groups_from_sections(runtime_config.agent_group_sections()).values()
     assert (group.name, group.max_concurrent, group.components) == ("HPC", 2, ("PDE_HPC",))
 
 
-def test_qa_llm_reads_only_the_file(conf: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_llm_reads_only_the_file(conf: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.integrations import llm
 
-    conf.write_text("[qa_llm]\nQA_LLM_BASE_URL = http://file/v1\nQA_LLM_MODEL = file-model\n", encoding="utf-8")
-    monkeypatch.setenv("QA_LLM_MODEL", "env-model")
+    conf.write_text("[llm]\nLLM_BASE_URL = http://file/v1\nLLM_MODEL = file-model\n", encoding="utf-8")
+    monkeypatch.setenv("LLM_MODEL", "env-model")
 
     assert llm.llm_settings() == {
-        "QA_LLM_BASE_URL": "http://file/v1",
-        "QA_LLM_API_KEY": "",
-        "QA_LLM_MODEL": "file-model",
+        "LLM_BASE_URL": "http://file/v1",
+        "LLM_API_KEY": "",
+        "LLM_MODEL": "file-model",
     }
 
 

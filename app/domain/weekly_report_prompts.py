@@ -5,7 +5,7 @@ in the check is decided by code, see app/domain/weekly_report.py.
 """
 from __future__ import annotations
 
-# The script sent each prompt as a single user message; chat_json also needs
+# The script sent each prompt as a single user message; llm.ask_json also needs
 # a system message.
 SYSTEM = "你是研发周报检查助手，严格按用户给出的格式只输出 JSON。"
 

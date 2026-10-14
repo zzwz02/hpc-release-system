@@ -1,20 +1,31 @@
-"""LLM integration — QA analysis via the local OpenAI-compatible endpoint.
+"""LLM integration — the one way site features call the LLM.
 
-Background QA jobs call this synchronous adapter from a worker thread.
+Every feature that asks the LLM something (QA log analysis, 周报分析, ...)
+goes through ask_json(): one OpenAI-compatible endpoint, streamed, the reply
+parsed as one JSON object, a failed or unparseable reply asked again.
+Callers run it from a worker thread; it blocks.
 
-Reads the [qa_llm] section of release_system.conf at call time.
+Reads the [llm] section of release_system.conf at call time:
 
-  QA_LLM_BASE_URL  e.g. http://10.x.x.x:8000/v1
-  QA_LLM_API_KEY   bearer token (optional; sent only if set)
-  QA_LLM_MODEL     model name passed in the payload
+  LLM_BASE_URL  OpenAI-compatible endpoint, e.g. http://10.x.x.x:8000/v1
+  LLM_MODEL     model name passed in the payload
+  LLM_API_KEY   bearer token (optional; sent only if set)
 """
 from __future__ import annotations
 
+import json
+import re
+import time
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from app import runtime_config
+
+SECTION = "llm"
+# The section's name before it served every feature; still recognised only to
+# say what to rename.
+OLD_SECTION = "qa_llm"
+LLM_CONFIG_KEYS = ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
 
 
 class LLMConfigError(RuntimeError):
@@ -25,12 +36,22 @@ class LLMCallError(RuntimeError):
     """Endpoint returned an error or unparseable body."""
 
 
-LLM_CONFIG_KEYS = ("QA_LLM_BASE_URL", "QA_LLM_API_KEY", "QA_LLM_MODEL")
-
-
 def llm_settings() -> dict[str, str]:
-    values = runtime_config.section("qa_llm")
+    values = runtime_config.section(SECTION)
     return {key: values.get(key, "") for key in LLM_CONFIG_KEYS}
+
+
+def require_config() -> dict[str, str]:
+    """Return the [llm] settings, or raise LLMConfigError naming what to fill in."""
+    settings = llm_settings()
+    if settings["LLM_BASE_URL"] and settings["LLM_MODEL"]:
+        return settings
+    if runtime_config.section(OLD_SECTION):
+        raise LLMConfigError(
+            "release_system.conf 的 [qa_llm] 已改名为 [llm]：请把节名改为 [llm]，"
+            "键名 QA_LLM_BASE_URL / QA_LLM_MODEL / QA_LLM_API_KEY 改为 LLM_BASE_URL / LLM_MODEL / LLM_API_KEY"
+        )
+    raise LLMConfigError("未配置 LLM：请在 release_system.conf 的 [llm] 中填写 LLM_BASE_URL 和 LLM_MODEL")
 
 
 def _stream_delta_text(chunk, field: str) -> str:
@@ -64,17 +85,15 @@ def chat_json(
     timeout: int = 180,
     progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> str:
-    """Stream a JSON reply.  ``progress`` receives a stats dict after each
-    chunk: ``content_chunks``, ``reasoning_chunks`` and, once the server
-    reports it, ``usage`` ({prompt_tokens, completion_tokens})."""
-    settings = llm_settings()
-    base = settings["QA_LLM_BASE_URL"].rstrip("/")
-    model = settings["QA_LLM_MODEL"]
-    if not base or not model:
-        raise LLMConfigError(
-            "未配置本地 LLM 服务：请在 release_system.conf 的 [qa_llm] 中填写 QA_LLM_BASE_URL 和 QA_LLM_MODEL"
-        )
-    key = settings["QA_LLM_API_KEY"]
+    """Stream one reply in JSON mode and return its raw text (see ask_json).
+
+    ``progress`` receives a stats dict after each chunk: ``content_chunks``,
+    ``reasoning_chunks`` and, once the server reports it, ``usage``
+    ({prompt_tokens, completion_tokens})."""
+    settings = require_config()
+    base = settings["LLM_BASE_URL"].rstrip("/")
+    model = settings["LLM_MODEL"]
+    key = settings["LLM_API_KEY"]
     try:
         from openai import OpenAI
     except ImportError as exc:
@@ -129,3 +148,60 @@ def chat_json(
         raise LLMCallError(f"LLM 返回格式异常：{str(chunks)[:400]}") from exc
     except Exception as exc:
         raise LLMCallError(f"LLM 流式返回失败：{str(exc)[:400]}") from exc
+
+
+def parse_json_object(reply: str) -> dict[str, Any]:
+    """The JSON object in a reply, tolerating a code fence or text around it."""
+    text = reply.strip()
+    try:
+        value = json.loads(text)
+    except ValueError:
+        match = re.search(r"\{.*\}", text, re.S)
+        if not match:
+            raise LLMCallError(f"LLM 输出不是 JSON：{text[:300]}") from None
+        try:
+            value = json.loads(match.group(0))
+        except ValueError as exc:
+            raise LLMCallError(f"LLM 输出不是有效的 JSON：{exc}") from exc
+    if not isinstance(value, dict):
+        raise LLMCallError(f"LLM 输出不是 JSON 对象：{text[:300]}")
+    return value
+
+
+def ask_json(
+    system: str,
+    user: str,
+    *,
+    attempts: int = 2,
+    timeout: int = 180,
+    progress: Callable[[dict[str, Any]], None] | None = None,
+    on_attempt: Callable[[int, int], None] | None = None,
+    on_retry: Callable[[Exception], None] | None = None,
+    call: Callable[[str, str], str] | None = None,
+) -> dict[str, Any]:
+    """Ask the LLM and return the JSON object it answers with.
+
+    A call that fails or answers something unparseable is made again, up to
+    *attempts* times in all, after a short pause; a configuration error is
+    raised at once.  ``progress`` streams chunk stats (see chat_json);
+    ``on_attempt(n, attempts)`` runs before each call and ``on_retry(error)``
+    before a retry.  *call* replaces the endpoint (tests, offline runs).
+    """
+    call = call or (lambda system_text, user_text: chat_json(
+        system_text, user_text, timeout=timeout, progress=progress,
+    ))
+    attempts = max(1, attempts)
+    for attempt in range(1, attempts + 1):
+        if on_attempt:
+            on_attempt(attempt, attempts)
+        try:
+            return parse_json_object(call(system, user))
+        except LLMConfigError:
+            raise
+        except Exception as exc:
+            if attempt >= attempts:
+                raise
+            if on_retry:
+                on_retry(exc)
+            time.sleep(min(attempt, 3))
+    raise AssertionError("unreachable")

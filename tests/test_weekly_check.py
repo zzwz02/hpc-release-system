@@ -720,7 +720,7 @@ def test_upload_analyze_view_and_export_flow(site: TestClient, monkeypatch: pyte
     conf = tmp_path / "release_system.conf"
     conf.write_text(
         "[jira]\nJIRA_BASE_URL = http://jira\nJIRA_TOKEN = t\n"
-        "[qa_llm]\nQA_LLM_BASE_URL = http://llm/v1\nQA_LLM_MODEL = m\n",
+        "[llm]\nLLM_BASE_URL = http://llm/v1\nLLM_MODEL = m\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(settings, "runtime_conf_path", conf)
@@ -824,7 +824,7 @@ def test_a_running_analysis_can_be_stopped(site: TestClient, monkeypatch: pytest
     conf = tmp_path / "release_system.conf"
     conf.write_text(
         "[jira]\nJIRA_BASE_URL = http://jira\nJIRA_TOKEN = t\n"
-        "[qa_llm]\nQA_LLM_BASE_URL = http://llm/v1\nQA_LLM_MODEL = m\n",
+        "[llm]\nLLM_BASE_URL = http://llm/v1\nLLM_MODEL = m\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(settings, "runtime_conf_path", conf)
