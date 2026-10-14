@@ -168,7 +168,7 @@ deploy/jira-agent/     JIRA agent 服务器 B 的启动脚本与 HPC 知识包
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt -r requirements-dev.txt
+python -m pip install -r requirements.txt
 cd web
 npm ci
 cd ..

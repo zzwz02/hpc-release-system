@@ -1,9 +1,10 @@
 ldap3
 openpyxl
 openai
-httpx
+httpx>=0.28
 fastapi
 uvicorn[standard]
 websockets
 pydantic>=2
 pydantic-settings
+pytest
