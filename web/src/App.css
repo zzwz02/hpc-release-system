@@ -2001,8 +2001,12 @@ textarea.artifact {
   border-radius: var(--r-lg); box-shadow: var(--shadow-lg);
   animation: dlg-in .15s ease-out;
 }
+.dialog-card.maxw-660 { width: min(660px, 100%); }
+.dialog-card.maxw-720 { width: min(720px, 100%); }
 @keyframes dlg-in { from { opacity: 0; transform: translateY(6px) scale(.99); } to { opacity: 1; transform: none; } }
-.dialog-card > h3, .dialog-card .detail-head, .dialog-head { padding: 15px 18px 0; font-size: 16px; font-weight: 700; }
+.dialog-card > h2, .dialog-card > h3, .dialog-card .detail-head, .dialog-head {
+  padding: 15px 18px 0; font-size: 16px; font-weight: 700;
+}
 .dialog-head { border-bottom: 0; background: transparent; }
 .dialog-body { padding: 15px 18px; display: grid; gap: 12px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; padding: 13px 18px; border-top: 1px solid var(--border); }
@@ -2035,6 +2039,46 @@ textarea.artifact {
 }
 /* Details holding rendered content (an app_info diff) instead of plain text. */
 .confirm-details-rich { white-space: normal; font-size: 13px; background: var(--surface); padding: 10px; }
+
+.cicd-detail-meta {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+  color: var(--ink-2); font-size: 12.5px; line-height: 1.45;
+}
+.cicd-detail-meta.secondary { margin-top: -4px; color: var(--muted); }
+.cicd-detail-meta span {
+  display: inline-flex; align-items: center; gap: 4px; min-height: 22px;
+}
+.cicd-context-title {
+  margin-bottom: 7px; color: var(--ink-2); font-size: 12.5px; font-weight: 700;
+}
+.cicd-context-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: var(--r);
+  background: var(--border);
+}
+.cicd-context-item {
+  display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 10px;
+  align-items: start; min-width: 0; padding: 9px 11px;
+  background: var(--surface);
+}
+.cicd-context-label {
+  color: var(--muted); font-size: 12px; line-height: 1.45;
+}
+.cicd-context-value {
+  min-width: 0; color: var(--text); font-weight: 650;
+  line-height: 1.45; overflow-wrap: anywhere;
+}
+.cicd-diff-table {
+  border: 1px solid var(--border); border-radius: var(--r); overflow: hidden;
+}
+.cicd-diff-table td { overflow-wrap: anywhere; }
+.cicd-diff-old { color: var(--ink-2); }
+@media (max-width: 620px) {
+  .dialog-backdrop { padding: 12px; }
+  .cicd-context-grid { grid-template-columns: 1fr; }
+  .cicd-context-item { grid-template-columns: 72px minmax(0, 1fr); }
+}
 
 /* ======================== app_info unified diff ======================== */
 .diff-list { display: grid; gap: 10px; }

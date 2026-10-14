@@ -84,6 +84,52 @@ require_delivery_reject_returned = require_capability(
 )
 
 
+def _payload_context_value(payload: dict, key: str) -> str:
+    value = payload.get(key)
+    if isinstance(value, dict):
+        value = value.get("old") or value.get("new") or ""
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value)
+    return str(value or "").strip()
+
+
+def _jira_task_context(
+    conn: sqlite3.Connection,
+    *,
+    request_type: str,
+    task_id: str | None,
+    app_id: str | None,
+    payload: dict,
+) -> dict[str, str]:
+    context = {
+        key: _payload_context_value(payload, key)
+        for key in ("app_name", "app_version", "repo_type", "repo_name", "branch")
+    }
+    app_ref = app_id or task_id or str(payload.get("app_id") or "").strip()
+    if app_ref:
+        task = next(
+            (
+                item
+                for item in cicd_service.list_tasks(conn)
+                if item.get("id") == app_ref or item.get("app_id") == app_ref
+            ),
+            None,
+        )
+        if task:
+            task_context = {
+                "app_name": str(task.get("app_name") or ""),
+                "app_version": str(task.get("app_version") or ""),
+                "repo_type": str(task.get("repo_type") or ""),
+                "repo_name": str(task.get("repo_name") or ""),
+                "branch": str(task.get("branch") or ""),
+            }
+            if request_type == "create":
+                context = {**task_context, **{k: v for k, v in context.items() if v}}
+            else:
+                context = {**context, **{k: v for k, v in task_context.items() if v}}
+    return {key: value for key, value in context.items() if value}
+
+
 # ---------------------------------------------------------------------------
 # GET endpoints — plain `def` (thread pool)
 # ---------------------------------------------------------------------------
@@ -265,7 +311,7 @@ async def post_approve(
                 jira_error = "未配置 JIRA：release_system.conf 的 [jira] 需要 JIRA_BASE_URL 和 JIRA_TOKEN"
             else:
                 row = conn.execute(
-                    "SELECT request_type, task_id, payload, submitter "
+                    "SELECT request_type, task_id, app_id, payload, submitter "
                     "FROM cicd_task_requests WHERE id=?",
                     (int(body["request_id"]),),
                 ).fetchone()
@@ -273,11 +319,19 @@ async def post_approve(
                     import json as _json
 
                     payload_dict = _json.loads(row["payload"] or "{}")
+                    task_context = _jira_task_context(
+                        conn,
+                        request_type=row["request_type"],
+                        task_id=row["task_id"],
+                        app_id=row["app_id"],
+                        payload=payload_dict,
+                    )
                     title = jira_integration.compute_title(
                         conn,
                         row["request_type"],
                         payload_dict,
                         row["task_id"],
+                        task_context=task_context,
                     )
                     desc = jira_integration.build_description(
                         request_id=int(body["request_id"]),
@@ -287,6 +341,7 @@ async def post_approve(
                         submitter=row["submitter"],
                         title=title,
                         review_note=body.get("review_note", ""),
+                        task_context=task_context,
                     )
                     jira_id = jira_integration.create_issue(
                         title, desc, jira_config=jcfg

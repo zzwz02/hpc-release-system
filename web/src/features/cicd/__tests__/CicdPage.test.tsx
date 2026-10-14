@@ -379,6 +379,32 @@ describe("CicdPage", () => {
     });
   });
 
+  it("ApproveDialog: previews Stop Jira title for Running to Stopped changes", async () => {
+    const stopReq = makeRequest({
+      payload: { status: { old: "Running", new: "Stopped" } },
+      task_app_name: "alignn",
+      task_branch: "maca",
+    });
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/tasks")) {
+        return Promise.resolve({ tasks: [makeTask({ app_name: "alignn", branch: "maca" })] });
+      }
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      if (url.includes("/api/cicd/requests")) return Promise.resolve({ requests: [stopReq] });
+      return Promise.resolve({ deliveries: [] });
+    });
+
+    renderCicd("RM");
+    await userEvent.click(await screen.findByText("待审批"));
+    await userEvent.click(await screen.findByRole("button", { name: "审批" }));
+    await userEvent.click(screen.getByLabelText(/下发 SPD/));
+    await userEvent.click(screen.getByLabelText(/自动创建/));
+
+    expect(
+      screen.getByText("将自动创建 Jira：[Stop] alignn 【停止发布 maca 分支】"),
+    ).toBeInTheDocument();
+  });
+
   // ── DeliveryPane ──────────────────────────────────────────────────────────
 
   it("DeliveryPane: renders 待交付 content for RM", async () => {
@@ -392,6 +418,46 @@ describe("CicdPage", () => {
       // At minimum the pane container should be active
       expect(screen.getByText("待交付")).toBeInTheDocument();
     });
+  });
+
+  it("DetailDialog: renders task basic info as a compact delivery summary", async () => {
+    const delivery = makeRequest({
+      id: 11,
+      status: "approved",
+      delivery_status: "pending",
+      payload: { status: { old: "Running", new: "Stopped" } },
+      task_app_name: "Ginkgo",
+      task_app_version: "v1.9.0",
+      task_repo_name: `${GERRIT_HPC_BASE}/hpc_ginkgo`,
+      task_branch: "maca",
+    });
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/config")) {
+        return Promise.resolve({ jira_browse_url: "https://jira.example.test/browse/" });
+      }
+      if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [] });
+      if (url.includes("/api/cicd/notifications")) return Promise.resolve({ count: 0, last_visited_at: "" });
+      if (url.includes("/api/cicd/requests")) return Promise.resolve({ requests: [] });
+      if (url.includes("/api/cicd/deliveries")) return Promise.resolve({ deliveries: [delivery] });
+      return Promise.resolve({});
+    });
+
+    renderCicd("RM");
+    await userEvent.click(await screen.findByText("待交付"));
+    await userEvent.click(await screen.findByRole("button", { name: "详情" }));
+
+    const dialog = screen.getByRole("dialog");
+    const basicInfo = within(dialog).getByText("任务基础信息").closest(".cicd-context");
+    expect(basicInfo).not.toBeNull();
+    expect(within(basicInfo as HTMLElement).getByText("项目名称")).toBeInTheDocument();
+    expect(within(basicInfo as HTMLElement).getByText("Ginkgo")).toBeInTheDocument();
+    expect(within(basicInfo as HTMLElement).getByText("版本")).toBeInTheDocument();
+    expect(within(basicInfo as HTMLElement).getByText("v1.9.0")).toBeInTheDocument();
+    expect(within(basicInfo as HTMLElement).getByText("仓库名")).toBeInTheDocument();
+    expect(within(basicInfo as HTMLElement).getByText("hpc_ginkgo")).toBeInTheDocument();
+    expect(within(basicInfo as HTMLElement).getByText("分支")).toBeInTheDocument();
+    expect(within(basicInfo as HTMLElement).getByText("maca")).toBeInTheDocument();
+    expect(within(dialog).getByText("变更详情")).toBeInTheDocument();
   });
 
   it("DeliveryPane: renders 已交付 pane for RM", async () => {

@@ -143,6 +143,65 @@ function cicdFieldValue(field: string, value: unknown): string {
   return String(value ?? "");
 }
 
+function payloadContextValue(payload: Record<string, unknown>, field: string): string {
+  const value = payload[field];
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const entry = value as DiffEntry;
+    return cicdFieldValue(field, entry.old || entry.new || "");
+  }
+  return cicdFieldValue(field, value);
+}
+
+function requestTaskInfo(req: CicdRequest, tasks: CicdTask[]): [string, string][] {
+  const payload = (req.payload ?? {}) as Record<string, unknown>;
+  const task = tasks.find((t) => t.id === req.task_id || t.app_id === req.app_id);
+  const repoType = task?.repo_type;
+  const appName = task?.app_name || req.task_app_name || payloadContextValue(payload, "app_name");
+  const appVersion =
+    task?.app_version || req.task_app_version || payloadContextValue(payload, "app_version");
+  const repoName = formatCicdRepoPath(
+    task?.repo_name || req.task_repo_name || payloadContextValue(payload, "repo_name"),
+    repoType,
+  );
+  const branch = task?.branch || req.task_branch || payloadContextValue(payload, "branch");
+  return [
+    ["项目名称", appName || "—"],
+    ["版本", appVersion || "—"],
+    ["仓库名", repoName || "—"],
+    ["分支", branch || "—"],
+  ];
+}
+
+function orderedDiffEntries(payload: Record<string, unknown>): [string, unknown][] {
+  const priority = ["repo_name", "branch"];
+  const seen = new Set<string>();
+  const ordered: [string, unknown][] = [];
+  for (const key of priority) {
+    if (Object.prototype.hasOwnProperty.call(payload, key)) {
+      ordered.push([key, payload[key]]);
+      seen.add(key);
+    }
+  }
+  for (const entry of Object.entries(payload)) {
+    if (!seen.has(entry[0])) ordered.push(entry);
+  }
+  return ordered;
+}
+
+function diffSide(payload: Record<string, unknown>, field: string, side: "old" | "new"): string {
+  const value = payload[field];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  return String((value as DiffEntry)[side] ?? "").trim();
+}
+
+function isStopModifyRequest(req: CicdRequest, payload: Record<string, unknown>): boolean {
+  return (
+    req.request_type === "modify" &&
+    diffSide(payload, "status", "old") === "Running" &&
+    diffSide(payload, "status", "new") === "Stopped"
+  );
+}
+
 function ownerLabel(task: CicdTask): string {
   return task.owner_display || task.owner_username || "";
 }
@@ -246,7 +305,7 @@ function DiffTable({
         </tr>
       </thead>
       <tbody>
-        {Object.entries(payload ?? {}).map(([field, ch]) => {
+        {orderedDiffEntries(payload ?? {}).map(([field, ch]) => {
           const entry = ch as DiffEntry;
           const oldV = cicdFieldValue(field, entry?.old);
           const newV = cicdFieldValue(field, entry?.new);
@@ -287,17 +346,24 @@ function ApproveDialog({ req, tasks, onDone, onClose }: ApproveDialogProps) {
 
   const payload = (req.payload ?? {}) as Record<string, unknown>;
   const rejectAllowed = allows(req, "cicd.request.reject");
+  const task = tasks.find((t) => t.id === req.task_id || t.app_id === req.app_id);
   const taskName =
     (payload.app_name as string) ||
-    tasks.find((t) => t.id === req.task_id)?.app_name ||
+    task?.app_name ||
+    req.task_app_name ||
     req.task_id ||
     "";
-  const jiraTitle =
-    req.request_type === "create"
-      ? tasks.some((t) => t.app_name === taskName)
-        ? `[Append] ${taskName} 【追加发布新版本】`
-        : `[New] ${taskName} 【新发布项目】`
-      : `[Change] ${taskName} 【修改项目】`;
+  const taskBranch = task?.branch || req.task_branch || payloadContextValue(payload, "branch");
+  let jiraTitle = `[Change] ${taskName} 【修改项目】`;
+  if (isStopModifyRequest(req, payload)) {
+    jiraTitle = taskBranch
+      ? `[Stop] ${taskName} 【停止发布 ${taskBranch} 分支】`
+      : `[Stop] ${taskName} 【停止发布】`;
+  } else if (req.request_type === "create") {
+    jiraTitle = tasks.some((t) => t.app_name === taskName)
+      ? `[Append] ${taskName} 【追加发布新版本】`
+      : `[New] ${taskName} 【新发布项目】`;
+  }
 
   async function handleApprove() {
     setSaving(true);
@@ -577,71 +643,66 @@ function DetailDialog({
 }) {
   const payload = (req.payload ?? {}) as Record<string, unknown>;
   const jiraHref = jiraIssueUrl(jiraBrowseUrl, req.jira_id);
+  const taskInfoItems = requestTaskInfo(req, tasks);
 
   return (
     <div className="dialog-backdrop" role="dialog" aria-modal="true">
-      <div className="dialog-card maxw-580">
+      <div className="dialog-card maxw-720">
         <h2>申请详情 #{req.id}</h2>
         <div className="dialog-body">
-          <div className="small muted mb-8">
-            提交人：<b>{req.submitter_display || req.submitter}</b>
-            &nbsp;|&nbsp; 类型：{REQ_TYPE_LABEL[req.request_type] ?? req.request_type}
-            <OriginBadge origin={req.origin} />
-            &nbsp;|&nbsp; {req.task_id ? `任务：${req.task_id}` : "新建任务"}
-            &nbsp;|&nbsp; 状态：<ReqStatusSpan status={req.status} />
+          <div className="cicd-detail-meta">
+            <span>
+              提交人：<b>{req.submitter_display || req.submitter}</b>
+            </span>
+            <span>
+              类型：{REQ_TYPE_LABEL[req.request_type] ?? req.request_type}
+              <OriginBadge origin={req.origin} />
+            </span>
+            <span>{req.task_id ? `任务：${req.task_id}` : "新建任务"}</span>
+            <span>
+              状态：<ReqStatusSpan status={req.status} />
+            </span>
             {req.jira_id && jiraHref && (
-              <>
-                &nbsp;|&nbsp; Jira：{" "}
+              <span>
+                Jira：
                 <a href={jiraHref} target="_blank" rel="noopener noreferrer">
                   {req.jira_id}
                 </a>
-              </>
+              </span>
             )}
             {req.delivery_status && (
-              <>
-                &nbsp;|&nbsp; 交付状态：
+              <span>
+                交付状态：
                 <b>{DELIVERY_STATUS_LABEL[req.delivery_status] ?? req.delivery_status}</b>
-              </>
+              </span>
             )}
           </div>
           {req.reviewer && (
-            <div className="small muted mb-8">
-              审批人：{req.reviewer}
-              &nbsp;|&nbsp; 审批时间：{formatServerTime(req.reviewed_at || "")}
+            <div className="cicd-detail-meta secondary">
+              <span>审批人：{req.reviewer}</span>
+              <span>审批时间：{formatServerTime(req.reviewed_at || "")}</span>
               {req.review_note && (
-                <>&nbsp;|&nbsp; 备注：<b>{req.review_note}</b></>
+                <span>
+                  备注：<b>{req.review_note}</b>
+                </span>
               )}
             </div>
           )}
-          {req.request_type === "modify" && (() => {
-            const ctx = {
-              app_name: req.task_app_name || "",
-              app_version: req.task_app_version || "",
-              repo_name: req.task_repo_name || "",
-              branch: req.task_branch || "",
-            };
-            const task = tasks.find((t) => t.id === req.task_id);
-            const items: [string, string][] = [
-              ["项目名称", task?.app_name || ctx.app_name || "—"],
-              ["版本", task?.app_version || ctx.app_version || "—"],
-              ["仓库名", formatCicdRepoPath(task?.repo_name || ctx.repo_name, task?.repo_type) || "—"],
-              ["分支", task?.branch || ctx.branch || "—"],
-            ];
-            return (
-              <div className="cicd-context mb-8">
-                <div className="cicd-context-title">任务基础信息</div>
-                <div className="cicd-context-grid">
-                  {items.map(([label, value]) => (
-                    <div key={label} className="cicd-context-item">
-                      <div className="cicd-context-label">{label}</div>
-                      <div className="cicd-context-value">{value}</div>
-                    </div>
-                  ))}
+          <div className="cicd-context">
+            <div className="cicd-context-title">任务基础信息</div>
+            <div className="cicd-context-grid">
+              {taskInfoItems.map(([label, value]) => (
+                <div key={label} className="cicd-context-item">
+                  <div className="cicd-context-label">{label}</div>
+                  <div className="cicd-context-value">{value}</div>
                 </div>
-              </div>
-            );
-          })()}
-          <DiffTable payload={payload} reqType={req.request_type} />
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="cicd-context-title">变更详情</div>
+            <DiffTable payload={payload} reqType={req.request_type} />
+          </div>
         </div>
         <div className="row dialog-actions justify-end mt-12">
           <button className="btn" onClick={onClose}>

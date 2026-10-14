@@ -17,6 +17,7 @@ from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
 
 from app import runtime_config
+from app.config import settings
 from app.domain.cicd_config import CICD_PAYLOAD_CONFIG_LABELS
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,9 @@ DISPATCH_ISSUE_TYPE = "Task"
 DISPATCH_SUBTASK_TYPE = "Sub-task"
 EXPECTED_ETA_FIELD = "customfield_10115"
 ESTIMATED_ETA_FIELD = "customfield_10116"
+_CICD_FIRST_ACTION_FIELD = "_cicd_first_action"
+_CICD_FIRST_ACTION_CREATED = "created"
+_CICD_FIRST_ACTION_ASSOCIATED = "associated"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -82,32 +86,78 @@ def _request(base_url: str, token: str, method: str, path: str,
 
 
 # ─────────────────────────────────────────────────────────────
-# Issue title helper (mirrors JS cicdJiraTitle)
+# Issue title helper
 # ─────────────────────────────────────────────────────────────
+
+def _change_side(payload: dict, field: str, side: str) -> str:
+    value = payload.get(field)
+    if not isinstance(value, dict):
+        return ""
+    return str(value.get(side) or "").strip()
+
+
+def _is_stop_modify_request(request_type: str, payload: dict) -> bool:
+    return (
+        request_type == "modify"
+        and _change_side(payload, "status", "old") == "Running"
+        and _change_side(payload, "status", "new") == "Stopped"
+    )
+
+
+def _legacy_task_exists_for_app(conn: sqlite3.Connection, app_name: str) -> bool:
+    if not app_name:
+        return False
+    return conn.execute(
+        "SELECT 1 FROM cicd_tasks WHERE app_name=?",
+        (app_name,),
+    ).fetchone() is not None
+
+
+def _is_append_create(
+    conn: sqlite3.Connection,
+    payload: dict,
+    app_name: str,
+    task_context: dict | None,
+) -> bool:
+    first_action = str(payload.get(_CICD_FIRST_ACTION_FIELD) or "").strip()
+    if first_action == _CICD_FIRST_ACTION_ASSOCIATED:
+        return True
+    if first_action == _CICD_FIRST_ACTION_CREATED:
+        return False
+
+    context_name = str((task_context or {}).get("app_name") or "").strip()
+    if context_name and (not app_name or context_name == app_name):
+        return True
+
+    return _legacy_task_exists_for_app(conn, app_name)
+
 
 def compute_title(
     conn: sqlite3.Connection,
     request_type: str,
     payload: dict,
     task_id: str | None,
+    task_context: dict | None = None,
 ) -> str:
     """Compute the Jira issue title for a CICD request.
 
-    Mirrors the JS function cicdJiraTitle() in index.html.
+    Kept aligned with the CICD approval dialog preview.
     """
-    app_name = payload.get("app_name", "")
+    app_name = payload.get("app_name", "") or (task_context or {}).get("app_name", "")
     if not app_name and task_id:
         row = conn.execute("SELECT app_name FROM cicd_tasks WHERE id=?", (task_id,)).fetchone()
         if row:
             app_name = row[0]
+    app_name = str(app_name or "").strip()
+    if _is_stop_modify_request(request_type, payload):
+        branch = str((task_context or {}).get("branch") or "").strip()
+        if branch:
+            return f"[Stop] {app_name} 【停止发布 {branch} 分支】"
+        return f"[Stop] {app_name} 【停止发布】"
     if request_type == "create":
-        exists = conn.execute(
-            "SELECT 1 FROM cicd_tasks WHERE app_name=?", (app_name,)
-        ).fetchone()
-        return (
-            f"[Append] {app_name} 【追加发布新版本】" if exists
-            else f"[New] {app_name} 【新发布项目】"
-        )
+        if _is_append_create(conn, payload, app_name, task_context):
+            return f"[Append] {app_name} 【追加发布新版本】"
+        return f"[New] {app_name} 【新发布项目】"
     return f"[Change] {app_name} 【修改项目】"
 
 
@@ -119,7 +169,7 @@ _FIELD_LABEL: dict[str, str] = {
     "app_name":        "应用名称",
     "app_version":     "应用版本",
     "repo_url":        "代码仓库",
-    "repo_name":       "Gerrit 路径",
+    "repo_name":       "仓库名",
     "branch":          "分支",
     "release_decision": "Release 决策",
     "build_product":   "构建产物",
@@ -144,6 +194,91 @@ _REQ_TYPE_LABEL: dict[str, str] = {
 }
 
 
+def _stringify_value(value: object) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value)
+    return str(value or "")
+
+
+def _payload_context_value(payload: dict, key: str) -> str:
+    value = payload.get(key)
+    if isinstance(value, dict):
+        return _stringify_value(value.get("old") or value.get("new") or "")
+    return _stringify_value(value)
+
+
+def _strip_known_prefix(value: str, prefix: str) -> str | None:
+    prefix = prefix.rstrip("/")
+    if value == prefix:
+        return ""
+    with_slash = f"{prefix}/"
+    if value.startswith(with_slash):
+        return value[len(with_slash):]
+    return None
+
+
+def _format_repo_path(repo_name: str, repo_type: str = "") -> str:
+    value = repo_name.strip()
+    if not value:
+        return ""
+    hpc_project = settings.gerrit_hpc_project.strip("/")
+    manifest_project = settings.gerrit_manifest_project.strip("/")
+    ssh_base = settings.gerrit_ssh_base_url.rstrip("/")
+    hpc_base = f"{ssh_base}/{hpc_project}"
+    manifest_repo_url = f"{hpc_base}/{manifest_project}"
+
+    manifest_relative = _strip_known_prefix(value, manifest_repo_url)
+    if manifest_relative is not None:
+        return manifest_relative.lstrip("/")
+
+    marker = f"/{hpc_project}/"
+    index = value.find(marker)
+    hpc_path = value[index + len(marker):] if index >= 0 else value
+    manifest_prefix = f"{manifest_project}/"
+    if (
+        (repo_type == "repo" or hpc_path.endswith(".xml"))
+        and hpc_path.startswith(manifest_prefix)
+    ):
+        return hpc_path[len(manifest_prefix):]
+    return hpc_path
+
+
+def _basic_task_context(payload: dict, task_context: dict | None) -> dict[str, str]:
+    context: dict[str, str] = {}
+    repo_type = (
+        _stringify_value((task_context or {}).get("repo_type", ""))
+        or _payload_context_value(payload, "repo_type")
+    )
+    for key in ("app_name", "app_version", "repo_name", "branch"):
+        value = _stringify_value((task_context or {}).get(key, ""))
+        if not value:
+            value = _payload_context_value(payload, key)
+        if key == "repo_name":
+            value = _format_repo_path(value, repo_type)
+        if value:
+            context[key] = value
+    return context
+
+
+def _ordered_change_items(payload: dict) -> list[tuple[str, object]]:
+    priority = ("repo_name", "branch")
+    ordered: list[tuple[str, object]] = []
+    seen: set[str] = set()
+    for key in priority:
+        if key in payload:
+            ordered.append((key, payload[key]))
+            seen.add(key)
+    ordered.extend((key, value) for key, value in payload.items() if key not in seen)
+    return ordered
+
+
+def _field_value(field: str, value: object, repo_type: str = "") -> str:
+    text = _stringify_value(value)
+    if field == "repo_name":
+        return _format_repo_path(text, repo_type)
+    return text
+
+
 def build_description(
     *,
     request_id: int | None,
@@ -153,6 +288,7 @@ def build_description(
     submitter: str,
     title: str,
     review_note: str = "",
+    task_context: dict | None = None,
 ) -> str:
     """Build a Jira wiki-markup description string from a CICD request.
 
@@ -172,6 +308,15 @@ def build_description(
     lines.append(f"|申请人|{submitter}|")
     if task_id:
         lines.append(f"|任务 ID|{task_id}|")
+    context = _basic_task_context(payload, task_context)
+    if context.get("app_name"):
+        lines.append(f"|项目名称|{context['app_name']}|")
+    if context.get("app_version"):
+        lines.append(f"|版本|{context['app_version']}|")
+    if context.get("repo_name"):
+        lines.append(f"|仓库名|{context['repo_name']}|")
+    if context.get("branch"):
+        lines.append(f"|分支|{context['branch']}|")
     lines.append("")
 
     # ── 变更详情 ──
@@ -184,16 +329,20 @@ def build_description(
             if v is None or v == "" or v == []:
                 continue
             label = _FIELD_LABEL.get(k, k)
-            val = ", ".join(v) if isinstance(v, list) else str(v)
+            val = _stringify_value(v)
             lines.append(f"|{label}|{val}|")
     elif payload:
         lines.append("||字段||原值||新值||")
-        for k, ch in payload.items():
+        repo_type = (
+            _stringify_value((task_context or {}).get("repo_type", ""))
+            or _payload_context_value(payload, "repo_type")
+        )
+        for k, ch in _ordered_change_items(payload):
             if not isinstance(ch, dict):
                 continue
             label = _FIELD_LABEL.get(k, k)
-            old_v = ", ".join(ch["old"]) if isinstance(ch.get("old"), list) else str(ch.get("old", ""))
-            new_v = ", ".join(ch["new"]) if isinstance(ch.get("new"), list) else str(ch.get("new", ""))
+            old_v = _field_value(k, ch.get("old"), repo_type)
+            new_v = _field_value(k, ch.get("new"), repo_type)
             lines.append(f"|{label}|{old_v}|{new_v}|")
     else:
         lines.append("（无变更详情）")
