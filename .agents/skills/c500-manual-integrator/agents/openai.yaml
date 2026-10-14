@@ -1,4 +1,4 @@
 interface:
   display_name: "C500 Docs Integrator"
-  short_description: "Merge release DB manuals and release notes into RST docs"
-  default_prompt: "Use $c500-manual-integrator to merge release_system.db documentation data into the C500/X201 manuals and release notes."
+  short_description: "Update HPC release notes and the release wiki page from the release DB; prune the AI4Sci guide"
+  default_prompt: "Use $c500-manual-integrator to update the C500/X201 HPC release notes and the release wiki page from release_system.db, and remove Apps no longer published to the developer community from the AI4Sci user guide."

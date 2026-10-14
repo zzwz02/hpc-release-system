@@ -108,7 +108,7 @@ JIRA agent 是按组配置的数字员工，第一阶段处理 HPC 组的 Bug �
 
 常规生成的四类产物为 `release_note`、`manual`、`ai4sci`、`data`。Manager Review CSV 单独生成；测试范围 CSV 按需导出，不是 artifacts 的一个 kind。最终锁定生成上述四类 final 产物，不会自动把 Manager Review 升格为最终审批记录。
 
-生成文档是一个时间点的结果，不能假定后续编辑已同步到旧草稿。C500/X201 RST 合并使用 [文档整合技能](.agents/skills/c500-manual-integrator/SKILL.md)，指定目标 release 后再导出，避免误取另一个周期的 final 产物。
+生成文档是一个时间点的结果，不能假定后续编辑已同步到旧草稿。C500/X201 发布说明、wiki 发布页和 AI4Sci 用户手册的更新使用 [文档整合技能](.agents/skills/c500-manual-integrator/SKILL.md)，先指定目标 release，避免误取另一个周期的数据。
 
 ## 代码结构与事实源
 

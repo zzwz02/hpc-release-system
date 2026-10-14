@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render C500 manuals and HPC release notes to preview-like or standalone HTML."""
+"""Render the AI4Sci user guide and the HPC release notes to preview-like or standalone HTML."""
 from __future__ import annotations
 
 import argparse
@@ -41,14 +41,6 @@ class SplitPage:
 
 PROJECTS = (
     DocProject(
-        name="hpc_manual",
-        root_key="c500",
-        project_dir="HPC_Manual",
-        source_file="source/HPC_Manual_CN.rst",
-        html_file="HPC_Manual_CN.html",
-        display_title="沐曦通用GPU HPC 应用用户手册",
-    ),
-    DocProject(
         name="ai4sci_user_guide",
         root_key="c500",
         project_dir="AI4Sci_User_Guide",
@@ -78,7 +70,7 @@ PROJECTS = (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Render C500 manual RST files and C500/X201 HPC release notes to HTML "
+            "Render the AI4Sci user guide and the C500/X201 HPC release notes to HTML "
             "using their Sphinx projects."
         )
     )
@@ -104,6 +96,16 @@ def parse_args() -> argparse.Namespace:
         "--sphinx-build",
         default=os.environ.get("SPHINXBUILD", "sphinx-build"),
         help="sphinx-build executable. Default: SPHINXBUILD env var or sphinx-build",
+    )
+    parser.add_argument(
+        "--only",
+        action="append",
+        choices=[project.name for project in PROJECTS],
+        metavar="NAME",
+        help=(
+            "Build only this document; repeat to select several. "
+            f"Names: {', '.join(project.name for project in PROJECTS)}. Default: all."
+        ),
     )
     parser.add_argument(
         "--clean",
@@ -879,18 +881,20 @@ def main() -> int:
     out_dir = args.out_dir.expanduser().resolve()
     sphinx_build = resolve_executable(args.sphinx_build)
 
-    if not docs_root.is_dir():
+    projects = [project for project in PROJECTS if not args.only or project.name in args.only]
+    root_keys = {project.root_key for project in projects}
+    if "c500" in root_keys and not docs_root.is_dir():
         raise SystemExit(f"找不到 C500_Docs 目录: {docs_root}")
-    if not x201_docs_root.is_dir():
+    if "x201" in root_keys and not x201_docs_root.is_dir():
         raise SystemExit(f"找不到 X201_Docs 目录: {x201_docs_root}")
 
     docs_roots = {"c500": docs_root, "x201": x201_docs_root}
-    project_roots = {project: validate_project(docs_roots, project) for project in PROJECTS}
+    project_roots = {project: validate_project(docs_roots, project) for project in projects}
 
     if args.clean or args.single_file:
-        for path in [out_dir / project.name for project in PROJECTS]:
+        for path in [out_dir / project.name for project in projects]:
             shutil.rmtree(path, ignore_errors=True)
-        for path in [out_dir / f"{project.name}.html" for project in PROJECTS]:
+        for path in [out_dir / f"{project.name}.html" for project in projects]:
             path.unlink(missing_ok=True)
         shutil.rmtree(out_dir / "_doctrees", ignore_errors=True)
         shutil.rmtree(out_dir / "_single_build", ignore_errors=True)
@@ -898,7 +902,7 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     build_out_dir = out_dir / "_single_build" if args.single_file else out_dir
     results = []
-    for project in PROJECTS:
+    for project in projects:
         html_file = build_project(
             sphinx_build=sphinx_build,
             project=project,

@@ -13,7 +13,7 @@ description: Develop, debug, or review this HPC release collaboration repository
 - 前端：读 [web/README-web.md](../../../web/README-web.md)。交互修改要验证实际页面和真实请求形状。
 - 测试、迁移、运行环境：读 [verification.md](references/verification.md)。文档修改只做相称的链接、语法和事实检查。
 - JIRA agent（对话、队列、Codex app-server 客户端、服务器 B 知识包）：读相邻的 [jira-agent-dev](../jira-agent-dev/SKILL.md) 技能。
-- C500/X201 RST 合并使用相邻的 `c500-manual-integrator` 技能，本技能不代替手册分类与版本规则。
+- C500/X201 发布说明、wiki 发布页和 AI4Sci 用户手册的更新使用相邻的 `c500-manual-integrator` 技能，本技能不代替其中的文档规则。
 
 ## 修改落点与事实源
 
