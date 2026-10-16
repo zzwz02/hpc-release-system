@@ -3,6 +3,50 @@ import { test, expect } from "@playwright/test";
 test.use({ baseURL: process.env.REPRO_UI_URL || "http://127.0.0.1:8033" });
 
 for (const width of [1366, 1920]) {
+  test(`SPD can reconsider a DevOps failure at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    const record = {
+      id: 3001, job_name: "Hpc_App_Release", build_number: 88, normalized_stage: "build image",
+      owner_account: "m00930", owner_role: "DevOps", code_owner: "owner1", official_name: "HPCG",
+      responsibility_status: "confirmed", final_owner_account: "m00930", final_owner_role: "DevOps",
+      reason_summary: "镜像构建失败", created_at: "2026-10-16T09:00:00", responsibility_events: [],
+    };
+    const posts: { path: string; body: unknown }[] = [];
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.context().route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      let data: unknown = {};
+      if (route.request().method() === "POST") {
+        posts.push({ path, body: route.request().postDataJSON() });
+        data = { id: "e".repeat(32), status: "queued" };
+      } else if (path === "/api/me") data = { user: { username: "m00930", display_name: "DevOps", role: "SPD" } };
+      else if (path === "/api/state") data = { user_display_names: { m00930: "DevOps" }, releases: [], apps: [] };
+      else if (path.endsWith("/summary")) data = { total_records: 1, groups: [] };
+      else if (path.endsWith("/repro-tasks")) data = { tasks: [], enabled: true, worker_online: true };
+      else if (path.endsWith("/3001")) data = record;
+      else if (path.endsWith("/failures")) data = { records: [record], total: 1, page: 1, page_size: 20, total_pages: 1 };
+      await route.fulfill({ json: data });
+    });
+    await page.goto("/jenkins-failures?date_from=2026-10-16&date_to=2026-10-16");
+    const row = page.getByRole("row").filter({ hasText: "Hpc_App_Release" });
+    await expect(row.getByRole("button", { name: "复议诊断", exact: true })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath(`devops-actions-${width}.png`), fullPage: true });
+    await row.getByRole("button", { name: "查看详情", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "记录详情" });
+    await expect(dialog.getByRole("button", { name: "复议诊断", exact: true })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "处理责任", exact: true })).toHaveCount(0);
+    await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+    await row.getByRole("button", { name: "复议诊断", exact: true }).click();
+    await dialog.getByLabel("复议原因").fill("请复核是否为业务依赖问题");
+    await page.screenshot({ path: testInfo.outputPath(`devops-repro-${width}.png`), fullPage: true });
+    expect(await dialog.evaluate((element) => element.scrollWidth > element.clientWidth + 1)).toBe(false);
+    await dialog.getByRole("button", { name: "提交复议", exact: true }).click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts).toEqual([{ path: "/api/cicd-agent/failures/3001/repro-tasks", body: { reason: "请复核是否为业务依赖问题" } }]);
+    expect(errors).toEqual([]);
+  });
+
   test(`reconsideration report and RM prefill at ${width}px`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 });
     const errors: string[] = [];

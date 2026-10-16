@@ -56,9 +56,9 @@ const failureRecord = {
   created_at: "2026-09-04T12:00:00",
 };
 
-function renderPage(route = "/jenkins-failures") {
+function renderPage(route = "/jenkins-failures", role = "RM") {
   vi.mocked(useAuth).mockReturnValue({
-    user: { username: "alice", display_name: "Alice", role: "RM" },
+    user: { username: "alice", display_name: "Alice", role },
     ldapStatus: { enabled: false, uri: "" },
     login: vi.fn(),
     logout: vi.fn(),
@@ -79,8 +79,11 @@ function renderPage(route = "/jenkins-failures") {
 }
 
 describe("JenkinsFailuresPage", () => {
+  let currentRecord = failureRecord;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    currentRecord = failureRecord;
     vi.mocked(apiGet).mockImplementation(async (path: string) => {
       if (path === "/api/state") {
         return {
@@ -127,8 +130,11 @@ describe("JenkinsFailuresPage", () => {
           ],
         };
       }
+      if (path === "/api/cicd-agent/failures/101/repro-tasks") {
+        return { tasks: [], enabled: true, worker_online: true };
+      }
       if (path === "/api/cicd-agent/failures/101") {
-        return failureRecord;
+        return currentRecord;
       }
       if (path.startsWith("/api/cicd-agent/failures")) {
         return {
@@ -136,12 +142,15 @@ describe("JenkinsFailuresPage", () => {
           page_size: 20,
           total: 1,
           total_pages: 1,
-          records: [failureRecord],
+          records: [currentRecord],
         };
       }
       throw new Error(`Unhandled apiGet path: ${path}`);
     });
     vi.mocked(apiPost).mockImplementation(async (path: string, body: unknown) => {
+      if (path === "/api/cicd-agent/failures/101/repro-tasks") {
+        return { id: "a".repeat(32), status: "queued" };
+      }
       if (path === "/api/cicd-agent/failures/101/responsibility-feedback") {
         return {
           record: {
@@ -177,6 +186,49 @@ describe("JenkinsFailuresPage", () => {
       }
       throw new Error(`Unhandled apiPost path: ${path}`);
     });
+  });
+
+  it.each([
+    ["Code Owner", "build_image", "build", "ai_suggested"],
+    ["DevOps", "build image", "build", "ai_suggested"],
+    ["DevOps", "build_image", "build", "confirmed"],
+    ["DevOps", "", "build_image", "corrected"],
+    ["Unresolved", "build image", "build", "unresolved"],
+  ])("shows both reconsideration entries for %s / %s / %s / %s", async (owner_role, normalized_stage, failed_stage, responsibility_status) => {
+    currentRecord = { ...failureRecord, owner_role, normalized_stage, failed_stage, responsibility_status };
+    renderPage();
+    const table = await screen.findByRole("table");
+    expect(await within(table).findByRole("button", { name: "复议诊断" })).toBeInTheDocument();
+    await userEvent.click(within(table).getByRole("button", { name: "查看详情" }));
+    const dialog = await screen.findByRole("dialog", { name: "记录详情" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "复议诊断" }));
+    expect(await within(dialog).findByLabelText("复议原因")).toBeInTheDocument();
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  it("lets SPD submit reconsideration for a DevOps record without RM actions", async () => {
+    renderPage("/jenkins-failures", "SPD");
+    await userEvent.click(await screen.findByRole("button", { name: "复议诊断" }));
+    const dialog = await screen.findByRole("dialog", { name: "记录详情" });
+    await userEvent.type(await within(dialog).findByLabelText("复议原因"), "请复核是否为业务依赖问题");
+    await userEvent.click(within(dialog).getByRole("button", { name: "提交复议" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith(
+      "/api/cicd-agent/failures/101/repro-tasks", { reason: "请复核是否为业务依赖问题" },
+    ));
+    expect(apiPost).toHaveBeenCalledTimes(1);
+    expect(within(dialog).queryByRole("button", { name: "处理责任" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "带入责任处理" })).not.toBeInTheDocument();
+  });
+
+  it("does not offer reconsideration for other stages", async () => {
+    currentRecord = { ...failureRecord, normalized_stage: "install maca" };
+    renderPage();
+    const table = await screen.findByRole("table");
+    expect(within(table).queryByRole("button", { name: "复议诊断" })).not.toBeInTheDocument();
+    await userEvent.click(await within(table).findByRole("button", { name: "查看详情" }));
+    const dialog = await screen.findByRole("dialog", { name: "记录详情" });
+    expect(within(dialog).queryByRole("button", { name: "复议诊断" })).not.toBeInTheDocument();
+    expect(apiPost).not.toHaveBeenCalled();
   });
 
   it("uses date filters from email link query params", async () => {

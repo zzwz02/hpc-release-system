@@ -660,8 +660,7 @@ export function JenkinsFailuresPage() {
                       <span>查看详情</span>
                       <span aria-hidden="true">›</span>
                     </button>
-                    {record.normalized_stage?.replace(/_/g, " ") === "build image" &&
-                      (record.owner_role === "Code Owner" || record.final_owner_role === "Code Owner") && (
+                    {(record.normalized_stage || record.failed_stage)?.replace(/_/g, " ") === "build image" && (
                         <button type="button" className="btn ghost sm cicd-repro-row-trigger" onClick={(event) => {
                           event.stopPropagation(); setInitialRepro(true); setSelectedId(record.id);
                         }}>复议诊断</button>
@@ -956,8 +955,7 @@ function FailureDetail({
               处理责任
             </button>
           )}
-          {(record.normalized_stage?.replace(/_/g, " ") === "build image" &&
-            (record.owner_role === "Code Owner" || record.final_owner_role === "Code Owner")) && (
+          {(record.normalized_stage || record.failed_stage)?.replace(/_/g, " ") === "build image" && (
             <button type="button" className="btn sm cicd-agent-detail-trigger" aria-expanded={reproExpanded}
               onClick={() => { setReproExpanded((value) => !value); setResponsibilityExpanded(false); setActionMode(null); }}>
               复议诊断
