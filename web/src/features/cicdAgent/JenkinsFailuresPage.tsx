@@ -4,6 +4,7 @@ import { useLocation } from "react-router-dom";
 import { useAuth } from "../../api/AuthContext";
 import { apiGet } from "../../api/http";
 import type { StatePayload } from "../../types";
+import { FailureReproPanel, type ReproTask } from "./FailureReproPanel";
 import {
   CICD_AGENT_FAILURES_KEY,
   CICD_AGENT_FILTER_OPTIONS_KEY,
@@ -285,6 +286,7 @@ export function JenkinsFailuresPage() {
   const [filters, setFilters] = useState<FailureRecordFilters>(() => filtersFromSearch(search));
   const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [initialRepro, setInitialRepro] = useState(false);
   const [summaryGroup, setSummaryGroup] = useState<SummaryGroupKey>("owner_role");
   const [summaryExpanded, setSummaryExpanded] = useState(false);
 
@@ -414,6 +416,7 @@ export function JenkinsFailuresPage() {
 
   const closeDetail = useCallback(() => {
     setSelectedId(null);
+    setInitialRepro(false);
   }, []);
 
   useEffect(() => {
@@ -657,6 +660,12 @@ export function JenkinsFailuresPage() {
                       <span>查看详情</span>
                       <span aria-hidden="true">›</span>
                     </button>
+                    {record.normalized_stage?.replace(/_/g, " ") === "build image" &&
+                      (record.owner_role === "Code Owner" || record.final_owner_role === "Code Owner") && (
+                        <button type="button" className="btn ghost sm cicd-repro-row-trigger" onClick={(event) => {
+                          event.stopPropagation(); setInitialRepro(true); setSelectedId(record.id);
+                        }}>复议诊断</button>
+                      )}
                   </td>
                 </tr>
               ))}
@@ -687,6 +696,7 @@ export function JenkinsFailuresPage() {
           onClick={closeDetail}
         >
           <FailureDetail
+            initialRepro={initialRepro}
             record={detailQuery.data}
             loading={detailQuery.isFetching}
             displayNames={displayNames}
@@ -736,6 +746,7 @@ function FilterSelect({ label, value, options, formatOption, onChange }: {
 }
 
 function FailureDetail({
+  initialRepro,
   record,
   loading,
   displayNames,
@@ -744,6 +755,7 @@ function FailureDetail({
   onResolve,
   onClose,
 }: {
+  initialRepro: boolean;
   record?: FailureRecordDetail;
   loading: boolean;
   displayNames: Record<string, string>;
@@ -754,6 +766,7 @@ function FailureDetail({
 }) {
   const [actionMode, setActionMode] = useState<"feedback" | "resolution" | null>(null);
   const [responsibilityExpanded, setResponsibilityExpanded] = useState(false);
+  const [reproExpanded, setReproExpanded] = useState(initialRepro);
   const [feedbackForm, setFeedbackForm] = useState<FailureResponsibilityFeedbackPayload>({
     feedback_type: "owner_wrong",
     reason: "",
@@ -803,12 +816,15 @@ function FailureDetail({
   }, [record]);
 
   function openFeedback() {
+    setReproExpanded(false);
     setResponsibilityExpanded(true);
     setFormError(null);
     setActionMode((value) => value === "feedback" ? null : "feedback");
   }
 
   function openResolution() {
+    setReproExpanded(false);
+    setResolutionForm((value) => ({ ...value, source_repro_task_id: undefined }));
     setResponsibilityExpanded(true);
     setFormError(null);
     setActionMode((value) => value === "resolution" ? null : "resolution");
@@ -823,6 +839,24 @@ function FailureDetail({
       }
       return nextValue;
     });
+  }
+
+  function useReproReport(task: ReproTask) {
+    const diagnosis = task.report?.diagnosis;
+    if (!record || !diagnosis) return;
+    setResolutionForm({
+      action: diagnosis.suggested_role === "Unresolved" ? "unresolved" : "correct",
+      final_owner_role: diagnosis.suggested_role,
+      final_owner_account: diagnosis.suggested_role === "DevOps" ? DEVOPS_OWNER_ACCOUNT : record.code_owner || "",
+      final_reason_summary: diagnosis.summary,
+      final_action_suggestion: diagnosis.action_suggestion,
+      note: `参考复议 ${task.id}: ${diagnosis.responsibility_reason}`,
+      source_repro_task_id: task.id,
+    });
+    setReproExpanded(false);
+    setResponsibilityExpanded(true);
+    setActionMode("resolution");
+    setFormError(null);
   }
 
   async function submitFeedback(event: FormEvent<HTMLFormElement>) {
@@ -922,6 +956,13 @@ function FailureDetail({
               处理责任
             </button>
           )}
+          {(record.normalized_stage?.replace(/_/g, " ") === "build image" &&
+            (record.owner_role === "Code Owner" || record.final_owner_role === "Code Owner")) && (
+            <button type="button" className="btn sm cicd-agent-detail-trigger" aria-expanded={reproExpanded}
+              onClick={() => { setReproExpanded((value) => !value); setResponsibilityExpanded(false); setActionMode(null); }}>
+              复议诊断
+            </button>
+          )}
           <button
             className="btn ghost sm cicd-agent-chain-trigger"
             type="button"
@@ -944,6 +985,7 @@ function FailureDetail({
           {responsibilityStatusLabel(record.responsibility_status)}
         </small>
       </div>
+      {reproExpanded && <FailureReproPanel key={record.id} recordId={record.id} canResolve={canResolve} onUseReport={useReproReport} />}
       {responsibilityExpanded && (
         <section className="cicd-agent-responsibility-panel">
         <div className="cicd-agent-responsibility-head">

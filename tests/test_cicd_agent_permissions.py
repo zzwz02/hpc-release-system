@@ -26,6 +26,40 @@ def _client_for_role(monkeypatch: pytest.MonkeyPatch, role: str, responder=None)
 
 
 @pytest.mark.parametrize("role", ALL_ROLES)
+def test_repro_reuses_page_permission_and_trusted_actor(monkeypatch, role):
+    captured = {}
+
+    def responder(*args, **kwargs):
+        captured.update(kwargs)
+        return JSONResponse({"id": "test"})
+
+    allowed = role in roles_for_tab("jenkins-failures")
+    with _client_for_role(monkeypatch, role, responder) as client:
+        assert client.get("/api/cicd-agent/failures/1/repro-tasks").status_code == (200 if allowed else 403)
+        response = client.post("/api/cicd-agent/failures/1/repro-tasks", json={
+            "reason": "复现依赖错误", "actor_user": "fake", "actor_role": "RM"})
+        assert response.status_code == (200 if allowed else 403)
+    if allowed:
+        assert captured["body"] == {"reason": "复现依赖错误", "actor_user": role.lower(), "actor_role": role}
+
+
+@pytest.mark.parametrize("role", ALL_ROLES)
+def test_repro_logs_reuse_page_permission_including_download(monkeypatch, role):
+    allowed = role in roles_for_tab("jenkins-failures")
+    with _client_for_role(monkeypatch, role) as client:
+        monkeypatch.setattr(cicd_agent, "_request_agent_payload", lambda *_args, **_kwargs: (200, {"content": "redacted log"}))
+        prefix = f"/api/cicd-agent/repro-tasks/{'a' * 32}/logs"
+        for suffix in ("", "/build-0-1.log", "/build-0-1.log/download"):
+            response = client.get(prefix + suffix)
+            assert response.status_code == (200 if allowed else 403)
+            if allowed:
+                assert response.headers["cache-control"] == "no-store"
+        if allowed:
+            assert "attachment" in response.headers["content-disposition"]
+            assert response.text == "redacted log"
+
+
+@pytest.mark.parametrize("role", ALL_ROLES)
 def test_jenkins_failure_api_role_gate(
     monkeypatch: pytest.MonkeyPatch,
     role: str,
@@ -125,6 +159,7 @@ def test_jenkins_failure_resolution_is_limited_to_rm(
                 "final_owner_account": "owner02",
                 "final_owner_role": "Code Owner",
                 "final_reason_summary": None,
+                "source_repro_task_id": None,
                 "final_action_suggestion": None,
                 "note": "改派给代码负责人",
                 "actor_user": role.lower(),

@@ -155,6 +155,7 @@ export interface FailureResponsibilityFeedbackPayload {
 }
 
 export interface FailureResponsibilityResolutionPayload {
+  source_repro_task_id?: string;
   action: "confirm" | "correct" | "unresolved";
   final_owner_account?: string | null;
   final_owner_role?: string | null;

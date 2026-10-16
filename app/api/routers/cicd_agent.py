@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app import runtime_config
@@ -64,6 +64,7 @@ class FailureResponsibilityFeedbackCreate(BaseModel):
 
 
 class FailureResponsibilityResolutionCreate(BaseModel):
+    source_repro_task_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
     action: Literal["confirm", "correct", "unresolved"]
     final_owner_account: str | None = Field(default=None, max_length=255)
     final_owner_role: str | None = Field(default=None, max_length=100)
@@ -119,6 +120,9 @@ def _request_agent_payload(
 ) -> tuple[int, Any]:
     data: bytes | None = None
     headers = {"Accept": "application/json"}
+    gateway_token = runtime_config.section("cicd_agent").get("REPRO_GATEWAY_TOKEN", "")
+    if gateway_token:
+        headers["Authorization"] = f"Bearer {gateway_token}"
     if body is not None:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -147,6 +151,8 @@ def _request_agent_payload(
 
 def _request_agent(method: str, path: str, *, query: str = "", body: Any = None) -> JSONResponse:
     status_code, payload = _request_agent_payload(method, path, query=query, body=body)
+    if status_code >= 400 and isinstance(payload, dict) and isinstance(payload.get("detail"), str):
+        payload = {**payload, "error": payload["detail"]}
     return JSONResponse(status_code=status_code, content=payload)
 
 
@@ -692,6 +698,54 @@ def resolve_failure_responsibility(
         f"/api/v1/failures/{record_id}/responsibility-resolution",
         body=body,
     )
+
+
+class FailureReproCreate(BaseModel):
+    reason: str = Field(min_length=1, max_length=4000)
+
+
+@router.get("/failures/{record_id}/repro-tasks")
+def list_failure_repro_tasks(record_id: int, _user: dict = Depends(require_jenkins_access)):
+    return _request_agent("GET", f"/api/v1/failures/{record_id}/repro-tasks")
+
+
+@router.post("/failures/{record_id}/repro-tasks")
+def create_failure_repro_task(record_id: int, payload: FailureReproCreate,
+                             user: dict = Depends(require_jenkins_access)):
+    return _request_agent("POST", f"/api/v1/failures/{record_id}/repro-tasks", body={
+        "reason": payload.reason, "actor_user": _assistant_user_id(user), "actor_role": str(user.get("role") or "")})
+
+
+@router.post("/repro-tasks/{task_id}/cancel")
+def cancel_failure_repro_task(task_id: str, user: dict = Depends(require_jenkins_access)):
+    return _request_agent("POST", f"/api/v1/repro-tasks/{task_id}/cancel", body={
+        "actor_user": _assistant_user_id(user), "actor_role": str(user.get("role") or "")})
+
+
+@router.get("/repro-tasks/{task_id}/logs")
+def list_repro_logs(task_id: str, _user: dict = Depends(require_jenkins_access)):
+    response = _request_agent("GET", f"/api/v1/repro-tasks/{urllib.parse.quote(task_id, safe='')}/logs")
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.get("/repro-tasks/{task_id}/logs/{name}")
+def read_repro_log(task_id: str, name: str, before: int | None = Query(default=None, ge=0),
+                   _user: dict = Depends(require_jenkins_access)):
+    path = f"/api/v1/repro-tasks/{urllib.parse.quote(task_id, safe='')}/logs/{urllib.parse.quote(name, safe='')}"
+    response = _request_agent("GET", path, query=urllib.parse.urlencode({"before": before}) if before is not None else "")
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.get("/repro-tasks/{task_id}/logs/{name}/download")
+def download_repro_log(task_id: str, name: str, _user: dict = Depends(require_jenkins_access)):
+    path = f"/api/v1/repro-tasks/{urllib.parse.quote(task_id, safe='')}/logs/{urllib.parse.quote(name, safe='')}"
+    status, payload = _request_agent_payload("GET", path, query="full=true")
+    if status != 200:
+        return JSONResponse(payload, status_code=status, headers={"Cache-Control": "no-store"})
+    return PlainTextResponse(payload["content"], headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": "attachment; filename=repro-log.txt"})
 
 
 @router.post("/failure-chat")

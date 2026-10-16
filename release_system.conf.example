@@ -64,6 +64,7 @@ LLM_API_KEY = <api-key>
 [cicd_agent]
 BASE_URL = http://10.2.118.76:8056
 TIMEOUT_SECONDS = 90
+REPRO_GATEWAY_TOKEN =
 
 
 # ── 网站 ──────────────────────────────────────────────────────
