@@ -64,6 +64,22 @@ describe("FailureReproPanel", () => {
     expect(screen.queryByRole("button", { name: "带入责任处理" })).not.toBeInTheDocument();
   });
 
+  it("shows archived evidence without adding another details panel", async () => {
+    vi.mocked(apiGet).mockResolvedValue({ tasks: [], enabled: true, evidence_archive: { status: "complete" } });
+    panel();
+    expect(await screen.findByText("Jenkins 复现证据已归档")).toBeInTheDocument();
+  });
+
+  it("distinguishes expired logs from missing task output", async () => {
+    vi.mocked(apiGet).mockImplementation(async (path) => path.endsWith("/logs")
+      ? { logs: [], retention: { expired_at: "2026-10-21" } }
+      : { tasks: [task], enabled: true, evidence_archive: { status: "expired" } });
+    panel();
+    expect(await screen.findByText(/Jenkins 原始日志已按保留策略清理/)).toBeInTheDocument();
+    await userEvent.click(screen.getByText("过程日志", { selector: "summary" }));
+    expect(await screen.findByText("过程日志已按保留策略清理，最终报告与补丁仍保留。")).toBeInTheDocument();
+  });
+
   it("loads logs only on expansion, supports older pages and download", async () => {
     vi.mocked(apiGet).mockImplementation(async (path) => {
       if (path.endsWith("/logs")) return { logs: [{ name: "build-0-1.log", label: "未修改副本构建", bytes: 9000 }] };

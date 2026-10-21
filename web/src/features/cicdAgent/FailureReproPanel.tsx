@@ -87,8 +87,10 @@ export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
   const logsRef = useRef<HTMLDetailsElement>(null);
   const query = useQuery({
     queryKey: ["cicd-agent", "repro-tasks", recordId],
-    queryFn: () => apiGet<{ tasks: ReproTask[]; enabled: boolean; worker_online?: boolean }>(`/api/cicd-agent/failures/${recordId}/repro-tasks`),
-    refetchInterval: (q) => q.state.data?.tasks.some((t) => !FINISHED.has(t.status)) ? 3000 : false,
+    queryFn: () => apiGet<{ tasks: ReproTask[]; enabled: boolean; worker_online?: boolean;
+      evidence_archive?: { status: string; captured_at?: string; expired_at?: string } }>(`/api/cicd-agent/failures/${recordId}/repro-tasks`),
+    refetchInterval: (q) => q.state.data?.tasks.some((t) => !FINISHED.has(t.status))
+      || ["pending", "retry", "capturing"].includes(q.state.data?.evidence_archive?.status ?? "") ? 3000 : false,
     retry: false,
   });
   const tasks = query.data?.tasks ?? [];
@@ -139,6 +141,10 @@ export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
     {query.isLoading && <p className="muted">正在加载复议记录...</p>}
     {!query.isLoading && !query.data?.enabled && <p className="muted">复议服务未启用</p>}
     {query.data?.enabled && query.data.worker_online === false && <p className="cicd-repro-warning">复议 Worker 未在线，任务将保留在队列中。</p>}
+    {query.data?.evidence_archive?.status === "complete" && <p className="muted small">Jenkins 复现证据已归档</p>}
+    {["pending", "capturing", "retry"].includes(query.data?.evidence_archive?.status ?? "") && <p className="muted small">Jenkins 复现证据正在归档</p>}
+    {query.data?.evidence_archive?.status === "failed" && <p className="cicd-repro-warning">证据归档失败，尚未具备脱离 Jenkins 日志的复现条件。</p>}
+    {query.data?.evidence_archive?.status === "expired" && <p className="cicd-repro-warning">Jenkins 原始日志已按保留策略清理，历史报告仍保留；再次复现需管理员重新获取证据。</p>}
     {active ? <div className="cicd-repro-active" role="status">
       <b>{active.cancel_requested ? "正在取消" : LABELS[active.status] || active.status}</b>
       <span>{active.node_name || "等待节点分配"}</span>

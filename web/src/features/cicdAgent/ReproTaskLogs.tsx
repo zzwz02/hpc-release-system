@@ -16,7 +16,8 @@ export function ReproTaskLogs({ taskId, running, initialName = "" }: { taskId: s
   const [before, setBefore] = useState<number>();
   const base = `/api/cicd-agent/repro-tasks/${encodeURIComponent(taskId)}/logs`;
   const listing = useQuery({
-    queryKey: ["repro-logs", taskId], queryFn: () => apiGet<{ logs: { name: string; label: string; bytes: number }[] }>(base),
+    queryKey: ["repro-logs", taskId], queryFn: () => apiGet<{ logs: { name: string; label: string; bytes: number }[];
+      retention?: { expired_at: string } | null }>(base),
     refetchInterval: running ? 5000 : false, retry: false,
   });
   const logs = listing.data?.logs ?? [];
@@ -41,7 +42,8 @@ export function ReproTaskLogs({ taskId, running, initialName = "" }: { taskId: s
     </div>
     {(listing.error || content.error) && <p role="alert" className="error-banner">{String(listing.error || content.error)}</p>}
     {(listing.isLoading || content.isLoading) && <p className="muted">正在读取日志...</p>}
-    {!listing.isLoading && !listing.error && !logs.length && <p className="muted">任务日志尚未生成或已清理。</p>}
+    {!listing.isLoading && !listing.error && !logs.length && <p className="muted">{listing.data?.retention
+      ? "过程日志已按保留策略清理，最终报告与补丁仍保留。" : "任务日志尚未生成或已清理。"}</p>}
     {page && <>
       <div className="cicd-repro-log-pagination">
         <span className="muted small">{page.total_lines ? `${page.start_line}–${page.end_line} / ${page.total_lines} 行` : "空日志"} · 已脱敏{running && before === undefined ? " · 更新中" : ""}</span>
