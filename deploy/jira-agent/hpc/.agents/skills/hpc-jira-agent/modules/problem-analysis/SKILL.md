@@ -19,6 +19,8 @@ description: 按 HPC 故障现象选择构建、崩溃或卡死、kernel trap、
 | 运行期 JIT、重复编译或缓存异常 | [runtime-recompile-analysis](skills/runtime-recompile-analysis/SKILL.md) | 是否真实重复编译，能否解释原现象？ |
 | 版本或配置变化后恶化 | [regression-analysis](skills/regression-analysis/SKILL.md) | 哪个受控变量改变结果？ |
 
+已有证据指向 AOT 或 JIT 编译器生成代码相关的 GPU 执行性能回退时，使用 [compiler-kernel-regression](skills/compiler-kernel-regression/SKILL.md)。
+
 回退是可叠加的对照方法，没有旧版本仍按症状诊断。新平台接入使用[应用适配](../application-analysis/skills/app-adaptation/SKILL.md)；应用语义和构建方法按需读取[应用专项](../application-analysis/SKILL.md)。
 
 ## 实验决策与收敛

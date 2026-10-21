@@ -53,6 +53,8 @@ description: 处理指定 HPC Jira：读取要求，复现并定位构建、运�
 
 仅获诊断授权时，达到要求的定位深度并验证依据后交付；涉及外组转交时仍须完成复现材料交接，不扩展为源码修复。本组修复、适配或优化任务不能以“已定位”代替完成；矛盾证据或原案例验证失败须继续处理。只达到组件定位时，不声称内部机制已解释。
 
+性能回退经受控对照指向 compiler 生成代码时，进入 [compiler-kernel-regression](modules/problem-analysis/skills/compiler-kernel-regression/SKILL.md) 完成专项定位与复现交接。
+
 ## 4. 验证并交付
 
 `conclusion` 只表示本轮达到的技术深度，`action_required` 单独表示是否需要补充、协助、审核或转交；出现阻塞时不把已经确认的技术结论退回“无法判断”。两者组合和字段要求以[网站交付规范](modules/jira-evidence/references/result-delivery.md#输出契约)为准。
