@@ -26,6 +26,7 @@ export interface FailureRecordFilters {
   confidence?: string;
   need_human_review?: boolean;
   responsibility_status?: string;
+  pending_rm_review?: boolean;
   notification_status?: string;
   keyword?: string;
 }
@@ -67,6 +68,11 @@ export interface FailureRecordListItem {
   responsibility_updated_by?: string | null;
   responsibility_updated_at?: string | null;
   responsibility_note?: string | null;
+  pending_rm_review?: boolean;
+  review_sources?: string[];
+  repro_review_state?: "none" | "running" | "pending_review" | "reviewed" | "exception" | "stale" | "cancelled";
+  repro_manual_review?: boolean;
+  latest_repro_task_id?: string | null;
   effective_owner_account?: string | null;
   effective_owner_role?: string | null;
   effective_reason_summary?: string | null;
@@ -123,6 +129,7 @@ export interface FailureRecordListResponse {
   page_size: number;
   total: number;
   total_pages: number;
+  pending_rm_review_count?: number;
   records: FailureRecordListItem[];
 }
 

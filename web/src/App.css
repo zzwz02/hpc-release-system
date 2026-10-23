@@ -973,7 +973,7 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
   margin-top: 0;
 }
 .cicd-agent-table-action {
-  width: 108px;
+  width: 144px;
   white-space: nowrap;
 }
 .cicd-agent-detail-trigger {
@@ -992,6 +992,39 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
 .cicd-agent-detail-trigger span[aria-hidden="true"] {
   font-size: 16px;
   line-height: 1;
+}
+.cicd-agent-row-actions {
+  display: grid;
+  grid-template-columns: 120px;
+  gap: 6px;
+  width: 120px;
+}
+.cicd-agent-row-actions .btn {
+  width: 100%;
+  height: 32px;
+  padding: 5px 8px;
+  color: var(--ink-2);
+  background: var(--surface);
+  border-color: var(--border-2);
+  box-shadow: none;
+}
+.cicd-agent-row-actions .btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border-2);
+  box-shadow: none;
+}
+.cicd-agent-row-actions .review-pending_review,
+.cicd-agent-row-actions .review-pending_review:hover:not(:disabled) {
+  color: var(--warn-fg);
+  background: var(--warn-bg);
+  border-color: var(--warn-bd);
+}
+.cicd-agent-row-actions .review-reviewed,
+.cicd-agent-row-actions .review-reviewed:hover:not(:disabled) {
+  color: var(--ok-fg);
+  background: var(--ok-bg);
+  border-color: var(--ok-bd);
 }
 .reason-cell {
   min-width: 260px;
@@ -2491,7 +2524,11 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
   .jira-agent-event.user { margin-left: 0; }
 }
 .cicd-repro-panel { border-top: 2px solid #2d777c; padding: 18px 0; margin: 16px 0; }
-.cicd-repro-row-trigger { display: block; margin-top: 6px; width: 100%; }
+.cicd-repro-row-trigger svg { flex-shrink: 0; }
+.cicd-agent-dispute-entry { display: inline-flex; align-items: center; gap: 3px; font: inherit; font-size: 12px; cursor: pointer; }
+.cicd-agent-dispute-entry:hover { text-decoration: underline; }
+.cicd-agent-review-toggle { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.cicd-agent-review-count { min-width: 22px; text-align: center; font-variant-numeric: tabular-nums; color: #925409; font-weight: 600; }
 .cicd-repro-panel h4, .cicd-repro-panel h5 { margin: 0 0 10px; }
 .cicd-repro-form { display: grid; grid-template-columns: 100px minmax(200px, 1fr) auto; gap: 12px; align-items: center; margin: 16px 0; }
 .cicd-repro-form textarea { resize: vertical; min-height: 64px; width: 100%; }

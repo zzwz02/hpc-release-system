@@ -1,5 +1,5 @@
-import { useRef, useState, type FormEvent } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileText, RefreshCw, ShieldCheck, CircleAlert } from "lucide-react";
 import { apiGet, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
@@ -39,7 +39,17 @@ export interface ReproTask {
     suggested_owner_account: string;
     builds: { attempt: number; results: { target: string; exit_code: number | null; log: string }[] }[];
     patches: { patch: string; verified: boolean }[];
+    log_review?: {
+      decision: "log_sufficient" | "reproduce" | "insufficient_evidence";
+      reason: string;
+      matched_rule_id: string;
+      policy_version: string;
+      evidence: { start_line: number; end_line: number; quote: string }[];
+    };
+    build_skipped_reason?: string;
     verification?: {
+      execution_mode?: "historical_logs" | "build";
+      build_skipped_reason?: string;
       summary: string;
       passed: boolean;
       original_failure_reproduced: boolean;
@@ -61,7 +71,7 @@ export interface ReproTask {
 }
 
 const LABELS: Record<string, string> = {
-  queued: "排队中", preparing: "准备源码与证据", selecting_node: "选择复现节点",
+  queued: "排队中", analyzing_history: "历史日志分析中", preparing: "准备源码与证据", selecting_node: "选择复现节点",
   reproducing: "复现构建中", diagnosing: "Codex 诊断中", verifying: "验证补丁中",
   completed: "诊断完成，待 RM 审定", blocked: "环境阻塞", failed: "执行失败",
   cancelled: "已取消", interrupted: "执行中断",
@@ -69,6 +79,10 @@ const LABELS: Record<string, string> = {
 const OUTCOMES: Record<string, string> = {
   log_only: "仅日志分析", environment_blocked: "复现环境阻塞", not_reproduced: "未复现原错误",
   reproduced: "已复现原错误", different_failure: "出现不同错误，尚未复现", fix_verified: "补丁构建验证通过",
+  historical_log_confirmed: "历史日志诊断完成 · 未执行构建", evidence_insufficient: "历史证据不足，待人工复核",
+};
+const LOG_DECISIONS: Record<string, string> = {
+  log_sufficient: "历史日志证据充分", reproduce: "需要复现构建", insufficient_evidence: "历史证据不足",
 };
 const FINISHED = new Set(["completed", "blocked", "failed", "cancelled", "interrupted"]);
 
@@ -78,6 +92,7 @@ export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
   onUseReport: (task: ReproTask) => void;
 }) {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const [reason, setReason] = useState("");
   const [selected, setSelected] = useState("");
   const [busy, setBusy] = useState(false);
@@ -89,18 +104,47 @@ export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
     queryKey: ["cicd-agent", "repro-tasks", recordId],
     queryFn: () => apiGet<{ tasks: ReproTask[]; enabled: boolean; worker_online?: boolean;
       evidence_archive?: { status: string; captured_at?: string; expired_at?: string } }>(`/api/cicd-agent/failures/${recordId}/repro-tasks`),
+    refetchOnMount: "always",
     refetchInterval: (q) => q.state.data?.tasks.some((t) => !FINISHED.has(t.status))
       || ["pending", "retry", "capturing"].includes(q.state.data?.evidence_archive?.status ?? "") ? 3000 : false,
     retry: false,
   });
   const tasks = query.data?.tasks ?? [];
+  const latest = tasks[0];
+  const reviewVersion = latest ? `${latest.id}:${latest.status}:${latest.resolved_by}:${latest.stale}` : "";
+  useEffect(() => {
+    if (!reviewVersion) return;
+    void queryClient.invalidateQueries({ queryKey: ["cicd-agent", "failures"] });
+    void queryClient.invalidateQueries({ queryKey: ["cicd-agent", "summary"] });
+  }, [queryClient, reviewVersion]);
   const active = tasks.find((task) => !FINISHED.has(task.status));
   const task = tasks.find((item) => item.id === selected) ?? tasks[0];
   const report = task?.report;
   const diagnosis = report?.diagnosis;
   const verification = report?.verification;
-  const builds: BuildFact[] = verification?.builds ?? report?.builds.flatMap((b) => b.results.map((r) => ({ ...r, attempt: b.attempt }))) ?? [];
-  const scope = verification?.scope ?? "仅验证已列出的构建 target，不代表完整功能测试通过。";
+  const logReview = report?.log_review;
+  const historicalOnly = verification?.execution_mode === "historical_logs"
+    || ["historical_log_confirmed", "evidence_insufficient"].includes(report?.outcome ?? "");
+  const logOnly = historicalOnly || report?.outcome === "log_only";
+  const verified = report?.verified && !logOnly;
+  const historyDisplay = logOnly || task?.status === "analyzing_history";
+  const outcome = historicalOnly && report?.outcome === "fix_verified"
+    ? logReview?.decision === "insufficient_evidence" ? "evidence_insufficient" : "historical_log_confirmed"
+    : report?.outcome;
+  const skippedReason = report?.build_skipped_reason?.trim() || verification?.build_skipped_reason?.trim()
+    || "本次仅分析历史日志";
+  const compactSkippedReason = skippedReason.length > 80 || skippedReason === diagnosis?.summary
+    || skippedReason === diagnosis?.responsibility_reason
+    ? outcome === "historical_log_confirmed" ? "历史日志证据充分"
+      : outcome === "evidence_insufficient" ? "历史证据不足，需人工复核" : "本次仅分析历史日志"
+    : skippedReason;
+  const builds: BuildFact[] = historicalOnly ? []
+    : verification?.builds ?? report?.builds.flatMap((b) => b.results.map((r) => ({ ...r, attempt: b.attempt }))) ?? [];
+  const scope = verification?.scope || (historicalOnly ? "仅依据历史日志认定，未执行构建或基础镜像核对。"
+    : "仅验证已列出的构建 target，不代表完整功能测试通过。");
+  const canUseReport = canResolve && task?.status === "completed" && !task.stale && !task.resolved_by
+    && ["Code Owner", "DevOps"].includes(diagnosis?.suggested_role ?? "")
+    && report?.outcome !== "evidence_insufficient" && logReview?.decision !== "insufficient_evidence";
 
   function showLog(name: string) {
     setLogName(name);
@@ -147,7 +191,7 @@ export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
     {query.data?.evidence_archive?.status === "expired" && <p className="cicd-repro-warning">Jenkins 原始日志已按保留策略清理，历史报告仍保留；再次复现需管理员重新获取证据。</p>}
     {active ? <div className="cicd-repro-active" role="status">
       <b>{active.cancel_requested ? "正在取消" : LABELS[active.status] || active.status}</b>
-      <span>{active.node_name || "等待节点分配"}</span>
+      <span>{active.status === "analyzing_history" ? "正在分析 Jenkins 原始日志" : active.node_name || "等待节点分配"}</span>
       {(canResolve || user?.username === active.requested_by) && <button type="button" className="btn sm"
         disabled={busy || active.cancel_requested} onClick={() => void cancel()}>取消复议</button>}
     </div> : <details className="cicd-repro-new" open={tasks.length === 0 ? true : undefined}>
@@ -162,20 +206,21 @@ export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
     </form></details>}
     {tasks.length > 0 && <label className="cicd-repro-history">复议记录
       <select value={task?.id} onChange={(e) => { setSelected(e.target.value); setLogName(""); setLogsOpen(false); }}>
-        {tasks.map((t) => <option key={t.id} value={t.id}>{t.created_at.replace("T", " ")} / {t.requested_by} / {LABELS[t.status] || t.status}</option>)}
+        {tasks.map((t) => <option key={t.id} value={t.id}>{t.created_at.replace("T", " ")} / {t.requested_by} / {t.resolved_by ? "RM 已审定" : t.stale ? "历史报告" : LABELS[t.status] || t.status}</option>)}
       </select>
     </label>}
     {task && <div className="cicd-repro-result">
       <div className="section-head-row">
-        <b className={`cicd-repro-outcome ${report?.verified ? "passed" : ""}`}>
-          {report?.verified ? <ShieldCheck size={18} /> : <CircleAlert size={18} />}
-          {report ? OUTCOMES[report.outcome] || report.outcome : LABELS[task.status]}</b>
-        {canResolve && task.status === "completed" && diagnosis && !task.stale && !task.resolved_by &&
+        <b className={`cicd-repro-outcome ${verified ? "passed" : ""}`}
+          style={historyDisplay ? { color: "var(--ink-2)" } : undefined}>
+          {historyDisplay ? <FileText size={18} /> : verified ? <ShieldCheck size={18} /> : <CircleAlert size={18} />}
+          {outcome ? OUTCOMES[outcome] || outcome : LABELS[task.status]}</b>
+        {canUseReport &&
           <button type="button" className="btn sm cicd-agent-resolution-trigger" onClick={() => onUseReport(task)}>带入责任处理</button>}
       </div>
       <p className="muted small">发起人：{task.requested_by} · {task.reason}</p>
       {task.error && <p className="error-banner">{task.error}</p>}
-      {task.stale && <p className="cicd-repro-warning">责任认定已变化，此报告不能覆盖新的认定。</p>}
+      {task.stale && !task.resolved_by && <p className="cicd-repro-warning">责任认定已变化，此报告不能覆盖新的认定。</p>}
       {task.resolved_by && <p className="muted">已由 {task.resolved_by} 处理</p>}
       {report?.environment_error && <p className="cicd-repro-warning">{report.environment_error}</p>}
       {diagnosis && <>
@@ -186,41 +231,68 @@ export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
           <dt>认定依据</dt><dd>{diagnosis.responsibility_reason}</dd>
           <dt>处理建议</dt><dd>{diagnosis.action_suggestion}</dd>
         </dl>
-        <p className="cicd-repro-boundary">{scope}</p>
-        <details><summary>验证过程与认定证据</summary>
-          {verification && <p>{verification.summary}</p>}
+      </>}
+      {report && <>
+        <p className="cicd-repro-boundary">{historicalOnly ? `未执行构建：${compactSkippedReason}` : scope}</p>
+        <details><summary>{historicalOnly ? "历史日志与认定证据" : "验证过程与认定证据"}</summary>
+          {historicalOnly ? <p>{scope}</p> : verification && <p>{verification.summary}</p>}
           <dl className="cicd-repro-facts">
-            <dt>执行节点</dt><dd>{task.node_name || "未分配"} · {report?.arch}</dd>
-            <dt>源码 revision</dt><dd><code>{report?.source_commit}</code></dd>
+            {historicalOnly && compactSkippedReason !== skippedReason && <>
+              <dt>跳过构建原因</dt><dd>{skippedReason}</dd>
+            </>}
+            <dt>执行节点</dt><dd>{historicalOnly ? "未分配（已跳过构建）" : task.node_name || "未分配"}</dd>
+            <dt>架构</dt><dd>{report.arch || "未知"}</dd>
+            <dt>源码 revision</dt><dd>{historicalOnly ? <>
+              未检查、未下载（已跳过源码准备）
+              {report.source_commit && <div>历史记录：<code>{report.source_commit}</code></div>}
+            </> : <code>{report.source_commit || "未知"}</code>}</dd>
           </dl>
           <table className="cicd-repro-process-table">
-            <thead><tr><th>步骤</th><th>实际结果</th><th>日志</th></tr></thead>
+            <thead><tr>{["步骤", "实际结果", "日志"].map((label) =>
+              <th key={label} scope="col" style={{ position: "static" }}>{label}</th>)}</tr></thead>
             <tbody>
               {builds.filter((b) => b.attempt === 0).map((b, i) => <tr key={`base-${i}`}>
                 <td>未修改副本构建</td><td>{b.target} · 退出码 {b.exit_code ?? "未返回"}
                   {verification?.original_failure_reproduced && <div>原始错误已重现</div>}</td>
                 <td><button className="btn ghost sm cicd-repro-icon" title="查看未修改副本日志" aria-label="查看未修改副本日志" onClick={() => showLog(b.log)}><FileText size={16} /></button></td>
               </tr>)}
-              {Boolean(report?.patches.length) && <tr><td>应用候选补丁</td><td>已应用到独立 candidate 副本，未改原始源码</td><td /></tr>}
+              {!historicalOnly && Boolean(report.patches.length) && <tr><td>应用候选补丁</td><td>已应用到独立 candidate 副本，未改原始源码</td><td /></tr>}
               {builds.filter((b) => b.attempt > 0).map((b, i) => <tr key={`fix-${i}`}>
                 <td>补丁副本重新构建</td><td>{b.target} · 退出码 {b.exit_code ?? "未返回"}
                   {b.method && <div><code>{b.method}{b.no_cache ? " --no-cache" : ""}{b.pull ? " --pull" : ""}</code></div>}</td>
                 <td><button className="btn ghost sm cicd-repro-icon" title="查看补丁构建日志" aria-label="查看补丁构建日志" onClick={() => showLog(b.log)}><FileText size={16} /></button></td>
               </tr>)}
-              {!builds.length && <tr><td>构建验证</td><td>暂无已完成的构建记录</td><td /></tr>}
-              <tr><td>基础镜像核对</td><td>{report?.base_digests_match ? "未修改副本与历史 digest 一致" : "尚未验证与历史一致"}
-                {verification?.passed && <div>补丁副本也与历史 digest 一致</div>}</td><td /></tr>
+              {!builds.length && <tr><td>构建验证</td><td>{historicalOnly ? "未执行" : "暂无已完成的构建记录"}</td><td /></tr>}
+              <tr><td>基础镜像核对</td><td>{historicalOnly ? "未执行" : report.base_digests_match ? "未修改副本与历史 digest 一致" : "尚未验证与历史一致"}
+                {!historicalOnly && verification?.passed && <div>补丁副本也与历史 digest 一致</div>}</td><td /></tr>
             </tbody>
           </table>
-          <h5>Jenkins 原始证据</h5><pre>{diagnosis.original_evidence || "暂无"}</pre>
-          <h5>复现证据</h5><pre>{diagnosis.reproduction_evidence || "暂无"}</pre>
-          {diagnosis.limitations.length > 0 && <><h5>验证边界</h5><ul>{diagnosis.limitations.map((text, i) => <li key={i}>{text}</li>)}</ul></>}
-          {Boolean(verification?.installed_packages.length) && <details><summary>构建日志中的已安装依赖</summary>
+          <div className="section-head-row">
+            <h5>Jenkins 原始证据</h5>
+            <button type="button" className="btn ghost sm cicd-repro-icon" title="查看 Jenkins 原始日志" aria-label="查看 Jenkins 原始日志"
+              onClick={() => showLog("original.log")}><FileText size={16} /></button>
+          </div>
+          {!logReview?.evidence.length && <pre>{diagnosis?.original_evidence || "暂无"}</pre>}
+          {logReview && <>
+            <dl className="cicd-repro-facts">
+              <dt>日志判定</dt><dd>{LOG_DECISIONS[logReview.decision]}</dd>
+              <dt>判定依据</dt><dd>{logReview.reason}</dd>
+              <dt>命中规则</dt><dd>{logReview.matched_rule_id || "无"}</dd>
+              <dt>策略版本</dt><dd>{logReview.policy_version || "未知"}</dd>
+            </dl>
+            {logReview.evidence.length > 0 && <><h5>引用行</h5><ol>{logReview.evidence.map((evidence, i) => <li key={i}>
+              <span className="muted small">原始日志第 {evidence.start_line}-{evidence.end_line} 行</span>
+              <pre>{evidence.quote}</pre>
+            </li>)}</ol></>}
+          </>}
+          <h5>复现证据</h5><pre>{historicalOnly ? "未执行复现构建" : diagnosis?.reproduction_evidence || "暂无"}</pre>
+          {Boolean(diagnosis?.limitations.length) && <><h5>验证边界</h5><ul>{diagnosis?.limitations.map((text, i) => <li key={i}>{text}</li>)}</ul></>}
+          {!historicalOnly && Boolean(verification?.installed_packages.length) && <details><summary>构建日志中的已安装依赖</summary>
             <div className="cicd-repro-packages">{verification?.installed_packages.map((pkg) => <div key={pkg.name}><code>{pkg.name}</code><span>{pkg.version}</span></div>)}</div>
           </details>}
         </details>
       </>}
-      {report?.patches.map((patch, i) => <details key={i}><summary>修复补丁 · {patch.verified ? "验证通过" : "未验证通过"}</summary><pre>{patch.patch}</pre></details>)}
+      {!historicalOnly && report?.patches.map((patch, i) => <details key={i}><summary>修复补丁 · {patch.verified ? "验证通过" : "未验证通过"}</summary><pre>{patch.patch}</pre></details>)}
       <details ref={logsRef} open={logsOpen} onToggle={(e) => setLogsOpen(e.currentTarget.open)}>
         <summary>过程日志</summary>
         {logsOpen && <ReproTaskLogs key={`${task.id}:${logName}`} taskId={task.id} initialName={logName} running={!FINISHED.has(task.status)} />}

@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAuth } from "../../../api/AuthContext";
 import { apiGet, apiPost } from "../../../api/http";
 import { JenkinsFailuresPage } from "../JenkinsFailuresPage";
+import type { FailureRecordDetail } from "../cicdAgentApi";
 
 vi.mock("../../../api/http", () => ({
   apiGet: vi.fn(),
@@ -79,7 +80,7 @@ function renderPage(route = "/jenkins-failures", role = "RM") {
 }
 
 describe("JenkinsFailuresPage", () => {
-  let currentRecord = failureRecord;
+  let currentRecord: typeof failureRecord & Pick<FailureRecordDetail, "repro_review_state" | "pending_rm_review"> = failureRecord;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -142,6 +143,7 @@ describe("JenkinsFailuresPage", () => {
           page_size: 20,
           total: 1,
           total_pages: 1,
+          pending_rm_review_count: 3,
           records: [currentRecord],
         };
       }
@@ -186,6 +188,60 @@ describe("JenkinsFailuresPage", () => {
       }
       throw new Error(`Unhandled apiPost path: ${path}`);
     });
+  });
+
+  it("filters pending RM records with the current date range and summary", async () => {
+    renderPage("/jenkins-failures?date_from=2026-10-01&date_to=2026-10-23");
+    const toggle = await screen.findByRole("checkbox", { name: /仅看待 RM 裁定/ });
+    await waitFor(() => expect(toggle.closest("label")).toHaveTextContent("3"));
+    await userEvent.click(toggle);
+    await waitFor(() => {
+      expect(apiGet).toHaveBeenCalledWith(expect.stringMatching(/failures\?date_from=2026-10-01&date_to=2026-10-23&pending_rm_review=true&page=1/));
+      expect(apiGet).toHaveBeenCalledWith(expect.stringMatching(/summary\?.*pending_rm_review=true/));
+    });
+    await userEvent.click(toggle);
+    expect(toggle).not.toBeChecked();
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  it("restores the RM pending filter from a link", async () => {
+    renderPage("/jenkins-failures?pending_rm_review=true");
+    expect(screen.getByRole("checkbox", { name: /仅看待 RM 裁定/ })).toBeChecked();
+    await waitFor(() => expect(apiGet).toHaveBeenCalledWith(expect.stringMatching(/failures\?.*pending_rm_review=true/)));
+  });
+
+  it("does not apply an RM-only toggle for SPD from a copied URL", async () => {
+    renderPage("/jenkins-failures?pending_rm_review=true", "SPD");
+    await screen.findByRole("table");
+    expect(screen.queryByRole("checkbox", { name: /仅看待 RM 裁定/ })).not.toBeInTheDocument();
+    expect(vi.mocked(apiGet).mock.calls.every(([path]) => !path.includes("pending_rm_review"))).toBe(true);
+  });
+
+  it.each([
+    ["none", "复议诊断"], ["running", "复议中"], ["pending_review", "复议待审"],
+    ["reviewed", "复议已审定"], ["exception", "复议异常"], ["stale", "历史复议"], ["cancelled", "复议已取消"],
+  ] as const)("uses the latest %s state on the existing action button", async (state, label) => {
+    currentRecord = { ...failureRecord, repro_review_state: state };
+    renderPage();
+    const button = await screen.findByRole("button", { name: label });
+    expect(button).toHaveClass(`review-${state}`);
+    expect(button).toHaveAttribute("title");
+    await userEvent.click(button);
+    const dialog = await screen.findByRole("dialog", { name: "记录详情" });
+    expect(within(dialog).getByRole("region", { name: "复议诊断" })).toBeInTheDocument();
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  it("opens existing feedback without starting a new feedback form", async () => {
+    currentRecord = { ...failureRecord, responsibility_status: "disputed", repro_review_state: "pending_review" };
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: "有争议" }));
+    const dialog = await screen.findByRole("dialog", { name: "记录详情" });
+    expect(dialog).toHaveTextContent("反馈建议责任人");
+    expect(dialog).toHaveTextContent("命中 build image push 规则");
+    expect(within(dialog).queryByLabelText("反馈原因")).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("region", { name: "复议诊断" })).not.toBeInTheDocument();
+    expect(apiPost).not.toHaveBeenCalled();
   });
 
   it.each([

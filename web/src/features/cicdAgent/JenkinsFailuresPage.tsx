@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "react-router-dom";
+import { Check, CircleAlert, Clock3, FileSearch, History, MessageSquareWarning } from "lucide-react";
 import { useAuth } from "../../api/AuthContext";
 import { apiGet } from "../../api/http";
 import type { StatePayload } from "../../types";
@@ -98,6 +99,7 @@ function filtersFromSearch(search: string): FailureRecordFilters {
     }
     filters[key] = value;
   }
+  if (params.get("pending_rm_review") === "true") filters.pending_rm_review = true;
   return filters;
 }
 
@@ -279,6 +281,25 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function ReproEntry({ record, onClick }: { record: FailureRecordDetail; onClick: () => void }) {
+  const state = record.repro_review_state || "none";
+  const choices = {
+    none: { label: "复议诊断", icon: FileSearch, title: "发起复议诊断" },
+    running: { label: "复议中", icon: Clock3, title: "查看最新复议进度" },
+    pending_review: { label: "复议待审", icon: CircleAlert,
+      title: record.repro_manual_review ? "证据不足，需要 RM 人工判断" : "查看待 RM 裁定的复议报告" },
+    reviewed: { label: "复议已审定", icon: Check, title: "RM 已处理本轮复议，查看报告与责任处理记录；不代表完全采纳建议或补丁构建通过" },
+    exception: { label: "复议异常", icon: CircleAlert, title: "查看执行失败或环境阻塞原因" },
+    stale: { label: "历史复议", icon: History, title: "责任认定已变化，旧报告仅供参考" },
+    cancelled: { label: "复议已取消", icon: History, title: "查看已取消的复议，可重新发起" },
+  };
+  const { label, icon: Icon, title } = choices[state] || choices.none;
+  return <button type="button" className={`btn sm cicd-repro-row-trigger review-${state}`}
+    title={title} onClick={(event) => { event.stopPropagation(); onClick(); }}>
+    <Icon size={14} aria-hidden="true" /><span>{label}</span>
+  </button>;
+}
+
 export function JenkinsFailuresPage() {
   const { user } = useAuth();
   const { search } = useLocation();
@@ -287,6 +308,7 @@ export function JenkinsFailuresPage() {
   const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [initialRepro, setInitialRepro] = useState(false);
+  const [initialResponsibility, setInitialResponsibility] = useState(false);
   const [summaryGroup, setSummaryGroup] = useState<SummaryGroupKey>("owner_role");
   const [summaryExpanded, setSummaryExpanded] = useState(false);
 
@@ -298,13 +320,14 @@ export function JenkinsFailuresPage() {
   }, [search]);
 
   const activeFilters = useMemo<FailureRecordFilters>(
-    () => Object.fromEntries(Object.entries(filters).filter(([, value]) => value)),
-    [filters],
+    () => Object.fromEntries(Object.entries(filters).filter(([key, value]) => value && (key !== "pending_rm_review" || user?.role === "RM"))),
+    [filters, user?.role],
   );
 
   const recordsQuery = useQuery({
     queryKey: [...CICD_AGENT_FAILURES_KEY, activeFilters, page],
     queryFn: () => fetchFailureRecords(activeFilters, page),
+    refetchInterval: 15000,
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   });
@@ -322,6 +345,7 @@ export function JenkinsFailuresPage() {
   const summaryQuery = useQuery({
     queryKey: [...CICD_AGENT_SUMMARY_KEY, activeFilters, summaryGroup],
     queryFn: () => fetchFailureSummary(activeFilters, summaryGroup),
+    refetchInterval: 15000,
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   });
@@ -337,7 +361,7 @@ export function JenkinsFailuresPage() {
     queryKey: ["cicd-agent", "failure-detail", selectedId],
     queryFn: () => fetchFailureDetail(selectedId as number),
     enabled: selectedId != null,
-    staleTime: Infinity,
+    staleTime: 0,
     refetchOnWindowFocus: false,
   });
 
@@ -361,7 +385,7 @@ export function JenkinsFailuresPage() {
     [filterOptions?.owners, filters.code_owner],
   );
 
-  function updateFilter(key: keyof FailureRecordFilters, value: string) {
+  function updateFilter(key: keyof FailureRecordFilters, value: string | boolean) {
     setPage(1);
     setSelectedId(null);
     setFilters((current) => ({ ...current, [key]: value }));
@@ -414,9 +438,16 @@ export function JenkinsFailuresPage() {
     await queryClient.invalidateQueries({ queryKey: ["cicd-agent"] });
   }
 
+  function openDetail(id: number, view: "record" | "repro" | "responsibility" = "record") {
+    setInitialRepro(view === "repro");
+    setInitialResponsibility(view === "responsibility");
+    setSelectedId(id);
+  }
+
   const closeDetail = useCallback(() => {
     setSelectedId(null);
     setInitialRepro(false);
+    setInitialResponsibility(false);
   }, []);
 
   useEffect(() => {
@@ -442,6 +473,11 @@ export function JenkinsFailuresPage() {
           />
           只看我的
         </label>
+        {user?.role === "RM" && <label className="check cicd-agent-review-toggle">
+          <input type="checkbox" checked={Boolean(filters.pending_rm_review)}
+            onChange={(event) => updateFilter("pending_rm_review", event.target.checked)} />
+          仅看待 RM 裁定 <span className="cicd-agent-review-count">{pageInfo?.pending_rm_review_count ?? 0}</span>
+        </label>}
         <div className="spacer" />
         <button className="btn sm" type="button" onClick={refresh}>刷新</button>
         <button className="btn ghost sm" type="button" onClick={resetFilters}>重置</button>
@@ -622,7 +658,7 @@ export function JenkinsFailuresPage() {
                 <tr
                   key={record.id}
                   className={selectedId === record.id ? "selected" : ""}
-                  onClick={() => setSelectedId(record.id)}
+                  onClick={() => openDetail(record.id)}
                 >
                   <td>#{record.id}</td>
                   <td><b>{fmt(record.official_name)}</b></td>
@@ -640,6 +676,11 @@ export function JenkinsFailuresPage() {
                         {fmt(effectiveOwnerRole(record))}
                       </small>
                       {record.responsibility_status && record.responsibility_status !== "ai_suggested" && (
+                        record.responsibility_status === "disputed" ?
+                        <button type="button" className="pill responsibility-disputed cicd-agent-dispute-entry"
+                          title="查看已提交的责任反馈" onClick={(event) => {
+                            event.stopPropagation(); openDetail(record.id, "responsibility");
+                          }}><MessageSquareWarning size={12} aria-hidden="true" />有争议</button> :
                         <small className={`pill ${responsibilityStatusClass(record.responsibility_status)}`}>
                           {responsibilityStatusLabel(record.responsibility_status)}
                         </small>
@@ -649,22 +690,22 @@ export function JenkinsFailuresPage() {
                   <td className="reason-cell">{effectiveReason(record) || "暂无摘要"}</td>
                   <td>{formatDateTime(record.created_at)}</td>
                   <td className="cicd-agent-table-action">
-                    <button
-                      className="btn sm cicd-agent-detail-trigger"
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setSelectedId(record.id);
-                      }}
-                    >
-                      <span>查看详情</span>
-                      <span aria-hidden="true">›</span>
-                    </button>
-                    {(record.normalized_stage || record.failed_stage)?.replace(/_/g, " ") === "build image" && (
-                        <button type="button" className="btn ghost sm cicd-repro-row-trigger" onClick={(event) => {
-                          event.stopPropagation(); setInitialRepro(true); setSelectedId(record.id);
-                        }}>复议诊断</button>
+                    <div className="cicd-agent-row-actions">
+                      <button
+                        className="btn sm cicd-agent-detail-trigger"
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openDetail(record.id);
+                        }}
+                      >
+                        <span>查看详情</span>
+                        <span aria-hidden="true">›</span>
+                      </button>
+                      {(record.normalized_stage || record.failed_stage)?.replace(/_/g, " ") === "build image" && (
+                        <ReproEntry record={record} onClick={() => openDetail(record.id, "repro")} />
                       )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -695,7 +736,9 @@ export function JenkinsFailuresPage() {
           onClick={closeDetail}
         >
           <FailureDetail
+            key={`${selectedId}:${initialRepro}:${initialResponsibility}`}
             initialRepro={initialRepro}
+            initialResponsibility={initialResponsibility}
             record={detailQuery.data}
             loading={detailQuery.isFetching}
             displayNames={displayNames}
@@ -746,6 +789,7 @@ function FilterSelect({ label, value, options, formatOption, onChange }: {
 
 function FailureDetail({
   initialRepro,
+  initialResponsibility,
   record,
   loading,
   displayNames,
@@ -755,6 +799,7 @@ function FailureDetail({
   onClose,
 }: {
   initialRepro: boolean;
+  initialResponsibility: boolean;
   record?: FailureRecordDetail;
   loading: boolean;
   displayNames: Record<string, string>;
@@ -764,7 +809,7 @@ function FailureDetail({
   onClose: () => void;
 }) {
   const [actionMode, setActionMode] = useState<"feedback" | "resolution" | null>(null);
-  const [responsibilityExpanded, setResponsibilityExpanded] = useState(false);
+  const [responsibilityExpanded, setResponsibilityExpanded] = useState(initialResponsibility);
   const [reproExpanded, setReproExpanded] = useState(initialRepro);
   const [feedbackForm, setFeedbackForm] = useState<FailureResponsibilityFeedbackPayload>({
     feedback_type: "owner_wrong",
@@ -795,7 +840,7 @@ function FailureDetail({
         : normalizeResponsibilityRole(effectiveOwnerRole(record))
     );
     setActionMode(null);
-    setResponsibilityExpanded(false);
+    setResponsibilityExpanded(initialResponsibility);
     setFormError(null);
     setFeedbackForm({
       feedback_type: "owner_wrong",
@@ -812,7 +857,7 @@ function FailureDetail({
       final_action_suggestion: record.final_action_suggestion || "",
       note: "",
     });
-  }, [record]);
+  }, [record, initialResponsibility]);
 
   function openFeedback() {
     setReproExpanded(false);
