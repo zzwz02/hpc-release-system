@@ -32,6 +32,8 @@
 
 新增 App 和工作台详情中的 App 类型共用 [标准词表](shared/domain_metadata.json)：HPC 14 类、AI4Sci 9 类，按一级类型筛选，不再汇总历史快照的类型。切换一级类型会清空不适用的标准分类。不提供“其他”选项或自填输入框。历史或自定义类型仅作为对应 App 的“当前值”显示，不进入公共选项。沿用文档字段的编辑权限和截止时间限制。
 
+总览和 App 工作台顶部显示当前 release 的 App freeze（发布范围冻结）与 Doc freeze（文档截止）时间，供 Owner 查看；时间按北京时间展示，未填写时显示“未设置”，切换 release 后同步更新。
+
 阶段由 [phases.py](app/domain/phases.py) 根据锁定标记和 deadline 计算，并非人工填写状态。
 
 ```mermaid

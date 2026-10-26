@@ -20,6 +20,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DateInput } from "../../components/DateInput";
 import { RefreshBar } from "../../components/RefreshBar";
+import { ReleaseDeadlines } from "../../components/ReleaseDeadlines";
 import { apiGet, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
@@ -705,6 +706,7 @@ export function DashboardPage() {
             onChange={handleReleaseChange}
           />
         )}
+        <ReleaseDeadlines release={data?.release} />
         <span className="spacer" />
         <RefreshBar
           dataUpdatedAt={dataUpdatedAt}

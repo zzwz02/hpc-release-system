@@ -24,6 +24,7 @@ import {
 } from "../cicd/cicdApi";
 import type { CicdFirstDecisionPreviewResponse, FetchPreviewResponse } from "../cicd/cicdApi";
 import { RefreshBar } from "../../components/RefreshBar";
+import { ReleaseDeadlines } from "../../components/ReleaseDeadlines";
 import { Markdown } from "../../components/Markdown";
 import { AppInfoDiffView } from "../../components/AppInfoDiffView";
 import { formatServerTime } from "../../lib/time";
@@ -3164,6 +3165,7 @@ export function AppWorkbenchPage() {
             {bulkFetching ? "批量拉取中..." : "批量拉取 Gerrit app_info"}
           </button>
         )}
+        <ReleaseDeadlines release={release} />
         <span className="spacer" />
         <RefreshBar
           dataUpdatedAt={dataUpdatedAt}

@@ -160,6 +160,17 @@ a:hover { text-decoration: underline; }
 .page-toolbar .spacer { flex: 1; }
 .view--split > .page-toolbar { flex-shrink: 0; margin-bottom: 12px; }
 
+/* Compact release deadlines share the page toolbar with release actions. */
+.release-deadlines {
+  display: flex; align-items: center; gap: 10px;
+  margin-left: 8px; font-size: 12px;
+}
+.release-deadlines > .muted { white-space: nowrap; }
+.release-deadlines dl { display: grid; gap: 3px; margin: 0; }
+.release-deadlines dl > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.release-deadlines dt { color: var(--ink-2); min-width: 12em; }
+.release-deadlines dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
 /* section headings inside pages */
 .view h2 { font-size: 17px; margin: 2px 0 12px; }
 .view h3 { font-size: 14.5px; margin: 18px 0 10px; color: var(--ink-2); }

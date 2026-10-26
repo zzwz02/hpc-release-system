@@ -184,6 +184,27 @@ beforeEach(() => {
 });
 
 describe("AppWorkbenchPage", () => {
+
+  it("shows the selected release deadlines to Owner and updates after refresh", async () => {
+    (useAuth as ReturnType<typeof vi.fn>).mockReturnValue({ user: { username: "alice", role: "Owner", display_name: "Alice" } });
+    const payload = makePayload();
+    payload.release!.app_freeze_deadline = "2026-10-27 18:30";
+    payload.release!.doc_deadline = "2026-10-30 23:59";
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
+    renderPage(makeQueryClient());
+    const deadlines = await screen.findByRole("region", { name: "当前 release 截止时间" });
+    expect(deadlines.closest(".page-toolbar")).not.toBeNull();
+    expect(deadlines).toHaveTextContent("App freeze · 发布范围冻结2026-10-27 18:30:00");
+    expect(deadlines).toHaveTextContent("Doc freeze · 文档截止2026-10-30 23:59:00");
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue({ ...payload,
+      release: { ...payload.release!, app_freeze_deadline: "2026-11-01 23:59", doc_deadline: "" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /刷新/ }));
+    await waitFor(() => expect(deadlines).toHaveTextContent("2026-11-01 23:59:00"));
+    expect(deadlines).toHaveTextContent("Doc freeze · 文档截止未设置");
+    expect(deadlines).not.toHaveTextContent("2026-10-27");
+  });
+
   it("shows loading state while fetching", () => {
     (apiGet as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}));
     const qc = makeQueryClient();
