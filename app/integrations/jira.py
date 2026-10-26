@@ -753,6 +753,7 @@ def download_attachment(
     content_url: str,
     *,
     max_bytes: int = 50 * 1024 * 1024,
+    timeout_seconds: float = 120,
 ) -> bytes:
     """Download attachment bytes; only URLs under the configured JIRA base."""
     cfg = _require_config()
@@ -760,7 +761,7 @@ def download_attachment(
         raise ValueError("附件地址不属于配置的 JIRA")
     req = urllib.request.Request(content_url, method="GET")
     req.add_header("Authorization", f"Bearer {cfg['JIRA_TOKEN']}")
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
         data = resp.read(max_bytes + 1)
     if len(data) > max_bytes:
         raise ValueError(f"附件超过 {max_bytes // (1024 * 1024)}MB，未下载")

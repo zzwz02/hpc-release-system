@@ -23,6 +23,7 @@ from app.api.routers import (
     cicd,
     cicd_agent,
     jira_agent,
+    jira_learning,
     qa,
     releases,
     state,
@@ -33,6 +34,7 @@ from app.config import settings
 from app.db.connection import connect
 from app.services import auth_service, jira_agent_ssh_key
 from app.services.jira_agent_runner import runner as jira_agent_runner
+from app.services.jira_learning_runner import runner as jira_learning_runner
 
 
 @asynccontextmanager
@@ -48,10 +50,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # JIRA agent queue runner (in-process; keep uvicorn at a single worker).
     if settings.jira_agent_runner_enabled:
         await jira_agent_runner.start()
+    if settings.jira_learning_runner_enabled:
+        await jira_learning_runner.start()
     try:
         yield
     finally:
         await jira_agent_ssh_key.sessions.stop()
+        if settings.jira_learning_runner_enabled:
+            await jira_learning_runner.stop()
         if settings.jira_agent_runner_enabled:
             await jira_agent_runner.stop()
 
@@ -70,6 +76,7 @@ def create_app() -> FastAPI:
     app.include_router(cicd.router)
     app.include_router(cicd_agent.router)
     app.include_router(jira_agent.router)
+    app.include_router(jira_learning.router)
     app.include_router(qa.router)
     app.include_router(releases.router)
     app.include_router(weekly_report.router)

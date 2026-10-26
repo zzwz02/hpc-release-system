@@ -7,6 +7,7 @@ import { useAuth } from "../../../api/AuthContext";
 import { apiGet, apiPost } from "../../../api/http";
 import { confirmDialog } from "../../../lib/confirm";
 import { JiraAgentPage } from "../JiraAgentPage";
+import { type LearningJob, type LearningProposal } from "../jiraLearningApi";
 
 vi.mock("../../../api/http", () => ({
   apiGet: vi.fn(),
@@ -161,6 +162,21 @@ function handledResponse() {
           latest_conversation: { id: "jac_0", owner: "alice", state: "closed", conclusion: "cannot_reproduce" },
         },
       },
+      {
+        ...issue,
+        key: "MC3-8000",
+        url: "http://jira/browse/MC3-8000",
+        summary: "矩阵计算性能下降",
+        status: "Resolved",
+        updated: "",
+        can_handover: true,
+        open_conversation: null,
+        agent: {
+          conversation_count: 1,
+          last_activity: "2026-09-12 08:00:00",
+          latest_conversation: { id: "jac_2", owner: "bob", state: "closed", conclusion: "analysis_done" },
+        },
+      },
     ],
   };
 }
@@ -174,6 +190,31 @@ function previewResponse(open: boolean) {
     conversations: open ? [conversation, oldConversation] : [oldConversation],
   };
 }
+
+const learningJob: LearningJob = {
+  id: "jlj_1",
+  issue_key: "MC3-7672",
+  agent_group: "HPC",
+  requested_by: "alice",
+  parent_job_id: "",
+  status: "queued",
+  source_available: false,
+  can_message: true,
+  acquisition_status: "",
+  error: "",
+  created_at: "2026-09-24 15:00:00",
+  started_at: "",
+  finished_at: "",
+};
+
+const learningProposal: LearningProposal = {
+  id: "proposal-1", job_id: learningJob.id, kind: "skill_update", title: "保留受控对照的判断依据",
+  summary: "对照结果应能支持结论。", target_path: "SKILL.md", proposed_text: "补充结论与证据的对应关系。",
+  patch_text: "--- a/SKILL.md\n+++ b/SKILL.md\n@@ -1 +1 @@\n-old\n+new",
+  applicability: "回退分析", evidence_ids: ["report"], limitations: "", validation: "检查引用证据。",
+  status: "pending", published_commit: "", reviews: [], base_commit: "a".repeat(40), repository_ref: "main",
+  files: [{ path: "SKILL.md", previous_text: "old", updated_text: "new", base_hash: "hash" }],
+};
 
 const machinesResponse = {
   groups: [{ name: "HPC", display_name: "HPC 数字员工" }],
@@ -194,11 +235,65 @@ const keyInfoResponse = {
   path: "/home/agent/.ssh/id_ed25519.pub",
 };
 
-function mockBackend({ open = true, rm = false }: { open?: boolean; rm?: boolean } = {}) {
+function mockBackend({
+  open = true,
+  rm = false,
+  jobs = [],
+  proposals = [],
+}: {
+  open?: boolean;
+  rm?: boolean;
+  jobs?: LearningJob[];
+  proposals?: LearningProposal[];
+} = {}) {
   vi.mocked(apiGet).mockImplementation(async (path: string) => {
     if (path === "/api/jira-agent/machines") return { ...machinesResponse, can_manage: rm };
     if (path === "/api/jira-agent/ssh-key-info?group=HPC") return keyInfoResponse;
     if (path === "/api/jira-agent/issues?scope=handled") return handledResponse();
+    if (path.startsWith("/api/jira-agent/learning/jobs?")) {
+      const key = new URL(path, "http://test").searchParams.get("issue_key");
+      return { jobs: key ? jobs.filter((job) => job.issue_key === key) : jobs, has_more: false };
+    }
+    if (path === "/api/jira-agent/learning/issues?group=HPC") return {
+      issues: handledResponse().issues.map((issue) => ({ ...issue, learning: jobs.find((job) => job.issue_key === issue.key) })),
+      missing: [], total: 2,
+    };
+    const learning = jobs.find((job) => path === `/api/jira-agent/learning/jobs/${job.id}`);
+    if (learning) return {
+      job: learning,
+      turns: [{
+        id: "jlt_1", job_id: learning.id, seq: 1, trigger: "initial",
+        created_by: "alice", input_text: "发起知识学习", status: learning.status,
+        error: learning.error, created_at: learning.created_at, started_at: "", finished_at: "",
+      }],
+      events: [
+        {
+          id: "jle_user", job_id: learning.id, turn_id: "jlt_1", seq: 1,
+          kind: "user_message", payload: { author: "alice", text: "发起知识学习", mode: "initial" },
+          created_at: learning.created_at,
+        },
+        {
+          id: "jle_status", job_id: learning.id, turn_id: "jlt_1", seq: 2,
+          kind: learning.status === "failed" ? "error" : "agent_message",
+          payload: { text: learning.error || "已整理候选提案" }, created_at: learning.created_at,
+        },
+      ],
+      proposals: proposals.filter((proposal) => proposal.job_id === learning.id),
+      collection_gaps: proposals.length ? [{ source: "archive.zip", reason: "格式不支持" }] : [],
+    };
+    if (path.includes("/materials?")) return {
+      items: [{ id: "report", kind: "agent_artifact", name: "REPORT.md", independent: true }], total: 1, next_offset: null,
+    };
+    if (path.includes("/material?")) return {
+      success: true, contentItems: [{ type: "inputText", text: JSON.stringify({ text: "对照验证的结果", next_offset: null }) }],
+    };
+    if (path.endsWith("/source")) return {
+      sources: [{ id: "report", kind: "agent_artifact", name: "REPORT.md", text: "对照验证的结果", independent: true }],
+      collection_gaps: [{ source: "archive.zip", reason: "格式不支持" }],
+    };
+    if (path === "/api/jira-agent/learning/jobs/jlj_1") return {
+      job: learningJob, turns: [], events: [], proposals: [],
+    };
     if (path.startsWith("/api/jira-agent/issues?")) return searchResponse(open);
     if (path === "/api/jira-agent/issues/MC3-7672") return previewResponse(open);
     if (path === "/api/jira-agent/conversations/jac_1") return detail;
@@ -328,6 +423,7 @@ describe("JiraAgentPage", () => {
     await user.click(screen.getByRole("button", { name: "agent 处理过" }));
     expect(apiGet).toHaveBeenCalledWith("/api/jira-agent/issues?scope=handled");
     expect(screen.queryByLabelText("过滤 agent 处理过的工单")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "知识学习" })).not.toBeInTheDocument();
     unmount();
 
     mockUser("RM");
@@ -353,6 +449,236 @@ describe("JiraAgentPage", () => {
     await waitFor(() => {
       expect(screen.getByTestId("location")).toHaveTextContent("issue=MC3-7672&conversation=jac_0");
     });
+  });
+
+  it("creates one joint learning task and opens it without losing source selection", async () => {
+    mockUser("RM");
+    const joint = { ...learningJob, issue_keys: ["MC3-7672", "MC3-8000"], title: "对照定位方法" };
+    mockBackend({ jobs: [joint] });
+    vi.mocked(apiPost).mockResolvedValue({ job: joint, reused: false });
+    const user = userEvent.setup(); renderPage("/jira-agent?view=learning");
+    const list = await screen.findByTestId("jira-learning-issues");
+    expect(screen.getByRole("button", { name: "联合学习" })).toBeDisabled();
+    await user.click(await within(list).findByRole("checkbox", { name: "选择 Jira MC3-7672" }));
+    await user.click(within(list).getByRole("checkbox", { name: "选择 Jira MC3-8000" }));
+    await user.click(screen.getByRole("button", { name: "联合学习（2 张）" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("MC3-8000");
+    await user.type(screen.getByLabelText("学习任务名称"), "对照定位方法");
+    await user.click(screen.getByRole("button", { name: "开始学习" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/learning/jobs", {
+      issue_keys: ["MC3-7672", "MC3-8000"], agent_group: "HPC", instructions: "", repository_only: false,
+      title: "对照定位方法", request_id: expect.any(String),
+    }));
+    expect(await screen.findByRole("heading", { name: "对照定位方法" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "学习任务" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("location")).toHaveTextContent("learning_job=jlj_1");
+    await user.click(screen.getByRole("tab", { name: "Jira" }));
+    expect(screen.getByRole("checkbox", { name: "选择 Jira MC3-7672" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "选择 Jira MC3-8000" })).not.toBeChecked();
+  });
+
+  it("keeps hidden selections after a rejected joint request", async () => {
+    mockUser("RM"); mockBackend();
+    vi.mocked(apiPost).mockRejectedValue(new Error("MC3-8000：无权访问"));
+    const user = userEvent.setup(); renderPage("/jira-agent?view=learning");
+    const list = await screen.findByTestId("jira-learning-issues");
+    await user.click(await within(list).findByRole("checkbox", { name: "选择 Jira MC3-7672" }));
+    await user.click(within(list).getByRole("checkbox", { name: "选择 Jira MC3-8000" }));
+    await user.type(screen.getByLabelText("过滤学习工单"), "MC3-7672");
+    expect(screen.getByText(/其中 1 张不在当前结果中/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "联合学习（2 张）" }));
+    await user.click(screen.getByRole("button", { name: "开始学习" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("无权访问");
+    await user.click(screen.getByRole("button", { name: "取消" }));
+    await user.clear(screen.getByLabelText("过滤学习工单"));
+    expect(screen.getByRole("checkbox", { name: "选择 Jira MC3-7672" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "选择 Jira MC3-8000" })).toBeChecked();
+  });
+
+  it("restores learning URL and keeps each job's draft separate", async () => {
+    mockUser("RM"); mockBackend({ jobs: [learningJob, { ...learningJob, id: "second", issue_key: "MC3-8000" }] });
+    const user = userEvent.setup();
+    renderPage("/jira-agent?view=learning&issue=MC3-7672&learning_job=jlj_1&learning_tab=dialogue");
+    await user.type(await screen.findByLabelText("补充学习要求"), "只属于第一张单");
+    await user.click(screen.getByRole("button", { name: "查看 Jira MC3-8000 的学习状态" }));
+    await user.click(await screen.findByRole("button", { name: /MC3-8000.*排队中/ }));
+    await waitFor(() => expect(screen.getByLabelText("补充学习要求")).toHaveValue(""));
+    await user.type(screen.getByLabelText("补充学习要求"), "第二张单");
+    await user.click(screen.getByRole("tab", { name: "Jira" }));
+    await user.click(screen.getByRole("button", { name: "查看 Jira MC3-7672 的学习状态" }));
+    await user.click(await screen.findByRole("button", { name: /MC3-7672.*排队中/ }));
+    await waitFor(() => expect(screen.getByLabelText("补充学习要求")).toHaveValue("只属于第一张单"));
+    const process = screen.getByTestId("jira-learning-timeline").closest("details")!;
+    expect(process).toHaveAttribute("open");
+    await user.click(within(process).getByText("学习对话"));
+    expect(process).not.toHaveAttribute("open");
+    expect(screen.getByLabelText("补充学习要求")).toHaveValue("只属于第一张单");
+    expect(screen.getByRole("heading", { name: "学习结果" })).toBeVisible();
+    expect(screen.getByTestId("location")).toHaveTextContent("learning_job=jlj_1");
+  });
+
+  it("shows one proposal at a time, folds evidence and keeps the conversation on the same page", async () => {
+    mockUser("RM");
+    mockBackend({ jobs: [{ ...learningJob, status: "completed" }], proposals: [learningProposal,
+      { ...learningProposal, id: "proposal-2", title: "补充独立诊断流程", kind: "new_skill", status: "approved" }] });
+    const user = userEvent.setup(); renderPage("/jira-agent?view=learning&issue=MC3-7672&learning_job=jlj_1");
+    const first = await screen.findByRole("button", { name: /保留受控对照的判断依据/ });
+    expect(first).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "审核通过" })).not.toBeInTheDocument();
+    const process = screen.getByTestId("jira-learning-timeline").closest("details")!;
+    expect(process).not.toHaveAttribute("open");
+    expect(screen.getByLabelText("补充学习要求")).toBeVisible();
+    await user.click(first);
+    expect(screen.getByRole("button", { name: "审核通过" })).toBeVisible();
+    expect(within(first.closest("article")!).getByText("修改对比").closest("details")).not.toHaveAttribute("open");
+    await user.click(screen.getAllByText("来源证据")[0]);
+    expect(await screen.findByText(/REPORT.md/)).toBeVisible();
+    expect(screen.queryByText("格式不支持")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "查看学习材料" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /补充独立诊断流程/ }));
+    expect(first).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "审核通过" })).not.toBeInTheDocument();
+    await user.click(within(process).getByText("学习对话"));
+    expect(process).toHaveAttribute("open");
+    expect(screen.getByRole("heading", { name: "学习结果" })).toBeVisible();
+  });
+
+  it("shows only failed evidence affecting a proposal, not skipped material inventories", async () => {
+    mockUser("RM");
+    mockBackend({ jobs: [{ ...learningJob, status: "completed" }], proposals: [{ ...learningProposal,
+      material_gaps: [{ source_id: "bad-log", name: "bad.log", reason: "文件已不存在", impact: "不能核对异常侧耗时" }] }] });
+    const user = userEvent.setup(); renderPage("/jira-agent?view=learning&issue=MC3-7672&learning_job=jlj_1");
+    await user.click(await screen.findByRole("button", { name: /保留受控对照的判断依据/ }));
+    expect(screen.getByText("影响判断的材料缺失")).toBeVisible();
+    expect(screen.getByText(/不能核对异常侧耗时/)).toBeVisible();
+    expect(screen.queryByText("格式不支持")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "查看学习材料" })).not.toBeInTheDocument();
+  });
+
+  it.each(["pending", "approved", "published"] as const)("omits %s legacy cases and superseded proposals", async (status) => {
+    mockUser("RM");
+    mockBackend({ jobs: [{ ...learningJob, status: "completed" }], proposals: [
+      { ...learningProposal, kind: "case", title: "旧案例资料", status },
+      { ...learningProposal, id: "old", title: "已替代提案", superseded_by: "covered" },
+      { ...learningProposal, id: "covered", kind: "do_not_publish", title: "已有规则覆盖", previous_id: "old", files: [], patch_text: "" },
+    ] });
+    const user = userEvent.setup(); renderPage("/jira-agent?view=learning&issue=MC3-7672&learning_job=jlj_1");
+    expect(await screen.findByText("无需更新", { exact: true })).toBeVisible();
+    expect(screen.queryByLabelText("提案进度")).not.toBeInTheDocument();
+    expect(screen.queryByText("历史提案")).not.toBeInTheDocument();
+    expect(screen.queryByText("旧案例资料")).not.toBeInTheDocument();
+    expect(screen.queryByText("已替代提案")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("jira-learning-proposal")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "查看上版" })).not.toBeInTheDocument();
+    await user.click(screen.getByText("来源证据"));
+    expect(await screen.findByText(/REPORT.md/)).toBeVisible();
+  });
+
+  it.each(["skill_update", "new_skill"] as const)("shows only actionable %s proposals when some knowledge is already covered", async (kind) => {
+    mockUser("RM"); mockBackend({ jobs: [{ ...learningJob, status: "completed" }], proposals: [
+      { ...learningProposal, kind },
+      { ...learningProposal, id: "covered", kind: "do_not_publish", title: "验收规则已覆盖", summary: "没有必要重复添加验收规则。", files: [], patch_text: "" },
+    ] });
+    renderPage("/jira-agent?view=learning&issue=MC3-7672&learning_job=jlj_1");
+    expect(await screen.findByLabelText("提案进度")).toHaveTextContent("1 项待审核");
+    expect(screen.getAllByTestId("jira-learning-proposal")).toHaveLength(1);
+    expect(screen.queryByTestId("jira-learning-no-update")).not.toBeInTheDocument();
+    expect(screen.queryByText("验收规则已覆盖")).not.toBeInTheDocument();
+    expect(screen.getByText("没有必要重复添加验收规则。")).not.toBeVisible();
+  });
+
+  it("combines no-update reasons and evidence into one outcome without review controls", async () => {
+    mockUser("RM"); mockBackend({ jobs: [{ ...learningJob, status: "completed" }], proposals: [
+      { ...learningProposal, kind: "do_not_publish", summary: "诊断规则已覆盖。", files: [], patch_text: "" },
+      { ...learningProposal, id: "covered", kind: "do_not_publish", summary: "验收规则已覆盖。", files: [], patch_text: "" },
+    ] });
+    const user = userEvent.setup(); renderPage("/jira-agent?view=learning&issue=MC3-7672&learning_job=jlj_1");
+    const result = await screen.findByTestId("jira-learning-no-update");
+    expect(screen.getAllByText("无需更新", { exact: true })).toHaveLength(1);
+    expect(within(result).getByText("诊断规则已覆盖。 验收规则已覆盖。")).toBeVisible();
+    expect(screen.queryByTestId("jira-learning-proposal")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("提案进度")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "审核通过" })).not.toBeInTheDocument();
+    await user.click(within(result).getByText("来源证据"));
+    expect(await within(result).findByText(/REPORT.md/)).toBeVisible();
+    expect(within(result).getAllByText(/REPORT.md/)).toHaveLength(1);
+  });
+
+  it.each(["running", "failed", "cancelled"] as const)("does not present a final no-update outcome for a %s learning turn", async (status) => {
+    mockUser("RM"); mockBackend({ jobs: [{ ...learningJob, status }], proposals: [
+      { ...learningProposal, kind: "do_not_publish", files: [], patch_text: "" },
+    ] });
+    renderPage("/jira-agent?view=learning&issue=MC3-7672&learning_job=jlj_1");
+    expect(await screen.findByRole("heading", { name: "学习结果" })).toBeVisible();
+    expect(screen.queryByTestId("jira-learning-no-update")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("jira-learning-proposal")).not.toBeInTheDocument();
+  });
+
+  it("requires feedback to revise and does not publish when approving a proposal", async () => {
+    mockUser("RM"); mockBackend({ jobs: [{ ...learningJob, status: "completed" }], proposals: [learningProposal] });
+    vi.mocked(apiPost).mockResolvedValue({});
+    const user = userEvent.setup(); renderPage("/jira-agent?view=learning&issue=MC3-7672&learning_job=jlj_1");
+    await user.click(await screen.findByRole("button", { name: /保留受控对照/ }));
+    expect(screen.getByRole("button", { name: "退回并重新整理" })).toBeDisabled();
+    await user.type(screen.getByLabelText("审核意见"), "请注明适用条件");
+    expect(screen.getByRole("button", { name: "退回并重新整理" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "审核通过" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/learning/proposals/proposal-1/review", { decision: "approved", note: "请注明适用条件" }));
+    expect(apiPost).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "登记入库" })).not.toBeInTheDocument();
+  });
+
+  it("requires a commit for publication and keeps deployment registration separate", async () => {
+    mockUser("RM"); mockBackend({ jobs: [{ ...learningJob, status: "completed" }], proposals: [
+      { ...learningProposal, status: "approved" },
+      { ...learningProposal, id: "published", title: "已入库的提案", status: "published", published_commit: "b".repeat(40) },
+    ] });
+    vi.mocked(apiPost).mockResolvedValue({});
+    const user = userEvent.setup(); renderPage("/jira-agent?view=learning&issue=MC3-7672&learning_job=jlj_1");
+    const handoff = await screen.findByText("人工更新与验证");
+    expect(handoff.closest("details")).not.toHaveAttribute("open");
+    await user.click(handoff);
+    await user.click(screen.getByRole("tab", { name: "登记提交" }));
+    await user.click(screen.getByRole("checkbox", { name: /保留受控对照/ }));
+    expect(screen.getByRole("button", { name: "核对并登记" })).toBeDisabled();
+    await user.type(screen.getByLabelText("统一入库提交 SHA"), "a".repeat(40));
+    await user.click(screen.getByRole("button", { name: "核对并登记" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/learning/jobs/jlj_1/publication", { proposal_ids: ["proposal-1"], commit_sha: "a".repeat(40), note: "" }));
+    await user.click(screen.getByRole("tab", { name: "登记部署" }));
+    expect(screen.getByRole("button", { name: "登记部署结果" })).toBeDisabled();
+    await user.type(screen.getByLabelText("部署目标服务"), "分析服务");
+    await user.click(screen.getByRole("button", { name: "登记部署结果" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/learning/jobs/jlj_1/deployments", { target: "分析服务", commit_sha: "b".repeat(40), result: "succeeded", note: "" }));
+  });
+
+  it("prevents revisions of historical jobs and approval of blocked proposals", async () => {
+    mockUser("RM"); mockBackend({ jobs: [{ ...learningJob, status: "completed", readonly: true }], proposals: [
+      { ...learningProposal, review_blocker: "基线已发生变化" },
+    ] });
+    const user = userEvent.setup(); renderPage("/jira-agent?view=learning&issue=MC3-7672&learning_job=jlj_1");
+    await user.click(await screen.findByRole("button", { name: /保留受控对照/ }));
+    await user.type(screen.getByLabelText("审核意见"), "补充证据");
+    expect(screen.getByRole("button", { name: "审核通过" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "退回并重新整理" })).toBeDisabled();
+    expect(screen.queryByLabelText("补充学习要求")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重新采集并学习" })).not.toBeInTheDocument();
+    expect(screen.getByText("历史对话只读，请在最新学习记录中继续。")).toBeVisible();
+  });
+
+  it("adds historical Jira without starting a learning task", async () => {
+    mockUser("RM"); mockBackend();
+    const base = vi.mocked(apiGet).getMockImplementation()!;
+    vi.mocked(apiGet).mockImplementation(async (path: string) => path.includes("/learning/issues/preview?")
+      ? { total: 1, issues: [{ key: "OLD-1", summary: "历史工单", status: "Closed" }] } : base(path));
+    vi.mocked(apiPost).mockResolvedValue({ issues: [{ key: "OLD-1" }], missing: [] });
+    const user = userEvent.setup(); renderPage("/jira-agent?view=learning");
+    await user.click(await screen.findByRole("button", { name: "添加历史 Jira" }));
+    await user.type(screen.getByLabelText("历史 Jira 编号或 JQL"), "OLD-1");
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "查询" }));
+    await user.click(await screen.findByRole("checkbox", { name: "加入 OLD-1" }));
+    await user.click(screen.getByRole("button", { name: "加入列表（1）" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/learning/issues", { issue_keys: ["OLD-1"], agent_group: "HPC" }));
+    expect(apiPost).not.toHaveBeenCalledWith("/api/jira-agent/learning/jobs", expect.anything());
   });
 
   it("lists issues with agent state and opens the live conversation of a clicked issue", async () => {

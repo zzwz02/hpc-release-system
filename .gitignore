@@ -14,6 +14,7 @@ build/
 ldap.conf
 jira.conf
 jira_agent.conf
+jira_learning.conf
 jira_agent_data/
 qa_llm.env
 qa_logs/

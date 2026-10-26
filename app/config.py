@@ -77,6 +77,12 @@ class Settings(BaseSettings):
     jira_agent_data_dir: Path = _PROJECT_ROOT / "jira_agent_data"
     jira_agent_runner_enabled: bool = True
 
+    # Independent CPU-only Codex service, configured in [jira_learning:<group>].
+    jira_learning_runner_enabled: bool = True
+    # Read-only Git checkout used to verify manually published commits. The
+    # website code snapshot and the review repository may be separate mounts.
+    jira_learning_repo_root: Path = _PROJECT_ROOT.parent / "jira_agent_skill"
+
     # --- Gerrit -----------------------------------------------------------------
     # One deploy-time override for the Gerrit SSH origin. Project paths come
     # from shared/integrations.json, which is also consumed by the frontend.

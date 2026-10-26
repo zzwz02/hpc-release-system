@@ -86,6 +86,7 @@ class FakeCodex:
         # commands (the BatchMode check) exit with verify_exit.
         self.ssh_password = "s3cret"
         self.verify_exit = 0
+        self.pack_root: Path | None = None
         self.processes: dict[str, dict] = {}
         self._subscriber: dict[str, object] = {}  # thread id -> connection receiving its notifications
         self._interrupts: dict[str, asyncio.Event] = {}
@@ -138,6 +139,11 @@ class FakeCodex:
             message = json.loads(raw)
             if "id" not in message:
                 continue
+            if "method" not in message:
+                future = getattr(self, "tool_responses", {}).pop(message["id"], None)
+                if future is not None:
+                    future.set_result(message.get("result"))
+                continue
             method, params = message["method"], message.get("params") or {}
             self.requests.append((method, params))
             if method == "turn/start" and self.turn_start_delay:
@@ -181,6 +187,11 @@ class FakeCodex:
             status = "active" if self._running_turn(thread_id) else "idle"
             return {"thread": {"id": thread_id, "status": {"type": status, **({"activeFlags": []} if status == "active" else {})}}}, None
         if method == "thread/turns/list":
+            if not self.thread_turns.get(params["threadId"]):
+                return None, {"code": -32600, "message": (
+                    f"thread {params['threadId']} is not materialized yet; "
+                    "thread/turns/list is unavailable before first user message"
+                )}
             ids = list(reversed(self.thread_turns.get(params["threadId"], [])))[: params.get("limit") or 25]
             data = [dict(self.turn_state[t], items=list(self.turn_state[t]["items"])) for t in ids]
             if params.get("itemsView") == "notLoaded":
@@ -211,6 +222,14 @@ class FakeCodex:
         if method == "turn/steer":
             return {"turnId": params["expectedTurnId"]}, None
         if method == "command/exec":  # one-shot: the BatchMode key-login check
+            if self.pack_root is not None and params.get("command", [])[:2] == ["python3", "-c"]:
+                # Run the real read-only collector against a temporary deployed pack.
+                import subprocess
+                import sys
+                command = params["command"]
+                result = subprocess.run([sys.executable, "-c", command[2], str(self.pack_root), command[4]],
+                                        capture_output=True, text=True, timeout=30)
+                return {"exitCode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}, None
             stderr = "" if self.verify_exit == 0 else "Permission denied (publickey)."
             return {"exitCode": self.verify_exit, "stdout": "", "stderr": stderr}, None
         if method in ("command/exec/write", "command/exec/terminate"):
@@ -350,7 +369,7 @@ class FakeJira:
             raise jira.JiraQueryError("Error in JQL Query: bad")
         fields = ("key", "url", "summary", "issue_type", "status", "priority", "assignee", "reporter", "components", "created", "updated")
         if jql.startswith("key in ("):
-            keys = [key for key in jql[len("key in ("):-1].split(", ") if key not in self.gone]
+            keys = [key.strip() for key in jql[len("key in ("):-1].split(",") if key.strip() not in self.gone]
             issues = [{**{k: self.get_issue(key)[k] for k in fields}, "status": "Closed"} for key in keys]
             return {"total": len(issues), "issues": issues}
         key_match = re.search(r"key = ([A-Z][A-Z0-9_]*-\d+)", jql)
@@ -633,6 +652,10 @@ def test_other_roles_cannot_access_jira_agent(env) -> None:
         assert env.client.get("/api/jira-agent/issues").status_code == 403
         assert env.client.get("/api/jira-agent/issues", params={"scope": "handled"}).status_code == 403
         assert env.client.get("/api/jira-agent/issues/MC3-1").status_code == 403
+
+
+
+
 
 
 def test_owner_qa_scope_requires_reporter_group_bug_and_open_status(env) -> None:

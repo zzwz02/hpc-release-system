@@ -40,9 +40,12 @@ def _isolated_runtime_config(tmp_path_factory):
     that need config monkeypatch settings.runtime_conf_path to their own file.
     """
     original = settings.runtime_conf_path
+    original_agent_db = settings.jira_agent_database_url
     settings.runtime_conf_path = tmp_path_factory.mktemp("runtime_config") / "missing.conf"
+    settings.jira_agent_database_url = f"sqlite:///{tmp_path_factory.mktemp('agent_database') / 'agent.db'}"
     yield
     settings.runtime_conf_path = original
+    settings.jira_agent_database_url = original_agent_db
 
 
 @pytest.fixture()

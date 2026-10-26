@@ -93,6 +93,44 @@ def test_example_file_parses_into_every_section(monkeypatch: pytest.MonkeyPatch)
     [group] = domain.groups_from_sections(runtime_config.agent_group_sections()).values()
     assert (group.name, group.max_concurrent, group.components) == ("HPC", 2, ("PDE_HPC",))
 
+    from app.domain import jira_learning
+
+    [learning] = jira_learning.load_groups().values()
+    assert (learning.name, learning.timeout_seconds) == ("HPC", 7200)
+
+
+
+def test_learning_servers_are_separate_and_apply_on_next_read(conf: Path) -> None:
+    from app.domain import jira_learning
+
+    assert jira_learning.load_groups() == {}
+    text = (
+        "[jira_agent:HPC]\nCODEX_WS_URL=ws://analysis:4510\n"
+        "[jira_learning:HPC]\nCODEX_WS_URL=ws://learning:4520\n"
+        "CODEX_WS_TOKEN=a=b%c\nWORKSPACE_ROOT=/learning/workspaces\n"
+        "MODEL=learning-model\nREPOSITORY_REF=refs/remotes/origin/main\nTURN_TIMEOUT_SECONDS=120\n"
+    )
+    conf.write_text(text)
+    group = jira_learning.load_groups()["HPC"]
+    assert (group.ws_url, group.ws_token, group.model, group.timeout_seconds) == (
+        "ws://learning:4520", "a=b%c", "learning-model", 120,
+    )
+    assert runtime_config.agent_group_sections()["HPC"]["CODEX_WS_URL"] == "ws://analysis:4510"
+    conf.write_text(text.replace("MODEL=learning-model", "MODEL=updated-model"))
+    assert jira_learning.load_groups()["HPC"].model == "updated-model"
+
+
+@pytest.mark.parametrize("timeout", ["", "TURN_TIMEOUT_SECONDS=soon\n", "TURN_TIMEOUT_SECONDS=0\n"])
+def test_learning_timeout_requires_explicit_valid_configuration(conf: Path, timeout: str) -> None:
+    from app.domain import jira_learning
+
+    conf.write_text(
+        "[jira_learning:HPC]\nCODEX_WS_URL=ws://learning:4520\n"
+        "CODEX_WS_TOKEN=token\nWORKSPACE_ROOT=/learning/workspaces\n" + timeout
+    )
+    with pytest.raises(runtime_config.ConfigError, match=r"\[jira_learning:HPC\].*TURN_TIMEOUT_SECONDS"):
+        jira_learning.load_groups()
+
 
 def test_llm_reads_only_the_file(conf: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.integrations import llm

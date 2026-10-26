@@ -18,6 +18,8 @@ import { toast } from "../../lib/toast";
 import { MachineChoice } from "./MachineChoice";
 import { MachinesDialog } from "./MachinesDialog";
 import { SshKeyUploadDialog } from "./SshKeyUploadDialog";
+import { LearningIssueList } from "./LearningIssueList";
+import { LearningPanel } from "./LearningPanel";
 import {
   ACTION_REQUIRED_LABELS,
   CLOSE_REASON_LABELS,
@@ -174,19 +176,31 @@ function groupTimeline(events: AgentEvent[]): TimelineItem[] {
 // ─────────────────────────────────────────────────────────────
 
 export function JiraAgentPage() {
+  const { user } = useAuth();
+  return <JiraAgentWorkspace key={`${user?.username ?? ""}:${user?.role ?? ""}`} />;
+}
+
+function JiraAgentWorkspace() {
   const [searchParams, setSearchParams] = useSearchParams();
   const issueKey = searchParams.get("issue") ?? "";
   const conversationParam = searchParams.get("conversation") ?? "";
   const [showMachines, setShowMachines] = useState(false);
+  const view: IssueListView = searchParams.get("view") === "learning" ? "learning" : searchParams.get("view") === "handled" ? "handled" : "search";
+  function setView(value: IssueListView) {
+    setSearchParams((params) => { const next = new URLSearchParams(params); next.set("view", value); next.delete("learning_job"); next.delete("learning_tab"); return next; });
+  }
+  const [learningKeys, setLearningKeys] = useState<string[]>([]);
+  const { user } = useAuth();
 
   const navigate = useCallback(
     (issue: string, conversation = "", replace = false) => {
       const next: Record<string, string> = {};
+      if (view !== "search") next.view = view;
       if (issue) next.issue = issue;
       if (conversation) next.conversation = conversation;
       setSearchParams(next, { replace });
     },
-    [setSearchParams],
+    [setSearchParams, view],
   );
 
   let main = <div className="panel empty">从左侧选择 JIRA 工单。</div>;
@@ -204,7 +218,7 @@ export function JiraAgentPage() {
         <div>
           <h2 className="jira-agent-title">JIRA agent</h2>
           <p className="hint">
-            JIRA assignee 或 RM 把工单交给本组数字员工；agent 分析、复现、修复后在 JIRA 评论结论，由 assignee 决定下一步。
+            {view === "learning" && isRM(user) ? "从工单中整理可复用的经验，由 RM 审核后人工更新 skill。" : "JIRA assignee 或 RM 把工单交给本组数字员工；agent 分析、复现、修复后在 JIRA 评论结论，由 assignee 决定下一步。"}
           </p>
         </div>
         <button type="button" className="btn sm" onClick={() => setShowMachines(true)}>
@@ -212,11 +226,27 @@ export function JiraAgentPage() {
         </button>
       </div>
       {showMachines && <MachinesDialog onClose={() => setShowMachines(false)} />}
-      <div className="jira-agent-layout">
+      <div className={`jira-agent-layout${view === "learning" && isRM(user) ? " jira-learning-workspace" : ""}`}>
         <aside className="jira-agent-sidebar">
-          <IssueSearchPanel selectedKey={issueKey} onSelect={(key, conversation) => navigate(key, conversation)} />
+          <IssueSearchPanel
+            selectedKey={issueKey}
+            view={view}
+            learningKeys={learningKeys}
+            onViewChange={setView}
+            onLearningSelectionChange={setLearningKeys}
+            onSelect={(key, conversation) => navigate(key, conversation)}
+          />
         </aside>
-        <div className="jira-agent-main">{main}</div>
+        <div className="jira-agent-main">
+          {view === "learning" && isRM(user)
+            ? (
+              <LearningPanel
+                key={user?.username}
+                focusedIssueKey={issueKey}
+              />
+            )
+            : main}
+        </div>
       </div>
     </section>
   );
@@ -250,13 +280,28 @@ function ConversationRedirect({
 // ─────────────────────────────────────────────────────────────
 
 type SelectIssue = (key: string, conversation?: string) => void;
+type IssueListView = "search" | "handled" | "learning";
 
-/** RM searches Jira; Owner sees assigned QA issues and their handled history. */
-function IssueSearchPanel({ selectedKey, onSelect }: { selectedKey: string; onSelect: SelectIssue }) {
+/** RM can search, inspect every handled issue, or select several for knowledge learning. */
+function IssueSearchPanel({
+  selectedKey,
+  view,
+  learningKeys,
+  onViewChange,
+  onLearningSelectionChange,
+  onSelect,
+}: {
+  selectedKey: string;
+  view: IssueListView;
+  learningKeys: string[];
+  onViewChange: (view: IssueListView) => void;
+  onLearningSelectionChange: (keys: string[]) => void;
+  onSelect: SelectIssue;
+}) {
   const { user } = useAuth();
   const rm = isRM(user);
-  const [view, setView] = useState<"search" | "handled">("search");
   const handled = view === "handled";
+  const learning = rm && view === "learning";
 
   return (
     <div className="panel">
@@ -265,9 +310,9 @@ function IssueSearchPanel({ selectedKey, onSelect }: { selectedKey: string; onSe
         <div className="jira-agent-view-switch" role="group" aria-label="工单列表">
             <button
               type="button"
-              className={`btn sm${handled ? "" : " active"}`}
-              aria-pressed={!handled}
-              onClick={() => setView("search")}
+              className={`btn sm${view === "search" ? " active" : ""}`}
+              aria-pressed={view === "search"}
+              onClick={() => onViewChange("search")}
             >
               {rm ? "查找" : "我的工单"}
             </button>
@@ -275,14 +320,27 @@ function IssueSearchPanel({ selectedKey, onSelect }: { selectedKey: string; onSe
               type="button"
               className={`btn sm${handled ? " active" : ""}`}
               aria-pressed={handled}
-              onClick={() => setView("handled")}
+              onClick={() => onViewChange("handled")}
             >
               agent 处理过
             </button>
+            {rm && (
+              <button
+                type="button"
+                className={`btn sm${learning ? " active" : ""}`}
+                aria-pressed={learning}
+                onClick={() => onViewChange("learning")}
+              >
+                知识学习
+              </button>
+            )}
         </div>
       </div>
-      {handled ? (
-        <HandledIssueList selectedKey={selectedKey} onSelect={onSelect} />
+      {learning ? (<LearningIssueList selectedKey={selectedKey} selectedKeys={learningKeys} onSelection={onLearningSelectionChange} onSelect={(key) => onSelect(key)} />) : handled ? (
+        <HandledIssueList
+          selectedKey={selectedKey}
+          onSelect={onSelect}
+        />
       ) : (
         <IssueSearch selectedKey={selectedKey} onSelect={onSelect} rm={rm} />
       )}
@@ -347,7 +405,13 @@ function IssueSearch({ selectedKey, onSelect, rm }: { selectedKey: string; onSel
   );
 }
 
-function HandledIssueList({ selectedKey, onSelect }: { selectedKey: string; onSelect: SelectIssue }) {
+function HandledIssueList({
+  selectedKey,
+  onSelect,
+}: {
+  selectedKey: string;
+  onSelect: SelectIssue;
+}) {
   const { user } = useAuth();
   const rm = isRM(user);
   const [filter, setFilter] = useState("");
@@ -364,7 +428,6 @@ function HandledIssueList({ selectedKey, onSelect }: { selectedKey: string; onSe
       || [issue.key, issue.summary, issue.status, issue.assignee?.display_name ?? "", issue.agent?.latest_conversation.owner ?? ""]
         .some((value) => value.toLowerCase().includes(needle)),
   );
-
   return (
     <div className="panel-body jira-agent-search">
       <div className="row">
@@ -380,7 +443,9 @@ function HandledIssueList({ selectedKey, onSelect }: { selectedKey: string; onSe
           type="button"
           className="btn sm"
           disabled={handledQuery.isFetching}
-          onClick={() => void handledQuery.refetch()}
+          onClick={() => {
+            void handledQuery.refetch();
+          }}
         >
           刷新
         </button>
@@ -400,7 +465,12 @@ function HandledIssueList({ selectedKey, onSelect }: { selectedKey: string; onSe
           )}
         </div>
       )}
-      <IssueResults issues={issues} empty={!handledQuery.isFetching} selectedKey={selectedKey} onSelect={onSelect} />
+      <IssueResults
+        issues={issues}
+        empty={!handledQuery.isFetching}
+        selectedKey={selectedKey}
+        onSelect={onSelect}
+      />
     </div>
   );
 }
@@ -443,13 +513,8 @@ function IssueResults({
             </span>
           );
         }
-        return (
-          <button
-            type="button"
-            key={issue.key}
-            className={`jira-agent-list-item${issue.key === selectedKey ? " active" : ""}`}
-            onClick={() => onSelect(issue.key, latest?.id)}
-          >
+        const content = (
+          <>
             <span className="jira-agent-list-top">
               <strong>{issue.key}</strong>
               <span className="pill">{issue.status}</span>
@@ -457,13 +522,25 @@ function IssueResults({
             <span className="jira-agent-list-summary">{issue.summary}</span>
             <span className="jira-agent-list-meta">
               <span className="muted">{issue.assignee?.display_name ?? "无 assignee"}</span>
-              {agentPill}
+              <span className="pill-group">
+                {agentPill}
+              </span>
             </span>
             {agent && latest && (
               <span className="jira-agent-list-meta muted">
                 {agent.conversation_count} 个对话 · 最近 {latest.owner} · {agent.last_activity.slice(5, 16)}
               </span>
             )}
+          </>
+        );
+        return (
+          <button
+            type="button"
+            key={issue.key}
+            className={`jira-agent-list-item${issue.key === selectedKey ? " active" : ""}`}
+            onClick={() => onSelect(issue.key, latest?.id)}
+          >
+            {content}
           </button>
         );
       })}

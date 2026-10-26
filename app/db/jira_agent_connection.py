@@ -178,6 +178,105 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL,
             UNIQUE (agent_group, ssh_target)
         );
+
+        -- Learning is isolated from analysis turns and never changes the live
+        -- knowledge pack. Queued jobs survive a website restart.
+        CREATE TABLE IF NOT EXISTS jira_learning_jobs (
+            id TEXT PRIMARY KEY,
+            issue_key TEXT NOT NULL,
+            agent_group TEXT NOT NULL,
+            requested_by TEXT NOT NULL,
+            parent_job_id TEXT NOT NULL DEFAULT '',
+            revision_of_proposal_id TEXT NOT NULL DEFAULT '',
+            revision_feedback_json TEXT NOT NULL DEFAULT '[]',
+            knowledge_sha256 TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'queued'
+                CHECK (status IN ('queued', 'collecting', 'running', 'completed', 'failed')),
+            source_path TEXT NOT NULL DEFAULT '',
+            source_sha256 TEXT NOT NULL DEFAULT '',
+            acquisition_status TEXT NOT NULL DEFAULT '',
+            thread_id TEXT NOT NULL DEFAULT '',
+            codex_turn_id TEXT NOT NULL DEFAULT '',
+            error TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            started_at TEXT NOT NULL DEFAULT '',
+            finished_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_jira_learning_jobs_status
+            ON jira_learning_jobs(status, created_at);
+
+        CREATE TABLE IF NOT EXISTS jira_learning_turns (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL REFERENCES jira_learning_jobs(id) ON DELETE CASCADE,
+            seq INTEGER NOT NULL,
+            trigger TEXT NOT NULL CHECK (trigger IN ('initial', 'followup')),
+            created_by TEXT NOT NULL,
+            input_text TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'queued'
+                CHECK (status IN ('queued', 'running', 'completed', 'failed')),
+            codex_turn_id TEXT NOT NULL DEFAULT '',
+            response_text TEXT NOT NULL DEFAULT '',
+            error TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            started_at TEXT NOT NULL DEFAULT '',
+            finished_at TEXT NOT NULL DEFAULT '',
+            UNIQUE (job_id, seq)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_jira_learning_turn_queued
+            ON jira_learning_turns(job_id) WHERE status = 'queued';
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_jira_learning_turn_running
+            ON jira_learning_turns(job_id) WHERE status = 'running';
+        CREATE INDEX IF NOT EXISTS idx_jira_learning_turns_queue
+            ON jira_learning_turns(status, created_at);
+
+        CREATE TABLE IF NOT EXISTS jira_learning_events (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL REFERENCES jira_learning_jobs(id) ON DELETE CASCADE,
+            turn_id TEXT NOT NULL REFERENCES jira_learning_turns(id) ON DELETE CASCADE,
+            seq INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            item_id TEXT NOT NULL DEFAULT '',
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_jira_learning_events_job
+            ON jira_learning_events(job_id, seq);
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_jira_learning_event_item
+            ON jira_learning_events(job_id, item_id) WHERE item_id != '';
+
+        CREATE TABLE IF NOT EXISTS jira_learning_proposals (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL REFERENCES jira_learning_jobs(id) ON DELETE CASCADE,
+            turn_id TEXT NOT NULL DEFAULT '',
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            target_path TEXT NOT NULL,
+            proposed_text TEXT NOT NULL,
+            patch_text TEXT NOT NULL DEFAULT '',
+            applicability TEXT NOT NULL,
+            evidence_json TEXT NOT NULL,
+            limitations TEXT NOT NULL,
+            validation TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'approved', 'rejected', 'needs_revision', 'published')),
+            published_commit TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_jira_learning_proposals_job
+            ON jira_learning_proposals(job_id);
+
+        CREATE TABLE IF NOT EXISTS jira_learning_reviews (
+            id TEXT PRIMARY KEY,
+            proposal_id TEXT NOT NULL REFERENCES jira_learning_proposals(id) ON DELETE CASCADE,
+            reviewer TEXT NOT NULL,
+            decision TEXT NOT NULL
+                CHECK (decision IN ('approved', 'rejected', 'needs_revision', 'published')),
+            note TEXT NOT NULL DEFAULT '',
+            commit_sha TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
         """
     )
     # '' = the agent picks from the system machine list; else user@host.
@@ -191,6 +290,95 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
     # the meaning of historical turns, whose delivery was not tracked.
     _ensure_column(conn, "jira_agent_turns", "delivery_status", "TEXT NOT NULL DEFAULT '' CHECK (delivery_status IN ('', 'collecting', 'incomplete', 'complete'))")
     _ensure_column(conn, "jira_agent_turns", "delivery_errors_json", "TEXT NOT NULL DEFAULT '[]'")
+    _ensure_column(conn, "jira_learning_jobs", "parent_job_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "jira_learning_jobs", "revision_of_proposal_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "jira_learning_jobs", "revision_feedback_json", "TEXT NOT NULL DEFAULT '[]'")
+    _ensure_column(conn, "jira_learning_jobs", "knowledge_sha256", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "jira_learning_proposals", "patch_text", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "jira_learning_proposals", "turn_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "jira_learning_proposals", "material_gaps_json", "TEXT NOT NULL DEFAULT '[]'")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_jira_learning_revision "
+        "ON jira_learning_jobs(revision_of_proposal_id) WHERE revision_of_proposal_id != ''"
+    )
+    # Additive learning metadata keeps existing task/review history intact.
+    for table, fields in {
+        "jira_learning_jobs": {
+            "title": "TEXT NOT NULL DEFAULT ''",
+            "request_id": "TEXT NOT NULL DEFAULT ''",
+            "request_hash": "TEXT NOT NULL DEFAULT ''",
+            "repository_only": "INTEGER NOT NULL DEFAULT 0",
+            "cancel_requested": "INTEGER NOT NULL DEFAULT 0",
+            "cancelled_at": "TEXT NOT NULL DEFAULT ''",
+            "phase": "TEXT NOT NULL DEFAULT ''",
+        },
+        "jira_learning_turns": {
+            "snapshot_json": "TEXT NOT NULL DEFAULT '{}'",
+            "revision_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+            "cancelled_at": "TEXT NOT NULL DEFAULT ''",
+        },
+        "jira_learning_proposals": {
+            "files_json": "TEXT NOT NULL DEFAULT '[]'",
+            "dependencies_json": "TEXT NOT NULL DEFAULT '{}'",
+            "base_commit": "TEXT NOT NULL DEFAULT ''",
+            "repository_ref": "TEXT NOT NULL DEFAULT ''",
+            "previous_id": "TEXT NOT NULL DEFAULT ''",
+            "superseded_by": "TEXT NOT NULL DEFAULT ''",
+            "version": "INTEGER NOT NULL DEFAULT 1",
+            "warnings_json": "TEXT NOT NULL DEFAULT '[]'",
+        },
+    }.items():
+        for column, ddl in fields.items():
+            _ensure_column(conn, table, column, ddl)
+    conn.executescript("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_learning_request
+            ON jira_learning_jobs(requested_by, request_id) WHERE request_id != '';
+        CREATE TABLE IF NOT EXISTS jira_learning_members (
+            job_id TEXT NOT NULL REFERENCES jira_learning_jobs(id) ON DELETE CASCADE,
+            issue_key TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            PRIMARY KEY (job_id, issue_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_learning_member_issue ON jira_learning_members(issue_key, job_id);
+        INSERT OR IGNORE INTO jira_learning_members(job_id, issue_key, position)
+            SELECT id, issue_key, 0 FROM jira_learning_jobs;
+        CREATE TABLE IF NOT EXISTS jira_learning_issues (
+            issue_key TEXT NOT NULL,
+            agent_group TEXT NOT NULL,
+            issue_json TEXT NOT NULL,
+            added_by TEXT NOT NULL,
+            added_at TEXT NOT NULL,
+            PRIMARY KEY (issue_key, agent_group)
+        );
+        CREATE TABLE IF NOT EXISTS jira_learning_deployments (
+            id TEXT PRIMARY KEY,
+            proposal_id TEXT NOT NULL REFERENCES jira_learning_proposals(id),
+            target TEXT NOT NULL,
+            commit_sha TEXT NOT NULL,
+            result TEXT NOT NULL CHECK (result IN ('succeeded', 'failed')),
+            note TEXT NOT NULL,
+            recorded_by TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS jira_learning_deployment_events (
+            id TEXT PRIMARY KEY,
+            agent_group TEXT NOT NULL,
+            target TEXT NOT NULL,
+            commit_sha TEXT NOT NULL,
+            result TEXT NOT NULL CHECK (result IN ('succeeded', 'failed')),
+            note TEXT NOT NULL,
+            recorded_by TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_learning_deployment_commit
+            ON jira_learning_deployment_events(agent_group, commit_sha);
+        INSERT OR IGNORE INTO jira_learning_deployment_events
+            SELECT d.id,j.agent_group,d.target,d.commit_sha,d.result,d.note,d.recorded_by,d.created_at
+            FROM jira_learning_deployments d
+            JOIN jira_learning_proposals p ON p.id=d.proposal_id
+            JOIN jira_learning_jobs j ON j.id=p.job_id;
+    """)
+    _ensure_column(conn, "jira_agent_conversations", "source_kind", "TEXT NOT NULL DEFAULT 'jira'")
     # A user-given machine needs a fresh key upload on every hand-over.
     conn.execute("DROP TABLE IF EXISTS jira_agent_ssh_keys")
     conn.commit()

@@ -55,17 +55,18 @@ def create_conversation(
     created_by: str,
     workspace: str,
     machine: str = "",
+    source_kind: str = "jira",
 ) -> dict:
     now = beijing_timestamp()
     conn.execute(
         """
         INSERT INTO jira_agent_conversations
             (id, issue_key, issue_summary, agent_group, owner, created_by,
-             workspace, machine, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             workspace, machine, created_at, updated_at, source_kind)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (conversation_id, issue_key, issue_summary, agent_group, owner,
-         created_by, workspace, machine, now, now),
+         created_by, workspace, machine, now, now, source_kind),
     )
     return get_conversation(conn, conversation_id)  # type: ignore[return-value]
 
@@ -77,7 +78,7 @@ def get_conversation(conn: sqlite3.Connection, conversation_id: str) -> dict | N
 def get_open_conversation(conn: sqlite3.Connection, issue_key: str) -> dict | None:
     return _one(
         conn,
-        "SELECT * FROM jira_agent_conversations WHERE issue_key = ? AND status = 'open'",
+        "SELECT * FROM jira_agent_conversations WHERE source_kind = 'jira' AND issue_key = ? AND status = 'open'",
         (issue_key,),
     )
 
@@ -88,7 +89,7 @@ def open_conversations_by_issue(conn: sqlite3.Connection, issue_keys: list[str])
     marks = ",".join("?" * len(issue_keys))
     rows = _all(
         conn,
-        f"SELECT * FROM jira_agent_conversations WHERE status = 'open' AND issue_key IN ({marks})",
+        f"SELECT * FROM jira_agent_conversations WHERE source_kind = 'jira' AND status = 'open' AND issue_key IN ({marks})",
         tuple(issue_keys),
     )
     return {row["issue_key"]: row for row in rows}
@@ -101,7 +102,7 @@ def list_conversations(
     issue_key: str | None = None,
     limit: int = 200,
 ) -> list[dict]:
-    clauses: list[str] = []
+    clauses: list[str] = ["source_kind = 'jira'"]
     params: list[Any] = []
     if username is not None:
         clauses.append("(owner = ? COLLATE NOCASE OR created_by = ? COLLATE NOCASE)")
@@ -124,13 +125,13 @@ def list_conversations(
 def handled_issues(conn: sqlite3.Connection) -> tuple[int, list[dict]]:
     """All issues ever handed to the agent, most recent activity first."""
     total = conn.execute(
-        "SELECT COUNT(DISTINCT issue_key) FROM jira_agent_conversations"
+        "SELECT COUNT(DISTINCT issue_key) FROM jira_agent_conversations WHERE source_kind = 'jira'"
     ).fetchone()[0]
     rows = _all(
         conn,
         """
         SELECT issue_key, COUNT(*) AS conversation_count, MAX(updated_at) AS last_activity
-        FROM jira_agent_conversations
+        FROM jira_agent_conversations WHERE source_kind = 'jira'
         GROUP BY issue_key
         ORDER BY last_activity DESC, MAX(rowid) DESC
         """,
@@ -140,7 +141,7 @@ def handled_issues(conn: sqlite3.Connection) -> tuple[int, list[dict]]:
 
 def has_handled_issue(conn: sqlite3.Connection, issue_key: str) -> bool:
     return conn.execute(
-        "SELECT 1 FROM jira_agent_conversations WHERE issue_key = ? LIMIT 1",
+        "SELECT 1 FROM jira_agent_conversations WHERE source_kind = 'jira' AND issue_key = ? LIMIT 1",
         (issue_key,),
     ).fetchone() is not None
 
@@ -148,10 +149,29 @@ def has_handled_issue(conn: sqlite3.Connection, issue_key: str) -> bool:
 def has_owner_history(conn: sqlite3.Connection, issue_key: str, username: str) -> bool:
     return conn.execute(
         """SELECT 1 FROM jira_agent_conversations
-           WHERE issue_key = ? AND (owner = ? COLLATE NOCASE OR created_by = ? COLLATE NOCASE)
+           WHERE source_kind = 'jira' AND issue_key = ? AND (owner = ? COLLATE NOCASE OR created_by = ? COLLATE NOCASE)
            LIMIT 1""",
         (issue_key, username, username),
     ).fetchone() is not None
+
+
+def handled_issue_keys(
+    conn: sqlite3.Connection,
+    agent_group: str,
+    issue_keys: list[str],
+) -> set[str]:
+    """Return selected keys that have conversation history for this agent group."""
+    result: set[str] = set()
+    for start in range(0, len(issue_keys), 500):
+        chunk = issue_keys[start:start + 500]
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"""SELECT DISTINCT issue_key FROM jira_agent_conversations
+                WHERE source_kind = 'jira' AND agent_group = ? AND issue_key IN ({marks})""",
+            (agent_group, *chunk),
+        ).fetchall()
+        result.update(row["issue_key"] for row in rows)
+    return result
 
 
 def touch_conversation(conn: sqlite3.Connection, conversation_id: str) -> None:

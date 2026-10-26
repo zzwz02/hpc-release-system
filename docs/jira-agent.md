@@ -12,6 +12,8 @@ JIRA agent 是按组配置的“数字员工”。网站（服务器 A）负责�
             └── ~/.codex/auth.json、~/.ssh/                   本组执行身份 → C / D / E
 ```
 
+知识学习初版的范围与独立服务配置见[Jira 知识学习](jira-learning.md)。
+
 ## 使用流程
 
 1. 在 **JIRA agent** 页左侧查找工单，点击后右侧打开这张工单：
@@ -29,6 +31,8 @@ JIRA agent 是按组配置的“数字员工”。网站（服务器 A）负责�
    - **RM · agent 处理过**：显示全部交给过 agent 的工单（含已关闭的），可按编号、标题、状态或人员在列表中过滤。
 
    后端对 Owner 的列表、工单直达链接和交单接口执行同一范围检查；交单及续办仍要求当前 JIRA assignee 或 RM。JIRA 令牌无权读取的工单不会显示。
+
+   RM 可切换到 **知识学习**，从 agent 处理过的工单中勾选一张或多张，也可添加历史 Jira。多选创建一个联合学习任务，综合各张工单生成提案，由 RM 审核后人工更新 skill。
 2. 网站按排队顺序执行：同步 issue.json、issue.md、JIRA 附件和上传文件到 B 的工作目录，新建 Codex thread，按 AGENTS.md 与 skills 完成分类、归属判断、复现、分析和修复。
 3. 页面时间线实时显示 agent 消息、执行的命令（含退出码和输出）、文件修改和结构化结论。
 4. 分析完成并成功回收全部交付文件后，网站按本轮设置在 JIRA **只追加评论**：结论、证据、补丁和下一步建议。agent 不修改 assignee、状态或代码。
@@ -83,9 +87,10 @@ Agent 只读取网站同步的 Jira 材料，不直接查询 Jira 用户、组�
 2. **SSH 访问 C/D/E**：为 hpc 用户生成密钥（`ssh-keygen -t ed25519 -C hpc-jira-agent@<B>`），同目录必须有 `.pub`（只有私钥时用 `ssh-keygen -y -f <私钥> > <私钥>.pub` 补出），并把私钥路径写进 A 的 `[jira_agent:<组名>] SSH_KEY_PATH`。系统机器列表中的机器由 RM 提前配好免密（`ssh -o BatchMode=yes <user@host> true` 能通过），再在页面 **系统机器** 中登记。自填机器用的 `ssh-copy-id` 在 B 上运行，B 需要安装它（openssh-client 自带）。
 3. **同步知识包**（在仓库检出目录执行）：
    ```bash
-   PACK_DIR=$HOME/hpc-jira-agent deploy/jira-agent/sync-pack.sh
+   SKILL_REPO=/path/to/jira_agent_skill SKILL_COMMIT=<完整提交SHA> \
+     PACK_DIR=$HOME/hpc-jira-agent deploy/jira-agent/sync-pack.sh
    ```
-   知识包目录会被初始化为 git 仓库，Codex 以它为项目根，自动加载 AGENTS.md 和 `.agents/skills`。修改知识或 skills 时，改仓库中的 `deploy/jira-agent/hpc/`，再重新同步。当前主入口为 `.agents/skills/hpc-jira-agent/SKILL.md`，按需调用工单材料、远端实验、问题分析和应用分析模块。
+   知识包目录会被初始化为 git 仓库，Codex 以它为项目根，自动加载 AGENTS.md 和 `.agents/skills`。修改知识或 skills 时，在独立的 `jira_agent_skill` 仓库中修改、验证并提交，再指定该提交重新同步。当前主入口为 `.agents/skills/hpc-jira-agent/SKILL.md`，按需调用工单材料、远端实验、问题分析和应用分析模块。
 4. **生成 WebSocket token**：
    ```bash
    mkdir -p ~/.config/hpc-jira-agent && chmod 700 ~/.config/hpc-jira-agent

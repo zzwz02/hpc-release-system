@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 from app.domain import jira_agent as domain
+from tests.learning_helpers import commit, git, knowledge_repo
 
 DEPLOY = Path(__file__).resolve().parents[1] / 'deploy/jira-agent'
 SKILL = DEPLOY / 'hpc/.agents/skills/hpc-jira-agent'
@@ -77,23 +78,41 @@ def test_staff_loader_preserves_website_headings_and_code_blocks(tmp_path):
     assert packet['data']['acquisition']['parts']['comments']['collected'] == 2
 
 
-def test_pack_sync_copies_fresh_knowledge_pack(tmp_path):
+def test_pack_sync_uses_pinned_commit_and_preserves_workspace(tmp_path, monkeypatch):
+    source = knowledge_repo(tmp_path, monkeypatch)
+    revision = git(source, 'rev-parse', 'HEAD')
+    expected = {name: (source / name).read_bytes()
+                for name in git(source, 'ls-files').splitlines()}
+    skill = '.agents/skills/hpc-jira-agent/SKILL.md'
+    added = '.agents/skills/hpc-jira-agent/references/later.md'
+    commit(source, {skill: '# Later revision\n', added: '# Later rule\n'})
+    (source / skill).write_text('# Uncommitted change\n')
+    (source / '.agents/skills/local-only.md').write_text('# Local only\n')
     pack = tmp_path / 'new deployed pack'
-    env = {**os.environ, 'PACK_DIR': str(pack)}
+    workspace = pack / 'workspaces/existing/STATUS.md'
+    workspace.parent.mkdir(parents=True)
+    workspace.write_text('Keep existing task\n')
+    env = {**os.environ, 'PACK_DIR': str(pack), 'SKILL_REPO': str(source),
+           'SKILL_COMMIT': revision}
     subprocess.run(['bash', str(DEPLOY / 'sync-pack.sh')], env=env, check=True, capture_output=True)
 
-    assert (pack / 'workspaces').is_dir()
     assert (pack / '.git').is_dir()
-    assert (pack / 'AGENTS.md').read_bytes() == (DEPLOY / 'hpc/AGENTS.md').read_bytes()
-    assert (pack / '.gitignore').read_bytes() == (DEPLOY / 'hpc/.gitignore').read_bytes()
-    for source in SKILL.rglob('*'):
-        if source.is_file() and '__pycache__' not in source.parts:
-            assert (pack / '.agents/skills/hpc-jira-agent' / source.relative_to(SKILL)).read_bytes() == source.read_bytes()
+    for name, content in expected.items():
+        assert (pack / name).read_bytes() == content
+    assert not (pack / added).exists()
+    assert not (pack / '.agents/skills/local-only.md').exists()
+    assert workspace.read_text() == 'Keep existing task\n'
+    assert json.loads((pack / '.skill-version.json').read_text()) == {'commit': revision}
+    assert (source / skill).read_text() == '# Uncommitted change\n'
 
 
-def test_pack_sync_refuses_source_as_destination():
+def test_pack_sync_refuses_source_as_destination(tmp_path, monkeypatch):
+    source = knowledge_repo(tmp_path, monkeypatch)
+    env = {**os.environ, 'PACK_DIR': str(source), 'SKILL_REPO': str(source),
+           'SKILL_COMMIT': git(source, 'rev-parse', 'HEAD')}
     result = subprocess.run(['bash', str(DEPLOY / 'sync-pack.sh')],
-                            env={**os.environ, 'PACK_DIR': str(DEPLOY / 'hpc')},
-                            capture_output=True, text=True)
+                            env=env, capture_output=True, text=True)
     assert result.returncode != 0
-    assert 'outside the source' in result.stderr
+    assert 'must be separate directories' in result.stderr
+    assert not (source / '.skill-version.json').exists()
+    assert git(source, 'status', '--porcelain') == ''

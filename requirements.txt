@@ -8,3 +8,5 @@ websockets
 pydantic>=2
 pydantic-settings
 pytest
+pypdf>=5,<7
+Pillow>=10

@@ -39,12 +39,14 @@ class CodexAppServerClient:
         client_name: str = "hpc_release_system",
         request_timeout: float = 60.0,
         open_timeout: float = 15.0,
+        dynamic_tools: bool = False,
     ) -> None:
         self.url = url
         self.token = token
         self.client_name = client_name
         self.request_timeout = request_timeout
         self.open_timeout = open_timeout
+        self.dynamic_tools = dynamic_tools
         self._ws: Any = None
         self._reader: asyncio.Task | None = None
         self._pending: dict[int, asyncio.Future] = {}
@@ -81,7 +83,8 @@ class CodexAppServerClient:
                         "name": self.client_name,
                         "title": "HPC release system",
                         "version": "0.1.0",
-                    }
+                    },
+                    **({"capabilities": {"experimentalApi": True}} if self.dynamic_tools else {}),
                 },
             )
             await self._send({"method": "initialized"})
@@ -170,7 +173,10 @@ class CodexAppServerClient:
                     if future is not None and not future.done():
                         future.set_result(message)
                 elif "id" in message:
-                    await self._reject_server_request(message)
+                    if self.dynamic_tools and message.get('method') == 'item/tool/call':
+                        self._events.put_nowait(message)
+                    else:
+                        await self._reject_server_request(message)
                 else:
                     self._events.put_nowait(message)
             self._closed_reason = "Codex app-server 连接已关闭"
@@ -188,7 +194,7 @@ class CodexAppServerClient:
             self._events.put_nowait(None)
 
     async def _reject_server_request(self, message: dict) -> None:
-        """Approvals and client-side tools are not offered by this client.
+        """Reject approvals and requests outside the explicitly enabled tool channel.
 
         The server host is expected to run with approval_policy=never; if a
         request still arrives, decline it and surface it as an event.
@@ -219,6 +225,7 @@ class CodexAppServerClient:
         developer_instructions: str = "",
         model: str = "",
         service_name: str = "",
+        tools: list[dict] | None = None,
     ) -> dict:
         params: dict[str, Any] = {"cwd": cwd, "ephemeral": False}
         if developer_instructions:
@@ -227,7 +234,14 @@ class CodexAppServerClient:
             params["model"] = model
         if service_name:
             params["serviceName"] = service_name
+        if tools:
+            if not self.dynamic_tools:
+                raise ValueError('dynamic tools were not enabled for this client')
+            params['dynamicTools'] = tools
         return (await self.request("thread/start", params))["thread"]
+
+    async def respond_tool(self, request_id: int | str, result: dict) -> None:
+        await self._send({'id': request_id, 'result': result})
 
     async def resume_thread(self, thread_id: str, *, model: str = "") -> dict:
         params: dict[str, Any] = {"threadId": thread_id, "excludeTurns": True}
@@ -256,15 +270,22 @@ class CodexAppServerClient:
         *,
         output_schema: dict | None = None,
         model: str = "",
+        skill: tuple[str, str] | None = None,
+        effort: str = "",
     ) -> dict:
+        inputs: list[dict[str, str]] = [{"type": "text", "text": text}]
+        if skill is not None:
+            inputs.append({"type": "skill", "name": skill[0], "path": skill[1]})
         params: dict[str, Any] = {
             "threadId": thread_id,
-            "input": [{"type": "text", "text": text}],
+            "input": inputs,
         }
         if output_schema is not None:
             params["outputSchema"] = output_schema
         if model:
             params["model"] = model
+        if effort:
+            params["effort"] = effort
         return (await self.request("turn/start", params))["turn"]
 
     async def steer_turn(self, thread_id: str, expected_turn_id: str, text: str) -> dict:
