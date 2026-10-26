@@ -247,16 +247,22 @@ def owner_issue_jql(
     return f'{scope} ORDER BY summary DESC, created DESC'
 
 
-def default_issue_jql(*, username: str, is_rm: bool, groups: dict[str, AgentGroup]) -> str:
-    """Own not-closed issues; RM sees issues of the configured JIRA groups."""
+def default_issue_jql(
+    *, username: str, is_rm: bool, groups: dict[str, AgentGroup],
+    reporter_group: str = OWNER_QA_REPORTER_GROUP,
+) -> str:
+    """RM sees open QA bugs currently or previously assigned to its member groups."""
     member_groups = [g.jira_members_group for g in groups.values() if g.jira_members_group]
     if is_rm and member_groups:
-        scope = " OR ".join(f"assignee in membersOf({jql_string(m)})" for m in member_groups)
-        if len(member_groups) > 1:
-            scope = f"({scope})"
-    else:
-        scope = f"assignee = {jql_string(username)}"
-    return f"{scope} AND status != Closed ORDER BY updated DESC"
+        scope = " OR ".join(
+            f"assignee in membersOf({jql_string(m)}) OR assignee was in membersOf({jql_string(m)})"
+            for m in member_groups
+        )
+        return (
+            f"type = Bug AND reporter in membersOf({jql_string(reporter_group)}) "
+            f"AND ({scope}) AND status not in (Resolved, Closed) ORDER BY created DESC"
+        )
+    return f"assignee = {jql_string(username)} AND status != Closed ORDER BY updated DESC"
 
 
 # ─────────────────────────────────────────────────────────────

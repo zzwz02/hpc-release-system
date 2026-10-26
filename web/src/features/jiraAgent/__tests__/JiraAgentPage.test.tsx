@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -214,8 +214,7 @@ function LocationProbe() {
   return <div data-testid="location">{location.search}</div>;
 }
 
-function renderPage(route = "/jira-agent") {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderPage(route = "/jira-agent", queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[route]}>
@@ -485,6 +484,49 @@ describe("JiraAgentPage", () => {
         post_comment: false,
       });
     });
+  });
+
+  it.each(["queued", "running"])("inherits the %s turn's comment choice and resets after completion", async (state) => {
+    mockBackend();
+    let current = { ...conversation, state, latest_turn: { ...turn, status: state, post_comment: false } };
+    const base = vi.mocked(apiGet).getMockImplementation()!;
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === "/api/jira-agent/conversations/jac_1") return { ...detail, conversation: current };
+      if (path.startsWith("/api/jira-agent/conversations/jac_1/events")) {
+        return { conversation: current, events: [], rev: detail.rev };
+      }
+      return base(path);
+    });
+    vi.mocked(apiPost).mockImplementation(async () => ({ mode: "merged", conversation: current }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const user = userEvent.setup();
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1", client);
+    const checkbox = await screen.findByRole("checkbox", { name: /本轮结论发布到 JIRA 评论/ });
+    expect(checkbox).not.toBeChecked();
+    await user.type(screen.getByLabelText("补充信息"), "补充证据");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith(
+      "/api/jira-agent/conversations/jac_1/messages",
+      { text: "补充证据", files: [], post_comment: false },
+    ));
+    expect(checkbox).not.toBeChecked();
+
+    // Refreshes and queued -> running must preserve unsent edits.
+    await user.click(checkbox);
+    await user.type(screen.getByLabelText("补充信息"), "尚未发送");
+    current = { ...current, state: "running", latest_turn: { ...current.latest_turn, status: "running" } };
+    await act(async () => { await client.invalidateQueries({ queryKey: ["jira-agent", "conversation", "jac_1"] }); });
+    expect(checkbox).toBeChecked();
+    await user.click(checkbox);
+    current = { ...current, state: "waiting_review", latest_turn: { ...current.latest_turn, status: "completed" } };
+    await act(async () => { await client.invalidateQueries({ queryKey: ["jira-agent", "conversation", "jac_1"] }); });
+    await waitFor(() => expect(checkbox).toBeChecked());
+    expect(screen.getByLabelText("补充信息")).toHaveValue("尚未发送");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(apiPost).toHaveBeenLastCalledWith(
+      "/api/jira-agent/conversations/jac_1/messages",
+      { text: "尚未发送", files: [], post_comment: true },
+    ));
   });
 
   it("disables actions while a restarted site re-attaches to the running turn", async () => {

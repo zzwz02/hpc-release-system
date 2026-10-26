@@ -384,8 +384,8 @@ def _search_item(conn: sqlite3.Connection, user: dict, issue: dict, conversation
 async def search_issues(user: dict, query: str) -> dict:
     """Search box: empty → default list, one issue key → that issue, else JQL.
 
-    The default list is the user's not-closed issues; RM sees the issues of
-    the configured JIRA member groups.  Searches run with the JIRA account in
+    The default list is the user's open QA bugs; RM also sees QA bugs
+    previously assigned to the configured JIRA member groups.  Searches run with the JIRA account in
     release_system.conf [jira]; hand-over is still limited to the assignee or RM.
     """
     if not _is_rm(user) and query.strip():
@@ -408,6 +408,7 @@ async def search_issues(user: dict, query: str) -> dict:
         elif _is_rm(user):
             jql = domain.default_issue_jql(
                 username=user["username"], is_rm=True, groups=runner_module.load_groups(),
+                reporter_group=jira.owner_qa_reporter_group(),
             )
         else:
             jql = domain.owner_issue_jql(

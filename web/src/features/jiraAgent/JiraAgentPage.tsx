@@ -1370,8 +1370,16 @@ function FilesPanel({ files }: { files: AgentFile[] }) {
 function Composer({ conversation, onSent }: { conversation: AgentConversation; onSent: () => void }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
-  const [postComment, setPostComment] = useState(true);
+  const activeTurn = conversation.state === "running" || conversation.state === "queued"
+    ? conversation.latest_turn : null;
+  const activeTurnId = activeTurn?.id;
+  const defaultPostComment = activeTurn?.post_comment ?? true;
+  const [postComment, setPostComment] = useState(defaultPostComment);
   const fileInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setPostComment(defaultPostComment);
+  }, [conversation.id, activeTurnId, defaultPostComment]);
 
   const recovering = conversation.phase === "recovering";
   const delivering = conversation.state === "delivering";

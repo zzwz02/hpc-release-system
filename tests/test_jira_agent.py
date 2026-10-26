@@ -317,6 +317,8 @@ class FakeJira:
         self.fail_comment = False
         self.issue_overrides: dict[str, dict] = {}
         self.qa_reporters = {"qa"}
+        self.hpc_members = {"alice", "bob", "carol"}
+        self.past_assignees: set[str] = set()
 
     def get_issue(self, key: str) -> dict:
         if key == "NOPE-1":
@@ -359,9 +361,12 @@ class FakeJira:
             assignee_match = re.search(r'assignee = "([^"]+)"', jql)
             reporter = (issue["reporter"] or {}).get("name", "")
             assignee = (issue["assignee"] or {}).get("name", "")
+            if "assignee was in membersOf" in jql:
+                matches_assignee = assignee in self.hpc_members or bool(self.past_assignees & self.hpc_members)
+            else:
+                matches_assignee = bool(assignee_match and assignee == assignee_match.group(1))
             if (reporter not in self.qa_reporters or issue["issue_type"] != "Bug"
-                    or issue["status"] in ("Resolved", "Closed")
-                    or not assignee_match or assignee != assignee_match.group(1)):
+                    or issue["status"] in ("Resolved", "Closed") or not matches_assignee):
                 return {"total": 0, "issues": []}
         return {"total": 1, "issues": [{k: issue[k] for k in fields}]}
 
@@ -584,7 +589,12 @@ def test_issue_search_default_list_keys_and_jql(env) -> None:
 
     env.as_user("carol")
     rm = env.client.get("/api/jira-agent/issues").json()
-    assert rm["jql"] == 'assignee in membersOf("pde_hpc") AND status != Closed ORDER BY updated DESC'
+    assert rm["jql"] == (
+        'type = Bug AND reporter in membersOf("dl.sw_qa") '
+        'AND (assignee in membersOf("pde_hpc") OR assignee was in membersOf("pde_hpc")) '
+        'AND status not in (Resolved, Closed) ORDER BY created DESC'
+    )
+    assert rm["issues"][0]["can_handover"] is True
     several = env.client.get("/api/jira-agent/issues", params={"q": "MC3-1, MC3-2"})
     assert several.status_code == 400
     missing = env.client.get("/api/jira-agent/issues", params={"q": "NOPE-1"}).json()
@@ -633,6 +643,24 @@ def test_other_roles_cannot_access_jira_agent(env) -> None:
         assert env.client.get("/api/jira-agent/issues").status_code == 403
         assert env.client.get("/api/jira-agent/issues", params={"scope": "handled"}).status_code == 403
         assert env.client.get("/api/jira-agent/issues/MC3-1").status_code == 403
+
+
+@pytest.mark.parametrize("overrides, included", [
+    ({}, True),
+    ({"status": "Resolved"}, False),
+    ({"status": "Closed"}, False),
+    ({"issue_type": "Task"}, False),
+    ({"reporter": {"name": "outsider"}}, False),
+])
+def test_rm_default_search_includes_former_hpc_qa_bugs(env, overrides, included) -> None:
+    env.as_user("carol")
+    env.jira.assignee = "outsider"
+    env.jira.past_assignees = {"alice"}
+    env.jira.issue_overrides["MC3-7672"] = overrides
+    response = env.client.get("/api/jira-agent/issues").json()
+    assert bool(response["issues"]) is included
+    env.jira.past_assignees.clear()
+    assert env.client.get("/api/jira-agent/issues").json()["issues"] == []
 
 
 def test_owner_qa_scope_requires_reporter_group_bug_and_open_status(env) -> None:
