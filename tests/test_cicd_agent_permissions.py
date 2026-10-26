@@ -26,6 +26,32 @@ def _client_for_role(monkeypatch: pytest.MonkeyPatch, role: str, responder=None)
 
 
 @pytest.mark.parametrize("role", ALL_ROLES)
+def test_notification_preference_uses_logged_in_identity_and_page_permission(monkeypatch, role):
+    captured = []
+
+    def responder(*args, **kwargs):
+        captured.append((args, kwargs))
+        return JSONResponse({"enabled": True})
+
+    allowed = role in roles_for_tab("jenkins-failures")
+    with _client_for_role(monkeypatch, role, responder) as client:
+        path = "/api/cicd-agent/failure-notifications/preferences"
+        response = client.get(path + "?actor_user=someone_else")
+        assert response.status_code == (200 if allowed else 403)
+        response = client.post(path, json={"enabled": True})
+        assert response.status_code == (200 if allowed else 403)
+        if allowed:
+            assert response.headers["cache-control"] == "no-store"
+            assert captured == [
+                (("GET", "/api/v1/failure-notifications/preferences"), {"query": f"actor_user={role.lower()}"}),
+                (("POST", "/api/v1/failure-notifications/preferences"), {"body": {"actor_user": role.lower(), "enabled": True}}),
+            ]
+            assert client.post(path, json={"enabled": True, "actor_user": "someone_else"}).status_code == 422
+            assert client.post(path, json={"enabled": "false"}).status_code == 422
+            assert len(captured) == 2
+
+
+@pytest.mark.parametrize("role", ALL_ROLES)
 def test_repro_reuses_page_permission_and_trusted_actor(monkeypatch, role):
     captured = {}
 

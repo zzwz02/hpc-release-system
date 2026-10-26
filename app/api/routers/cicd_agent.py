@@ -18,7 +18,7 @@ from typing import Any, Literal
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app import runtime_config
 from app.config import settings
@@ -634,6 +634,28 @@ async def _stream_agent_events_to_browser(
     except asyncio.CancelledError:
         persist_interrupted()
         raise
+
+
+class FailureNotificationPreferenceUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = Field(strict=True)
+
+
+@router.get("/failure-notifications/preferences")
+def failure_notification_preference(user: dict = Depends(require_jenkins_access)):
+    response = _request_agent("GET", "/api/v1/failure-notifications/preferences",
+                              query=urllib.parse.urlencode({"actor_user": user["username"]}))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/failure-notifications/preferences")
+def update_failure_notification_preference(payload: FailureNotificationPreferenceUpdate,
+                                          user: dict = Depends(require_jenkins_access)):
+    response = _request_agent("POST", "/api/v1/failure-notifications/preferences",
+                              body={"actor_user": user["username"], "enabled": payload.enabled})
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.get("/failures")

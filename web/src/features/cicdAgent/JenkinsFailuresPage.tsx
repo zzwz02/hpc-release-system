@@ -6,6 +6,7 @@ import { useAuth } from "../../api/AuthContext";
 import { apiGet } from "../../api/http";
 import type { StatePayload } from "../../types";
 import { FailureReproPanel, type ReproTask } from "./FailureReproPanel";
+import { FailureNotificationToggle } from "./FailureNotificationToggle";
 import {
   CICD_AGENT_FAILURES_KEY,
   CICD_AGENT_FILTER_OPTIONS_KEY,
@@ -62,6 +63,7 @@ const URL_FILTER_KEYS = [
   "normalized_stage",
   "code_owner",
   "owner_account",
+  "owner_role",
   "maca_project",
   "maca_version",
   "chip",
@@ -73,14 +75,14 @@ const DATE_PARAM_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 type SummaryGroupKey = (typeof SUMMARY_GROUP_OPTIONS)[number]["value"];
 type ResponsibilityOwnerRole = (typeof RESPONSIBILITY_OWNER_ROLES)[number];
 
-function emptyFilters(): FailureRecordFilters {
+function emptyFilters(username: string): FailureRecordFilters {
   const today = todayString();
   return {
-    date_from: today,
+    date_from: todayString(-6),
     date_to: today,
     job_type: "",
     normalized_stage: "",
-    code_owner: "",
+    code_owner: username,
     owner_account: "",
     maca_project: "",
     maca_version: "",
@@ -88,9 +90,17 @@ function emptyFilters(): FailureRecordFilters {
   };
 }
 
-function filtersFromSearch(search: string): FailureRecordFilters {
-  const filters = emptyFilters();
+function linkedFailureId(search: string): number | null {
+  const value = new URLSearchParams(search).get("failure_id") ?? "";
+  const id = Number(value);
+  return /^[1-9]\d*$/.test(value) && Number.isSafeInteger(id) ? id : null;
+}
+
+function filtersFromSearch(search: string, username: string, isRm: boolean): FailureRecordFilters {
+  const filters = emptyFilters(username);
   const params = new URLSearchParams(search);
+  // Explicit owner links take precedence over the personal default.
+  if (params.has("code_owner") || params.has("owner_account")) filters.code_owner = "";
   for (const key of URL_FILTER_KEYS) {
     const value = params.get(key)?.trim() ?? "";
     if (!value) continue;
@@ -99,7 +109,10 @@ function filtersFromSearch(search: string): FailureRecordFilters {
     }
     filters[key] = value;
   }
-  if (params.get("pending_rm_review") === "true") filters.pending_rm_review = true;
+  if (isRm && params.get("pending_rm_review") === "true") {
+    filters.pending_rm_review = true;
+    if (!params.has("code_owner")) filters.code_owner = "";
+  }
   return filters;
 }
 
@@ -302,11 +315,13 @@ function ReproEntry({ record, onClick }: { record: FailureRecordDetail; onClick:
 
 export function JenkinsFailuresPage() {
   const { user } = useAuth();
+  const currentUsername = user?.username ?? "";
+  const isRm = user?.role === "RM";
   const { search } = useLocation();
   const queryClient = useQueryClient();
-  const [filters, setFilters] = useState<FailureRecordFilters>(() => filtersFromSearch(search));
+  const [filters, setFilters] = useState<FailureRecordFilters>(() => filtersFromSearch(search, currentUsername, isRm));
   const [page, setPage] = useState(1);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(() => linkedFailureId(search));
   const [initialRepro, setInitialRepro] = useState(false);
   const [initialResponsibility, setInitialResponsibility] = useState(false);
   const [summaryGroup, setSummaryGroup] = useState<SummaryGroupKey>("owner_role");
@@ -314,10 +329,12 @@ export function JenkinsFailuresPage() {
 
   useEffect(() => {
     setPage(1);
-    setSelectedId(null);
+    setSelectedId(linkedFailureId(search));
+    setInitialRepro(false);
+    setInitialResponsibility(false);
     setSummaryExpanded(false);
-    setFilters(filtersFromSearch(search));
-  }, [search]);
+    setFilters(filtersFromSearch(search, currentUsername, isRm));
+  }, [search, currentUsername, isRm]);
 
   const activeFilters = useMemo<FailureRecordFilters>(
     () => Object.fromEntries(Object.entries(filters).filter(([key, value]) => value && (key !== "pending_rm_review" || user?.role === "RM"))),
@@ -373,7 +390,6 @@ export function JenkinsFailuresPage() {
   const summaryGroups = summaryExpanded
     ? allSummaryGroups
     : allSummaryGroups.slice(0, SUMMARY_COLLAPSED_LIMIT);
-  const currentUsername = user?.username ?? "";
   const onlyMine = Boolean(currentUsername && filters.code_owner === currentUsername);
   const currentSummaryFilterKey = summaryFilterKey(summaryGroup);
   const currentSummaryFilterValue = String(filters[currentSummaryFilterKey] ?? "");
@@ -396,6 +412,16 @@ export function JenkinsFailuresPage() {
     updateFilter("code_owner", checked ? currentUsername : "");
   }
 
+  function togglePendingReview(checked: boolean) {
+    setPage(1);
+    setSelectedId(null);
+    setFilters((current) => ({
+      ...current,
+      pending_rm_review: checked,
+      code_owner: checked && current.code_owner === currentUsername ? "" : current.code_owner,
+    }));
+  }
+
   function applySummaryFilter(groupValue: string) {
     updateFilter(summaryFilterKey(summaryGroup), groupValue === "N/A" ? "" : groupValue);
   }
@@ -413,7 +439,7 @@ export function JenkinsFailuresPage() {
     setPage(1);
     setSelectedId(null);
     setSummaryExpanded(false);
-    setFilters(emptyFilters());
+    setFilters(emptyFilters(currentUsername));
   }
 
   function refresh() {
@@ -475,10 +501,11 @@ export function JenkinsFailuresPage() {
         </label>
         {user?.role === "RM" && <label className="check cicd-agent-review-toggle">
           <input type="checkbox" checked={Boolean(filters.pending_rm_review)}
-            onChange={(event) => updateFilter("pending_rm_review", event.target.checked)} />
+            onChange={(event) => togglePendingReview(event.target.checked)} />
           仅看待 RM 裁定 <span className="cicd-agent-review-count">{pageInfo?.pending_rm_review_count ?? 0}</span>
         </label>}
         <div className="spacer" />
+        <FailureNotificationToggle key={currentUsername} username={currentUsername} />
         <button className="btn sm" type="button" onClick={refresh}>刷新</button>
         <button className="btn ghost sm" type="button" onClick={resetFilters}>重置</button>
       </div>

@@ -332,8 +332,9 @@ function compactParams(values: Record<string, unknown>): Record<string, string> 
   );
 }
 
-export function todayString(): string {
+export function todayString(offsetDays = 0): string {
   const now = new Date();
+  now.setDate(now.getDate() + offsetDays);
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");

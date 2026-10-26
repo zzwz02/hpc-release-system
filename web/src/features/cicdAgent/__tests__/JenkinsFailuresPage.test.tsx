@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAuth } from "../../../api/AuthContext";
 import { apiGet, apiPost } from "../../../api/http";
 import { JenkinsFailuresPage } from "../JenkinsFailuresPage";
@@ -82,10 +82,20 @@ function renderPage(route = "/jenkins-failures", role = "RM") {
 describe("JenkinsFailuresPage", () => {
   let currentRecord: typeof failureRecord & Pick<FailureRecordDetail, "repro_review_state" | "pending_rm_review"> = failureRecord;
 
+  function latestQuery(endpoint = "/api/cicd-agent/failures") {
+    const calls = vi.mocked(apiGet).mock.calls.filter(([path]) => path.startsWith(`${endpoint}?`));
+    return new URL(calls[calls.length - 1]?.[0] ?? "/", "http://localhost").searchParams;
+  }
+
+  afterEach(() => vi.useRealTimers());
+
   beforeEach(() => {
     vi.clearAllMocks();
     currentRecord = failureRecord;
     vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === "/api/cicd-agent/failure-notifications/preferences") {
+        return { account: "alice", enabled: false, send_time: "09:45", timezone: "Asia/Shanghai" };
+      }
       if (path === "/api/state") {
         return {
           user_display_names: {
@@ -190,11 +200,79 @@ describe("JenkinsFailuresPage", () => {
     });
   });
 
+  it.each([
+    [2026, 10, 26, "2026-10-20", "2026-10-26"],
+    [2026, 1, 3, "2025-12-28", "2026-01-03"],
+    [2024, 3, 2, "2024-02-25", "2024-03-02"],
+  ])("defaults to seven calendar days through %s-%s-%s and the logged-in Code Owner", async (year, month, day, from, to) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(year, month - 1, day, 12));
+    renderPage();
+
+    expect(screen.getByLabelText("开始时间")).toHaveValue(from);
+    expect(screen.getByLabelText("结束时间")).toHaveValue(to);
+    expect(screen.getByRole("checkbox", { name: "只看我的" })).toBeChecked();
+    await waitFor(() => {
+      for (const endpoint of ["/api/cicd-agent/failures", "/api/cicd-agent/failures/summary"]) {
+        const query = latestQuery(endpoint);
+        expect(query.get("date_from")).toBe(from);
+        expect(query.get("date_to")).toBe(to);
+        expect(query.get("code_owner")).toBe("alice");
+      }
+    });
+  });
+
+  it("keeps the personal filter off after unchecking and refreshing", async () => {
+    renderPage("/jenkins-failures?date_from=2026-10-01&date_to=2026-10-23");
+    const toggle = screen.getByRole("checkbox", { name: "只看我的" });
+    await screen.findByRole("table");
+    await userEvent.click(toggle);
+    await userEvent.click(screen.getByRole("button", { name: "刷新" }));
+
+    await waitFor(() => {
+      expect(toggle).not.toBeChecked();
+      for (const endpoint of ["/api/cicd-agent/failures", "/api/cicd-agent/failures/summary"]) {
+        const query = latestQuery(endpoint);
+        expect(query.has("code_owner")).toBe(false);
+        expect(query.get("date_from")).toBe("2026-10-01");
+        expect(query.get("date_to")).toBe("2026-10-23");
+      }
+    });
+  });
+
+  it("resets a linked RM review to the personal seven-day defaults", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 26, 12));
+    renderPage("/jenkins-failures?date_from=2026-10-01&date_to=2026-10-23&pending_rm_review=true");
+    await screen.findByRole("table");
+    await userEvent.click(screen.getByRole("button", { name: "重置" }));
+
+    expect(screen.getByLabelText("开始时间")).toHaveValue("2026-10-20");
+    expect(screen.getByLabelText("结束时间")).toHaveValue("2026-10-26");
+    expect(screen.getByRole("checkbox", { name: "只看我的" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /仅看待 RM 裁定/ })).not.toBeChecked();
+    await waitFor(() => {
+      expect(latestQuery().get("code_owner")).toBe("alice");
+      expect(latestQuery().has("pending_rm_review")).toBe(false);
+    });
+  });
+
+  it.each(["code_owner", "owner_account"])("respects an explicit %s link instead of adding the personal default", async (field) => {
+    renderPage(`/jenkins-failures?${field}=bob`);
+    expect(screen.getByRole("checkbox", { name: "只看我的" })).not.toBeChecked();
+    await waitFor(() => {
+      expect(latestQuery().get(field)).toBe("bob");
+      if (field === "owner_account") expect(latestQuery().has("code_owner")).toBe(false);
+    });
+  });
+
   it("filters pending RM records with the current date range and summary", async () => {
     renderPage("/jenkins-failures?date_from=2026-10-01&date_to=2026-10-23");
     const toggle = await screen.findByRole("checkbox", { name: /仅看待 RM 裁定/ });
+    expect(screen.getByRole("checkbox", { name: "只看我的" })).toBeChecked();
     await waitFor(() => expect(toggle.closest("label")).toHaveTextContent("3"));
     await userEvent.click(toggle);
+    expect(screen.getByRole("checkbox", { name: "只看我的" })).not.toBeChecked();
     await waitFor(() => {
       expect(apiGet).toHaveBeenCalledWith(expect.stringMatching(/failures\?date_from=2026-10-01&date_to=2026-10-23&pending_rm_review=true&page=1/));
       expect(apiGet).toHaveBeenCalledWith(expect.stringMatching(/summary\?.*pending_rm_review=true/));
@@ -207,6 +285,7 @@ describe("JenkinsFailuresPage", () => {
   it("restores the RM pending filter from a link", async () => {
     renderPage("/jenkins-failures?pending_rm_review=true");
     expect(screen.getByRole("checkbox", { name: /仅看待 RM 裁定/ })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "只看我的" })).not.toBeChecked();
     await waitFor(() => expect(apiGet).toHaveBeenCalledWith(expect.stringMatching(/failures\?.*pending_rm_review=true/)));
   });
 
@@ -214,6 +293,7 @@ describe("JenkinsFailuresPage", () => {
     renderPage("/jenkins-failures?pending_rm_review=true", "SPD");
     await screen.findByRole("table");
     expect(screen.queryByRole("checkbox", { name: /仅看待 RM 裁定/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "只看我的" })).toBeChecked();
     expect(vi.mocked(apiGet).mock.calls.every(([path]) => !path.includes("pending_rm_review"))).toBe(true);
   });
 
@@ -292,6 +372,7 @@ describe("JenkinsFailuresPage", () => {
 
     expect(screen.getByLabelText("开始时间")).toHaveValue("2026-08-31");
     expect(screen.getByLabelText("结束时间")).toHaveValue("2026-09-06");
+    expect(screen.getByRole("checkbox", { name: "只看我的" })).toBeChecked();
 
     await waitFor(() => {
       expect(apiGet).toHaveBeenCalledWith(
@@ -303,6 +384,20 @@ describe("JenkinsFailuresPage", () => {
         ),
       );
     });
+  });
+
+  it("opens the failure linked from a personal notification without the personal Code Owner filter", async () => {
+    renderPage("/jenkins-failures?date_from=2026-10-25&date_to=2026-10-25&owner_account=bob&owner_role=Code%20Owner&failure_id=101");
+    const dialog = await screen.findByRole("dialog", { name: "记录详情" });
+    await waitFor(() => expect(dialog).toHaveTextContent("Hpc_App_Release #88"));
+    expect(screen.getByRole("checkbox", { name: "只看我的" })).not.toBeChecked();
+    await waitFor(() => {
+      expect(latestQuery().get("owner_account")).toBe("bob");
+      expect(latestQuery().get("owner_role")).toBe("Code Owner");
+      expect(latestQuery().has("code_owner")).toBe(false);
+    });
+    await userEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(screen.queryByRole("dialog", { name: "记录详情" })).not.toBeInTheDocument();
   });
 
   it("opens failure detail in a dialog and closes it", async () => {
