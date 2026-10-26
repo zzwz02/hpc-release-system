@@ -19,6 +19,7 @@ from tests.test_jira_agent import env, _wait, _done
 from tests.test_jira_testing import BASE, setup, start, forbid_jira
 from tools.build_jira_test_cases import build
 
+SOURCES = Path(__file__).resolve().parents[1] / 'app/resources/jira_test_cases'
 
 
 def write_case(root, key='example', note='复现问题'):
@@ -46,6 +47,32 @@ def rows():
         return repo.cases(conn)
 
 
+def test_packaged_repository_cases_contain_only_three_inputs(tmp_path):
+    root = tmp_path / 'catalog'
+    root.mkdir()
+    # Start with source directories only; no previously generated packages.
+    for directory in SOURCES.iterdir():
+        if not directory.name.startswith('_'):
+            shutil.copytree(directory, root / directory.name)
+    original = catalog.load(root)
+    assert len(original) == 3
+    assert {entry['body']['input']['issue']['key'] for entry in original} == {'MC3-7814', 'MC3-7818', 'MC3-7798'}
+    assert build(root, root / '_packages') == 3
+    assert catalog.load(root) == original
+    for archive in (root / '_packages').glob('*.zip'):
+        with zipfile.ZipFile(archive) as files:
+            assert set(files.namelist()) <= {'manifest.json', 'case.json', 'review.json', 'attachments/image-2026-09-17-10-23-10-021.png'}
+            body = json.loads(files.read('case.json'))
+            assert set(body) == {'title', 'input', 'provenance'}
+            assert set(body['provenance']) == {'issue_key'}
+        restored = package.decode(archive.read_bytes())
+        assert len(restored['criteria'].splitlines()) == 3
+        assert restored['reference'] == ''
+    # A packaged deployment needs neither source directories nor the old site.
+    for directory in root.iterdir():
+        if directory.name != '_packages':
+            shutil.rmtree(directory)
+    assert catalog.load(root) == original
 
 
 def test_missing_optional_catalog_builds_empty_packages(tmp_path):

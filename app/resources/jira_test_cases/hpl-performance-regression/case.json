@@ -1,0 +1,65 @@
+{
+  "title": "[C500 单卡][HPL] 3.9.0.1 相比 3.8.0.11 性能下降",
+  "input": {
+    "files": [],
+    "issue": {
+      "acquisition": {
+        "conflicts": [],
+        "parts": {
+          "attachment_metadata": {
+            "status": "complete"
+          },
+          "comments": {
+            "collected": 0,
+            "reported_total": 0,
+            "status": "complete"
+          },
+          "custom_fields": {
+            "collected": 0,
+            "status": "complete"
+          },
+          "description": {
+            "status": "complete"
+          },
+          "field_definitions": {
+            "status": "complete"
+          },
+          "issue": {
+            "status": "complete"
+          }
+        },
+        "scope": "人工保存的测试输入；不代表 Jira 当前内容或全量采集。",
+        "source": "test_case",
+        "status": "complete"
+      },
+      "assignee": {
+        "display_name": "Xiajun Shi (xshi)",
+        "name": "xshi"
+      },
+      "attachments": [],
+      "comments": [],
+      "components": [
+        "PDE"
+      ],
+      "custom_fields": {},
+      "description": "HPL 在 C500 64GB 单卡上测试，参数为 `N=77824`、`NB=512`，宿主机 KMD 3.4.4、MACA 3.3.0.15。\n\n两版各预热一次、测试三次：3.8.0.11 的性能中位数为 3795.27 GFLOPS，3.9.0.1 为 3392.52 GFLOPS，下降约 10.6%；六次残差检查均通过。\n\n- good（3.8.0.11）：`harbor.sh.mxcr.io/xshi/hpl-maca:mc3-7798-good-3.8.0.11@sha256:cad47054b241a0039c9450851aeb8a1b8c43265bba45cb1f845f308c47ddd3a2`\n- bad（3.9.0.1）：`harbor.sh.mxcr.io/xshi/hpl-maca:mc3-7798-bad-3.9.0.1@sha256:aabf314dd4d8330098babc39fda9938d1905a04cf340ac3411b417b7b778d9f6`\n\n单卡测试命令：\n\n```bash\ndocker run --rm --pull=always \\\n  -v /mnt/hdd:/mnt/hdd -e MACA_PERF_DIR=/tmp -u 0 \\\n  --device=/dev/dri --device=/dev/mxcd --group-add video \\\n  --security-opt seccomp=unconfined \\\n  harbor.sh.mxcr.io/xshi/hpl-maca:mc3-7798-bad-3.9.0.1@sha256:aabf314dd4d8330098babc39fda9938d1905a04cf340ac3411b417b7b778d9f6 \\\n  sh -c 'cd /opt/rocHPL && /opt/rocHPL/run_hpl_autotest.sh && cat /tmp/perf'\n```",
+      "field_definitions": [],
+      "issue_type": "Bug",
+      "key": "MC3-7798",
+      "labels": [],
+      "priority": "Normal",
+      "project": "MACA 3.0",
+      "raw_fields": {},
+      "reporter": {
+        "display_name": "Xiajun Shi (xshi)",
+        "name": "xshi"
+      },
+      "summary": "[C500 单卡][HPL] 3.9.0.1 相比 3.8.0.11 性能下降",
+      "url": "http://10.2.201.98:8080/browse/MC3-7798"
+    },
+    "note": "请复现 HPL 单卡性能差异，定位性能下降原因，说明受影响的计算或调用范围及耗时证据，并给出归属判断和后续处理建议。"
+  },
+  "provenance": {
+    "issue_key": "MC3-7798"
+  }
+}
