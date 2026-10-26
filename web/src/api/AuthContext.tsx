@@ -48,6 +48,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const queries = useQueryClient();
   const clearUser = useCallback(() => {
+    void queries.cancelQueries({ queryKey: ["jira-testing"] });
+    queries.removeQueries({ queryKey: ["jira-testing"] });
     void queries.cancelQueries({ queryKey: ["jira-learning"] });
     queries.removeQueries({ queryKey: ["jira-learning"] });
     setUser(undefined);
@@ -87,6 +89,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } else {
         await loginLocal(username, password);
       }
+      queries.removeQueries({ queryKey: ["jira-testing"] });
       queries.removeQueries({ queryKey: ["jira-learning"] });
       // After successful login, reload the user
       const me = await fetchMe();

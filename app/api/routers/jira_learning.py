@@ -190,6 +190,11 @@ class BundleBody(PublicationBody):
     proposal_ids: list[str]
 
 
+class ValidationBody(BaseModel):
+    proposal_ids: list[str]
+    suite_id: str
+    purpose: str
+    note: str = ""
 
 
 @router.get("/jobs/{job_id}/patch-bundle")
@@ -202,3 +207,13 @@ def export_bundle(job_id: str, proposal_ids: str, user: dict = Depends(require_r
 @router.post("/jobs/{job_id}/publication")
 def publish_bundle(job_id: str, body: BundleBody, user: dict = Depends(require_reviewer)) -> dict:
     return handoff.publish(user, job_id, body.proposal_ids, body.commit_sha, body.note)
+
+
+@router.get("/jobs/{job_id}/validations")
+def validations(job_id: str, user: dict = Depends(require_reviewer)) -> dict:
+    return {'validations': handoff.validations(job_id)}
+
+
+@router.post("/jobs/{job_id}/validations")
+def link_validation(job_id: str, body: ValidationBody, user: dict = Depends(require_reviewer)) -> dict:
+    return handoff.link_validation(user, job_id, body.proposal_ids, body.suite_id, body.purpose, body.note)

@@ -59,6 +59,14 @@ def owner_qa_reporter_group() -> str:
     return str(_read_config().get("JIRA_AGENT_OWNER_QA_REPORTER_GROUP") or "").strip() or "dl.sw_qa"
 
 
+def agent_username(user: dict) -> str:
+    """Map an Owner's site login to Jira without changing the audit identity."""
+    username = user.get("username", "")
+    if user.get("role") != "Owner":
+        return username
+    return runtime_config.section("jira_agent_users").get(username, "") or username
+
+
 def browse_url() -> str:
     """Return the safe, browser-facing Jira issue prefix (never a token)."""
     base_url = str(_read_config().get("JIRA_BASE_URL") or "").strip()

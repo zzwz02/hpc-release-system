@@ -28,7 +28,8 @@ from app.db.jira_agent_connection import connect_jira_agent
 from app.domain import jira_agent as domain
 from app.integrations import jira
 from app.integrations.codex_app_server import CodexAppServerClient, CodexAppServerError
-from app.repositories import jira_agent_repo as repo
+from app.repositories import jira_agent_repo as repo, jira_testing_repo
+from app.services import jira_testing_execution
 from app.repositories.base import dumps_json
 from app.timeutil import BEIJING_TZ, beijing_now, beijing_timestamp
 
@@ -123,6 +124,10 @@ async def post_turn_comment(conn, turn_id: str) -> dict:
             or turn["delivery_status"] not in ("", "complete")):
         return turn
     conversation = repo.get_conversation(conn, turn["conversation_id"])
+    if conversation["source_kind"] == "test":
+        with transaction(conn):
+            repo.update_turn(conn, turn_id, post_comment=0, comment_status="")
+        return repo.get_turn(conn, turn_id)
     try:
         comment_id = await asyncio.to_thread(
             jira.add_comment, conversation["issue_key"], turn["comment_body"]
@@ -301,6 +306,8 @@ class JiraAgentRunner:
                                     payload={"status": "cancelled", "text": _STOP_TEXT["closed"]},
                                 )
                         continue
+                    if conversation["source_kind"] == "test" and not jira_testing_repo.can_schedule(conn, conversation["id"]):
+                        continue
                     with transaction(conn):
                         claimed = repo.claim_turn(conn, turn["id"])
                     if not claimed:
@@ -399,8 +406,10 @@ class JiraAgentRunner:
         cid, tid = active.conversation_id, active.turn_id
         try:
             conversation = repo.get_conversation(conn, cid)
+            group = jira_testing_execution.group_for(conn, conversation, group)
             active.machine_targets = (
-                (conversation["machine"],) if conversation["machine"]
+                jira_testing_repo.machine_targets(conn, cid) if conversation["source_kind"] == "test"
+                else (conversation["machine"],) if conversation["machine"]
                 else tuple(m["ssh_target"] for m in repo.list_machines(conn, group.name))
             )
             active.machine_used = conversation["machine_used"]
@@ -495,11 +504,16 @@ class JiraAgentRunner:
     ) -> tuple[str, str, str]:
         """Sync inputs, start or resume the thread, start the turn and consume it."""
         cid, tid = active.conversation_id, active.turn_id
-        issue = await asyncio.to_thread(
-            jira.get_issue_snapshot, conversation["issue_key"],
-            timeout_seconds=max(0, deadline - time.monotonic()),
-        )
-        uploaded = await self._sync_inputs(conn, active, conversation, issue)
+        test = None
+        if conversation["source_kind"] == "test":
+            test = await jira_testing_execution.prepare(conn, active.client, conversation, tid)
+            issue, uploaded = test["input"]["issue"], []
+        else:
+            issue = await asyncio.to_thread(
+                jira.get_issue_snapshot, conversation["issue_key"],
+                timeout_seconds=max(0, deadline - time.monotonic()),
+            )
+            uploaded = await self._sync_inputs(conn, active, conversation, issue)
 
         if conversation["thread_id"]:
             active.thread_id = conversation["thread_id"]
@@ -508,9 +522,10 @@ class JiraAgentRunner:
         else:
             thread = await active.client.start_thread(  # type: ignore[union-attr]
                 cwd=conversation["workspace"],
-                developer_instructions=domain.developer_instructions(
-                    group, conversation["issue_key"], conversation["workspace"]
-                ),
+                developer_instructions=(test["config"]["instructions"].replace("/TEST_WORKSPACE", conversation["workspace"])
+                    if test else domain.developer_instructions(
+                        group, conversation["issue_key"], conversation["workspace"]
+                    )),
                 model=group.model,
                 service_name="release-system-jira-agent",
             )
@@ -534,7 +549,9 @@ class JiraAgentRunner:
             ),
         )
         codex_turn = await active.client.start_turn(  # type: ignore[union-attr]
-            active.thread_id, prompt, output_schema=domain.RESULT_SCHEMA, model=group.model
+            active.thread_id, test["config"]["prompt"] if test else prompt,
+            output_schema=test["config"]["output_schema"] if test else domain.RESULT_SCHEMA, model=group.model,
+            effort=test["config"]["effort"] if test else "",
         )
         active.codex_turn_id = codex_turn["id"]
         active.phase = "running"
@@ -862,7 +879,7 @@ class JiraAgentRunner:
             self._delivery_state(conn, conversation["id"], turn["id"], "incomplete",
                                  [{"path": "", "error": _error_text(exc)}])
             return
-        post = bool(repo.get_turn(conn, turn["id"])["post_comment"])
+        post = conversation["source_kind"] == "jira" and bool(repo.get_turn(conn, turn["id"])["post_comment"])
         # The status and comment gate are one transaction, so restart cannot
         # publish a success comment for an incomplete delivery.
         with transaction(conn):

@@ -654,8 +654,49 @@ def test_other_roles_cannot_access_jira_agent(env) -> None:
         assert env.client.get("/api/jira-agent/issues/MC3-1").status_code == 403
 
 
+def test_owner_jira_mapping_shares_visibility_without_search_or_rm_access(env):
+    original = env.conf.read_text()
+    env.conf.write_text(original + '\n[jira_agent_users]\nbob = alice\ndave = alice\ncarol = alice\n')
+    assert jira.agent_username(USERS['carol']) == 'carol'
+    assert jira.agent_username(USERS['dave']) == 'dave'
+    env.as_user('carol')
+    conversation = _handover(env, 'MC3-1', post_comment=False)['conversation']
+    _wait(env, conversation['id'], _done)
+    env.as_user('bob')
+    mine = env.client.get('/api/jira-agent/issues').json()
+    assert mine['jql'] == domain.owner_issue_jql('alice')
+    assert mine['issues'][0]['can_handover']
+    handled = env.client.get('/api/jira-agent/issues', params={'scope': 'handled'}).json()
+    assert [item['key'] for item in handled['issues']] == ['MC3-1']
+    detail = env.client.get(f"/api/jira-agent/conversations/{conversation['id']}")
+    assert detail.status_code == 200 and detail.json()['conversation']['can_write']
+    assert env.client.get('/api/jira-agent/issues', params={'q':'MC3-1'}).status_code == 403
+    assert env.client.get('/api/jira-agent/testing/cases').status_code == 403
+    env.jira.issue_overrides['MC3-2'] = {'assignee': {'name': 'someone_else'}}
+    assert env.client.get('/api/jira-agent/issues/MC3-2').status_code == 404
+    assert env.client.post('/api/jira-agent/conversations', json={'issue_key':'MC3-2'}).status_code == 404
+    env.as_user('dave')
+    assert env.client.get('/api/jira-agent/issues').status_code == 403
+    env.as_user('bob')
+    env.conf.write_text(original)
+    assert env.client.get(f"/api/jira-agent/conversations/{conversation['id']}").status_code == 404
 
 
+def test_mapped_owner_actions_keep_the_site_login_as_author(env):
+    env.conf.write_text(env.conf.read_text() + '\n[jira_agent_users]\nbob = alice\n')
+    env.as_user('bob')
+    conversation = _handover(env, 'MC3-1', post_comment=False)['conversation']
+    assert (conversation['owner'], conversation['created_by']) == ('alice', 'bob')
+    _wait(env, conversation['id'], _done)
+    env.fake.plans.append('hold')
+    path = f"/api/jira-agent/conversations/{conversation['id']}"
+    response = env.client.post(path + '/messages', json={'text':'补充材料', 'post_comment':False})
+    assert response.status_code == 200
+    detail = _wait(env, conversation['id'], lambda data: _latest(data)['status'] == 'running')
+    assert any(event['kind'] == 'user_message' and event['payload']['author'] == 'bob'
+               for event in detail['events'])
+    assert env.client.post(path + '/cancel').status_code == 200
+    _wait(env, conversation['id'], _done)
 
 
 def test_owner_qa_scope_requires_reporter_group_bug_and_open_status(env) -> None:

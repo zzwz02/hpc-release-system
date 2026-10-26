@@ -23,13 +23,15 @@ export function MachineChoice({
   agentGroup,
   disabled,
   onChange,
+  initialTarget = "",
 }: {
   agentGroup: string;
   disabled: boolean;
   onChange: (machine: string | null) => void;
+  initialTarget?: string;
 }) {
-  const [mode, setMode] = useState<"auto" | "custom">("auto");
-  const [target, setTarget] = useState("");
+  const [mode, setMode] = useState<"auto" | "custom">(initialTarget ? "custom" : "auto");
+  const [target, setTarget] = useState(initialTarget);
 
   const machinesQuery = useQuery({ queryKey: JIRA_AGENT_MACHINES_KEY, queryFn: listMachines });
   // server B's key: checked up front so a missing SSH_KEY_PATH shows before hand-over

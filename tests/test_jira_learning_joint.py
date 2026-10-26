@@ -9,7 +9,7 @@ import pytest
 from app.db.connection import transaction
 from app.domain import jira_learning as domain
 from app.integrations import knowledge_repository as knowledge
-from app.repositories import jira_learning_repo as repo
+from app.repositories import jira_learning_repo as repo, jira_testing_repo as testing_repo
 from app.services import jira_learning_service as service, jira_learning_runner as execution, jira_learning_handoff as handoff
 from tests.learning_helpers import commit, git
 from tests.test_jira_learning_workflow import env, stage, RM, PREFIX
@@ -178,6 +178,26 @@ def test_bundle_distinguishes_navigation_from_declared_dependencies(env, tmp_pat
         git(root, 'apply', '--check', str(patch))
 
 
+def test_validation_compares_actual_test_pack_and_marks_old_proposal_versions(env):
+    root, _, conn = env
+    job, proposal = stage(conn)
+    service.review(RM, proposal['id'], 'approved', '')
+    base = knowledge.snapshot('main')['files']
+    candidate = {**base, **{f['path']: f['updated_text'] for f in proposal['files']}}
+    with transaction(conn):
+        cid = testing_repo.save_version(conn, 'rm', '', '验证输入', {'issue': {'summary': '输入'}, 'files': []}, 'hash', '通过条件', '', {})
+        vid = testing_repo.versions(conn, cid)[0]['id']
+        conn.execute('INSERT INTO jira_test_batches VALUES(?,?,?,?,?,?)', ('batch', vid, json.dumps({'skill_sha256': 'fingerprint'}), json.dumps({'files': base, 'server': 'validation'}), 'rm', '2026-10-23'))
+        conn.execute('INSERT INTO jira_test_suites VALUES(?,?,?,?,?,?,?,?)', ('suite', 'request', 'hash', 'ready', '{}', '{}', '', '2026-10-23'))
+        conn.execute('INSERT INTO jira_test_suite_items VALUES(?,?,?,?,?)', ('suite', cid, vid, 'batch', 0))
+    linked = handoff.link_validation(RM, job['id'], [proposal['id']], 'suite', 'other', '其他场景')['validations'][0]
+    assert not linked['matches']
+    with transaction(conn):
+        conn.execute('UPDATE jira_test_batches SET pack_json=? WHERE id=?', (json.dumps({'files': candidate, 'server': 'validation'}), 'batch'))
+    assert handoff.validations(job['id'])[0]['matches']
+    with transaction(conn):
+        repo.add_proposals(conn, job['id'], [{**proposal, 'previous_id': proposal['id']}], turn_id=repo.list_turns(conn, job['id'])[0]['id'])
+    assert handoff.validations(job['id'])[0]['superseded']
 
 
 # A deterministic protocol peer used by the browser fixture, not a live model.

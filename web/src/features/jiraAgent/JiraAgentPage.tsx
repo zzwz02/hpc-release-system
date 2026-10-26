@@ -20,6 +20,7 @@ import { MachinesDialog } from "./MachinesDialog";
 import { SshKeyUploadDialog } from "./SshKeyUploadDialog";
 import { LearningIssueList } from "./LearningIssueList";
 import { LearningPanel } from "./LearningPanel";
+import { TestingWorkspace } from "./TestingWorkspace";
 import {
   ACTION_REQUIRED_LABELS,
   CLOSE_REASON_LABELS,
@@ -203,6 +204,8 @@ function JiraAgentWorkspace() {
     [setSearchParams, view],
   );
 
+  if (searchParams.get("view") === "testing" && isRM(user)) return <TestingWorkspace />;
+
   let main = <div className="panel empty">从左侧选择 JIRA 工单。</div>;
   if (issueKey) {
     main = (
@@ -221,6 +224,7 @@ function JiraAgentWorkspace() {
             {view === "learning" && isRM(user) ? "从工单中整理可复用的经验，由 RM 审核后人工更新 skill。" : "JIRA assignee 或 RM 把工单交给本组数字员工；agent 分析、复现、修复后在 JIRA 评论结论，由 assignee 决定下一步。"}
           </p>
         </div>
+        {isRM(user) && <button type="button" className="btn sm" onClick={() => setSearchParams({ view: "testing" })}>测试用例</button>}
         <button type="button" className="btn sm" onClick={() => setShowMachines(true)}>
           系统机器
         </button>
@@ -563,6 +567,8 @@ function IssueView({
 }) {
   const queryClient = useQueryClient();
   const viewer = useViewerKey();
+  const { user } = useAuth();
+  const [, setParams] = useSearchParams();
   const previewQuery = useQuery({
     queryKey: [...jiraAgentIssueKey(issueKey), viewer],
     queryFn: () => previewIssue(issueKey),
@@ -684,6 +690,7 @@ function IssueView({
           {recovering && <p className="jira-agent-warning">{RECOVERING_TEXT}</p>}
           {conversation && (
             <div className="actions">
+              {isRM(user) && <button className="btn sm" disabled={["queued", "running", "delivering"].includes(conversation.state)} onClick={() => setParams({ view: "testing", import: conversation.id })}>保存为测试用例</button>}
               {conversation.can_write && (conversation.state === "queued" || conversation.state === "running") && (
                 <button type="button" className="btn sm danger" disabled={recovering} onClick={() => void cancel()}>
                   取消本轮
@@ -821,11 +828,16 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
 // Conversation
 // ─────────────────────────────────────────────────────────────
 
-function ConversationBody({ id, onChanged }: { id: string; onChanged: () => void }) {
+export function ConversationBody({ id, onChanged, testing }: {
+  id: string;
+  onChanged: () => void;
+  testing?: { processOpen: boolean; onProcessToggle: (open: boolean) => void };
+}) {
   const viewer = useViewerKey();
   const detailQuery = useQuery({
     queryKey: [...jiraAgentConversationKey(id), viewer],
     queryFn: () => getConversation(id),
+    refetchOnMount: testing ? "always" : false,
   });
   const detail = detailQuery.data;
   const conversation = detail?.conversation;
@@ -883,11 +895,10 @@ function ConversationBody({ id, onChanged }: { id: string; onChanged: () => void
   }
 
   let lastTurnId = "";
-  return (
-    <>
+  const timeline = (
       <div className="panel">
         <div className="panel-body jira-agent-timeline" data-testid="jira-agent-timeline">
-          {groupTimeline(events).map((item) => {
+          {groupTimeline(testing ? events.filter((event) => !["result", "delivery", "jira_comment"].includes(event.kind)) : events).map((item) => {
             const turn = turnsById.get(item.turnId);
             const separator = item.turnId && item.turnId !== lastTurnId && turn;
             if (item.turnId) lastTurnId = item.turnId;
@@ -902,7 +913,7 @@ function ConversationBody({ id, onChanged }: { id: string; onChanged: () => void
                     turn={turn}
                     files={detail.files}
                     canWrite={conversation.can_write}
-                    canRetry={conversation.can_write && conversation.latest_turn?.id === item.turnId}
+                    canRetry={(conversation.can_write || conversation.source_kind === "test") && conversation.latest_turn?.id === item.turnId}
                     onChanged={onChanged}
                   />
                 )}
@@ -913,6 +924,32 @@ function ConversationBody({ id, onChanged }: { id: string; onChanged: () => void
         </div>
       </div>
 
+  );
+  if (testing) {
+    const turn = conversation.latest_turn ?? detail.turns.at(-1);
+    const event = [...events].reverse().find((item) => item.kind === "result" && item.turn_id === turn?.id);
+    const result = turn?.result ?? (event?.payload as unknown as AgentResult | undefined);
+    const files = detail.files.filter((file) => file.turn_id === turn?.id && file.source === "artifact");
+    const inputs = detail.files.filter((file) => file.direction === "input");
+    const pending = turn?.delivery_status === "collecting" || turn?.delivery_status === "incomplete";
+    return <div className="test-conversation">
+      {result ? <ResultCard result={result} files={files} pending={pending} showFiles={false} foldEvidence />
+        : <p className="muted">{active ? "agent 正在处理，尚未生成结论。" : "本次测试没有生成分析结论。"}</p>}
+      {pending && <DeliveryEvent turn={turn} canRetry={conversation.can_write || conversation.source_kind === "test"} onChanged={onChanged} />}
+      {result && <section className="test-delivery"><h3>交付文件</h3>
+        <ResultFiles result={result} files={files} />
+        {files.length === 0 && <p className="muted">{pending ? "交付文件尚未收齐。" : "本次未交付文件。"}</p>}
+      </section>}
+      <details className="test-process" open={testing.processOpen} onToggle={(event) => testing.onProcessToggle(event.currentTarget.open)}>
+        <summary>agent 处理过程 <span className="muted">对话、命令和执行记录</span></summary>
+        {timeline}
+        {inputs.length > 0 && <FilesPanel files={inputs} />}
+      </details>
+    </div>;
+  }
+  return (
+    <>
+      {timeline}
       {detail.files.length > 0 && <FilesPanel files={detail.files} />}
       {conversation.can_write && <Composer conversation={conversation} onSent={onChanged} />}
     </>
@@ -1098,7 +1135,9 @@ function CommandEvent({ event }: { event: AgentEvent }) {
   );
 }
 
-function ResultCard({ result, files, pending }: { result: AgentResult; files: AgentFile[]; pending: boolean }) {
+function ResultCard({ result, files, pending, showFiles = true, foldEvidence = false }: {
+  result: AgentResult; files: AgentFile[]; pending: boolean; showFiles?: boolean; foldEvidence?: boolean;
+}) {
   const ownership = result.ownership ?? { belongs_to_us: "", target_group: "", reasoning: "" };
   const state = resultState(result.conclusion, result.action_required);
   const handoff = state.action === "needs_handoff" && ownership.target_group?.trim();
@@ -1126,11 +1165,6 @@ function ResultCard({ result, files, pending }: { result: AgentResult; files: Ag
   );
   const repair = state.conclusion === "fix_prepared" || state.conclusion === "fixed_pending_review";
   const showFix = repair && result.fix?.description;
-  const patches = repair ? files.filter((file) => {
-    const name = (file.remote_path || file.name).toLowerCase();
-    return name.endsWith(".patch") || name.endsWith(".diff");
-  }) : [];
-  const artifacts = files.filter((file) => !patches.includes(file));
   const review = state.action === "needs_review"
     ? (
       state.conclusion === "fix_prepared"
@@ -1141,10 +1175,17 @@ function ResultCard({ result, files, pending }: { result: AgentResult; files: Ag
     )
     : "";
 
+  const evidence = result.evidence?.map((item, index) => (
+    <div key={index}>
+      <div>{item.description}</div>
+      <pre className="jira-agent-output">{item.command ? "$ " + item.command + "\n" : ""}{item.result}</pre>
+    </div>
+  ));
+
   return (
     <div className="jira-agent-event result" data-testid="jira-agent-result">
       <div className="jira-agent-event-head">
-        <strong>{pending ? "分析结论（文件交付尚未完成）" : "本轮结论"}</strong>
+        <strong>{pending ? "分析结论（文件交付尚未完成）" : foldEvidence ? "分析结论" : "本轮结论"}</strong>
         <span className="pill-group">
           <span className="pill accent">{CONCLUSION_LABELS[state.conclusion] ?? state.conclusion}</span>
           {action && <span className="pill warn">{action}</span>}
@@ -1242,7 +1283,33 @@ function ResultCard({ result, files, pending }: { result: AgentResult; files: Ag
           </>
         )}
       </dl>
-      {(showFix || patches.length > 0) && (
+      {showFiles && <ResultFiles result={result} files={files} section="patches" />}
+      {result.summary && <Markdown value={result.summary} className="md-view jira-agent-md" />}
+      {result.evidence?.length > 0 && (foldEvidence ? <details className="test-disclosure test-result-evidence">
+        <summary>分析证据 <span className="muted">{result.evidence.length} 项</span></summary>
+        <div className="test-disclosure-body jira-agent-evidence">{evidence}</div>
+      </details> : (
+        <div className="jira-agent-evidence">
+          <strong>证据</strong>
+          {evidence}
+        </div>
+      ))}
+      {showFiles && <ResultFiles result={result} files={files} section="artifacts" />}
+    </div>
+  );
+}
+
+function ResultFiles({ result, files, section }: { result: AgentResult; files: AgentFile[]; section?: "patches" | "artifacts" }) {
+  const state = resultState(result.conclusion, result.action_required);
+  const repair = state.conclusion === "fix_prepared" || state.conclusion === "fixed_pending_review";
+  const showFix = repair && result.fix?.description;
+  const patches = repair ? files.filter((file) => {
+    const name = (file.remote_path || file.name).toLowerCase();
+    return name.endsWith(".patch") || name.endsWith(".diff");
+  }) : [];
+  const artifacts = files.filter((file) => !patches.includes(file));
+  return <>
+      {section !== "artifacts" && (showFix || patches.length > 0) && (
         <div className="jira-agent-patches">
           <strong>修复补丁</strong>
           {patches.length > 0 ? patches.map((file) => (
@@ -1267,22 +1334,7 @@ function ResultCard({ result, files, pending }: { result: AgentResult; files: Ag
           )}
         </div>
       )}
-      {result.summary && <Markdown value={result.summary} className="md-view jira-agent-md" />}
-      {result.evidence?.length > 0 && (
-        <div className="jira-agent-evidence">
-          <strong>证据</strong>
-          {result.evidence.map((item, index) => (
-            <div key={index}>
-              <div>{item.description}</div>
-              <pre className="jira-agent-output">
-                {item.command ? "$ " + item.command + "\n" : ""}
-                {item.result}
-              </pre>
-            </div>
-          ))}
-        </div>
-      )}
-      {artifacts.length > 0 && (
+      {section !== "patches" && artifacts.length > 0 && (
         <div className="jira-agent-artifacts">
           <strong>产物</strong>
           {artifacts.map((file) => (
@@ -1292,8 +1344,7 @@ function ResultCard({ result, files, pending }: { result: AgentResult; files: Ag
           ))}
         </div>
       )}
-    </div>
-  );
+  </>;
 }
 
 function DeliveryEvent({ turn, canRetry, onChanged }: {

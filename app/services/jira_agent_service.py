@@ -78,7 +78,7 @@ def assignee_name(issue: dict) -> str:
 
 
 def can_act(user: dict, issue: dict) -> bool:
-    return _is_rm(user) or _same_user(user.get("username", ""), assignee_name(issue))
+    return _is_rm(user) or _same_user(jira.agent_username(user), assignee_name(issue))
 
 
 def check_actor(user: dict, issue: dict) -> None:
@@ -88,11 +88,13 @@ def check_actor(user: dict, issue: dict) -> None:
 
 def can_view(user: dict, conversation: dict, reporter: str = "") -> bool:
     username = user.get("username", "")
+    identity = jira.agent_username(user)
     return (
         _is_rm(user)
-        or _same_user(username, conversation["owner"])
+        or _same_user(identity, conversation["owner"])
         or _same_user(username, conversation["created_by"])
-        or (user.get("role") == "Owner" and _same_user(username, reporter))
+        or _same_user(identity, conversation["created_by"])
+        or (user.get("role") == "Owner" and _same_user(identity, reporter))
     )
 
 
@@ -100,6 +102,10 @@ def _get_visible(conn: sqlite3.Connection, user: dict, conversation_id: str) -> 
     conversation = repo.get_conversation(conn, conversation_id)
     if conversation is None:
         raise ApiError(404, "对话不存在或无权访问")
+    if conversation["source_kind"] == "test":
+        if not _is_rm(user):
+            raise ApiError(404, "对话不存在或无权访问")
+        return conversation
     if can_view(user, conversation):
         return conversation
     if user.get("role") == "Owner":
@@ -117,9 +123,9 @@ async def _owner_can_view_issue(user: dict, issue: dict, conn: sqlite3.Connectio
         return True
     if user.get("role") != "Owner":
         return False
-    username = user["username"]
+    username = jira.agent_username(user)
     key = issue["key"]
-    if repo.has_owner_history(conn, key, username):
+    if any(repo.has_owner_history(conn, key, name) for name in {username, user['username']}):
         return True
     reporter = (issue.get("reporter") or {}).get("name", "")
     if _same_user(username, reporter) and repo.has_handled_issue(conn, key):
@@ -208,16 +214,16 @@ def conversation_view(conn: sqlite3.Connection, user: dict, conversation: dict) 
     latest = repo.latest_turn(conn, conversation["id"])
     active = runner.active_for_conversation(conversation["id"])
     can_write = conversation["status"] == "open" and (
-        _is_rm(user) or _same_user(user.get("username", ""), conversation["owner"])
+        _is_rm(user) or _same_user(jira.agent_username(user), conversation["owner"])
     )
     return {
         **conversation,
         "state": _state(conversation, latest),
         "phase": active.phase if active else "",
         "latest_turn": _turn_view(conn, latest),
-        "read_only": not can_write,
-        "can_write": can_write,
-        "browse_url": jira.browse_url() + conversation["issue_key"] if jira.browse_url() else "",
+        "read_only": not can_write or conversation["source_kind"] == "test",
+        "can_write": can_write and conversation["source_kind"] != "test",
+        "browse_url": (jira.browse_url() + conversation["issue_key"] if jira.browse_url() else "") if conversation["source_kind"] == "jira" else "",
     }
 
 
@@ -411,7 +417,7 @@ async def search_issues(user: dict, query: str) -> dict:
             )
         else:
             jql = domain.owner_issue_jql(
-                user["username"], reporter_group=jira.owner_qa_reporter_group(),
+                jira.agent_username(user), reporter_group=jira.owner_qa_reporter_group(),
             )
         found = await _jql_search(jql, max_results=MAX_SEARCH_RESULTS)
         issues, total = found["issues"], found["total"]
@@ -449,7 +455,8 @@ async def list_handled_issues(user: dict) -> dict:
             key = row["issue_key"]
             issue = jira_by_key.get(key)
             if issue is None:
-                if _is_rm(user) or repo.has_owner_history(conn, key, user["username"]):
+                if _is_rm(user) or any(repo.has_owner_history(conn, key, name)
+                                      for name in {user['username'], jira.agent_username(user)}):
                     missing.append(key)
                 continue
             reporter = (issue.get("reporter") or {}).get("name", "")
@@ -540,7 +547,7 @@ async def handover(user: dict, body: dict) -> dict:
 
     conn = open_db()
     try:
-        machine = _check_machine(
+        machine = check_machine(
             conn, user, group, body.get("machine") or "", body.get("ssh_key_session_id") or "",
         )
         existing = repo.get_open_conversation(conn, issue["key"])
@@ -598,6 +605,8 @@ async def send_message(user: dict, conversation_id: str, body: dict) -> dict:
     conn = open_db()
     try:
         conversation = _get_visible(conn, user, conversation_id)
+        if conversation["source_kind"] == "test":
+            raise ApiError(409, "测试运行不接受追加提示；请保存新版本或重新运行")
         if conversation["status"] != "open":
             raise ApiError(409, "该对话已结束（只读），请重新把工单交给 agent 新建对话")
         _check_not_recovering(conversation_id)
@@ -679,7 +688,7 @@ async def cancel(user: dict, conversation_id: str) -> dict:
     conn = open_db()
     try:
         conversation = _get_visible(conn, user, conversation_id)
-        if not (_is_rm(user) or _same_user(user["username"], conversation["owner"])):
+        if not (_is_rm(user) or _same_user(jira.agent_username(user), conversation["owner"])):
             raise AuthzError("只有对话 owner 或 RM 可以取消")
         _check_not_recovering(conversation_id)
         turn = repo.active_turn(conn, conversation_id)
@@ -715,13 +724,15 @@ async def retry_delivery(user: dict, turn_id: str) -> dict:
         conversation = _get_visible(conn, user, turn["conversation_id"])
         if conversation["status"] != "open":
             raise ApiError(409, "对话已结束，不能重试交付")
-        issue = await fetch_issue(conversation["issue_key"])
-        check_actor(user, issue)
-        if not _same_user(assignee_name(issue), conversation["owner"]):
-            raise ApiError(409, "JIRA assignee 已变更，不能重试旧对话交付")
+        if conversation["source_kind"] == "jira":
+            issue = await fetch_issue(conversation["issue_key"])
+            check_actor(user, issue)
+            if not _same_user(assignee_name(issue), conversation["owner"]):
+                raise ApiError(409, "JIRA assignee 已变更，不能重试旧对话交付")
         group = runner_module.load_groups().get(conversation["agent_group"])
         if group is None:
             raise ApiError(409, "数字员工组配置不可用")
+        group = runner_module.jira_testing_execution.group_for(conn, conversation, group)
         with transaction(conn):
             conversation = _get_visible(conn, user, conversation["id"])
             latest = repo.latest_turn(conn, conversation["id"])
@@ -744,8 +755,10 @@ async def retry_comment(user: dict, turn_id: str) -> dict:
         if turn is None:
             raise ApiError(404, "轮次不存在")
         conversation = _get_visible(conn, user, turn["conversation_id"])
-        if not (_is_rm(user) or _same_user(user["username"], conversation["owner"])):
+        if not (_is_rm(user) or _same_user(jira.agent_username(user), conversation["owner"])):
             raise AuthzError("只有对话 owner 或 RM 可以重试发布评论")
+        if conversation["source_kind"] == "test":
+            raise ApiError(409, "测试运行禁止发布 Jira 评论")
         if turn["comment_status"] != "failed" or turn["delivery_status"] not in ("", "complete"):
             raise ApiError(409, "该轮评论不需要重试")
         return {"turn": _turn_view(conn, await runner_module.post_turn_comment(conn, turn_id))}
@@ -760,7 +773,7 @@ async def retry_comment(user: dict, turn_id: str) -> dict:
 MAX_MACHINE_DESCRIPTION = 500
 
 
-def _check_machine(
+def check_machine(
     conn: sqlite3.Connection, user: dict, group: domain.AgentGroup, machine: str, key_session_id: str,
 ) -> str:
     """Validate the hand-over machine choice; returns what the conversation stores.

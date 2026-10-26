@@ -64,6 +64,7 @@ export interface AgentTurn {
 }
 
 export interface AgentConversation {
+  source_kind?: "jira" | "test";
   id: string;
   issue_key: string;
   issue_summary: string;

@@ -342,6 +342,16 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_learning_member_issue ON jira_learning_members(issue_key, job_id);
         INSERT OR IGNORE INTO jira_learning_members(job_id, issue_key, position)
             SELECT id, issue_key, 0 FROM jira_learning_jobs;
+        CREATE TABLE IF NOT EXISTS jira_learning_validations (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL REFERENCES jira_learning_jobs(id) ON DELETE CASCADE,
+            suite_id TEXT NOT NULL,
+            proposal_ids_json TEXT NOT NULL,
+            purpose TEXT NOT NULL,
+            note TEXT NOT NULL,
+            recorded_by TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS jira_learning_issues (
             issue_key TEXT NOT NULL,
             agent_group TEXT NOT NULL,
@@ -379,6 +389,8 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
             JOIN jira_learning_jobs j ON j.id=p.job_id;
     """)
     _ensure_column(conn, "jira_agent_conversations", "source_kind", "TEXT NOT NULL DEFAULT 'jira'")
+    from app.repositories.jira_testing_repo import initialize
+    initialize(conn)
     # A user-given machine needs a fresh key upload on every hand-over.
     conn.execute("DROP TABLE IF EXISTS jira_agent_ssh_keys")
     conn.commit()

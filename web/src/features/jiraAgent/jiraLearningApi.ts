@@ -228,6 +228,13 @@ export function reviseLearningPublication(id: string, commit: string, note: stri
 
 export const exportLearningBundle = (id: string, proposals: string[]) => apiGetBlob(`${BASE}/jobs/${encodeURIComponent(id)}/patch-bundle?proposal_ids=${encodeURIComponent(proposals.join(","))}`);
 export const publishLearningBundle = (id: string, proposals: string[], commit: string, note: string) => apiPost(`${BASE}/jobs/${encodeURIComponent(id)}/publication`, { proposal_ids: proposals, commit_sha: commit, note });
+export interface LearningValidation {
+  id: string; suite_id: string; proposal_ids: string[]; purpose: string; note: string; recorded_by: string; created_at: string;
+  superseded: boolean; matches: boolean; active: boolean; counts: Record<string, number>; total: number;
+  tests: { case_id: string; skill_sha256: string; server: string; matches: boolean }[];
+}
+export const listLearningValidations = (id: string) => apiGet<{ validations: LearningValidation[] }>(`${BASE}/jobs/${encodeURIComponent(id)}/validations`);
+export const linkLearningValidation = (id: string, proposals: string[], suite: string, purpose: string, note: string) => apiPost(`${BASE}/jobs/${encodeURIComponent(id)}/validations`, { proposal_ids: proposals, suite_id: suite, purpose, note });
 
 export interface LearningComparison {
   relation: { reason: string; paths: string[] };

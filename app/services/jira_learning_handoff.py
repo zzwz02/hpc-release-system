@@ -9,7 +9,7 @@ from app.domain import jira_learning as domain
 from app.integrations import knowledge_repository as knowledge
 from app.repositories import jira_learning_repo as repo
 from app.repositories.base import new_id
-from app.services import jira_learning_service as learning
+from app.services import jira_learning_service as learning, jira_testing_batches as testing
 from app.timeutil import beijing_timestamp
 
 
@@ -92,6 +92,16 @@ def publish(user, job_id, ids, commit, note):
     return {'commit_sha': resolved, 'proposal_ids': ids}
 
 
+def link_validation(user, job_id, ids, suite_id, purpose, note):
+    if purpose not in ('original', 'other') or len(note) > 4000:
+        raise ValueError('请选择验证用途并填写简短备注')
+    testing.detail(suite_id)  # Existence check; this never feeds test results to learning.
+    with learning._db() as conn, transaction(conn):
+        conn.execute('UPDATE jira_learning_jobs SET id=id WHERE 0')
+        selected(conn, job_id, ids, ('approved', 'published'))
+        conn.execute('INSERT INTO jira_learning_validations VALUES(?,?,?,?,?,?,?,?)',
+                     (new_id('jlv'), job_id, suite_id, json.dumps(ids), purpose, note.strip(), user['username'], beijing_timestamp()))
+    return {'validations': validations(job_id)}
 
 
 def deploy(user, job_id, target, commit, result, note):
@@ -107,3 +117,31 @@ def deploy(user, job_id, target, commit, result, note):
             raise ApiError(409, '请先登记该提交的入库版本')
         repo.add_deployment(conn, job['agent_group'], target.strip(), commit, result, note.strip(), user['username'])
         return {'deployments': repo.list_deployments(conn, published[0]['id'])}
+
+
+def validations(job_id):
+    with learning._db() as conn:
+        if not repo.get_job(conn, job_id):
+            raise ApiError(404, '学习任务不存在')
+        rows = [dict(row) for row in conn.execute('SELECT * FROM jira_learning_validations WHERE job_id=? ORDER BY rowid DESC', (job_id,))]
+        for row in rows:
+            row['proposal_ids'] = json.loads(row.pop('proposal_ids_json'))
+            proposals = [repo.get_proposal(conn, pid) for pid in row['proposal_ids']]
+            row['superseded'] = any(p['superseded_by'] for p in proposals)
+            base = knowledge.snapshot(proposals[0]['base_commit'], complete=True)['files']
+            expected = knowledge.hashes({**base, **{f['path']: f['updated_text'] for p in proposals for f in p['files']}})
+            expected = {k: v for k, v in expected.items() if k.startswith(knowledge.PREFIX)}
+            suite = testing.detail(row['suite_id'])
+            fingerprints = []
+            for entry in suite['entries']:
+                if not entry['batch_id']:
+                    continue
+                batch = conn.execute('SELECT pack_json,config_json FROM jira_test_batches WHERE id=?', (entry['batch_id'],)).fetchone()
+                pack, config = json.loads(batch['pack_json']), json.loads(batch['config_json'])
+                hashes = knowledge.hashes(pack.get('files', {}))
+                hashes = {k: v for k, v in hashes.items() if k.startswith(knowledge.PREFIX)}
+                fingerprints.append({'case_id': entry['case_id'], 'skill_sha256': config.get('skill_sha256', ''),
+                                     'server': pack.get('server', ''), 'matches': bool(hashes) and hashes == expected})
+            row.update(tests=fingerprints, counts=suite['counts'], total=suite['total'], active=suite['active'],
+                       matches=bool(fingerprints) and len(fingerprints) == len(suite['entries']) and all(p['matches'] for p in fingerprints))
+    return rows

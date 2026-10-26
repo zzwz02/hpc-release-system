@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 vite",
+    "prebuild": "python3 ../tools/build_jira_test_cases.py",
     "build": "tsc && vite build",
     "lint": "eslint . --ext ts,tsx --max-warnings 0",
     "test": "NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 vitest run",

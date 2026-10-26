@@ -49,6 +49,11 @@ JIRA_ASSIGNEE = m00930
 # 可选：父 issue key；有值则创建子任务，留空则创建顶级 Task
 JIRA_PARENT_ISSUE = SPD-1535
 
+# 可选：Owner 登录名与 Jira 用户名不同时配置；未配置的账号使用登录名。
+# 只影响 Jira agent 的工单身份，操作记录仍保留实际登录名。
+# [jira_agent_users]
+# site_owner = jira_owner
+
 
 # ── 大模型（QA AI 分析、周报等所有调用大模型的功能共用） ─────────
 # OpenAI 兼容接口（通常以 /v1 结尾），需要 python -m pip install openai。
@@ -114,3 +119,16 @@ TURN_TIMEOUT_SECONDS = 7200
 # 独立 jira_agent_skill 检出目录由 JIRA_LEARNING_REPO_ROOT 指定。
 # 必须是本地已获取的正式远端分支；学习固定其当前提交，不自动 fetch 或改仓库。
 REPOSITORY_REF = refs/remotes/origin/main
+
+# AI 初评使用独立只读 app-server；可复用学习服务，但不能指向任何分析服务。
+# 工作目录只供评价使用，不挂载到分析容器；不挂载 SSH、GPU、Docker socket。
+# 未配置时仍可测试和人工评价，初评显示配置缺失；配置后可单独重试。
+# 模型、推理强度不跟随被测模型变化。服务端也应设置 read-only / never。
+# [jira_evaluation:HPC]
+# CODEX_WS_URL = ws://127.0.0.1:4520
+# CODEX_WS_TOKEN = <readonly-ws-token>
+# WORKSPACE_ROOT = /home/jira-learner/evaluation/workspaces
+# MODEL = <evaluation-model>
+# REASONING_EFFORT = high
+# TURN_TIMEOUT_SECONDS = 1800
+# 网站测试并发默认 1，可用 JIRA_TESTING_MAX_CONCURRENT 调整；仍受分析组并发限制。
