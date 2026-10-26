@@ -190,3 +190,8 @@ async def key_session_input(
 @router.post("/ssh-key-sessions/{session_id}/close")
 async def close_key_session(session_id: str, user: dict = Depends(require_jira_agent_access)) -> dict:
     return await jira_agent_ssh_key.sessions.close(user, session_id)
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str, user: dict = Depends(require_jira_agent_access)) -> dict:
+    return await service.delete_conversation(user, conversation_id)

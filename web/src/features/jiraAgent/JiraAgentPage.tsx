@@ -27,6 +27,7 @@ import {
   OWNERSHIP_LABELS,
   STATE_LABELS,
   cancelConversationTurn,
+  deleteConversation,
   fileDownloadUrl,
   fileToUpload,
   getConversation,
@@ -485,6 +486,8 @@ function IssueView({
   onNavigate: (issue: string, conversation?: string, replace?: boolean) => void;
 }) {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const [deleting, setDeleting] = useState(false);
   const viewer = useViewerKey();
   const previewQuery = useQuery({
     queryKey: [...jiraAgentIssueKey(issueKey), viewer],
@@ -529,6 +532,32 @@ function IssueView({
       refresh();
     } catch (error) {
       toast.error(errorMessage(error));
+    }
+  }
+
+  async function removeHistory() {
+    if (!conversation || !(await confirmDialog({
+      body: `确认删除 ${issueKey} 中 ${conversation.owner} 创建于 ${conversation.created_at} 的历史对话？本网站的全部轮次、分析结果和文件将被删除且无法恢复。已发布的 JIRA 评论和服务器 B 的工作目录不会删除。`,
+      danger: true, confirmText: "删除历史对话",
+    }))) return;
+    setDeleting(true);
+    try {
+      const response = await deleteConversation(selectedId);
+      const remaining = conversations.filter((item) => item.id !== selectedId);
+      const next = remaining.find((item) => item.status === "open") ?? remaining[0];
+      await queryClient.cancelQueries({ queryKey: jiraAgentConversationKey(selectedId) });
+      queryClient.setQueryData([...jiraAgentIssueKey(issueKey), viewer], {
+        ...preview, conversations: remaining,
+      });
+      onNavigate(issueKey, next?.id ?? DRAFT, true);
+      queryClient.removeQueries({ queryKey: jiraAgentConversationKey(selectedId) });
+      void queryClient.invalidateQueries({ queryKey: ["jira-agent"] });
+      if (response.warning) toast.info(response.warning);
+      else toast.success("历史对话已删除");
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -610,6 +639,11 @@ function IssueView({
               {conversation.can_write && (conversation.state === "queued" || conversation.state === "running") && (
                 <button type="button" className="btn sm danger" disabled={recovering} onClick={() => void cancel()}>
                   取消本轮
+                </button>
+              )}
+              {isRM(user) && conversation.status === "closed" && (
+                <button type="button" className="btn sm danger" disabled={deleting} onClick={() => void removeHistory()}>
+                  {deleting ? "正在删除…" : "删除历史对话"}
                 </button>
               )}
               {preview.can_handover && (

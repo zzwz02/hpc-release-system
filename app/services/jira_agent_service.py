@@ -15,6 +15,8 @@ import base64
 import binascii
 import re
 import sqlite3
+import shutil
+import logging
 import urllib.error
 from pathlib import Path
 
@@ -280,6 +282,37 @@ def list_events(user: dict, conversation_id: str, after_rev: int) -> dict:
         }
     finally:
         conn.close()
+
+
+async def delete_conversation(user: dict, conversation_id: str) -> dict:
+    if not _is_rm(user):
+        raise AuthzError("只有 RM 可以删除历史对话")
+    conn = open_db()
+    try:
+        with transaction(conn):
+            conversation = repo.get_conversation(conn, conversation_id)
+            if conversation is None:
+                raise ApiError(404, "对话不存在或已删除")
+            if conversation["status"] != "closed":
+                raise ApiError(409, "只能删除已结束的历史对话，当前对话不能删除")
+            if runner.active_for_conversation(conversation_id) or not repo.delete_closed_conversation(conn, conversation_id):
+                raise ApiError(409, "对话仍在执行、回收文件或发布评论，请稍后再删除")
+    finally:
+        conn.close()
+    warning = ""
+    # Only remove this conversation's local files, never a caller-supplied path
+    # or the remote agent workspace. SQLite cascades its turns/events/file rows.
+    if Path(conversation_id).name == conversation_id and conversation_id.startswith("jac_"):
+        folder = Path(settings.jira_agent_data_dir) / conversation_id
+        try:
+            if folder.is_symlink():
+                folder.unlink()
+            elif folder.exists():
+                await asyncio.to_thread(shutil.rmtree, folder)
+        except OSError:
+            logging.getLogger(__name__).warning("Could not remove local files for deleted conversation %s", conversation_id)
+            warning = "对话已删除，但本地文件清理失败，请联系管理员清理"
+    return {"deleted": True, "issue_key": conversation["issue_key"], "warning": warning}
 
 
 def file_for_download(user: dict, conversation_id: str, file_id: str) -> tuple[Path, str]:
@@ -749,6 +782,10 @@ async def retry_comment(user: dict, turn_id: str) -> dict:
             raise AuthzError("只有对话 owner 或 RM 可以重试发布评论")
         if turn["comment_status"] != "failed" or turn["delivery_status"] not in ("", "complete"):
             raise ApiError(409, "该轮评论不需要重试")
+        # Mark the in-flight publication before yielding, so history deletion
+        # cannot remove its records while the JIRA request is running.
+        with transaction(conn):
+            repo.update_turn(conn, turn_id, comment_status="pending")
         return {"turn": _turn_view(conn, await runner_module.post_turn_comment(conn, turn_id))}
     finally:
         conn.close()

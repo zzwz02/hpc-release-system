@@ -4,11 +4,12 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAuth } from "../../../api/AuthContext";
-import { apiGet, apiPost } from "../../../api/http";
+import { apiFetch, apiGet, apiPost } from "../../../api/http";
 import { confirmDialog } from "../../../lib/confirm";
 import { JiraAgentPage } from "../JiraAgentPage";
 
 vi.mock("../../../api/http", () => ({
+  apiFetch: vi.fn(),
   apiGet: vi.fn(),
   apiPost: vi.fn(),
 }));
@@ -395,6 +396,49 @@ describe("JiraAgentPage", () => {
     expect(select.value).toBe("jac_1");
     expect(within(select).getAllByRole("option")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "发送" })).toBeInTheDocument();
+  });
+
+  it("lets RM delete selected history and switches to the remaining conversation", async () => {
+    mockBackend();
+    mockUser("RM");
+    const base = vi.mocked(apiGet).getMockImplementation()!;
+    let deleted = false;
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (deleted && path === "/api/jira-agent/issues/MC3-7672") return {
+        ...previewResponse(true), conversations: [conversation],
+      };
+      return base(path);
+    });
+    vi.mocked(apiFetch).mockImplementation(async () => {
+      deleted = true;
+      return { deleted: true, issue_key: "MC3-7672", warning: "" };
+    });
+    const user = userEvent.setup();
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_0");
+    await user.click(await screen.findByRole("button", { name: "删除历史对话" }));
+    expect(confirmDialog).toHaveBeenCalledWith(expect.objectContaining({ danger: true, confirmText: "删除历史对话" }));
+    expect(apiFetch).toHaveBeenCalledWith("/api/jira-agent/conversations/jac_0", { method: "DELETE" });
+    await waitFor(() => expect(screen.getByLabelText("对话")).toHaveValue("jac_1"));
+    expect(within(screen.getByLabelText("对话")).getAllByRole("option")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "删除历史对话" })).not.toBeInTheDocument();
+  });
+
+  it("does not delete history when RM cancels confirmation", async () => {
+    mockBackend();
+    mockUser("RM");
+    vi.mocked(confirmDialog).mockResolvedValue(false);
+    const user = userEvent.setup();
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_0");
+    await user.click(await screen.findByRole("button", { name: "删除历史对话" }));
+    expect(apiFetch).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("对话")).toHaveValue("jac_0");
+  });
+
+  it("does not offer history deletion to Owner", async () => {
+    mockBackend();
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_0");
+    await screen.findByLabelText("对话");
+    expect(screen.queryByRole("button", { name: "删除历史对话" })).not.toBeInTheDocument();
   });
 
   it("starts with a hand-over draft when the issue has no live conversation", async () => {

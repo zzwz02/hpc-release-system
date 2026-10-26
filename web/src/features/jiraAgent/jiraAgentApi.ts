@@ -453,3 +453,10 @@ export function sendKeySessionInput(id: string, data: string) {
 export function closeKeySession(id: string) {
   return apiPost<KeySession>(`/api/jira-agent/ssh-key-sessions/${encodeURIComponent(id)}/close`, {});
 }
+
+
+export function deleteConversation(id: string) {
+  return apiFetch<{ deleted: boolean; issue_key: string; warning: string }>(
+    `/api/jira-agent/conversations/${encodeURIComponent(id)}`, { method: "DELETE" },
+  );
+}

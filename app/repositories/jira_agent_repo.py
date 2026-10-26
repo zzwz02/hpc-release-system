@@ -624,3 +624,13 @@ def update_machine(conn: sqlite3.Connection, machine_id: str, *, ssh_target: str
 def delete_machine(conn: sqlite3.Connection, machine_id: str) -> bool:
     cur = conn.execute("DELETE FROM jira_agent_machines WHERE id = ?", (machine_id,))
     return cur.rowcount == 1
+
+
+def delete_closed_conversation(conn: sqlite3.Connection, conversation_id: str) -> bool:
+    """Delete history only after all execution and delivery work has stopped."""
+    return conn.execute(
+        """DELETE FROM jira_agent_conversations WHERE id=? AND status='closed'
+        AND NOT EXISTS (SELECT 1 FROM jira_agent_turns WHERE conversation_id=?
+            AND (status IN ('queued', 'running') OR delivery_status='collecting' OR comment_status='pending'))""",
+        (conversation_id, conversation_id),
+    ).rowcount == 1

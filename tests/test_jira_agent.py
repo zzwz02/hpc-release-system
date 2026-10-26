@@ -763,6 +763,58 @@ def test_followup_resumes_the_same_thread_and_comments_again(env) -> None:
 # Conversation isolation
 # ─────────────────────────────────────────────────────────────
 
+def test_rm_deletes_only_closed_history_with_local_files_and_cascaded_rows(env) -> None:
+    first = _handover(env, files=[{"filename": "notes.txt", "content_base64": base64.b64encode(b"notes").decode()}])["conversation"]
+    first_detail = _wait(env, first["id"], _done)
+    second = _handover(env, new_conversation=True)["conversation"]
+    _wait(env, second["id"], _done)
+    path = f"/api/jira-agent/conversations/{first['id']}"
+    local_folder = Path(settings.jira_agent_data_dir) / first["id"]
+    assert local_folder.exists()
+    assert env.client.delete(path).status_code == 403
+    env.as_user("carol")
+    assert env.client.delete(f"/api/jira-agent/conversations/{second['id']}").status_code == 409
+    comments = list(env.jira.comments)
+    response = env.client.delete(path)
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+    assert not local_folder.exists()
+    assert env.jira.comments == comments
+    assert env.client.get(path).status_code == 404
+    assert env.client.get(path + "/events").status_code == 404
+    assert env.client.delete(path).status_code == 404
+    assert [c["id"] for c in env.client.get("/api/jira-agent/issues/MC3-7672").json()["conversations"]] == [second["id"]]
+    assert _detail(env, second["id"])["turns"]
+    conn = connect_jira_agent(settings.jira_agent_database_url)
+    try:
+        for table in ("jira_agent_turns", "jira_agent_events", "jira_agent_files"):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table} WHERE conversation_id=?", (first["id"],)).fetchone()[0] == 0
+    finally:
+        conn.close()
+    file = first_detail["files"][0]
+    assert env.client.get(path + f"/files/{file['id']}").status_code == 404
+
+
+@pytest.mark.parametrize("field,value", [("status", "running"), ("delivery_status", "collecting"), ("comment_status", "pending")])
+def test_history_deletion_rejects_unfinished_work(env, field, value) -> None:
+    first = _handover(env)["conversation"]
+    finished = _wait(env, first["id"], _done)
+    second = _handover(env, new_conversation=True)["conversation"]
+    _wait(env, second["id"], _done)
+    conn = connect_jira_agent(settings.jira_agent_database_url)
+    try:
+        with transaction(conn):
+            repo.update_turn(conn, finished["turns"][0]["id"], **{field: value})
+        env.as_user("carol")
+        response = env.client.delete(f"/api/jira-agent/conversations/{first['id']}")
+        assert response.status_code == 409
+        assert repo.get_conversation(conn, first["id"]) is not None
+        with transaction(conn):
+            repo.update_turn(conn, finished["turns"][0]["id"], **{field: finished["turns"][0][field]})
+    finally:
+        conn.close()
+
+
 def test_new_conversation_for_same_assignee_and_assignee_changes(env) -> None:
     first = _handover(env)["conversation"]
     _wait(env, first["id"], _done)
