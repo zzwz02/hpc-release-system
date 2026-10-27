@@ -645,11 +645,6 @@ function IssueView({
                   取消本轮
                 </button>
               )}
-              {isRM(user) && (
-                <button type="button" className="btn sm danger" disabled={deleting || recovering || ["queued", "running", "delivering"].includes(conversation.state)} onClick={() => void removeHistory()}>
-                  {deleting ? "正在删除…" : "删除对话"}
-                </button>
-              )}
               {preview.can_handover && (
                 <button
                   type="button"
@@ -658,6 +653,11 @@ function IssueView({
                   onClick={() => onNavigate(issueKey, DRAFT)}
                 >
                   新建对话
+                </button>
+              )}
+              {isRM(user) && (
+                <button type="button" className="btn sm danger jira-agent-delete-conversation" disabled={deleting || recovering || ["queued", "running", "delivering"].includes(conversation.state)} onClick={() => void removeHistory()}>
+                  {deleting ? "正在删除…" : "删除对话"}
                 </button>
               )}
             </div>
