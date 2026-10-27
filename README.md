@@ -199,7 +199,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 
 ## 集成配置
 
-LDAP、JIRA、大模型、CICD Agent、网站对外地址和各组 JIRA 数字员工的配置统一放在根目录 `release_system.conf`（已 gitignore），分为 `[ldap]`、`[jira]`、`[llm]`、`[cicd_agent]`、`[site]`、`[jira_agent:<组名>]` 几节。大模型一节供 QA AI 分析和周报等所有功能共用，代码里统一经 [llm.py](app/integrations/llm.py) 的 `ask_json()` 调用；原来的 `[qa_llm]` 已改名为 `[llm]`，键名去掉 `QA_` 前缀，仍写旧节名时会提示如何改。复制 `release_system.conf.example` 起步，各键含义与必填规则见其中注释。配置在每次使用时现读，修改后即时生效。旧的 `ldap.conf` / `jira.conf` / `qa_llm.env` / `jira_agent.conf` 已不再读取，升级时把内容搬到对应节。
+LDAP、JIRA、大模型、CICD Agent、网站对外地址和各组 JIRA 数字员工的配置统一放在根目录 `release_system.conf`（已 gitignore），分为 `[ldap]`、`[jira]`、`[llm]`、`[cicd_agent]`、`[dingtalk]`、`[site]`、`[jira_agent:<组名>]` 几节。大模型一节供 QA AI 分析和周报等所有功能共用，代码里统一经 [llm.py](app/integrations/llm.py) 的 `ask_json()` 调用；原来的 `[qa_llm]` 已改名为 `[llm]`，键名去掉 `QA_` 前缀，仍写旧节名时会提示如何改。复制 `release_system.conf.example` 起步，各键含义与必填规则见其中注释。配置在每次使用时现读，修改后即时生效。旧的 `ldap.conf` / `jira.conf` / `qa_llm.env` / `jira_agent.conf` 已不再读取，升级时把内容搬到对应节。
 
 环境变量只放文件位置和少数开发参数（下表），由 `app/config.py` 的 `Settings` 从环境变量和根目录 `.env` 读取，改后需重启。前后端共用的约定在 `shared/*.json`；调优参数和固定业务规则（如派单 JIRA 的项目、Component、issue 类型和 ETA 字段）是代码常量。新增配置放在哪里见 [release-system-dev 技能](.agents/skills/release-system-dev/SKILL.md) 的“配置落点”。
 
@@ -235,3 +235,12 @@ with sqlite3.connect(uri, uri=True) as conn:
 ## 文档维护
 
 README 负责产品、使用入口和运行方式；技能负责开发约束，`references/` 放按需读取的细节；部署手册与功能建议放 `docs/`。同一规则只写在一处，其他地方链接过去；不把一时的业务数量、特定模型名或机器路径写成永久要求。
+
+## 钉钉通知
+
+在 `release_system.conf` 的 `[dingtalk]` 填写 `ACCESS_TOKEN`、加签 `SECRET` 和要 @ 的 `USERID`（多个 ID 用逗号分隔）。`ACCESS_TOKEN` 留空关闭通知；配置现读，填好后无需重启。机器人须启用加签安全设置。
+
+- JIRA agent 每分钟检查完成、失败或意外中断的轮次，用工单号和网页结论/操作标记发送一句话；交付不完整时明确提示，不报成功。主动取消不通知。首次启用只接收启用后结束的轮次，之后停机期间漏发的轮次会补发，每轮通知一次。
+- Jenkins 在北京时间每天 10:00–20:00 的整点（包含 10:00 和 20:00，其他时段不查询、不告警）查询一次网页同源的 `/api/v1/failures/summary`，按责任组聚合，北京时间开始/结束日期均为当天，不附加用户筛选。所有 Code Owner 总错误数 **>20**、DevOps（SPD）总错误数 **>30** 时发送一条包含两项数量的通知；当天发送成功后不再发送，次日重新计算。首次启动不立即补查，等待下一个整点；允许时段内整点启动则立即查询。
+- 成功回执保存在 JIRA agent 数据库的 `notification_receipts`，重启不会重复告警；失败在后续轮询重试，不影响 JIRA 处理。远端已接收但本地尚未记录时发生断网/退出，重试仍可能重复一条消息（钉钉没有幂等键）。首次启用前的旧轮次不补发。
+- RM 登录后可访问 `/api/notifications/status` 查看是否启用、最近检查时间及脱敏错误；单 worker 运行，与 JIRA runner 的部署要求一致。Jenkins 未配置时跳过其检查。

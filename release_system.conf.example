@@ -105,3 +105,10 @@ MODEL_CATALOGS =
 TURN_TIMEOUT_SECONDS = 7200
 # 该组 B 上同时运行的轮次数
 MAX_CONCURRENT = 2
+
+# 钉钉自定义机器人：ACCESS_TOKEN 留空关闭；启用后 SECRET、USERID 必填。
+# USERID 为要 @ 的钉钉用户 ID，多个用逗号分隔（不是网站用户名）。
+[dingtalk]
+ACCESS_TOKEN =
+SECRET =
+USERID =
