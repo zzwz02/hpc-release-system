@@ -207,7 +207,7 @@ describe("JenkinsFailuresPage", () => {
   ])("defaults to seven calendar days through %s-%s-%s and the logged-in Code Owner", async (year, month, day, from, to) => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(year, month - 1, day, 12));
-    renderPage();
+    renderPage("/jenkins-failures", "Owner");
 
     expect(screen.getByLabelText("开始时间")).toHaveValue(from);
     expect(screen.getByLabelText("结束时间")).toHaveValue(to);
@@ -222,8 +222,20 @@ describe("JenkinsFailuresPage", () => {
     });
   });
 
+  it("defaults RM to all owners and allows selecting only mine", async () => {
+    renderPage();
+    const toggle = screen.getByRole("checkbox", { name: "只看我的" });
+    expect(toggle).not.toBeChecked();
+    await screen.findByRole("table");
+    for (const endpoint of ["/api/cicd-agent/failures", "/api/cicd-agent/failures/summary"]) {
+      expect(latestQuery(endpoint).has("code_owner")).toBe(false);
+    }
+    await userEvent.click(toggle);
+    await waitFor(() => expect(latestQuery().get("code_owner")).toBe("alice"));
+  });
+
   it("keeps the personal filter off after unchecking and refreshing", async () => {
-    renderPage("/jenkins-failures?date_from=2026-10-01&date_to=2026-10-23");
+    renderPage("/jenkins-failures?date_from=2026-10-01&date_to=2026-10-23", "Owner");
     const toggle = screen.getByRole("checkbox", { name: "只看我的" });
     await screen.findByRole("table");
     await userEvent.click(toggle);
@@ -240,7 +252,7 @@ describe("JenkinsFailuresPage", () => {
     });
   });
 
-  it("resets a linked RM review to the personal seven-day defaults", async () => {
+  it("resets a linked RM review to the all-owner seven-day defaults", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 9, 26, 12));
     renderPage("/jenkins-failures?date_from=2026-10-01&date_to=2026-10-23&pending_rm_review=true");
@@ -249,10 +261,10 @@ describe("JenkinsFailuresPage", () => {
 
     expect(screen.getByLabelText("开始时间")).toHaveValue("2026-10-20");
     expect(screen.getByLabelText("结束时间")).toHaveValue("2026-10-26");
-    expect(screen.getByRole("checkbox", { name: "只看我的" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "只看我的" })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: /仅看待 RM 裁定/ })).not.toBeChecked();
     await waitFor(() => {
-      expect(latestQuery().get("code_owner")).toBe("alice");
+      expect(latestQuery().has("code_owner")).toBe(false);
       expect(latestQuery().has("pending_rm_review")).toBe(false);
     });
   });
@@ -269,6 +281,7 @@ describe("JenkinsFailuresPage", () => {
   it("filters pending RM records with the current date range and summary", async () => {
     renderPage("/jenkins-failures?date_from=2026-10-01&date_to=2026-10-23");
     const toggle = await screen.findByRole("checkbox", { name: /仅看待 RM 裁定/ });
+    await userEvent.click(screen.getByRole("checkbox", { name: "只看我的" }));
     expect(screen.getByRole("checkbox", { name: "只看我的" })).toBeChecked();
     await waitFor(() => expect(toggle.closest("label")).toHaveTextContent("3"));
     await userEvent.click(toggle);
@@ -368,7 +381,7 @@ describe("JenkinsFailuresPage", () => {
   });
 
   it("uses date filters from email link query params", async () => {
-    renderPage("/jenkins-failures?date_from=2026-08-31&date_to=2026-09-06");
+    renderPage("/jenkins-failures?date_from=2026-08-31&date_to=2026-09-06", "Owner");
 
     expect(screen.getByLabelText("开始时间")).toHaveValue("2026-08-31");
     expect(screen.getByLabelText("结束时间")).toHaveValue("2026-09-06");

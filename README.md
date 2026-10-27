@@ -17,6 +17,8 @@
 
 这是职责摘要，不是权限实现。角色、页签与命名能力以 [access_control.json](shared/access_control.json) 为准；所有权、阶段、锁定与申请状态还会进一步限制操作。后端鉴权是最终边界，前端按钮仅用于展示。
 
+App 工作台和 Jenkins 失败查询中，Owner 默认勾选“只看我的”，RM 默认查看全部。Jenkins 查询的 RM“只看我的”默认不勾选，链接中的明确筛选条件优先。
+
 其他页面：开发 WIKI，以及「AI助手」页签下的四个子页签 Jenkins 失败查询、CICD 助手（旧版 V1 只保留直达地址）、JIRA agent、周报，各有自己的地址与权限。完整导航见 [routeConfig.ts](web/src/routes/routeConfig.ts)。
 
 ## 发布周期怎么运行

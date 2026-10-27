@@ -75,14 +75,14 @@ const DATE_PARAM_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 type SummaryGroupKey = (typeof SUMMARY_GROUP_OPTIONS)[number]["value"];
 type ResponsibilityOwnerRole = (typeof RESPONSIBILITY_OWNER_ROLES)[number];
 
-function emptyFilters(username: string): FailureRecordFilters {
+function emptyFilters(username: string, isRm: boolean): FailureRecordFilters {
   const today = todayString();
   return {
     date_from: todayString(-6),
     date_to: today,
     job_type: "",
     normalized_stage: "",
-    code_owner: username,
+    code_owner: isRm ? "" : username,
     owner_account: "",
     maca_project: "",
     maca_version: "",
@@ -97,7 +97,7 @@ function linkedFailureId(search: string): number | null {
 }
 
 function filtersFromSearch(search: string, username: string, isRm: boolean): FailureRecordFilters {
-  const filters = emptyFilters(username);
+  const filters = emptyFilters(username, isRm);
   const params = new URLSearchParams(search);
   // Explicit owner links take precedence over the personal default.
   if (params.has("code_owner") || params.has("owner_account")) filters.code_owner = "";
@@ -439,7 +439,7 @@ export function JenkinsFailuresPage() {
     setPage(1);
     setSelectedId(null);
     setSummaryExpanded(false);
-    setFilters(emptyFilters(currentUsername));
+    setFilters(emptyFilters(currentUsername, isRm));
   }
 
   function refresh() {

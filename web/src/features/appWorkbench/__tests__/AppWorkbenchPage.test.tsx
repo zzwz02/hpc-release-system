@@ -185,6 +185,20 @@ beforeEach(() => {
 
 describe("AppWorkbenchPage", () => {
 
+  it.each(["Owner", "RM"])("defaults %s scope", async (role) => {
+    vi.mocked(useAuth).mockReturnValue({ user: { username: "alice", role } } as ReturnType<typeof useAuth>);
+    vi.mocked(apiGet).mockResolvedValue(makePayload());
+    renderPage(makeQueryClient());
+    await screen.findByTestId("app-row-app1");
+    expect(Boolean(screen.queryByTestId("app-row-app2"))).toBe(role === "RM");
+    if (role === "Owner") {
+      const toggle = screen.getByRole("checkbox", { name: "只看我的" });
+      expect(toggle).toBeChecked();
+      fireEvent.click(toggle);
+      expect(screen.getByTestId("app-row-app2")).toBeInTheDocument();
+    }
+  });
+
   it("shows the selected release deadlines to Owner and updates after refresh", async () => {
     (useAuth as ReturnType<typeof vi.fn>).mockReturnValue({ user: { username: "alice", role: "Owner", display_name: "Alice" } });
     const payload = makePayload();
@@ -430,8 +444,7 @@ describe("AppWorkbenchPage", () => {
     );
     const qc = makeQueryClient();
     renderPage(qc);
-    await waitFor(() => screen.getByTestId("own-only-checkbox"));
-    fireEvent.click(screen.getByTestId("own-only-checkbox"));
+    await waitFor(() => expect(screen.getByTestId("own-only-checkbox")).toBeChecked());
     await waitFor(() => {
       // alice owns app1 only
       expect(screen.getByTestId("app-row-app1")).toBeTruthy();

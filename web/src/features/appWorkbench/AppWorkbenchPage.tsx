@@ -2905,7 +2905,10 @@ export function AppWorkbenchPage() {
   }, [data, data?.release?.id, selectedReleaseId, setSelectedReleaseId, queryClient]);
 
   const [search, setSearch] = useState("");
-  const [ownOnly, setOwnOnly] = useState(false);
+  const [ownOnly, setOwnOnly] = useState(user?.role === "Owner");
+  React.useEffect(() => {
+    setOwnOnly(user?.role === "Owner");
+  }, [user?.username, user?.role]);
   const [statusFilter, setStatusFilter] = useState<AppStatusFilter>("all");
   const [showNewApp, setShowNewApp] = useState(false);
   const [newAppInitialValues, setNewAppInitialValues] = useState<NewAppInitialValues | null>(null);
