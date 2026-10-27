@@ -572,7 +572,7 @@ def test_handover_runs_codex_turn_records_timeline_and_comments(env) -> None:
 
     [(key, body)] = env.jira.comments
     assert key == "MC3-7672"
-    assert "技术结论：修复已验证，待审核" in body
+    assert "技术结论：修复已验证" in body
     assert "blocks = (n + 255) / 256;" in body
     assert body.index("*修复说明*") < body.index("*修复补丁*") < body.index("*复现结果*") < body.index("*证据*")
     assert f"http://site/jira-agent?conversation={conversation['id']}" in body

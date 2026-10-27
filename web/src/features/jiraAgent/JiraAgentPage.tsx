@@ -114,7 +114,7 @@ function stateText(conversation: AgentConversation): string {
   if (conversation.state === "waiting_review" && turn?.conclusion) {
     const result = resultState(turn.conclusion, turn.result?.action_required);
     const action = ACTION_REQUIRED_LABELS[result.action];
-    return "待审阅 · " + (CONCLUSION_LABELS[result.conclusion] ?? result.conclusion)
+    return (CONCLUSION_LABELS[result.conclusion] ?? result.conclusion)
       + (action ? " · " + action : "");
   }
   return STATE_LABELS[conversation.state];

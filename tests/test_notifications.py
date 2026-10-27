@@ -103,7 +103,7 @@ def test_daily_thresholds_retry_restart_and_rollover(configured, monkeypatch):
 @pytest.mark.parametrize('conclusion,action,label', [
     ('root_cause_confirmed', 'needs_review', '已找到原因 · 需要审核'),
     ('analysis_done', 'none', '已完成分析'),
-    ('fixed_pending_review', 'needs_review', '修复已验证，待审核 · 需要审核'),
+    ('fixed_pending_review', 'needs_review', '修复已验证 · 需要审核'),
 ])
 def test_jira_labels(conclusion, action, label):
     import json

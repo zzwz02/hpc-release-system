@@ -229,10 +229,10 @@ export const CONCLUSION_LABELS: Record<string, string> = {
   insufficient_evidence: "暂时无法判断",
   reproduced: "问题已复现",
   cannot_reproduce: "当前未复现",
-  scope_narrowed: "已定位到具体范围",
+  scope_narrowed: "范围已缩小",
   root_cause_confirmed: "已找到原因",
   fix_prepared: "已有修复方案，待验证",
-  fixed_pending_review: "修复已验证，待审核",
+  fixed_pending_review: "修复已验证",
   analysis_done: "已完成分析",
   not_our_group: "建议由其他组处理",
 };

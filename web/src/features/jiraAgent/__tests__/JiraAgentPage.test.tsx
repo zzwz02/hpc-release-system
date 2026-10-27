@@ -269,7 +269,7 @@ describe("JiraAgentPage", () => {
     renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
     const card = within(await screen.findByTestId("jira-agent-result"));
     expect(card.getByText("需要转交")).toBeInTheDocument();
-    expect(card.getByText(conclusion === "scope_narrowed" ? "已定位到具体范围" : "建议由其他组处理")).toBeInTheDocument();
+    expect(card.getByText(conclusion === "scope_narrowed" ? "范围已缩小" : "建议由其他组处理")).toBeInTheDocument();
     expect(card.getByText("SDK 维护团队")).toBeInTheDocument();
     expect(card.getByText("复现结果")).toBeInTheDocument();
     expect(card.getByText("./repro --check")).toBeInTheDocument();
@@ -382,7 +382,7 @@ describe("JiraAgentPage", () => {
     await user.click(within(results).getByRole("button", { name: /MC3-7672/ }));
 
     const resultCard = await screen.findByTestId("jira-agent-result");
-    expect(within(resultCard).getByText("修复已验证，待审核")).toBeInTheDocument();
+    expect(within(resultCard).getByText("修复已验证")).toBeInTheDocument();
     expect(within(resultCard).getByText("需要审核")).toBeInTheDocument();
     expect(within(resultCard).getByText("待审核")).toBeInTheDocument();
     expect(within(resultCard).getByText("修复补丁")).toBeInTheDocument();
