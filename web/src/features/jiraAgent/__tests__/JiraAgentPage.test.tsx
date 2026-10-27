@@ -6,12 +6,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAuth } from "../../../api/AuthContext";
 import { apiFetch, apiGet, apiPost } from "../../../api/http";
 import { confirmDialog } from "../../../lib/confirm";
+import { toast } from "../../../lib/toast";
 import { JiraAgentPage } from "../JiraAgentPage";
 
 vi.mock("../../../api/http", () => ({
   apiFetch: vi.fn(),
   apiGet: vi.fn(),
   apiPost: vi.fn(),
+}));
+
+vi.mock("../../../lib/toast", () => ({
+  toast: { info: vi.fn(), success: vi.fn(), error: vi.fn() },
 }));
 
 vi.mock("../../../lib/confirm", () => ({
@@ -406,7 +411,7 @@ describe("JiraAgentPage", () => {
     expect(screen.getByRole("button", { name: "发送" })).toBeInTheDocument();
   });
 
-  it("lets RM delete selected history and switches to the remaining conversation", async () => {
+  it.each(["", "对话已删除，但 B 上目录未清理：10.2.118.75:/b/workspaces/MC3-7672-jac_0，请联系管理员手动清理"])("lets RM delete history and switches conversations with warning %s", async (warning) => {
     mockBackend();
     mockUser("RM");
     const base = vi.mocked(apiGet).getMockImplementation()!;
@@ -419,13 +424,14 @@ describe("JiraAgentPage", () => {
     });
     vi.mocked(apiFetch).mockImplementation(async () => {
       deleted = true;
-      return { deleted: true, issue_key: "MC3-7672", warning: "" };
+      return { deleted: true, issue_key: "MC3-7672", warning };
     });
     const user = userEvent.setup();
     renderPage("/jira-agent?issue=MC3-7672&conversation=jac_0");
     await user.click(await screen.findByRole("button", { name: "删除历史对话" }));
-    expect(confirmDialog).toHaveBeenCalledWith(expect.objectContaining({ danger: true, confirmText: "删除历史对话" }));
+    expect(confirmDialog).toHaveBeenCalledWith(expect.objectContaining({ danger: true, confirmText: "删除历史对话", body: expect.stringContaining("B 端清理失败也会继续删除对话") }));
     expect(apiFetch).toHaveBeenCalledWith("/api/jira-agent/conversations/jac_0", { method: "DELETE" });
+    if (warning) await waitFor(() => expect(toast.info).toHaveBeenCalledWith(warning));
     await waitFor(() => expect(screen.getByLabelText("对话")).toHaveValue("jac_1"));
     expect(within(screen.getByLabelText("对话")).getAllByRole("option")).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "删除历史对话" })).not.toBeInTheDocument();

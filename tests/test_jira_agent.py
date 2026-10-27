@@ -80,6 +80,8 @@ class FakeCodex:
         self.turn_start_delay = 0.0
         self.resume_delay = 0.0
         self.read_delay = 0.0
+        self.remove_delay = 0.0
+        self.remove_failure = False
         self.threads = 0
         self.turns = 0
         self.turn_state: dict[str, dict] = {}  # turn id -> Turn as thread/turns/list returns it
@@ -157,6 +159,8 @@ class FakeCodex:
                     lambda: asyncio.ensure_future(self._process_timeout(process_id, process)),
                 )
                 continue
+            if method == "fs/remove" and self.remove_delay:
+                await asyncio.sleep(self.remove_delay)
             if method == "fs/readFile" and self.read_delay:
                 await asyncio.sleep(self.read_delay)
             result, error = self._result(ws, method, params)
@@ -203,6 +207,12 @@ class FakeCodex:
             if params.get("itemsView") == "notLoaded":
                 data = [dict(turn, items=[]) for turn in data]
             return {"data": data}, None
+        if method == "fs/remove":
+            if self.remove_failure:
+                return None, {"code": -32000, "message": "removal failed"}
+            path = params["path"]
+            self.files = {name: data for name, data in self.files.items() if name != path and not name.startswith(path + "/")}
+            return {}, None
         if method == "fs/writeFile":
             self.files[params["path"]] = base64.b64decode(params["dataBase64"])
             return {}, None
@@ -796,6 +806,9 @@ def test_rm_deletes_only_closed_history_with_local_files_and_cascaded_rows(env) 
     assert response.status_code == 200
     assert response.json()["deleted"] is True
     assert not local_folder.exists()
+    assert env.fake.params("fs/remove")[-1] == {"path": first["workspace"], "recursive": True, "force": True}
+    assert not any(name.startswith(first["workspace"] + "/") for name in env.fake.files)
+    assert any(name.startswith(second["workspace"] + "/") for name in env.fake.files)
     assert env.jira.comments == comments
     assert env.client.get(path).status_code == 404
     assert env.client.get(path + "/events").status_code == 404
@@ -1962,3 +1975,66 @@ def test_existing_thread_provider_mismatch_never_sends_a_turn(env):
     assert _latest(detail)["status"] == "failed"
     assert "服务商" in _latest(detail)["error"]
     assert len(env.fake.params("turn/start")) == 1
+
+
+@pytest.mark.parametrize("failure", ["remote", "missing_group", "unsafe_path"])
+def test_remote_deletion_failure_still_deletes_history_and_local_files(env, failure):
+    first = _handover(env)["conversation"]
+    _wait(env, first["id"], _done)
+    second = _handover(env, new_conversation=True)["conversation"]
+    _wait(env, second["id"], _done)
+    env.as_user("carol")
+    env.fake.remove_failure = True
+    if failure == "missing_group":
+        env.conf.write_text("")
+    elif failure == "unsafe_path":
+        conn = connect_jira_agent(settings.jira_agent_database_url)
+        with transaction(conn):
+            conn.execute("UPDATE jira_agent_conversations SET workspace = ? WHERE id = ?", ("/unrelated", first["id"]))
+        conn.close()
+        first["workspace"] = "/unrelated"
+    path = f"/api/jira-agent/conversations/{first['id']}"
+    response = env.client.delete(path)
+    assert response.status_code == 200, response.text
+    assert response.json()["deleted"] is True
+    warning = response.json()["warning"]
+    assert "对话已删除" in warning and "B 上目录未清理" in warning
+    host = "未知机器（组 HPC）" if failure == "missing_group" else "127.0.0.1"
+    assert f"{host}:{first['workspace']}" in warning
+    assert env.client.get(path).status_code == 404
+    assert not (Path(settings.jira_agent_data_dir) / first["id"]).exists()
+    assert _detail(env, second["id"])["turns"]
+    assert env.jira.comments
+    assert env.fake.files
+    if failure != "remote":
+        assert not env.fake.params("fs/remove")
+
+
+def test_history_deletion_excludes_concurrent_delete_and_comment_retry(env):
+    from concurrent.futures import ThreadPoolExecutor
+    first = _handover(env)["conversation"]
+    turn = _latest(_wait(env, first["id"], _done))
+    second = _handover(env, new_conversation=True)["conversation"]
+    _wait(env, second["id"], _done)
+    conn = connect_jira_agent(settings.jira_agent_database_url)
+    with transaction(conn):
+        repo.update_turn(conn, turn["id"], comment_status="failed")
+    conn.close()
+    env.as_user("carol")
+    env.fake.remove_delay = 1
+    path = f"/api/jira-agent/conversations/{first['id']}"
+    comments = len(env.jira.comments)
+    with ThreadPoolExecutor() as pool:
+        deletion = pool.submit(env.client.delete, path)
+        _until(lambda: bool(env.fake.params("fs/remove")))
+        assert env.client.delete(path).status_code == 409
+        assert env.client.post(f"/api/jira-agent/turns/{turn['id']}/comment/retry").status_code == 409
+        assert deletion.result().status_code == 200
+    assert len(env.jira.comments) == comments
+
+
+@pytest.mark.parametrize("workspace", ["/", "/b/workspaces", "/b/workspaces/../other", "/other/MC3-7672-jac_test", "/b/workspaces/other-conversation"])
+def test_workspace_deletion_rejects_non_owned_paths(workspace):
+    group = domain.AgentGroup("HPC", "HPC", "ws://b:1", "t", "/b/workspaces", (), "", 600, 1)
+    with pytest.raises(ValueError):
+        domain.workspace_for_deletion(group, {"id": "jac_test", "issue_key": "MC3-7672", "workspace": workspace})

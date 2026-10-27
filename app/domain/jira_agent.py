@@ -349,6 +349,19 @@ def workspace_path(group: AgentGroup, issue_key: str, conversation_id: str) -> s
     return f"{group.workspace_root}/{safe_filename(issue_key)}-{conversation_id}"
 
 
+def workspace_for_deletion(group: AgentGroup, conversation: dict) -> str:
+    """Require the exact, direct-child workspace created for this conversation."""
+    root = group.workspace_root
+    cid = conversation["id"]
+    expected = workspace_path(group, conversation["issue_key"], cid)
+    if (root == "/" or not root.startswith("/") or posixpath.normpath(root) != root
+            or not re.fullmatch(r"jac_[A-Za-z0-9]+", cid)
+            or conversation["workspace"] != expected
+            or posixpath.dirname(expected) != root):
+        raise ValueError("B 上工作目录与当前组及对话不匹配，未删除；请确认原服务器和工作目录配置")
+    return expected
+
+
 def safe_filename(name: str, fallback: str = "file") -> str:
     base = posixpath.basename(str(name).replace("\\", "/")).strip()
     base = re.sub(r"[^\w.\-+]+", "_", base).strip("._")

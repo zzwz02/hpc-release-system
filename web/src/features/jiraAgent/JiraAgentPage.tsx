@@ -538,7 +538,7 @@ function IssueView({
 
   async function removeHistory() {
     if (!conversation || !(await confirmDialog({
-      body: `确认删除 ${issueKey} 中 ${conversation.owner} 创建于 ${conversation.created_at} 的历史对话？本网站的全部轮次、分析结果和文件将被删除且无法恢复。已发布的 JIRA 评论和服务器 B 的工作目录不会删除。`,
+      body: `确认删除 ${issueKey} 中 ${conversation.owner} 创建于 ${conversation.created_at} 的历史对话？本网站的全部轮次、分析结果和本地文件都将删除且无法恢复，同时尝试删除服务器 B 上该对话的整个工作目录。已发布的 JIRA 评论保留。B 端清理失败也会继续删除对话，并提示未清理目录的机器地址和完整路径。`,
       danger: true, confirmText: "删除历史对话",
     }))) return;
     setDeleting(true);

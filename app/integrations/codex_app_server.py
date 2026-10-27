@@ -333,6 +333,13 @@ class CodexAppServerClient:
     async def create_directory(self, path: str) -> None:
         await self.request("fs/createDirectory", {"path": path, "recursive": True})
 
+    async def remove_directory(self, path: str) -> None:
+        """Idempotent removal; callers must validate ownership of the path."""
+        await self.request(
+            "fs/remove", {"path": path, "recursive": True, "force": True},
+            timeout=max(self.request_timeout, 300),
+        )
+
     async def write_file(self, path: str, data: bytes) -> None:
         await self.request(
             "fs/writeFile",

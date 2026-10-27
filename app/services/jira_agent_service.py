@@ -18,10 +18,12 @@ import sqlite3
 import shutil
 import logging
 import urllib.error
+from urllib.parse import urlsplit
 from pathlib import Path
 
 from app.api.errors import ApiError, AuthzError
 from app.config import settings
+from app.runtime_config import ConfigError
 from app.db.connection import transaction
 from app.domain import jira_agent as domain
 from app.integrations import jira
@@ -38,6 +40,10 @@ MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_SEARCH_RESULTS = 50
 HANDLED_JQL_CHUNK = 100
 _ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*-\d+$")
+# The application is single-worker. Protect remote deletion across awaits
+# without holding a SQLite write transaction; failed/crashed attempts can retry
+# because fs/remove ignores a missing workspace.
+_DELETING_CONVERSATIONS: set[str] = set()
 
 _CLOSE_TEXT = {
     "superseded": "JIRA assignee 已变更，本对话已结束（只读）",
@@ -288,21 +294,43 @@ def list_events(user: dict, conversation_id: str, after_rev: int) -> dict:
 async def delete_conversation(user: dict, conversation_id: str) -> dict:
     if not _is_rm(user):
         raise AuthzError("只有 RM 可以删除历史对话")
-    conn = open_db()
+    if conversation_id in _DELETING_CONVERSATIONS:
+        raise ApiError(409, "该对话正在删除，请稍后再试")
+    _DELETING_CONVERSATIONS.add(conversation_id)
+    conn = None
+    warnings = []
     try:
+        conn = open_db()
+        conversation = repo.get_conversation(conn, conversation_id)
+        if conversation is None:
+            raise ApiError(404, "对话不存在或已删除")
+        if conversation["status"] != "closed":
+            raise ApiError(409, "只能删除已结束的历史对话，当前对话不能删除")
+        if runner.active_for_conversation(conversation_id) or not repo.can_delete_closed_conversation(conn, conversation_id):
+            raise ApiError(409, "对话仍在执行、回收文件或发布评论，请稍后再删除")
+        host = f"未知机器（组 {conversation['agent_group']}）"
+        try:
+            group = runner_module.load_groups().get(conversation["agent_group"])
+            if group is None:
+                raise ValueError("数字员工组配置不可用")
+            host = urlsplit(group.ws_url).hostname or host
+            if ":" in host:
+                host = f"[{host}]"
+            workspace = domain.workspace_for_deletion(group, conversation)
+            async with CodexAppServerClient(group.ws_url, group.ws_token) as client:
+                await client.remove_directory(workspace)
+        except (CodexAppServerError, ConfigError, ValueError):
+            warnings.append(f"B 上目录未清理：{host}:{conversation['workspace']}，请联系管理员手动清理")
+            logging.getLogger(__name__).warning("Could not remove B workspace for deleted conversation %s", conversation_id)
         with transaction(conn):
-            conversation = repo.get_conversation(conn, conversation_id)
-            if conversation is None:
-                raise ApiError(404, "对话不存在或已删除")
-            if conversation["status"] != "closed":
-                raise ApiError(409, "只能删除已结束的历史对话，当前对话不能删除")
-            if runner.active_for_conversation(conversation_id) or not repo.delete_closed_conversation(conn, conversation_id):
-                raise ApiError(409, "对话仍在执行、回收文件或发布评论，请稍后再删除")
+            if not repo.delete_closed_conversation(conn, conversation_id):
+                raise ApiError(409, "对话状态已变化；记录已保留，请刷新后重试")
     finally:
-        conn.close()
-    warning = ""
-    # Only remove this conversation's local files, never a caller-supplied path
-    # or the remote agent workspace. SQLite cascades its turns/events/file rows.
+        if conn is not None:
+            conn.close()
+        _DELETING_CONVERSATIONS.discard(conversation_id)
+    # SQLite cascades turns/events/file rows; local
+    # cleanup still only uses this conversation id, never a supplied path.
     if Path(conversation_id).name == conversation_id and conversation_id.startswith("jac_"):
         folder = Path(settings.jira_agent_data_dir) / conversation_id
         try:
@@ -312,7 +340,8 @@ async def delete_conversation(user: dict, conversation_id: str) -> dict:
                 await asyncio.to_thread(shutil.rmtree, folder)
         except OSError:
             logging.getLogger(__name__).warning("Could not remove local files for deleted conversation %s", conversation_id)
-            warning = "对话已删除，但本地文件清理失败，请联系管理员清理"
+            warnings.append("本地文件清理失败，请联系管理员清理")
+    warning = "对话已删除，但" + "；".join(warnings) if warnings else ""
     return {"deleted": True, "issue_key": conversation["issue_key"], "warning": warning}
 
 
@@ -848,6 +877,8 @@ async def retry_comment(user: dict, turn_id: str) -> dict:
         conversation = _get_visible(conn, user, turn["conversation_id"])
         if not (_is_rm(user) or _same_user(user["username"], conversation["owner"])):
             raise AuthzError("只有对话 owner 或 RM 可以重试发布评论")
+        if conversation["id"] in _DELETING_CONVERSATIONS:
+            raise ApiError(409, "对话正在删除，不能重试发布评论")
         if turn["comment_status"] != "failed" or turn["delivery_status"] not in ("", "complete"):
             raise ApiError(409, "该轮评论不需要重试")
         # Mark the in-flight publication before yielding, so history deletion
