@@ -12,11 +12,13 @@ description: Develop, debug, or review the JIRA agent (per-group digital employe
 以下是用户明确定下的规则。新的明确需求可以调整，但不能在实现中顺手放宽：
 
 - **A/B 分工**：网站（A）只管理对话、消息、文件、排队、执行记录和 JIRA 评论，通过 WebSocket + capability token 直连组服务器 B 上的 `codex app-server`。**B 上不写适配服务**，只有启动命令、知识包、Codex `auth.json` 和访问 C/D/E 的 SSH 凭证。沙箱与审批策略由 B 的启动参数决定，A 在 `thread/start`、`turn/start` 中不传 sandbox/approval。
-- **执行机器**（交单时二选一，存于对话 `machine`，续办沿用）：
-  - 空 = agent 从本组系统机器列表（`jira_agent_machines`，仅 RM 维护，RM 提前在 B 上配好免密）按需自选，结论 `machine` 字段记录实际使用的机器；列表为空时交单 409。
-  - `user@host` = 用户自填，不进系统列表。**每次交单**都要先经上传公钥终端（`services/jira_agent_ssh_key.py`）：A 用 app-server 的 `command/exec`（tty）在 **B 上**跑 `ssh-copy-id -i <SSH_KEY_PATH>.pub`，成功后在 B 上 `ssh -o BatchMode=yes ... true`。通过的会话（内存中，10 分钟内有效）是一次性凭证：交单带 `ssh_key_session_id`，`sessions.claim` 核对用户、组、目标后作废，不记录机器是否验证过。密码只经 `command/exec/write` 转发，不入库、不记日志、不进事件。
-  - 界面必须提醒用专用测试账号：上传后 agent 可免密登录，公钥不随对话失效。
-  - `user@host` 的格式校验（`domain.parse_ssh_target`）保证不能以 `-` 开头、不带端口和空格，防止变成 ssh 参数。
+- **执行机器**（交单时二选一，续办沿用 `execution_config_json`）：
+  - 自动模式从本组 RM 维护的系统机器中按需选择一台或多台。指定模式保存结构化目标列表和机器类型说明，数据依赖固定自动判断；页面逐台添加机器，不提供批量粘贴、机器使用方式或共享数据依赖选项，新任务统一由 agent 按需选择，兼容历史任务已保存的全部需要策略；单个 SSH 目标仍由 `domain.parse_ssh_target` 严格校验，不能用分号拼接传 SSH。
+  - 指定模式每次交单逐台经 `jira_agent_ssh_key.py` 上传 B 的公钥并验证，密码只经 PTY 转发，不存储或记录；提醒使用专用测试账号及公钥不会自动失效。
+  - `jira_agent_preflight.py` 从 B 检查每台 SSH；仅自填机器额外检查数据目录（实际来源、小文件可读性及可选标识），系统机器的数据检查标记 skipped 且不产生数据告警，配置在 `[jira_agent:<组>] DATASET_*`；未配置/超时不能算通过。`POST /execution-preflights` 支持 JSON 与 NDJSON。
+  - 检查快照持久化，有效期不超过 10 分钟和逐机 SSH 凭证剩余时间；最终交单携带 `preflight_id`、`request_id`、`acknowledged_issue_ids`，在创建任务的同一事务里消费全部凭证。任务创建失败必须回滚消费；同请求重试返回原任务，跨用户/组/用途/版本及改变内容的请求被拒绝。
+  - 自填全部需要时任何 SSH 失败阻止提交；候选池可排除失败项。数据异常确认只允许继续独立工作，不代表所需测试输入可用。出队复核、容器与具体数据复核另做，不能省略多机必需节点。
+  - 新轮结果用 `machines_used` 数组，旧 `machine` 仅兼容单机。对话配置固定，换机新建对话；恢复已有远端轮次使用已存机器范围。
 - **只评论**：agent 不改 assignee、不转单、不 resolve、不提交代码；网站把结构化结论渲染成评论追加到 JIRA，由 assignee 决定下一步（human-in-the-loop）。
   - 是否发评论按轮次由用户选（交单和发消息都带 `post_comment`，默认 true）。一轮内以最后一条消息为准（合并、steer 都会覆盖 `jira_agent_turns.post_comment`），runner 收尾时重新读取。不发时照样渲染 `comment_body` 并记 `jira_comment` 事件 `status: skipped`，`comment_status` 保持空，重试接口不接受。给 agent 的提示词和 outputSchema 不区分两种轮次。
 - **谁能操作**：只有当前 JIRA assignee 或 RM 能交单、发消息，每次写操作都实时读 JIRA 校验。查看权限为对话 owner、交单人或 RM。页签角色只来自 `shared/access_control.json` 的 `jira-agent`。
@@ -40,7 +42,7 @@ description: Develop, debug, or review the JIRA agent (per-group digital employe
 | HTTP 契约、请求体 | [app/api/routers/jira_agent.py](../../../app/api/routers/jira_agent.py) |
 | 交单、续办、新建对话、assignee 变更、取消、评论重试、视图 | [app/services/jira_agent_service.py](../../../app/services/jira_agent_service.py) |
 | 调度循环、单轮执行、输入同步、事件记录、产物拉回、评论发布、健康检查 | [app/services/jira_agent_runner.py](../../../app/services/jira_agent_runner.py) |
-| 系统机器列表增删改、交单机器校验 | `jira_agent_service.py` 末尾（`_check_machine`、`*_machine`） |
+| 系统机器列表增删改、交单机器校验 | `jira_agent_service.py` 末尾（`*_machine`），交单预检查在 `jira_agent_preflight.py` |
 | 自填机器上传公钥终端（B 上 ssh-copy-id + BatchMode 验证） | [app/services/jira_agent_ssh_key.py](../../../app/services/jira_agent_ssh_key.py) |
 | 结论 JSON schema、组配置解析、工作目录路径、提示词、评论 wiki markup | [app/domain/jira_agent.py](../../../app/domain/jira_agent.py) |
 | Codex app-server 通用客户端（无 JIRA 逻辑） | [app/integrations/codex_app_server.py](../../../app/integrations/codex_app_server.py) |
@@ -53,7 +55,7 @@ Runner 在 FastAPI lifespan 中启停（`settings.jira_agent_runner_enabled`）�
 
 ## 数据模型与状态
 
-- **`jira_agent_conversations`**：`status` 为 open/closed，`close_reason` 为 superseded/new_conversation；另有 `thread_id`、`workspace`、`thread_archived`、`machine`（空 = 从系统机器列表自选，否则自填 `user@host`，旧库由 `_ensure_column` 补列）。
+- **`jira_agent_conversations`**：`status` 为 open/closed，`close_reason` 为 superseded/new_conversation；另有 `thread_id`、`workspace`、`thread_archived`、`machine`（旧单机兼容字段）；新配置在 `execution_config_json`，提交证据在 `execution_snapshot_json`（旧库由 `_ensure_column` 补列）。
 - **`jira_agent_machines`**：系统机器列表（组 + `ssh_target` 唯一 + 说明），仅 RM 增删改。自填机器不入库，旧库的 `jira_agent_ssh_keys` 表在初始化时删除。
 - **`jira_agent_turns`**：
   - `status` 取 queued / running / completed / failed / cancelled / interrupted。queued 行就是持久队列，按 rowid FIFO；每个对话最多一个 queued 或 running（部分唯一索引）。
@@ -94,7 +96,7 @@ Runner 在 FastAPI lifespan 中启停（`settings.jira_agent_runner_enabled`）�
 - **用到的方法**：
   - 线程与回合：`thread/start`（cwd、developerInstructions、model、serviceName）、`thread/resume`（excludeTurns）、`thread/turns/list`（最新在前）、`thread/archive`、`turn/start`（input、outputSchema、model）、`turn/steer`（必须带 `expectedTurnId`）、`turn/interrupt`。
   - 文件：`fs/createDirectory`、`fs/writeFile` / `fs/readFile`（`dataBase64`，绝对路径）。
-  - 命令（只有上传公钥终端使用）：`command/exec`。
+  - 命令（公钥终端与执行环境预检查使用）：`command/exec`。
     - tty 模式需要客户端给 `processId`（只在本连接内有效）。输出走 `command/exec/outputDelta`（base64，PTY 输出都在 stdout），输入用 `command/exec/write`（`deltaBase64`），`command/exec/terminate` 结束进程（exitCode 1）。请求要到进程退出才返回 `exitCode`。
     - **默认 10 秒超时**（0.153.4 实测：交互进程被杀，exit 124），不够人输密码。上传公钥终端带 `timeoutMs: 60000`（`jira_agent_ssh_key.PROCESS_TIMEOUT_MS`），超时由 app-server 执行，网站停了也会按时杀进程；网站不另设空闲或总时长限制，退出码 124 显示为超时。
     - 非 tty 带 `timeoutMs` 时一次返回 stdout/stderr。
@@ -104,14 +106,14 @@ Runner 在 FastAPI lifespan 中启停（`settings.jira_agent_runner_enabled`）�
 
 ## 知识包（B 侧）开发
 
-- 源文件在 `deploy/jira-agent/hpc/`，用 `sync-pack.sh` 同步到 B 的 `PACK_DIR`。该目录会被初始化为 git 仓库，Codex 以它为项目根，所以 `workspaces/` 下的每个工作目录都会加载 AGENTS.md 和 `.agents/skills`；启动脚本同时把它标为 trusted。
+- 正式知识源在独立的 `jira_agent_skill` 仓库；`deploy/jira-agent/hpc/` 是保留的打包副本，不作为正式发布版本源。用 `sync-pack.sh` 指定 `SKILL_REPO` 和完整 `SKILL_COMMIT` 同步到 B 的 `PACK_DIR`。该目录会被初始化为 git 仓库，Codex 以它为项目根，所以 `workspaces/` 下的工作目录会加载 AGENTS.md 和 `.agents/skills`；启动脚本把知识根目录标为 trusted。
 - AGENTS.md 放组职责、边界、机器清单与资源规则、证据规则、结论含义；流程细节放 skills（分类归属 → 复现修复 → 转交材料）。修改走 git 评审后再同步，不直接在 B 上改正式版本。
 - 工作目录约定：`issue.md`（每轮刷新）、`attachments/`、`uploads/`、`work/`、`artifacts/`。`artifacts` 字段必须列出文件而不是目录，否则拉回会失败。
 - 提示词中与组无关的框架（不操作 JIRA、真实证据、输出 schema）在 `domain/jira_agent.py` 的 `developer_instructions` / `build_turn_prompt`；组知识不写进网站代码。
 
 ## 验证
 
-**单元与集成测试**：`python -m pytest -q tests/test_jira_agent.py`。
+**单元与集成测试**：`python -m pytest -q tests/test_jira_agent.py tests/test_jira_execution.py tests/test_jira_testing.py tests/test_jira_testing_batch.py`。
 
 - 测试用真实 websockets 起一个假的 app-server（token 认证、thread/turn/steer/interrupt/fs、`hold` 计划），并替换 `jira.get_issue` / `download_attachment` / `add_comment`。
 - 新增行为时扩展 `FakeCodex` 的计划，不要 mock 掉 runner。

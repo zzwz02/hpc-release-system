@@ -2964,3 +2964,12 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .learning-origins { margin: 16px 0; }
 @media (max-width: 900px) { .learning-comparison-columns { grid-template-columns: 1fr; } }
 @media (max-width: 640px) { .learning-combine-form > div { align-items: stretch; flex-direction: column; } .learning-comparison { padding: 10px; } }
+
+/* Multi-host execution setup and the shared environment check. */
+.jira-agent-target-row { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(160px, 1fr) auto; gap: 8px; margin: 8px 0; }
+.jira-agent-machine > label:not(.jira-agent-check) { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+.jira-agent-preflight-table { overflow-x: auto; }
+.jira-agent-preflight-table table { width: 100%; border-collapse: collapse; }
+.jira-agent-preflight-table th, .jira-agent-preflight-table td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.jira-agent-preflight-table small { display: block; overflow-wrap: anywhere; }
+@media (max-width: 640px) { .jira-agent-target-row { grid-template-columns: 1fr; } }

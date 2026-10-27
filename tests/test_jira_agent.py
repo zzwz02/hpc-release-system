@@ -12,6 +12,7 @@ import re
 import threading
 import time
 import urllib.error
+import uuid
 from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
@@ -47,6 +48,7 @@ RESULT = {
     "summary": "修复尾部元素未计算",
     "root_cause": "blocks = n / 256 向下取整",
     "machine": SYSTEM_MACHINE,
+    "machines_used": [SYSTEM_MACHINE],
     "reproduction": {"reproduced": True, "environment": "A100", "steps": ["make", "./saxpy 16777217"]},
     "evidence": [{"description": "修复后验证", "command": "./saxpy 16777217", "result": "PASS exit=0"}],
     "fix": {"description": "改为向上取整"},
@@ -86,6 +88,8 @@ class FakeCodex:
         # commands (the BatchMode check) exit with verify_exit.
         self.ssh_password = "s3cret"
         self.verify_exit = 0
+        self.probe_results = {}
+        self.execution_targets = [SYSTEM_MACHINE]
         self.pack_root: Path | None = None
         self.processes: dict[str, dict] = {}
         self.comment_override: dict | None = None
@@ -231,6 +235,14 @@ class FakeCodex:
                 result = subprocess.run([sys.executable, "-c", command[2], str(self.pack_root), command[4]],
                                         capture_output=True, text=True, timeout=30)
                 return {"exitCode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}, None
+            command = params.get("command", [])
+            if command and command[0] == "ssh":
+                override = self.probe_results.get(command[-2], {})
+                if command[-1] == "true" and override.get("ssh_exit"):
+                    return {"exitCode": override['ssh_exit'], "stdout": "", "stderr": "Connection refused"}, None
+                if command[-1] != "true":
+                    result = override.get("dataset", {"status": "pass", "code": "readable", "message": "挂载来源匹配，探测文件可读"})
+                    return {"exitCode": 0, "stdout": json.dumps(result), "stderr": ""}, None
             stderr = "" if self.verify_exit == 0 else "Permission denied (publickey)."
             return {"exitCode": self.verify_exit, "stdout": "", "stderr": stderr}, None
         if method in ("command/exec/write", "command/exec/terminate"):
@@ -317,7 +329,7 @@ class FakeCodex:
 
         command = {
             "type": "commandExecution", "id": f"cmd_{turn_id}",
-            "command": f"ssh {SYSTEM_MACHINE} 'make && ./saxpy 16777217'",
+            "command": " && ".join(f"ssh {target} 'make && ./saxpy 16777217'" for target in self.execution_targets),
             "cwd": "/b", "status": "inProgress", "commandActions": [], "exitCode": None,
             "aggregatedOutput": None, "durationMs": None,
         }
@@ -337,7 +349,8 @@ class FakeCodex:
             await notify("item/completed", {"item": {**command, "status": "completed", "exitCode": 0, "aggregatedOutput": "PASS\n", "durationMs": 12}, "completedAtMs": 2})
             await notify("item/completed", {"item": {"type": "agentMessage", "id": f"note_{turn_id}", "text": "开始复现", "phase": "commentary"}, "completedAtMs": 3})
             self.files[f"{self.thread_cwd.get(thread_id, '/b')}/artifacts/fix.patch"] = PATCH
-            result = {**RESULT, "comment": self.comment_override or {
+            result = {**RESULT, "machines_used": self.execution_targets,
+                      "machine": self.execution_targets[0] if len(self.execution_targets) == 1 else "", "comment": self.comment_override or {
                 "kind": "fix", "outcome": "修复尾部元素未计算，向上取整后原案例验证通过。",
                 "body": "16777217 个元素验证 PASS，退出码 0。\n\n请 owner 审核候选修改和验证记录。",
                 "evidence_indices": [0], "commands": [], "link_text": "候选修改与验证记录",
@@ -434,6 +447,8 @@ def _write_conf(path: Path, url: str, *, token: str = TOKEN, max_concurrent: int
         f"[jira_agent:HPC]\nDISPLAY_NAME = HPC 数字员工\nCODEX_WS_URL = {url}\nCODEX_WS_TOKEN = {token}\n"
         f"WORKSPACE_ROOT = /b/workspaces\nCOMPONENTS = PDE_HPC\nJIRA_MEMBERS_GROUP = pde_hpc\n"
         f"SSH_KEY_PATH = {KEY_PATH}\n"
+        "DATASET_PATH = /pde_hpc/dataset\nDATASET_EXPECTED_SOURCES = [\"nas:/dataset\"]\n"
+        "DATASET_PROBE_RELATIVE_PATH = .dataset-id\nDATASET_PROBE_EXPECTED_VALUE = test-data\n"
         f"MAX_CONCURRENT = {max_concurrent}\n"
         f"TURN_TIMEOUT_SECONDS = {timeout}\n",
         encoding="utf-8",
@@ -530,7 +545,22 @@ def _done(detail: dict) -> bool:
             and not detail["conversation"]["phase"])
 
 
+def _preflight(env, key="MC3-7672", *, context=None, execution=None, machine="", ssh_key_session_id="", key_sessions=None):
+    from app.domain.jira_execution import normalize
+    response = env.client.post("/api/jira-agent/execution-preflights", json={
+        "agent_group": "HPC", "context": context or {"kind": "jira", "issue_key": key},
+        "execution": execution or normalize(machine=machine),
+        "key_sessions": key_sessions or ({machine: ssh_key_session_id} if machine else {}),
+    })
+    assert response.status_code == 200, response.text
+    value = response.json()
+    return {"preflight_id": value["id"], "request_id": str(uuid.uuid4()),
+            "acknowledged_issue_ids": value["snapshot"]["warning_ids"]}
+
+
 def _handover(env, key: str = "MC3-7672", **extra) -> dict:
+    if not extra.get("preflight_id"):
+        extra.update(_preflight(env, key, machine=extra.get("machine", ""), ssh_key_session_id=extra.get("ssh_key_session_id", "")))
     response = env.client.post("/api/jira-agent/conversations", json={"issue_key": key, **extra})
     assert response.status_code == 200, response.text
     return response.json()
@@ -1497,7 +1527,7 @@ def test_rm_maintains_system_machines(env) -> None:
     assert env.client.delete(f"/api/jira-agent/machines/{machine_id}").status_code == 404
 
     env.as_user("alice")  # the automatic choice needs a system machine
-    empty = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-1"})
+    empty = env.client.post("/api/jira-agent/execution-preflights", json={"agent_group": "HPC", "context": {"kind": "jira", "issue_key": "MC3-1"}, "execution": {"mode": "auto"}})
     assert empty.status_code == 409
     assert "系统机器列表为空" in empty.json()["error"]
 
@@ -1536,10 +1566,16 @@ def _upload_key(env, target: str) -> str:
 
 def test_user_given_machine_needs_a_fresh_key_upload_for_each_handover(env) -> None:
     target = "tester@10.0.0.9"
-    refused = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-1", "machine": target})
+    def prepare(target, session="", issue="MC3-1"):
+        return env.client.post("/api/jira-agent/execution-preflights", json={
+            "agent_group": "HPC", "context": {"kind": "jira", "issue_key": issue},
+            "execution": {"mode": "custom", "targets": [{"target": target}]},
+            "key_sessions": {target: session},
+        })
+    refused = prepare(target)
     assert refused.status_code == 409
     assert "上传 SSH 公钥到 tester@10.0.0.9" in refused.json()["error"]
-    bad = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-1", "machine": "-oProxyCommand=sh@x"})
+    bad = prepare("-oProxyCommand=sh@x")
     assert bad.status_code == 400
 
     info = env.client.get("/api/jira-agent/ssh-key-info", params={"group": "HPC"}).json()
@@ -1575,16 +1611,10 @@ def test_user_given_machine_needs_a_fresh_key_upload_for_each_handover(env) -> N
     assert check["command"][-2:] == [target, "true"]
 
     env.as_user("carol")  # the upload belongs to the user who did it
-    other = env.client.post(
-        "/api/jira-agent/conversations",
-        json={"issue_key": "MC3-1", "machine": target, "ssh_key_session_id": session_id},
-    )
+    other = prepare(target, session_id)
     assert other.status_code == 409
     env.as_user("alice")
-    elsewhere = env.client.post(
-        "/api/jira-agent/conversations",
-        json={"issue_key": "MC3-1", "machine": "tester@10.0.0.8", "ssh_key_session_id": session_id},
-    )
+    elsewhere = prepare("tester@10.0.0.8", session_id)
     assert elsewhere.status_code == 409
 
     conversation = _handover(env, "MC3-1", machine=target, ssh_key_session_id=session_id)["conversation"]
@@ -1599,10 +1629,7 @@ def test_user_given_machine_needs_a_fresh_key_upload_for_each_handover(env) -> N
     assert b"s3cret" not in stored
 
     # the upload admits one hand-over; the next one needs its own upload
-    reused = env.client.post(
-        "/api/jira-agent/conversations",
-        json={"issue_key": "MC3-2", "machine": target, "ssh_key_session_id": session_id},
-    )
+    reused = prepare(target, session_id, "MC3-2")
     assert reused.status_code == 409
     second = _handover(env, "MC3-2", machine=target, ssh_key_session_id=_upload_key(env, target))
     assert second["conversation"]["machine"] == target

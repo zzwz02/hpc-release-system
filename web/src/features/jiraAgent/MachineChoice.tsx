@@ -1,87 +1,39 @@
-/**
- * Hand-over machine choice: the agent picks from the group's system machine
- * list, or the user gives user@host.  A user-given machine gets server B's
- * public key uploaded (risk warning + password) on every hand-over, see
- * HandoverComposer.  Reports "" (auto), the target, or null while the choice
- * cannot be handed over.
- */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import {
-  JIRA_AGENT_MACHINES_KEY,
-  SSH_TARGET_RE,
-  getSshKeyInfo,
-  jiraAgentSshKeyInfoKey,
-  listMachines,
-} from "./jiraAgentApi";
+import { JIRA_AGENT_MACHINES_KEY, SSH_TARGET_RE, defaultExecution, listMachines, type ExecutionConfig } from "./jiraAgentApi";
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-export function MachineChoice({
-  agentGroup,
-  disabled,
-  onChange,
-  initialTarget = "",
-}: {
-  agentGroup: string;
-  disabled: boolean;
-  onChange: (machine: string | null) => void;
-  initialTarget?: string;
+export function MachineChoice({ agentGroup, disabled, onChange, initialValue }: {
+  agentGroup: string; disabled: boolean; onChange: (value: ExecutionConfig | null) => void; initialValue?: ExecutionConfig;
 }) {
-  const [mode, setMode] = useState<"auto" | "custom">(initialTarget ? "custom" : "auto");
-  const [target, setTarget] = useState(initialTarget);
-
+  const [value, setValue] = useState<ExecutionConfig>(() => ({ ...(initialValue ?? defaultExecution()), selection_policy: "as_needed", dataset_requirement: "auto" }));
+  const [rows, setRows] = useState(initialValue?.targets.length ? initialValue.targets : [{ target: "", purpose: "" }]);
   const machinesQuery = useQuery({ queryKey: JIRA_AGENT_MACHINES_KEY, queryFn: listMachines });
-  // server B's key: checked up front so a missing SSH_KEY_PATH shows before hand-over
-  const keyQuery = useQuery({
-    queryKey: jiraAgentSshKeyInfoKey(agentGroup),
-    queryFn: () => getSshKeyInfo(agentGroup),
-    enabled: mode === "custom" && Boolean(agentGroup),
-  });
+  const count = (machinesQuery.data?.machines ?? []).filter(m => m.agent_group === agentGroup).length;
+  const normalized = useMemo(() => rows.map(row => {
+    const parts = row.target.trim().split("@");
+    return { target: parts.length === 2 ? `${parts[0]}@${parts[1].toLowerCase()}` : row.target.trim(), purpose: row.purpose.trim() };
+  }), [rows]);
+  const valid = normalized.length > 0 && normalized.length <= 32 && normalized.every(row => SSH_TARGET_RE.test(row.target) && row.target.length <= 286)
+    && new Set(normalized.map(row => row.target)).size === normalized.length;
+  const ready = useMemo(() => value.mode === "auto" ? (count ? { ...value, targets: [] } : null)
+    : valid ? { ...value, targets: normalized } : null, [value, count, valid, normalized]);
+  useEffect(() => onChange(ready), [ready, onChange]);
 
-  const machines = (machinesQuery.data?.machines ?? []).filter((machine) => machine.agent_group === agentGroup);
-  const trimmed = target.trim();
-  const validTarget = SSH_TARGET_RE.test(trimmed);
-
-  let machine: string | null = null;
-  if (mode === "auto") machine = machines.length > 0 ? "" : null;
-  else if (validTarget && keyQuery.data) machine = trimmed;
-  useEffect(() => {
-    onChange(machine);
-  }, [machine, onChange]);
-
-  return (
-    <fieldset className="jira-agent-machine" disabled={disabled}>
-      <legend>执行机器</legend>
-      <label className="jira-agent-check">
-        <input type="radio" name="jira-agent-machine" checked={mode === "auto"} onChange={() => setMode("auto")} />
-        agent 从系统机器列表自动选择
-        <span className="muted">（本组 {machines.length} 台）</span>
-      </label>
-      {mode === "auto" && machinesQuery.data && machines.length === 0 && (
-        <p className="jira-agent-warning">系统机器列表为空，请联系 RM 添加机器，或自填 user@host。</p>
-      )}
-      <label className="jira-agent-check">
-        <input type="radio" name="jira-agent-machine" checked={mode === "custom"} onChange={() => setMode("custom")} />
-        自填 user@host（不加入系统机器列表）
-      </label>
-      {mode === "custom" && (
-        <>
-          <input
-            aria-label="自填机器"
-            placeholder="例如 hpctest@10.2.118.80，请使用专用测试账号"
-            value={target}
-            onChange={(event) => setTarget(event.target.value)}
-          />
-          {trimmed && !validTarget && <p className="jira-agent-warning">请填写 user@host，不带端口。</p>}
-          {validTarget && keyQuery.data && (
-            <p className="muted">每次交给 agent 时都会弹出风险提醒，需输入该账号密码上传服务器 B 的 SSH 公钥并通过连接测试。</p>
-          )}
-          {keyQuery.isError && <p className="jira-agent-warning">{errorMessage(keyQuery.error)}</p>}
-        </>
-      )}
-    </fieldset>
-  );
+  return <fieldset className="jira-agent-machine" disabled={disabled}>
+    <legend>执行机器</legend>
+    <label className="jira-agent-check"><input type="radio" name="jira-agent-machine" checked={value.mode === "auto"} onChange={() => setValue(v => ({ ...v, mode: "auto" }))} />agent 从系统机器列表自动选择<span className="muted">（本组 {count} 台，可按任务使用多台）</span></label>
+    {value.mode === "auto" && machinesQuery.data && !count && <p className="jira-agent-warning">系统机器列表为空，请联系 RM 添加机器，或自填 user@host。</p>}
+    {machinesQuery.isError && <p role="alert">{String(machinesQuery.error)}</p>}
+    <label className="jira-agent-check"><input type="radio" name="jira-agent-machine" checked={value.mode === "custom"} onChange={() => setValue(v => ({ ...v, mode: "custom" }))} />自填 user@host（可填写多台，不加入系统机器列表）</label>
+    {value.mode === "custom" && <>
+      {rows.map((row, index) => <div className="jira-agent-target-row" key={index}>
+        <input aria-label={index === 0 ? "自填机器" : `自填机器 ${index + 1}`} placeholder="tester@host，请使用专用测试账号" value={row.target} onChange={e => setRows(rows.map((r, i) => i === index ? { ...r, target: e.target.value } : r))} />
+        <input aria-label={`机器类型 ${index + 1}`} placeholder="机器类型（可选），如 C500 / C600" value={row.purpose} maxLength={500} onChange={e => setRows(rows.map((r, i) => i === index ? { ...r, purpose: e.target.value } : r))} />
+        <button type="button" className="btn sm" aria-label={`删除机器 ${index + 1}`} onClick={() => setRows(rows.length === 1 ? [{ target: "", purpose: "" }] : rows.filter((_, i) => i !== index))}>删除</button>
+      </div>)}
+      <button type="button" className="btn sm" disabled={rows.length >= 32} onClick={() => setRows([...rows, { target: "", purpose: "" }])}>添加机器</button>
+      {!valid && rows.some(r => r.target) && <p className="jira-agent-warning">请逐行填写不重复的 user@host，不带端口。</p>}
+      <p className="muted">交单前逐台完成登录授权，按提示输入机器账号密码；已配置免密登录时自动跳过。请使用专用测试账号。</p>
+    </>}
+  </fieldset>;
 }

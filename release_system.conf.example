@@ -99,6 +99,14 @@ JIRA_MEMBERS_GROUP = pde_hpc
 # 交单自填 user@host 时，网站经 app-server 在 B 上运行 ssh-copy-id 上传这把公钥，
 # 并从 B 测试免密登录。公钥注释建议写成 hpc-jira-agent@<B>，方便对方识别和删除。
 SSH_KEY_PATH = /home/hpc-agent/.ssh/id_ed25519
+# 共享数据检查：留空显示“未配置”，不会视为检查通过。
+DATASET_PATH = /pde_hpc/dataset
+# JSON 数组，填写实际共享来源，例如 ["nas:/export/dataset"]。
+DATASET_EXPECTED_SOURCES = []
+# 已有小型只读探测文件，相对于 DATASET_PATH；检查不会创建文件。
+DATASET_PROBE_RELATIVE_PATH =
+# 可选：探测文件的预期文本内容（去除首尾空白，最多 4096 字节）。
+DATASET_PROBE_EXPECTED_VALUE =
 # 覆盖 B 上 codex 的模型；留空则由 B 上的 codex 自行决定
 MODEL =
 # 每轮最长执行时间（秒），从出队开始计算

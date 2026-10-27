@@ -61,7 +61,8 @@
 | `issue_category` | 构建、运行、正确性、性能、环境等实际分类 |
 | `ownership` | `belongs_to_us`: `yes` / `no` / `unclear`；`target_group`：主受理团队；`reasoning`：证据与限制 |
 | `summary`、`root_cause` | 中文结论与已确认根因；未确认机制如实说明 |
-| `machine` | 实际使用的获准 `user@host`；未使用机器时为空 |
+| `machines_used` | 本轮实际使用的全部获准 `user@host`，未使用时为 `[]`；旧 schema 不添加此字段 |
+| `machine` | 兼容字段：只使用一台机器时填写该 `user@host`，多台或未使用时为空 |
 | `reproduction` | `reproduced`、`environment`、`steps`，保留原命令和实际环境 |
 | `evidence` | 每项包含 `description`、`command`、`result`，仅实际执行及输出 |
 | `fix` | `description`，说明候选改动与验证结果；无修复时为空字符串 |

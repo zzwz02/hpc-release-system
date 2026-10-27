@@ -8,6 +8,7 @@ from app.repositories import jira_testing_repo as repo, jira_test_evaluation_rep
 from app.repositories.base import new_id, dumps_json
 from app.services import jira_testing_service as service, jira_agent_runner as execution
 from app.timeutil import beijing_timestamp
+from app.services import jira_agent_preflight as preflight
 
 
 def occupied(conn, ids):
@@ -53,12 +54,15 @@ def submit(user, body):
                 conflicts = occupied(conn, selected)
                 if conflicts:
                     raise ApiError(409, '以下用例已有测试排队或执行中：' + '、'.join(versions[key]['title'] for key in selected if key in conflicts))
-                config = service.run_config(user, group, body)
+                scope = preflight.test_scope(conn, 'suite', body)
+                receipt = preflight.resolve(conn, user, group, body, scope)
+                config = service.run_config(group, body, receipt)
                 if not config['model']:
                     raise ValueError('测试必须指定模型')
                 conn.execute('INSERT INTO jira_test_suites VALUES(?,?,?,?,?,?,?,?)',
                              (sid, body['request_id'], digest, 'preparing', dumps_json(config),
                               dumps_json({'username': user['username']}), '', beijing_timestamp()))
+                preflight.consume(conn, user, body, receipt, sid)
                 for ordinal, case_id in enumerate(selected):
                     conn.execute('INSERT INTO jira_test_suite_items VALUES(?,?,?,?,?)',
                                  (sid, case_id, versions[case_id]['version_id'], '', ordinal))

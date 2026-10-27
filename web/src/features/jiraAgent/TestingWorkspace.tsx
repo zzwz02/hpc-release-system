@@ -8,8 +8,8 @@ import { TestingEvaluation } from "./TestingEvaluation";
 import { TestingRecords } from "./TestingRecords";
 import { ConversationBody } from "./JiraAgentPage";
 import { MachineChoice } from "./MachineChoice";
-import { SshKeyUploadDialog } from "./SshKeyUploadDialog";
-import { cancelConversationTurn, fileToUpload, getSshKeyInfo, jiraAgentConversationKey, jiraAgentSshKeyInfoKey } from "./jiraAgentApi";
+import { ExecutionPreflightDialog } from "./ExecutionPreflightDialog";
+import { cancelConversationTurn, fileToUpload, jiraAgentConversationKey, defaultExecution, type ExecutionConfig, type ExecutionSubmission } from "./jiraAgentApi";
 import {
   getTestCase, importTestCase, listTestCases, REVIEW_LABELS, reviewTestRun, saveTestCase, startTestSuite, listTestSuites, stopTestSuite, retryTestSuite, resultLabel, currentResult, draftTestCriteria,
   exportTestPackage, previewTestPackage,
@@ -39,7 +39,6 @@ export function TestingWorkspace() {
   const entry = suite?.entries.filter((item) => !id || item.case_id === id).flatMap((item) => item.batch ? item.batch.runs.map((run) => ({ batch: item.batch!, run, caseId: item.case_id, title: item.title })) : []).find((item) => item.run.conversation_id === selected);
   const selectedCase = useQuery({ queryKey: ["jira-testing", identity, entry?.caseId], queryFn: () => getTestCase(entry!.caseId), enabled: !!entry });
   const [chosen, setChosen] = useState<string[]>([]);
-  const request = useRef<{ signature: string; id: string }>();
   const submitting = useRef(false);
   const pending = useRef<string[]>([]);
   const source = useQuery({ queryKey: ["jira-testing", identity, "import", imported], queryFn: () => importTestCase(imported), enabled: !!imported, retry: false, staleTime: 0, refetchOnMount: "always" });
@@ -53,14 +52,13 @@ export function TestingWorkspace() {
   const [failure, setFailure] = useState("");
   const [filter, setFilter] = useState("");
   const [groupName, setGroupName] = useState("");
-  const [machine, setMachine] = useState<string | null>("");
+  const [machine, setMachine] = useState<ExecutionConfig | null>(defaultExecution);
   const [uploading, setUploading] = useState(false);
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("xhigh");
   const [reviews, setReviews] = useState<Record<string, ReviewDraft>>({});
   const [folds, setFolds] = useState<Record<string, boolean>>({});
   const group = options.data?.groups.find((item) => item.name === groupName) ?? options.data?.groups[0];
-  const keyQuery = useQuery({ queryKey: jiraAgentSshKeyInfoKey(group?.name ?? ""), queryFn: () => getSshKeyInfo(group!.name), enabled: Boolean(machine && group) });
   const current = detail.data?.versions[0];
   const visible = options.data?.cases.filter((item) => item.title.toLowerCase().includes(filter.trim().toLowerCase())) ?? [];
   const picked = options.data?.cases.filter((item) => chosen.includes(item.id)) ?? [];
@@ -69,9 +67,12 @@ export function TestingWorkspace() {
   const conflicts = picked.filter((item) => occupied.has(item.id));
 
   useEffect(() => { if (source.data) { setDraft(source.data); setEditing(""); } }, [source.data]);
+  const selectedConversation = entry?.run.conversation_id;
+  const selectedStatus = entry?.run.status;
+  const selectedDelivery = entry?.run.delivery_status;
   useEffect(() => {
-    if (entry) void client.invalidateQueries({ queryKey: jiraAgentConversationKey(entry.run.conversation_id) });
-  }, [client, selected, entry?.run.status, entry?.run.delivery_status]);
+    if (selected && selectedConversation) void client.invalidateQueries({ queryKey: jiraAgentConversationKey(selectedConversation) });
+  }, [client, selected, selectedConversation, selectedStatus, selectedDelivery]);
   const refresh = useCallback(() => {
     void client.invalidateQueries({ queryKey: ["jira-testing", identity] });
     if (selected && selected !== "none") void client.invalidateQueries({ queryKey: jiraAgentConversationKey(selected) });
@@ -81,19 +82,17 @@ export function TestingWorkspace() {
     setParams({ view: "testing", ...(caseId ? { case: caseId } : {}), ...(runId ? { tab: "records", run: runId } : {}) });
     setDraft(null);
   }
-  async function start(ids: string[], sshKeySessionId = "") {
+  async function start(ids: string[], submission?: ExecutionSubmission) {
     if (!group || machine === null || submitting.current || !ids.length) return;
-    if (machine && !sshKeySessionId) { pending.current = ids; setUploading(true); return; }
-    const body = { case_ids: ids, agent_group: group.name, machine, model: model || group.model, effort };
-    const signature = JSON.stringify(body);
-    if (request.current?.signature !== signature) request.current = { signature, id: Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("") };
+    if (!submission) { pending.current = ids; setUploading(true); return; }
+    const body = { case_ids: ids, agent_group: group.name, model: model || group.model, effort, ...submission };
     setFailure(""); setBusy(true); submitting.current = true;
     try {
-      const result = await startTestSuite({ ...body, request_id: request.current.id, ssh_key_session_id: sshKeySessionId });
+      const result = await startTestSuite(body);
+      setUploading(false);
       await suites.refetch();
       setParams({ view: "testing", tab: "records", suite: result.id });
-      request.current = undefined;
-    } catch (error) { setFailure(errorText(error)); } finally { setBusy(false); submitting.current = false; }
+    } finally { setBusy(false); submitting.current = false; }
   }
   async function save(value: CaseDraft) {
     const result = await saveTestCase(value, editing);
@@ -192,16 +191,17 @@ export function TestingWorkspace() {
     </div>
     <TestDialog title="测试设置" open={configuring} close={() => setConfiguring(false)}>
       {configuring && <>
-        {(options.data?.groups.length ?? 0) > 1 && <label>分析组<select aria-label="分析组" value={group?.name ?? ""} onChange={(event) => { setGroupName(event.target.value); setMachine(""); setModel(""); }}>{options.data?.groups.map((item) => <option key={item.name}>{item.name}</option>)}</select></label>}
-        {group && <MachineChoice key={group.name} agentGroup={group.name} initialTarget={machine || ""} disabled={busy} onChange={setMachine} />}
+        {(options.data?.groups.length ?? 0) > 1 && <label>分析组<select aria-label="分析组" value={group?.name ?? ""} onChange={(event) => { setGroupName(event.target.value); setMachine(defaultExecution()); setModel(""); }}>{options.data?.groups.map((item) => <option key={item.name}>{item.name}</option>)}</select></label>}
+        {group && <MachineChoice key={group.name} agentGroup={group.name} initialValue={machine ?? undefined} disabled={busy} onChange={setMachine} />}
         <div className="test-controls"><label>模型<input type="text" aria-label="模型" value={model || group?.model || ""} onChange={(event) => setModel(event.target.value)} /></label>
           <label>推理强度<select aria-label="推理强度" value={effort} onChange={(event) => setEffort(event.target.value)}>{["low", "medium", "high", "xhigh"].map((item) => <option key={item}>{item}</option>)}</select></label></div>
         <p className="hint">使用分析服务当前的 skill。设置应用于下一次提交的整批测试。</p>
         <div className="dialog-actions"><button className="btn primary" disabled={machine === null || !(model || group?.model)} onClick={() => setConfiguring(false)}>完成</button></div>
       </>}
     </TestDialog>
-    {uploading && machine && keyQuery.data && <SshKeyUploadDialog target={machine} keyInfo={keyQuery.data} onVerified={(sessionId) => { setUploading(false); void start(pending.current, sessionId); }} onClose={() => setUploading(false)} />}
-    {uploading && keyQuery.isError && <p role="alert">{errorText(keyQuery.error)}</p>}
+    {uploading && machine && group && <ExecutionPreflightDialog agentGroup={group.name} execution={machine}
+      context={{ kind: "suite", case_ids: pending.current }} onReady={submission => start(pending.current, submission)} onClose={() => setUploading(false)} />}
+
   </section>;
 }
 
@@ -238,8 +238,8 @@ function RunDetail({ title, close, batch, run, input, refresh, review, setReview
     <ConversationBody id={run.conversation_id} onChanged={refresh} testing={{ processOpen, onProcessToggle: toggleProcess }} />
     <details className="test-run-config"><summary>本次配置</summary>
       <p>模型：{batch.config.model} · 推理强度：{batch.config.effort}</p>
-      <p>选机方式：{batch.config.machine || "agent 自动选择机器"}</p>
-      {run.machine_used && <p>实际执行机器：{run.machine_used}</p>}
+      <p>选机方式：{batch.config.execution?.targets.map(t => t.target).join("、") || batch.config.machine || "agent 自动选择机器"}</p>
+      {(run.machines_used?.length || run.machine_used) && <p>实际执行机器：{run.machines_used?.join("、") || run.machine_used}</p>}
       <p>{batch.config.skill_source === "analysis_service" ? "skill 服务快照" : "skill 仓库提交"}：<code>{batch.config.skill_source === "analysis_service" ? batch.config.skill_sha256 : batch.config.skill_commit}</code></p>
       <p>开始：{run.started_at || "—"} · 结束：{run.finished_at || "—"}</p>
       {run.evaluation && <><p>初评模型：{run.evaluation.config.model || "未配置"} / {run.evaluation.config.effort || "—"}</p>

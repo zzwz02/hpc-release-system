@@ -17,7 +17,7 @@ import { isRM } from "../../lib/roles";
 import { toast } from "../../lib/toast";
 import { MachineChoice } from "./MachineChoice";
 import { MachinesDialog } from "./MachinesDialog";
-import { SshKeyUploadDialog } from "./SshKeyUploadDialog";
+import { ExecutionPreflightDialog } from "./ExecutionPreflightDialog";
 import { LearningIssueList } from "./LearningIssueList";
 import { LearningPanel } from "./LearningPanel";
 import { TestingWorkspace } from "./TestingWorkspace";
@@ -34,12 +34,10 @@ import {
   fileToUpload,
   getConversation,
   getConversationEvents,
-  getSshKeyInfo,
   handoverIssue,
   jiraAgentConversationKey,
   jiraAgentIssueKey,
   jiraAgentIssueSearchKey,
-  jiraAgentSshKeyInfoKey,
   listHandledIssues,
   previewIssue,
   retryTurnComment,
@@ -47,6 +45,9 @@ import {
   resultState,
   searchIssues,
   sendConversationMessage,
+  type ExecutionTargetResult,
+  type ExecutionConfig,
+  type ExecutionSubmission,
   type AgentConversation,
   type AgentEvent,
   type AgentFile,
@@ -123,7 +124,8 @@ function stateText(conversation: AgentConversation): string {
 
 /** The machine in use: the user's own, else the one the agent reported. */
 function machineText(conversation: AgentConversation) {
-  const machine = conversation.machine || conversation.machine_used;
+  const specified = conversation.execution?.targets.map(t => t.target) ?? [];
+  const machine = (conversation.machines_used?.length ? conversation.machines_used : specified).join("、") || conversation.machine || conversation.machine_used;
   if (!machine) {
     return conversation.state === "running"
       ? "处理中，agent 尚未登录机器"
@@ -132,7 +134,7 @@ function machineText(conversation: AgentConversation) {
   return (
     <>
       <code>{machine}</code>
-      <span className="muted">（{conversation.machine ? "用户指定" : "agent 选择"}）</span>
+      <span className="muted">（{conversation.execution?.mode === "custom" || conversation.machine ? "用户指定" : "agent 选择"}）</span>
     </>
   );
 }
@@ -730,18 +732,14 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   // "" = the agent picks from the system list; null = the choice is not ready yet
-  const [machine, setMachine] = useState<string | null>(null);
+  const [machine, setMachine] = useState<ExecutionConfig | null>(null);
   const [postComment, setPostComment] = useState(true);
   // a user-given machine: the SSH key upload dialog that must pass before this hand-over
   const [uploading, setUploading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const recovering = Boolean(preview.open_conversation?.recovering);
   const disabled = !preview.can_handover;
-  const keyQuery = useQuery({
-    queryKey: jiraAgentSshKeyInfoKey(preview.agent_group),
-    queryFn: () => getSshKeyInfo(preview.agent_group),
-    enabled: Boolean(machine),
-  });
+
 
   async function submit() {
     const open = preview.open_conversation;
@@ -757,11 +755,10 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
     ) {
       return;
     }
-    if (machine) setUploading(true);
-    else await handover("");
+    setUploading(true);
   }
 
-  async function handover(sshKeySessionId: string) {
+  async function handover(submission: ExecutionSubmission) {
     setBusy(true);
     try {
       const files = await readFiles(fileInput.current?.files ?? null);
@@ -770,14 +767,12 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
         note: note.trim(),
         files,
         new_conversation: true,
-        machine: machine ?? "",
-        ...(sshKeySessionId ? { ssh_key_session_id: sshKeySessionId } : {}),
+        ...submission,
         post_comment: postComment,
       });
+      setUploading(false);
       toast.success("已交给 agent，进入排队");
       onCreated(result.conversation.id);
-    } catch (error) {
-      toast.error(errorMessage(error));
     } finally {
       setBusy(false);
     }
@@ -791,13 +786,13 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
           rows={3}
           placeholder="交单说明（可选），例如验收标准"
           value={note}
-          disabled={disabled}
+          disabled={disabled || busy || uploading}
           onChange={(event) => setNote(event.target.value)}
         />
-        <MachineChoice agentGroup={preview.agent_group} disabled={disabled} onChange={setMachine} />
-        <PostCommentCheck checked={postComment} disabled={disabled} onChange={setPostComment} />
+        <MachineChoice agentGroup={preview.agent_group} disabled={disabled || busy || uploading} onChange={setMachine} />
+        <PostCommentCheck checked={postComment} disabled={disabled || busy || uploading} onChange={setPostComment} />
         <div className="actions">
-          <input ref={fileInput} type="file" multiple aria-label="附加文件" disabled={disabled} />
+          <input ref={fileInput} type="file" multiple aria-label="附加文件" disabled={disabled || busy || uploading} />
           <button
             type="button"
             className="btn primary"
@@ -809,17 +804,9 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
         </div>
         {recovering && <p className="jira-agent-warning">{RECOVERING_TEXT}</p>}
       </div>
-      {uploading && machine && keyQuery.data && (
-        <SshKeyUploadDialog
-          target={machine}
-          keyInfo={keyQuery.data}
-          onVerified={(sessionId) => {
-            setUploading(false);
-            void handover(sessionId);
-          }}
-          onClose={() => setUploading(false)}
-        />
-      )}
+      {uploading && machine && <ExecutionPreflightDialog agentGroup={preview.agent_group} execution={machine}
+        context={{ kind: "jira", issue_key: preview.issue.key }} onReady={handover} onClose={() => setUploading(false)} />}
+
     </div>
   );
 }
@@ -1094,6 +1081,12 @@ function EventRow({
           <pre className="jira-agent-output">{String(payload.detail ?? "")}</pre>
         </details>
       );
+    case "environment_check": {
+      const checks = (Array.isArray(payload.results) ? payload.results : []) as ExecutionTargetResult[];
+      return <details className="jira-agent-event"><summary>执行环境复核 · {checks.length} 台机器</summary>
+        {checks.map(check => <p key={check.target}><code>{check.target}</code> · SSH：{check.ssh.message}{check.dataset.status !== "skipped" && <> · 数据：{check.dataset.message}</>}</p>)}
+      </details>;
+    }
     case "result":
       return <ResultCard result={payload as unknown as AgentResult} files={files.filter((f) => f.turn_id === event.turn_id && f.source === "artifact")} pending={turn?.delivery_status === "incomplete" || turn?.delivery_status === "collecting"} />;
     case "delivery":
@@ -1242,10 +1235,10 @@ function ResultCard({ result, files, pending, showFiles = true, foldEvidence = f
             </dd>
           </>
         )}
-        {result.machine && (
+        {(result.machines_used?.length || result.machine) && (
           <>
             <dt>执行机器</dt>
-            <dd><code>{result.machine}</code></dd>
+            <dd><code>{result.machines_used?.length ? result.machines_used.join("、") : result.machine}</code></dd>
           </>
         )}
         {showRoot && (

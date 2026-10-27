@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.api.errors import ApiError
+from app.api.jira_execution_models import ExecutionSubmission
 from app.deps import require_roles
 from app.domain import jira_test_package
 from app.services import jira_testing_service as service, jira_testing_batches as batches_service, jira_test_evaluation as evaluations
@@ -24,7 +25,7 @@ class CaseBody(BaseModel):
     import_update: str = ""
 
 
-class RunBody(BaseModel):
+class RunBody(ExecutionSubmission):
     version_id: str
     agent_group: str
     machine: str = ''

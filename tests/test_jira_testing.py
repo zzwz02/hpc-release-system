@@ -13,7 +13,7 @@ from app.integrations import jira
 from app.repositories import jira_agent_repo as repo
 from app.services import jira_agent_runner
 from tests.learning_helpers import knowledge_repo, commit
-from tests.test_jira_agent import env, _handover, _wait, _done, _detail, SYSTEM_MACHINE, _write_conf, _upload_key
+from tests.test_jira_agent import _preflight, env, _handover, _wait, _done, _detail, SYSTEM_MACHINE, _write_conf, _upload_key
 
 BASE = '/api/jira-agent/testing'
 
@@ -34,9 +34,11 @@ def setup(env, monkeypatch):
 
 
 def start(env, case, **extra):
+    proof = _preflight(env, context={'kind': 'test', 'case_id': case['id'], 'version_id': case['versions'][0]['id']},
+                       machine=extra.get('machine', ''), ssh_key_session_id=extra.get('ssh_key_session_id', ''))
     response = env.client.post(BASE + f'/cases/{case["id"]}/batches', json={
         'version_id': case['versions'][0]['id'], 'agent_group': 'HPC',
-        'model': 'test-model', 'effort': 'xhigh', **extra})
+        'model': 'test-model', 'effort': 'xhigh', **proof, **extra})
     assert response.status_code == 200, response.text
     batch = response.json()['batches'][0]
     assert len(batch['runs']) == 1
@@ -93,7 +95,8 @@ def test_default_skill_is_frozen_from_service_including_uncommitted_resources(se
     _wait(env, first, lambda detail: detail['conversation']['phase'] == 'running')
     # Each run captures the deployed files, including changes outside Git.
     response = env.client.post(BASE + f'/cases/{case["id"]}/batches', json={
-        'version_id': case['versions'][0]['id'], 'agent_group': 'HPC', 'model': 'test-model'})
+        'version_id': case['versions'][0]['id'], 'agent_group': 'HPC', 'model': 'test-model',
+        **_preflight(env, context={'kind': 'test', 'case_id': case['id'], 'version_id': case['versions'][0]['id']})})
     assert response.status_code == 200, response.text
     batch = response.json()['batches'][0]
     assert batch['config']['skill_source'] == 'analysis_service'
@@ -132,7 +135,8 @@ def test_invalid_service_pack_does_not_silently_fall_back_to_repository(setup, f
     else:
         (root / '.agents/skills/blob').write_bytes(b'\xff')
     response = env.client.post(BASE + f'/cases/{case["id"]}/batches', json={
-        'version_id': case['versions'][0]['id'], 'agent_group': 'HPC', 'model': 'test-model'})
+        'version_id': case['versions'][0]['id'], 'agent_group': 'HPC', 'model': 'test-model',
+        **_preflight(env, context={'kind': 'test', 'case_id': case['id'], 'version_id': case['versions'][0]['id']})})
     assert response.status_code == 400, response.text
     assert env.client.get(BASE + f'/cases/{case["id"]}/batches').json()['batches'] == []
     assert env.fake.turns == 0
@@ -155,7 +159,8 @@ def test_shared_service_pack_requires_matching_entry_points(setup, mode):
     (alias / '.agents').symlink_to(target / '.agents', target_is_directory=True)
     env.fake.pack_root = alias
     response = env.client.post(BASE + f'/cases/{case["id"]}/batches', json={
-        'version_id': case['versions'][0]['id'], 'agent_group': 'HPC', 'model': 'test-model'})
+        'version_id': case['versions'][0]['id'], 'agent_group': 'HPC', 'model': 'test-model',
+        **_preflight(env, context={'kind': 'test', 'case_id': case['id'], 'version_id': case['versions'][0]['id']})})
     if mode != 'shared':
         assert response.status_code == 400
         assert env.fake.turns == 0
@@ -170,7 +175,7 @@ def test_shared_service_pack_requires_matching_entry_points(setup, mode):
     assert env.fake.files[workspace + '/.agents/skills/hpc-jira-agent/SKILL.md'] == (root / '.agents/skills/hpc-jira-agent/SKILL.md').read_bytes()
 
 
-def test_auto_choice_keeps_queued_machine_scope_and_records_actual_machine(setup):
+def test_auto_choice_never_adds_new_hosts_and_excludes_removed_hosts_at_dequeue(setup):
     env, root, body, case = setup
     env.fake.plans = ['hold', 'complete']
     first = start(env, case)['runs'][0]['conversation_id']
@@ -187,9 +192,12 @@ def test_auto_choice_keeps_queued_machine_scope_and_records_actual_machine(setup
     _wait(env, first, _done)
     result = _wait(env, second, _done)
     assert result['turns'][0]['status'] == 'completed'
-    assert result['conversation']['machine_used'] == SYSTEM_MACHINE
+    assert result['conversation']['machine_used'] == ''
+    assert result['turns'][0]['execution_snapshot']['available_targets'] == []
+    assert any('允许范围之外' in event['payload'].get('text', '') for event in result['events'])
     prompt = env.fake.params('turn/start')[-1]['input'][0]['text']
     assert SYSTEM_MACHINE in prompt and 'new@10.0.0.99' not in prompt
+    assert '允许连接的目标：[]' in prompt.split('出队环境复核（以此为准）')[-1]
 
 
 def test_custom_machine_uses_verified_session_and_empty_list_allows_only_custom(setup):
@@ -216,7 +224,7 @@ def test_custom_machine_uses_verified_session_and_empty_list_allows_only_custom(
     result = _wait(env, batch['runs'][0]['conversation_id'], _done)
     assert result['turns'][0]['status'] == 'completed'
     assert result['conversation']['machine'] == target
-    assert batch['config']['machines'] == []
+    assert [m['ssh_target'] for m in batch['config']['machines']] == [target]
     assert 'ssh_key_session_id' not in batch['config']
     assert env.client.post(url, json=request).status_code == 409
     prompt = env.fake.params('turn/start')[-1]['input'][0]['text']
@@ -408,8 +416,8 @@ def test_missing_source_files_and_unavailable_skills_fail_before_queueing(setup)
     assert '附件缺失' in response.text
     (root / 'AGENTS.md').unlink()
     response = env.client.post(BASE + f'/cases/{case["id"]}/batches', json={
-        'version_id': case['versions'][0]['id'], 'agent_group': 'HPC', 'machine': SYSTEM_MACHINE,
-        'model': 'test-model'})
+        'version_id': case['versions'][0]['id'], 'agent_group': 'HPC',
+        'model': 'test-model', **_preflight(env, context={'kind': 'test', 'case_id': case['id'], 'version_id': case['versions'][0]['id']})})
     assert response.status_code == 400
     assert env.client.get(BASE + f'/cases/{case["id"]}/batches').json()['batches'] == []
 

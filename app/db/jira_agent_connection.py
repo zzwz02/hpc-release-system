@@ -291,6 +291,26 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS jira_agent_preflights (
+            id TEXT PRIMARY KEY, username TEXT NOT NULL, agent_group TEXT NOT NULL,
+            scope_json TEXT NOT NULL, execution_json TEXT NOT NULL, snapshot_json TEXT NOT NULL,
+            key_sessions_json TEXT NOT NULL, policy_hash TEXT NOT NULL,
+            expires_at REAL NOT NULL, created_at TEXT NOT NULL,
+            request_id TEXT NOT NULL DEFAULT '', submission_hash TEXT NOT NULL DEFAULT '',
+            consumed_by TEXT NOT NULL DEFAULT ''
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_jira_preflight_submission
+            ON jira_agent_preflights(username, request_id) WHERE request_id != '';
+        CREATE TABLE IF NOT EXISTS jira_agent_key_claims (
+            session_id TEXT PRIMARY KEY, preflight_id TEXT NOT NULL
+                REFERENCES jira_agent_preflights(id)
+        );
+    """)
+    _ensure_column(conn, "jira_agent_conversations", "execution_config_json", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "jira_agent_conversations", "execution_snapshot_json", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "jira_agent_turns", "execution_snapshot_json", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "jira_agent_turns", "machines_used_json", "TEXT NOT NULL DEFAULT '[]'")
     # '' = the agent picks from the system machine list; else user@host.
     _ensure_column(conn, "jira_agent_conversations", "machine", "TEXT NOT NULL DEFAULT ''")
     # what the agent is actually on: detected from its commands, then its result.

@@ -12,7 +12,7 @@ from app.db.connection import transaction
 from app.domain import jira_test_evaluation as grading
 from app.repositories import jira_test_evaluation_repo as evaluations, jira_agent_repo as agent
 from app.services import jira_agent_runner, jira_testing_runner
-from tests.test_jira_agent import env, FakeCodex, _wait, _done
+from tests.test_jira_agent import _preflight, env, FakeCodex, _wait, _done
 from tests.test_jira_testing import setup, start, BASE, forbid_jira
 
 
@@ -46,8 +46,13 @@ def grading_setup(setup, monkeypatch):
 
 
 def suite(env, ids, request=None):
+    request = request or str(uuid.uuid4())
+    cache = getattr(env, 'suite_proofs', {})
+    if request not in cache:
+        cache[request] = _preflight(env, context={'kind': 'suite', 'case_ids': ids})
+        env.suite_proofs = cache
     response = env.client.post(BASE + '/suites', json={'case_ids': ids, 'agent_group': 'HPC',
-        'model': 'tested-model', 'request_id': request or str(uuid.uuid4())})
+        'model': 'tested-model', **cache[request], 'request_id': request})
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -204,7 +209,8 @@ def test_manual_evaluation_before_ai_completion_survives_and_can_be_updated(grad
     cid = running['entries'][0]['batch']['runs'][0]['conversation_id']
     wait_eval(env, cid, 'running')
     assert running['finished'] == 1 and running['evaluated'] == 0
-    assert env.client.post(BASE + f'/runs/{cid}/review', json={'decision':'partial','note':'缺少独立验证'}).status_code == 200
+    review = env.client.post(BASE + f'/runs/{cid}/review', json={'decision':'partial','note':'缺少独立验证'})
+    assert review.status_code == 200, review.text
     before = env.client.get(BASE + '/suites/' + submitted['id']).json()
     assert before['counts'] == {'partial':1} and before['reviewed'] == 1
     peer.release()
@@ -311,6 +317,8 @@ def test_simultaneous_submission_is_idempotent_and_preparation_can_retry(setup, 
     # Failure happens before any queued analysis is created.
     (root / 'AGENTS.md').unlink()
     key = str(uuid.uuid4())
+    # Both concurrent submissions refer to the same completed preflight, as a double click does.
+    env.suite_proofs = {key: _preflight(env, context={'kind': 'suite', 'case_ids': [case['id']]})}
     with ThreadPoolExecutor(max_workers=2) as pool:
         submitted = list(pool.map(lambda _: suite(env, [case['id']], key), range(2)))
     assert submitted[0]['id'] == submitted[1]['id']

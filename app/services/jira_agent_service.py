@@ -21,13 +21,13 @@ from pathlib import Path
 from app.api.errors import ApiError, AuthzError
 from app.config import settings
 from app.db.connection import transaction
-from app.domain import jira_agent as domain
+from app.domain import jira_agent as domain, jira_execution
 from app.integrations import jira
 from app.integrations.codex_app_server import CodexAppServerError
 from app.repositories import jira_agent_repo as repo
 from app.repositories.base import loads_json, new_id
 from app.services import jira_agent_runner as runner_module
-from app.services import jira_agent_ssh_key
+from app.services import jira_agent_preflight as preflight
 from app.services.jira_agent_runner import open_db, runner
 
 MAX_UPLOAD_FILES = 10
@@ -189,6 +189,8 @@ def _turn_view(conn: sqlite3.Connection, turn: dict | None) -> dict | None:
     view = dict(turn)
     view["result"] = loads_json(view.pop("result_json"), None)
     view["post_comment"] = bool(view["post_comment"])
+    view["execution_snapshot"] = loads_json(view.pop("execution_snapshot_json", ""), {})
+    view["machines_used"] = loads_json(view.pop("machines_used_json", "[]"), [])
     view["delivery_errors"] = loads_json(view.pop("delivery_errors_json"), [])
     publication = repo.comment_publication(conn, turn["id"])
     view["comment_publication_state"] = publication["state"] if publication else ""
@@ -219,7 +221,10 @@ def conversation_view(conn: sqlite3.Connection, user: dict, conversation: dict) 
         _is_rm(user) or _same_user(jira.agent_username(user), conversation["owner"])
     )
     return {
-        **conversation,
+        **{k: v for k, v in conversation.items() if k not in ("execution_config_json", "execution_snapshot_json")},
+        "execution": jira_execution.configuration(conversation),
+        "execution_snapshot": loads_json(conversation.get("execution_snapshot_json", ""), {}),
+        "machines_used": loads_json(latest.get("machines_used_json", "[]"), []) if latest else [],
         "state": _state(conversation, latest),
         "phase": active.phase if active else "",
         "latest_turn": _turn_view(conn, latest),
@@ -509,25 +514,33 @@ def _check_not_recovering(conversation_id: str) -> None:
         raise ApiError(409, _RECOVERING_TEXT)
 
 
-async def close_conversation(conn: sqlite3.Connection, conversation: dict, reason: str) -> None:
-    """Close read-only, cancel/interrupt its active turn, archive its thread."""
+def _close_conversation_rows(conn, conversation, reason):
+    """The caller owns the transaction; remote interruption happens after commit."""
     _check_not_recovering(conversation["id"])
     _check_not_delivering(conn, conversation["id"])
+    if not repo.close_conversation(conn, conversation["id"], reason):
+        return ""
+    turn = repo.active_turn(conn, conversation["id"])
     running_turn_id = ""
-    with transaction(conn):
-        if not repo.close_conversation(conn, conversation["id"], reason):
-            return
-        turn = repo.active_turn(conn, conversation["id"])
-        if turn is not None and not repo.cancel_queued_turn(conn, turn["id"], _CLOSE_TEXT[reason]):
-            running_turn_id = turn["id"]
-        repo.add_event(
-            conn, conversation_id=conversation["id"],
-            kind="status", payload={"status": "closed", "text": _CLOSE_TEXT[reason]},
-        )
+    if turn is not None and not repo.cancel_queued_turn(conn, turn["id"], _CLOSE_TEXT[reason]):
+        running_turn_id = turn["id"]
+    repo.add_event(conn, conversation_id=conversation["id"], kind="status",
+                   payload={"status": "closed", "text": _CLOSE_TEXT[reason]})
+    return running_turn_id
+
+
+async def _finish_close(conn, conversation, reason, running_turn_id):
     if running_turn_id and not await runner.stop_turn(running_turn_id, "closed"):
         with transaction(conn):
             repo.update_turn(conn, running_turn_id, status="interrupted", error=_CLOSE_TEXT[reason])
     runner.schedule_archive(conversation["id"])
+
+
+async def close_conversation(conn: sqlite3.Connection, conversation: dict, reason: str) -> None:
+    """Close read-only, cancel/interrupt its active turn, archive its thread."""
+    with transaction(conn):
+        running_turn_id = _close_conversation_rows(conn, conversation, reason)
+    await _finish_close(conn, conversation, reason, running_turn_id)
 
 
 async def handover(user: dict, body: dict) -> dict:
@@ -549,19 +562,33 @@ async def handover(user: dict, body: dict) -> dict:
 
     conn = open_db()
     try:
-        machine = check_machine(
-            conn, user, group, body.get("machine") or "", body.get("ssh_key_session_id") or "",
-        )
+        prior = preflight.previous(conn, user, body)
+        if prior:
+            return {"created": False, "conversation": conversation_view(conn, user, repo.get_conversation(conn, prior["consumed_by"]))}
+        existing = repo.get_open_conversation(conn, issue["key"])
+        if existing is not None:
+            _check_not_recovering(existing["id"])
+            _check_not_delivering(conn, existing["id"])
+        scope = {"kind": "jira", "issue_key": issue["key"], "owner": assignee.casefold()}
+        receipt = preflight.resolve(conn, user, group, body, scope)
+        machine = jira_execution.legacy_machine(receipt["execution"])
         existing = repo.get_open_conversation(conn, issue["key"])
         if existing is not None:
             same_owner = _same_user(existing["owner"], assignee)
             if same_owner and not body.get("new_conversation"):
                 return {"created": False, "conversation": conversation_view(conn, user, existing)}
-            await close_conversation(conn, existing, "new_conversation" if same_owner else "superseded")
+        close_reason = "new_conversation" if existing and _same_user(existing["owner"], assignee) else "superseded"
+        old_running_turn = ""
 
         conversation_id = new_id("jac")
         try:
             with transaction(conn):
+                prior = preflight.previous(conn, user, body)
+                if prior:
+                    return {"created": False, "conversation": conversation_view(conn, user, repo.get_conversation(conn, prior["consumed_by"]))}
+                preflight.consume(conn, user, body, receipt, conversation_id)
+                if existing:
+                    old_running_turn = _close_conversation_rows(conn, existing, close_reason)
                 conversation = repo.create_conversation(
                     conn,
                     conversation_id=conversation_id,
@@ -572,6 +599,7 @@ async def handover(user: dict, body: dict) -> dict:
                     created_by=user["username"],
                     workspace=domain.workspace_path(group, issue["key"], conversation_id),
                     machine=machine,
+                    execution_config=receipt["execution"], execution_snapshot=receipt["snapshot"],
                 )
                 turn = repo.create_turn(
                     conn, conversation_id=conversation_id, trigger="handover",
@@ -591,6 +619,8 @@ async def handover(user: dict, body: dict) -> dict:
                 )
         except sqlite3.IntegrityError as exc:
             raise ApiError(409, "该工单刚刚已被交给 agent，请刷新后查看") from exc
+        if existing:
+            await _finish_close(conn, existing, close_reason, old_running_turn)
         runner.wake()
         return {"created": True, "conversation": conversation_view(conn, user, conversation)}
     finally:
@@ -773,23 +803,6 @@ async def retry_comment(user: dict, turn_id: str) -> dict:
 # ─────────────────────────────────────────────────────────────
 
 MAX_MACHINE_DESCRIPTION = 500
-
-
-def check_machine(
-    conn: sqlite3.Connection, user: dict, group: domain.AgentGroup, machine: str, key_session_id: str,
-) -> str:
-    """Validate the hand-over machine choice; returns what the conversation stores.
-
-    "" lets the agent pick from the group's system machine list; a user-given
-    user@host needs this user's key upload to it that just passed, spent here.
-    """
-    if not machine.strip():
-        if not repo.list_machines(conn, group.name):
-            raise ApiError(409, "系统机器列表为空，请联系 RM 添加机器，或自填 user@host")
-        return ""
-    target = domain.parse_ssh_target(machine)
-    jira_agent_ssh_key.sessions.claim(user, key_session_id, group, target)
-    return target
 
 
 def _check_rm(user: dict) -> None:

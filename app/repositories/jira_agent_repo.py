@@ -14,6 +14,7 @@ from app.timeutil import beijing_timestamp
 ACTIVE_TURN_STATUSES = ("queued", "running")
 
 _TURN_UPDATABLE = {
+    "execution_snapshot_json", "machines_used_json",
     "status",
     "codex_turn_id",
     "result_json",
@@ -58,6 +59,8 @@ def create_conversation(
     workspace: str,
     machine: str = "",
     source_kind: str = "jira",
+    execution_config: dict | None = None,
+    execution_snapshot: dict | None = None,
 ) -> dict:
     now = beijing_timestamp()
     conn.execute(
@@ -70,6 +73,9 @@ def create_conversation(
         (conversation_id, issue_key, issue_summary, agent_group, owner,
          created_by, workspace, machine, now, now, source_kind),
     )
+    if execution_config is not None:
+        conn.execute("UPDATE jira_agent_conversations SET execution_config_json=?, execution_snapshot_json=? WHERE id=?",
+                     (dumps_json(execution_config), dumps_json(execution_snapshot or {}), conversation_id))
     return get_conversation(conn, conversation_id)  # type: ignore[return-value]
 
 

@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAuth } from "../../../api/AuthContext";
-import { apiGet, apiPost } from "../../../api/http";
+import { apiGet, apiPost, apiPostNdjson } from "../../../api/http";
 import { confirmDialog } from "../../../lib/confirm";
 import { JiraAgentPage } from "../JiraAgentPage";
 import { type LearningJob, type LearningProposal } from "../jiraLearningApi";
@@ -12,6 +12,7 @@ import { type LearningJob, type LearningProposal } from "../jiraLearningApi";
 vi.mock("../../../api/http", () => ({
   apiGet: vi.fn(),
   apiPost: vi.fn(),
+  apiPostNdjson: vi.fn(),
 }));
 
 vi.mock("../../../lib/confirm", () => ({
@@ -324,6 +325,13 @@ function renderPage(route = "/jira-agent") {
 describe("JiraAgentPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(apiPostNdjson).mockImplementation(async (_path, body, onItem) => {
+      const request = body as { execution: { targets: { target: string }[] } };
+      const targets = request.execution.targets.length ? request.execution.targets.map(t => t.target) : ["hpc@10.2.118.75"];
+      (onItem as (item: unknown) => void)({ type: "completed", result: { id: "jpf_1", expires_at: Date.now() / 1000 + 600,
+        execution: request.execution, snapshot: { results: targets.map(target => ({ target, ssh: { status: "pass", message: "免密登录通过" }, dataset: { status: "pass", message: "数据可读" } })),
+        available_targets: targets, can_submit: true, requires_acknowledgement: false, warning_ids: [] } } });
+    });
     vi.mocked(confirmDialog).mockResolvedValue(true);
     mockUser("Owner");
   });
@@ -757,10 +765,11 @@ describe("JiraAgentPage", () => {
     expect(screen.queryByTestId("jira-agent-timeline")).not.toBeInTheDocument();
 
     await user.type(note, "用 A100");
-    expect(await screen.findByText("（本组 1 台）")).toBeInTheDocument();
+    expect(await screen.findByText(/本组 1 台/)).toBeInTheDocument();
     const submit = screen.getByRole("button", { name: "交给 agent" });
     await waitFor(() => expect(submit).toBeEnabled());
     await user.click(submit);
+    await user.click(await screen.findByRole("button", { name: "开始检查" }));
 
     await waitFor(() => {
       expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/conversations", {
@@ -768,7 +777,9 @@ describe("JiraAgentPage", () => {
         note: "用 A100",
         files: [],
         new_conversation: true,
-        machine: "",
+        preflight_id: "jpf_1",
+        request_id: expect.any(String),
+        acknowledged_issue_ids: [],
         post_comment: true,
       });
     });
@@ -792,6 +803,7 @@ describe("JiraAgentPage", () => {
     const submit = screen.getByRole("button", { name: "交给 agent" });
     await waitFor(() => expect(submit).toBeEnabled());
     await user.click(submit);
+    await user.click(await screen.findByRole("button", { name: "开始检查" }));
     await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(1));
     expect(confirmDialog).toHaveBeenCalledTimes(1);
     expect(vi.mocked(apiPost).mock.calls[0][1]).toMatchObject({ new_conversation: true });
@@ -898,30 +910,33 @@ describe("JiraAgentPage", () => {
     await user.click(await screen.findByLabelText(/自填 user@host/));
     const submit = screen.getByRole("button", { name: "交给 agent" });
     await user.type(screen.getByLabelText("自填机器"), "tester@10.0.0.9");
-    expect(await screen.findByText(/每次交给 agent 时都会弹出风险提醒/)).toBeInTheDocument();
+    expect(await screen.findByText(/交单前逐台完成登录授权/)).toBeInTheDocument();
     await waitFor(() => expect(submit).toBeEnabled());
 
     // closing the dialog without a passed upload hands nothing over
     await user.click(submit);
-    await user.click(within(screen.getByRole("dialog", { name: "上传 SSH 公钥" })).getByRole("button", { name: "关闭" }));
+    await user.click(await screen.findByRole("button", { name: "输入密码并检查" }));
+    await user.click(within(screen.getByRole("dialog", { name: "机器登录授权" })).getByRole("button", { name: "关闭" }));
+    await user.click(screen.getByRole("button", { name: "返回修改" }));
     expect(apiPost).not.toHaveBeenCalledWith("/api/jira-agent/conversations", expect.anything());
 
     await user.click(submit);
-    const dialog = screen.getByRole("dialog", { name: "上传 SSH 公钥" });
+    await user.click(await screen.findByRole("button", { name: "输入密码并检查" }));
+    const dialog = screen.getByRole("dialog", { name: "机器登录授权" });
     expect(within(dialog).getByTestId("jira-agent-key-warning")).toHaveTextContent("请使用专用测试账号，不要使用个人账号");
     expect(within(dialog).getByTestId("jira-agent-key-warning")).toHaveTextContent("免密登录");
-    const start = within(dialog).getByRole("button", { name: "开始上传" });
+    const start = within(dialog).getByRole("button", { name: "开始登录" });
     expect(start).toBeDisabled();
     await user.click(within(dialog).getByRole("checkbox"));
     await user.click(start);
 
     expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/ssh-key-sessions", { agent_group: "HPC", target: "tester@10.0.0.9" });
-    expect(within(dialog).getByLabelText("密码")).toHaveAttribute("type", "password");
+    expect(within(dialog).getByLabelText("机器登录密码")).toHaveAttribute("type", "password");
     await waitFor(
       () => {
         expect(apiPost).toHaveBeenCalledWith(
           "/api/jira-agent/conversations",
-          expect.objectContaining({ machine: "tester@10.0.0.9", ssh_key_session_id: "jak_1" }),
+          expect.objectContaining({ preflight_id: "jpf_1", acknowledged_issue_ids: [] }),
         );
       },
       { timeout: 3000 },

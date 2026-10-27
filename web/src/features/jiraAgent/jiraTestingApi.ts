@@ -1,3 +1,4 @@
+import type { ExecutionConfig, ExecutionSubmission } from "./jiraAgentApi";
 import { apiFetch, apiGet, apiGetBlob, apiPost } from "../../api/http";
 
 export interface TestInput {
@@ -35,6 +36,7 @@ export interface TestRun {
   error: string;
   conclusion: string;
   machine_used: string;
+  machines_used?: string[];
   started_at: string;
   finished_at: string;
   evidence_key?: string;
@@ -47,7 +49,7 @@ export interface TestBatch {
   version_id: string;
   version: number;
   created_at: string;
-  config: { model: string; effort: string; machine: string; skill_commit: string; skill_source?: string; skill_sha256: string; input_sha256: string };
+  config: { execution?: ExecutionConfig; model: string; effort: string; machine: string; skill_commit: string; skill_source?: string; skill_sha256: string; input_sha256: string };
   counts: Record<keyof typeof REVIEW_LABELS, number>;
   runs: TestRun[];
 }
@@ -100,7 +102,7 @@ export const resultLabel = (run: TestRun) => {
   return label + (value.source === "human" ? " · 人工" : value.source === "ai" ? " · AI" : "");
 };
 export const listTestSuites = () => apiGet<{ suites: TestSuite[] }>(`${base}/suites`);
-export const startTestSuite = (body: { request_id: string; case_ids: string[]; agent_group: string; model: string; effort: string; machine: string; ssh_key_session_id?: string }) => apiPost<TestSuite>(`${base}/suites`, body);
+export const startTestSuite = (body: ExecutionSubmission & { request_id: string; case_ids: string[]; agent_group: string; model: string; effort: string; machine?: string; ssh_key_session_id?: string }) => apiPost<TestSuite>(`${base}/suites`, body);
 export const stopTestSuite = (id: string) => apiPost<TestSuite>(`${base}/suites/${id}/stop`, {});
 export const retryTestSuite = (id: string) => apiPost<TestSuite>(`${base}/suites/${id}/retry`, {});
 export const retryTestEvaluation = (id: string) => apiPost(`${base}/runs/${id}/evaluate`, {});

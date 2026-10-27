@@ -1,4 +1,4 @@
-import { apiFetch, apiGet, apiPost } from "../../api/http";
+import { apiFetch, apiGet, apiPost, apiPostNdjson } from "../../api/http";
 
 export const JIRA_AGENT_KEY = ["jira-agent"] as const;
 export const JIRA_AGENT_CONVERSATIONS_KEY = ["jira-agent", "conversations"] as const;
@@ -29,6 +29,7 @@ export interface AgentResult {
   root_cause: string;
   /** user@host the agent actually used; absent in results from before machines existed. */
   machine?: string;
+  machines_used?: string[];
   reproduction: { reproduced: boolean; environment: string; steps: string[] };
   evidence: { description: string; command: string; result: string }[];
   fix: { description: string };
@@ -38,6 +39,8 @@ export interface AgentResult {
 }
 
 export interface AgentTurn {
+  execution_snapshot?: ExecutionSnapshot;
+  machines_used?: string[];
   id: string;
   conversation_id: string;
   seq: number;
@@ -65,6 +68,9 @@ export interface AgentTurn {
 }
 
 export interface AgentConversation {
+  execution?: ExecutionConfig;
+  execution_snapshot?: ExecutionSnapshot;
+  machines_used?: string[];
   source_kind?: "jira" | "test";
   id: string;
   issue_key: string;
@@ -297,7 +303,7 @@ export function previewIssue(issueKey: string) {
   return apiGet<IssuePreview>(`/api/jira-agent/issues/${encodeURIComponent(issueKey)}`);
 }
 
-export function handoverIssue(body: {
+export function handoverIssue(body: ExecutionSubmission & {
   issue_key: string;
   note?: string;
   files?: UploadPayload[];
@@ -455,3 +461,23 @@ export function sendKeySessionInput(id: string, data: string) {
 export function closeKeySession(id: string) {
   return apiPost<KeySession>(`/api/jira-agent/ssh-key-sessions/${encodeURIComponent(id)}/close`, {});
 }
+
+
+export interface ExecutionConfig {
+  mode: "auto" | "custom";
+  selection_policy: "all_required" | "as_needed";
+  targets: { target: string; purpose: string }[];
+  dataset_requirement: "auto" | "required" | "not_required";
+}
+export const defaultExecution = (): ExecutionConfig => ({ mode: "auto", selection_policy: "as_needed", targets: [], dataset_requirement: "auto" });
+export interface ExecutionCheck { status: "pass" | "fail" | "unknown" | "skipped"; code: string; message: string; mount?: { target: string; source: string; fstype: string } }
+export interface ExecutionTargetResult { target: string; ssh: ExecutionCheck; dataset: ExecutionCheck; checked_at: string }
+export interface ExecutionSnapshot { results: ExecutionTargetResult[]; can_submit: boolean; requires_acknowledgement: boolean; warning_ids: string[]; available_targets: string[]; dataset_path: string; checked_at: string }
+export interface ExecutionPreflight { id: string; execution: ExecutionConfig; snapshot: ExecutionSnapshot; expires_at: number }
+export interface ExecutionSubmission { preflight_id: string; request_id: string; acknowledged_issue_ids: string[] }
+export interface PreflightContext { kind: "jira" | "test" | "suite"; issue_key?: string; case_id?: string; version_id?: string; case_ids?: string[] }
+export type PreflightEvent = { type: "target"; result: ExecutionTargetResult } | { type: "completed"; result: ExecutionPreflight } | { type: "error"; error: string };
+export function checkExecution(body: { agent_group: string; context: PreflightContext; execution: ExecutionConfig; key_sessions: Record<string, string> }, onItem: (item: PreflightEvent) => void, signal: AbortSignal) {
+  return apiPostNdjson("/api/jira-agent/execution-preflights", body, onItem, { signal });
+}
+export const executionRequestId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");

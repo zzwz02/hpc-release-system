@@ -128,6 +128,16 @@ def main():
 
         app.router.routes.insert(0, app.router.routes.pop())
 
+    @app.post('/api/_testing/execution')
+    def execution_fault(body: dict):
+        fake.probe_results.clear()
+        fake.execution_targets = body.get('targets') or [SYSTEM_MACHINE]
+        for target in body.get('unreadable', []):
+            fake.probe_results[target] = {'dataset': {'status': 'fail', 'code': 'permission', 'message': '执行账号无法读取共享数据'}}
+        return {'ok': True}
+
+    app.router.routes.insert(0, app.router.routes.pop())
+
     print(f'Isolated test data: {folder}', flush=True)
     try:
         uvicorn.run(app, host='127.0.0.1', port=args.port, log_level='warning')

@@ -26,6 +26,7 @@ from app.config import settings
 from app.db.connection import transaction
 from app.db.jira_agent_connection import connect_jira_agent
 from app.domain import jira_agent as domain
+from app.domain import jira_execution
 from app.integrations import jira
 from app.integrations.codex_app_server import CodexAppServerClient, CodexAppServerError, CodexTransportError
 from app.repositories import jira_agent_repo as repo, jira_testing_repo
@@ -118,6 +119,7 @@ class ActiveTurn:
     # machines this turn may use, and the one its commands show it on
     machine_targets: tuple[str, ...] = ()
     machine_used: str = ""
+    machines_used: tuple[str, ...] = ()
 
 
 # The website runs one worker. This prevents manual retry and recovery from
@@ -544,12 +546,21 @@ class JiraAgentRunner:
         try:
             conversation = repo.get_conversation(conn, cid)
             group = jira_testing_execution.group_for(conn, conversation, group)
+            if conversation["source_kind"] == "test" and not conversation.get("execution_config_json"):
+                historical = jira_testing_repo.context(conn, cid)["config"]
+                conversation["execution_config_json"] = dumps_json(jira_execution.normalize(machine=historical.get("machine", "")))
+                conversation["execution_snapshot_json"] = dumps_json(jira_execution.legacy_snapshot(historical.get("machine", ""), historical.get("machines", [])))
             active.machine_targets = (
                 jira_testing_repo.machine_targets(conn, cid) if conversation["source_kind"] == "test"
-                else (conversation["machine"],) if conversation["machine"]
+                else tuple(t["target"] for t in jira_execution.configuration(conversation)["targets"])
+                if jira_execution.configuration(conversation)["mode"] == "custom"
                 else tuple(m["ssh_target"] for m in repo.list_machines(conn, group.name))
             )
-            active.machine_used = conversation["machine_used"]
+            saved_snapshot = json.loads(repo.get_turn(conn, tid).get("execution_snapshot_json") or "{}")
+            if recover and saved_snapshot:
+                active.machine_targets = tuple(saved_snapshot.get("available_targets", []))
+            active.machine_used = ""
+            active.machines_used = tuple(json.loads(repo.get_turn(conn, tid).get("machines_used_json", "[]")))
             deadline = _deadline(repo.get_turn(conn, tid), group)
             if recover:
                 text, run = "网站已重启，正在重新连接 Codex 查看本轮", self._reattach
@@ -645,6 +656,15 @@ class JiraAgentRunner:
     ) -> tuple[str, str, str]:
         """Sync inputs, start or resume the thread, start the turn and consume it."""
         cid, tid = active.conversation_id, active.turn_id
+        from app.services import jira_agent_preflight as preflight
+        turn = repo.get_turn(conn, tid)
+        snapshot = await preflight.refresh(group, conversation, first_turn=turn["seq"] == 1)
+        active.machine_targets = tuple(snapshot["available_targets"])
+        with transaction(conn):
+            repo.update_turn(conn, tid, execution_snapshot_json=dumps_json(snapshot))
+            repo.add_event(conn, conversation_id=cid, turn_id=tid, kind="environment_check", payload=snapshot)
+        if active.stop_reason or time.monotonic() >= deadline:
+            return "interrupted", "", ""
         test = None
         if conversation["source_kind"] == "test":
             test = await jira_testing_execution.prepare(conn, active.client, conversation, tid)
@@ -691,9 +711,7 @@ class JiraAgentRunner:
             created_by=turn["created_by"],
             input_text=turn["input_text"],
             uploaded=uploaded,
-            machine_text=domain.machine_instructions(
-                machine, [] if machine else repo.list_machines(conn, group.name)
-            ),
+            machine_text=jira_execution.instructions(jira_execution.configuration(conversation), snapshot),
             previous_result=dumps_json(previous_summary) if previous_summary else "",
             previous_comment=previous.get("comment_body", "") if previous.get("comment_status") == "posted" else "",
         )
@@ -701,7 +719,8 @@ class JiraAgentRunner:
             active.stop_reason = active.stop_reason or "timeout"
             return "interrupted", "", ""
         codex_turn = await active.client.start_turn(  # type: ignore[union-attr]
-            active.thread_id, test["config"]["prompt"] if test else prompt,
+            active.thread_id, (test["config"]["prompt"] if test else prompt) + "\n\n出队环境复核（以此为准）：\n" +
+                             jira_execution.instructions(jira_execution.configuration(conversation), snapshot),
             output_schema=test["config"]["output_schema"] if test else domain.RESULT_SCHEMA, model=group.model,
             effort=test["config"]["effort"] if test else "",
         )
@@ -937,9 +956,9 @@ class JiraAgentRunner:
                 "duration_ms": item.get("durationMs"),
                 "output": _clip(item.get("aggregatedOutput") or "", _OUTPUT_LIMIT),
             }, item_id)
-            self._note_machine(conn, active, domain.detect_machine(
-                item.get("command") or "", active.machine_targets,
-            ))
+            for target in active.machine_targets:
+                if domain.detect_machine(item.get("command") or "", (target,)):
+                    self._note_machine(conn, active, target)
         elif kind == "fileChange" and completed:
             _event(conn, cid, tid, "file_change", {
                 "status": item.get("status") or "",
@@ -971,11 +990,16 @@ class JiraAgentRunner:
     @staticmethod
     def _note_machine(conn, active: ActiveTurn, machine: str) -> None:
         """Show the machine on the conversation while the turn is still running."""
-        if not machine or machine == active.machine_used:
+        if not machine or machine in active.machines_used:
             return
-        active.machine_used = machine
+        if machine not in active.machine_targets:
+            _event(conn, active.conversation_id, active.turn_id, "status", {"status": "warning", "text": f"结果报告了本轮允许范围之外的机器：{machine}"})
+            return
+        active.machines_used = (*active.machines_used, machine)
+        active.machine_used = machine if len(active.machines_used) == 1 else ""
         with transaction(conn):
-            repo.set_machine_used(conn, active.conversation_id, machine)
+            repo.update_turn(conn, active.turn_id, machines_used_json=dumps_json(list(active.machines_used)))
+            repo.set_machine_used(conn, active.conversation_id, active.machine_used)
 
     def _delivery_state(self, conn, cid: str, tid: str, status: str, errors: list[dict]) -> None:
         labels = {
@@ -1002,9 +1026,12 @@ class JiraAgentRunner:
             repo.add_event(conn, conversation_id=conversation["id"], turn_id=turn["id"],
                            kind="result", item_id=f"result:{turn['id']}", payload=result)
         self._delivery_state(conn, conversation["id"], turn["id"], "collecting", [])
-        reported = (result.get("machine") or "").strip()
-        if reported and reported != active.machine_used:
-            self._note_machine(conn, active, reported)
+        reported = result.get("machines_used")
+        if not isinstance(reported, list):
+            reported = [result.get("machine", "")]
+        for target in reported:
+            if isinstance(target, str):
+                self._note_machine(conn, active, target.strip())
         await self.deliver_result(conn, active, group, conversation, turn, result)
 
     async def retry_delivery(self, conn, group: domain.AgentGroup, conversation: dict, turn: dict) -> None:

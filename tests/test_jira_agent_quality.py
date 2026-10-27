@@ -20,7 +20,7 @@ from app.domain import jira_agent as domain
 from app.integrations import jira
 from app.repositories import jira_agent_repo as repo
 from app.services import jira_agent_runner as runner
-from tests.test_jira_agent import (RESULT, env, _handover, _wait, _done, _latest,
+from tests.test_jira_agent import (RESULT, env, _preflight, _handover, _wait, _done, _latest,
                                    _detail, _db_turn, _phase, _until)
 
 GROUP = domain.AgentGroup("HPC", "HPC 数字员工", "ws://b:4510", "t", "/w", (), "", 600, 1)
@@ -436,6 +436,7 @@ def test_additive_migration_preserves_old_results_and_comments(tmp_path):
 
 
 def test_prestart_reconnect_keeps_early_cancellation_available(env, monkeypatch):
+    proof = _preflight(env)
     original_connect = runner.CodexAppServerClient.connect
     connections = 0
     async def connect(client):
@@ -451,7 +452,7 @@ def test_prestart_reconnect_keeps_early_cancellation_available(env, monkeypatch)
         assert release.wait(5)
         return env.jira.get_issue_snapshot(*args, **kwargs)
     monkeypatch.setattr(jira, "get_issue_snapshot", snapshot)
-    cid = _handover(env)["conversation"]["id"]
+    cid = _handover(env, **proof)["conversation"]["id"]
     try:
         assert entered.wait(5)
         assert runner.runner.active_for_conversation(cid).phase == "preparing"

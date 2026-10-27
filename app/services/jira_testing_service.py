@@ -6,13 +6,14 @@ from pathlib import PurePosixPath
 
 from app.api.errors import ApiError
 from app.db.connection import transaction
-from app.domain import jira_testing as domain, jira_agent, jira_test_package
+from app.domain import jira_testing as domain, jira_agent, jira_test_package, jira_execution
 from app.integrations import knowledge_service
 from app.integrations.codex_app_server import CodexAppServerClient
 from app.repositories import jira_testing_repo as repo, jira_agent_repo as agent, jira_test_evaluation_repo as evaluations
 from app.repositories.base import dumps_json, new_id
 from app.services import jira_agent_runner as execution
-from app.services.jira_agent_service import assignee_name, check_machine
+from app.services.jira_agent_service import assignee_name
+from app.services import jira_agent_preflight as preflight
 from app.timeutil import beijing_timestamp
 
 
@@ -149,26 +150,39 @@ async def run(user, case_id, body):
     model = body['model'].strip() or group.model
     if not model:
         raise ValueError('测试必须明确指定模型')
+    with execution.open_db() as conn:
+        prior = preflight.previous(conn, user, body)
+        if prior:
+            return {'batch_id': prior['consumed_by'], **detail(case_id)}
+        scope = preflight.test_scope(conn, 'test', {**body, 'case_id': case_id})
+        preflight.resolve(conn, user, group, body, scope)
     pack = await knowledge_service.capture(group, complete=True)
     pack.update(commit=pack.get('deployed_commit', ''), ref='')
-    config = run_config(user, group, body)
     with execution.open_db() as conn, transaction(conn):
+        prior = preflight.previous(conn, user, body)
+        if prior:
+            return {'batch_id': prior['consumed_by'], **detail(case_id)}
+        receipt = preflight.resolve(conn, user, group, body, scope)
+        config = run_config(group, body, receipt)
         bid, cid = enqueue(conn, user, version, group, pack, config)
+        preflight.consume(conn, user, body, receipt, bid)
     execution.runner.wake()
     return {'batch_id': bid, **detail(case_id)}
 
 
-def run_config(user, group, body):
-    with execution.open_db() as conn:
-        machine = check_machine(conn, user, group, body.get('machine', ''), body.get('ssh_key_session_id', ''))
-        machines = agent.list_machines(conn, group.name) if not machine else []
+def run_config(group, body, receipt):
+    config, snapshot = receipt['execution'], receipt['snapshot']
+    machines = [{'ssh_target': r['target'], 'description': ''} for r in snapshot['results']]
     return {'agent_group': group.name, 'endpoint': group.ws_url, 'model': body.get('model', '').strip() or group.model,
-            'effort': body.get('effort', 'xhigh'), 'machine': machine, 'machines': machines,
-            'timeout_seconds': group.turn_timeout_seconds}
+            'effort': body.get('effort', 'xhigh'), 'machine': jira_execution.legacy_machine(config), 'machines': machines,
+            'execution': config, 'execution_snapshot': snapshot, 'timeout_seconds': group.turn_timeout_seconds}
 
 
 def enqueue(conn, user, version, group, pack, settings):
     config = copy.deepcopy(settings)
+    if "execution" not in config:
+        config["execution"] = jira_execution.normalize(machine=config.get("machine", ""))
+        config["execution_snapshot"] = jira_execution.legacy_snapshot(config.get("machine", ""), config.get("machines", []))
     config.update(skill_commit=pack.get('deployed_commit', ''), skill_source='analysis_service',
                   skill_sha256=domain.pack_digest(pack), input_sha256=version['input_sha256'],
                   output_schema=jira_agent.RESULT_SCHEMA,
@@ -178,13 +192,14 @@ def enqueue(conn, user, version, group, pack, settings):
         owner=assignee_name(version['input']['issue']) or user['username'], created_by=user['username'],
         input_text=version['input'].get('note', ''),
         uploaded=[item['path'] for item in version['input']['files'] if item['path'].startswith('uploads/')],
-        machine_text=jira_agent.machine_instructions(config['machine'], config['machines']))
+        machine_text=jira_execution.instructions(config['execution'], config['execution_snapshot']))
     bid, cid = new_id('jtb'), new_id('jtr')
     conn.execute('INSERT INTO jira_test_batches VALUES(?,?,?,?,?,?)',
                  (bid, version['id'], dumps_json(config), dumps_json(pack), user['username'], beijing_timestamp()))
     agent.create_conversation(conn, conversation_id=cid, issue_key=cid, issue_summary=version['title'],
                               agent_group=group.name, owner=user['username'], created_by=user['username'],
-                              workspace=f'{group.workspace_root}/tests/{cid}', machine=config['machine'], source_kind='test')
+                              workspace=f'{group.workspace_root}/tests/{cid}', machine=config['machine'], source_kind='test',
+                              execution_config=config.get('execution'), execution_snapshot=config.get('execution_snapshot'))
     conn.execute('INSERT INTO jira_test_runs VALUES(?,?,?)', (cid, bid, 1))
     turn = agent.create_turn(conn, conversation_id=cid, trigger='handover', created_by=user['username'],
                              input_text=version['input']['note'], post_comment=False)

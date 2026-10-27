@@ -139,6 +139,12 @@ def context(conn, conversation_id):
 
 
 def _targets(row):
+    config = json.loads(row['config_json'])
+    if config.get('execution'):
+        execution = config['execution']
+        if execution['mode'] == 'custom':
+            return tuple(item['target'] for item in execution['targets'])
+        return tuple(item['target'] for item in config.get('execution_snapshot', {}).get('results', []))
     if row['machine']:
         return (row['machine'],)
     return tuple(item['ssh_target'] for item in json.loads(row['config_json']).get('machines', []))
@@ -189,11 +195,12 @@ def batches(conn, case_id, batch_id=""):
             batch['config'].pop(key, None)
         batch['runs'] = []
         for run in conn.execute("""SELECT r.*,t.status,t.delivery_status,t.error,t.conclusion,
-            t.started_at,t.finished_at,c.machine_used FROM jira_test_runs r
+            t.started_at,t.finished_at,c.machine_used,t.machines_used_json FROM jira_test_runs r
             JOIN jira_agent_conversations c ON c.id=r.conversation_id
             JOIN jira_agent_turns t ON t.conversation_id=c.id WHERE r.batch_id=? ORDER BY r.ordinal""",
                                (batch['id'],)):
             item = dict(run)
+            item["machines_used"] = json.loads(item.pop("machines_used_json", "[]"))
             item['reviews'] = [dict(review) for review in conn.execute(
                 'SELECT * FROM jira_test_reviews WHERE conversation_id=? ORDER BY rowid DESC',
                 (item['conversation_id'],))]
