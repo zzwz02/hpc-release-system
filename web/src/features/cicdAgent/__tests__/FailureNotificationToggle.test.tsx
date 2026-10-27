@@ -29,6 +29,8 @@ describe("FailureNotificationToggle", () => {
     expect(apiGet).toHaveBeenCalledWith(endpoint);
     expect(apiPost).not.toHaveBeenCalled();
     expect(toggle.closest("label")).toHaveAttribute("title", expect.stringContaining("09:45"));
+    expect(toggle.closest("label")).toHaveAttribute("title", expect.stringContaining("周一至周五"));
+    expect(toggle.closest("label")).toHaveAttribute("title", expect.stringContaining("周一汇总周五至周日"));
   });
 
   it("saves enabled and disabled preferences without accepting an account or recipient", async () => {
