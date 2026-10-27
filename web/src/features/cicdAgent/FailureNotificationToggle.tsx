@@ -20,7 +20,7 @@ export function FailureNotificationToggle({ username }: { username: string }) {
   });
   const error = update.error || preference.error;
   return <div className="cicd-agent-notification-setting" aria-busy={update.isPending}>
-    <label className="check" title="北京时间每天 09:45，邮件提醒昨日归属于你的 Code Owner 失败记录">
+    <label className="check" title="北京时间周一至周五 09:45，提醒归属于你的 Code Owner 失败记录；周一汇总周五至周日，其余工作日汇总昨日，周末不发送">
       <input type="checkbox" checked={update.isPending ? Boolean(update.variables) : Boolean(preference.data?.enabled)}
         disabled={!preference.data || preference.isFetching || update.isPending}
         onChange={event => update.mutate(event.target.checked)} />
