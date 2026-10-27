@@ -642,20 +642,20 @@ def delete_machine(conn: sqlite3.Connection, machine_id: str) -> bool:
     return cur.rowcount == 1
 
 
-_DELETABLE_CONVERSATION = """id=? AND status='closed'
+_DELETABLE_CONVERSATION = """id=?
     AND NOT EXISTS (SELECT 1 FROM jira_agent_turns WHERE conversation_id=?
         AND (status IN ('queued', 'running') OR delivery_status='collecting' OR comment_status='pending'))"""
 
 
-def can_delete_closed_conversation(conn: sqlite3.Connection, conversation_id: str) -> bool:
+def can_delete_conversation(conn: sqlite3.Connection, conversation_id: str) -> bool:
     return conn.execute(
         f"SELECT 1 FROM jira_agent_conversations WHERE {_DELETABLE_CONVERSATION}",
         (conversation_id, conversation_id),
     ).fetchone() is not None
 
 
-def delete_closed_conversation(conn: sqlite3.Connection, conversation_id: str) -> bool:
-    """Delete history only after all execution and delivery work has stopped."""
+def delete_conversation(conn: sqlite3.Connection, conversation_id: str) -> bool:
+    """Delete a conversation only after all execution and delivery work has stopped."""
     return conn.execute(
         f"DELETE FROM jira_agent_conversations WHERE {_DELETABLE_CONVERSATION}",
         (conversation_id, conversation_id),

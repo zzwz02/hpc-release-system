@@ -428,13 +428,37 @@ describe("JiraAgentPage", () => {
     });
     const user = userEvent.setup();
     renderPage("/jira-agent?issue=MC3-7672&conversation=jac_0");
-    await user.click(await screen.findByRole("button", { name: "删除历史对话" }));
-    expect(confirmDialog).toHaveBeenCalledWith(expect.objectContaining({ danger: true, confirmText: "删除历史对话", body: expect.stringContaining("B 端清理失败也会继续删除对话") }));
+    await user.click(await screen.findByRole("button", { name: "删除对话" }));
+    expect(confirmDialog).toHaveBeenCalledWith(expect.objectContaining({ danger: true, confirmText: "删除对话", body: expect.stringContaining("B 端清理失败也会继续删除对话") }));
     expect(apiFetch).toHaveBeenCalledWith("/api/jira-agent/conversations/jac_0", { method: "DELETE" });
     if (warning) await waitFor(() => expect(toast.info).toHaveBeenCalledWith(warning));
     await waitFor(() => expect(screen.getByLabelText("对话")).toHaveValue("jac_1"));
     expect(within(screen.getByLabelText("对话")).getAllByRole("option")).toHaveLength(1);
-    expect(screen.queryByRole("button", { name: "删除历史对话" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "删除对话" })).toBeEnabled();
+  });
+
+  it("lets RM delete the latest conversation and returns to the handover form", async () => {
+    mockBackend();
+    mockUser("RM");
+    const base = vi.mocked(apiGet).getMockImplementation()!;
+    let deleted = false;
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === "/api/jira-agent/issues/MC3-7672") return {
+        ...previewResponse(true), conversations: deleted ? [] : [conversation],
+        open_conversation: deleted ? null : conversation,
+      };
+      return base(path);
+    });
+    vi.mocked(apiFetch).mockImplementation(async () => {
+      deleted = true;
+      return { deleted: true, issue_key: "MC3-7672", warning: "" };
+    });
+    const user = userEvent.setup();
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
+    await user.click(await screen.findByRole("button", { name: "删除对话" }));
+    expect(apiFetch).toHaveBeenCalledWith("/api/jira-agent/conversations/jac_1", { method: "DELETE" });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "删除对话" })).not.toBeInTheDocument());
+    expect(await screen.findByRole("button", { name: "交给 agent" })).toBeInTheDocument();
   });
 
   it("does not delete history when RM cancels confirmation", async () => {
@@ -443,7 +467,7 @@ describe("JiraAgentPage", () => {
     vi.mocked(confirmDialog).mockResolvedValue(false);
     const user = userEvent.setup();
     renderPage("/jira-agent?issue=MC3-7672&conversation=jac_0");
-    await user.click(await screen.findByRole("button", { name: "删除历史对话" }));
+    await user.click(await screen.findByRole("button", { name: "删除对话" }));
     expect(apiFetch).not.toHaveBeenCalled();
     expect(screen.getByLabelText("对话")).toHaveValue("jac_0");
   });
@@ -452,7 +476,7 @@ describe("JiraAgentPage", () => {
     mockBackend();
     renderPage("/jira-agent?issue=MC3-7672&conversation=jac_0");
     await screen.findByLabelText("对话");
-    expect(screen.queryByRole("button", { name: "删除历史对话" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "删除对话" })).not.toBeInTheDocument();
   });
 
   it.each([false, true])("RM selects a model and effort for handover/followup: %s", async (followup) => {

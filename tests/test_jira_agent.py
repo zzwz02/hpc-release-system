@@ -790,7 +790,7 @@ def test_followup_resumes_the_same_thread_and_comments_again(env) -> None:
 # Conversation isolation
 # ─────────────────────────────────────────────────────────────
 
-def test_rm_deletes_only_closed_history_with_local_files_and_cascaded_rows(env) -> None:
+def test_rm_deletes_history_with_local_files_and_cascaded_rows(env) -> None:
     first = _handover(env, files=[{"filename": "notes.txt", "content_base64": base64.b64encode(b"notes").decode()}])["conversation"]
     first_detail = _wait(env, first["id"], _done)
     second = _handover(env, new_conversation=True)["conversation"]
@@ -800,7 +800,6 @@ def test_rm_deletes_only_closed_history_with_local_files_and_cascaded_rows(env) 
     assert local_folder.exists()
     assert env.client.delete(path).status_code == 403
     env.as_user("carol")
-    assert env.client.delete(f"/api/jira-agent/conversations/{second['id']}").status_code == 409
     comments = list(env.jira.comments)
     response = env.client.delete(path)
     assert response.status_code == 200
@@ -825,12 +824,37 @@ def test_rm_deletes_only_closed_history_with_local_files_and_cascaded_rows(env) 
     assert env.client.get(path + f"/files/{file['id']}").status_code == 404
 
 
-@pytest.mark.parametrize("field,value", [("status", "running"), ("delivery_status", "collecting"), ("comment_status", "pending")])
-def test_history_deletion_rejects_unfinished_work(env, field, value) -> None:
+@pytest.mark.parametrize("with_history", [False, True])
+def test_rm_deletes_latest_conversation_and_can_handover_again(env, with_history):
+    old = _handover(env)["conversation"]
+    _wait(env, old["id"], _done)
+    current = _handover(env, new_conversation=True)["conversation"] if with_history else old
+    _wait(env, current["id"], _done)
+    path = f"/api/jira-agent/conversations/{current['id']}"
+    assert env.client.delete(path).status_code == 403
+    env.as_user("carol")
+    response = env.client.delete(path)
+    assert response.status_code == 200, response.text
+    assert response.json()["warning"] == ""
+    assert env.client.get(path).status_code == 404
+    assert not (Path(settings.jira_agent_data_dir) / current["id"]).exists()
+    assert not any(name.startswith(current["workspace"] + "/") for name in env.fake.files)
+    preview = env.client.get("/api/jira-agent/issues/MC3-7672").json()
+    assert preview["open_conversation"] is None
+    assert [c["id"] for c in preview["conversations"]] == ([old["id"]] if with_history else [])
+    fresh = _handover(env)["conversation"]
+    assert fresh["id"] != current["id"]
+    _wait(env, fresh["id"], _done)
+
+
+@pytest.mark.parametrize("closed", [False, True])
+@pytest.mark.parametrize("field,value", [("status", "queued"), ("status", "running"), ("delivery_status", "collecting"), ("comment_status", "pending")])
+def test_history_deletion_rejects_unfinished_work(env, field, value, closed) -> None:
     first = _handover(env)["conversation"]
     finished = _wait(env, first["id"], _done)
-    second = _handover(env, new_conversation=True)["conversation"]
-    _wait(env, second["id"], _done)
+    if closed:
+        second = _handover(env, new_conversation=True)["conversation"]
+        _wait(env, second["id"], _done)
     conn = connect_jira_agent(settings.jira_agent_database_url)
     try:
         with transaction(conn):
@@ -2010,12 +2034,14 @@ def test_remote_deletion_failure_still_deletes_history_and_local_files(env, fail
         assert not env.fake.params("fs/remove")
 
 
-def test_history_deletion_excludes_concurrent_delete_and_comment_retry(env):
+@pytest.mark.parametrize("closed", [False, True])
+def test_history_deletion_excludes_concurrent_operations(env, closed):
     from concurrent.futures import ThreadPoolExecutor
     first = _handover(env)["conversation"]
     turn = _latest(_wait(env, first["id"], _done))
-    second = _handover(env, new_conversation=True)["conversation"]
-    _wait(env, second["id"], _done)
+    if closed:
+        second = _handover(env, new_conversation=True)["conversation"]
+        _wait(env, second["id"], _done)
     conn = connect_jira_agent(settings.jira_agent_database_url)
     with transaction(conn):
         repo.update_turn(conn, turn["id"], comment_status="failed")
@@ -2029,6 +2055,10 @@ def test_history_deletion_excludes_concurrent_delete_and_comment_retry(env):
         _until(lambda: bool(env.fake.params("fs/remove")))
         assert env.client.delete(path).status_code == 409
         assert env.client.post(f"/api/jira-agent/turns/{turn['id']}/comment/retry").status_code == 409
+        if not closed:
+            assert env.client.post(path + "/messages", json={"text": "继续"}).status_code == 409
+            assert env.client.post(f"/api/jira-agent/turns/{turn['id']}/delivery/retry").status_code == 409
+            assert env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-7672", "new_conversation": True}).status_code == 409
         assert deletion.result().status_code == 200
     assert len(env.jira.comments) == comments
 
