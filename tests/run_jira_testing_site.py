@@ -72,10 +72,18 @@ def main():
             for key, summary in [('MC3-1', '运行时版本差异的定位'), ('MC3-2', '正常条件下的对照验证')]:
                 source.issue_overrides[key] = {'summary': summary, 'description': summary + '，保留可核对的现象和条件。', 'attachments': []}
                 jira_learning_repo.add_issue(conn, source.get_issue(key), 'HPC', 'rm')
-    for name in ('get_issue', 'get_issue_snapshot', 'download_attachment', 'search_issues', 'add_comment'):
+    for name in ('get_issue', 'get_issue_snapshot', 'download_attachment', 'search_issues', 'add_comment', 'find_agent_comment'):
         setattr(jira, name, getattr(source, name))
     app = create_app()
     faults = {'missing_artifacts': False}
+    publication = {'accepted_timeout': False, 'post_calls': 0}
+    def post_comment(key, body):
+        publication['post_calls'] += 1
+        comment_id = source.add_comment(key, body)
+        if publication['accepted_timeout']:
+            raise TimeoutError('Local test: JIRA accepted the comment, response lost')
+        return comment_id
+    jira.add_comment = post_comment
     original = fake._result
 
     def result(ws, method, params):
@@ -95,6 +103,13 @@ def main():
         fake.plans = [plan]
         fake.read_delay = read_delay
         return {'ok': True}
+
+    app.router.routes.insert(0, app.router.routes.pop())
+
+    @app.post('/api/_testing/publication')
+    def publication_fault(accepted_timeout: bool = False):
+        publication['accepted_timeout'] = accepted_timeout
+        return {**publication, 'comments': len(source.comments)}
 
     app.router.routes.insert(0, app.router.routes.pop())
 

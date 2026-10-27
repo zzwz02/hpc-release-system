@@ -359,6 +359,28 @@ describe("JiraAgentPage", () => {
     expect(card.queryByText("修复补丁")).not.toBeInTheDocument();
   });
 
+  it("reconciles an uncertain publication without presenting it as a resend", async () => {
+    mockBackend();
+    const base = vi.mocked(apiGet).getMockImplementation()!;
+    const pending = { ...turn, comment_status: "failed", comment_publication_state: "uncertain",
+      comment_error: "原请求结果未知", comment_id: "" };
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === "/api/jira-agent/conversations/jac_1") return {
+        ...detail, conversation: { ...conversation, latest_turn: pending }, turns: [pending],
+        events: detail.events.map((event) => event.kind === "jira_comment"
+          ? { ...event, payload: { status: "uncertain", error: "原请求结果未知" } } : event),
+      };
+      return base(path);
+    });
+    vi.mocked(apiPost).mockResolvedValue({ turn: pending });
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
+    expect(await screen.findByText(/JIRA 评论发布结果待确认/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重试发布" })).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "核对发布结果" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/turns/jat_1/comment/retry", {}));
+    expect(apiPost).toHaveBeenCalledTimes(1);
+  });
+
   it.each([true, false])("retries file delivery with the original comment choice %s", async (post) => {
     mockBackend();
     const base = vi.mocked(apiGet).getMockImplementation()!;
@@ -834,7 +856,7 @@ describe("JiraAgentPage", () => {
     const user = userEvent.setup();
     renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
 
-    expect(await screen.findByText("网站刚重启，正在重新接管本轮，几秒后可以操作")).toBeInTheDocument();
+    expect(await screen.findByText("正在重新接管本轮并核对远端状态，稍后可以操作")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "取消本轮" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "新建对话" })).toBeDisabled();
     await user.type(screen.getByLabelText("补充信息"), "继续");

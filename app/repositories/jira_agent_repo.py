@@ -28,6 +28,8 @@ _TURN_UPDATABLE = {
     "error",
     "started_at",
     "finished_at",
+    "recovery_attempts",
+    "retry_pending",
 }
 
 
@@ -245,6 +247,31 @@ def get_turn(conn: sqlite3.Connection, turn_id: str) -> dict | None:
     return _one(conn, "SELECT * FROM jira_agent_turns WHERE id = ?", (turn_id,))
 
 
+def comment_publication(conn: sqlite3.Connection, turn_id: str) -> dict | None:
+    return _one(conn, "SELECT * FROM jira_agent_comment_publications WHERE turn_id = ?", (turn_id,))
+
+
+def prepare_comment(conn: sqlite3.Connection, turn_id: str, body: str, *, legacy: bool = False) -> dict:
+    """Freeze the outgoing body before I/O, including its stable business-turn id."""
+    if not legacy:
+        body += f" _记录编号：{turn_id}_"
+    conn.execute(
+        "INSERT OR IGNORE INTO jira_agent_comment_publications (turn_id, body, state, updated_at) VALUES (?, ?, ?, ?)",
+        (turn_id, body, "uncertain" if legacy else "ready", beijing_timestamp()),
+    )
+    publication = comment_publication(conn, turn_id)
+    update_turn(conn, turn_id, comment_body=publication["body"])
+    return publication
+
+
+def set_comment_publication(conn: sqlite3.Connection, turn_id: str, state: str,
+                            *, comment_id: str = "", error: str = "") -> None:
+    conn.execute(
+        "UPDATE jira_agent_comment_publications SET state = ?, comment_id = ?, error = ?, updated_at = ? WHERE turn_id = ?",
+        (state, comment_id, error, beijing_timestamp(), turn_id),
+    )
+
+
 def list_turns(conn: sqlite3.Connection, conversation_id: str) -> list[dict]:
     return _all(
         conn,
@@ -289,7 +316,7 @@ def append_turn_input(conn: sqlite3.Connection, turn_id: str, text: str) -> None
 def claim_turn(conn: sqlite3.Connection, turn_id: str) -> bool:
     cur = conn.execute(
         """
-        UPDATE jira_agent_turns SET status = 'running', started_at = ?
+        UPDATE jira_agent_turns SET status = 'running', started_at = CASE WHEN started_at = '' THEN ? ELSE started_at END
         WHERE id = ? AND status = 'queued'
         """,
         (beijing_timestamp(), turn_id),
@@ -385,7 +412,7 @@ def requeue_turn(conn: sqlite3.Connection, turn_id: str) -> bool:
     """Put a turn that never reached the app-server back at its queue position."""
     cur = conn.execute(
         """
-        UPDATE jira_agent_turns SET status = 'queued', started_at = ''
+        UPDATE jira_agent_turns SET status = 'queued'
         WHERE id = ? AND status = 'running'
         """,
         (turn_id,),
@@ -418,10 +445,12 @@ def pending_comment_turns(conn: sqlite3.Connection) -> list[dict]:
     return _all(
         conn,
         """
-        SELECT * FROM jira_agent_turns
-        WHERE status = 'completed' AND comment_status = 'pending'
-          AND delivery_status IN ('', 'complete')
-        ORDER BY rowid
+        SELECT t.* FROM jira_agent_turns t
+        LEFT JOIN jira_agent_comment_publications p ON p.turn_id = t.id
+        WHERE t.status = 'completed' AND t.post_comment = 1
+          AND (t.comment_status = 'pending' OR p.state IN ('sending', 'uncertain'))
+          AND t.delivery_status IN ('', 'complete')
+        ORDER BY t.rowid
         """,
     )
 

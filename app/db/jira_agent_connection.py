@@ -90,7 +90,8 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_jira_agent_conversations_owner
             ON jira_agent_conversations(owner, updated_at DESC);
 
-        -- One turn = one Codex turn; queued rows are the persistent queue.
+        -- One business turn can include bounded internal Codex attempts.
+        -- Queued rows are the persistent queue; steer never adds a row.
         CREATE TABLE IF NOT EXISTS jira_agent_turns (
             id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL
@@ -123,6 +124,17 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_jira_agent_turns_status_created
             ON jira_agent_turns(status, created_at);
+
+        -- Durable publication intent. An uncertain POST is reconciled by GET,
+        -- never blindly retried after a timeout or process restart.
+        CREATE TABLE IF NOT EXISTS jira_agent_comment_publications (
+            turn_id TEXT PRIMARY KEY REFERENCES jira_agent_turns(id) ON DELETE CASCADE,
+            body TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('ready', 'sending', 'uncertain', 'rejected', 'posted')),
+            comment_id TEXT NOT NULL DEFAULT '',
+            error TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
 
         -- Timeline. seq is display order; rev increases on every insert/update
         -- so the browser can poll incrementally (commands update in place).
@@ -286,6 +298,10 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
     # 0 = keep this turn's result on the website only (no JIRA comment); the
     # choice sent with the turn's latest message wins.
     _ensure_column(conn, "jira_agent_turns", "post_comment", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column(conn, "jira_agent_turns", "recovery_attempts", "INTEGER NOT NULL DEFAULT 0")
+    # A pending retry still points to the previous Codex turn, allowing restart
+    # to distinguish a retry not sent yet from an accepted start with a lost reply.
+    _ensure_column(conn, "jira_agent_turns", "retry_pending", "INTEGER NOT NULL DEFAULT 0")
     # Analysis completion and file delivery are independent. Empty preserves
     # the meaning of historical turns, whose delivery was not tracked.
     _ensure_column(conn, "jira_agent_turns", "delivery_status", "TEXT NOT NULL DEFAULT '' CHECK (delivery_status IN ('', 'collecting', 'incomplete', 'complete'))")

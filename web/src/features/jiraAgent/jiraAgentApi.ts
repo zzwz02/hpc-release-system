@@ -56,6 +56,7 @@ export interface AgentTurn {
   comment_id: string;
   comment_body: string;
   comment_error: string;
+  comment_publication_state?: "" | "ready" | "sending" | "uncertain" | "rejected" | "posted";
   error: string;
   created_at: string;
   started_at: string;

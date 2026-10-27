@@ -783,4 +783,61 @@ def add_comment(issue_key: str, body: str) -> str:
         cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"], "POST",
         f"/rest/api/2/issue/{quote(issue_key)}/comment", {"body": body},
     )
-    return str(result.get("id") or "")
+    comment_id = str(result.get("id") or "")
+    if not comment_id:
+        raise ValueError("JIRA 未返回评论 ID，发布结果待核对")
+    return comment_id
+
+
+def find_agent_comment(issue_key: str, body: str, turn_id: str) -> str:
+    """Read all comment pages and verify author + frozen body, never a partial snapshot.
+
+    A marker collision or edited comment needs investigation, not another POST.
+    An empty result is NOT proof that a timed-out POST cannot arrive later.
+    """
+    cfg = _require_config()
+    base, token = cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"]
+    me = _request(base, token, "GET", "/rest/api/2/myself", max_bytes=1024 * 1024)
+
+    def identity(user: dict) -> set[str]:
+        return {str(user[k]) for k in ("accountId", "key", "name") if user.get(k)}
+
+    author_ids = identity(me)
+    if not author_ids:
+        raise ValueError("无法核对 JIRA 评论发布账号")
+    offset, expected_total = 0, None
+    seen: set[str] = set()
+    matches = []
+    deadline = time.monotonic() + 60
+    marker = f"_记录编号：{turn_id}_"
+    for _ in range(100):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ValueError("JIRA 评论回读超时，发布结果仍待确认")
+        page = _request(base, token, "GET",
+                        f"/rest/api/2/issue/{quote(issue_key, safe='')}/comment?startAt={offset}&maxResults=100",
+                        timeout=min(20, remaining), max_bytes=4 * 1024 * 1024)
+        items, total = page.get("comments"), page.get("total")
+        if (not isinstance(items, list) or type(total) is not int or total < 0
+                or page.get("startAt") != offset or (expected_total is not None and total != expected_total)):
+            raise ValueError("JIRA 评论回读不完整或分页发生变化，请再次核对")
+        expected_total = total
+        for item in items:
+            cid, text = str(item.get("id") or ""), item.get("body") or ""
+            if not cid or cid in seen:
+                raise ValueError("JIRA 评论分页缺少 ID 或存在重复")
+            seen.add(cid)
+            same_body = text.replace("\r\n", "\n") == body.replace("\r\n", "\n")
+            same_author = bool(identity(item.get("author") or {}) & author_ids)
+            if marker in text and (not same_body or not same_author):
+                raise ValueError("发现相同轮次标识但正文或作者不同的评论，需要核对")
+            if same_body and same_author:
+                matches.append(cid)
+        offset += len(items)
+        if offset == total:
+            if len(matches) > 1:
+                raise ValueError("发现多条匹配评论，需要人工核对")
+            return matches[0] if matches else ""
+        if not items or offset > total:
+            raise ValueError("JIRA 评论分页提前结束")
+    raise ValueError("JIRA 评论超出回读页数限制，未确认完整性")

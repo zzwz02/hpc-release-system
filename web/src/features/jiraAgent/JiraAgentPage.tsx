@@ -105,7 +105,7 @@ function isActive(conversation: AgentConversation | undefined): boolean {
   );
 }
 
-const RECOVERING_TEXT = "网站刚重启，正在重新接管本轮，几秒后可以操作";
+const RECOVERING_TEXT = "正在重新接管本轮并核对远端状态，稍后可以操作";
 
 function stateText(conversation: AgentConversation): string {
   const turn = conversation.latest_turn;
@@ -1399,6 +1399,7 @@ function CommentEvent({
   const [busy, setBusy] = useState(false);
   const posted = event.payload.status === "posted";
   const skipped = event.payload.status === "skipped";
+  const uncertain = event.payload.status === "uncertain" || turn?.comment_publication_state === "uncertain";
 
   async function retry() {
     if (!turn) return;
@@ -1421,10 +1422,10 @@ function CommentEvent({
         <span>已在 JIRA 发布评论（#{String(event.payload.comment_id ?? "")}），等待 assignee 决定下一步。</span>
       )}
       {skipped && <span>按发送时的选择，本轮结论只在网页显示，未发布到 JIRA。</span>}
-      {!posted && !skipped && <span>JIRA 评论发布失败：{String(event.payload.error ?? "")}</span>}
+      {!posted && !skipped && <span>{uncertain ? "JIRA 评论发布结果待确认：" : "JIRA 评论发布失败："}{String(event.payload.error ?? "")}</span>}
       {!posted && !skipped && canWrite && turn?.comment_status === "failed" && (
         <button type="button" className="btn sm" disabled={busy} onClick={() => void retry()}>
-          重试发布
+          {uncertain ? "核对发布结果" : "重试发布"}
         </button>
       )}
       {turn?.comment_body && (

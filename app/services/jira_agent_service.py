@@ -190,6 +190,8 @@ def _turn_view(conn: sqlite3.Connection, turn: dict | None) -> dict | None:
     view["result"] = loads_json(view.pop("result_json"), None)
     view["post_comment"] = bool(view["post_comment"])
     view["delivery_errors"] = loads_json(view.pop("delivery_errors_json"), [])
+    publication = repo.comment_publication(conn, turn["id"])
+    view["comment_publication_state"] = publication["state"] if publication else ""
     view["queue_position"] = (
         repo.queue_position(conn, turn["id"]) if turn["status"] == "queued" else None
     )
@@ -493,7 +495,7 @@ async def list_handled_issues(user: dict) -> dict:
     }
 
 
-_RECOVERING_TEXT = "网站刚重启，正在重新接管本轮，请几秒后再试"
+_RECOVERING_TEXT = "正在重新接管本轮并核对远端状态，请稍后再试"
 
 
 def _is_recovering(conversation_id: str) -> bool:
@@ -759,7 +761,7 @@ async def retry_comment(user: dict, turn_id: str) -> dict:
             raise AuthzError("只有对话 owner 或 RM 可以重试发布评论")
         if conversation["source_kind"] == "test":
             raise ApiError(409, "测试运行禁止发布 Jira 评论")
-        if turn["comment_status"] != "failed" or turn["delivery_status"] not in ("", "complete"):
+        if not turn["post_comment"] or turn["comment_status"] != "failed" or turn["delivery_status"] not in ("", "complete"):
             raise ApiError(409, "该轮评论不需要重试")
         return {"turn": _turn_view(conn, await runner_module.post_turn_comment(conn, turn_id))}
     finally:

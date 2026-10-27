@@ -27,7 +27,7 @@ from app.db.connection import transaction
 from app.db.jira_agent_connection import connect_jira_agent
 from app.domain import jira_agent as domain
 from app.integrations import jira
-from app.integrations.codex_app_server import CodexAppServerClient, CodexAppServerError
+from app.integrations.codex_app_server import CodexAppServerClient, CodexAppServerError, CodexTransportError
 from app.repositories import jira_agent_repo as repo, jira_testing_repo
 from app.services import jira_testing_execution
 from app.repositories.base import dumps_json
@@ -39,6 +39,9 @@ _OUTPUT_LIMIT = 20_000
 _ARTIFACT_MAX_BYTES = 10 * 1024 * 1024
 _INTERRUPT_GRACE_SECONDS = 60
 _SCAN_SECONDS = 5.0
+# Shared budget for website recovery; server-side willRetry stays server-side.
+_RECOVERY_LIMIT = 2
+_RECOVERY_BACKOFF_SECONDS = 2.0
 
 _STOP_TEXT = {
     "user": "已由用户取消",
@@ -117,40 +120,80 @@ class ActiveTurn:
     machine_used: str = ""
 
 
+# The website runs one worker. This prevents manual retry and recovery from
+# racing in that worker; the durable ready -> sending claim is the crash boundary.
+_POSTING: set[str] = set()
+
+
 async def post_turn_comment(conn, turn_id: str) -> dict:
-    """Publish (or re-publish) a turn's rendered comment to JIRA."""
-    turn = repo.get_turn(conn, turn_id)
-    if (not turn["post_comment"] or turn["comment_status"] not in ("pending", "failed")
-            or turn["delivery_status"] not in ("", "complete")):
-        return turn
-    conversation = repo.get_conversation(conn, turn["conversation_id"])
-    if conversation["source_kind"] == "test":
-        with transaction(conn):
-            repo.update_turn(conn, turn_id, post_comment=0, comment_status="")
+    """Publish once, or reconcile an uncertain send without repeating the POST."""
+    if turn_id in _POSTING:
         return repo.get_turn(conn, turn_id)
+    _POSTING.add(turn_id)
     try:
-        comment_id = await asyncio.to_thread(
-            jira.add_comment, conversation["issue_key"], turn["comment_body"]
-        )
-    except Exception as exc:
-        error = _error_text(exc)
-        logger.warning("JIRA comment for %s failed: %s", conversation["issue_key"], error)
+        turn = repo.get_turn(conn, turn_id)
+        if (not turn["post_comment"] or turn["comment_status"] not in ("pending", "failed")
+                or turn["status"] != "completed" or turn["delivery_status"] not in ("", "complete")):
+            return turn
+        conversation = repo.get_conversation(conn, turn["conversation_id"])
+        if conversation["source_kind"] == "test":
+            with transaction(conn):
+                repo.update_turn(conn, turn_id, post_comment=0, comment_status="")
+            return repo.get_turn(conn, turn_id)
+        publication = repo.comment_publication(conn, turn_id)
+        if publication is None:
+            # Before this migration, pending/failed did not distinguish an
+            # unsent request from a POST accepted by Jira. Never assume it did.
+            with transaction(conn):
+                publication = repo.prepare_comment(conn, turn_id, turn["comment_body"], legacy=True)
+        state, comment_id, error = publication["state"], publication["comment_id"], ""
+        if state in {"sending", "uncertain"}:
+            try:
+                comment_id = await asyncio.to_thread(
+                    jira.find_agent_comment, conversation["issue_key"], publication["body"], turn_id,
+                )
+                if comment_id:
+                    state = "posted"
+                else:
+                    state, error = "uncertain", "尚未找到对应评论；原请求可能仍在处理，请稍后核对。未再次发送。"
+            except Exception as exc:
+                state, error = "uncertain", _error_text(exc)
+        elif state in {"ready", "rejected"}:
+            with transaction(conn):
+                # Re-read user choice immediately before the irreversible I/O.
+                latest = repo.get_turn(conn, turn_id)
+                if not latest["post_comment"]:
+                    return latest
+                claimed = conn.execute(
+                    "UPDATE jira_agent_comment_publications SET state = 'sending', updated_at = ? "
+                    "WHERE turn_id = ? AND state IN ('ready', 'rejected')",
+                    (beijing_timestamp(), turn_id),
+                ).rowcount
+            if not claimed:
+                return repo.get_turn(conn, turn_id)
+            try:
+                comment_id = await asyncio.to_thread(jira.add_comment, conversation["issue_key"], publication["body"])
+                if not comment_id:
+                    raise ValueError("JIRA 未返回评论 ID")
+                state = "posted"
+            except Exception as exc:
+                # Timeouts, connection loss, HTTP 408/5xx and malformed success
+                # responses are ambiguous. A known rejection is safe to retry.
+                rejected = isinstance(exc, urllib.error.HTTPError) and exc.code in {400, 401, 403, 404, 405, 413, 415, 422, 429}
+                state, error = ("rejected" if rejected else "uncertain"), _error_text(exc)
+        status = "posted" if state == "posted" else "failed"
+        if state == "uncertain":
+            error = "发布结果待确认：" + error
         with transaction(conn):
-            repo.update_turn(conn, turn_id, comment_status="failed", comment_error=error)
-            repo.add_event(
-                conn, conversation_id=conversation["id"], turn_id=turn_id,
-                kind="jira_comment", payload={"status": "failed", "error": error},
-            )
-    else:
-        with transaction(conn):
-            repo.update_turn(
-                conn, turn_id, comment_status="posted", comment_id=comment_id, comment_error=""
-            )
-            repo.add_event(
-                conn, conversation_id=conversation["id"], turn_id=turn_id,
-                kind="jira_comment", payload={"status": "posted", "comment_id": comment_id},
-            )
-    return repo.get_turn(conn, turn_id)  # type: ignore[return-value]
+            repo.set_comment_publication(conn, turn_id, state, comment_id=comment_id, error=error)
+            repo.update_turn(conn, turn_id, comment_status=status, comment_id=comment_id, comment_error=error)
+            repo.add_event(conn, conversation_id=conversation["id"], turn_id=turn_id,
+                           kind="jira_comment", item_id=f"comment-publication:{turn_id}",
+                           payload={"status": "uncertain" if state == "uncertain" else status,
+                                    "comment_id": comment_id, "error": error})
+        return repo.get_turn(conn, turn_id)
+    finally:
+        _POSTING.discard(turn_id)
 
 
 class JiraAgentRunner:
@@ -397,6 +440,100 @@ class JiraAgentRunner:
 
     # ── one turn ──────────────────────────────────────────────
 
+    async def _reserve_recovery(self, conn, active: ActiveTurn, deadline: float,
+                                reason: str, *, retry_pending: bool = False) -> bool:
+        turn = repo.get_turn(conn, active.turn_id)
+        count = turn["recovery_attempts"]
+        delay = _RECOVERY_BACKOFF_SECONDS * (count + 1)
+        if active.stop_reason or count >= _RECOVERY_LIMIT or time.monotonic() + delay >= deadline:
+            return False
+        with transaction(conn):
+            repo.update_turn(conn, active.turn_id, recovery_attempts=count + 1,
+                             **({"retry_pending": 1} if retry_pending else {}))
+            repo.add_event(conn, conversation_id=active.conversation_id, turn_id=active.turn_id,
+                           kind="status", payload={"status": "running", "recovery_attempt": count + 1,
+                           "text": f"本轮第 {count + 1} 次恢复：{reason}；沿用原时间预算"})
+        active.phase = "recovering"
+        await asyncio.sleep(delay)
+        return not active.stop_reason and time.monotonic() < deadline
+
+    @staticmethod
+    def _tool_free_failure(target: dict) -> bool:
+        # A completed tool may have launched a background experiment. Without
+        # a job-state contract we must not replay it, even if its exit code is 0.
+        return (target.get("status") == "failed" and isinstance(target.get("items"), list)
+                and all(item.get("type") in {"reasoning", "agentMessage"} for item in target["items"]))
+
+    @staticmethod
+    def _capacity_failure(error: str) -> bool:
+        error = error.casefold()
+        return "model" in error and any(word in error for word in ("capacity", "overloaded"))
+
+    async def _execute_with_recovery(self, conn, active: ActiveTurn, group: domain.AgentGroup,
+                                     conversation: dict, deadline: float, run) -> tuple[str, str, str]:
+        while True:
+            try:
+                if active.client is None:
+                    active.client = CodexAppServerClient(group.ws_url, group.ws_token,
+                                                       open_timeout=max(.1, min(15, deadline - time.monotonic())))
+                    await active.client.connect()
+                if run == self._start:
+                    # No remote turn exists yet: keep input merging and early
+                    # cancellation available after a pre-start reconnect.
+                    active.phase = "preparing"
+                result = await run(conn, active, group, conversation, deadline)
+                status, error, _ = result
+                if status != "failed" or not self._capacity_failure(error) or active.stop_reason:
+                    return result
+                # The final failed notification (not an intermediate willRetry)
+                # must agree with a complete remote snapshot before a new start.
+                thread = await active.client.resume_thread(active.thread_id, model=group.model)
+                latest = await active.client.list_turns(active.thread_id)
+                safe = (latest and latest[0].get("id") == active.codex_turn_id
+                        and (thread.get("status") or {}).get("type") == "idle"
+                        and self._tool_free_failure(latest[0]))
+                if not safe or not await self._reserve_recovery(
+                    conn, active, deadline, "模型容量不足，已确认尚未执行工具", retry_pending=True,
+                ):
+                    return ("interrupted", "", "") if active.stop_reason else result
+                conversation = repo.get_conversation(conn, active.conversation_id)
+                run = self._reattach
+            except CodexTransportError:
+                phase = active.phase
+                if not await self._reserve_recovery(conn, active, deadline, "连接中断，先核对远端执行状态"):
+                    raise
+                if active.client is not None:
+                    await active.client.close()
+                active.client = None
+                conversation = repo.get_conversation(conn, active.conversation_id)
+                run = (self._reattach if conversation["thread_id"] and phase in {"starting", "running", "recovering"}
+                       else self._start)
+
+    async def _start_retry(self, conn, active: ActiveTurn, group: domain.AgentGroup,
+                           conversation: dict, deadline: float) -> tuple[str, str, str]:
+        if active.stop_reason or time.monotonic() >= deadline:
+            active.stop_reason = active.stop_reason or "timeout"
+            return "interrupted", "", ""
+        config = (jira_testing_repo.context(conn, conversation["id"])["config"]
+                  if conversation["source_kind"] == "test" else {})
+        active.phase = "starting"
+        turn = await active.client.start_turn(
+            active.thread_id,
+            "这是同一业务轮次的容量故障恢复，不是用户新增轮次。继续处理本线程已收到的要求和补充；"
+            "先核对已有任务及产物状态，不重复启动实验。原时间预算和机器授权继续有效。\n" + domain.COMMENT_INSTRUCTIONS,
+            output_schema=config.get("output_schema", domain.RESULT_SCHEMA), model=group.model,
+            effort=config.get("effort", ""),
+        )
+        active.codex_turn_id = turn["id"]
+        with transaction(conn):
+            repo.update_turn(conn, active.turn_id, codex_turn_id=turn["id"], retry_pending=0)
+            repo.add_event(conn, conversation_id=active.conversation_id, turn_id=active.turn_id, kind="status",
+                           payload={"status": "running", "text": "已恢复本轮执行", "codex_turn_id": turn["id"]})
+        active.phase = "running"
+        if active.stop_reason:
+            await self._interrupt(active)
+        return await self._consume(conn, active, group, deadline)
+
     async def _run_turn(
         self, active: ActiveTurn, group: domain.AgentGroup, *, recover: bool = False
     ) -> None:
@@ -419,9 +556,9 @@ class JiraAgentRunner:
             else:
                 text, run = f"开始执行（{group.display_name}）", self._start
             _event(conn, cid, tid, "status", {"status": "running", "text": text})
-            active.client = CodexAppServerClient(group.ws_url, group.ws_token)
-            await active.client.connect()
-            status, turn_error, final_text = await run(conn, active, group, conversation, deadline)
+            status, turn_error, final_text = await self._execute_with_recovery(
+                conn, active, group, conversation, deadline, run,
+            )
             turn = repo.get_turn(conn, tid)
             active.phase = "finishing"
             if status == "requeue" and active.stop_reason:
@@ -463,7 +600,11 @@ class JiraAgentRunner:
         except Exception as exc:
             logger.exception("JIRA agent turn %s failed", tid)
             error = _error_text(exc)
-            if active.stop_reason in _STOP_TEXT:
+            if repo.get_turn(conn, tid)["status"] == "completed":
+                # A local write after a remote POST may fail. Preserve the
+                # completed analysis and durable publication intent for recovery.
+                final_status = "completed"
+            elif active.stop_reason in _STOP_TEXT:
                 final_status = "cancelled"
                 error = f"{_STOP_TEXT[active.stop_reason]}（{error}）"
             elif active.phase == "recovering":
@@ -536,6 +677,12 @@ class JiraAgentRunner:
         active.phase = "starting"
         turn = repo.get_turn(conn, tid)  # re-read: messages may have been merged
         machine = conversation["machine"]
+        previous = [item for item in repo.list_turns(conn, cid)
+                    if item["seq"] < turn["seq"] and item["result_json"]]
+        previous = previous[-1] if previous else {}
+        previous_result = domain.parse_stored_result(previous["result_json"]) if previous else {}
+        previous_summary = {key: previous_result[key] for key in ("conclusion", "summary", "comment", "action_required")
+                            if key in previous_result}
         prompt = domain.build_turn_prompt(
             trigger=turn["trigger"],
             seq=turn["seq"],
@@ -547,7 +694,12 @@ class JiraAgentRunner:
             machine_text=domain.machine_instructions(
                 machine, [] if machine else repo.list_machines(conn, group.name)
             ),
+            previous_result=dumps_json(previous_summary) if previous_summary else "",
+            previous_comment=previous.get("comment_body", "") if previous.get("comment_status") == "posted" else "",
         )
+        if active.stop_reason or time.monotonic() >= deadline:
+            active.stop_reason = active.stop_reason or "timeout"
+            return "interrupted", "", ""
         codex_turn = await active.client.start_turn(  # type: ignore[union-attr]
             active.thread_id, test["config"]["prompt"] if test else prompt,
             output_schema=test["config"]["output_schema"] if test else domain.RESULT_SCHEMA, model=group.model,
@@ -578,6 +730,20 @@ class JiraAgentRunner:
         active.thread_id = conversation["thread_id"]
         thread = await active.client.resume_thread(active.thread_id, model=group.model)  # type: ignore[union-attr]
         latest = await active.client.list_turns(active.thread_id)  # type: ignore[union-attr]
+        if turn["retry_pending"] and not latest:
+            return "failed", "无法核对远端恢复尝试，未启动新实验", ""
+        if turn["retry_pending"] and latest:
+            if latest[0].get("id") == turn["codex_turn_id"]:
+                if ((thread.get("status") or {}).get("type") == "idle" and self._tool_free_failure(latest[0])):
+                    return await self._start_retry(conn, active, group, conversation, deadline)
+                return "failed", "恢复前远端状态与已记录的失败不一致，未启动重复实验", ""
+            # A retry was accepted before the website persisted the new id.
+            if self._is_this_turn(latest[0], {**turn, "codex_turn_id": ""}):
+                with transaction(conn):
+                    repo.update_turn(conn, tid, codex_turn_id=latest[0]["id"], retry_pending=0)
+                turn = repo.get_turn(conn, tid)
+            else:
+                return "failed", "无法确认远端恢复尝试的身份，未启动新实验", ""
         target = latest[0] if latest and self._is_this_turn(latest[0], turn) else None
         if target is None:
             return "requeue", "网站重启，本轮尚未在 Codex 上开始，已重新排队", ""
@@ -864,12 +1030,15 @@ class JiraAgentRunner:
     async def deliver_result(self, conn, active: ActiveTurn, group: domain.AgentGroup,
                              conversation: dict, turn: dict, result: dict) -> None:
         try:
-            artifacts, errors = await self._pull_artifacts(conn, active, conversation, result)
-            patches = [(record["name"], Path(record["local_path"]).read_text("utf-8", errors="replace"))
-                       for record in artifacts if record["name"].endswith((".patch", ".diff"))]
+            _, errors = await self._pull_artifacts(conn, active, conversation, result)
             body = domain.render_jira_comment(group=group, result=result, turn_seq=turn["seq"],
                                              owner=conversation["owner"],
-                                             conversation_url=conversation_url(conversation["id"]), patches=patches)
+                                             conversation_url=conversation_url(conversation["id"]), patches=[])
+            warnings = domain.comment_quality_warnings(result, body)
+            if warnings:
+                _event(conn, conversation["id"], turn["id"], "status",
+                       {"status": "completed", "text": "；".join(warnings), "comment_quality_warnings": warnings},
+                       item_id=f"comment-quality:{turn['id']}")
         except asyncio.CancelledError:
             self._delivery_state(conn, conversation["id"], turn["id"], "incomplete",
                                  [{"path": "", "error": "文件回收中断，请重试"}])
@@ -883,6 +1052,8 @@ class JiraAgentRunner:
         # The status and comment gate are one transaction, so restart cannot
         # publish a success comment for an incomplete delivery.
         with transaction(conn):
+            if post and not errors:
+                body = repo.prepare_comment(conn, turn["id"], body)["body"]
             repo.update_turn(conn, turn["id"], comment_status="pending" if post and not errors else "",
                              comment_body=body, comment_error="")
             self._delivery_state(conn, conversation["id"], turn["id"], "incomplete" if errors else "complete", errors)
