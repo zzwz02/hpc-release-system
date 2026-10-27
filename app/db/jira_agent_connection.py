@@ -182,11 +182,15 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
     )
     # '' = the agent picks from the system machine list; else user@host.
     _ensure_column(conn, "jira_agent_conversations", "machine", "TEXT NOT NULL DEFAULT ''")
+    # Empty only for legacy conversations; resolve from their existing Codex thread.
+    _ensure_column(conn, "jira_agent_conversations", "model_provider", "TEXT NOT NULL DEFAULT ''")
     # what the agent is actually on: detected from its commands, then its result.
     _ensure_column(conn, "jira_agent_conversations", "machine_used", "TEXT NOT NULL DEFAULT ''")
     # 0 = keep this turn's result on the website only (no JIRA comment); the
     # choice sent with the turn's latest message wins.
     _ensure_column(conn, "jira_agent_turns", "post_comment", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column(conn, "jira_agent_turns", "model", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "jira_agent_turns", "effort", "TEXT NOT NULL DEFAULT ''")
     # Analysis completion and file delivery are independent. Empty preserves
     # the meaning of historical turns, whose delivery was not tracked.
     _ensure_column(conn, "jira_agent_turns", "delivery_status", "TEXT NOT NULL DEFAULT '' CHECK (delivery_status IN ('', 'collecting', 'incomplete', 'complete'))")

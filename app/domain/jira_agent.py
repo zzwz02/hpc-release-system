@@ -146,6 +146,8 @@ class AgentGroup:
     # Private key of the execution account on server B; <path>.pub is what
     # the password terminal puts on user-given machines.
     ssh_key_path: str = ""
+    # Provider -> absolute Codex model catalog path on server B.
+    model_catalogs: tuple[tuple[str, str], ...] = ()
 
 
 def groups_from_sections(sections: dict[str, dict[str, str]]) -> dict[str, AgentGroup]:
@@ -168,6 +170,18 @@ def groups_from_sections(sections: dict[str, dict[str, str]]) -> dict[str, Agent
         max_concurrent = runtime_config.required_int(where, values, "MAX_CONCURRENT")
         if max_concurrent < 1:
             raise runtime_config.ConfigError(f"release_system.conf [{where}] MAX_CONCURRENT 至少为 1")
+        try:
+            catalogs = json.loads(values.get("MODEL_CATALOGS") or "{}")
+            if not isinstance(catalogs, dict) or any(
+                not isinstance(provider, str) or not provider.strip()
+                or not isinstance(path, str) or not path.startswith("/")
+                for provider, path in catalogs.items()
+            ):
+                raise ValueError()
+        except (ValueError, TypeError) as exc:
+            raise runtime_config.ConfigError(
+                f"release_system.conf [{where}] MODEL_CATALOGS 必须是 provider 到 B 上绝对路径的 JSON 对象"
+            ) from exc
         groups[name] = AgentGroup(
             name=name,
             display_name=runtime_config.required(where, values, "DISPLAY_NAME"),
@@ -182,6 +196,7 @@ def groups_from_sections(sections: dict[str, dict[str, str]]) -> dict[str, Agent
             max_concurrent=max_concurrent,
             jira_members_group=values.get("JIRA_MEMBERS_GROUP", ""),
             ssh_key_path=ssh_key_path,
+            model_catalogs=tuple(catalogs.items()),
         )
     return groups
 

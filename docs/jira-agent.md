@@ -32,7 +32,7 @@ JIRA agent 是按组配置的“数字员工”。网站（服务器 A）负责�
 2. 网站按排队顺序执行：同步 issue.json、issue.md、JIRA 附件和上传文件到 B 的工作目录，新建 Codex thread，按 AGENTS.md 与 skills 完成分类、归属判断、复现、分析和修复。
 3. 页面时间线实时显示 agent 消息、执行的命令（含退出码和输出）、文件修改和结构化结论。
 4. 分析完成并成功回收全部交付文件后，网站按本轮设置在 JIRA **只追加评论**：结论、证据、补丁和下一步建议。agent 不修改 assignee、状态或代码。
-   - 交单或发消息时取消勾选 **本轮结论发布到 JIRA 评论**，这一轮结论只在网页显示，不发评论（用于只想了解详情、让 agent 继续分析的场景）。选择按轮次生效：运行中或排队中的补充信息框默认沿用本轮已保存的选择，未修改时与开始本轮时一致；手动修改后再发消息，以这一轮最后一次发送的选择为准。轮次结束后，补充信息框恢复默认勾选，供下一轮使用。
+   - 交单或发消息时取消勾选 **本轮结论发布到 JIRA 评论**，这一轮结论只在网页显示，不发评论（用于只想了解详情、让 agent 继续分析的场景）。选择在当前对话内持续保留；手动修改后再发消息，以这一轮最后一次发送的选择为准，后续轮次继续沿用。新建对话恢复默认勾选。
    - 分析完成但所列产物缺失、路径越界、超过 10 MiB 或读取失败时，页面显示 **交付不完整**，保留分析结论、已回收文件及逐文件错误，暂停评论发布。当前对话最新一轮可点 **重试回收文件**；只读取文件，不重新执行模型。已回收且校验完整的文件复用，全部成功后沿用原轮次的评论选择。
    - 文件回收期间不能发起续办或替换当前对话；已发起后续轮次或关闭的历史对话不能重试旧轮次，避免读取被后续执行覆盖的工作文件。
 5. assignee 阅读评论后自行决定：接受修改并 resolve、转交，或在网站补充信息，让 agent 在同一对话中继续（新一轮沿用同一 thread 和工作目录）。
@@ -151,3 +151,19 @@ WantedBy=multi-user.target
 `jira_agent_turns.status=completed` 表示分析完成；`delivery_status` 独立记录 `collecting` / `incomplete` / `complete`，`delivery_errors_json` 保存文件路径和错误。旧库启动时增量补列，历史行保留空状态，不追溯更改已有结论或评论。API 的轮次视图提供 `delivery_status` 和 `delivery_errors`；对话派生状态增加 `delivering`、`delivery_incomplete`。
 
 `POST /api/jira-agent/turns/{turn_id}/delivery/retry` 仅允许有查看权限且仍为当前 Jira assignee 或 RM 的用户操作；对话须仍开放、归属未变，且该轮是最新的分析完成但交付不完整轮次。数据库条件更新防止并发回收，返回 `{turn: ...}`；文件仍未收齐时返回保留分析的 `incomplete` 轮次及错误。成功回收后才按 `post_comment` 决定是否发布评论；评论失败仍使用原评论重试接口。
+
+### 对话服务商、模型与 effort
+
+RM 在新建对话交单时可选择服务商、模型及该模型支持的 effort。默认仍沿用 B 上的默认服务商（本地配置为 OpenAI / GPT plan）。**同一对话固定 provider，切换 OpenAI / DeepSeek 必须新建对话**，对应新的 Codex thread。续办可调整同一 provider 下的模型和 effort；排队或运行中不能调整。普通用户没有选择入口，后端也校验 RM 权限及 provider、模型、effort 的组合。
+
+模型来源：
+
+- 默认服务商使用 B 的 `model/list` 和 `config/read`，组 `MODEL` 可覆盖默认模型。
+- 其他 provider 须先在 B 的用户 `~/.codex/config.toml` 配置 URL 与认证。Key 只保留在 B，网站接口不返回或传入 Key。
+- A 的 `release_system.conf` 在对应 `[jira_agent:<组>]` 节增加可选 `MODEL_CATALOGS`，例如 `MODEL_CATALOGS = {"deepseek": "/home/hpc-agent/.codex/deepseek-models.json"}`。路径为 **B 上的绝对路径**，文件使用 Codex 官方模型目录格式（`models` / `slug` / `default_reasoning_level` / `supported_reasoning_levels`）。目录的第一个可见模型是该 provider 的默认模型。
+- A 通过 app-server 的 `fs/readFile` 读取目录，只向网页返回 provider 名称、模型标识和 effort 选项，不返回目录中的提示词或 provider 凭据。额外目录无法读取时，页面显示对应错误，其余可用服务商仍可选择。
+- 新建对话及续办时把对应 `modelProvider` 和 `config.model_catalog_json` 传给 `thread/start` / `thread/resume`。额外目录的 provider 禁用内置 web search，避免默认假设第三方 Responses 端点支持该工具。默认服务商保留 B 上原配置。
+
+provider 保存在 `jira_agent_conversations.model_provider`；模型与 effort 保存在 `jira_agent_turns.model` / `effort`，每轮实际值回填记录。模型、effort 和发布评论的选择在同一对话内保留，刷新页面、网站重启不重置，新建对话恢复默认。旧库初始化时补列；旧对话的 provider 从已有 thread 确认，不能用今日默认值覆盖已有 thread 的服务商。
+
+执行端检查 `thread/start` / `thread/resume` 响应顶层的实际 `modelProvider` 是否与对话一致，若不一致则拒绝发送新轮次。不要仅检查 `thread.modelProvider`：它是持久化元数据，未必反映当前运行配置。当前 Codex 对已加载的 thread 可能忽略 resume 的 provider 覆盖；网站不提供解除订阅后换 provider 的操作，以保持对话上下文和执行规则简单。

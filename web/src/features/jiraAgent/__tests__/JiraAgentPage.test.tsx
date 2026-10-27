@@ -52,6 +52,7 @@ const turn = {
 };
 
 const conversation = {
+  model_provider: "openai",
   id: "jac_1",
   issue_key: "MC3-7672",
   issue_summary: "saxpy 尾部元素错误",
@@ -197,6 +198,13 @@ const keyInfoResponse = {
 
 function mockBackend({ open = true, rm = false }: { open?: boolean; rm?: boolean } = {}) {
   vi.mocked(apiGet).mockImplementation(async (path: string) => {
+    if (path === "/api/jira-agent/models?group=HPC") return {
+      default_provider: "openai", default_model: "default-model", default_effort: "medium", errors: [],
+      providers: [{ id: "openai", name: "OpenAI", default_model: "default-model", default_effort: "medium" }], models: ["default-model", "other-model"].map((model) => ({
+        model, provider: "openai", displayName: model, defaultReasoningEffort: "medium",
+        supportedReasoningEfforts: ["medium", "high"].map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort })),
+      })),
+    };
     if (path === "/api/jira-agent/machines") return { ...machinesResponse, can_manage: rm };
     if (path === "/api/jira-agent/ssh-key-info?group=HPC") return keyInfoResponse;
     if (path === "/api/jira-agent/issues?scope=handled") return handledResponse();
@@ -441,6 +449,89 @@ describe("JiraAgentPage", () => {
     expect(screen.queryByRole("button", { name: "删除历史对话" })).not.toBeInTheDocument();
   });
 
+  it.each([false, true])("RM selects a model and effort for handover/followup: %s", async (followup) => {
+    mockUser("RM");
+    mockBackend({ open: followup, rm: true });
+    vi.mocked(apiPost).mockResolvedValue({ created: true, mode: "queued", conversation });
+    const user = userEvent.setup();
+    renderPage(`/jira-agent?issue=MC3-7672${followup ? "&conversation=jac_1" : ""}`);
+    const model = await screen.findByLabelText("模型");
+    await waitFor(() => expect(model).toBeEnabled());
+    expect(screen.getByRole("option", { name: "default-model (default)" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "medium (default)" })).toBeInTheDocument();
+    await user.selectOptions(model, "other-model");
+    await user.selectOptions(screen.getByLabelText("effort"), "high");
+    await user.type(screen.getByLabelText(followup ? "补充信息" : "交单说明"), "分析问题");
+    const submit = screen.getByRole("button", { name: followup ? "发送" : "交给 agent" });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await user.click(submit);
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith(
+      followup ? "/api/jira-agent/conversations/jac_1/messages" : "/api/jira-agent/conversations",
+      expect.objectContaining({ model: "other-model", effort: "high" }),
+    ));
+    if (followup) await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("other-model"));
+  });
+
+  it("Owner cannot see model choices", async () => {
+    mockBackend();
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
+    await screen.findByLabelText("补充信息");
+    expect(screen.queryByLabelText("模型")).not.toBeInTheDocument();
+    expect(apiGet).not.toHaveBeenCalledWith("/api/jira-agent/models?group=HPC");
+  });
+
+  it.each([false, true])("offers DeepSeek at handover and locks its provider in a conversation: %s", async (followup) => {
+    mockUser("RM");
+    mockBackend({ open: followup, rm: true });
+    const base = vi.mocked(apiGet).getMockImplementation()!;
+    const deepseek = {
+      ...conversation, model_provider: "deepseek",
+      latest_turn: { ...turn, model: "deepseek-flash", effort: "high", post_comment: false },
+    };
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === "/api/jira-agent/models?group=HPC") {
+        const original = await base(path) as { providers: unknown[]; models: unknown[] };
+        return {
+          ...original,
+          providers: [...original.providers, { id: "deepseek", name: "DeepSeek", default_model: "deepseek-flash", default_effort: "high" }],
+          models: [...original.models, ...["deepseek-flash", "deepseek-v4-pro"].map((model) => ({
+            model, provider: "deepseek", displayName: model, defaultReasoningEffort: "high",
+            supportedReasoningEfforts: ["low", "high", "max"].map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort })),
+          }))],
+        };
+      }
+      if (followup && path === "/api/jira-agent/conversations/jac_1") return { ...detail, conversation: deepseek };
+      return base(path);
+    });
+    vi.mocked(apiPost).mockResolvedValue({ created: true, mode: "queued", conversation: deepseek });
+    const user = userEvent.setup();
+    renderPage(`/jira-agent?issue=MC3-7672${followup ? "&conversation=jac_1" : ""}`);
+    const provider = await screen.findByLabelText("服务商");
+    if (followup) {
+      expect(provider).toBeDisabled();
+      expect(provider).toHaveValue("deepseek");
+      expect(screen.getByText("切换服务商需新建对话")).toBeInTheDocument();
+    } else {
+      await waitFor(() => expect(provider).toBeEnabled());
+      expect(provider).toHaveValue("openai");
+      await user.selectOptions(provider, "deepseek");
+    }
+    const model = screen.getByLabelText("模型");
+    await waitFor(() => expect(model).toBeEnabled());
+    expect(within(model).queryByRole("option", { name: "other-model" })).not.toBeInTheDocument();
+    expect(within(model).getByRole("option", { name: "deepseek-flash (default)" })).toBeInTheDocument();
+    await user.selectOptions(model, "deepseek-v4-pro");
+    const effort = screen.getByLabelText("effort");
+    expect(within(effort).queryByRole("option", { name: "medium" })).not.toBeInTheDocument();
+    await user.selectOptions(effort, "max");
+    await user.type(screen.getByLabelText(followup ? "补充信息" : "交单说明"), "使用所选模型分析");
+    await user.click(screen.getByRole("button", { name: followup ? "发送" : "交给 agent" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith(
+      followup ? "/api/jira-agent/conversations/jac_1/messages" : "/api/jira-agent/conversations",
+      expect.objectContaining({ model_provider: "deepseek", model: "deepseek-v4-pro", effort: "max" }),
+    ));
+  });
+
   it("starts with a hand-over draft when the issue has no live conversation", async () => {
     mockBackend({ open: false });
     vi.mocked(apiPost).mockResolvedValue({ created: true, conversation });
@@ -530,7 +621,7 @@ describe("JiraAgentPage", () => {
     });
   });
 
-  it.each(["queued", "running"])("inherits the %s turn's comment choice and resets after completion", async (state) => {
+  it.each(["queued", "running"])("inherits the %s turn's comment choice after completion", async (state) => {
     mockBackend();
     let current = { ...conversation, state, latest_turn: { ...turn, status: state, post_comment: false } };
     const base = vi.mocked(apiGet).getMockImplementation()!;
@@ -564,12 +655,12 @@ describe("JiraAgentPage", () => {
     await user.click(checkbox);
     current = { ...current, state: "waiting_review", latest_turn: { ...current.latest_turn, status: "completed" } };
     await act(async () => { await client.invalidateQueries({ queryKey: ["jira-agent", "conversation", "jac_1"] }); });
-    await waitFor(() => expect(checkbox).toBeChecked());
+    await waitFor(() => expect(checkbox).not.toBeChecked());
     expect(screen.getByLabelText("补充信息")).toHaveValue("尚未发送");
     await user.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(apiPost).toHaveBeenLastCalledWith(
       "/api/jira-agent/conversations/jac_1/messages",
-      { text: "尚未发送", files: [], post_comment: true },
+      { text: "尚未发送", files: [], post_comment: false },
     ));
   });
 

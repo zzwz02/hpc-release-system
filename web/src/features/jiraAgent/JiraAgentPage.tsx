@@ -15,6 +15,7 @@ import { Markdown } from "../../components/Markdown";
 import { confirmDialog } from "../../lib/confirm";
 import { isRM } from "../../lib/roles";
 import { toast } from "../../lib/toast";
+import { ModelChoice, type ModelSelection } from "./ModelChoice";
 import { MachineChoice } from "./MachineChoice";
 import { MachinesDialog } from "./MachinesDialog";
 import { SshKeyUploadDialog } from "./SshKeyUploadDialog";
@@ -611,7 +612,9 @@ function IssueView({
               <span>owner：{conversation.owner}</span>
               <span>交单人：{conversation.created_by}</span>
               <span>数字员工：{conversation.agent_group}</span>
+              {conversation.model_provider && <span>服务商：{conversation.model_provider}</span>}
               <span>机器：{machineText(conversation)}</span>
+              {conversation.latest_turn?.model && <span>模型：{conversation.latest_turn.model} · {conversation.latest_turn.effort}</span>}
               <span>Thread：{conversation.thread_id || "未创建"}</span>
               <span>
                 B 工作目录：<code>{conversation.workspace}</code>
@@ -677,6 +680,8 @@ function IssueView({
 }
 
 function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCreated: (id: string) => void }) {
+  const { user } = useAuth();
+  const [selection, setSelection] = useState<ModelSelection>({});
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   // "" = the agent picks from the system list; null = the choice is not ready yet
@@ -716,6 +721,7 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
     try {
       const files = await readFiles(fileInput.current?.files ?? null);
       const result = await handoverIssue({
+        ...(isRM(user) ? selection : {}),
         issue_key: preview.issue.key,
         note: note.trim(),
         files,
@@ -744,6 +750,7 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
           disabled={disabled}
           onChange={(event) => setNote(event.target.value)}
         />
+        <ModelChoice group={preview.agent_group} value={selection} onChange={setSelection} disabled={busy || disabled} />
         <MachineChoice agentGroup={preview.agent_group} disabled={disabled} onChange={setMachine} />
         <PostCommentCheck checked={postComment} disabled={disabled} onChange={setPostComment} />
         <div className="actions">
@@ -1402,18 +1409,28 @@ function FilesPanel({ files }: { files: AgentFile[] }) {
 }
 
 function Composer({ conversation, onSent }: { conversation: AgentConversation; onSent: () => void }) {
+  const { user } = useAuth();
+  const savedModel = conversation.latest_turn?.model || "";
+  const savedEffort = conversation.latest_turn?.effort || "";
+  const savedProvider = conversation.model_provider || "";
+  const [selection, setSelection] = useState<ModelSelection>({ model_provider: savedProvider, model: savedModel, effort: savedEffort });
+  const [modelChanged, setModelChanged] = useState(false);
+  useEffect(() => {
+    setSelection({ model_provider: savedProvider, model: savedModel, effort: savedEffort });
+    setModelChanged(false);
+  }, [conversation.id, savedProvider, savedModel, savedEffort]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const activeTurn = conversation.state === "running" || conversation.state === "queued"
     ? conversation.latest_turn : null;
-  const activeTurnId = activeTurn?.id;
-  const defaultPostComment = activeTurn?.post_comment ?? true;
+  const latestTurnId = conversation.latest_turn?.id;
+  const defaultPostComment = conversation.latest_turn?.post_comment ?? true;
   const [postComment, setPostComment] = useState(defaultPostComment);
   const fileInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setPostComment(defaultPostComment);
-  }, [conversation.id, activeTurnId, defaultPostComment]);
+  }, [conversation.id, latestTurnId, defaultPostComment]);
 
   const recovering = conversation.phase === "recovering";
   const delivering = conversation.state === "delivering";
@@ -1427,9 +1444,10 @@ function Composer({ conversation, onSent }: { conversation: AgentConversation; o
     setBusy(true);
     try {
       const files = await readFiles(fileInput.current?.files ?? null);
-      const response = await sendConversationMessage(conversation.id, { text, files, post_comment: postComment });
+      const response = await sendConversationMessage(conversation.id, { text, files, post_comment: postComment, ...(isRM(user) && !activeTurn && modelChanged ? selection : {}) });
       toast.success(MODE_LABELS[response.mode] ?? "已发送");
       setText("");
+      setModelChanged(false);
       if (fileInput.current) fileInput.current.value = "";
       onSent();
     } catch (error) {
@@ -1449,6 +1467,7 @@ function Composer({ conversation, onSent }: { conversation: AgentConversation; o
           value={text}
           onChange={(event) => setText(event.target.value)}
         />
+        <ModelChoice group={conversation.agent_group} value={selection} lockProvider onChange={(value) => { setSelection(value); setModelChanged(true); }} disabled={busy || Boolean(activeTurn) || recovering || delivering} />
         <PostCommentCheck
           checked={postComment}
           onChange={setPostComment}

@@ -30,6 +30,7 @@ from app.integrations import jira
 from app.integrations.codex_app_server import CodexAppServerClient, CodexAppServerError
 from app.repositories import jira_agent_repo as repo
 from app.repositories.base import dumps_json
+from app.services import jira_agent_models
 from app.timeutil import BEIJING_TZ, beijing_now, beijing_timestamp
 
 logger = logging.getLogger(__name__)
@@ -501,23 +502,43 @@ class JiraAgentRunner:
         )
         uploaded = await self._sync_inputs(conn, active, conversation, issue)
 
+        turn = repo.get_turn(conn, tid)
+        provider = conversation["model_provider"]
+        # Resolve old rows from their original thread, not today's default.
+        if not provider and conversation["thread_id"]:
+            thread = await active.client.resume_thread(conversation["thread_id"])
+            provider = thread["effective_model_provider"]
+        catalog = await jira_agent_models.read_catalog(active.client, group)
+        provider = provider or catalog.default_provider
+        model, effort = catalog.select(provider, turn["model"], turn["effort"])
+        config = jira_agent_models.thread_config(group, provider)
+        with transaction(conn):
+            repo.bind_model_provider(conn, cid, provider)
+            repo.update_turn(conn, tid, model=model, effort=effort)
+
         if conversation["thread_id"]:
             active.thread_id = conversation["thread_id"]
-            thread = await active.client.resume_thread(active.thread_id, model=group.model)  # type: ignore[union-attr]
-            await self._stop_leftover_turn(conn, active, thread)
+            thread = await active.client.resume_thread(  # type: ignore[union-attr]
+                active.thread_id, model=model, model_provider=provider, config=config,
+            )
         else:
             thread = await active.client.start_thread(  # type: ignore[union-attr]
                 cwd=conversation["workspace"],
                 developer_instructions=domain.developer_instructions(
                     group, conversation["issue_key"], conversation["workspace"]
                 ),
-                model=group.model,
+                model=model,
+                model_provider=provider,
+                config=config,
                 service_name="release-system-jira-agent",
             )
             active.thread_id = thread["id"]
             with transaction(conn):
                 repo.set_thread_id(conn, cid, thread["id"])
 
+        if thread["effective_model_provider"] != provider:
+            raise CodexAppServerError("实际 thread 的服务商与本对话不一致，请新建对话，未发送模型请求")
+        await self._stop_leftover_turn(conn, active, thread)
         active.phase = "starting"
         turn = repo.get_turn(conn, tid)  # re-read: messages may have been merged
         machine = conversation["machine"]
@@ -534,7 +555,7 @@ class JiraAgentRunner:
             ),
         )
         codex_turn = await active.client.start_turn(  # type: ignore[union-attr]
-            active.thread_id, prompt, output_schema=domain.RESULT_SCHEMA, model=group.model
+            active.thread_id, prompt, output_schema=domain.RESULT_SCHEMA, model=model, effort=effort
         )
         active.codex_turn_id = codex_turn["id"]
         active.phase = "running"
@@ -559,7 +580,13 @@ class JiraAgentRunner:
         cid, tid = active.conversation_id, active.turn_id
         turn = repo.get_turn(conn, tid)
         active.thread_id = conversation["thread_id"]
-        thread = await active.client.resume_thread(active.thread_id, model=group.model)  # type: ignore[union-attr]
+        provider = conversation["model_provider"]
+        thread = await active.client.resume_thread(  # type: ignore[union-attr]
+            active.thread_id, model=turn["model"] if provider else "", model_provider=provider,
+            config=jira_agent_models.thread_config(group, provider),
+        )
+        with transaction(conn):
+            repo.bind_model_provider(conn, cid, thread["effective_model_provider"])
         latest = await active.client.list_turns(active.thread_id)  # type: ignore[union-attr]
         target = latest[0] if latest and self._is_this_turn(latest[0], turn) else None
         if target is None:

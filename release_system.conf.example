@@ -76,7 +76,7 @@ PUBLIC_BASE_URL = http://release.example.com:8000
 # ── JIRA 数字员工（每组一节：[jira_agent:<组名>]） ──────────────
 # 每节对应该组服务器 B 上的一个 codex app-server。网站只保存连接信息；
 # 组知识、skills、Codex 与 SSH 凭证都在服务器 B 上。部署说明见 docs/jira-agent.md。
-# COMPONENTS、JIRA_MEMBERS_GROUP、SSH_KEY_PATH、MODEL 可选，其余键必须填写。
+# COMPONENTS、JIRA_MEMBERS_GROUP、SSH_KEY_PATH、MODEL、MODEL_CATALOGS 可选，其余键必须填写。
 [jira_agent:HPC]
 DISPLAY_NAME = HPC 数字员工
 # B 上 codex app-server 的 WebSocket 地址，以及 capability token
@@ -96,6 +96,11 @@ JIRA_MEMBERS_GROUP = pde_hpc
 SSH_KEY_PATH = /home/hpc-agent/.ssh/id_ed25519
 # 覆盖 B 上 codex 的模型；留空则由 B 上的 codex 自行决定
 MODEL =
+# 可选服务商模型目录：JSON 对象，值为 B 上 Codex 模型目录的绝对路径。
+# provider 必须已在 B 的用户 config.toml 配好 URL / 认证；网站不接收或转发 Key。
+# 例如 {"deepseek": "/home/hpc-agent/.codex/deepseek-models.json"}
+# 留空只展示 app-server 默认服务商的模型；默认服务商仍由 B 配置决定。
+MODEL_CATALOGS =
 # 每轮最长执行时间（秒），从出队开始计算
 TURN_TIMEOUT_SECONDS = 7200
 # 该组 B 上同时运行的轮次数

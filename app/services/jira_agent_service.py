@@ -25,11 +25,12 @@ from app.config import settings
 from app.db.connection import transaction
 from app.domain import jira_agent as domain
 from app.integrations import jira
-from app.integrations.codex_app_server import CodexAppServerError
+from app.integrations.codex_app_server import CodexAppServerClient, CodexAppServerError
 from app.repositories import jira_agent_repo as repo
 from app.repositories.base import loads_json, new_id
 from app.services import jira_agent_runner as runner_module
 from app.services import jira_agent_ssh_key
+from app.services import jira_agent_models
 from app.services.jira_agent_runner import open_db, runner
 
 MAX_UPLOAD_FILES = 10
@@ -555,6 +556,59 @@ async def close_conversation(conn: sqlite3.Connection, conversation: dict, reaso
     runner.schedule_archive(conversation["id"])
 
 
+async def list_models(user: dict, group_name: str) -> dict:
+    if not _is_rm(user):
+        raise AuthzError("只有 RM 可以选择模型和 effort")
+    return (await _model_catalog(group_name)).view()
+
+
+async def _model_catalog(group_name: str) -> jira_agent_models.ModelCatalog:
+    group = runner_module.load_groups().get(group_name)
+    if group is None:
+        raise ValueError("数字员工组不存在")
+    try:
+        async with CodexAppServerClient(group.ws_url, group.ws_token) as client:
+            return await jira_agent_models.read_catalog(client, group)
+    except CodexAppServerError as exc:
+        raise ApiError(502, str(exc)) from exc
+
+
+async def _model_choice(
+    user: dict, group_name: str, body: dict, *, fixed_provider: str = "",
+) -> tuple[str, str, str]:
+    model, effort = (body.get("model") or "").strip(), (body.get("effort") or "").strip()
+    provider = (body.get("model_provider") or "").strip()
+    if (model or effort or provider) and not _is_rm(user):
+        raise AuthzError("只有 RM 可以选择服务商、模型和 effort")
+    if fixed_provider and provider and provider != fixed_provider:
+        raise ApiError(409, "同一对话固定服务商，切换 GPT/DeepSeek 请新建对话")
+    catalog = await _model_catalog(group_name)
+    provider = fixed_provider or provider or catalog.default_provider
+    model, effort = catalog.select(provider, model, effort)
+    return model, effort, provider
+
+
+async def _resolve_legacy_provider(conn, conversation: dict) -> str:
+    if conversation["model_provider"]:
+        return conversation["model_provider"]
+    group = runner_module.load_groups().get(conversation["agent_group"])
+    if group is None:
+        raise ValueError("数字员工组不存在")
+    try:
+        async with CodexAppServerClient(group.ws_url, group.ws_token) as client:
+            if conversation["thread_id"]:
+                result = await client.request("thread/read", {"threadId": conversation["thread_id"], "includeTurns": False})
+                provider = (result.get("thread") or {}).get("modelProvider") or ""
+            else:
+                provider = (await client.model_settings(group.workspace_root))["provider"]
+        with transaction(conn):
+            repo.bind_model_provider(conn, conversation["id"], provider)
+        conversation["model_provider"] = provider
+        return provider
+    except CodexAppServerError as exc:
+        raise ApiError(502, "无法确认旧对话的服务商，请检查 app-server 连接") from exc
+
+
 async def handover(user: dict, body: dict) -> dict:
     issue = await fetch_issue(body.get("issue_key", ""))
     conn = open_db()
@@ -572,6 +626,7 @@ async def handover(user: dict, body: dict) -> dict:
     post_comment = bool(body.get("post_comment", True))
     group = domain.group_for_issue(runner_module.load_groups(), issue["components"])
 
+    model, effort, provider = await _model_choice(user, group.name, body)
     conn = open_db()
     try:
         machine = _check_machine(
@@ -597,10 +652,11 @@ async def handover(user: dict, body: dict) -> dict:
                     created_by=user["username"],
                     workspace=domain.workspace_path(group, issue["key"], conversation_id),
                     machine=machine,
+                    model_provider=provider,
                 )
                 turn = repo.create_turn(
                     conn, conversation_id=conversation_id, trigger="handover",
-                    created_by=user["username"], input_text=note, post_comment=post_comment,
+                    created_by=user["username"], input_text=note, post_comment=post_comment, model=model, effort=effort,
                 )
                 for name, data in uploads:
                     _store_upload(conn, conversation_id, turn["id"], name, data)
@@ -645,6 +701,18 @@ async def send_message(user: dict, conversation_id: str, body: dict) -> dict:
             )
         check_actor(user, issue)
 
+        previous = repo.latest_turn(conn, conversation_id) or {}
+        post_comment = bool(body.get("post_comment", previous.get("post_comment", True)))
+        changing_model = any(key in body for key in ("model", "effort", "model_provider"))
+        if changing_model:
+            if not _is_rm(user):
+                raise AuthzError("只有 RM 可以选择模型和 effort")
+            provider = await _resolve_legacy_provider(conn, conversation)
+            model, effort, _ = await _model_choice(user, conversation["agent_group"], body, fixed_provider=provider)
+        else:
+            model, effort = previous.get("model", ""), previous.get("effort", "")
+        if changing_model and repo.active_turn(conn, conversation_id):
+            raise ApiError(409, "本轮已排队或运行，模型和 effort 只能在新一轮选择")
         _check_not_delivering(conn, conversation_id)
         names = [name for name, _ in uploads]
         active = runner.active_for_conversation(conversation_id)
@@ -662,7 +730,7 @@ async def send_message(user: dict, conversation_id: str, body: dict) -> dict:
             else:
                 turn = repo.create_turn(
                     conn, conversation_id=conversation_id, trigger="followup",
-                    created_by=user["username"], input_text=text, post_comment=post_comment,
+                    created_by=user["username"], input_text=text, post_comment=post_comment, model=model, effort=effort,
                 )
                 mode = "queued"
             for name, data in uploads:

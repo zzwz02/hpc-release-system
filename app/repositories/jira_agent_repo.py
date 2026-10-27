@@ -21,7 +21,7 @@ _TURN_UPDATABLE = {
     "comment_status",
     "delivery_status",
     "delivery_errors_json",
-    "post_comment",
+    "post_comment", "model", "effort",
     "comment_id",
     "comment_body",
     "comment_error",
@@ -55,19 +55,33 @@ def create_conversation(
     created_by: str,
     workspace: str,
     machine: str = "",
+    model_provider: str = "",
 ) -> dict:
     now = beijing_timestamp()
     conn.execute(
         """
         INSERT INTO jira_agent_conversations
             (id, issue_key, issue_summary, agent_group, owner, created_by,
-             workspace, machine, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             workspace, machine, created_at, updated_at, model_provider)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (conversation_id, issue_key, issue_summary, agent_group, owner,
-         created_by, workspace, machine, now, now),
+         created_by, workspace, machine, now, now, model_provider),
     )
     return get_conversation(conn, conversation_id)  # type: ignore[return-value]
+
+
+def bind_model_provider(conn: sqlite3.Connection, conversation_id: str, provider: str) -> None:
+    """Resolve a legacy conversation once; never overwrite its established provider."""
+    if not provider:
+        raise ValueError("无法确定对话服务商")
+    conn.execute(
+        "UPDATE jira_agent_conversations SET model_provider = ? WHERE id = ? AND model_provider = ''",
+        (provider, conversation_id),
+    )
+    conversation = get_conversation(conn, conversation_id)
+    if conversation is None or conversation["model_provider"] != provider:
+        raise ValueError("对话服务商不一致，切换服务商请新建对话")
 
 
 def get_conversation(conn: sqlite3.Connection, conversation_id: str) -> dict | None:
@@ -200,6 +214,8 @@ def create_turn(
     created_by: str,
     input_text: str,
     post_comment: bool = True,
+    model: str = "",
+    effort: str = "",
 ) -> dict:
     seq = conn.execute(
         "SELECT COALESCE(MAX(seq), 0) + 1 FROM jira_agent_turns WHERE conversation_id = ?",
@@ -209,12 +225,12 @@ def create_turn(
     conn.execute(
         """
         INSERT INTO jira_agent_turns
-            (id, conversation_id, seq, trigger, created_by, input_text, post_comment, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (id, conversation_id, seq, trigger, created_by, input_text, post_comment, created_at, model, effort)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             turn_id, conversation_id, seq, trigger, created_by, input_text,
-            int(post_comment), beijing_timestamp(),
+            int(post_comment), beijing_timestamp(), model, effort,
         ),
     )
     touch_conversation(conn, conversation_id)

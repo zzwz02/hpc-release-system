@@ -38,6 +38,8 @@ export interface AgentResult {
 }
 
 export interface AgentTurn {
+  model?: string;
+  effort?: string;
   id: string;
   conversation_id: string;
   seq: number;
@@ -64,6 +66,7 @@ export interface AgentTurn {
 }
 
 export interface AgentConversation {
+  model_provider?: string;
   id: string;
   issue_key: string;
   issue_summary: string;
@@ -304,6 +307,9 @@ export function handoverIssue(body: {
   /** The key upload to a user@host machine that just passed; each hand-over needs its own. */
   ssh_key_session_id?: string;
   post_comment?: boolean;
+  model?: string;
+  effort?: string;
+  model_provider?: string;
 }) {
   return apiPost<{ created: boolean; conversation: AgentConversation }>(
     "/api/jira-agent/conversations",
@@ -323,7 +329,7 @@ export function getConversationEvents(id: string, after: number) {
 
 export function sendConversationMessage(
   id: string,
-  body: { text: string; files?: UploadPayload[]; post_comment?: boolean },
+  body: { text: string; files?: UploadPayload[]; post_comment?: boolean; model?: string; effort?: string; model_provider?: string },
 ) {
   return apiPost<{ mode: "steer" | "merged" | "queued"; conversation: AgentConversation }>(
     `/api/jira-agent/conversations/${encodeURIComponent(id)}/messages`,
@@ -458,5 +464,28 @@ export function closeKeySession(id: string) {
 export function deleteConversation(id: string) {
   return apiFetch<{ deleted: boolean; issue_key: string; warning: string }>(
     `/api/jira-agent/conversations/${encodeURIComponent(id)}`, { method: "DELETE" },
+  );
+}
+
+export interface AgentModel {
+  provider: string;
+  model: string;
+  displayName: string;
+  defaultReasoningEffort: string;
+  supportedReasoningEfforts: { reasoningEffort: string; description: string }[];
+}
+
+export interface AgentModelCatalog {
+  models: AgentModel[];
+  providers: { id: string; name: string; default_model: string; default_effort: string }[];
+  default_provider: string;
+  default_model: string;
+  default_effort: string;
+  errors: { provider: string; message: string }[];
+}
+
+export function listAgentModels(group: string) {
+  return apiGet<AgentModelCatalog>(
+    `/api/jira-agent/models?group=${encodeURIComponent(group)}`,
   );
 }

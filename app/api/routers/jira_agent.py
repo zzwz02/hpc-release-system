@@ -36,6 +36,9 @@ class HandoverBody(BaseModel):
     ssh_key_session_id: str = ""
     # False = the result stays on the website; nothing is posted to JIRA
     post_comment: bool = True
+    model: str = ""
+    effort: str = ""
+    model_provider: str = ""
 
 
 class MessageBody(BaseModel):
@@ -43,6 +46,9 @@ class MessageBody(BaseModel):
     files: list[UploadBody] = Field(default_factory=list)
     # applies to the turn this message starts or joins; the latest message wins
     post_comment: bool = True
+    model: str = ""
+    effort: str = ""
+    model_provider: str = ""
 
 
 class MachineBody(BaseModel):
@@ -63,6 +69,11 @@ class KeyInputBody(BaseModel):
 @router.get("/health")
 async def health(user: dict = Depends(require_jira_agent_access)) -> dict:
     return {"groups": await jira_agent_runner.check_health()}
+
+
+@router.get("/models")
+async def models(group: str, user: dict = Depends(require_jira_agent_access)) -> dict:
+    return await service.list_models(user, group)
 
 
 @router.get("/issues")
@@ -111,7 +122,7 @@ async def send_message(
     body: MessageBody,
     user: dict = Depends(require_jira_agent_access),
 ) -> dict:
-    return await service.send_message(user, conversation_id, body.model_dump())
+    return await service.send_message(user, conversation_id, body.model_dump(exclude_unset=True))
 
 
 @router.post("/conversations/{conversation_id}/cancel")

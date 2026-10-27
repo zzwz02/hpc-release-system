@@ -73,7 +73,9 @@ class FakeCodex:
         self.token = token
         self.requests: list[tuple[str, dict]] = []
         self.files: dict[str, bytes] = {}
+        self.config: dict = {}
         self.thread_cwd: dict[str, str] = {}
+        self.thread_providers: dict[str, str] = {}
         self.plans: list[str] = []
         self.turn_start_delay = 0.0
         self.resume_delay = 0.0
@@ -168,18 +170,33 @@ class FakeCodex:
         return next((t for t in self.thread_turns.get(thread_id, []) if self.turn_state[t]["status"] == "inProgress"), "")
 
     def _result(self, ws, method: str, params: dict):
+        if method == "config/read":
+            return {"config": self.config}, None
+        if method == "model/list":
+            return {"data": [
+                {"model": name, "displayName": name, "isDefault": name == "default-model",
+                 "defaultReasoningEffort": "medium", "supportedReasoningEfforts": [
+                     {"reasoningEffort": e, "description": e} for e in ["medium", "high"]]}
+                for name in ["default-model", "other-model"]
+            ]}, None
         if method == "thread/start":
             self.threads += 1
             thread_id = f"thr_{self.threads}"
             self.thread_cwd[thread_id] = params["cwd"]
+            self.thread_providers[thread_id] = params.get("modelProvider") or self.config.get("model_provider") or "openai"
             self.thread_turns[thread_id] = []
             self._subscriber[thread_id] = ws
-            return {"thread": {"id": thread_id, "cwd": params["cwd"]}}, None
+            provider = self.thread_providers[thread_id]
+            return {"modelProvider": provider, "thread": {"id": thread_id, "cwd": params["cwd"], "modelProvider": provider}}, None
         if method == "thread/resume":
             thread_id = params["threadId"]
             self._subscriber[thread_id] = ws
             status = "active" if self._running_turn(thread_id) else "idle"
-            return {"thread": {"id": thread_id, "status": {"type": status, **({"activeFlags": []} if status == "active" else {})}}}, None
+            # A loaded thread ignores provider overrides (Codex 0.153.4).
+            provider = self.thread_providers.setdefault(thread_id, params.get("modelProvider") or "openai")
+            return {"modelProvider": provider, "thread": {"id": thread_id, "modelProvider": provider, "status": {"type": status, **({"activeFlags": []} if status == "active" else {})}}}, None
+        if method == "thread/read":
+            return {"thread": {"id": params["threadId"], "modelProvider": self.thread_providers.get(params["threadId"], "openai")}}, None
         if method == "thread/turns/list":
             ids = list(reversed(self.thread_turns.get(params["threadId"], [])))[: params.get("limit") or 25]
             data = [dict(self.turn_state[t], items=list(self.turn_state[t]["items"])) for t in ids]
@@ -961,12 +978,20 @@ def test_turn_can_keep_its_result_on_the_website_only(env) -> None:
     assert detail["events"][0]["payload"]["post_comment"] is False
     assert env.client.post(f"/api/jira-agent/turns/{turn['id']}/comment/retry").status_code == 409
 
-    # the choice is per turn: a follow-up without the flag comments as before
+    # Follow-ups retain the conversation choice unless explicitly changed.
     response = env.client.post(
         f"/api/jira-agent/conversations/{conversation['id']}/messages", json={"text": "继续"},
     )
     assert response.status_code == 200, response.text
     turn = _latest(_wait(env, conversation["id"], lambda d: _latest(d)["seq"] == 2 and _done(d)))
+    assert (turn["post_comment"], turn["comment_status"]) == (False, "")
+    assert not env.jira.comments
+    response = env.client.post(
+        f"/api/jira-agent/conversations/{conversation['id']}/messages",
+        json={"text": "发布下一轮结论", "post_comment": True},
+    )
+    assert response.status_code == 200
+    turn = _latest(_wait(env, conversation["id"], lambda d: _latest(d)["seq"] == 3 and _done(d)))
     assert (turn["post_comment"], turn["comment_status"]) == (True, "posted")
     assert len(env.jira.comments) == 1
 
@@ -1786,3 +1811,154 @@ def test_delivery_retry_refuses_old_round_after_followup(env, monkeypatch):
     _wait(env, conversation["id"], lambda d: _latest(d)["seq"] == 2 and _done(d))
     assert env.client.post(f"/api/jira-agent/turns/{turn['id']}/delivery/retry").status_code == 409
     assert env.jira.comments == []
+
+
+def test_rm_model_choice_persists_in_conversation_and_is_validated(env):
+    assert env.client.get("/api/jira-agent/models?group=HPC").status_code == 403
+    denied = env.client.post("/api/jira-agent/conversations", json={
+        "issue_key": "MC3-7672", "model": "other-model", "effort": "high",
+    })
+    assert denied.status_code == 403
+    env.as_user("carol")
+    models = env.client.get("/api/jira-agent/models?group=HPC")
+    assert models.status_code == 200
+    assert models.json()["default_model"] == "default-model"
+    for choice in [{"model": "unknown"}, {"model": "other-model", "effort": "invalid"}]:
+        response = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-7672", **choice})
+        assert response.status_code == 400, response.text
+    cid = _handover(env, model="other-model", effort="high", post_comment=False)["conversation"]["id"]
+    detail = _wait(env, cid, _done)
+    assert _latest(detail)["model"] == "other-model"
+    assert _latest(detail)["effort"] == "high"
+    params = env.fake.params("turn/start")[-1]
+    assert (params["model"], params["effort"]) == ("other-model", "high")
+    env.as_user("alice")
+    response = env.client.post(f"/api/jira-agent/conversations/{cid}/messages", json={"text": "继续", "post_comment": False})
+    assert response.status_code == 200, response.text
+    _wait(env, cid, _done)
+    params = env.fake.params("turn/start")[-1]
+    assert (params["model"], params["effort"]) == ("other-model", "high")
+    env.stop_site()
+    env.start_site()
+    response = env.client.post(f"/api/jira-agent/conversations/{cid}/messages", json={"text": "重启后继续"})
+    assert response.status_code == 200
+    detail = _wait(env, cid, _done)
+    assert (_latest(detail)["model"], _latest(detail)["effort"]) == ("other-model", "high")
+    assert _latest(detail)["post_comment"] is False
+    assert not env.jira.comments
+    new_cid = _handover(env, new_conversation=True)["conversation"]["id"]
+    detail = _wait(env, new_cid, _done)
+    assert (_latest(detail)["model"], _latest(detail)["effort"]) == ("default-model", "medium")
+    assert _latest(detail)["post_comment"] is True
+
+
+def test_model_choice_rejected_when_turn_is_active(env):
+    env.as_user("carol")
+    env.fake.plans = ["hold"]
+    cid = _handover(env)["conversation"]["id"]
+    _wait(env, cid, lambda d: d["conversation"]["phase"] == "running")
+    response = env.client.post(f"/api/jira-agent/conversations/{cid}/messages", json={
+        "text": "更换模型", "model": "other-model", "effort": "high",
+    })
+    assert response.status_code == 409, response.text
+    assert not env.fake.params("turn/steer")
+    env.client.post(f"/api/jira-agent/conversations/{cid}/cancel")
+    _wait(env, cid, _done)
+
+
+def _enable_deepseek(env):
+    path = "/b/deepseek-models.json"
+    env.conf.write_text(env.conf.read_text() + f'MODEL_CATALOGS = {{"deepseek": "{path}"}}\n')
+    env.fake.config = {"model_providers": {
+        "deepseek": {"name": "DeepSeek", "experimental_bearer_token": "private-test-key"},
+    }}
+    env.fake.files[path] = json.dumps({"models": [
+        {"slug": name, "display_name": name, "default_reasoning_level": "high",
+         "supported_reasoning_levels": [{"effort": e, "description": e} for e in ["low", "high", "max"]],
+         "base_instructions": "private model instructions must not reach the browser"}
+        for name in ["deepseek-flash", "deepseek-v4-pro"]
+    ]}).encode()
+    return path
+
+
+def test_provider_catalog_and_conversation_boundary(env):
+    path = _enable_deepseek(env)
+    env.as_user("carol")
+    response = env.client.get("/api/jira-agent/models?group=HPC")
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["default_provider"] == "openai"
+    assert {p["id"] for p in data["providers"]} == {"openai", "deepseek"}
+    assert {m["provider"] for m in data["models"]} == {"openai", "deepseek"}
+    assert "private" not in response.text and "experimental_bearer_token" not in response.text
+    assert path not in response.text
+    cid = _handover(env, model_provider="deepseek", model="deepseek-flash", effort="high", post_comment=False)["conversation"]["id"]
+    detail = _wait(env, cid, _done)
+    assert detail["conversation"]["model_provider"] == "deepseek"
+    thread_id = detail["conversation"]["thread_id"]
+    start = env.fake.params("thread/start")[-1]
+    assert start["modelProvider"] == "deepseek" and start["model"] == "deepseek-flash"
+    assert start["config"]["model_catalog_json"] == path
+    assert "private-test-key" not in json.dumps(start)
+
+    for choice, status in [
+        ({"model_provider": "openai", "model": "default-model"}, 409),
+        ({"model": "default-model"}, 400),
+        ({"model": "deepseek-flash", "effort": "medium"}, 400),
+    ]:
+        response = env.client.post(f"/api/jira-agent/conversations/{cid}/messages", json={"text": "继续", **choice})
+        assert response.status_code == status, response.text
+    assert len(env.fake.params("turn/start")) == 1
+    response = env.client.post(f"/api/jira-agent/conversations/{cid}/messages", json={
+        "text": "同服务商换模型", "model_provider": "deepseek", "model": "deepseek-v4-pro", "effort": "max",
+    })
+    assert response.status_code == 200, response.text
+    _wait(env, cid, _done)
+    assert env.fake.params("turn/start")[-1]["model"] == "deepseek-v4-pro"
+    assert env.fake.params("turn/start")[-1]["effort"] == "max"
+    assert env.fake.params("thread/resume")[-1]["modelProvider"] == "deepseek"
+    assert _detail(env, cid)["conversation"]["thread_id"] == thread_id
+
+    env.stop_site()
+    env.start_site()
+    env.as_user("alice")
+    denied = env.client.post(f"/api/jira-agent/conversations/{cid}/messages", json={"text": "修改", "model_provider": "openai"})
+    assert denied.status_code == 403
+    response = env.client.post(f"/api/jira-agent/conversations/{cid}/messages", json={"text": "沿用设置"})
+    assert response.status_code == 200, response.text
+    _wait(env, cid, _done)
+    assert env.fake.params("thread/resume")[-1]["modelProvider"] == "deepseek"
+    assert env.fake.params("turn/start")[-1]["model"] == "deepseek-v4-pro"
+    assert not env.jira.comments
+    new = _handover(env, new_conversation=True, post_comment=False)["conversation"]
+    assert new["model_provider"] == "openai"
+    _wait(env, new["id"], _done)
+    assert env.fake.params("thread/start")[-1]["modelProvider"] == "openai"
+    assert _detail(env, new["id"])["conversation"]["thread_id"] != thread_id
+
+
+def test_broken_custom_catalog_reports_error_without_hiding_default_models(env):
+    path = _enable_deepseek(env)
+    env.fake.files[path] = b'{"models": "invalid"}'
+    env.as_user("carol")
+    response = env.client.get("/api/jira-agent/models?group=HPC")
+    assert response.status_code == 200
+    data = response.json()
+    assert [p["id"] for p in data["providers"]] == ["openai"]
+    assert data["errors"][0]["provider"] == "deepseek"
+    rejected = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-7672", "model_provider": "deepseek"})
+    assert rejected.status_code == 400
+    cid = _handover(env, post_comment=False)["conversation"]["id"]
+    _wait(env, cid, _done)
+
+
+def test_existing_thread_provider_mismatch_never_sends_a_turn(env):
+    cid = _handover(env, post_comment=False)["conversation"]["id"]
+    detail = _wait(env, cid, _done)
+    env.fake.thread_providers[detail["conversation"]["thread_id"]] = "unexpected-provider"
+    response = env.client.post(f"/api/jira-agent/conversations/{cid}/messages", json={"text": "继续"})
+    assert response.status_code == 200
+    detail = _wait(env, cid, _done)
+    assert _latest(detail)["status"] == "failed"
+    assert "服务商" in _latest(detail)["error"]
+    assert len(env.fake.params("turn/start")) == 1

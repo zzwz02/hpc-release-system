@@ -212,6 +212,39 @@ class CodexAppServerClient:
 
     # ── threads and turns ─────────────────────────────────────
 
+    async def model_defaults(self, cwd: str) -> tuple[str, str]:
+        config = await self.model_settings(cwd)
+        return config["model"], config["effort"]
+
+    async def model_settings(self, cwd: str) -> dict:
+        """Only public model settings; never return provider credentials."""
+        result = await self.request("config/read", {"cwd": cwd, "includeLayers": False})
+        config = result.get("config") or {}
+        return {
+            "model": config.get("model") or "",
+            "effort": config.get("model_reasoning_effort") or "",
+            "provider": config.get("model_provider") or "openai",
+            "providers": {
+                name: {"name": provider.get("name") or name}
+                for name, provider in (config.get("model_providers") or {}).items()
+            },
+        }
+
+    @staticmethod
+    def _thread_result(result: dict) -> dict:
+        # thread.modelProvider is persisted metadata and can be stale after a
+        # resume override; the top-level field identifies the live provider.
+        return {**result["thread"], "effective_model_provider": result.get("modelProvider", "")}
+
+    async def list_models(self) -> list[dict]:
+        models, cursor = [], None
+        while True:
+            result = await self.request("model/list", {"cursor": cursor})
+            models.extend(result.get("data") or [])
+            cursor = result.get("nextCursor")
+            if not cursor:
+                return models
+
     async def start_thread(
         self,
         *,
@@ -219,6 +252,8 @@ class CodexAppServerClient:
         developer_instructions: str = "",
         model: str = "",
         service_name: str = "",
+        model_provider: str = "",
+        config: dict | None = None,
     ) -> dict:
         params: dict[str, Any] = {"cwd": cwd, "ephemeral": False}
         if developer_instructions:
@@ -227,13 +262,23 @@ class CodexAppServerClient:
             params["model"] = model
         if service_name:
             params["serviceName"] = service_name
-        return (await self.request("thread/start", params))["thread"]
+        if model_provider:
+            params["modelProvider"] = model_provider
+        if config:
+            params["config"] = config
+        return self._thread_result(await self.request("thread/start", params))
 
-    async def resume_thread(self, thread_id: str, *, model: str = "") -> dict:
+    async def resume_thread(
+        self, thread_id: str, *, model: str = "", model_provider: str = "", config: dict | None = None,
+    ) -> dict:
         params: dict[str, Any] = {"threadId": thread_id, "excludeTurns": True}
         if model:
             params["model"] = model
-        return (await self.request("thread/resume", params))["thread"]
+        if model_provider:
+            params["modelProvider"] = model_provider
+        if config:
+            params["config"] = config
+        return self._thread_result(await self.request("thread/resume", params))
 
     async def list_turns(
         self, thread_id: str, *, limit: int = 1, items_view: str = "full"
@@ -256,6 +301,7 @@ class CodexAppServerClient:
         *,
         output_schema: dict | None = None,
         model: str = "",
+        effort: str = "",
     ) -> dict:
         params: dict[str, Any] = {
             "threadId": thread_id,
@@ -265,6 +311,8 @@ class CodexAppServerClient:
             params["outputSchema"] = output_schema
         if model:
             params["model"] = model
+        if effort:
+            params["effort"] = effort
         return (await self.request("turn/start", params))["turn"]
 
     async def steer_turn(self, thread_id: str, expected_turn_id: str, text: str) -> dict:
