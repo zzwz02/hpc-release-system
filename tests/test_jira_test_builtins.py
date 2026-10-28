@@ -61,13 +61,13 @@ def test_packaged_repository_cases_contain_only_three_inputs(tmp_path):
     assert catalog.load(root) == original
     for archive in (root / '_packages').glob('*.zip'):
         with zipfile.ZipFile(archive) as files:
-            assert set(files.namelist()) <= {'manifest.json', 'case.json', 'review.json', 'attachments/image-2026-09-17-10-23-10-021.png'}
+            assert set(files.namelist()) == {'manifest.json', 'case.json', 'review.json'}
             body = json.loads(files.read('case.json'))
             assert set(body) == {'title', 'input', 'provenance'}
             assert set(body['provenance']) == {'issue_key'}
         restored = package.decode(archive.read_bytes())
         assert len(restored['criteria'].splitlines()) == 3
-        assert restored['reference'] == ''
+        assert bool(restored['reference']) == (archive.stem == 'amber-memory-growth')
     # A packaged deployment needs neither source directories nor the old site.
     for directory in root.iterdir():
         if directory.name != '_packages':
