@@ -1,50 +1,78 @@
 """Read only local evidence. No Jira requests, analysis endpoints or experiments."""
 import json
+import os
+import tempfile
+from pathlib import Path
 
 from app.api.errors import ApiError
+from app.config import settings
 from app.db.connection import transaction
-from app.domain import jira_testing as testing, jira_learning
+from app.domain import jira_testing as testing
 from app.repositories import jira_test_evaluation_repo as repo, jira_agent_repo as agent
 from app.repositories.base import new_id
 from app.services import jira_agent_runner as execution
-from app.services.jira_learning_sources import collect_sources
+from app.services.jira_learning_archive import LearningArchive
+from app.services.jira_learning_materials import catalog, TOOL as MATERIAL_TOOL
 from app.timeutil import beijing_timestamp
 
 
-def collect(cid):
+TOOL = {**MATERIAL_TOOL, 'name': 'read_evaluation_material',
+        'description': '只读本次测试保存的材料。list 分页列出文件、过程记录或压缩包成员，可按 query 筛选；read 按 ID 读取原文，可用 source_ids 批量读。offset 和 next_offset 用于连续读取，返回的 evidence_id 用于评价引用。'}
+
+
+def directory(eid):
+    return settings.jira_agent_data_dir / 'evaluations' / eid
+
+
+def collect(cid, folder: Path):
     with execution.open_db() as conn:
+        conn.execute('BEGIN')
         turn = agent.latest_turn(conn, cid)
         key = repo.evidence_key(conn, cid)
         files = [row for row in agent.list_files(conn, cid) if row['direction'] == 'output']
         events = agent.list_events(conn, cid)
         row = repo.one(conn, '''SELECT v.input_json FROM jira_test_runs r JOIN jira_test_batches b ON b.id=r.batch_id
             JOIN jira_test_versions v ON v.id=b.version_id WHERE r.conversation_id=?''', (cid,))
-    sources, gaps = collect_sources({'attachments': []}, [], [{
-        'result': json.loads(turn['result_json'] or '{}'), 'turn_id': turn['id'], 'turn_seq': turn['seq'],
-        'conversation_id': cid}], files)
-    # Keep persisted process output, rather than fetching or running anything remotely.
-    budget = 4 * 1024 * 1024
+    result = {'id': 'agent:result:' + turn['id'], 'kind': 'agent_result', 'name': '分析结果',
+              'text': turn['result_json'] or '{}', 'conversation_id': cid, 'turn_id': turn['id']}
+    sources = [result]
     for event in events:
-        if event['kind'] == 'user_message':
-            continue
         text = json.dumps(event['payload'], ensure_ascii=False)
-        limit = min(120000, budget)
-        if len(text) > limit:
-            gaps.append({'source': 'event:' + event['id'], 'reason': '过程记录过长，仅提供部分内容'})
-        if limit:
-            sources.append({'id': 'event:' + event['id'], 'kind': event['kind'], 'text': text[:limit], 'truncated': len(text) > limit})
-            budget -= min(len(text), limit)
+        sources.append({'id': 'event:' + event['id'], 'kind': event['kind'], 'text': text,
+                        'name': event['kind'] + ' ' + event.get('created_at', ''),
+                        'conversation_id': cid, 'turn_id': event['turn_id']})
     inputs = json.loads(row['input_json'])
     inputs['files'] = [{k: v for k, v in item.items() if k != 'content_base64'} for item in inputs['files']]
-    material = {'input': inputs, 'sources': sources, 'collection_gaps': gaps,
+    inventory = catalog({'key': inputs['issue'].get('key', cid)}, [], files)
+    material = {'input': inputs, 'sources': [], 'collection_gaps': [], 'material_access': True,
+                'result_source_id': result['id'], 'source_count': len(sources) + len(inventory),
+                'index_sha256': testing.digest(sources + inventory),
                 'status': turn['status'], 'delivery_status': turn['delivery_status'], 'error': turn['error'],
                 'files': [{key: file[key] for key in ('id','name','size','sha256')} for file in files]}
-    material, truncated = jira_learning.model_source(material)
-    material['collection_gaps'].extend(truncated)
-    with execution.open_db() as conn:
-        if repo.evidence_key(conn, cid) != key:
-            raise ValueError('采集期间材料有更新，请重试初评')
+    # Publish one fixed local index; bodies are never shortened for model context.
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.TemporaryDirectory(dir=folder) as stage:
+        archive = LearningArchive(Path(stage))
+        archive.initialize([])
+        with archive.connect(write=True) as conn:
+            for source in sources + inventory:
+                archive.put(conn, source)
+        with execution.open_db() as conn:
+            if repo.evidence_key(conn, cid) != key:
+                raise ValueError('采集期间材料有更新，请重试初评')
+        (folder / 'materials').mkdir(exist_ok=True, mode=0o700)
+        os.replace(archive.path, LearningArchive(folder).path)
     return material, key
+
+
+def read_evidence(material, folder):
+    """Persist only evidence actually read, with stable excerpt IDs and ranges."""
+    archive = LearningArchive(folder)
+    records = archive.validation()
+    sources = archive.references([source['id'] for source in records['sources']], bodies=True)
+    latest = {read['source_id']: read for read in records['material_reads']}
+    gaps = [{'source': sid, 'reason': read['error']} for sid, read in latest.items() if not read['success']]
+    return {**material, 'sources': sources, 'collection_gaps': gaps, 'material_reads': records['material_reads']}
 
 
 def history(cid):

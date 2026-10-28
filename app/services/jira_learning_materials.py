@@ -9,6 +9,7 @@ import io
 import json
 import lzma
 import os
+import re
 import stat
 import tarfile
 import urllib.error
@@ -65,9 +66,26 @@ def catalog(issue: dict, messages: list[dict], files: list[dict]) -> list[dict]:
             fingerprint = None
         items.append({'id': prefix + ':' + record['id'], 'name': name, 'kind': kind,
                       'size': record['size'], 'issue_key': issue['key'],
+                      'sha256': record.get('sha256', ''),
                       'conversation_id': record['conversation_id'], 'turn_id': record['turn_id'],
                       'independent': kind == 'owner_upload' or Path(name).suffix.lower() in _OBSERVATION_SUFFIXES,
                       'origin': {'path': str(path), 'fingerprint': fingerprint}})
+    groups = {}
+    for item in items:
+        match = re.fullmatch(r'(.+\.(?:tar(?:\.gz|\.xz|\.bz2)?|tgz|zip))\.part(\d+)', item['name'], re.IGNORECASE)
+        if match:
+            key = (item['conversation_id'], item['turn_id'], match[1])
+            groups.setdefault(key, []).append((int(match[2]), item))
+    for (_, _, name), parts in groups.items():
+        parts.sort(key=lambda pair: pair[0])
+        numbers = [number for number, _ in parts]
+        ids = [item['id'] for _, item in parts]
+        item = {**parts[0][1], 'id': 'split:' + hashlib.sha256('\n'.join(ids).encode()).hexdigest()[:24],
+                'name': name, 'size': sum(part['size'] for _, part in parts), 'sha256': '',
+                'origin': {'parts': ids}}
+        if numbers != list(range(len(parts))):
+            item['error'] = '分卷编号不连续或重复，无法读取完整压缩包'
+        items.append(item)
     for attachment in issue.get('attachments', []):
         if not attachment.get('id'):
             continue
@@ -120,7 +138,20 @@ class MaterialStore:
         if item.get('error'):
             raise ValueError(item['error'])
         origin = item['origin']
-        if origin.get('parent'):
+        if origin.get('parts'):
+            chunks = bytearray()
+            for sid in origin['parts']:
+                part = self._item(sid)
+                if part is None:
+                    raise ValueError('压缩包分卷缺失')
+                if len(chunks) + part['size'] > MAX_FILE_BYTES:
+                    raise ValueError('合并分卷超过单次获取上限（256 MiB）')
+                data = self._bytes(part, depth + 1)
+                if len(chunks) + len(data) > MAX_FILE_BYTES:
+                    raise ValueError('合并分卷超过单次获取上限（256 MiB）')
+                chunks.extend(data)
+            data = bytes(chunks)
+        elif origin.get('parent'):
             parent = self._item(origin['parent'])
             if parent is None:
                 raise ValueError('压缩包来源不存在')
@@ -166,6 +197,8 @@ class MaterialStore:
             raise ValueError('材料没有可用的获取位置')
         if len(data) > MAX_FILE_BYTES:
             raise ValueError('材料超过单次获取上限（256 MiB）')
+        if origin.get('path') and item.get('sha256') and hashlib.sha256(data).hexdigest() != item['sha256']:
+            raise ValueError('材料与交付时的文件校验值不一致')
         item['cache'] = self._blob(data)
         return data
 
@@ -241,7 +274,7 @@ class MaterialStore:
                         raise ValueError('压缩包包含重复路径，无法可靠区分成员')
                     seen.add(normalized)
                     sid = item['id'] + '!/' + hashlib.sha256(name.encode()).hexdigest()[:20]
-                    child = {**{k: v for k, v in item.items() if k not in ('id', 'name', 'size', 'origin', 'cache', 'error', 'decoded', 'expanded', 'members', 'thumbnail', 'pdf_pages')},
+                    child = {**{k: v for k, v in item.items() if k not in ('id', 'name', 'size', 'sha256', 'origin', 'cache', 'error', 'decoded', 'expanded', 'members', 'thumbnail', 'pdf_pages')},
                              'id': sid, 'name': name, 'size': member.file_size if isinstance(member, zipfile.ZipInfo) else member.size,
                              'origin': {'parent': item['id'], 'member': name},
                              'independent': item['kind'] in ('jira_attachment', 'owner_upload') or Path(name).suffix.lower() in _OBSERVATION_SUFFIXES}

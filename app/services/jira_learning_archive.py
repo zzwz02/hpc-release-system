@@ -275,6 +275,8 @@ class LearningArchive:
                     item[field] = prefix + item[field]
             if item.get('origin', {}).get('parent'):
                 item['origin']['parent'] = prefix + item['origin']['parent']
+            if item.get('origin', {}).get('parts'):
+                item['origin']['parts'] = [prefix + sid for sid in item['origin']['parts']]
             if isinstance(item.get('members'), list):
                 item['members'] = [prefix + sid for sid in item['members']]
             return item

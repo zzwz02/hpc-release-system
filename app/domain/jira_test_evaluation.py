@@ -5,7 +5,7 @@ from pathlib import Path
 from app import runtime_config
 from app.domain.jira_testing import digest
 
-RULE = Path(__file__).resolve().parents[1] / 'resources/jira_test_evaluator/SKILL.md'
+RULE = Path(__file__).resolve().parents[2] / 'deploy/jira-evaluation/pack/.agents/skills/jira-test-evaluator/SKILL.md'
 
 
 def config(name):
@@ -63,8 +63,8 @@ def validate(raw, snapshot, material):
         refs = item['evidence_ids']
         if not isinstance(refs, list) or any(not isinstance(ref, str) or ref not in sources for ref in refs):
             raise ValueError('初评引用了不存在的证据')
-        if item['status'] == 'met' and (not refs or not any(sources[ref].get('text', '').strip() for ref in refs)):
-            raise ValueError('满足标准必须引用已读取的证据')
+        if item['status'] in ('met', 'unmet') and (not refs or not any(sources[ref].get('text', '').strip() for ref in refs)):
+            raise ValueError('判定满足或未满足标准必须引用已读取的证据')
     statuses = {item['status'] for item in items}
     if value['decision'] == 'pass' and (statuses != {'met'} or material['delivery_status'] != 'complete' or material['status'] != 'completed'):
         raise ValueError('标准未全部满足或交付未完成，不能判定通过')

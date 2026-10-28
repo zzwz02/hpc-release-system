@@ -12,11 +12,39 @@ from app.db.connection import transaction
 from app.domain import jira_test_evaluation as grading
 from app.repositories import jira_test_evaluation_repo as evaluations, jira_agent_repo as agent
 from app.services import jira_agent_runner, jira_testing_runner
+from app.services import jira_test_evaluation as evidence
 from tests.test_jira_agent import _preflight, env, FakeCodex, _wait, _done
 from tests.test_jira_testing import setup, start, BASE, forbid_jira
 
 
 class Evaluator(FakeCodex):
+    def _result(self, ws, method, params):
+        result = super()._result(ws, method, params)
+        if method == 'thread/resume':
+            # A server request stays pending across transport reconnects.
+            for target, message in getattr(self, 'tool_requests', {}).values():
+                if target == params['threadId']:
+                    asyncio.get_running_loop().call_soon(
+                        lambda payload=message: asyncio.ensure_future(self._send(params['threadId'], payload)))
+        return result
+
+    async def read(self, thread, turn, arguments, **overrides):
+        call = str(uuid.uuid4())
+        if not hasattr(self, 'tool_responses'):
+            self.tool_responses = {}
+            self.tool_requests = {}
+        future = asyncio.get_running_loop().create_future()
+        self.tool_responses[call] = future
+        message = {'id': call, 'method': 'item/tool/call', 'params': {
+            'threadId': thread, 'turnId': turn, 'callId': call, 'tool': evidence.TOOL['name'],
+            'arguments': {'action': 'read', 'source_id': '', 'offset': 0, 'limit': 48000,
+                          'reason': '核对交付证据', **arguments}, **overrides}}
+        self.tool_requests[call] = (thread, message)
+        await self._send(thread, message)
+        response = await asyncio.wait_for(future, 10)
+        self.tool_requests.pop(call)
+        return response, json.loads(response['contentItems'][0]['text']) if response['success'] else None
+
     async def _play(self, params, turn_id, plan):
         if plan == 'hold':
             await self._released(turn_id)
@@ -25,7 +53,15 @@ class Evaluator(FakeCodex):
             self.turn_state[turn_id].update(status='completed', items=[{'type':'agentMessage', 'id':'draft', 'text':json.dumps({'criteria':['复现问题并提供运行证据']})}])
             return
         material = json.loads(self.files[cwd + '/material.json'])
-        source = next(item['id'] for item in material['sources'] if item['kind'] == 'agent_artifact')
+        thread = params['threadId']
+        response, _ = await self.read(thread, turn_id, {}, threadId='another-task')
+        assert not response['success']
+        response, index = await self.read(thread, turn_id, {'action': 'list'})
+        assert response['success']
+        source = next(item['id'] for item in index['items'] if item['kind'] == 'agent_artifact')
+        response, observed = await self.read(thread, turn_id, {'source_id': source})
+        assert response['success'] and observed['text']
+        source = observed['evidence_id']
         response = {'decision': 'pass', 'summary': '完成约定分析并交付运行证据。', 'criteria': [
             {'id': item['id'], 'status': 'met', 'reason': '交付记录与标准相符', 'evidence_ids': [source]}
             for item in material['standards']['criteria']]}
@@ -88,6 +124,13 @@ def test_new_evaluation_completes_with_materialized_thread_required(grading_setu
     assert result['result']['decision'] == 'pass'
     assert peer.turns == env.fake.turns == 1
     assert peer.params('thread/turns/list')
+    assert peer.params('thread/start')[0]['dynamicTools'] == [evidence.TOOL]
+    assert peer.params('initialize')[0]['capabilities']['experimentalApi']
+    saved = env.client.get(BASE + f'/runs/{cid}/evaluations/{result["id"]}/evidence').json()
+    cited = result['result']['criteria'][0]['evidence_ids'][0]
+    assert saved['sources'][0]['id'] == cited and saved['sources'][0]['text']
+    assert saved['sources'][0]['range']['start'] == 0
+    assert saved['material_reads'][-1]['evidence_id'] == cited
 
 
 def test_batch_freezes_versions_uses_one_snapshot_and_recovers(grading_setup, monkeypatch):

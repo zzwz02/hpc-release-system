@@ -150,6 +150,7 @@ app/integrations/      LDAP / Gerrit / Jira / LLM / Codex app-server 集成
 web/src/               React 页面、HTTP 客户端、查询缓存和 UI 状态
 shared/                跨前后端权限、词表和 Gerrit 路径
 deploy/jira-agent/     JIRA agent 服务器 B 的启动脚本与 HPC 知识包
+deploy/jira-evaluation/ 测试初评 skill，随网站一起部署
 .agents/skills/        开发、JIRA agent 开发与 C500/X201 文档工作流（.claude/skills 为指向它的软链接）
 ```
 
@@ -189,7 +190,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 
 首次初始化会创建 `app/domain/authn.py` 中的固定开发账号（没有仅开发环境启用的开关），部署前应处理。Admin 不存在时依次使用 `HPC_ADMIN_PASSWORD`、`ADMIN_PASSWORD_FILE` 指定的文件或随机口令。会话没有服务端过期策略。
 
-生产形态由单个进程服务 API 和前端：在 `web/` 运行 `npm run build` 校验并打包内置测试用例、生成 `web_dist/`，再从仓库根启动 uvicorn。构建需要 Python 3；用例包位于 `app/resources/jira_test_cases/_packages/`，随 `app/` 一起部署。用例加载与维护见 [内置测试用例](docs/jira-agent.md#内置测试用例)。**保持单 worker**：QA 任务状态、JIRA agent 队列以及周报的上传和作业都在进程内。
+生产形态由单个进程服务 API 和前端：在 `web/` 运行 `npm run build` 校验并打包内置测试用例、生成 `web_dist/`，再从仓库根启动 uvicorn。构建需要 Python 3；用例包位于 `app/resources/jira_test_cases/_packages/`，随 `app/` 一起部署。启用测试初评时，还需保留 `deploy/jira-evaluation/` 目录及其中的隐藏目录 `.agents/`。用例加载与维护见 [内置测试用例](docs/jira-agent.md#内置测试用例)。**保持单 worker**：QA 任务状态、JIRA agent 队列以及周报的上传和作业都在进程内。
 
 ## 集成配置
 
