@@ -153,3 +153,14 @@ export async function apiGetText(path: string): Promise<{
   const text = await res.text();
   return { text, headers: res.headers };
 }
+
+/** Binary downloads share the same login-expiry and API error handling. */
+export async function apiGetBlob(path: string): Promise<Blob> {
+  const res = await fetch(path, { credentials: "include" });
+  if (res.status === 401) _on401();
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as ApiEnvelope;
+    throw new Error(data.error || res.statusText);
+  }
+  return res.blob();
+}

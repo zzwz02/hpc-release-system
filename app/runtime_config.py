@@ -1,7 +1,8 @@
 """Runtime service configuration — one sectioned INI file, release_system.conf.
 
 Sections: [ldap] [jira] [llm] [cicd_agent] [dingtalk] [site] and one
-[jira_agent:<group>] per JIRA agent digital employee; release_system.conf.example documents every
+[jira_agent:<group>] per JIRA agent and [jira_learning:<group>] per learning service and [jira_evaluation:<group>] per evaluator;
+release_system.conf.example documents every
 key.  Accessors re-read the file on every call (it is a few KB), so an edit
 applies on the next use without a restart.
 
@@ -16,6 +17,7 @@ import configparser
 from app.config import settings
 
 AGENT_GROUP_PREFIX = "jira_agent:"
+LEARNING_GROUP_PREFIX = "jira_learning:"
 
 
 class ConfigError(RuntimeError):
@@ -55,6 +57,16 @@ def agent_group_sections() -> dict[str, dict[str, str]]:
         if name.startswith(AGENT_GROUP_PREFIX)
     }
 
+
+
+def learning_group_sections() -> dict[str, dict[str, str]]:
+    """Return independently configured learning servers by group name."""
+    parser = _read()
+    return {
+        name[len(LEARNING_GROUP_PREFIX):]: _values(parser, name)
+        for name in parser.sections()
+        if name.startswith(LEARNING_GROUP_PREFIX)
+    }
 
 
 def required(section_name: str, values: dict[str, str], key: str) -> str:

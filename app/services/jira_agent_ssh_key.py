@@ -6,9 +6,9 @@ app-server (``command/exec``), then checks key login from B with BatchMode.
 B keeps running only codex app-server.  What the user types is forwarded to
 the PTY and never stored or logged.
 
-Every hand-over to a user-given machine needs a fresh upload: a succeeded
-session is a one-time pass that the hand-over claims (``claim``), so nothing
-about the machine is remembered between hand-overs.
+Every hand-over to user-given machines needs fresh uploads. Preflight validates
+these short-lived sessions; its durable receipts consume all their IDs in the
+same database transaction as task creation. Passwords stay in this PTY relay.
 
 The app-server enforces the time limit (``PROCESS_TIMEOUT_MS``), so a
 session cannot outlive it even if the website stops.  Sessions live in this
@@ -60,7 +60,6 @@ class KeySession:
     message: str = ""
     exit_code: int | None = None
     closed_by_user: bool = False
-    claimed: bool = False  # a succeeded session admits exactly one hand-over
     finished: float = 0.0
     task: asyncio.Task | None = None
 
@@ -174,8 +173,8 @@ class KeySessionManager:
     def get(self, user: dict, session_id: str, after: int) -> dict:
         return self._own(user, session_id).view(after)
 
-    def claim(self, user: dict, session_id: str, group: domain.AgentGroup, target: str) -> None:
-        """Spend this user's succeeded upload of ``target`` on one hand-over."""
+    def validate(self, user: dict, session_id: str, group: domain.AgentGroup, target: str) -> KeySession:
+        """Validate a live upload; transactional consumption belongs to preflight."""
         self._prune()
         session = self._sessions.get(session_id)
         if (
@@ -184,10 +183,9 @@ class KeySessionManager:
             or session.group.name != group.name
             or session.target != target
             or session.status != "succeeded"
-            or session.claimed
         ):
             raise ApiError(409, f"每次交给自填机器前都要上传 SSH 公钥到 {target} 并通过连接测试")
-        session.claimed = True
+        return session
 
     async def write(self, user: dict, session_id: str, data: str) -> dict:
         session = self._own(user, session_id)

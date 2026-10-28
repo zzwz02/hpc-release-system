@@ -148,6 +148,9 @@ def test_jira_activation_delivery_and_durable_replay(configured, monkeypatch):
             ]):
                 conn.execute("INSERT INTO jira_agent_turns (id, conversation_id, seq, trigger, created_by, created_at, status, delivery_status, finished_at, result_json) VALUES (?, 'c', ?, 'handover', 'u', '', ?, ?, ?, ?)",
                              (str(seq), seq, status, delivery, finished, '{"conclusion":"analysis_done","action_required":"none"}'))
+        with conn:
+            conn.execute("INSERT INTO jira_agent_conversations (id, issue_key, agent_group, owner, created_by, workspace, created_at, updated_at, source_kind) VALUES ('test', 'TEST-1', 'HPC', 'u', 'u', '/test', '', '', 'test')")
+            conn.execute("INSERT INTO jira_agent_turns (id, conversation_id, seq, trigger, created_by, created_at, status, delivery_status, finished_at, result_json) VALUES ('test-turn', 'test', 1, 'handover', 'u', '', 'completed', 'complete', '2026-10-27 12:01:00', '{\"conclusion\":\"analysis_done\",\"action_required\":\"none\"}')")
         await poller.tick()
         assert sent == ['PHS-1 jira agent失败']
         with conn:

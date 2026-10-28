@@ -5,9 +5,9 @@ import { listAgentModels } from "./jiraAgentApi";
 
 export interface ModelSelection { model_provider?: string; model?: string; effort?: string }
 
-export function ModelChoice({ group, value, onChange, disabled = false, lockProvider = false }: {
+export function ModelChoice({ group, value, onChange, disabled = false, lockProvider = false, hint }: {
   group: string; value: ModelSelection; onChange: (value: ModelSelection) => void;
-  disabled?: boolean; lockProvider?: boolean;
+  disabled?: boolean; lockProvider?: boolean; hint?: string;
 }) {
   const { user } = useAuth();
   const rm = isRM(user);
@@ -46,7 +46,7 @@ export function ModelChoice({ group, value, onChange, disabled = false, lockProv
           <option key={effort.reasoningEffort} value={effort.reasoningEffort}>{effort.reasoningEffort}</option>
         ))}
       </select></label>
-      <span className="muted">{legacy ? "旧对话的服务商将在续办时确认" : lockProvider ? "切换服务商需新建对话" : "服务商在本对话内固定"}</span>
+      <span className="muted">{hint ?? (legacy ? "旧对话的服务商将在续办时确认" : lockProvider ? "切换服务商需新建对话" : "服务商在本对话内固定")}</span>
       <button type="button" className="btn" disabled={query.isFetching} onClick={() => void query.refetch()}>刷新模型</button>
       {query.isError && <span className="error">模型列表加载失败：{String(query.error)}</span>}
       {query.data?.errors.map((error) => <span className="error" key={error.provider}>{error.provider}：{error.message}</span>)}

@@ -18,7 +18,10 @@ import { toast } from "../../lib/toast";
 import { ModelChoice, type ModelSelection } from "./ModelChoice";
 import { MachineChoice } from "./MachineChoice";
 import { MachinesDialog } from "./MachinesDialog";
-import { SshKeyUploadDialog } from "./SshKeyUploadDialog";
+import { ExecutionPreflightDialog } from "./ExecutionPreflightDialog";
+import { LearningIssueList } from "./LearningIssueList";
+import { LearningPanel } from "./LearningPanel";
+import { TestingWorkspace } from "./TestingWorkspace";
 import {
   ACTION_REQUIRED_LABELS,
   CLOSE_REASON_LABELS,
@@ -33,12 +36,11 @@ import {
   fileToUpload,
   getConversation,
   getConversationEvents,
-  getSshKeyInfo,
   handoverIssue,
+  executionRequestId,
   jiraAgentConversationKey,
   jiraAgentIssueKey,
   jiraAgentIssueSearchKey,
-  jiraAgentSshKeyInfoKey,
   listHandledIssues,
   previewIssue,
   retryTurnComment,
@@ -46,6 +48,9 @@ import {
   resultState,
   searchIssues,
   sendConversationMessage,
+  type ExecutionTargetResult,
+  type ExecutionConfig,
+  type ExecutionSubmission,
   type AgentConversation,
   type AgentEvent,
   type AgentFile,
@@ -104,7 +109,7 @@ function isActive(conversation: AgentConversation | undefined): boolean {
   );
 }
 
-const RECOVERING_TEXT = "网站刚重启，正在重新接管本轮，几秒后可以操作";
+const RECOVERING_TEXT = "正在重新接管本轮并核对远端状态，稍后可以操作";
 
 function stateText(conversation: AgentConversation): string {
   const turn = conversation.latest_turn;
@@ -122,7 +127,8 @@ function stateText(conversation: AgentConversation): string {
 
 /** The machine in use: the user's own, else the one the agent reported. */
 function machineText(conversation: AgentConversation) {
-  const machine = conversation.machine || conversation.machine_used;
+  const specified = conversation.execution?.targets.map(t => t.target) ?? [];
+  const machine = (conversation.machines_used?.length ? conversation.machines_used : specified).join("、") || conversation.machine || conversation.machine_used;
   if (!machine) {
     return conversation.state === "running"
       ? "处理中，agent 尚未登录机器"
@@ -131,7 +137,7 @@ function machineText(conversation: AgentConversation) {
   return (
     <>
       <code>{machine}</code>
-      <span className="muted">（{conversation.machine ? "用户指定" : "agent 选择"}）</span>
+      <span className="muted">（{conversation.execution?.mode === "custom" || conversation.machine ? "用户指定" : "agent 选择"}）</span>
     </>
   );
 }
@@ -176,20 +182,34 @@ function groupTimeline(events: AgentEvent[]): TimelineItem[] {
 // ─────────────────────────────────────────────────────────────
 
 export function JiraAgentPage() {
+  const { user } = useAuth();
+  return <JiraAgentWorkspace key={`${user?.username ?? ""}:${user?.role ?? ""}`} />;
+}
+
+function JiraAgentWorkspace() {
   const [searchParams, setSearchParams] = useSearchParams();
   const issueKey = searchParams.get("issue") ?? "";
   const conversationParam = searchParams.get("conversation") ?? "";
   const [showMachines, setShowMachines] = useState(false);
+  const view: IssueListView = searchParams.get("view") === "learning" ? "learning" : searchParams.get("view") === "handled" ? "handled" : "search";
+  function setView(value: IssueListView) {
+    setSearchParams((params) => { const next = new URLSearchParams(params); next.set("view", value); next.delete("learning_job"); next.delete("learning_tab"); return next; });
+  }
+  const [learningKeys, setLearningKeys] = useState<string[]>([]);
+  const { user } = useAuth();
 
   const navigate = useCallback(
     (issue: string, conversation = "", replace = false) => {
       const next: Record<string, string> = {};
+      if (view !== "search") next.view = view;
       if (issue) next.issue = issue;
       if (conversation) next.conversation = conversation;
       setSearchParams(next, { replace });
     },
-    [setSearchParams],
+    [setSearchParams, view],
   );
+
+  if (searchParams.get("view") === "testing" && isRM(user)) return <TestingWorkspace />;
 
   let main = <div className="panel empty">从左侧选择 JIRA 工单。</div>;
   if (issueKey) {
@@ -206,19 +226,36 @@ export function JiraAgentPage() {
         <div>
           <h2 className="jira-agent-title">JIRA agent</h2>
           <p className="hint">
-            JIRA assignee 或 RM 把工单交给本组数字员工；agent 分析、复现、修复后在 JIRA 评论结论，由 assignee 决定下一步。
+            {view === "learning" && isRM(user) ? "从工单中整理可复用的经验，由 RM 审核后人工更新 skill。" : "JIRA assignee 或 RM 把工单交给本组数字员工；agent 分析、复现、修复后在 JIRA 评论结论，由 assignee 决定下一步。"}
           </p>
         </div>
+        {isRM(user) && <button type="button" className="btn sm" onClick={() => setSearchParams({ view: "testing" })}>测试用例</button>}
         <button type="button" className="btn sm" onClick={() => setShowMachines(true)}>
           系统机器
         </button>
       </div>
       {showMachines && <MachinesDialog onClose={() => setShowMachines(false)} />}
-      <div className="jira-agent-layout">
+      <div className={`jira-agent-layout${view === "learning" && isRM(user) ? " jira-learning-workspace" : ""}`}>
         <aside className="jira-agent-sidebar">
-          <IssueSearchPanel selectedKey={issueKey} onSelect={(key, conversation) => navigate(key, conversation)} />
+          <IssueSearchPanel
+            selectedKey={issueKey}
+            view={view}
+            learningKeys={learningKeys}
+            onViewChange={setView}
+            onLearningSelectionChange={setLearningKeys}
+            onSelect={(key, conversation) => navigate(key, conversation)}
+          />
         </aside>
-        <div className="jira-agent-main">{main}</div>
+        <div className="jira-agent-main">
+          {view === "learning" && isRM(user)
+            ? (
+              <LearningPanel
+                key={user?.username}
+                focusedIssueKey={issueKey}
+              />
+            )
+            : main}
+        </div>
       </div>
     </section>
   );
@@ -252,13 +289,28 @@ function ConversationRedirect({
 // ─────────────────────────────────────────────────────────────
 
 type SelectIssue = (key: string, conversation?: string) => void;
+type IssueListView = "search" | "handled" | "learning";
 
-/** RM searches Jira; Owner sees assigned QA issues and their handled history. */
-function IssueSearchPanel({ selectedKey, onSelect }: { selectedKey: string; onSelect: SelectIssue }) {
+/** RM can search, inspect every handled issue, or select several for knowledge learning. */
+function IssueSearchPanel({
+  selectedKey,
+  view,
+  learningKeys,
+  onViewChange,
+  onLearningSelectionChange,
+  onSelect,
+}: {
+  selectedKey: string;
+  view: IssueListView;
+  learningKeys: string[];
+  onViewChange: (view: IssueListView) => void;
+  onLearningSelectionChange: (keys: string[]) => void;
+  onSelect: SelectIssue;
+}) {
   const { user } = useAuth();
   const rm = isRM(user);
-  const [view, setView] = useState<"search" | "handled">("search");
   const handled = view === "handled";
+  const learning = rm && view === "learning";
 
   return (
     <div className="panel">
@@ -267,9 +319,9 @@ function IssueSearchPanel({ selectedKey, onSelect }: { selectedKey: string; onSe
         <div className="jira-agent-view-switch" role="group" aria-label="工单列表">
             <button
               type="button"
-              className={`btn sm${handled ? "" : " active"}`}
-              aria-pressed={!handled}
-              onClick={() => setView("search")}
+              className={`btn sm${view === "search" ? " active" : ""}`}
+              aria-pressed={view === "search"}
+              onClick={() => onViewChange("search")}
             >
               {rm ? "查找" : "我的工单"}
             </button>
@@ -277,14 +329,27 @@ function IssueSearchPanel({ selectedKey, onSelect }: { selectedKey: string; onSe
               type="button"
               className={`btn sm${handled ? " active" : ""}`}
               aria-pressed={handled}
-              onClick={() => setView("handled")}
+              onClick={() => onViewChange("handled")}
             >
               agent 处理过
             </button>
+            {rm && (
+              <button
+                type="button"
+                className={`btn sm${learning ? " active" : ""}`}
+                aria-pressed={learning}
+                onClick={() => onViewChange("learning")}
+              >
+                知识学习
+              </button>
+            )}
         </div>
       </div>
-      {handled ? (
-        <HandledIssueList selectedKey={selectedKey} onSelect={onSelect} />
+      {learning ? (<LearningIssueList selectedKey={selectedKey} selectedKeys={learningKeys} onSelection={onLearningSelectionChange} onSelect={(key) => onSelect(key)} />) : handled ? (
+        <HandledIssueList
+          selectedKey={selectedKey}
+          onSelect={onSelect}
+        />
       ) : (
         <IssueSearch selectedKey={selectedKey} onSelect={onSelect} rm={rm} />
       )}
@@ -349,7 +414,13 @@ function IssueSearch({ selectedKey, onSelect, rm }: { selectedKey: string; onSel
   );
 }
 
-function HandledIssueList({ selectedKey, onSelect }: { selectedKey: string; onSelect: SelectIssue }) {
+function HandledIssueList({
+  selectedKey,
+  onSelect,
+}: {
+  selectedKey: string;
+  onSelect: SelectIssue;
+}) {
   const { user } = useAuth();
   const rm = isRM(user);
   const [filter, setFilter] = useState("");
@@ -366,7 +437,6 @@ function HandledIssueList({ selectedKey, onSelect }: { selectedKey: string; onSe
       || [issue.key, issue.summary, issue.status, issue.assignee?.display_name ?? "", issue.agent?.latest_conversation.owner ?? ""]
         .some((value) => value.toLowerCase().includes(needle)),
   );
-
   return (
     <div className="panel-body jira-agent-search">
       <div className="row">
@@ -382,7 +452,9 @@ function HandledIssueList({ selectedKey, onSelect }: { selectedKey: string; onSe
           type="button"
           className="btn sm"
           disabled={handledQuery.isFetching}
-          onClick={() => void handledQuery.refetch()}
+          onClick={() => {
+            void handledQuery.refetch();
+          }}
         >
           刷新
         </button>
@@ -402,7 +474,12 @@ function HandledIssueList({ selectedKey, onSelect }: { selectedKey: string; onSe
           )}
         </div>
       )}
-      <IssueResults issues={issues} empty={!handledQuery.isFetching} selectedKey={selectedKey} onSelect={onSelect} />
+      <IssueResults
+        issues={issues}
+        empty={!handledQuery.isFetching}
+        selectedKey={selectedKey}
+        onSelect={onSelect}
+      />
     </div>
   );
 }
@@ -445,13 +522,8 @@ function IssueResults({
             </span>
           );
         }
-        return (
-          <button
-            type="button"
-            key={issue.key}
-            className={`jira-agent-list-item${issue.key === selectedKey ? " active" : ""}`}
-            onClick={() => onSelect(issue.key, latest?.id)}
-          >
+        const content = (
+          <>
             <span className="jira-agent-list-top">
               <strong>{issue.key}</strong>
               <span className="pill">{issue.status}</span>
@@ -459,13 +531,25 @@ function IssueResults({
             <span className="jira-agent-list-summary">{issue.summary}</span>
             <span className="jira-agent-list-meta">
               <span className="muted">{issue.assignee?.display_name ?? "无 assignee"}</span>
-              {agentPill}
+              <span className="pill-group">
+                {agentPill}
+              </span>
             </span>
             {agent && latest && (
               <span className="jira-agent-list-meta muted">
                 {agent.conversation_count} 个对话 · 最近 {latest.owner} · {agent.last_activity.slice(5, 16)}
               </span>
             )}
+          </>
+        );
+        return (
+          <button
+            type="button"
+            key={issue.key}
+            className={`jira-agent-list-item${issue.key === selectedKey ? " active" : ""}`}
+            onClick={() => onSelect(issue.key, latest?.id)}
+          >
+            {content}
           </button>
         );
       })}
@@ -490,6 +574,7 @@ function IssueView({
   const { user } = useAuth();
   const [deleting, setDeleting] = useState(false);
   const viewer = useViewerKey();
+  const [, setParams] = useSearchParams();
   const previewQuery = useQuery({
     queryKey: [...jiraAgentIssueKey(issueKey), viewer],
     queryFn: () => previewIssue(issueKey),
@@ -656,10 +741,11 @@ function IssueView({
                 </button>
               )}
               {isRM(user) && (
-                <button type="button" className="btn sm danger jira-agent-delete-conversation" disabled={deleting || recovering || ["queued", "running", "delivering"].includes(conversation.state)} onClick={() => void removeHistory()}>
+                <button type="button" className="btn sm danger" disabled={deleting || recovering || ["queued", "running", "delivering"].includes(conversation.state)} onClick={() => void removeHistory()}>
                   {deleting ? "正在删除…" : "删除对话"}
                 </button>
               )}
+              {isRM(user) && <button className="btn sm" disabled={["queued", "running", "delivering"].includes(conversation.state)} onClick={() => setParams({ view: "testing", import: conversation.id })}>保存为测试用例</button>}
             </div>
           )}
         </div>
@@ -686,18 +772,14 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   // "" = the agent picks from the system list; null = the choice is not ready yet
-  const [machine, setMachine] = useState<string | null>(null);
+  const [machine, setMachine] = useState<ExecutionConfig | null>(null);
   const [postComment, setPostComment] = useState(true);
   // a user-given machine: the SSH key upload dialog that must pass before this hand-over
   const [uploading, setUploading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const recovering = Boolean(preview.open_conversation?.recovering);
   const disabled = !preview.can_handover;
-  const keyQuery = useQuery({
-    queryKey: jiraAgentSshKeyInfoKey(preview.agent_group),
-    queryFn: () => getSshKeyInfo(preview.agent_group),
-    enabled: Boolean(machine),
-  });
+
 
   async function submit() {
     const open = preview.open_conversation;
@@ -713,11 +795,12 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
     ) {
       return;
     }
-    if (machine) setUploading(true);
-    else await handover("");
+    if (machine?.mode === "custom") { setUploading(true); return; }
+    try { await handover({ preflight_id: "", request_id: executionRequestId(), acknowledged_issue_ids: [] }); }
+    catch (error) { toast.error(error instanceof Error ? error.message : String(error)); }
   }
 
-  async function handover(sshKeySessionId: string) {
+  async function handover(submission: ExecutionSubmission) {
     setBusy(true);
     try {
       const files = await readFiles(fileInput.current?.files ?? null);
@@ -727,14 +810,12 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
         note: note.trim(),
         files,
         new_conversation: true,
-        machine: machine ?? "",
-        ...(sshKeySessionId ? { ssh_key_session_id: sshKeySessionId } : {}),
+        ...submission,
         post_comment: postComment,
       });
+      setUploading(false);
       toast.success("已交给 agent，进入排队");
       onCreated(result.conversation.id);
-    } catch (error) {
-      toast.error(errorMessage(error));
     } finally {
       setBusy(false);
     }
@@ -748,14 +829,14 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
           rows={3}
           placeholder="交单说明（可选），例如验收标准"
           value={note}
-          disabled={disabled}
+          disabled={disabled || busy || uploading}
           onChange={(event) => setNote(event.target.value)}
         />
-        <ModelChoice group={preview.agent_group} value={selection} onChange={setSelection} disabled={busy || disabled} />
-        <MachineChoice agentGroup={preview.agent_group} disabled={disabled} onChange={setMachine} />
-        <PostCommentCheck checked={postComment} disabled={disabled} onChange={setPostComment} />
+        <ModelChoice group={preview.agent_group} value={selection} onChange={setSelection} disabled={disabled || busy || uploading} />
+        <MachineChoice agentGroup={preview.agent_group} disabled={disabled || busy || uploading} onChange={setMachine} />
+        <PostCommentCheck checked={postComment} disabled={disabled || busy || uploading} onChange={setPostComment} />
         <div className="actions">
-          <input ref={fileInput} type="file" multiple aria-label="附加文件" disabled={disabled} />
+          <input ref={fileInput} type="file" multiple aria-label="附加文件" disabled={disabled || busy || uploading} />
           <button
             type="button"
             className="btn primary"
@@ -767,17 +848,9 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
         </div>
         {recovering && <p className="jira-agent-warning">{RECOVERING_TEXT}</p>}
       </div>
-      {uploading && machine && keyQuery.data && (
-        <SshKeyUploadDialog
-          target={machine}
-          keyInfo={keyQuery.data}
-          onVerified={(sessionId) => {
-            setUploading(false);
-            void handover(sessionId);
-          }}
-          onClose={() => setUploading(false)}
-        />
-      )}
+      {uploading && machine?.mode === "custom" && <ExecutionPreflightDialog agentGroup={preview.agent_group} execution={machine}
+        context={{ kind: "jira", issue_key: preview.issue.key }} onReady={handover} onClose={() => setUploading(false)} />}
+
     </div>
   );
 }
@@ -786,11 +859,16 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
 // Conversation
 // ─────────────────────────────────────────────────────────────
 
-function ConversationBody({ id, onChanged }: { id: string; onChanged: () => void }) {
+export function ConversationBody({ id, onChanged, testing }: {
+  id: string;
+  onChanged: () => void;
+  testing?: { processOpen: boolean; onProcessToggle: (open: boolean) => void };
+}) {
   const viewer = useViewerKey();
   const detailQuery = useQuery({
     queryKey: [...jiraAgentConversationKey(id), viewer],
     queryFn: () => getConversation(id),
+    refetchOnMount: testing ? "always" : false,
   });
   const detail = detailQuery.data;
   const conversation = detail?.conversation;
@@ -848,11 +926,10 @@ function ConversationBody({ id, onChanged }: { id: string; onChanged: () => void
   }
 
   let lastTurnId = "";
-  return (
-    <>
+  const timeline = (
       <div className="panel">
         <div className="panel-body jira-agent-timeline" data-testid="jira-agent-timeline">
-          {groupTimeline(events).map((item) => {
+          {groupTimeline(testing ? events.filter((event) => !["result", "delivery", "jira_comment"].includes(event.kind)) : events).map((item) => {
             const turn = turnsById.get(item.turnId);
             const separator = item.turnId && item.turnId !== lastTurnId && turn;
             if (item.turnId) lastTurnId = item.turnId;
@@ -867,7 +944,7 @@ function ConversationBody({ id, onChanged }: { id: string; onChanged: () => void
                     turn={turn}
                     files={detail.files}
                     canWrite={conversation.can_write}
-                    canRetry={conversation.can_write && conversation.latest_turn?.id === item.turnId}
+                    canRetry={(conversation.can_write || conversation.source_kind === "test") && conversation.latest_turn?.id === item.turnId}
                     onChanged={onChanged}
                   />
                 )}
@@ -878,6 +955,32 @@ function ConversationBody({ id, onChanged }: { id: string; onChanged: () => void
         </div>
       </div>
 
+  );
+  if (testing) {
+    const turn = conversation.latest_turn ?? detail.turns.at(-1);
+    const event = [...events].reverse().find((item) => item.kind === "result" && item.turn_id === turn?.id);
+    const result = turn?.result ?? (event?.payload as unknown as AgentResult | undefined);
+    const files = detail.files.filter((file) => file.turn_id === turn?.id && file.source === "artifact");
+    const inputs = detail.files.filter((file) => file.direction === "input");
+    const pending = turn?.delivery_status === "collecting" || turn?.delivery_status === "incomplete";
+    return <div className="test-conversation">
+      {result ? <ResultCard result={result} files={files} pending={pending} showFiles={false} foldEvidence />
+        : <p className="muted">{active ? "agent 正在处理，尚未生成结论。" : "本次测试没有生成分析结论。"}</p>}
+      {pending && <DeliveryEvent turn={turn} canRetry={conversation.can_write || conversation.source_kind === "test"} onChanged={onChanged} />}
+      {result && <section className="test-delivery"><h3>交付文件</h3>
+        <ResultFiles result={result} files={files} />
+        {files.length === 0 && <p className="muted">{pending ? "交付文件尚未收齐。" : "本次未交付文件。"}</p>}
+      </section>}
+      <details className="test-process" open={testing.processOpen} onToggle={(event) => testing.onProcessToggle(event.currentTarget.open)}>
+        <summary>agent 处理过程 <span className="muted">对话、命令和执行记录</span></summary>
+        {timeline}
+        {inputs.length > 0 && <FilesPanel files={inputs} />}
+      </details>
+    </div>;
+  }
+  return (
+    <>
+      {timeline}
       {detail.files.length > 0 && <FilesPanel files={detail.files} />}
       {conversation.can_write && <Composer conversation={conversation} onSent={onChanged} />}
     </>
@@ -1022,6 +1125,12 @@ function EventRow({
           <pre className="jira-agent-output">{String(payload.detail ?? "")}</pre>
         </details>
       );
+    case "environment_check": {
+      const checks = (Array.isArray(payload.results) ? payload.results : []) as ExecutionTargetResult[];
+      return <details className="jira-agent-event"><summary>执行环境复核 · {checks.length} 台机器</summary>
+        {checks.map(check => <p key={check.target}><code>{check.target}</code> · SSH：{check.ssh.message}{check.dataset.status !== "skipped" && <> · 数据：{check.dataset.message}</>}</p>)}
+      </details>;
+    }
     case "result":
       return <ResultCard result={payload as unknown as AgentResult} files={files.filter((f) => f.turn_id === event.turn_id && f.source === "artifact")} pending={turn?.delivery_status === "incomplete" || turn?.delivery_status === "collecting"} />;
     case "delivery":
@@ -1063,7 +1172,9 @@ function CommandEvent({ event }: { event: AgentEvent }) {
   );
 }
 
-function ResultCard({ result, files, pending }: { result: AgentResult; files: AgentFile[]; pending: boolean }) {
+function ResultCard({ result, files, pending, showFiles = true, foldEvidence = false }: {
+  result: AgentResult; files: AgentFile[]; pending: boolean; showFiles?: boolean; foldEvidence?: boolean;
+}) {
   const ownership = result.ownership ?? { belongs_to_us: "", target_group: "", reasoning: "" };
   const state = resultState(result.conclusion, result.action_required);
   const handoff = state.action === "needs_handoff" && ownership.target_group?.trim();
@@ -1091,11 +1202,6 @@ function ResultCard({ result, files, pending }: { result: AgentResult; files: Ag
   );
   const repair = state.conclusion === "fix_prepared" || state.conclusion === "fixed_pending_review";
   const showFix = repair && result.fix?.description;
-  const patches = repair ? files.filter((file) => {
-    const name = (file.remote_path || file.name).toLowerCase();
-    return name.endsWith(".patch") || name.endsWith(".diff");
-  }) : [];
-  const artifacts = files.filter((file) => !patches.includes(file));
   const review = state.action === "needs_review"
     ? (
       state.conclusion === "fix_prepared"
@@ -1106,10 +1212,17 @@ function ResultCard({ result, files, pending }: { result: AgentResult; files: Ag
     )
     : "";
 
+  const evidence = result.evidence?.map((item, index) => (
+    <div key={index}>
+      <div>{item.description}</div>
+      <pre className="jira-agent-output">{item.command ? "$ " + item.command + "\n" : ""}{item.result}</pre>
+    </div>
+  ));
+
   return (
     <div className="jira-agent-event result" data-testid="jira-agent-result">
       <div className="jira-agent-event-head">
-        <strong>{pending ? "分析结论（文件交付尚未完成）" : "本轮结论"}</strong>
+        <strong>{pending ? "分析结论（文件交付尚未完成）" : foldEvidence ? "分析结论" : "本轮结论"}</strong>
         <span className="pill-group">
           <span className="pill accent">{CONCLUSION_LABELS[state.conclusion] ?? state.conclusion}</span>
           {action && <span className="pill warn">{action}</span>}
@@ -1166,10 +1279,10 @@ function ResultCard({ result, files, pending }: { result: AgentResult; files: Ag
             </dd>
           </>
         )}
-        {result.machine && (
+        {(result.machines_used?.length || result.machine) && (
           <>
             <dt>执行机器</dt>
-            <dd><code>{result.machine}</code></dd>
+            <dd><code>{result.machines_used?.length ? result.machines_used.join("、") : result.machine}</code></dd>
           </>
         )}
         {showRoot && (
@@ -1207,7 +1320,33 @@ function ResultCard({ result, files, pending }: { result: AgentResult; files: Ag
           </>
         )}
       </dl>
-      {(showFix || patches.length > 0) && (
+      {showFiles && <ResultFiles result={result} files={files} section="patches" />}
+      {result.summary && <Markdown value={result.summary} className="md-view jira-agent-md" />}
+      {result.evidence?.length > 0 && (foldEvidence ? <details className="test-disclosure test-result-evidence">
+        <summary>分析证据 <span className="muted">{result.evidence.length} 项</span></summary>
+        <div className="test-disclosure-body jira-agent-evidence">{evidence}</div>
+      </details> : (
+        <div className="jira-agent-evidence">
+          <strong>证据</strong>
+          {evidence}
+        </div>
+      ))}
+      {showFiles && <ResultFiles result={result} files={files} section="artifacts" />}
+    </div>
+  );
+}
+
+function ResultFiles({ result, files, section }: { result: AgentResult; files: AgentFile[]; section?: "patches" | "artifacts" }) {
+  const state = resultState(result.conclusion, result.action_required);
+  const repair = state.conclusion === "fix_prepared" || state.conclusion === "fixed_pending_review";
+  const showFix = repair && result.fix?.description;
+  const patches = repair ? files.filter((file) => {
+    const name = (file.remote_path || file.name).toLowerCase();
+    return name.endsWith(".patch") || name.endsWith(".diff");
+  }) : [];
+  const artifacts = files.filter((file) => !patches.includes(file));
+  return <>
+      {section !== "artifacts" && (showFix || patches.length > 0) && (
         <div className="jira-agent-patches">
           <strong>修复补丁</strong>
           {patches.length > 0 ? patches.map((file) => (
@@ -1232,22 +1371,7 @@ function ResultCard({ result, files, pending }: { result: AgentResult; files: Ag
           )}
         </div>
       )}
-      {result.summary && <Markdown value={result.summary} className="md-view jira-agent-md" />}
-      {result.evidence?.length > 0 && (
-        <div className="jira-agent-evidence">
-          <strong>证据</strong>
-          {result.evidence.map((item, index) => (
-            <div key={index}>
-              <div>{item.description}</div>
-              <pre className="jira-agent-output">
-                {item.command ? "$ " + item.command + "\n" : ""}
-                {item.result}
-              </pre>
-            </div>
-          ))}
-        </div>
-      )}
-      {artifacts.length > 0 && (
+      {section !== "patches" && artifacts.length > 0 && (
         <div className="jira-agent-artifacts">
           <strong>产物</strong>
           {artifacts.map((file) => (
@@ -1257,8 +1381,7 @@ function ResultCard({ result, files, pending }: { result: AgentResult; files: Ag
           ))}
         </div>
       )}
-    </div>
-  );
+  </>;
 }
 
 function DeliveryEvent({ turn, canRetry, onChanged }: {
@@ -1313,6 +1436,7 @@ function CommentEvent({
   const [busy, setBusy] = useState(false);
   const posted = event.payload.status === "posted";
   const skipped = event.payload.status === "skipped";
+  const uncertain = event.payload.status === "uncertain" || turn?.comment_publication_state === "uncertain";
 
   async function retry() {
     if (!turn) return;
@@ -1335,10 +1459,10 @@ function CommentEvent({
         <span>已在 JIRA 发布评论（#{String(event.payload.comment_id ?? "")}），等待 assignee 决定下一步。</span>
       )}
       {skipped && <span>按发送时的选择，本轮结论只在网页显示，未发布到 JIRA。</span>}
-      {!posted && !skipped && <span>JIRA 评论发布失败：{String(event.payload.error ?? "")}</span>}
+      {!posted && !skipped && <span>{uncertain ? "JIRA 评论发布结果待确认：" : "JIRA 评论发布失败："}{String(event.payload.error ?? "")}</span>}
       {!posted && !skipped && canWrite && turn?.comment_status === "failed" && (
         <button type="button" className="btn sm" disabled={busy} onClick={() => void retry()}>
-          重试发布
+          {uncertain ? "核对发布结果" : "重试发布"}
         </button>
       )}
       {turn?.comment_body && (

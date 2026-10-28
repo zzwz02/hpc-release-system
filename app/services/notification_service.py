@@ -110,7 +110,7 @@ class NotificationPoller:
         turns = conn.execute("""
             SELECT t.*, c.issue_key FROM jira_agent_turns t
             JOIN jira_agent_conversations c ON c.id=t.conversation_id
-            WHERE t.status IN ('completed', 'failed', 'interrupted') AND t.finished_at >= ?
+            WHERE c.source_kind='jira' AND t.status IN ('completed', 'failed', 'interrupted') AND t.finished_at >= ?
             AND t.delivery_status != 'collecting'
             AND NOT EXISTS (SELECT 1 FROM notification_receipts n WHERE n.event_key='jira:' || t.id)
             ORDER BY t.finished_at

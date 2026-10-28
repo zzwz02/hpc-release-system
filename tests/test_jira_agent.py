@@ -12,6 +12,7 @@ import re
 import threading
 import time
 import urllib.error
+import uuid
 from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
@@ -47,6 +48,7 @@ RESULT = {
     "summary": "修复尾部元素未计算",
     "root_cause": "blocks = n / 256 向下取整",
     "machine": SYSTEM_MACHINE,
+    "machines_used": [SYSTEM_MACHINE],
     "reproduction": {"reproduced": True, "environment": "A100", "steps": ["make", "./saxpy 16777217"]},
     "evidence": [{"description": "修复后验证", "command": "./saxpy 16777217", "result": "PASS exit=0"}],
     "fix": {"description": "改为向上取整"},
@@ -90,7 +92,11 @@ class FakeCodex:
         # commands (the BatchMode check) exit with verify_exit.
         self.ssh_password = "s3cret"
         self.verify_exit = 0
+        self.probe_results = {}
+        self.execution_targets = [SYSTEM_MACHINE]
+        self.pack_root: Path | None = None
         self.processes: dict[str, dict] = {}
+        self.comment_override: dict | None = None
         self._subscriber: dict[str, object] = {}  # thread id -> connection receiving its notifications
         self._interrupts: dict[str, asyncio.Event] = {}
         self._ready = threading.Event()
@@ -142,6 +148,11 @@ class FakeCodex:
             message = json.loads(raw)
             if "id" not in message:
                 continue
+            if "method" not in message:
+                future = getattr(self, "tool_responses", {}).pop(message["id"], None)
+                if future is not None:
+                    future.set_result(message.get("result"))
+                continue
             method, params = message["method"], message.get("params") or {}
             self.requests.append((method, params))
             if method == "turn/start" and self.turn_start_delay:
@@ -180,8 +191,8 @@ class FakeCodex:
             return {"data": [
                 {"model": name, "displayName": name, "isDefault": name == "default-model",
                  "defaultReasoningEffort": "medium", "supportedReasoningEfforts": [
-                     {"reasoningEffort": e, "description": e} for e in ["medium", "high"]]}
-                for name in ["default-model", "other-model"]
+                     {"reasoningEffort": e, "description": e} for e in ["medium", "high", "xhigh"]]}
+                for name in ["default-model", "other-model", "test-model", "test-default", "tested-model"]
             ]}, None
         if method == "thread/start":
             self.threads += 1
@@ -202,6 +213,11 @@ class FakeCodex:
         if method == "thread/read":
             return {"thread": {"id": params["threadId"], "modelProvider": self.thread_providers.get(params["threadId"], "openai")}}, None
         if method == "thread/turns/list":
+            if not self.thread_turns.get(params["threadId"]):
+                return None, {"code": -32600, "message": (
+                    f"thread {params['threadId']} is not materialized yet; "
+                    "thread/turns/list is unavailable before first user message"
+                )}
             ids = list(reversed(self.thread_turns.get(params["threadId"], [])))[: params.get("limit") or 25]
             data = [dict(self.turn_state[t], items=list(self.turn_state[t]["items"])) for t in ids]
             if params.get("itemsView") == "notLoaded":
@@ -238,6 +254,22 @@ class FakeCodex:
         if method == "turn/steer":
             return {"turnId": params["expectedTurnId"]}, None
         if method == "command/exec":  # one-shot: the BatchMode key-login check
+            if self.pack_root is not None and params.get("command", [])[:2] == ["python3", "-c"]:
+                # Run the real read-only collector against a temporary deployed pack.
+                import subprocess
+                import sys
+                command = params["command"]
+                result = subprocess.run([sys.executable, "-c", command[2], str(self.pack_root), command[4]],
+                                        capture_output=True, text=True, timeout=30)
+                return {"exitCode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}, None
+            command = params.get("command", [])
+            if command and command[0] == "ssh":
+                override = self.probe_results.get(command[-2], {})
+                if command[-1] == "true" and override.get("ssh_exit"):
+                    return {"exitCode": override['ssh_exit'], "stdout": "", "stderr": "Connection refused"}, None
+                if command[-1] != "true":
+                    result = override.get("dataset", {"status": "pass", "code": "readable", "message": "挂载来源匹配，探测文件可读"})
+                    return {"exitCode": 0, "stdout": json.dumps(result), "stderr": ""}, None
             stderr = "" if self.verify_exit == 0 else "Permission denied (publickey)."
             return {"exitCode": self.verify_exit, "stdout": "", "stderr": stderr}, None
         if method in ("command/exec/write", "command/exec/terminate"):
@@ -312,13 +344,29 @@ class FakeCodex:
                 state["items"] = [i for i in state["items"] if i["id"] != item["id"]] + [item]
             await self._send(thread_id, {"method": method, "params": {"threadId": thread_id, "turnId": turn_id, **extra}})
 
+        async def capacity_failure() -> None:
+            state.update(status="failed", error={"message": "The model is at capacity"})
+            await self._send(thread_id, {"method": "turn/completed", "params": {"threadId": thread_id, "turn": dict(state)}})
+
+        if plan == "capacity":
+            await capacity_failure()
+            return
+        if plan == "capacity_will_retry":
+            await notify("error", {"willRetry": True, "error": {"message": "The model is at capacity"}})
+
         command = {
             "type": "commandExecution", "id": f"cmd_{turn_id}",
-            "command": f"ssh {SYSTEM_MACHINE} 'make && ./saxpy 16777217'",
+            "command": " && ".join(f"ssh {target} 'make && ./saxpy 16777217'" for target in self.execution_targets),
             "cwd": "/b", "status": "inProgress", "commandActions": [], "exitCode": None,
             "aggregatedOutput": None, "durationMs": None,
         }
         await notify("item/started", {"item": command, "startedAtMs": 1})
+        if plan == "capacity_after_tool":
+            await capacity_failure()
+            return
+        if plan == "disconnect":
+            await self._subscriber[thread_id].close()
+            plan = "gate"
         if plan == "hold":
             await self._interrupts[turn_id].wait()
             status = "interrupted"
@@ -328,7 +376,13 @@ class FakeCodex:
             await notify("item/completed", {"item": {**command, "status": "completed", "exitCode": 0, "aggregatedOutput": "PASS\n", "durationMs": 12}, "completedAtMs": 2})
             await notify("item/completed", {"item": {"type": "agentMessage", "id": f"note_{turn_id}", "text": "开始复现", "phase": "commentary"}, "completedAtMs": 3})
             self.files[f"{self.thread_cwd.get(thread_id, '/b')}/artifacts/fix.patch"] = PATCH
-            await notify("item/completed", {"item": {"type": "agentMessage", "id": f"final_{turn_id}", "text": json.dumps(RESULT, ensure_ascii=False), "phase": "final_answer"}, "completedAtMs": 4})
+            result = {**RESULT, "machines_used": self.execution_targets,
+                      "machine": self.execution_targets[0] if len(self.execution_targets) == 1 else "", "comment": self.comment_override or {
+                "kind": "fix", "outcome": "修复尾部元素未计算，向上取整后原案例验证通过。",
+                "body": "16777217 个元素验证 PASS，退出码 0。\n\n请 owner 审核候选修改和验证记录。",
+                "evidence_indices": [0], "commands": [], "link_text": "候选修改与验证记录",
+            }}
+            await notify("item/completed", {"item": {"type": "agentMessage", "id": f"final_{turn_id}", "text": json.dumps(result, ensure_ascii=False), "phase": "final_answer"}, "completedAtMs": 4})
             status = "completed"
         state["status"] = status
         await self._send(thread_id, {"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": status, "items": [], "error": None}}})
@@ -375,11 +429,13 @@ class FakeJira:
     def search_issues(self, jql: str, *, max_results: int = 50, validate: bool = True) -> dict:
         self.searches.append(jql)
         self.validate_flags.append(validate)
+        if validate and "assignee was in membersOf(" in jql:
+            raise jira.JiraQueryError("A value provided by the function 'membersOf' is invalid for the field 'assignee'.")
         if "bad" in jql:
             raise jira.JiraQueryError("Error in JQL Query: bad")
         fields = ("key", "url", "summary", "issue_type", "status", "priority", "assignee", "reporter", "components", "created", "updated")
         if jql.startswith("key in ("):
-            keys = [key for key in jql[len("key in ("):-1].split(", ") if key not in self.gone]
+            keys = [key.strip() for key in jql[len("key in ("):-1].split(",") if key.strip() not in self.gone]
             issues = [{**{k: self.get_issue(key)[k] for k in fields}, "status": "Closed"} for key in keys]
             return {"total": len(issues), "issues": issues}
         key_match = re.search(r"key = ([A-Z][A-Z0-9_]*-\d+)", jql)
@@ -402,9 +458,12 @@ class FakeJira:
 
     def add_comment(self, key: str, body: str) -> str:
         if self.fail_comment:
-            raise RuntimeError("issue is closed")
+            raise urllib.error.HTTPError("http://jira", 400, "issue is closed", {}, None)
         self.comments.append((key, body))
         return str(len(self.comments))
+
+    def find_agent_comment(self, key: str, body: str, turn_id: str) -> str:
+        return next((str(i + 1) for i, item in enumerate(self.comments) if item == (key, body)), "")
 
 
 USERS = {
@@ -422,6 +481,8 @@ def _write_conf(path: Path, url: str, *, token: str = TOKEN, max_concurrent: int
         f"[jira_agent:HPC]\nDISPLAY_NAME = HPC 数字员工\nCODEX_WS_URL = {url}\nCODEX_WS_TOKEN = {token}\n"
         f"WORKSPACE_ROOT = /b/workspaces\nCOMPONENTS = PDE_HPC\nJIRA_MEMBERS_GROUP = pde_hpc\n"
         f"SSH_KEY_PATH = {KEY_PATH}\n"
+        "DATASET_PATH = /pde_hpc/dataset\nDATASET_EXPECTED_SOURCES = [\"nas:/dataset\"]\n"
+        "DATASET_PROBE_RELATIVE_PATH = .dataset-id\nDATASET_PROBE_EXPECTED_VALUE = test-data\n"
         f"MAX_CONCURRENT = {max_concurrent}\n"
         f"TURN_TIMEOUT_SECONDS = {timeout}\n",
         encoding="utf-8",
@@ -440,12 +501,14 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(settings, "jira_agent_database_url", f"sqlite:///{(tmp_path / 'jira_agent.db').as_posix()}")
     monkeypatch.setattr(settings, "jira_agent_data_dir", tmp_path / "data")
     monkeypatch.setattr(jira_agent_runner, "_SCAN_SECONDS", 0.1)
+    monkeypatch.setattr(jira_agent_runner, "_RECOVERY_BACKOFF_SECONDS", 0.05)
     fake_jira = FakeJira()
     monkeypatch.setattr(jira, "get_issue", fake_jira.get_issue)
     monkeypatch.setattr(jira, "get_issue_snapshot", fake_jira.get_issue_snapshot)
     monkeypatch.setattr(jira, "download_attachment", fake_jira.download_attachment)
     monkeypatch.setattr(jira, "search_issues", fake_jira.search_issues)
     monkeypatch.setattr(jira, "add_comment", fake_jira.add_comment)
+    monkeypatch.setattr(jira, "find_agent_comment", fake_jira.find_agent_comment)
 
     fake.files[f"{KEY_PATH}.pub"] = PUBKEY
     conn = connect_jira_agent(settings.jira_agent_database_url)
@@ -516,7 +579,25 @@ def _done(detail: dict) -> bool:
             and not detail["conversation"]["phase"])
 
 
+def _preflight(env, key="MC3-7672", *, context=None, execution=None, machine="", ssh_key_session_id="", key_sessions=None):
+    from app.domain.jira_execution import normalize
+    config = execution or normalize(machine=machine)
+    if config["mode"] == "auto":
+        return {"preflight_id": "", "request_id": str(uuid.uuid4()), "acknowledged_issue_ids": []}
+    response = env.client.post("/api/jira-agent/execution-preflights", json={
+        "agent_group": "HPC", "context": context or {"kind": "jira", "issue_key": key},
+        "execution": config,
+        "key_sessions": key_sessions or ({machine: ssh_key_session_id} if machine else {}),
+    })
+    assert response.status_code == 200, response.text
+    value = response.json()
+    return {"preflight_id": value["id"], "request_id": str(uuid.uuid4()),
+            "acknowledged_issue_ids": value["snapshot"]["warning_ids"]}
+
+
 def _handover(env, key: str = "MC3-7672", **extra) -> dict:
+    if not extra.get("request_id"):
+        extra.update(_preflight(env, key, machine=extra.get("machine", ""), ssh_key_session_id=extra.get("ssh_key_session_id", "")))
     response = env.client.post("/api/jira-agent/conversations", json={"issue_key": key, **extra})
     assert response.status_code == 200, response.text
     return response.json()
@@ -572,9 +653,11 @@ def test_handover_runs_codex_turn_records_timeline_and_comments(env) -> None:
 
     [(key, body)] = env.jira.comments
     assert key == "MC3-7672"
-    assert "技术结论：修复已验证" in body
-    assert "blocks = (n + 255) / 256;" in body
-    assert body.index("*修复说明*") < body.index("*修复补丁*") < body.index("*复现结果*") < body.index("*证据*")
+    assert "向上取整后原案例验证通过" in body
+    assert "PASS" in body and len(body) < 600
+    assert "blocks = (n + 255) / 256;" not in body
+    assert turn["result"]["root_cause"] == RESULT["root_cause"]
+    assert body.count("不会修改 assignee、状态或代码；后续操作由 assignee 审核决定。") == 1
     assert f"http://site/jira-agent?conversation={conversation['id']}" in body
 
     patch = next(f for f in detail["files"] if f["source"] == "artifact")
@@ -610,6 +693,7 @@ def test_issue_search_default_list_keys_and_jql(env) -> None:
     assert mine["mode"] == "mine"
     assert mine["jql"] == domain.owner_issue_jql("alice")
     assert mine["issues"][0]["can_handover"] is True
+    assert env.jira.validate_flags[-1] is True
 
     for query in ("MC3-1", "project = MC3", "MC3-1, MC3-2"):
         assert env.client.get("/api/jira-agent/issues", params={"q": query}).status_code == 403
@@ -622,6 +706,7 @@ def test_issue_search_default_list_keys_and_jql(env) -> None:
         'AND status not in (Resolved, Closed) ORDER BY created DESC'
     )
     assert rm["issues"][0]["can_handover"] is True
+    assert env.jira.validate_flags[-1] is False
     several = env.client.get("/api/jira-agent/issues", params={"q": "MC3-1, MC3-2"})
     assert several.status_code == 400
     missing = env.client.get("/api/jira-agent/issues", params={"q": "NOPE-1"}).json()
@@ -631,6 +716,10 @@ def test_issue_search_default_list_keys_and_jql(env) -> None:
     jql = env.client.get("/api/jira-agent/issues", params={"q": "project = MC3"}).json()
     assert jql["mode"] == "jql"
     assert env.jira.searches[-1] == "project = MC3"
+    assert env.jira.validate_flags[-1] is True
+    manual = env.client.get("/api/jira-agent/issues", params={"q": rm["jql"]})
+    assert manual.status_code == 400
+    assert "membersOf" in manual.json()["error"]
     bad = env.client.get("/api/jira-agent/issues", params={"q": "bad jql"})
     assert bad.status_code == 400
     assert "Error in JQL Query" in bad.json()["error"]
@@ -688,6 +777,51 @@ def test_rm_default_search_includes_former_hpc_qa_bugs(env, overrides, included)
     assert bool(response["issues"]) is included
     env.jira.past_assignees.clear()
     assert env.client.get("/api/jira-agent/issues").json()["issues"] == []
+
+
+def test_owner_jira_mapping_shares_visibility_without_search_or_rm_access(env):
+    original = env.conf.read_text()
+    env.conf.write_text(original + '\n[jira_agent_users]\nbob = alice\ndave = alice\ncarol = alice\n')
+    assert jira.agent_username(USERS['carol']) == 'carol'
+    assert jira.agent_username(USERS['dave']) == 'dave'
+    env.as_user('carol')
+    conversation = _handover(env, 'MC3-1', post_comment=False)['conversation']
+    _wait(env, conversation['id'], _done)
+    env.as_user('bob')
+    mine = env.client.get('/api/jira-agent/issues').json()
+    assert mine['jql'] == domain.owner_issue_jql('alice')
+    assert mine['issues'][0]['can_handover']
+    handled = env.client.get('/api/jira-agent/issues', params={'scope': 'handled'}).json()
+    assert [item['key'] for item in handled['issues']] == ['MC3-1']
+    detail = env.client.get(f"/api/jira-agent/conversations/{conversation['id']}")
+    assert detail.status_code == 200 and detail.json()['conversation']['can_write']
+    assert env.client.get('/api/jira-agent/issues', params={'q':'MC3-1'}).status_code == 403
+    assert env.client.get('/api/jira-agent/testing/cases').status_code == 403
+    env.jira.issue_overrides['MC3-2'] = {'assignee': {'name': 'someone_else'}}
+    assert env.client.get('/api/jira-agent/issues/MC3-2').status_code == 404
+    assert env.client.post('/api/jira-agent/conversations', json={'issue_key':'MC3-2'}).status_code == 404
+    env.as_user('dave')
+    assert env.client.get('/api/jira-agent/issues').status_code == 403
+    env.as_user('bob')
+    env.conf.write_text(original)
+    assert env.client.get(f"/api/jira-agent/conversations/{conversation['id']}").status_code == 404
+
+
+def test_mapped_owner_actions_keep_the_site_login_as_author(env):
+    env.conf.write_text(env.conf.read_text() + '\n[jira_agent_users]\nbob = alice\n')
+    env.as_user('bob')
+    conversation = _handover(env, 'MC3-1', post_comment=False)['conversation']
+    assert (conversation['owner'], conversation['created_by']) == ('alice', 'bob')
+    _wait(env, conversation['id'], _done)
+    env.fake.plans.append('hold')
+    path = f"/api/jira-agent/conversations/{conversation['id']}"
+    response = env.client.post(path + '/messages', json={'text':'补充材料', 'post_comment':False})
+    assert response.status_code == 200
+    detail = _wait(env, conversation['id'], lambda data: _latest(data)['status'] == 'running')
+    assert any(event['kind'] == 'user_message' and event['payload']['author'] == 'bob'
+               for event in detail['events'])
+    assert env.client.post(path + '/cancel').status_code == 200
+    _wait(env, conversation['id'], _done)
 
 
 def test_owner_qa_scope_requires_reporter_group_bug_and_open_status(env) -> None:
@@ -1221,6 +1355,7 @@ def test_startup_requeues_unstarted_turn_and_posts_pending_comment(env) -> None:
             assert repo.claim_turn(conn, unstarted["id"])  # stopped before a thread existed
             finished = repo.create_turn(conn, conversation_id="jac_done", trigger="handover", created_by="alice", input_text="")
             repo.update_turn(conn, finished["id"], status="completed", comment_status="pending", comment_body="结论")
+            repo.prepare_comment(conn, finished["id"], "结论")
     finally:
         conn.close()
     env.start_site()
@@ -1228,7 +1363,8 @@ def test_startup_requeues_unstarted_turn_and_posts_pending_comment(env) -> None:
     assert _latest(_wait(env, "jac_new", _done))["status"] == "completed"
     assert env.fake.turns == 1
     _until(lambda: _db_turn(finished["id"])["comment_status"] == "posted")
-    assert env.jira.comments.count(("MC3-2", "结论")) == 1
+    assert len([item for item in env.jira.comments if item[0] == "MC3-2"]) == 1
+    assert finished["id"] in _db_turn(finished["id"])["comment_body"]
 
 
 def test_actions_are_refused_while_restarted_site_reattaches(env) -> None:
@@ -1326,17 +1462,11 @@ def test_group_selection_and_comment_rendering() -> None:
         },
         turn_seq=1, owner="alice", conversation_url="", patches=[],
     )
-    assert "技术结论：建议由其他组处理" in body
     assert "*建议接手*：PyTorch 组" in body
-    assert "*归属判断*：算子报错" in body
-    assert "不属于本组" not in body
-    assert "（建议由 PyTorch 组 负责）" not in body
-    assert body.index("*建议接手*") < body.index("*归属判断*") < body.index("*下一步建议*")
-    assert body.index("*下一步建议*") < body.index("*执行机器*")
-    assert body.count("*下一步建议*") == 1
+    assert "算子报错" in body
+    assert body.count("由 PyTorch 组按复现命令核对算子实现") == 1
     assert "*根因*" not in body
-    assert "*修复说明*" not in body
-    assert "不会修改 assignee" in body
+    assert "不会修改 assignee、状态或代码；后续操作由 assignee 审核决定。" in body
 
     body = domain.render_jira_comment(
         group=groups["HPC"],
@@ -1353,17 +1483,17 @@ def test_group_selection_and_comment_rendering() -> None:
         },
         turn_seq=2, owner="alice", conversation_url="", patches=[],
     )
-    assert "*所需补充*：" in body
-    assert "当前情况：只有异常版本耗时" in body
-    assert "提供方：工单 assignee" in body
-    assert "需要内容：提供正常版本的版本号、命令、输入和总耗时" in body
+    assert "*需要补充*：工单 assignee：提供正常版本的版本号、命令、输入和总耗时" in body
+    assert "只有异常版本耗时，无法计算回退幅度" in body
     assert "*下一步建议*" not in body
     assert "*根因*" not in body
 
     body = domain.render_jira_comment(
         group=groups["HPC"], result=RESULT, turn_seq=3, owner="alice", conversation_url="", patches=[]
     )
-    assert "*修复补丁*：本轮未交付 .patch/.diff 文件，当前只有修复说明。" in body
+    assert "修复尾部元素未计算" in body
+    assert "改为向上取整" in body
+    assert "*修复补丁*" not in body
 
 
 def test_result_status_validation_and_legacy_mapping() -> None:
@@ -1446,10 +1576,11 @@ def test_handoff_preserves_technical_depth_and_reproduction(conclusion) -> None:
     body = domain.render_jira_comment(
         group=group, result=parsed, turn_seq=1, owner="alice", conversation_url="", patches=[],
     )
-    assert f"技术结论：{domain.CONCLUSIONS[conclusion]}" in body
+    assert "独立案例已复现同一异常" in body
     assert "*建议接手*：SDK 维护团队" in body
-    assert "*复现结果*：已复现（正常与异常 SDK）" in body
-    assert "./repro --check" in body
+    assert "内部机制尚未确认" in body
+    assert parsed["reproduction"]["steps"] == ["./repro --check"]
+    assert "./repro --check" not in body
     assert "*根因*" not in body
     assert "*修复补丁*" not in body
 
@@ -1502,7 +1633,8 @@ def test_auto_machine_prompt_lists_system_machines_and_comment_names_used_machin
     assert f"| `{SYSTEM_MACHINE}` | 1×A100 40GB \\| CUDA 12 |" in prompt
     assert "machine" in turn_start["outputSchema"]["required"]
     [(_, body)] = env.jira.comments
-    assert f"*执行机器*：{SYSTEM_MACHINE}" in body
+    assert "*执行机器*" not in body
+    assert _latest(_detail(env, conversation["id"]))["result"]["machine"] == SYSTEM_MACHINE
     assert _detail(env, conversation["id"])["conversation"]["machine_used"] == SYSTEM_MACHINE
 
     sent = env.client.post(f"/api/jira-agent/conversations/{conversation['id']}/messages", json={"text": "继续"})
@@ -1548,7 +1680,7 @@ def test_rm_maintains_system_machines(env) -> None:
     assert env.client.delete(f"/api/jira-agent/machines/{machine_id}").status_code == 404
 
     env.as_user("alice")  # the automatic choice needs a system machine
-    empty = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-1"})
+    empty = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-1", **_preflight(env)})
     assert empty.status_code == 409
     assert "系统机器列表为空" in empty.json()["error"]
 
@@ -1587,10 +1719,16 @@ def _upload_key(env, target: str) -> str:
 
 def test_user_given_machine_needs_a_fresh_key_upload_for_each_handover(env) -> None:
     target = "tester@10.0.0.9"
-    refused = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-1", "machine": target})
+    def prepare(target, session="", issue="MC3-1"):
+        return env.client.post("/api/jira-agent/execution-preflights", json={
+            "agent_group": "HPC", "context": {"kind": "jira", "issue_key": issue},
+            "execution": {"mode": "custom", "targets": [{"target": target}]},
+            "key_sessions": {target: session},
+        })
+    refused = prepare(target)
     assert refused.status_code == 409
     assert "上传 SSH 公钥到 tester@10.0.0.9" in refused.json()["error"]
-    bad = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-1", "machine": "-oProxyCommand=sh@x"})
+    bad = prepare("-oProxyCommand=sh@x")
     assert bad.status_code == 400
 
     info = env.client.get("/api/jira-agent/ssh-key-info", params={"group": "HPC"}).json()
@@ -1626,16 +1764,10 @@ def test_user_given_machine_needs_a_fresh_key_upload_for_each_handover(env) -> N
     assert check["command"][-2:] == [target, "true"]
 
     env.as_user("carol")  # the upload belongs to the user who did it
-    other = env.client.post(
-        "/api/jira-agent/conversations",
-        json={"issue_key": "MC3-1", "machine": target, "ssh_key_session_id": session_id},
-    )
+    other = prepare(target, session_id)
     assert other.status_code == 409
     env.as_user("alice")
-    elsewhere = env.client.post(
-        "/api/jira-agent/conversations",
-        json={"issue_key": "MC3-1", "machine": "tester@10.0.0.8", "ssh_key_session_id": session_id},
-    )
+    elsewhere = prepare("tester@10.0.0.8", session_id)
     assert elsewhere.status_code == 409
 
     conversation = _handover(env, "MC3-1", machine=target, ssh_key_session_id=session_id)["conversation"]
@@ -1650,10 +1782,7 @@ def test_user_given_machine_needs_a_fresh_key_upload_for_each_handover(env) -> N
     assert b"s3cret" not in stored
 
     # the upload admits one hand-over; the next one needs its own upload
-    reused = env.client.post(
-        "/api/jira-agent/conversations",
-        json={"issue_key": "MC3-2", "machine": target, "ssh_key_session_id": session_id},
-    )
+    reused = prepare(target, session_id, "MC3-2")
     assert reused.status_code == 409
     second = _handover(env, "MC3-2", machine=target, ssh_key_session_id=_upload_key(env, target))
     assert second["conversation"]["machine"] == target
@@ -1672,9 +1801,9 @@ def test_failed_or_timed_out_key_uploads_admit_no_handover(env, monkeypatch: pyt
     assert "免密登录" in failed["message"] and "Permission denied" in failed["message"]
     refused = env.client.post(
         "/api/jira-agent/conversations",
-        json={"issue_key": "MC3-1", "machine": target, "ssh_key_session_id": session_id},
+        json={"issue_key": "MC3-1", "machine": target, "ssh_key_session_id": session_id, "request_id": "failed-key-handover"},
     )
-    assert refused.status_code == 409
+    assert refused.status_code == 409, refused.text
 
     env.fake.verify_exit = 0
     session_id = _start_key_session(env, target)
@@ -1744,8 +1873,10 @@ def test_missing_artifact_can_be_retried_without_running_model(env, monkeypatch,
     assert len([e for e in detail["events"] if e["kind"] == "result"]) == 1
     assert len([e for e in detail["events"] if e["kind"] == "delivery"]) == 1
     assert len(env.jira.comments) == int(post)
+    patch_record = next(f for f in detail["files"] if f["source"] == "artifact" and f["name"] == "fix.patch")
+    assert patch_record["preview"] == PATCH.decode()
     if post:
-        assert "blocks = (n + 255) / 256;" in env.jira.comments[0][1]
+        assert "向上取整后原案例验证通过" in env.jira.comments[0][1]
         assert "different later content" not in env.jira.comments[0][1]
     assert env.client.post(f"/api/jira-agent/turns/{turn['id']}/delivery/retry").status_code == 409
     assert len(env.jira.comments) == int(post)
@@ -1905,7 +2036,8 @@ def test_model_choice_rejected_when_turn_is_active(env):
 
 def _enable_deepseek(env):
     path = "/b/deepseek-models.json"
-    env.conf.write_text(env.conf.read_text() + f'MODEL_CATALOGS = {{"deepseek": "{path}"}}\n')
+    env.conf.write_text(env.conf.read_text().replace(
+        '[jira_agent:HPC]\n', f'[jira_agent:HPC]\nMODEL_CATALOGS = {{"deepseek": "{path}"}}\n', 1))
     env.fake.config = {"model_providers": {
         "deepseek": {"name": "DeepSeek", "experimental_bearer_token": "private-test-key"},
     }}

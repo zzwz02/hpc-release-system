@@ -49,6 +49,11 @@ JIRA_ASSIGNEE = m00930
 # 可选：父 issue key；有值则创建子任务，留空则创建顶级 Task
 JIRA_PARENT_ISSUE = SPD-1535
 
+# 可选：Owner 登录名与 Jira 用户名不同时配置；未配置的账号使用登录名。
+# 只影响 Jira agent 的工单身份，操作记录仍保留实际登录名。
+# [jira_agent_users]
+# site_owner = jira_owner
+
 
 # ── 大模型（QA AI 分析、周报等所有调用大模型的功能共用） ─────────
 # OpenAI 兼容接口（通常以 /v1 结尾），需要 python -m pip install openai。
@@ -94,6 +99,14 @@ JIRA_MEMBERS_GROUP = pde_hpc
 # 交单自填 user@host 时，网站经 app-server 在 B 上运行 ssh-copy-id 上传这把公钥，
 # 并从 B 测试免密登录。公钥注释建议写成 hpc-jira-agent@<B>，方便对方识别和删除。
 SSH_KEY_PATH = /home/hpc-agent/.ssh/id_ed25519
+# 共享数据检查：留空显示“未配置”，不会视为检查通过。
+DATASET_PATH = /pde_hpc/dataset
+# JSON 数组，填写实际共享来源，例如 ["nas:/export/dataset"]。
+DATASET_EXPECTED_SOURCES = []
+# 已有小型只读探测文件，相对于 DATASET_PATH；检查不会创建文件。
+DATASET_PROBE_RELATIVE_PATH =
+# 可选：探测文件的预期文本内容（去除首尾空白，最多 4096 字节）。
+DATASET_PROBE_EXPECTED_VALUE =
 # 覆盖 B 上 codex 的模型；留空则由 B 上的 codex 自行决定
 MODEL =
 # 可选服务商模型目录：JSON 对象，值为 B 上 Codex 模型目录的绝对路径。
@@ -112,3 +125,31 @@ MAX_CONCURRENT = 2
 ACCESS_TOKEN =
 SECRET =
 USERID =
+
+
+
+# ── Jira 知识学习（每组一节，使用独立 Codex 服务；整节缺省则不启用） ──
+# 学习端生成待审核提案，审核后由人工修改和发布知识包。MODEL 可选，其余键必填。
+[jira_learning:HPC]
+CODEX_WS_URL = ws://127.0.0.1:4520
+CODEX_WS_TOKEN = <learning-ws-token>
+WORKSPACE_ROOT = /home/jira-learner/hpc-jira-learning/workspaces
+MODEL =
+TURN_TIMEOUT_SECONDS = 7200
+
+# 独立 jira_agent_skill 检出目录由 JIRA_LEARNING_REPO_ROOT 指定。
+# 必须是本地已获取的正式远端分支；学习固定其当前提交，不自动 fetch 或改仓库。
+REPOSITORY_REF = refs/remotes/origin/main
+
+# AI 初评使用独立只读 app-server；可复用学习服务，但不能指向任何分析服务。
+# 工作目录只供评价使用，不挂载到分析容器；不挂载 SSH、GPU、Docker socket。
+# 未配置时仍可测试和人工评价，初评显示配置缺失；配置后可单独重试。
+# 模型、推理强度不跟随被测模型变化。服务端也应设置 read-only / never。
+# [jira_evaluation:HPC]
+# CODEX_WS_URL = ws://127.0.0.1:4520
+# CODEX_WS_TOKEN = <readonly-ws-token>
+# WORKSPACE_ROOT = /home/jira-learner/evaluation/workspaces
+# MODEL = <evaluation-model>
+# REASONING_EFFORT = high
+# TURN_TIMEOUT_SECONDS = 1800
+# 网站测试并发默认 1，可用 JIRA_TESTING_MAX_CONCURRENT 调整；仍受分析组并发限制。

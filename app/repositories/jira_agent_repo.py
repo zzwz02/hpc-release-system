@@ -14,6 +14,7 @@ from app.timeutil import beijing_timestamp
 ACTIVE_TURN_STATUSES = ("queued", "running")
 
 _TURN_UPDATABLE = {
+    "execution_snapshot_json", "machines_used_json",
     "status",
     "codex_turn_id",
     "result_json",
@@ -28,6 +29,8 @@ _TURN_UPDATABLE = {
     "error",
     "started_at",
     "finished_at",
+    "recovery_attempts",
+    "retry_pending",
 }
 
 
@@ -56,18 +59,24 @@ def create_conversation(
     workspace: str,
     machine: str = "",
     model_provider: str = "",
+    source_kind: str = "jira",
+    execution_config: dict | None = None,
+    execution_snapshot: dict | None = None,
 ) -> dict:
     now = beijing_timestamp()
     conn.execute(
         """
         INSERT INTO jira_agent_conversations
             (id, issue_key, issue_summary, agent_group, owner, created_by,
-             workspace, machine, created_at, updated_at, model_provider)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             workspace, machine, created_at, updated_at, model_provider, source_kind)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (conversation_id, issue_key, issue_summary, agent_group, owner,
-         created_by, workspace, machine, now, now, model_provider),
+         created_by, workspace, machine, now, now, model_provider, source_kind),
     )
+    if execution_config is not None:
+        conn.execute("UPDATE jira_agent_conversations SET execution_config_json=?, execution_snapshot_json=? WHERE id=?",
+                     (dumps_json(execution_config), dumps_json(execution_snapshot or {}), conversation_id))
     return get_conversation(conn, conversation_id)  # type: ignore[return-value]
 
 
@@ -91,7 +100,7 @@ def get_conversation(conn: sqlite3.Connection, conversation_id: str) -> dict | N
 def get_open_conversation(conn: sqlite3.Connection, issue_key: str) -> dict | None:
     return _one(
         conn,
-        "SELECT * FROM jira_agent_conversations WHERE issue_key = ? AND status = 'open'",
+        "SELECT * FROM jira_agent_conversations WHERE source_kind = 'jira' AND issue_key = ? AND status = 'open'",
         (issue_key,),
     )
 
@@ -102,7 +111,7 @@ def open_conversations_by_issue(conn: sqlite3.Connection, issue_keys: list[str])
     marks = ",".join("?" * len(issue_keys))
     rows = _all(
         conn,
-        f"SELECT * FROM jira_agent_conversations WHERE status = 'open' AND issue_key IN ({marks})",
+        f"SELECT * FROM jira_agent_conversations WHERE source_kind = 'jira' AND status = 'open' AND issue_key IN ({marks})",
         tuple(issue_keys),
     )
     return {row["issue_key"]: row for row in rows}
@@ -115,7 +124,7 @@ def list_conversations(
     issue_key: str | None = None,
     limit: int = 200,
 ) -> list[dict]:
-    clauses: list[str] = []
+    clauses: list[str] = ["source_kind = 'jira'"]
     params: list[Any] = []
     if username is not None:
         clauses.append("(owner = ? COLLATE NOCASE OR created_by = ? COLLATE NOCASE)")
@@ -138,13 +147,13 @@ def list_conversations(
 def handled_issues(conn: sqlite3.Connection) -> tuple[int, list[dict]]:
     """All issues ever handed to the agent, most recent activity first."""
     total = conn.execute(
-        "SELECT COUNT(DISTINCT issue_key) FROM jira_agent_conversations"
+        "SELECT COUNT(DISTINCT issue_key) FROM jira_agent_conversations WHERE source_kind = 'jira'"
     ).fetchone()[0]
     rows = _all(
         conn,
         """
         SELECT issue_key, COUNT(*) AS conversation_count, MAX(updated_at) AS last_activity
-        FROM jira_agent_conversations
+        FROM jira_agent_conversations WHERE source_kind = 'jira'
         GROUP BY issue_key
         ORDER BY last_activity DESC, MAX(rowid) DESC
         """,
@@ -154,7 +163,7 @@ def handled_issues(conn: sqlite3.Connection) -> tuple[int, list[dict]]:
 
 def has_handled_issue(conn: sqlite3.Connection, issue_key: str) -> bool:
     return conn.execute(
-        "SELECT 1 FROM jira_agent_conversations WHERE issue_key = ? LIMIT 1",
+        "SELECT 1 FROM jira_agent_conversations WHERE source_kind = 'jira' AND issue_key = ? LIMIT 1",
         (issue_key,),
     ).fetchone() is not None
 
@@ -162,10 +171,29 @@ def has_handled_issue(conn: sqlite3.Connection, issue_key: str) -> bool:
 def has_owner_history(conn: sqlite3.Connection, issue_key: str, username: str) -> bool:
     return conn.execute(
         """SELECT 1 FROM jira_agent_conversations
-           WHERE issue_key = ? AND (owner = ? COLLATE NOCASE OR created_by = ? COLLATE NOCASE)
+           WHERE source_kind = 'jira' AND issue_key = ? AND (owner = ? COLLATE NOCASE OR created_by = ? COLLATE NOCASE)
            LIMIT 1""",
         (issue_key, username, username),
     ).fetchone() is not None
+
+
+def handled_issue_keys(
+    conn: sqlite3.Connection,
+    agent_group: str,
+    issue_keys: list[str],
+) -> set[str]:
+    """Return selected keys that have conversation history for this agent group."""
+    result: set[str] = set()
+    for start in range(0, len(issue_keys), 500):
+        chunk = issue_keys[start:start + 500]
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"""SELECT DISTINCT issue_key FROM jira_agent_conversations
+                WHERE source_kind = 'jira' AND agent_group = ? AND issue_key IN ({marks})""",
+            (agent_group, *chunk),
+        ).fetchall()
+        result.update(row["issue_key"] for row in rows)
+    return result
 
 
 def touch_conversation(conn: sqlite3.Connection, conversation_id: str) -> None:
@@ -241,6 +269,31 @@ def get_turn(conn: sqlite3.Connection, turn_id: str) -> dict | None:
     return _one(conn, "SELECT * FROM jira_agent_turns WHERE id = ?", (turn_id,))
 
 
+def comment_publication(conn: sqlite3.Connection, turn_id: str) -> dict | None:
+    return _one(conn, "SELECT * FROM jira_agent_comment_publications WHERE turn_id = ?", (turn_id,))
+
+
+def prepare_comment(conn: sqlite3.Connection, turn_id: str, body: str, *, legacy: bool = False) -> dict:
+    """Freeze the outgoing body before I/O, including its stable business-turn id."""
+    if not legacy:
+        body += f" _记录编号：{turn_id}_"
+    conn.execute(
+        "INSERT OR IGNORE INTO jira_agent_comment_publications (turn_id, body, state, updated_at) VALUES (?, ?, ?, ?)",
+        (turn_id, body, "uncertain" if legacy else "ready", beijing_timestamp()),
+    )
+    publication = comment_publication(conn, turn_id)
+    update_turn(conn, turn_id, comment_body=publication["body"])
+    return publication
+
+
+def set_comment_publication(conn: sqlite3.Connection, turn_id: str, state: str,
+                            *, comment_id: str = "", error: str = "") -> None:
+    conn.execute(
+        "UPDATE jira_agent_comment_publications SET state = ?, comment_id = ?, error = ?, updated_at = ? WHERE turn_id = ?",
+        (state, comment_id, error, beijing_timestamp(), turn_id),
+    )
+
+
 def list_turns(conn: sqlite3.Connection, conversation_id: str) -> list[dict]:
     return _all(
         conn,
@@ -285,7 +338,7 @@ def append_turn_input(conn: sqlite3.Connection, turn_id: str, text: str) -> None
 def claim_turn(conn: sqlite3.Connection, turn_id: str) -> bool:
     cur = conn.execute(
         """
-        UPDATE jira_agent_turns SET status = 'running', started_at = ?
+        UPDATE jira_agent_turns SET status = 'running', started_at = CASE WHEN started_at = '' THEN ? ELSE started_at END
         WHERE id = ? AND status = 'queued'
         """,
         (beijing_timestamp(), turn_id),
@@ -381,7 +434,7 @@ def requeue_turn(conn: sqlite3.Connection, turn_id: str) -> bool:
     """Put a turn that never reached the app-server back at its queue position."""
     cur = conn.execute(
         """
-        UPDATE jira_agent_turns SET status = 'queued', started_at = ''
+        UPDATE jira_agent_turns SET status = 'queued'
         WHERE id = ? AND status = 'running'
         """,
         (turn_id,),
@@ -414,10 +467,12 @@ def pending_comment_turns(conn: sqlite3.Connection) -> list[dict]:
     return _all(
         conn,
         """
-        SELECT * FROM jira_agent_turns
-        WHERE status = 'completed' AND comment_status = 'pending'
-          AND delivery_status IN ('', 'complete')
-        ORDER BY rowid
+        SELECT t.* FROM jira_agent_turns t
+        LEFT JOIN jira_agent_comment_publications p ON p.turn_id = t.id
+        WHERE t.status = 'completed' AND t.post_comment = 1
+          AND (t.comment_status = 'pending' OR p.state IN ('sending', 'uncertain'))
+          AND t.delivery_status IN ('', 'complete')
+        ORDER BY t.rowid
         """,
     )
 

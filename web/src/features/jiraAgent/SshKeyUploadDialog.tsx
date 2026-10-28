@@ -121,12 +121,13 @@ export function SshKeyUploadDialog({
   }
 
   return (
-    <div className="dialog-backdrop" role="dialog" aria-modal="true" aria-label="上传 SSH 公钥">
+    <div className="dialog-backdrop" role="dialog" aria-modal="true" aria-label="机器登录授权">
       <div className="dialog-card maxw-660">
-        <h3>上传 SSH 公钥到 {target}</h3>
+        <h3>登录授权：{target}</h3>
         <div className="dialog-body">
           {!session ? (
             <>
+              <p>确认授权后，按提示输入 <code>{target}</code> 的登录密码；已配置免密登录时会自动跳过密码输入。</p>
               <div className="jira-agent-warning jira-agent-key-warning" data-testid="jira-agent-key-warning">
                 <strong>开始前请确认：</strong>
                 <ul>
@@ -144,7 +145,7 @@ export function SshKeyUploadDialog({
                     否则系统无法防止 agent 以后未经授权使用你的个人账号登录。
                   </li>
                   <li>密码只经网站转发给服务器 B 上的 ssh-copy-id，不会保存或记录。</li>
-                  <li>每次把工单交给自填机器都要重新确认并上传；公钥仍在对方机器上时 ssh-copy-id 会跳过，不再要求密码。</li>
+                  <li>每次把工单交给自填机器都要重新确认登录授权；已配置免密登录时会自动跳过密码输入。</li>
                 </ul>
               </div>
               <label className="jira-agent-check">
@@ -159,10 +160,11 @@ export function SshKeyUploadDialog({
           ) : (
             <>
               <pre ref={outputRef} className="jira-agent-output jira-agent-terminal" data-testid="jira-agent-key-terminal">
-                {output || "正在服务器 B 上运行 ssh-copy-id..."}
+                {output || "正在连接机器，请稍候…"}
               </pre>
               {status === "running" && (
                 <>
+                  <p>出现 password: 提示后，请输入 <code>{target}</code> 的登录密码。</p>
                   <form
                     className="row jira-agent-terminal-input"
                     onSubmit={(event) => {
@@ -173,9 +175,9 @@ export function SshKeyUploadDialog({
                   >
                     <input
                       type="password"
-                      aria-label="密码"
+                      aria-label="机器登录密码"
                       autoComplete="off"
-                      placeholder="出现 password: 提示后输入密码，回车发送"
+                      placeholder="输入该机器账号的登录密码，回车发送"
                       value={password}
                       onChange={(event) => setPassword(event.target.value)}
                     />
@@ -204,7 +206,7 @@ export function SshKeyUploadDialog({
                   </form>
                 </>
               )}
-              {status === "verifying" && <p className="muted">ssh-copy-id 已完成，正在从服务器 B 测试免密登录...</p>}
+              {status === "verifying" && <p className="muted">正在验证 agent 能否登录该机器…</p>}
               {session.message && (
                 <p className={status === "succeeded" ? "jira-agent-ok" : "jira-agent-warning"}>{session.message}</p>
               )}
@@ -215,7 +217,7 @@ export function SshKeyUploadDialog({
         <div className="dialog-actions">
           {!session && (
             <button type="button" className="btn primary" disabled={!confirmed || busy} onClick={() => void start()}>
-              开始上传
+              {busy ? "正在连接…" : "开始登录"}
             </button>
           )}
           <button type="button" className="btn" onClick={() => void close()}>

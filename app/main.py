@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from starlette.concurrency import run_in_threadpool
 
 from app.api.errors import register_error_handlers
 from app.api.routers import (
@@ -24,6 +25,8 @@ from app.api.routers import (
     cicd_agent,
     jira_agent,
     notifications,
+    jira_learning,
+    jira_testing,
     qa,
     releases,
     state,
@@ -32,9 +35,11 @@ from app.api.routers import (
 )
 from app.config import settings
 from app.db.connection import connect
-from app.services import auth_service, jira_agent_ssh_key
+from app.services import auth_service, jira_agent_ssh_key, jira_testing_builtins
 from app.services.jira_agent_runner import runner as jira_agent_runner
 from app.services.notification_service import poller as notification_poller
+from app.services.jira_learning_runner import runner as jira_learning_runner
+from app.services.jira_testing_runner import runner as jira_testing_runner
 
 
 @asynccontextmanager
@@ -47,15 +52,25 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     conn.close()
 
+    app.state.jira_testing_warning = await run_in_threadpool(jira_testing_builtins.initialize)
+
     # JIRA agent queue runner (in-process; keep uvicorn at a single worker).
     if settings.jira_agent_runner_enabled:
         await jira_agent_runner.start()
     await notification_poller.start()
+    if settings.jira_learning_runner_enabled:
+        await jira_learning_runner.start()
+    if settings.jira_testing_runner_enabled:
+        await jira_testing_runner.start()
     try:
         yield
     finally:
         await notification_poller.stop()
         await jira_agent_ssh_key.sessions.stop()
+        if settings.jira_testing_runner_enabled:
+            await jira_testing_runner.stop()
+        if settings.jira_learning_runner_enabled:
+            await jira_learning_runner.stop()
         if settings.jira_agent_runner_enabled:
             await jira_agent_runner.stop()
 
@@ -75,6 +90,8 @@ def create_app() -> FastAPI:
     app.include_router(cicd_agent.router)
     app.include_router(jira_agent.router)
     app.include_router(notifications.router)
+    app.include_router(jira_learning.router)
+    app.include_router(jira_testing.router)
     app.include_router(qa.router)
     app.include_router(releases.router)
     app.include_router(weekly_report.router)

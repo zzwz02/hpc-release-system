@@ -5,11 +5,16 @@ agent itself runs on the group's Codex app-server (see docs/jira-agent.md).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
-from fastapi.responses import FileResponse
+import asyncio
+import json
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.deps import require_tab_access
+from app.api.jira_execution_models import ExecutionSubmission, PreflightBody
+from app.services import jira_agent_preflight as preflight
 from app.services import jira_agent_runner, jira_agent_ssh_key, jira_agent_service as service
 
 router = APIRouter(prefix="/api/jira-agent")
@@ -25,7 +30,7 @@ class UploadBody(BaseModel):
     content_base64: str
 
 
-class HandoverBody(BaseModel):
+class HandoverBody(ExecutionSubmission):
     issue_key: str
     note: str = ""
     files: list[UploadBody] = Field(default_factory=list)
@@ -206,3 +211,33 @@ async def close_key_session(session_id: str, user: dict = Depends(require_jira_a
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(conversation_id: str, user: dict = Depends(require_jira_agent_access)) -> dict:
     return await service.delete_conversation(user, conversation_id)
+
+
+@router.post("/execution-preflights")
+async def execution_preflight(body: PreflightBody, request: Request, user: dict = Depends(require_jira_agent_access)):
+    prepared = await preflight.prepare(user, body.model_dump())
+    if "application/x-ndjson" not in request.headers.get("accept", ""):
+        return await preflight.create(user, prepared)
+
+    async def stream():
+        queue = asyncio.Queue()
+
+        async def run():
+            try:
+                result = await preflight.create(user, prepared, lambda item: queue.put_nowait({"type": "target", "result": item}))
+                await queue.put({"type": "completed", "result": result})
+            except Exception as exc:
+                await queue.put({"type": "error", "error": str(exc)})
+
+        task = asyncio.create_task(run())
+        try:
+            while True:
+                item = await queue.get()
+                yield json.dumps(item, ensure_ascii=False) + "\n"
+                if item["type"] in ("completed", "error"):
+                    break
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson", headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"})

@@ -30,6 +30,10 @@ class CodexAppServerError(RuntimeError):
     """Connection, protocol or RPC failure talking to the app-server."""
 
 
+class CodexTransportError(CodexAppServerError):
+    """Transient transport loss. Callers must reconcile remote work before retry."""
+
+
 class CodexAppServerClient:
     def __init__(
         self,
@@ -39,12 +43,14 @@ class CodexAppServerClient:
         client_name: str = "hpc_release_system",
         request_timeout: float = 60.0,
         open_timeout: float = 15.0,
+        dynamic_tools: bool = False,
     ) -> None:
         self.url = url
         self.token = token
         self.client_name = client_name
         self.request_timeout = request_timeout
         self.open_timeout = open_timeout
+        self.dynamic_tools = dynamic_tools
         self._ws: Any = None
         self._reader: asyncio.Task | None = None
         self._pending: dict[int, asyncio.Future] = {}
@@ -71,7 +77,8 @@ class CodexAppServerClient:
                 open_timeout=self.open_timeout,
             )
         except Exception as exc:  # InvalidStatus (401), OSError, TimeoutError
-            raise CodexAppServerError(f"无法连接 Codex app-server：{exc}") from exc
+            error = CodexTransportError if isinstance(exc, (OSError, TimeoutError)) else CodexAppServerError
+            raise error(f"无法连接 Codex app-server：{exc}") from exc
         self._reader = asyncio.create_task(self._read_loop())
         try:
             result = await self.request(
@@ -81,7 +88,8 @@ class CodexAppServerClient:
                         "name": self.client_name,
                         "title": "HPC release system",
                         "version": "0.1.0",
-                    }
+                    },
+                    **({"capabilities": {"experimentalApi": True}} if self.dynamic_tools else {}),
                 },
             )
             await self._send({"method": "initialized"})
@@ -108,14 +116,14 @@ class CodexAppServerClient:
         try:
             message = await asyncio.wait_for(future, timeout or self.request_timeout)
         except asyncio.TimeoutError as exc:
-            raise CodexAppServerError(f"Codex RPC {method} 超时") from exc
+            raise CodexTransportError(f"Codex RPC {method} 超时") from exc
         finally:
             self._pending.pop(request_id, None)
         return self._unwrap(method, message)
 
     async def _send_request(self, method: str, params: dict) -> tuple[int, asyncio.Future]:
         if self._closed_reason:
-            raise CodexAppServerError(self._closed_reason)
+            raise CodexTransportError(self._closed_reason)
         self._next_id += 1
         request_id = self._next_id
         future = asyncio.get_running_loop().create_future()
@@ -146,7 +154,7 @@ class CodexAppServerClient:
             return None
         if event is None:
             self._events.put_nowait(None)  # keep signalling for later callers
-            raise CodexAppServerError(self._closed_reason or "Codex app-server 连接已断开")
+            raise CodexTransportError(self._closed_reason or "Codex app-server 连接已断开")
         return event
 
     async def _send(self, payload: dict) -> None:
@@ -155,7 +163,7 @@ class CodexAppServerClient:
         try:
             await self._ws.send(json.dumps(payload, ensure_ascii=False))
         except websockets.ConnectionClosed as exc:
-            raise CodexAppServerError(f"Codex app-server 连接中断：{exc}") from exc
+            raise CodexTransportError(f"Codex app-server 连接中断：{exc}") from exc
 
     async def _read_loop(self) -> None:
         try:
@@ -170,7 +178,10 @@ class CodexAppServerClient:
                     if future is not None and not future.done():
                         future.set_result(message)
                 elif "id" in message:
-                    await self._reject_server_request(message)
+                    if self.dynamic_tools and message.get('method') == 'item/tool/call':
+                        self._events.put_nowait(message)
+                    else:
+                        await self._reject_server_request(message)
                 else:
                     self._events.put_nowait(message)
             self._closed_reason = "Codex app-server 连接已关闭"
@@ -184,11 +195,11 @@ class CodexAppServerClient:
                 self._closed_reason = "Codex app-server 连接已关闭"
             for future in self._pending.values():
                 if not future.done():
-                    future.set_exception(CodexAppServerError(self._closed_reason))
+                    future.set_exception(CodexTransportError(self._closed_reason))
             self._events.put_nowait(None)
 
     async def _reject_server_request(self, message: dict) -> None:
-        """Approvals and client-side tools are not offered by this client.
+        """Reject approvals and requests outside the explicitly enabled tool channel.
 
         The server host is expected to run with approval_policy=never; if a
         request still arrives, decline it and surface it as an event.
@@ -254,6 +265,7 @@ class CodexAppServerClient:
         service_name: str = "",
         model_provider: str = "",
         config: dict | None = None,
+        tools: list[dict] | None = None,
     ) -> dict:
         params: dict[str, Any] = {"cwd": cwd, "ephemeral": False}
         if developer_instructions:
@@ -266,7 +278,14 @@ class CodexAppServerClient:
             params["modelProvider"] = model_provider
         if config:
             params["config"] = config
+        if tools:
+            if not self.dynamic_tools:
+                raise ValueError('dynamic tools were not enabled for this client')
+            params['dynamicTools'] = tools
         return self._thread_result(await self.request("thread/start", params))
+
+    async def respond_tool(self, request_id: int | str, result: dict) -> None:
+        await self._send({'id': request_id, 'result': result})
 
     async def resume_thread(
         self, thread_id: str, *, model: str = "", model_provider: str = "", config: dict | None = None,
@@ -301,11 +320,15 @@ class CodexAppServerClient:
         *,
         output_schema: dict | None = None,
         model: str = "",
+        skill: tuple[str, str] | None = None,
         effort: str = "",
     ) -> dict:
+        inputs: list[dict[str, str]] = [{"type": "text", "text": text}]
+        if skill is not None:
+            inputs.append({"type": "skill", "name": skill[0], "path": skill[1]})
         params: dict[str, Any] = {
             "threadId": thread_id,
-            "input": [{"type": "text", "text": text}],
+            "input": inputs,
         }
         if output_schema is not None:
             params["outputSchema"] = output_schema
