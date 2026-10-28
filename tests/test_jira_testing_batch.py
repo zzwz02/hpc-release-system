@@ -46,6 +46,13 @@ class Evaluator(FakeCodex):
         return response, json.loads(response['contentItems'][0]['text']) if response['success'] else None
 
     async def _play(self, params, turn_id, plan):
+        if plan in ('overloaded', 'upstream_error'):
+            self.turn_state[turn_id].update(status='failed', error={
+                'message': 'Selected model is at capacity. Please try a different model.'
+                           if plan == 'overloaded' else 'Usage limit reached',
+                'codexErrorInfo': 'serverOverloaded' if plan == 'overloaded' else 'usageLimitExceeded',
+            })
+            return
         if plan == 'hold':
             await self._released(turn_id)
         cwd = self.thread_cwd[params['threadId']]
@@ -268,6 +275,86 @@ def test_failed_grading_retries_without_running_experiment_and_resumes(grading_s
     assert completed['result']['decision'] == 'pass'
     assert env.fake.turns == 1 and peer.turns == 2
     assert len(env.client.get(BASE + f'/runs/{cid}/evaluations').json()['evaluations']) == 2
+
+
+def test_capacity_retry_keeps_model_standards_and_analysis(grading_setup, monkeypatch):
+    env, peer, _, _, case = grading_setup
+    monkeypatch.setattr(jira_testing_runner, 'OVERLOAD_RETRY_DELAYS', (0, 0))
+    peer.plans = ['overloaded', 'overloaded', 'complete']
+    cid = start(env, case)['runs'][0]['conversation_id']
+    completed = wait_eval(env, cid)
+    assert completed['result']['decision'] == 'pass'
+    assert completed['error'] == ''
+    assert peer.turns == 3 and env.fake.turns == 1
+    assert len(peer.params('thread/start')) == 3
+    assert all(p['model'] == 'judge-model' and p['sandbox'] == 'read-only'
+               for p in peer.params('thread/start'))
+    assert all(p['model'] == 'judge-model' and p['effort'] == 'high'
+               for p in peer.params('turn/start'))
+    assert len(env.client.get(BASE + f'/runs/{cid}/evaluations').json()['evaluations']) == 1
+    with jira_agent_runner.open_db() as conn:
+        saved = evaluations.latest(conn, cid)
+    assert saved['retry_count'] == 2 and saved['retry_at'] == ''
+    assert completed['snapshot'] == json.loads(saved['snapshot_json'])
+
+
+def test_capacity_backoff_survives_restart_and_does_not_block_other_cases(grading_setup, monkeypatch):
+    env, peer, _, body, case = grading_setup
+    monkeypatch.setattr(jira_testing_runner, 'OVERLOAD_RETRY_DELAYS', (60,))
+    peer.plans = ['overloaded', 'complete', 'complete']
+    cid = start(env, case)['runs'][0]['conversation_id']
+    pending = wait_eval(env, cid, 'queued')
+    assert '60 秒后自动重试' in pending['error']
+    with jira_agent_runner.open_db() as conn:
+        before = evaluations.latest(conn, cid)
+    assert before['retry_count'] == 1 and before['retry_at']
+    assert before['thread_id'] == before['turn_id'] == ''
+    env.stop_site()
+    env.start_site()
+    assert wait_eval(env, cid, 'queued')['id'] == pending['id']
+    assert peer.turns == 1
+    other = copy.deepcopy(body)
+    other.update(title='Other case during capacity backoff')
+    other['input']['note'] = 'Another independent input'
+    second = env.client.post(BASE + '/cases', json=other).json()
+    second_cid = start(env, second)['runs'][0]['conversation_id']
+    assert wait_eval(env, second_cid)['result']['decision'] == 'pass'
+    assert wait_eval(env, cid, 'queued')['id'] == pending['id']
+    assert peer.turns == 2
+
+    # Editing a case or the default model cannot alter a scheduled evaluation.
+    changed = copy.deepcopy(body)
+    changed['criteria'] = 'Changed after evaluation was queued'
+    env.client.post(BASE + f'/cases/{case["id"]}/versions', json=changed)
+    env.conf.write_text(env.conf.read_text().replace('MODEL = judge-model', 'MODEL = changed-model'))
+    with jira_agent_runner.open_db() as conn, transaction(conn):
+        evaluations.update(conn, before['id'], retry_at='2000-01-01 00:00:00')
+    completed = wait_eval(env, cid)
+    assert completed['snapshot'] == pending['snapshot']
+    assert completed['config']['model'] == 'judge-model'
+    assert peer.params('turn/start')[-1]['model'] == 'judge-model'
+    assert peer.turns == 3 and env.fake.turns == 2
+    with jira_agent_runner.open_db() as conn:
+        after = evaluations.latest(conn, cid)
+    assert after['started_at'] == before['started_at']
+    assert after['evidence_key'] == before['evidence_key']
+
+
+@pytest.mark.parametrize('plan,delays,attempts,message', [
+    ('overloaded', (0, 0), 3, '自动重试 2 次仍未成功'),
+    ('overloaded', (120,), 1, '初评超时'),
+    ('upstream_error', (0, 0), 1, 'Usage limit reached'),
+    ('invalid', (0, 0), 1, '不存在的证据'),
+])
+def test_capacity_retry_is_bounded_and_only_for_explicit_overload(grading_setup, monkeypatch, plan, delays, attempts, message):
+    env, peer, _, _, case = grading_setup
+    monkeypatch.setattr(jira_testing_runner, 'OVERLOAD_RETRY_DELAYS', delays)
+    peer.plans = [plan] * attempts
+    cid = start(env, case)['runs'][0]['conversation_id']
+    failed = wait_eval(env, cid, 'failed')
+    assert message in failed['error']
+    assert peer.turns == attempts and env.fake.turns == 1
+    assert failed['result'] == {}
 
 
 def test_stop_only_cancels_queued_and_missing_criteria_needs_manual_evaluation(grading_setup):

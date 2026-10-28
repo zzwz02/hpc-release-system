@@ -17,6 +17,8 @@ from app.timeutil import beijing_now, beijing_timestamp
 
 log = logging.getLogger(__name__)
 SCAN_SECONDS = 2
+# Only explicit upstream capacity failures qualify; keep the overall timeout.
+OVERLOAD_RETRY_DELAYS = (60, 120, 240)
 
 
 def elapsed(start):
@@ -122,7 +124,9 @@ class TestingRunner:
                         reason = '执行未形成分析结论：' + (turn['error'] or '无可评价结果')
                     repo.update(conn, row['id'], status='skipped' if reason else 'queued', error=reason,
                                 finished_at=beijing_timestamp() if reason else '')
-            row = repo.one(conn, "SELECT * FROM jira_test_evaluations WHERE status IN ('running','queued') ORDER BY status DESC,rowid LIMIT 1")
+            row = repo.one(conn, """SELECT * FROM jira_test_evaluations
+                WHERE status='running' OR (status='queued' AND retry_at<=?)
+                ORDER BY status DESC,rowid LIMIT 1""", (beijing_timestamp(),))
         if row:
             await self.evaluate(row)
 
@@ -153,6 +157,8 @@ class TestingRunner:
                 write(eid, started_at=row['started_at'], status='running', config_json=dumps_json(config))
             if elapsed(row['started_at']) >= config['timeout']:
                 raise TimeoutError('初评超时；分析结果保留，可单独重试初评')
+            if row['retry_at']:
+                write(eid, status='running', retry_at='')
             material = json.loads(row['material_json'])
             directory = evidence.directory(eid)
             if not material:
@@ -209,7 +215,24 @@ class TestingRunner:
                         polled = time.monotonic()
                 uncertain = False
                 if remote['status'] != 'completed':
-                    raise ValueError('初评会话未正常完成：' + str(remote.get('error') or remote['status']))
+                    error = remote.get('error')
+                    if remote['status'] == 'failed' and isinstance(error, dict) and error.get('codexErrorInfo') == 'serverOverloaded':
+                        attempt = row['retry_count']
+                        if attempt >= len(OVERLOAD_RETRY_DELAYS):
+                            raise ValueError(f'初评模型持续繁忙，自动重试 {attempt} 次仍未成功；可稍后重新初评')
+                        delay = OVERLOAD_RETRY_DELAYS[attempt]
+                        if elapsed(row['started_at']) + delay >= config['timeout']:
+                            raise TimeoutError('初评超时')
+                        retry_at = (beijing_now() + datetime.timedelta(seconds=delay)).isoformat(sep=' ')
+                        # The old turn has definitively failed. A fresh read-only
+                        # thread avoids confusing it with an uncertain retry start.
+                        log.info('初评容量过载：%s thread=%s turn=%s，%s 秒后重试',
+                                 eid, row['thread_id'], row['turn_id'], delay)
+                        write(eid, status='queued', phase='', thread_id='', turn_id='',
+                              retry_count=attempt + 1, retry_at=retry_at,
+                              error=f'初评模型暂时繁忙，已安排 {delay} 秒后自动重试（第 {attempt + 1}/{len(OVERLOAD_RETRY_DELAYS)} 次）')
+                        return
+                    raise ValueError('初评会话未正常完成：' + str(error or remote['status']))
                 messages = [item.get('text', '') for item in remote.get('items', []) if item.get('type') == 'agentMessage']
                 if material.get('material_access'):
                     material = await asyncio.to_thread(evidence.read_evidence, material, directory)
