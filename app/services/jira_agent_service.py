@@ -86,11 +86,30 @@ def assignee_name(issue: dict) -> str:
     return (issue.get("assignee") or {}).get("name", "")
 
 
+RISK_LOCK_MESSAGE = "该 JIRA 已触发 cybersecurity risk warning，owner 操作已锁定，仅 RM 可以处理"
+
+
+def risk_locked(issue_key: str, conn=None) -> bool:
+    if conn is not None:
+        return repo.issue_locked(conn, issue_key)
+    conn = open_db()
+    try:
+        return repo.issue_locked(conn, issue_key)
+    finally:
+        conn.close()
+
+
+def check_risk_lock(user: dict, issue_key: str, conn=None) -> None:
+    if not _is_rm(user) and risk_locked(issue_key, conn):
+        raise AuthzError(RISK_LOCK_MESSAGE)
+
+
 def can_act(user: dict, issue: dict) -> bool:
-    return _is_rm(user) or _same_user(jira.agent_username(user), assignee_name(issue))
+    return _is_rm(user) or (not risk_locked(issue["key"]) and _same_user(jira.agent_username(user), assignee_name(issue)))
 
 
 def check_actor(user: dict, issue: dict) -> None:
+    check_risk_lock(user, issue["key"])
     if not can_act(user, issue):
         raise AuthzError("只有当前 JIRA assignee 或 RM 可以把工单交给 agent 或与 agent 对话")
 
@@ -226,7 +245,8 @@ def _state(conversation: dict, latest: dict | None) -> str:
 def conversation_view(conn: sqlite3.Connection, user: dict, conversation: dict) -> dict:
     latest = repo.latest_turn(conn, conversation["id"])
     active = runner.active_for_conversation(conversation["id"])
-    can_write = conversation["status"] == "open" and (
+    locked = conversation["source_kind"] == "jira" and risk_locked(conversation["issue_key"], conn)
+    can_write = (not locked or _is_rm(user)) and conversation["status"] == "open" and (
         _is_rm(user) or _same_user(jira.agent_username(user), conversation["owner"])
     )
     return {
@@ -237,6 +257,7 @@ def conversation_view(conn: sqlite3.Connection, user: dict, conversation: dict) 
         "state": _state(conversation, latest),
         "phase": active.phase if active else "",
         "latest_turn": _turn_view(conn, latest),
+        "risk_locked": locked,
         "read_only": not can_write or conversation["source_kind"] == "test",
         "can_write": can_write and conversation["source_kind"] != "test",
         "browse_url": (jira.browse_url() + conversation["issue_key"] if jira.browse_url() else "") if conversation["source_kind"] == "jira" else "",
@@ -413,6 +434,7 @@ async def preview_issue(user: dict, issue_key: str) -> dict:
             "attachment_count": len(issue["attachments"]),
             "comment_count": len(issue["comments"]),
         },
+        "risk_locked": risk_locked(issue["key"]),
         "can_handover": can_act(user, issue) and bool(assignee),
         "open_conversation": {
             "id": open_conversation["id"],
@@ -447,6 +469,7 @@ def _search_item(conn: sqlite3.Connection, user: dict, issue: dict, conversation
     visible = conversation and can_view(user, conversation, reporter)
     return {
         **{field: issue.get(field) for field in _SEARCH_ISSUE_FIELDS},
+        "risk_locked": risk_locked(issue["key"]),
         "can_handover": can_act(user, issue) and bool(assignee),
         "open_conversation": {
             "id": conversation["id"],
@@ -708,6 +731,7 @@ async def handover(user: dict, body: dict) -> dict:
                 prior = preflight.previous(conn, user, body)
                 if prior:
                     return {"created": False, "conversation": conversation_view(conn, user, repo.get_conversation(conn, prior["consumed_by"]))}
+                check_risk_lock(user, issue["key"], conn)
                 preflight.consume(conn, user, body, receipt, conversation_id)
                 if existing:
                     old_running_turn = _close_conversation_rows(conn, existing, close_reason)
@@ -766,6 +790,7 @@ async def send_message(user: dict, conversation_id: str, body: dict) -> dict:
             raise ApiError(409, "该对话已结束（只读），请重新把工单交给 agent 新建对话")
         _check_not_recovering(conversation_id)
         issue = await fetch_issue(conversation["issue_key"])
+        check_risk_lock(user, issue["key"], conn)
         assignee = assignee_name(issue)
         if not _same_user(assignee, conversation["owner"]):
             await close_conversation(conn, conversation, "superseded")
@@ -796,6 +821,7 @@ async def send_message(user: dict, conversation_id: str, body: dict) -> dict:
             raise ApiError(409, "agent 正在启动或收尾本轮，请几秒后再发送")
 
         with transaction(conn):
+            check_risk_lock(user, conversation["issue_key"], conn)
             turn = repo.active_turn(conn, conversation_id)
             if turn is not None:
                 repo.append_turn_input(conn, turn["id"], text)
@@ -833,6 +859,7 @@ async def _steer(
             with transaction(conn):
                 _store_upload(conn, conversation["id"], active.turn_id, name, data, remote_path=rel)
             remote.append(rel)
+        check_risk_lock(user, conversation["issue_key"], conn)
         steer_text = text or "用户上传了补充文件，请查看。"
         if remote:
             steer_text += "\n新上传文件：\n" + "\n".join(f"- {rel}" for rel in remote)
@@ -855,6 +882,7 @@ async def cancel(user: dict, conversation_id: str) -> dict:
     conn = open_db()
     try:
         conversation = _get_visible(conn, user, conversation_id)
+        check_risk_lock(user, conversation["issue_key"], conn)
         if not (_is_rm(user) or _same_user(jira.agent_username(user), conversation["owner"])):
             raise AuthzError("只有对话 owner 或 RM 可以取消")
         _check_not_recovering(conversation_id)
@@ -931,6 +959,7 @@ async def retry_comment(user: dict, turn_id: str) -> dict:
         if turn is None:
             raise ApiError(404, "轮次不存在")
         conversation = _get_visible(conn, user, turn["conversation_id"])
+        check_risk_lock(user, conversation["issue_key"], conn)
         if not (_is_rm(user) or _same_user(jira.agent_username(user), conversation["owner"])):
             raise AuthzError("只有对话 owner 或 RM 可以重试发布评论")
         _check_not_deleting(conversation["id"])

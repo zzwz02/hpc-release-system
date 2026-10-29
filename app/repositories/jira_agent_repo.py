@@ -363,6 +363,10 @@ def update_turn(conn: sqlite3.Connection, turn_id: str, **fields: Any) -> None:
         raise ValueError(f"unknown turn fields: {sorted(unknown)}")
     if not fields:
         return
+    if fields.get("error"):
+        turn = get_turn(conn, turn_id)
+        if turn:
+            record_risk_warning(conn, turn["conversation_id"], turn_id, fields["error"])
     assignments = ", ".join(f"{name} = ?" for name in fields)
     conn.execute(
         f"UPDATE jira_agent_turns SET {assignments} WHERE id = ?",
@@ -496,6 +500,8 @@ def add_event(
     item_id: str = "",
 ) -> dict:
     """Insert an event, or update the one with the same item_id in place."""
+    if kind in ("error", "warning") or (kind == "status" and payload.get("status") == "warning"):
+        record_risk_warning(conn, conversation_id, turn_id, payload.get("text", ""))
     now = beijing_timestamp()
     rev = conn.execute(
         "SELECT COALESCE(MAX(rev), 0) + 1 FROM jira_agent_events WHERE conversation_id = ?",
@@ -715,3 +721,30 @@ def delete_conversation(conn: sqlite3.Connection, conversation_id: str) -> bool:
         f"DELETE FROM jira_agent_conversations WHERE {_DELETABLE_CONVERSATION}",
         (conversation_id, conversation_id),
     ).rowcount == 1
+
+
+def issue_locked(conn: sqlite3.Connection, issue_key: str) -> bool:
+    return conn.execute("SELECT 1 FROM jira_agent_issue_locks WHERE issue_key = ?", (issue_key,)).fetchone() is not None
+
+
+def record_risk_warning(conn, conversation_id: str, turn_id: str, text: str) -> None:
+    from app.domain.jira_agent import is_cybersecurity_risk_warning
+    if not is_cybersecurity_risk_warning(text):
+        return
+    conn.execute("""INSERT OR IGNORE INTO jira_agent_issue_locks
+        (issue_key, reason, conversation_id, turn_id, created_at)
+        SELECT issue_key, 'cybersecurity_risk', id, ?, ? FROM jira_agent_conversations
+        WHERE id = ? AND source_kind = 'jira'""", (turn_id, beijing_timestamp(), conversation_id))
+
+
+def backfill_issue_locks(conn) -> None:
+    # Preserve warnings from before this feature was deployed, even after later success.
+    for row in conn.execute("""SELECT conversation_id, id, error FROM jira_agent_turns
+                              WHERE lower(error) LIKE '%cyber%'""").fetchall():
+        record_risk_warning(conn, row[0], row[1], row[2])
+    for row in conn.execute("""SELECT conversation_id, turn_id, kind, payload_json FROM jira_agent_events
+                              WHERE kind IN ('error', 'warning', 'status')
+                              AND lower(payload_json) LIKE '%cyber%'""").fetchall():
+        payload = loads_json(row[3], {})
+        if row[2] in ('error', 'warning') or payload.get('status') == 'warning':
+            record_risk_warning(conn, row[0], row[1], payload.get('text', ''))

@@ -64,6 +64,14 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
     """Create JIRA agent tables. Safe to run repeatedly."""
     conn.executescript(
         """
+        CREATE TABLE IF NOT EXISTS jira_agent_issue_locks (
+            issue_key TEXT PRIMARY KEY COLLATE NOCASE,
+            reason TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
         -- One conversation = one Codex thread + one workspace on server B,
         -- owned by the JIRA assignee at hand-over time.
         CREATE TABLE IF NOT EXISTS jira_agent_conversations (
@@ -433,6 +441,8 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
     initialize(conn)
     # A user-given machine needs a fresh key upload on every hand-over.
     conn.execute("DROP TABLE IF EXISTS jira_agent_ssh_keys")
+    from app.repositories.jira_agent_repo import backfill_issue_locks
+    backfill_issue_locks(conn)
     conn.commit()
 
 

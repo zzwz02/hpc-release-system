@@ -89,7 +89,7 @@ JIRA agent 是按组配置的数字员工，第一阶段处理 HPC 组的 Bug �
 | 服务器 B（组的 `codex app-server`） | agent 本体；本组知识包（AGENTS.md、skills）、Codex 登录凭证、访问 C/D/E 的 SSH 凭证。B 上不部署适配服务 |
 | 服务器 C/D/E | 复现、构建、测试环境，由 B 上的执行用户登录。交单时选择：agent 从 RM 维护的系统机器列表中自选，或用户指定多台 `user@host`（逐机上传公钥，统一检查 SSH 和共享数据，异常确认后提交） |
 
-要点：只有当前 JIRA assignee 或 RM 能交单和发消息；agent **只在 JIRA 追加评论**，不改 assignee、状态或代码；每组并发由网站排队控制，网站重启不丢轮次。RM 可在“知识学习”中从 agent 处理过的 Jira 或添加的历史 Jira 批量学习，审核提案后人工更新独立 `jira_agent_skill` 仓库，分别登记入库和部署。知识学习见 [docs/jira-learning.md](docs/jira-learning.md)。完整的找单、对话、排队、学习与恢复规则见 [docs/jira-agent.md](docs/jira-agent.md)。
+要点：只有当前 JIRA assignee 或 RM 能交单和发消息；工单收到 Codex cybersecurity risk warning 后，非 RM 操作锁定，只能由 RM 处理（owner 仍可查看）。锁定跨对话和 assignee 变更保留，删除历史对话不会解锁，部署时会补录历史错误/告警；agent **只在 JIRA 追加评论**，不改 assignee、状态或代码；每组并发由网站排队控制，网站重启不丢轮次。RM 可在“知识学习”中从 agent 处理过的 Jira 或添加的历史 Jira 批量学习，审核提案后人工更新独立 `jira_agent_skill` 仓库，分别登记入库和部署。知识学习见 [docs/jira-learning.md](docs/jira-learning.md)。完整的找单、对话、排队、学习与恢复规则见 [docs/jira-agent.md](docs/jira-agent.md)。
 
 RM 可在新建对话时选择服务商（例如 OpenAI / DeepSeek）、模型和 effort；**同一对话固定服务商，切换服务商必须新建对话**。续办允许调整同一服务商的模型和 effort，排队或运行中不可修改。默认仍使用 B 的默认服务商；默认模型从 app-server 获取，额外服务商从组配置 `MODEL_CATALOGS` 指定的 B 侧模型目录读取，Key 仅保留在 B。模型、effort 和发布评论的选择在对话内持续保留，新建对话恢复默认。
 

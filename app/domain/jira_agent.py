@@ -769,3 +769,8 @@ def render_jira_comment(
         lines.append("操作命令较长，请使用网站本轮记录中的完整命令。")
     lines += footer
     return "\n".join(lines)
+
+
+def is_cybersecurity_risk_warning(text: str) -> bool:
+    """Recognize the provider's cybersecurity-risk warning, including its code form."""
+    return bool(re.search(r"cyber[\s_-]*security[\s_-]+risk", text, re.IGNORECASE))

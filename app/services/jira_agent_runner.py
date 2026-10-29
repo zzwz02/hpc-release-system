@@ -950,6 +950,14 @@ class JiraAgentRunner:
                 continue
             method = message.get("method", "")
             params = message.get("params") or {}
+            if params.get("threadId") and params["threadId"] != active.thread_id:
+                continue
+            if params.get("turnId") and params["turnId"] != active.codex_turn_id:
+                continue
+            if method in ("error", "warning"):
+                warning = (params.get("error") or {}).get("message") or params.get("message") or ""
+                if domain.is_cybersecurity_risk_warning(warning):
+                    _event(conn, cid, tid, "warning", {"text": warning})
             if method in ("item/started", "item/completed"):
                 if params.get("turnId") and params["turnId"] != active.codex_turn_id:
                     continue

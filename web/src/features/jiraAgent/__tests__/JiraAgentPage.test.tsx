@@ -349,6 +349,30 @@ describe("JiraAgentPage", () => {
     mockUser("Owner");
   });
 
+  it.each(["Owner", "RM"])("shows cybersecurity lock with %s permissions", async (role) => {
+    mockUser(role);
+    mockBackend({ rm: role === "RM" });
+    const base = vi.mocked(apiGet).getMockImplementation()!;
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === "/api/jira-agent/issues/MC3-7672") return {
+        ...previewResponse(true), risk_locked: true, can_handover: role === "RM",
+      };
+      if (path === "/api/jira-agent/conversations/jac_1") return {
+        ...detail, conversation: { ...conversation, risk_locked: true, can_write: role === "RM", read_only: role !== "RM" },
+      };
+      return base(path);
+    });
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
+    expect(await screen.findByText(/owner 操作已锁定，仅 RM 可以处理/)).toBeVisible();
+    if (role === "RM") {
+      expect(await screen.findByLabelText("补充信息")).toBeVisible();
+      expect(screen.getByRole("button", { name: "新建对话" })).toBeEnabled();
+    } else {
+      expect(screen.queryByLabelText("补充信息")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "新建对话" })).not.toBeInTheDocument();
+    }
+  });
+
   it.each(["scope_narrowed", "not_our_group"])("keeps reproduction visible for %s handoffs", async (conclusion) => {
     mockBackend();
     const base = vi.mocked(apiGet).getMockImplementation()!;

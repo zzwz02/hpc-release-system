@@ -348,6 +348,17 @@ class FakeCodex:
             state.update(status="failed", error={"message": "The model is at capacity"})
             await self._send(thread_id, {"method": "turn/completed", "params": {"threadId": thread_id, "turn": dict(state)}})
 
+        if plan in ("cyber_warning", "cyber_error", "cyber_failed"):
+            message = "Your request was flagged for potential cybersecurity risk."
+            if plan == "cyber_failed":
+                state.update(status="failed", error={"message": message})
+                await self._send(thread_id, {"method": "turn/completed", "params": {"threadId": thread_id, "turn": dict(state)}})
+                return
+            if plan == "cyber_warning":
+                await notify("warning", {"message": message})
+            else:
+                await notify("error", {"willRetry": True, "error": {"message": message}})
+
         if plan == "capacity":
             await capacity_failure()
             return
@@ -2200,3 +2211,61 @@ def test_workspace_deletion_rejects_non_owned_paths(workspace):
     group = domain.AgentGroup("HPC", "HPC", "ws://b:1", "t", "/b/workspaces", (), "", 600, 1)
     with pytest.raises(ValueError):
         domain.workspace_for_deletion(group, {"id": "jac_test", "issue_key": "MC3-7672", "workspace": workspace})
+
+
+@pytest.mark.parametrize("plan", ["cyber_warning", "cyber_error", "cyber_failed"])
+def test_cybersecurity_warning_locks_issue_for_owner_but_not_rm(env, plan):
+    env.fake.plans = [plan]
+    cid = _handover(env)["conversation"]["id"]
+    detail = _wait(env, cid, _done)
+    assert detail["conversation"]["risk_locked"] is True
+    assert detail["conversation"]["can_write"] is False
+    preview = env.client.get("/api/jira-agent/issues/MC3-7672").json()
+    assert preview["risk_locked"] is True
+    assert preview["can_handover"] is False
+    for path, body in [
+        ("/api/jira-agent/conversations", {"issue_key": "MC3-7672", "new_conversation": True}),
+        (f"/api/jira-agent/conversations/{cid}/messages", {"text": "continue"}),
+        (f"/api/jira-agent/conversations/{cid}/cancel", {}),
+        (f"/api/jira-agent/turns/{_latest(detail)['id']}/comment/retry", {}),
+        (f"/api/jira-agent/turns/{_latest(detail)['id']}/delivery/retry", {}),
+        ("/api/jira-agent/execution-preflights", {"agent_group": "HPC", "context": {"kind": "jira", "issue_key": "MC3-7672"}, "execution": {"mode": "auto", "targets": []}}),
+    ]:
+        response = env.client.post(path, json=body)
+        assert response.status_code == 403, response.text
+        assert "cybersecurity risk" in response.json()["error"]
+    env.as_user("carol")
+    assert _detail(env, cid)["conversation"]["can_write"] is True
+    response = env.client.post(f"/api/jira-agent/conversations/{cid}/messages", json={"text": "RM review"})
+    assert response.status_code == 200, response.text
+    _wait(env, cid, _done)
+    newer = _handover(env, new_conversation=True)["conversation"]["id"]
+    _wait(env, newer, _done)
+    env.as_user("alice")
+    assert _detail(env, newer)["conversation"]["can_write"] is False
+    env.stop_site()
+    reset_jira_agent_init_state()
+    env.start_site()
+    assert _detail(env, newer)["conversation"]["risk_locked"] is True
+    env.jira.assignee = "bob"
+    env.as_user("bob")
+    response = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-7672"})
+    assert response.status_code == 403, response.text
+    assert "cybersecurity risk" in response.json()["error"]
+
+
+def test_risk_lock_survives_history_deletion_and_backfills_old_errors(env):
+    cid = _handover(env)["conversation"]["id"]
+    detail = _wait(env, cid, _done)
+    conn = connect_jira_agent(settings.jira_agent_database_url)
+    with transaction(conn):
+        conn.execute("UPDATE jira_agent_turns SET error = ? WHERE id = ?", ("Warning: cybersecurity risk", _latest(detail)["id"]))
+    conn.close()
+    env.stop_site()
+    reset_jira_agent_init_state()
+    env.start_site()
+    assert _detail(env, cid)["conversation"]["risk_locked"] is True
+    env.as_user("carol")
+    response = env.client.delete(f"/api/jira-agent/conversations/{cid}")
+    assert response.status_code == 200, response.text
+    assert env.client.get("/api/jira-agent/issues/MC3-7672").json()["risk_locked"] is True

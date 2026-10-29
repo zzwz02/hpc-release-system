@@ -96,6 +96,7 @@ export interface AgentConversation {
   phase: string;
   latest_turn: AgentTurn | null;
   read_only: boolean;
+  risk_locked?: boolean;
   can_write: boolean;
   browse_url: string;
 }
@@ -168,6 +169,7 @@ export interface IssuePreview {
   };
   /** Digital employee group that would handle the issue ("" when none is configured). */
   agent_group: string;
+  risk_locked?: boolean;
   can_handover: boolean;
   /** recovering: a restarted site is re-attaching to its running turn; closing it must wait. */
   open_conversation: { id: string; owner: string; owner_is_assignee: boolean; recovering?: boolean } | null;
@@ -184,6 +186,7 @@ export interface IssueSearchItem {
   assignee: { name: string; display_name: string } | null;
   components: string[];
   updated: string;
+  risk_locked?: boolean;
   can_handover: boolean;
   /** id is empty when the conversation belongs to someone the viewer cannot see. */
   open_conversation: {

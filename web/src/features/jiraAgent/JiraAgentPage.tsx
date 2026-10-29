@@ -707,15 +707,18 @@ function IssueView({
               </span>
             </div>
           )}
-          {!preview.can_handover && (
+          {(preview.risk_locked || conversation?.risk_locked) && (
+            <p className="jira-agent-warning">该 JIRA 已触发 cybersecurity risk warning，owner 操作已锁定，仅 RM 可以处理。</p>
+          )}
+          {!preview.can_handover && !preview.risk_locked && !conversation?.risk_locked && (
             <p className="jira-agent-warning">只有当前 JIRA assignee 或 RM 可以把工单交给 agent 或与 agent 对话。</p>
           )}
-          {conversation?.read_only && (
+          {conversation?.read_only && !conversation.risk_locked && (
             <p className="jira-agent-warning">
               {CLOSE_REASON_LABELS[conversation.close_reason] ?? "本对话已结束"}（只读）。
             </p>
           )}
-          {draft && open && preview.can_handover && (
+          {draft && open && (preview.can_handover && (!conversation?.risk_locked || isRM(user))) && (
             <p className="jira-agent-warning">
               {open.owner_is_assignee
                 ? `交给 agent 后，当前对话（${open.owner}）将结束并变为只读，新对话使用新的 Codex 会话和工作目录。`
@@ -730,7 +733,7 @@ function IssueView({
                   取消本轮
                 </button>
               )}
-              {preview.can_handover && (
+              {(preview.can_handover && (!conversation?.risk_locked || isRM(user))) && (
                 <button
                   type="button"
                   className="btn sm"
