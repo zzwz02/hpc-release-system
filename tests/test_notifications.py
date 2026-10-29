@@ -223,3 +223,32 @@ def test_jenkins_daily_hours_include_both_boundaries(configured, monkeypatch):
         assert checks == ['2026-10-27 10:00:00', '2026-10-27 20:00:00', '2026-10-28 10:00:00']
         assert len(jira_checks) == 7
     asyncio.run(scenario())
+
+
+def test_shared_proxy_is_opt_in_and_hot_reloaded(configured, monkeypatch):
+    real_client = httpx.AsyncClient
+    options = []
+    monkeypatch.setenv('HTTPS_PROXY', 'http://unrelated-proxy.invalid:8888')
+    def client(**kwargs):
+        options.append(dict(kwargs))
+        # Substitute only the network transport; inspect the explicit routing.
+        kwargs.pop('proxy', None)
+        return real_client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={'errcode': 0})), **kwargs)
+    monkeypatch.setattr(dingtalk.httpx, 'AsyncClient', client)
+    original = configured.read_text()
+    for value in (None, 'http://proxy.sha-dc01.metax-tech.com:1080', ''):
+        configured.write_text(original + (f'\n[proxy]\nURL = {value}\n' if value is not None else ''))
+        assert asyncio.run(dingtalk.send_text('test'))
+        assert options[-1]['proxy'] == (value or None)
+        assert options[-1]['trust_env'] is False
+    assert __import__('os').environ['HTTPS_PROXY'] == 'http://unrelated-proxy.invalid:8888'
+
+
+def test_invalid_proxy_is_reported_without_credentials(configured):
+    from app.runtime_config import ConfigError
+    configured.write_text(configured.read_text() +
+        '\n[proxy]\nURL = http://user:private-password@host:bad-port\n')
+    with pytest.raises(ConfigError, match=r'\[proxy\] URL') as error:
+        dingtalk.configuration()
+    assert 'private-password' not in str(error.value)

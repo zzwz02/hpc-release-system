@@ -1,6 +1,6 @@
 """Runtime service configuration — one sectioned INI file, release_system.conf.
 
-Sections: [ldap] [jira] [llm] [cicd_agent] [dingtalk] [site] and one
+Sections: [ldap] [jira] [llm] [cicd_agent] [dingtalk] [proxy] [site] and one
 [jira_agent:<group>] per JIRA agent and [jira_learning:<group>] per learning service and [jira_evaluation:<group>] per evaluator;
 release_system.conf.example documents every
 key.  Accessors re-read the file on every call (it is a few KB), so an edit
@@ -13,6 +13,7 @@ naming it.  Optional keys left empty only switch their feature off.
 from __future__ import annotations
 
 import configparser
+from urllib.parse import urlsplit
 
 from app.config import settings
 
@@ -82,3 +83,19 @@ def required_int(section_name: str, values: dict[str, str], key: str) -> int:
         return int(raw)
     except ValueError as exc:
         raise ConfigError(f"release_system.conf [{section_name}] {key} 必须是整数，当前为 {raw!r}") from exc
+
+
+def proxy_url() -> str | None:
+    """Shared opt-in HTTP proxy; reread on use, never change process environment."""
+    proxy = section("proxy").get("URL", "")
+    if not proxy:
+        return None
+    try:
+        parsed = urlsplit(proxy)
+        valid = parsed.scheme in ("http", "https") and bool(parsed.hostname)
+        parsed.port  # Validate without exposing credentials in error messages.
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ConfigError("release_system.conf [proxy] URL 必须是有效的 HTTP/HTTPS 代理地址")
+    return proxy

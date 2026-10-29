@@ -35,6 +35,7 @@ def configuration() -> dict[str, str] | None:
         return None
     for key in ("ACCESS_TOKEN", "SECRET", "USERID"):
         runtime_config.required("dingtalk", values, key)
+    runtime_config.proxy_url()  # Validate shared proxy for status diagnostics.
     return values
 
 
@@ -53,7 +54,9 @@ async def send_text(message: str) -> bool:
     body = {"msgtype": "text", "text": {"content": message},
             "at": {"atUserIds": users, "isAtAll": False}}
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(
+            timeout=15, proxy=runtime_config.proxy_url(), trust_env=False
+        ) as client:
             response = await client.post("https://oapi.dingtalk.com/robot/send", params=params, json=body)
             response.raise_for_status()
             result = response.json()

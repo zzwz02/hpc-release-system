@@ -153,3 +153,8 @@ REPOSITORY_REF = refs/remotes/origin/main
 # REASONING_EFFORT = high
 # TURN_TIMEOUT_SECONDS = 1800
 # 网站测试并发默认 1，可用 JIRA_TESTING_MAX_CONCURRENT 调整；仍受分析组并发限制。
+
+# 公共 HTTP/HTTPS 代理，服务按需接入；目前钉钉使用，其他服务不自动切换。
+# URL 留空或省略时，使用此配置的服务直连，不读取环境代理变量。
+[proxy]
+URL = http://proxy.sha-dc01.metax-tech.com:1080
