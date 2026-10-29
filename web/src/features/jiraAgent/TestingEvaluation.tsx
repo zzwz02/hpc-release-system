@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "../../lib/toast";
 import { currentResult, CURRENT_LABELS, getTestEvidence, getTestEvaluations, retryTestEvaluation, type TestRun } from "./jiraTestingApi";
@@ -7,11 +7,17 @@ export function TestingEvaluation({ run, refresh }: { run: TestRun; refresh: () 
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState(false);
   const [source, setSource] = useState("");
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    if (source && !dialog.current?.open) dialog.current?.showModal();
+    if (!source && dialog.current?.open) dialog.current.close();
+  }, [source]);
   const evaluation = run.evaluation;
   const materials = useQuery({ queryKey: ["jira-testing", "evidence", run.conversation_id, evaluation?.id],
     queryFn: () => getTestEvidence(run.conversation_id, evaluation!.id), enabled: !!source && !!evaluation });
   const records = useQuery({ queryKey: ["jira-testing", "evaluations", run.conversation_id, evaluation?.id],
     queryFn: () => getTestEvaluations(run.conversation_id), enabled: history });
+  const material = materials.data?.sources.find((item) => item.id === source);
   if (!evaluation) return null;
   const active = ["queued", "running"].includes(run.status) || run.delivery_status === "collecting";
   const canRetry = !active && ["failed", "completed"].includes(evaluation.status);
@@ -35,12 +41,17 @@ export function TestingEvaluation({ run, refresh }: { run: TestRun; refresh: () 
       <tbody>{evaluation.snapshot.criteria.map((criterion) => {
         const item = evaluation.result.criteria?.find((item) => item.id === criterion.id);
         return <tr key={criterion.id}><td>{criterion.text}</td><td>{item ? { met: "满足", unmet: "未满足", unknown: "证据不足" }[item.status] : "待核对"}</td>
-          <td>{item?.reason}{item?.evidence_ids.map((id, index) => <button className="test-evidence-link" key={id} onClick={() => setSource(source === id ? "" : id)}>查看依据 {index + 1}</button>)}</td></tr>;
+          <td>{item?.reason}{item?.evidence_ids.map((id, index) => <button className="test-evidence-link" key={id} aria-haspopup="dialog" onClick={() => setSource(id)}>查看依据 {index + 1}</button>)}</td></tr>;
       })}</tbody></table></div>}
-    {source && <div className="test-evidence"><div className="test-run-heading"><strong>引用材料</strong><button className="btn sm" onClick={() => setSource("")}>收起</button></div>
-      {materials.isLoading && <p>读取中…</p>}{materials.isError && <p role="alert">材料读取失败</p>}
-      {materials.data?.sources.filter((item) => item.id === source).map((item) => <div key={item.id}><p>{item.name || item.id}{item.truncated ? "（部分内容）" : ""}</p><pre>{item.text}</pre></div>)}
-    </div>}
+    <dialog ref={dialog} className="test-dialog test-evidence-dialog" aria-label="引用材料" onCancel={(event) => { event.preventDefault(); setSource(""); }}>
+      <div className="test-dialog-heading"><h3>引用材料</h3><button className="btn sm" onClick={() => setSource("")}>关闭</button></div>
+      <div className="test-dialog-body">
+        {materials.isLoading && <p role="status">读取中…</p>}
+        {materials.isError && <p role="alert">材料读取失败，请关闭后重试。</p>}
+        {materials.isSuccess && !material && <p role="alert">本次初评未保存这条引用材料。</p>}
+        {material && <><p>{material.name || material.id}{material.truncated ? "（部分内容）" : ""}</p><pre>{material.text || "这条引用材料没有正文。"}</pre></>}
+      </div>
+    </dialog>
     <div className="test-evaluation-actions">{canRetry && <button className="btn sm" disabled={busy} onClick={() => void retry()}>{busy ? "提交中…" : "重新初评"}</button>}</div>
     <details className="test-run-config" onToggle={(event) => setHistory(event.currentTarget.open)}><summary>历史初评与参考结果</summary>
       {evaluation.snapshot.reference && <details><summary>本次参考结果</summary><pre>{evaluation.snapshot.reference}</pre></details>}

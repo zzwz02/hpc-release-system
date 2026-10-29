@@ -175,6 +175,10 @@ class FakeCodex:
             if method == "fs/readFile" and self.read_delay:
                 await asyncio.sleep(self.read_delay)
             result, error = self._result(ws, method, params)
+            if method == 'turn/start' and getattr(self, 'lose_start_reply', False):
+                self.lose_start_reply = False
+                await ws.close()
+                return
             reply = {"id": message["id"], **({"error": error} if error else {"result": result})}
             try:
                 await ws.send(json.dumps(reply))
@@ -259,6 +263,19 @@ class FakeCodex:
                 import subprocess
                 import sys
                 command = params["command"]
+                if '/tests/jtr_' in command[3]:
+                    import tempfile
+                    with tempfile.TemporaryDirectory() as folder:
+                        root = Path(folder)
+                        (root / '.git').mkdir()
+                        for path, content in self.files.items():
+                            if path.startswith(command[3] + '/'):
+                                target = root / path.removeprefix(command[3] + '/')
+                                target.parent.mkdir(parents=True, exist_ok=True)
+                                target.write_bytes(content)
+                        result = subprocess.run([sys.executable, '-c', command[2], folder, command[4]],
+                                                capture_output=True, text=True, timeout=30)
+                    return {'exitCode': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr}, None
                 result = subprocess.run([sys.executable, "-c", command[2], str(self.pack_root), command[4]],
                                         capture_output=True, text=True, timeout=30)
                 return {"exitCode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}, None
@@ -364,6 +381,11 @@ class FakeCodex:
         if plan == "capacity_after_tool":
             await capacity_failure()
             return
+        if plan in ('stream_error', 'auth_error'):
+            state.update(status='failed', error={'message': 'stream disconnected before completion'
+                         if plan == 'stream_error' else 'Incorrect API key provided'})
+            await self._send(thread_id, {'method': 'turn/completed', 'params': {'threadId': thread_id, 'turn': dict(state)}})
+            return
         if plan == "disconnect":
             await self._subscriber[thread_id].close()
             plan = "gate"
@@ -382,7 +404,7 @@ class FakeCodex:
                 "body": "16777217 个元素验证 PASS，退出码 0。\n\n请 owner 审核候选修改和验证记录。",
                 "evidence_indices": [0], "commands": [], "link_text": "候选修改与验证记录",
             }}
-            await notify("item/completed", {"item": {"type": "agentMessage", "id": f"final_{turn_id}", "text": json.dumps(result, ensure_ascii=False), "phase": "final_answer"}, "completedAtMs": 4})
+            await notify("item/completed", {"item": {"type": "agentMessage", "id": f"final_{turn_id}", "text": 'invalid JSON' if plan == 'invalid_result' else json.dumps(result, ensure_ascii=False), "phase": "final_answer"}, "completedAtMs": 4})
             status = "completed"
         state["status"] = status
         await self._send(thread_id, {"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": status, "items": [], "error": None}}})

@@ -10,8 +10,7 @@ export function TestingRecords({ records, caseId, suite, selected, selectSuite, 
 }) {
   const entries = (caseId ? records : suite ? [suite] : []).flatMap((record) => record.entries.filter((item) => !caseId || item.case_id === caseId).map((item) => ({ ...item, record })));
   if (caseId || suite) return <section id="test-batch-detail" className="test-batch-detail" aria-label={caseId ? "用例测试记录" : "批次详情"}>
-    {!caseId && suite && <><button className="test-text-button test-records-back" onClick={() => selectSuite("")}>← 返回测试记录</button>
-    <div className="test-suite-summary">
+    {!caseId && suite && <div className="test-suite-summary">
       <div className="test-run-heading"><div><h3>{suite.created_at}</h3>
         <p className="test-suite-meta">{suite.total} 个用例 · {SUITE_LABELS[suite.phase] ?? suite.phase}{suite.reviewed > 0 && ` · 人工评价 ${suite.reviewed} 个`}</p>
       </div><div className="actions">
@@ -24,7 +23,7 @@ export function TestingRecords({ records, caseId, suite, selected, selectSuite, 
       {suite.phase === "preparing" && <p role="status">正在准备本批测试。</p>}
       {suite.status === "stopped" && <p className="hint">后续测试已停止，已启动的任务继续执行。</p>}
       {suite.error && <p role="alert" className="jira-agent-warning">{suite.error}</p>}
-    </div></>}
+    </div>}
     {!entries.length ? <p className="empty">尚无测试记录。勾选左侧用例后开始测试。</p> : <div className="test-table-wrap"><table className="test-runs-table test-case-runs" aria-label="测试记录">
       <thead><tr><th>{caseId ? "测试时间" : "用例"}</th><th>执行</th><th>评价</th><th>详情</th></tr></thead>
       <tbody>{entries.flatMap((item) => item.batch ? item.batch.runs.map((run) => {

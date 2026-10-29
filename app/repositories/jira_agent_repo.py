@@ -31,6 +31,7 @@ _TURN_UPDATABLE = {
     "finished_at",
     "recovery_attempts",
     "retry_pending",
+    "failure_kind", "resume_from",
 }
 
 

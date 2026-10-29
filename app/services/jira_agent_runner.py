@@ -121,6 +121,7 @@ class ActiveTurn:
     machine_targets: tuple[str, ...] = ()
     machine_used: str = ""
     machines_used: tuple[str, ...] = ()
+    failure_kind: str = ""
 
 
 # The website runs one worker. This prevents manual retry and recovery from
@@ -560,13 +561,16 @@ class JiraAgentRunner:
                 else tuple(m["ssh_target"] for m in repo.list_machines(conn, group.name))
             )
             saved_snapshot = json.loads(repo.get_turn(conn, tid).get("execution_snapshot_json") or "{}")
-            if recover and saved_snapshot:
+            if (recover or repo.get_turn(conn, tid)['resume_from']) and saved_snapshot:
                 active.machine_targets = tuple(saved_snapshot.get("available_targets", []))
             active.machine_used = ""
             active.machines_used = tuple(json.loads(repo.get_turn(conn, tid).get("machines_used_json", "[]")))
             deadline = _deadline(repo.get_turn(conn, tid), group)
             if recover:
                 text, run = "网站已重启，正在重新连接 Codex 查看本轮", self._reattach
+            elif conversation['source_kind'] == 'test' and repo.get_turn(conn, tid)['resume_from']:
+                active.phase = 'recovering'
+                text, run = "正在恢复测试，核对原任务及工作目录", self._resume_test
             else:
                 text, run = f"开始执行（{group.display_name}）", self._start
             _event(conn, cid, tid, "status", {"status": "running", "text": text})
@@ -581,7 +585,11 @@ class JiraAgentRunner:
             elif status == "requeue":
                 final_status, error = "queued", turn_error
             elif status == "completed":
-                result = domain.parse_result(final_text)
+                try:
+                    result = domain.parse_result(final_text)
+                except ValueError:
+                    active.failure_kind = 'response'
+                    raise
                 await self._finish_completed(conn, active, group, conversation, turn, result)
                 final_status = "completed"
             elif status == "interrupted":
@@ -614,6 +622,8 @@ class JiraAgentRunner:
         except Exception as exc:
             logger.exception("JIRA agent turn %s failed", tid)
             error = _error_text(exc)
+            if isinstance(exc, CodexAppServerError) and active.phase in ('starting', 'running', 'recovering'):
+                active.failure_kind = 'model'
             if repo.get_turn(conn, tid)["status"] == "completed":
                 # A local write after a remote POST may fail. Preserve the
                 # completed analysis and durable publication intent for recovery.
@@ -621,7 +631,7 @@ class JiraAgentRunner:
             elif active.stop_reason in _STOP_TEXT:
                 final_status = "cancelled"
                 error = f"{_STOP_TEXT[active.stop_reason]}（{error}）"
-            elif active.phase == "recovering":
+            elif active.phase == "recovering" and not repo.get_turn(conn, tid)['resume_from']:
                 final_status = "interrupted"
                 error = f"网站重启后未能重新接管本轮（{error}）；发送消息可继续处理"
         finally:
@@ -639,7 +649,8 @@ class JiraAgentRunner:
                 elif final_status != "completed":
                     with transaction(conn):
                         repo.update_turn(
-                            conn, tid, status=final_status, error=error, finished_at=beijing_timestamp()
+                            conn, tid, status=final_status, error=error, finished_at=beijing_timestamp(),
+                            failure_kind=active.failure_kind if not active.stop_reason else ''
                         )
                         repo.add_event(
                             conn, conversation_id=cid, turn_id=tid,
@@ -760,6 +771,70 @@ class JiraAgentRunner:
             await self._interrupt(active)
         return await self._consume(conn, active, group, deadline)
 
+    async def _resume_test(self, conn, active: ActiveTurn, group: domain.AgentGroup,
+                           conversation: dict, deadline: float) -> tuple[str, str, str]:
+        """Continue an explicitly requested test attempt without replaying its inputs."""
+        active.phase = 'recovering'
+        saved = repo.get_turn(conn, active.turn_id)
+        previous = repo.get_turn(conn, saved['resume_from'])
+        if not previous or not conversation['thread_id']:
+            raise ValueError('原对话不可恢复，请重新运行测试')
+        if saved['codex_turn_id']:
+            return await self._reattach(conn, active, group, conversation, deadline)
+        active.thread_id = conversation['thread_id']
+        try:
+            thread = await active.client.resume_thread(
+                active.thread_id, model=saved['model'], model_provider=conversation['model_provider'],
+                config=jira_agent_models.thread_config(group, conversation['model_provider']))
+            latest = await active.client.list_turns(active.thread_id)
+        except CodexAppServerError as exc:
+            if any(text in str(exc).casefold() for text in ('not found', 'no such file', 'not materialized')):
+                raise ValueError('原对话不可用，请重新运行测试') from exc
+            raise
+        if thread['effective_model_provider'] != conversation['model_provider']:
+            raise ValueError('原模型服务商已改变，请重新运行测试')
+        target = next(iter(latest), None)
+        if not target:
+            raise ValueError('原对话执行记录不可用，请重新运行测试')
+        same = self._is_this_turn(target, previous)
+        accepted = not same and self._is_this_turn(target, saved)
+        if not same and not accepted:
+            raise ValueError('远端对话已有其他轮次，无法确认恢复位置，请重新运行测试')
+        await jira_testing_execution.check_workspace(conn, active.client, conversation)
+        status = target.get('status')
+        # A lost start reply or a still-running old attempt must be adopted, never replayed.
+        adopt = accepted or status == 'inProgress'
+        if same and status == 'completed' and previous['failure_kind'] != 'response':
+            messages = [item.get('text', '') for item in target.get('items', []) if item.get('type') == 'agentMessage']
+            try:
+                domain.parse_result(messages[-1] if messages else '')
+                adopt = True
+            except ValueError:
+                pass
+        if adopt:
+            with transaction(conn):
+                repo.update_turn(conn, active.turn_id, codex_turn_id=target['id'])
+            return await self._reattach(conn, active, group, conversation, deadline)
+        if status not in ('failed', 'interrupted', 'completed') or (thread.get('status') or {}).get('type') != 'idle':
+            raise ValueError('远端执行状态尚未确定，未启动新的执行')
+        if active.stop_reason or time.monotonic() >= deadline:
+            active.stop_reason = active.stop_reason or 'timeout'
+            return 'interrupted', '', ''
+        config = jira_testing_repo.context(conn, conversation['id'])['config']
+        active.phase = 'starting'
+        turn = await active.client.start_turn(
+            active.thread_id,
+            '本次测试因模型调用或响应处理错误未完成。沿用原任务、输入和机器范围；'
+            '先核对已有实验和产物，接着完成原任务，不重复启动仍在运行的实验。\n' + domain.COMMENT_INSTRUCTIONS,
+            model=saved['model'], effort=saved['effort'], output_schema=config['output_schema'])
+        active.codex_turn_id = turn['id']
+        with transaction(conn):
+            repo.update_turn(conn, active.turn_id, codex_turn_id=turn['id'])
+        active.phase = 'running'
+        if active.stop_reason:
+            await self._interrupt(active)
+        return await self._consume(conn, active, group, deadline)
+
     async def _reattach(
         self, conn, active: ActiveTurn, group: domain.AgentGroup, conversation: dict,
         deadline: float,
@@ -774,6 +849,8 @@ class JiraAgentRunner:
         """
         cid, tid = active.conversation_id, active.turn_id
         turn = repo.get_turn(conn, tid)
+        if conversation['source_kind'] == 'test' and turn['resume_from'] and not turn['codex_turn_id']:
+            return await self._resume_test(conn, active, group, conversation, deadline)
         active.thread_id = conversation["thread_id"]
         provider = conversation["model_provider"]
         thread = await active.client.resume_thread(  # type: ignore[union-attr]
@@ -817,6 +894,8 @@ class JiraAgentRunner:
             _event(conn, cid, tid, "status", {"status": "running", "text": text})
             if status not in ("completed", "failed", "interrupted"):
                 status = "interrupted"  # left inProgress by an app-server that restarted
+            if status in ('failed', 'interrupted'):
+                active.failure_kind = 'model'
             return status, ((target.get("error") or {}).get("message") or ""), final_text
 
         active.phase = "running"
@@ -960,6 +1039,8 @@ class JiraAgentRunner:
                 turn = params.get("turn") or {}
                 if turn.get("id") != active.codex_turn_id:
                     continue
+                if turn.get('status') in ('failed', 'interrupted'):
+                    active.failure_kind = 'model'
                 return turn.get("status") or "failed", ((turn.get("error") or {}).get("message") or ""), final_text
             elif method == "error" and not params.get("willRetry"):
                 _event(conn, cid, tid, "error", {"text": (params.get("error") or {}).get("message", "Codex 错误")})

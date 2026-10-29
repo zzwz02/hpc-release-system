@@ -17,7 +17,7 @@ async function save(page: Page, title: string, criteria = "完成分析并交付
   return response.json();
 }
 async function launch(page: Page) {
-  await page.getByRole("button", { name: /^开始测试（/ }).click();
+  await page.getByRole("button", { name: "开始测试", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "执行环境检查", exact: true })).toHaveCount(0);
   await expect(page.getByRole("region", { name: "批次详情", exact: true })).toBeVisible();
   await expect(page.getByRole("complementary", { name: "测试用例" })).toBeVisible();
@@ -35,11 +35,14 @@ test("built-ins carry standards, have no historical runs and can be exported", a
   await login(page);
   const options = await (await page.request.get(`${api}/cases`)).json();
   const builtins = options.cases.filter((item: { builtin_key?: string }) => item.builtin_key);
-  expect(builtins).toHaveLength(3);
+  expect(builtins).toHaveLength(11);
   await page.goto(`${base}/jira-agent?view=testing`);
-  await expect(page.getByRole("button", { name: "开始测试（0）" })).toBeDisabled();
-  await page.getByRole("checkbox", { name: "选择当前列表全部用例", exact: true }).check();
-  await expect(page.getByRole("button", { name: "开始测试（3）" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "开始测试", exact: true })).toBeDisabled();
+  await expect(page.getByLabel("筛选用例")).toHaveCount(0);
+  await expect(page.getByText(/结果不回写 Jira/)).toHaveCount(0);
+  await page.getByRole("checkbox", { name: "选择全部用例", exact: true }).check();
+  await expect(page.getByRole("button", { name: "开始测试", exact: true })).toBeEnabled();
+  await expect(page.locator(".test-selected-count")).toContainText(`已选 ${options.cases.length} 个`);
   await page.getByRole("button", { name: "清空选择", exact: true }).click();
   for (const item of builtins) {
     const value = await (await page.request.get(`${api}/cases/${item.id}`)).json();
@@ -67,10 +70,16 @@ test("batch selection, AI verdict, optional review and foldable process share on
   const first = await save(page, "批量甲");
   await save(page, "批量乙");
   await page.goto(`${base}/jira-agent?view=testing`);
+  await page.locator(".test-case-button").filter({ hasText: "批量甲" }).click();
+  await expect(page.getByLabel("选择 批量甲", { exact: true })).not.toBeChecked();
+  await expect(page.getByRole("button", { name: "开始测试", exact: true })).toBeDisabled();
   await page.getByLabel("选择 批量甲", { exact: true }).check();
   await page.getByLabel("选择 批量乙", { exact: true }).check();
-  await page.getByLabel("筛选用例").fill("批量甲");
-  await expect(page.getByText(/有 1 个被筛选隐藏/)).toBeVisible();
+  await expect(page.locator(".test-sidebar-case.selected")).toContainText("批量甲");
+  await page.getByRole("button", { name: "测试记录", exact: true }).click();
+  await expect(page.getByLabel("选择 批量甲", { exact: true })).toBeChecked();
+  await expect(page.getByLabel("选择 批量乙", { exact: true })).toBeChecked();
+  await expect(page.locator(".test-selected-count")).toContainText("已选 2 个");
   const posting = page.waitForRequest((request) => request.method() === "POST" && request.url().endsWith("/suites"));
   await launch(page);
   expect((await posting).postDataJSON().case_ids).toHaveLength(2);
@@ -89,6 +98,18 @@ test("batch selection, AI verdict, optional review and foldable process share on
   await expect(detail(page).locator('.test-evaluation')).not.toHaveAttribute('open');
   await detail(page).locator('.test-evaluation > summary').click();
   await expect(detail(page).getByRole('cell', { name: '完成分析并交付验证记录', exact: true })).toBeVisible();
+  const evidence = page.getByRole('dialog', { name: '引用材料', exact: true });
+  const citation = detail(page).getByRole('button', { name: '查看依据 1', exact: true });
+  await citation.click();
+  await expect(evidence).toBeInViewport();
+  await expect(evidence.locator('pre')).toContainText('blocks = (n + 255) / 256;');
+  await page.keyboard.press('Escape');
+  await expect(evidence).not.toBeVisible();
+  await expect(citation).toBeFocused();
+  await citation.click();
+  await expect(evidence).toBeVisible();
+  await evidence.getByRole('button', { name: '关闭', exact: true }).click();
+  await expect(evidence).not.toBeVisible();
   await detail(page).locator('.test-evaluation > summary').click();
   const order = await detail(page).evaluate((element) => [".test-review", ".test-evaluation", "[data-testid=jira-agent-result]", ".test-process"].map((selector) => element.querySelector(selector)!.getBoundingClientRect().top));
   expect(order).toEqual([...order].sort((a,b) => a-b));
@@ -119,7 +140,7 @@ test("batch selection, AI verdict, optional review and foldable process share on
   await expect(page.getByRole('region', { name: '用例详情' }).getByRole('heading', { name: '批量甲', exact: true })).toBeVisible();
   await openRun(page);
   await expect(page.locator(".test-process")).not.toHaveAttribute("open");
-  await page.getByRole('button', { name: '测试汇总', exact: true }).click();
+  await page.getByRole('button', { name: '测试记录', exact: true }).click();
   await expect(page.getByRole('table', { name: '批次记录' })).toBeVisible();
   await expect(detail(page)).toHaveCount(0);
   await expect(page.getByRole('complementary', { name: '测试用例' })).toBeVisible();
@@ -132,7 +153,7 @@ test("batch selection, AI verdict, optional review and foldable process share on
   expect(sidebar!.x + sidebar!.width).toBeLessThan(main!.x);
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
-  await expect(page.getByRole('button', { name: '开始测试（0）' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '开始测试', exact: true })).toBeVisible();
   expect(errors).toEqual([]);
 });
 
@@ -214,7 +235,7 @@ test("failed launch retains options and Owner cannot access tests", async ({ pag
   await dialog(page).getByLabel("effort", { exact: true }).selectOption("max");
   await dialog(page).getByRole('button', { name: '完成', exact: true }).click();
   await page.request.post(`${base}/api/_testing/model-catalog?available=false`);
-  await page.getByRole('button', { name: '开始测试（1）' }).click();
+  await page.getByRole('button', { name: '开始测试', exact: true }).click();
   await expect(page.getByRole("alert")).toBeVisible();
   await page.getByRole('button', { name: '测试设置' }).click();
   await expect(dialog(page).getByLabel("服务商", { exact: true })).toHaveValue("deepseek");
