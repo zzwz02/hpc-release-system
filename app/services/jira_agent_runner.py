@@ -469,8 +469,7 @@ class JiraAgentRunner:
 
     @staticmethod
     def _capacity_failure(error: str) -> bool:
-        error = error.casefold()
-        return "model" in error and any(word in error for word in ("capacity", "overloaded"))
+        return domain.is_model_capacity_error(error)
 
     async def _execute_with_recovery(self, conn, active: ActiveTurn, group: domain.AgentGroup,
                                      conversation: dict, deadline: float, run) -> tuple[str, str, str]:

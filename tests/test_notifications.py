@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import sqlite3
 from urllib.parse import parse_qs
 
 import httpx
@@ -22,6 +23,13 @@ def configured(tmp_path, monkeypatch):
                     '[cicd_agent]\nBASE_URL = http://agent\nTIMEOUT_SECONDS = 5\n')
     monkeypatch.setattr(settings, 'runtime_conf_path', conf)
     monkeypatch.setattr(settings, 'jira_agent_database_url', f'sqlite:///{tmp_path}/jira.db')
+    monkeypatch.setattr(settings, 'db_path', tmp_path / 'main.db')
+    with sqlite3.connect(settings.db_path) as conn:
+        conn.execute('CREATE TABLE users (username TEXT PRIMARY KEY, display_name TEXT)')
+        conn.executemany('INSERT INTO users VALUES (?, ?)', [
+            ('u', 'Xiaoyue Zhao'), ('rm', 'Release Manager'), ('owner', 'Issue Owner'),
+            ('blank', '  '), ('null-name', None),
+        ])
     return conf
 
 
@@ -107,13 +115,13 @@ def test_daily_thresholds_retry_restart_and_rollover(configured, monkeypatch):
 ])
 def test_jira_labels(conclusion, action, label):
     import json
-    turn = {'issue_key': 'PHS-1', 'status': 'completed', 'delivery_status': 'complete',
+    turn = {'issue_key': 'PHS-1', 'created_by': 'm01021', 'error': '', 'status': 'completed', 'delivery_status': 'complete',
             'result_json': json.dumps({'conclusion': conclusion, 'action_required': action})}
-    assert service.jira_message(turn) == 'PHS-1 jira agent ' + label
+    assert service.jira_message(turn, 'Xiaoyue Zhao') == 'PHS-1（交单：Xiaoyue Zhao）jira agent ' + label
     turn['delivery_status'] = 'incomplete'
     assert '交付不完整' in service.jira_message(turn)
     turn['status'] = 'failed'
-    assert service.jira_message(turn) == 'PHS-1 jira agent失败'
+    assert service.jira_message(turn) == 'PHS-1（交单：m01021）jira agent失败：未返回失败原因，请查看对话详情'
 
 
 def test_config_hot_reload_and_diagnostics(configured):
@@ -152,11 +160,11 @@ def test_jira_activation_delivery_and_durable_replay(configured, monkeypatch):
             conn.execute("INSERT INTO jira_agent_conversations (id, issue_key, agent_group, owner, created_by, workspace, created_at, updated_at, source_kind) VALUES ('test', 'TEST-1', 'HPC', 'u', 'u', '/test', '', '', 'test')")
             conn.execute("INSERT INTO jira_agent_turns (id, conversation_id, seq, trigger, created_by, created_at, status, delivery_status, finished_at, result_json) VALUES ('test-turn', 'test', 1, 'handover', 'u', '', 'completed', 'complete', '2026-10-27 12:01:00', '{\"conclusion\":\"analysis_done\",\"action_required\":\"none\"}')")
         await poller.tick()
-        assert sent == ['PHS-1 jira agent失败']
+        assert sent == ['PHS-1（交单：Xiaoyue Zhao）jira agent失败：未返回失败原因，请查看对话详情']
         with conn:
             conn.execute("UPDATE jira_agent_turns SET delivery_status='complete' WHERE id='0'")
         await service.NotificationPoller().tick()
-        assert sent == ['PHS-1 jira agent失败', 'PHS-1 jira agent 已完成分析']
+        assert sent == ['PHS-1（交单：Xiaoyue Zhao）jira agent失败：未返回失败原因，请查看对话详情', 'PHS-1（交单：Xiaoyue Zhao）jira agent 已完成分析']
         await service.NotificationPoller().tick()
         assert len(sent) == 2
         conn.close()
@@ -252,3 +260,50 @@ def test_invalid_proxy_is_reported_without_credentials(configured):
     with pytest.raises(ConfigError, match=r'\[proxy\] URL') as error:
         dingtalk.configuration()
     assert 'private-password' not in str(error.value)
+
+
+@pytest.mark.parametrize("error,reason", [
+    ("Your request was flagged for potential cybersecurity risk", "cybersecurity"),
+    ("CYBERSECURITY_RISK", "cybersecurity"),
+    ("The model is at capacity", "model capacity"),
+    ("Model overloaded", "model capacity"),
+    ("Codex app-server 连接已断开", "codex disconnected"),
+    ("网站重启后未能重新接管本轮（无法连接 Codex app-server：connection refused）", "codex disconnected"),
+    ("Codex disconnected", "codex disconnected"),
+    ("stream disconnected before completion", "codex disconnected"),
+    ("无法连接 Codex app-server：HTTP 401", "认证或权限错误"),
+    ("Codex RPC turn/start 超时", "执行超时"),
+    ("429 Too Many Requests", "请求限流"),
+    ("401 Unauthorized token=private-token", "认证或权限错误"),
+    ("Unexpected failure secret=private-token", "原因未分类，请查看对话详情"),
+    ("", "未返回失败原因，请查看对话详情"),
+])
+@pytest.mark.parametrize("status,label", [("failed", "失败"), ("interrupted", "已中断")])
+def test_jira_failure_reason(error, reason, status, label):
+    turn = {"issue_key": "PHS-1", "created_by": "m01021", "status": status, "error": error}
+    assert service.jira_message(turn, "Xiaoyue Zhao") == f"PHS-1（交单：Xiaoyue Zhao）jira agent{label}：{reason}"
+
+
+def test_jira_notices_use_each_turn_submitter_and_fallback_account(configured, monkeypatch):
+    monkeypatch.setattr(service, "beijing_timestamp", lambda: "2026-10-27 12:00:00")
+    # This test exercises the real two-database lookup and delivery receipts.
+    sent = []
+    async def send(message):
+        sent.append(message)
+        return True
+    monkeypatch.setattr(dingtalk, "send_text", send)
+    configured.write_text(configured.read_text().split('[cicd_agent]')[0])
+    async def scenario():
+        poller = service.NotificationPoller()
+        await poller.tick()
+        conn = connect_jira_agent(settings.jira_agent_database_url)
+        with conn:
+            conn.execute("INSERT INTO jira_agent_conversations (id, issue_key, agent_group, owner, created_by, workspace, created_at, updated_at) VALUES ('c', 'PHS-1', 'HPC', 'owner', 'u', '/w', '', '')")
+            for seq, author in enumerate(['u', 'rm', 'm01021', 'blank', 'null-name']):
+                conn.execute("INSERT INTO jira_agent_turns (id, conversation_id, seq, trigger, created_by, created_at, status, finished_at, error) VALUES (?, 'c', ?, 'followup', ?, '', 'failed', '2026-10-27 12:01:00', 'The model is at capacity')", (str(seq), seq, author))
+        await poller.tick()
+        assert sent == [f"PHS-1（交单：{name}）jira agent失败：model capacity" for name in ['Xiaoyue Zhao', 'Release Manager', 'm01021', 'blank', 'null-name']]
+        await service.NotificationPoller().tick()
+        assert len(sent) == 5
+        conn.close()
+    asyncio.run(scenario())

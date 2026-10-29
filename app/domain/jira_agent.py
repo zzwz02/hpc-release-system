@@ -774,3 +774,31 @@ def render_jira_comment(
 def is_cybersecurity_risk_warning(text: str) -> bool:
     """Recognize the provider's cybersecurity-risk warning, including its code form."""
     return bool(re.search(r"cyber[\s_-]*security[\s_-]+risk", text, re.IGNORECASE))
+
+
+def is_model_capacity_error(error: str) -> bool:
+    error = error.casefold()
+    return "model" in error and any(word in error for word in ("capacity", "overloaded"))
+
+
+def failure_reason_label(error: str) -> str:
+    """Short notification categories; never forward raw errors or credentials."""
+    if is_cybersecurity_risk_warning(error):
+        return "cybersecurity"
+    if is_model_capacity_error(error):
+        return "model capacity"
+    lowered = error.casefold()
+    if any(word in lowered for word in ("超时", "限时", "timeout", "timed out")):
+        return "执行超时"
+    if any(word in lowered for word in ("rate limit", "rate_limit", "too many requests", "429")):
+        return "请求限流"
+    if any(word in lowered for word in ("unauthorized", "authentication", "401", "403")):
+        return "认证或权限错误"
+    if "stream disconnected" in lowered or ("codex" in lowered and any(word in lowered for word in (
+        "disconnected", "connection closed", "connection reset", "connection refused",
+        "连接已断开", "连接中断", "连接已关闭", "无法连接", "读取失败",
+    ))):
+        return "codex disconnected"
+    if "未能重新接管" in error:
+        return "Codex 轮次恢复失败"
+    return "原因未分类，请查看对话详情" if error.strip() else "未返回失败原因，请查看对话详情"

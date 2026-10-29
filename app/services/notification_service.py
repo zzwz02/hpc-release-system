@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta
+from pathlib import Path
 from urllib.parse import urlencode
 
 from app import runtime_config
@@ -11,6 +14,7 @@ from app.config import settings
 from app.db.jira_agent_connection import connect_jira_agent
 from app.domain import jira_agent
 from app.integrations import dingtalk
+from app.repositories import users_repo
 from app.timeutil import beijing_timestamp
 
 logger = logging.getLogger(__name__)
@@ -23,12 +27,12 @@ JENKINS_START_HOUR = 10
 JENKINS_END_HOUR = 20
 
 
-def jira_message(turn) -> str:
-    prefix = f'{turn["issue_key"]} jira agent'
-    if turn["status"] == "failed":
-        return prefix + "失败"
-    if turn["status"] == "interrupted":
-        return prefix + "已中断"
+def jira_message(turn, submitter_name: str = "") -> str:
+    name = " ".join(submitter_name.split()) or turn["created_by"]
+    prefix = f'{turn["issue_key"]}（交单：{name}）jira agent'
+    if turn["status"] in ("failed", "interrupted"):
+        status = "失败" if turn["status"] == "failed" else "已中断"
+        return prefix + status + "：" + jira_agent.failure_reason_label(turn["error"])
     if turn["delivery_status"] == "incomplete":
         return prefix + " 分析已完成，交付不完整"
     result = jira_agent.parse_stored_result(turn["result_json"])
@@ -115,8 +119,16 @@ class NotificationPoller:
             AND NOT EXISTS (SELECT 1 FROM notification_receipts n WHERE n.event_key='jira:' || t.id)
             ORDER BY t.finished_at
         """, (since,)).fetchall()
+        if not turns:
+            return
+        # Read only the names needed for these notices, without initializing the business DB.
+        usernames = list({turn["created_by"] for turn in turns})
+        with closing(sqlite3.connect(Path(settings.db_path).resolve().as_uri() + "?mode=ro", uri=True)) as users:
+            users.row_factory = sqlite3.Row
+            names = users_repo.display_names_for(users, usernames)
         for turn in turns:
-            await self._send_once(conn, "jira:" + turn["id"], jira_message(turn))
+            name = (names.get(turn["created_by"]) or "").strip()
+            await self._send_once(conn, "jira:" + turn["id"], jira_message(turn, name))
 
     async def _jenkins(self, conn):
         if not runtime_config.section("cicd_agent"):
