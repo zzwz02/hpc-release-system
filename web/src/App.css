@@ -2997,3 +2997,12 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .jira-agent-preflight-table th, .jira-agent-preflight-table td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
 .jira-agent-preflight-table small { display: block; overflow-wrap: anywhere; }
 @media (max-width: 640px) { .jira-agent-target-row { grid-template-columns: 1fr; } }
+
+/* Artifact previews. */
+.artifact-preview-dialog { width: min(960px, 96vw); max-height: 90vh; display: flex; flex-direction: column; }
+.artifact-preview-body { overflow: auto; min-height: 0; padding: 16px; }
+.artifact-link { border: none; background: none; color: var(--accent, #2563eb); cursor: pointer; padding: 2px 0; text-align: left; overflow-wrap: anywhere; font: inherit; }
+.artifact-link:hover { text-decoration: underline; }
+.artifact-preview-backdrop { z-index: 1100; }
+.artifact-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.artifact-preview-dialog > .panel-head { justify-content: space-between; }

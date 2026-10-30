@@ -16,6 +16,7 @@ import { confirmDialog } from "../../lib/confirm";
 import { isRM } from "../../lib/roles";
 import { toast } from "../../lib/toast";
 import { ModelChoice, type ModelSelection } from "./ModelChoice";
+import { ArtifactLink } from "./ArtifactPreview";
 import { MachineChoice } from "./MachineChoice";
 import { MachinesDialog } from "./MachinesDialog";
 import { ExecutionPreflightDialog } from "./ExecutionPreflightDialog";
@@ -1349,13 +1350,14 @@ function ResultFiles({ result, files, section }: { result: AgentResult; files: A
   }) : [];
   const artifacts = files.filter((file) => !patches.includes(file));
   return <>
+      {section !== "patches" && files.length > 0 && <a className="btn sm" href={`/api/jira-agent/turns/${encodeURIComponent(files[0].turn_id)}/artifacts.zip`}>打包下载本轮产物（ZIP）</a>}
       {section !== "artifacts" && (showFix || patches.length > 0) && (
         <div className="jira-agent-patches">
           <strong>修复补丁</strong>
           {patches.length > 0 ? patches.map((file) => (
             <div className="jira-agent-patch" key={file.id}>
               <div className="jira-agent-patch-head">
-                <code>{file.remote_path || file.name}</code>
+                <ArtifactLink file={file} />
                 {file.downloadable && (
                   <a href={fileDownloadUrl(file.conversation_id, file.id)}>下载完整补丁</a>
                 )}
@@ -1378,9 +1380,7 @@ function ResultFiles({ result, files, section }: { result: AgentResult; files: A
         <div className="jira-agent-artifacts">
           <strong>产物</strong>
           {artifacts.map((file) => (
-            <a key={file.id} href={fileDownloadUrl(file.conversation_id, file.id)}>
-              {file.remote_path || file.name}
-            </a>
+            <ArtifactLink key={file.id} file={file} />
           ))}
         </div>
       )}

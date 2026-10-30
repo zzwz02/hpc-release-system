@@ -17,6 +17,8 @@ from app.api.jira_execution_models import ExecutionSubmission, PreflightBody
 from app.services import jira_agent_preflight as preflight
 from app.services import jira_agent_runner, jira_agent_ssh_key, jira_agent_service as service
 
+from app.services import jira_agent_files as files
+
 router = APIRouter(prefix="/api/jira-agent")
 
 require_jira_agent_access = require_tab_access(
@@ -69,6 +71,25 @@ class KeySessionBody(BaseModel):
 
 class KeyInputBody(BaseModel):
     data: str
+
+
+@router.get("/turns/{turn_id}/artifacts.zip")
+def download_artifacts(turn_id: str, user: dict = Depends(require_jira_agent_access)):
+    archive, name = files.artifact_zip(user, turn_id)
+
+    def chunks():
+        try:
+            while chunk := archive.read(64 * 1024):
+                yield chunk
+        finally:
+            archive.close()
+    return StreamingResponse(chunks(), media_type="application/zip",
+                             headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@router.get("/conversations/{conversation_id}/files/{file_id}/preview")
+def preview_file(conversation_id: str, file_id: str, user: dict = Depends(require_jira_agent_access)) -> dict:
+    return files.preview(user, conversation_id, file_id)
 
 
 @router.get("/health")
