@@ -523,7 +523,7 @@ class JiraAgentRunner:
         turn = await active.client.start_turn(
             active.thread_id,
             "这是同一业务轮次的容量故障恢复，不是用户新增轮次。继续处理本线程已收到的要求和补充；"
-            "先核对已有任务及产物状态，不重复启动实验。原时间预算和机器授权继续有效。\n" + domain.COMMENT_INSTRUCTIONS,
+            "按当前 skill 的恢复规则核对任务状态和已有产物，不重复启动实验。原目标、验收、时间预算和机器授权继续有效。\n" + domain.COMMENT_INSTRUCTIONS,
             output_schema=config.get("output_schema", domain.RESULT_SCHEMA),
             model=saved["model"] or config.get("model", group.model),
             effort=saved["effort"] or config.get("effort", ""),

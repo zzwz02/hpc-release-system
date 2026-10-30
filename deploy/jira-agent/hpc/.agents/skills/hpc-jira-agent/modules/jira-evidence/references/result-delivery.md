@@ -97,7 +97,7 @@
 | `root_cause_confirmed` | 根因已有直接证据支持 |
 | `fix_prepared` | 已形成候选修复，但验证尚未完成 |
 | `fixed_pending_review` | 候选修复已通过针对性测试和原案例验收，等待人工审核 |
-| `analysis_done` | 已完成本轮要求的分析，不涉及修复 |
+| `analysis_done` | 已完成明确限定的分析、复现、采样或解释任务，不涉及本轮修复；不能仅因用户说“分析”而用于结束仍需修复的本组问题 |
 | `not_our_group` | 仅兼容历史结果；新结果保留实际技术深度，用 `needs_handoff` 表达转交 |
 
 `action_required` 取值：
@@ -125,6 +125,8 @@
 | `not_our_group` | `needs_handoff` |
 
 输出前检查各字段是否与本轮最新证据一致且彼此不冲突；有冲突时以已验证证据为准。再确认 `conclusion` 与 `action_required` 属于允许组合，`assistance` 只在 `needs_info` / `needs_help` 时填写；`needs_handoff` 使用 `ownership.target_group` 和 `next_steps` 表达转交信息。
+
+`root_cause_confirmed`、`fix_prepared` 记录技术进展，不自动表示任务完成。完成条件统一按[主流程](../../../SKILL.md#3-按归属处理)，不能把等待 owner 审核用作跳过必要验证的理由。
 
 需要补充或协助时，`assistance` 三项都要具体：`current_issue` 写当前卡在哪里，`owner` 写能提供材料或完成操作的人/角色，`request` 写可直接执行或提供的内容。使用具体版本、文件、命令、输入和指标，避免“补齐环境”“提供基线”“请协助处理”“进一步定位”“完成闭环”等无法直接行动的表述。例如：“请提供一次正常版本的测试记录，包含版本、输入、命令和总耗时”。
 

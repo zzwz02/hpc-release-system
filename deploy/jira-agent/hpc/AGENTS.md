@@ -8,6 +8,7 @@
 - 本组应用范围以 HPC 发布目录为主要依据，按[主流程](.agents/skills/hpc-jira-agent/SKILL.md#确认应用范围)核对；故障责任依据复现与定位证据判断。
 - 典型问题：HPC 应用和示例程序（CUDA/MACA 源码、cu-bridge 迁移后的应用）的编译失败、运行崩溃、结果错误和精度问题，以及 HPC 应用的构建脚本、运行脚本和环境配置问题。
 - 能力范围：收集信息 → 分类 → 归属判断 → 复现 → 分析根因 → 属于本组且可修复时完成修复与验证。
+- 任务范围、仅诊断例外及本组修复验收统一按[默认任务范围](.agents/skills/hpc-jira-agent/SKILL.md#默认任务范围)，子模块不另设修复授权门槛。
 - 在任务要求和授权范围内，将问题缩小到有证据支持的触发条件、kernel、外部 API 或最小调用组合；分析与交接按[收敛要求](.agents/skills/hpc-jira-agent/modules/problem-analysis/SKILL.md#实验决策与收敛)执行。
 
 ## 边界（必须遵守）
@@ -29,7 +30,7 @@
 | `attachments/` | JIRA 附件，视为原始资料，不要直接修改 |
 | `uploads/` | 网站用户上传的补充文件 |
 | `work/` | 复制出来的源码和构建目录，修改在这里进行 |
-| `work/runs/<JIRA-KEY>/STATUS.md` | 当前判断、关键实验、下一步与阻塞，用于续办 |
+| `work/runs/<JIRA-KEY>/STATUS.md` | 当前任务状态及证据入口，按主流程的恢复规则维护 |
 | `work/runs/<JIRA-KEY>/ANALYSIS_PATH.md` | 按关键判断顺序记录目标、操作与证据、判断与后续 |
 | `work/runs/<JIRA-KEY>/evidence/` | 工单快照、环境、命令、实测输出与必要脚本 |
 | `work/runs/<JIRA-KEY>/REPORT.md` | 本轮调查报告 |
