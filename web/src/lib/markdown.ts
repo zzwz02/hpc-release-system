@@ -17,6 +17,8 @@
 
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import hljs from "highlight.js/lib/common";
+import "highlight.js/styles/github.css";
 
 export interface MarkdownOutlineItem {
   id: string;
@@ -70,7 +72,15 @@ export function renderMarkdown(
   }
 
   // 1. Parse markdown
-  const rawHtml = marked.parse(text, { gfm: true, breaks: false }) as string;
+  const renderer = new marked.Renderer();
+  renderer.code = ({ text: code, lang }) => {
+    const language = (lang ?? "").split(/\s/)[0];
+    const rendered = hljs.getLanguage(language)
+      ? hljs.highlight(code, { language, ignoreIllegals: true }).value
+      : code.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return `<pre><code class="hljs">${rendered}</code></pre>`;
+  };
+  const rawHtml = marked.parse(text, { gfm: true, breaks: false, renderer }) as string;
 
   // 2. Sanitize — allow target/rel/loading attributes so we can set them next
   const sanitized = DOMPurify.sanitize(rawHtml, {
