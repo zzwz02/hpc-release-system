@@ -3001,6 +3001,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 /* Artifact previews. */
 .artifact-preview-dialog { width: min(960px, 96vw); max-height: 90vh; display: flex; flex-direction: column; }
 .artifact-preview-body { overflow: auto; min-height: 0; padding: 16px; }
+.artifact-preview-body .md-view pre { background: #fff; color: #24292e; }
 .artifact-link { border: none; background: none; color: var(--accent, #2563eb); cursor: pointer; padding: 2px 0; text-align: left; overflow-wrap: anywhere; font: inherit; }
 .artifact-link:hover { text-decoration: underline; }
 .artifact-preview-backdrop { z-index: 1100; }
