@@ -931,6 +931,40 @@ def test_followup_resumes_the_same_thread_and_comments_again(env) -> None:
     assert len(env.jira.comments) == 2
 
 
+@pytest.mark.parametrize("post_comment", [True, False])
+def test_followup_keeps_technical_progress_without_repeating_comment(env, post_comment) -> None:
+    conversation = _handover(env, post_comment=post_comment)["conversation"]
+    first = _wait(env, conversation["id"], _done)["turns"][0]
+    previous = {
+        **first["result"],
+        "summary": "SUMMARY_TO_CARRY",
+        "root_cause": "CAUSE_TO_CARRY",
+        "assistance": {"current_issue": "BLOCKER_TO_CARRY", "owner": "tester", "request": "恢复数据"},
+        "next_steps": ["NEXT_STEP_TO_CARRY"],
+        "artifacts": ["artifacts/previous-evidence.txt"],
+        "comment": {"outcome": "COMMENT_RENDERING_NOT_TO_REPEAT"},
+    }
+    with jira_agent_runner.open_db() as conn, transaction(conn):
+        repo.update_turn(conn, first["id"], result_json=json.dumps(previous),
+                         comment_body="PUBLISHED_COMMENT_NOT_TO_REPEAT")
+    response = env.client.post(f'/api/jira-agent/conversations/{conversation["id"]}/messages',
+                               json={"text": "继续并核对原案例", "post_comment": post_comment})
+    assert response.status_code == 200, response.text
+    _wait(env, conversation["id"], lambda d: _latest(d)["seq"] == 2 and _done(d))
+    prompt = env.fake.params("turn/start")[-1]["input"][0]["text"]
+    for marker in ("SUMMARY_TO_CARRY", "CAUSE_TO_CARRY", "BLOCKER_TO_CARRY", "NEXT_STEP_TO_CARRY",
+                   "artifacts/previous-evidence.txt"):
+        assert prompt.count(marker) == 1
+    assert "COMMENT_RENDERING_NOT_TO_REPEAT" not in prompt
+    assert "PUBLISHED_COMMENT_NOT_TO_REPEAT" not in prompt
+    assert "继续并核对原案例" in prompt
+    # Both original representations remain stored for audit/UI use.
+    with jira_agent_runner.open_db() as conn:
+        saved = repo.get_turn(conn, first["id"])
+    assert json.loads(saved["result_json"])["comment"] == previous["comment"]
+    assert saved["comment_body"] == "PUBLISHED_COMMENT_NOT_TO_REPEAT"
+
+
 # ─────────────────────────────────────────────────────────────
 # Conversation isolation
 # ─────────────────────────────────────────────────────────────
@@ -1640,8 +1674,8 @@ def test_auto_machine_prompt_lists_system_machines_and_comment_names_used_machin
     _wait(env, conversation["id"], _done)
     turn_start = env.fake.params("turn/start")[0]
     prompt = turn_start["input"][0]["text"]
-    assert "按工单需要从下列系统机器中选择一台" in prompt
-    assert f"| `{SYSTEM_MACHINE}` | 1×A100 40GB \\| CUDA 12 |" in prompt
+    assert prompt.count("按工单需要从下列系统机器中选择一台") == 1
+    assert prompt.count(f"| `{SYSTEM_MACHINE}` | 1×A100 40GB \\| CUDA 12 |") == 1
     assert "machine" in turn_start["outputSchema"]["required"]
     [(_, body)] = env.jira.comments
     assert "*执行机器*" not in body
@@ -1651,7 +1685,9 @@ def test_auto_machine_prompt_lists_system_machines_and_comment_names_used_machin
     sent = env.client.post(f"/api/jira-agent/conversations/{conversation['id']}/messages", json={"text": "继续"})
     assert sent.status_code == 200, sent.text
     _wait(env, conversation["id"], lambda d: _latest(d)["seq"] == 2 and _done(d))
-    assert SYSTEM_MACHINE in env.fake.params("turn/start")[1]["input"][0]["text"]
+    followup = env.fake.params("turn/start")[1]["input"][0]["text"]
+    assert followup.count("按工单需要从下列系统机器中选择一台") == 1
+    assert followup.count(f"| `{SYSTEM_MACHINE}` | 1×A100 40GB \\| CUDA 12 |") == 1
 
 
 def test_machine_shows_up_while_the_turn_is_still_running(env) -> None:
@@ -1785,7 +1821,7 @@ def test_user_given_machine_needs_a_fresh_key_upload_for_each_handover(env) -> N
     assert conversation["machine"] == target
     _wait(env, conversation["id"], _done)
     prompt = env.fake.params("turn/start")[0]["input"][0]["text"]
-    assert f"用户指定的机器 `ssh {target}`" in prompt
+    assert prompt.count(f"用户指定的机器 `ssh {target}`") == 1
     assert SYSTEM_MACHINE not in prompt
 
     # what was typed is only forwarded: not in any file the website wrote

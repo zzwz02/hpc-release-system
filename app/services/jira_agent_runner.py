@@ -722,13 +722,14 @@ class JiraAgentRunner:
         await self._stop_leftover_turn(conn, active, thread)
         active.phase = "starting"
         turn = repo.get_turn(conn, tid)  # re-read: messages may have been merged
-        machine = conversation["machine"]
         previous = [item for item in repo.list_turns(conn, cid)
                     if item["seq"] < turn["seq"] and item["result_json"]]
         previous = previous[-1] if previous else {}
         previous_result = domain.parse_stored_result(previous["result_json"]) if previous else {}
-        previous_summary = {key: previous_result[key] for key in ("conclusion", "summary", "comment", "action_required")
-                            if key in previous_result}
+        # Carry technical progress and blockers, not another rendering of the same comment.
+        previous_summary = {key: previous_result[key] for key in (
+            "conclusion", "summary", "root_cause", "action_required", "assistance", "next_steps", "artifacts",
+        ) if key in previous_result}
         prompt = domain.build_turn_prompt(
             trigger=turn["trigger"],
             seq=turn["seq"],
@@ -737,14 +738,14 @@ class JiraAgentRunner:
             created_by=turn["created_by"],
             input_text=turn["input_text"],
             uploaded=uploaded,
-            machine_text=jira_execution.instructions(jira_execution.configuration(conversation), snapshot),
             previous_result=dumps_json(previous_summary) if previous_summary else "",
-            previous_comment=previous.get("comment_body", "") if previous.get("comment_status") == "posted" else "",
         )
         if active.stop_reason or time.monotonic() >= deadline:
             active.stop_reason = active.stop_reason or "timeout"
             return "interrupted", "", ""
         heading = "本轮执行机器" if jira_execution.configuration(conversation)["mode"] == "auto" else "出队环境复核"
+        # Also append to frozen test prompts: dequeue checks may have removed targets.
+        # Older snapshots may contain their original scope; do not rewrite saved inputs.
         codex_turn = await active.client.start_turn(  # type: ignore[union-attr]
             active.thread_id, (test["config"]["prompt"] if test else prompt) + f"\n\n{heading}（以此为准）：\n" +
                              jira_execution.instructions(jira_execution.configuration(conversation), snapshot),

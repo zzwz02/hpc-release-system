@@ -190,8 +190,7 @@ def enqueue(conn, user, version, group, pack, settings):
         trigger='handover', seq=1, issue=version['input']['issue'],
         owner=assignee_name(version['input']['issue']) or user['username'], created_by=user['username'],
         input_text=version['input'].get('note', ''),
-        uploaded=[item['path'] for item in version['input']['files'] if item['path'].startswith('uploads/')],
-        machine_text=jira_execution.instructions(config['execution'], config['execution_snapshot']))
+        uploaded=[item['path'] for item in version['input']['files'] if item['path'].startswith('uploads/')])
     bid, cid = new_id('jtb'), new_id('jtr')
     conn.execute('INSERT INTO jira_test_batches VALUES(?,?,?,?,?,?)',
                  (bid, version['id'], dumps_json(config), dumps_json(pack), user['username'], beijing_timestamp()))

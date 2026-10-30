@@ -76,6 +76,11 @@ def test_saved_case_uses_the_same_prompts_and_skill_loading_as_jira(setup, monke
     live, test = env.fake.params('turn/start')
     assert test['input'] == live['input']
     assert len(test['input']) == 1 and test['input'][0]['type'] == 'text'
+    assert test['input'][0]['text'].count('按工单需要从下列系统机器中选择一台') == 1
+    with jira_agent_runner.open_db() as conn:
+        frozen = json.loads(conn.execute('SELECT config_json FROM jira_test_batches WHERE id=?',
+                                         (batch['id'],)).fetchone()[0])
+    assert SYSTEM_MACHINE not in frozen['prompt']
     assert test['outputSchema'] == live['outputSchema']
     assert not calls
     assert len(env.jira.comments) == 1
@@ -177,7 +182,8 @@ def test_shared_service_pack_requires_matching_entry_points(setup, mode):
     assert env.fake.files[workspace + '/.agents/skills/hpc-jira-agent/SKILL.md'] == (root / '.agents/skills/hpc-jira-agent/SKILL.md').read_bytes()
 
 
-def test_auto_choice_never_adds_new_hosts_and_excludes_removed_hosts_at_dequeue(setup):
+@pytest.mark.parametrize('legacy_prompt', [False, True])
+def test_auto_choice_never_adds_new_hosts_and_excludes_removed_hosts_at_dequeue(setup, legacy_prompt):
     env, root, body, case = setup
     env.fake.plans = ['hold', 'complete']
     first = start(env, case)['runs'][0]['conversation_id']
@@ -187,6 +193,13 @@ def test_auto_choice_never_adds_new_hosts_and_excludes_removed_hosts_at_dequeue(
     assert [item['ssh_target'] for item in batch['config']['machines']] == [SYSTEM_MACHINE]
     _wait(env, first, lambda detail: detail['conversation']['phase'] == 'running')
     with jira_agent_runner.open_db() as conn, transaction(conn):
+        if legacy_prompt:
+            # Existing queued snapshots keep their original text, including old machine guidance.
+            config = json.loads(conn.execute('SELECT config_json FROM jira_test_batches WHERE id=?',
+                                             (batch['id'],)).fetchone()[0])
+            config['prompt'] += '\n历史机器说明：' + SYSTEM_MACHINE
+            conn.execute('UPDATE jira_test_batches SET config_json=? WHERE id=?',
+                         (json.dumps(config), batch['id']))
         conn.execute('DELETE FROM jira_agent_machines')
         repo.create_machine(conn, agent_group='HPC', ssh_target='new@10.0.0.99',
                             description='Added after queue', created_by='carol')
@@ -198,7 +211,9 @@ def test_auto_choice_never_adds_new_hosts_and_excludes_removed_hosts_at_dequeue(
     assert result['turns'][0]['execution_snapshot']['available_targets'] == []
     assert any('允许范围之外' in event['payload'].get('text', '') for event in result['events'])
     prompt = env.fake.params('turn/start')[-1]['input'][0]['text']
-    assert SYSTEM_MACHINE in prompt and 'new@10.0.0.99' not in prompt
+    assert (SYSTEM_MACHINE in prompt) == legacy_prompt
+    assert 'new@10.0.0.99' not in prompt
+    assert prompt.count('本轮执行机器（以此为准）') == 1
     assert '系统机器列表为空，不要登录任何测试机器' in prompt.split('本轮执行机器（以此为准）')[-1]
 
 
@@ -230,7 +245,8 @@ def test_custom_machine_uses_verified_session_and_empty_list_allows_only_custom(
     assert 'ssh_key_session_id' not in batch['config']
     assert env.client.post(url, json=request).status_code == 409
     prompt = env.fake.params('turn/start')[-1]['input'][0]['text']
-    assert f'用户指定的机器 `ssh {target}`' in prompt and SYSTEM_MACHINE not in prompt
+    assert prompt.count(f'用户指定的机器 `ssh {target}`') == 1
+    assert SYSTEM_MACHINE not in prompt
 
 
 def test_auto_and_custom_runs_serialize_overlapping_hosts_only(setup, monkeypatch):
