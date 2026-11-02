@@ -286,6 +286,7 @@ def get_conversation_detail(user: dict, conversation_id: str) -> dict:
             "events": repo.list_events(conn, conversation_id),
             "rev": repo.max_event_rev(conn, conversation_id),
             "issue_conversations": history,
+            "upload_limits": {"max_files": MAX_UPLOAD_FILES, "max_file_bytes": MAX_UPLOAD_BYTES},
         }
     finally:
         conn.close()
@@ -421,6 +422,7 @@ async def preview_issue(user: dict, issue_key: str) -> dict:
             "recovering": _is_recovering(open_conversation["id"]),
         } if open_conversation else None,
         "conversations": history,
+        "upload_limits": {"max_files": MAX_UPLOAD_FILES, "max_file_bytes": MAX_UPLOAD_BYTES},
     }
 
 

@@ -7,7 +7,7 @@
  * URL: ?issue=KEY[&conversation=ID|new].  "new" is an unsent hand-over
  * draft; a bare ?conversation=ID (links in JIRA comments) resolves its issue.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../../api/AuthContext";
@@ -60,6 +60,7 @@ import {
   type IssuePreview,
   type IssueSearchItem,
   type IssueSearchResponse,
+  type UploadLimits,
 } from "./jiraAgentApi";
 
 const DRAFT = "new";
@@ -148,8 +149,48 @@ function mergeEvents(previous: AgentEvent[], incoming: AgentEvent[]): AgentEvent
   return [...byId.values()].sort((a, b) => a.seq - b.seq);
 }
 
-async function readFiles(files: FileList | null) {
-  return Promise.all(Array.from(files ?? []).map(fileToUpload));
+function uploadError(files: File[], limits: UploadLimits | undefined) {
+  if (!files.length) return "";
+  if (!limits) return "未获取到附件限制，请刷新页面后重试。";
+  if (files.length > limits.max_files) return `已选择 ${files.length} 个文件，每次最多 ${limits.max_files} 个，请重新选择或清除附件。`;
+  const oversized = files.find(file => file.size > limits.max_file_bytes);
+  if (!oversized) return "";
+  const size = Math.ceil(oversized.size / (1024 * 1024) * 100) / 100;
+  return `文件“${oversized.name}”（${size} MB）超过单个文件 ${limits.max_file_bytes / (1024 * 1024)} MB 的限制，请重新选择或清除附件。`;
+}
+
+async function readFiles(files: File[], limits: UploadLimits | undefined) {
+  const error = uploadError(files, limits);
+  if (error) throw new Error(error);
+  return Promise.all(files.map(fileToUpload));
+}
+
+function AttachmentInput({ files, onChange, limits, disabled, children }: {
+  files: File[];
+  onChange: (files: File[]) => void;
+  limits: UploadLimits | undefined;
+  disabled: boolean;
+  children: ReactNode;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  const id = useId();
+  const error = uploadError(files, limits);
+  useEffect(() => {
+    if (!files.length && input.current) input.current.value = "";
+  }, [files]);
+  return <div>
+    <div className="actions">
+      <input ref={input} type="file" multiple aria-label="附加文件" aria-describedby={id}
+        aria-invalid={Boolean(error)} disabled={disabled || !limits}
+        onChange={event => onChange(Array.from(event.currentTarget.files ?? []))} />
+      {files.length > 0 && <button type="button" className="btn" disabled={disabled} onClick={() => onChange([])}>清除附件</button>}
+      {children}
+    </div>
+    <div id={id}>
+      {limits && <p className="muted">单个文件不超过 {limits.max_file_bytes / (1024 * 1024)} MB，每次最多 {limits.max_files} 个</p>}
+      {error && <p className="jira-agent-warning" role="alert">{error}</p>}
+    </div>
+  </div>;
 }
 
 /** Tool-use steps are folded into one collapsed group per consecutive run. */
@@ -776,12 +817,14 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
   const [postComment, setPostComment] = useState(true);
   // a user-given machine: the SSH key upload dialog that must pass before this hand-over
   const [uploading, setUploading] = useState(false);
-  const fileInput = useRef<HTMLInputElement>(null);
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const invalid = Boolean(uploadError(attachments, preview.upload_limits));
   const recovering = Boolean(preview.open_conversation?.recovering);
   const disabled = !preview.can_handover;
 
 
   async function submit() {
+    if (invalid) return;
     const open = preview.open_conversation;
     if (
       open
@@ -803,7 +846,7 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
   async function handover(submission: ExecutionSubmission) {
     setBusy(true);
     try {
-      const files = await readFiles(fileInput.current?.files ?? null);
+      const files = await readFiles(attachments, preview.upload_limits);
       const result = await handoverIssue({
         ...(isRM(user) ? selection : {}),
         issue_key: preview.issue.key,
@@ -835,17 +878,16 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
         <ModelChoice group={preview.agent_group} value={selection} onChange={setSelection} disabled={disabled || busy || uploading} />
         <MachineChoice agentGroup={preview.agent_group} disabled={disabled || busy || uploading} onChange={setMachine} />
         <PostCommentCheck checked={postComment} disabled={disabled || busy || uploading} onChange={setPostComment} />
-        <div className="actions">
-          <input ref={fileInput} type="file" multiple aria-label="附加文件" disabled={disabled || busy || uploading} />
+        <AttachmentInput files={attachments} onChange={setAttachments} limits={preview.upload_limits} disabled={disabled || busy || uploading || recovering}>
           <button
             type="button"
             className="btn primary"
-            disabled={busy || disabled || recovering || machine === null}
+            disabled={busy || disabled || recovering || uploading || machine === null || invalid}
             onClick={() => void submit()}
           >
             交给 agent
           </button>
-        </div>
+        </AttachmentInput>
         {recovering && <p className="jira-agent-warning">{RECOVERING_TEXT}</p>}
       </div>
       {uploading && machine?.mode === "custom" && <ExecutionPreflightDialog agentGroup={preview.agent_group} execution={machine}
@@ -982,7 +1024,7 @@ export function ConversationBody({ id, onChanged, testing }: {
     <>
       {timeline}
       {detail.files.length > 0 && <FilesPanel files={detail.files} />}
-      {conversation.can_write && <Composer conversation={conversation} onSent={onChanged} />}
+      {conversation.can_write && <Composer conversation={conversation} limits={detail.upload_limits} onSent={onChanged} />}
     </>
   );
 }
@@ -1533,7 +1575,7 @@ function FilesPanel({ files }: { files: AgentFile[] }) {
   );
 }
 
-function Composer({ conversation, onSent }: { conversation: AgentConversation; onSent: () => void }) {
+function Composer({ conversation, limits, onSent }: { conversation: AgentConversation; limits: UploadLimits | undefined; onSent: () => void }) {
   const { user } = useAuth();
   const savedModel = conversation.latest_turn?.model || "";
   const savedEffort = conversation.latest_turn?.effort || "";
@@ -1551,7 +1593,8 @@ function Composer({ conversation, onSent }: { conversation: AgentConversation; o
   const latestTurnId = conversation.latest_turn?.id;
   const defaultPostComment = conversation.latest_turn?.post_comment ?? true;
   const [postComment, setPostComment] = useState(defaultPostComment);
-  const fileInput = useRef<HTMLInputElement>(null);
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const invalid = Boolean(uploadError(attachments, limits));
 
   useEffect(() => {
     setPostComment(defaultPostComment);
@@ -1568,12 +1611,12 @@ function Composer({ conversation, onSent }: { conversation: AgentConversation; o
   async function send() {
     setBusy(true);
     try {
-      const files = await readFiles(fileInput.current?.files ?? null);
+      const files = await readFiles(attachments, limits);
       const response = await sendConversationMessage(conversation.id, { text, files, post_comment: postComment, ...(isRM(user) && !activeTurn && modelChanged ? selection : {}) });
       toast.success(MODE_LABELS[response.mode] ?? "已发送");
       setText("");
       setModelChanged(false);
-      if (fileInput.current) fileInput.current.value = "";
+      setAttachments([]);
       onSent();
     } catch (error) {
       toast.error(errorMessage(error));
@@ -1598,17 +1641,16 @@ function Composer({ conversation, onSent }: { conversation: AgentConversation; o
           onChange={setPostComment}
           hint={conversation.state === "running" || conversation.state === "queued" ? "以本轮最后一次发送的选择为准" : ""}
         />
-        <div className="actions">
-          <input ref={fileInput} type="file" multiple aria-label="附加文件" />
+        <AttachmentInput files={attachments} onChange={setAttachments} limits={limits} disabled={busy || recovering || delivering}>
           <button
             type="button"
             className="btn primary"
-            disabled={busy || recovering || delivering || !text.trim()}
+            disabled={busy || recovering || delivering || !text.trim() || invalid}
             onClick={() => void send()}
           >
             发送
           </button>
-        </div>
+        </AttachmentInput>
       </div>
     </div>
   );

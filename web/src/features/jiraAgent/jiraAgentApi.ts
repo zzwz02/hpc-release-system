@@ -138,6 +138,11 @@ export interface IssueConversationRef {
   created_at: string;
 }
 
+export interface UploadLimits {
+  max_files: number;
+  max_file_bytes: number;
+}
+
 export interface ConversationDetail {
   conversation: AgentConversation;
   turns: AgentTurn[];
@@ -145,6 +150,7 @@ export interface ConversationDetail {
   events: AgentEvent[];
   rev: number;
   issue_conversations: IssueConversationRef[];
+  upload_limits: UploadLimits;
 }
 
 export interface EventsResponse {
@@ -154,6 +160,7 @@ export interface EventsResponse {
 }
 
 export interface IssuePreview {
+  upload_limits: UploadLimits;
   issue: {
     key: string;
     url: string;
