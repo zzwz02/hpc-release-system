@@ -9,6 +9,17 @@ from pathlib import PurePosixPath
 MAX_BYTES = 20 * 1024 * 1024
 
 
+def resumable(turn):
+    if turn['status'] not in ('failed', 'interrupted') or turn.get('result_json'):
+        return False
+    if turn.get('failure_kind'):
+        return turn['failure_kind'] in ('model', 'response')
+    # Older records have no failure source. Recognize explicit upstream errors only.
+    error = turn.get('error', '').casefold()
+    return ('model' in error and any(word in error for word in ('capacity', 'overloaded', 'not supported'))
+            or 'stream disconnected before completion' in error)
+
+
 def criteria_items(text):
     items = [re.sub(r'^\s*(?:[-*]|\d+[.)、])\s*', '', line).strip()
              for line in text.splitlines() if line.strip()]

@@ -81,7 +81,7 @@ def main():
     for name in ('get_issue', 'get_issue_snapshot', 'download_attachment', 'search_issues', 'add_comment', 'find_agent_comment'):
         setattr(jira, name, getattr(source, name))
     app = create_app()
-    faults = {'missing_artifacts': False}
+    faults = {'missing_artifacts': False, 'missing_inputs': False}
     publication = {'accepted_timeout': False, 'post_calls': 0}
     def post_comment(key, body):
         publication['post_calls'] += 1
@@ -93,6 +93,9 @@ def main():
     original = fake._result
 
     def result(ws, method, params):
+        if (faults['missing_inputs'] and method == 'fs/readFile'
+                and '/attachments/' in params.get('path', '')):
+            return None, {'code': -32000, 'message': 'Test input unavailable'}
         if (faults['missing_artifacts'] and method == 'fs/readFile'
                 and params.get('path', '').endswith('/artifacts/fix.patch')):
             return None, {'code': -32000, 'message': 'Test artifact unavailable'}
@@ -101,13 +104,21 @@ def main():
     fake._result = result
 
     @app.post('/api/_testing/plan')
-    def prepare(plan: str = 'complete', read_delay: float = 0, missing_artifacts: bool = False):
+    def prepare(plan: str = 'complete', read_delay: float = 0, missing_artifacts: bool = False, missing_inputs: bool = False):
         # Local fixture only; production create_app() has no such route.
-        assert plan in ('complete', 'hold')
+        assert plan in ('complete', 'hold', 'capacity_after_tool', 'stream_error', 'auth_error', 'invalid_result')
         assert 0 <= read_delay <= 5
         faults['missing_artifacts'] = missing_artifacts
+        faults['missing_inputs'] = missing_inputs
         fake.plans = [plan]
         fake.read_delay = read_delay
+        return {'ok': True}
+
+    app.router.routes.insert(0, app.router.routes.pop())
+
+    @app.post('/api/_testing/import-materials')
+    def import_materials(body: dict):
+        source.issue_overrides[body['key']] = body['issue']
         return {'ok': True}
 
     app.router.routes.insert(0, app.router.routes.pop())

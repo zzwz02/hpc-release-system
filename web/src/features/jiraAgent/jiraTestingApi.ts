@@ -24,6 +24,11 @@ export interface CaseVersion extends CaseDraft {
   version: number;
   input_sha256: string;
 }
+export interface CaseImport extends CaseDraft {
+  snapshot: string;
+  comments: { id: string; author: string; created: string; body: string }[];
+  files: { id: string; name: string; size: number; source: "jira" | "upload"; turn: number | null }[];
+}
 export const REVIEW_LABELS = {
   pending: "待评价", pass: "通过", partial: "部分符合", fail: "不符合",
   unknown: "无法判定", environment: "环境受限", platform: "平台故障", cancelled: "已取消",
@@ -31,6 +36,9 @@ export const REVIEW_LABELS = {
 export type ReviewDecision = Exclude<keyof typeof REVIEW_LABELS, "pending">;
 export interface TestRun {
   conversation_id: string;
+  turn_id?: string;
+  can_resume?: boolean;
+  resume_count?: number;
   ordinal: number;
   status: string;
   delivery_status: string;
@@ -67,7 +75,9 @@ const base = "/api/jira-agent/testing";
 export const listTestCases = () => apiGet<TestOptions>(`${base}/cases`);
 export const getTestCase = (id: string) => apiGet<CaseDetail>(`${base}/cases/${id}`);
 export const getTestBatches = (id: string) => apiGet<{ batches: TestBatch[] }>(`${base}/cases/${id}/batches`);
-export const importTestCase = (conversation: string) => apiGet<CaseDraft>(`${base}/import/${conversation}`);
+export const importTestCase = (conversation: string) => apiGet<CaseImport>(`${base}/import/${conversation}`);
+export const prepareTestImport = (conversation: string, body: { snapshot: string; comments: { id: string; body: string }[]; file_ids: string[] }) => apiPost<CaseDraft>(`${base}/import/${conversation}`, body);
+export const downloadTestImport = (conversation: string, file: string, snapshot: string) => apiGetBlob(`${base}/import/${conversation}/files/${encodeURIComponent(file)}?snapshot=${encodeURIComponent(snapshot)}`);
 export const previewTestPackage = (file: File) => apiFetch<CaseDraft>(`${base}/packages/preview`, {
   method: "POST", headers: { "Content-Type": "application/zip" }, body: file,
 });
@@ -78,6 +88,7 @@ export const startTestBatch = (id: string, body: ModelSelection & {
 }) => apiPost<CaseDetail>(`${base}/cases/${id}/batches`, body);
 export const reviewTestRun = (id: string, decision: ReviewDecision, note: string, extra: { confirm_ai?: boolean; evaluation_id?: string; evidence_key?: string } = {}) => apiPost(`${base}/runs/${id}/review`, { decision, note, ...extra });
 export const cancelTestBatch = (id: string) => apiPost(`${base}/batches/${id}/cancel`, {});
+export const resumeTestRun = (id: string, turn_id: string) => apiPost(`${base}/runs/${id}/resume`, { turn_id });
 
 export interface Evaluation {
   id: string; status: string; error: string; created_at: string; finished_at: string;
@@ -100,7 +111,8 @@ export const currentResult = (run: TestRun) => run.current ?? { decision: run.re
 export const resultLabel = (run: TestRun) => {
   const value = currentResult(run);
   const label = value.decision === "skipped" ? value.note : CURRENT_LABELS[value.decision] ?? value.decision;
-  return label + (value.source === "human" ? " · 人工" : value.source === "ai" ? " · AI" : "");
+  return label + (value.source === "human" ? " · 人工" : value.source === "ai" ? " · AI" : "")
+    + (run.resume_count ? ` · 恢复 ${run.resume_count} 次` : "");
 };
 export const listTestSuites = () => apiGet<{ suites: TestSuite[] }>(`${base}/suites`);
 export const startTestSuite = (body: ExecutionSubmission & ModelSelection & { request_id: string; case_ids: string[]; agent_group: string; machine?: string; ssh_key_session_id?: string }) => apiPost<TestSuite>(`${base}/suites`, body);

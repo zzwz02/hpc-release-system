@@ -142,7 +142,6 @@ def test_narrative_is_preserved_through_runner_and_publication_choice(env, post)
 def test_redacted_comment_cases(name, comment, required, forbidden):
     result = {**copy.deepcopy(RESULT), "comment": comment, "action_required": "none", "next_steps": []}
     body = render(result)
-    assert len(body) < 600, name
     assert all(text in body for text in required)
     assert all(text not in body for text in forbidden)
     assert body.count("不会修改 assignee、状态或代码；后续操作由 assignee 审核决定。") == 1
@@ -171,7 +170,7 @@ def test_long_required_commands_are_not_cut_or_rejected():
     result = {**RESULT, "comment": projection("按以下命令运行。", kind="explanation", commands=[command])}
     body = render(result)
     assert command in body and body.count("{noformat}") == 2
-    assert domain.comment_quality_warnings(result, body)
+    assert domain.comment_quality_warnings(result, body) == []
     assert domain.parse_result(json.dumps(result))["comment"]["commands"] == [command]
 
 
@@ -205,6 +204,87 @@ def test_invalid_projection_falls_back_without_losing_analysis():
     assert RESULT["root_cause"] in body
     assert domain.comment_quality_warnings(result, body)
     assert domain.parse_stored_result(json.dumps(result)) == result
+
+
+def test_continuation_keeps_analysis_and_handoff_independent_of_public_comment():
+    result = {**copy.deepcopy(RESULT),
+              "summary": "GPU MPI 返回成功，但接收数据与参考不符。",
+              "root_cause": "已定位数据错误环节，内部机制尚未确认。",
+              "ownership": {"belongs_to_us": "no", "target_group": "MPI／UCX",
+                            "reasoning": "原应用中观察到首次跨列传输数据错误。"},
+              "assistance": {"current_issue": "远端测试未运行", "owner": "owner", "request": "恢复 SSH"},
+              "next_steps": ["完成远端编译及数据对照"],
+              "artifacts": ["artifacts/test.cpp", "artifacts/README.md"],
+              "evidence": [{"description": "接收值对照", "command": "./check", "result": "large raw output"},
+                           {"description": "三个单独程序未复现", "command": "./tests", "result": "logs"}],
+              "comment": narrative("短评论。", "已通知内容。")}
+    original = copy.deepcopy(result)
+    context = domain.continuation_result(result)
+    for key in ("summary", "root_cause", "ownership", "assistance", "reproduction", "fix", "next_steps", "artifacts"):
+        assert context[key] == result[key]
+    assert context["evidence"] == [{"description": e["description"]} for e in result["evidence"]]
+    assert "comment" not in context
+    assert "large raw output" not in json.dumps(context)
+    assert result == original
+    assert domain.continuation_result({}) == {}
+
+
+def test_continuation_runner_passes_ownership_not_just_the_published_summary(env):
+    cid = _handover(env)["conversation"]["id"]
+    first = _latest(_wait(env, cid, _done))
+    with runner.open_db() as conn:
+        original = domain.parse_stored_result(repo.get_turn(conn, first["id"])["result_json"])
+    response = env.client.post(f"/api/jira-agent/conversations/{cid}/messages",
+                              json={"text": "说明归属和交接材料", "post_comment": False})
+    assert response.status_code == 200
+    _wait(env, cid, _done)
+    prompt = env.fake.params("turn/start")[-1]["input"][0]["text"]
+    history = prompt.split("上一轮分析记录", 1)[1].split("：\n", 1)[1]
+    previous, _ = json.JSONDecoder().raw_decode(history)
+    assert previous["ownership"] == original["ownership"]
+    assert previous["root_cause"] == original["root_cause"]
+    assert previous["artifacts"] == original["artifacts"]
+    assert "上一轮分析记录" in prompt and "上一轮已发布评论" in prompt
+    assert "不能代替上述分析记录" in prompt
+
+
+def test_quality_checks_flag_empty_handoff_and_exact_repetition_without_rewriting():
+    result = {**copy.deepcopy(RESULT), "action_required": "needs_handoff",
+              "comment": narrative("需要 SDK 接手。", "")}
+    body = render(result)
+    assert any("只有首句" in text for text in domain.comment_quality_warnings(result, body))
+    repeated = {**result, "comment": narrative("接收数据错误。", "接收数据错误。\n\n待完成远端验证。")}
+    before = copy.deepcopy(repeated)
+    assert any("重复" in text for text in domain.comment_quality_warnings(repeated, render(repeated)))
+    assert repeated == before
+    distinct = {**result, "comment": narrative("接收数据错误。", "旧版接收数据正确，新版接收数据错误。")}
+    assert not any("重复" in text for text in domain.comment_quality_warnings(distinct, render(distinct)))
+
+
+def test_visible_length_is_informational_and_counts_link_label_not_internal_url():
+    text = "*结论*\n\n{{mcLaunchKernel}} 调用记录。\n\n[API 日志|https://site/" + "x" * 900 + "]\n\n----\n\n_声明_"
+    assert domain.comment_visible_length(text) < 70
+
+
+def test_long_narrative_is_preserved_without_length_warning():
+    paragraphs = [f"配置 {i} 的独立对照：原参数与候选参数使用相同输入，结果均通过；"
+                  f"原耗时 {100 + i} 秒，候选耗时 {90 + i} 秒，尚未验证其他硬件。"
+                  for i in range(12)]
+    comment = narrative("已完成十二组配置对照，结果及范围如下。", "\n\n".join(paragraphs))
+    result = {**copy.deepcopy(RESULT), "comment": comment}
+    original = copy.deepcopy(result)
+    body = render(result)
+    assert domain.comment_visible_length(body) > 600
+    assert comment["body"] in body
+    assert domain.comment_quality_warnings(result, body) == []
+    assert result == original
+
+
+def test_short_comment_can_still_have_quality_defects():
+    result = {**RESULT, "comment": narrative("需要管理员恢复权限。", "需要管理员恢复权限。")}
+    body = render(result)
+    assert domain.comment_visible_length(body) < 600
+    assert any("重复" in item for item in domain.comment_quality_warnings(result, body))
 
 
 @pytest.mark.parametrize("url", ["http://host:4510", "host:4510", "ws://", "ws://host:bad", "ws://host:70000",

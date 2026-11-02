@@ -111,6 +111,7 @@ const result = {
 };
 
 const detail = {
+  upload_limits: { max_files: 10, max_file_bytes: 20 * 1024 * 1024 },
   conversation,
   turns: [turn],
   files: [
@@ -191,6 +192,7 @@ function handledResponse() {
 
 function previewResponse(open: boolean) {
   return {
+    upload_limits: detail.upload_limits,
     issue: { ...issue, attachment_count: 2, comment_count: 1 },
     agent_group: "HPC",
     can_handover: true,
@@ -880,6 +882,46 @@ describe("JiraAgentPage", () => {
       expect.objectContaining({ model: "other-model", effort: "high" }),
     ));
     if (followup) await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("other-model"));
+  });
+
+  it.each([false, true])("rejects invalid attachments before reading and preserves text: followup=%s", async (followup) => {
+    mockBackend({ open: followup });
+    const user = userEvent.setup();
+    renderPage(`/jira-agent?issue=MC3-7672${followup ? "&conversation=jac_1" : ""}`);
+    const input = await screen.findByLabelText("附加文件");
+    const text = screen.getByLabelText(followup ? "补充信息" : "交单说明");
+    const submit = screen.getByRole("button", { name: followup ? "发送" : "交给 agent" });
+    await user.type(text, "请保留这段说明");
+    await waitFor(() => expect(submit).toBeEnabled());
+    expect(screen.getByText("单个文件不超过 20 MB，每次最多 10 个")).toBeVisible();
+
+    const oversized = new File([new Uint8Array(detail.upload_limits.max_file_bytes + 1)], "large.log");
+    const read = vi.fn();
+    Object.defineProperty(oversized, "arrayBuffer", { value: read });
+    const small = new File(["log"], "small.log");
+    Object.defineProperty(small, "arrayBuffer", { value: read });
+    await user.upload(input, [small, oversized]);
+    expect(screen.getByRole("alert")).toHaveTextContent("large.log");
+    expect(submit).toBeDisabled();
+    await user.click(submit);
+    expect(read).not.toHaveBeenCalled();
+    expect(apiPost).not.toHaveBeenCalled();
+    expect((input as HTMLInputElement).files).toHaveLength(2);
+    expect(text).toHaveValue("请保留这段说明");
+
+    await user.upload(input, Array.from({ length: 11 }, (_, i) => new File(["log"], `${i}.log`)));
+    expect(screen.getByRole("alert")).toHaveTextContent("已选择 11 个文件，每次最多 10 个");
+    expect(submit).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "清除附件" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect((input as HTMLInputElement).files).toHaveLength(0);
+    expect(submit).toBeEnabled();
+    expect(text).toHaveValue("请保留这段说明");
+
+    await user.upload(input, [new File([new Uint8Array(detail.upload_limits.max_file_bytes)], "boundary.log"),
+      ...Array.from({ length: 9 }, (_, i) => new File(["log"], `${i}.log`))]);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(submit).toBeEnabled();
   });
 
   it("Owner cannot see model choices", async () => {

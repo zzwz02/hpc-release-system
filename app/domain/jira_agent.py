@@ -508,8 +508,11 @@ def build_turn_prompt(
     machine = f"\n\n{machine_text}" if machine_text else ""
     machine += "\n\n" + COMMENT_INSTRUCTIONS
     if previous_result or previous_comment:
-        machine += ("\n\n上一轮结果与已发布评论（历史资料，只用于区分新增和沿用，不代表本轮重新验证）：\n"
-                    + previous_result + "\n" + previous_comment)
+        machine += ("\n\n上一轮分析记录（历史资料，不代表本轮重新验证；证据这里只列条目说明，"
+                    "具体输出和操作见原报告、产物及线程记录）：\n" + previous_result)
+        if previous_comment:
+            machine += ("\n\n上一轮已发布评论（仅用于识别已通知内容，不能代替上述分析记录；"
+                        "本轮仍须保留读者理解当前判断所需的上下文）：\n" + previous_comment)
     if trigger == "handover":
         return f"""新工单交接：{issue['key']}「{issue.get('summary', '')}」
 owner（当前 assignee）：{owner}；交单人：{created_by}
@@ -526,11 +529,31 @@ owner（当前 assignee）：{owner}；交单人：{created_by}
 issue.json 和 issue.md 已刷新；检查 acquisition 中的完整性和缺失原因，不能把未采集到视为不存在。请在当前工作基础上继续，读取当前相关 skill 的收敛与交接要求，再完成本轮并输出结构化结论。{machine}"""
 
 
-COMMENT_INSTRUCTIONS = """完整报告保留复核细节；comment 是给工单读者的一条直接回复，严格使用本轮 schema。
-outcome 一句话回答本轮问题，网站加粗；body 用自然段或必要列表接着解释，不复述首句，不设“依据/尚未确认/待办”栏目。首句加正文通常控制在 200～360 字符（网站另附身份、链接和固定声明，整条通常约 400～600），无最低长度；必要命令或复杂交接可增加。关键数据保留有意义的精度，详细原值放报告。
-正文只选读者理解结论和采取下一步所需的事实。原始 trace 编号、分配块大小、详细环境检查清单、材料审计过程留在报告；不要逐项反驳本轮未提出的误解。未确认项只保留影响当前判断的边界，避免罗列所有未做工作。沿用历史结果简短说明一次，不重复“仅复核/未连接/未执行/未重新核验”。
-body 保留必要的旧判断修正；只有确有未完成且需他人处理的事项时才集中提出一处具体请求，网站不再追加 assistance、ownership 或 next_steps。解释性追问的回答本身就是交付，不要求 owner 再转述回复、确认或审核，不重发修复报告；续办突出变化，无新增则简短说明状态。调用路径定位不等于已证明内部机制。
-evidence_indices 最多两项，引用完整 evidence 的零起始序号，仅供追溯。body 用 JIRA wiki：空行分段，“* ”列项，{{符号}} 表示代码；不含首句、身份、声明或链接。commands 仅放必需的完整命令；link_text 给出具体入口名称，实际链接由网站生成。旧 schema 沿用其字段，不添加新字段。"""
+COMMENT_INSTRUCTIONS = """完整分析、证据和产物继续完整保存；comment 是供工单读者审核和接手的一条直接回复，严格使用本轮 schema。先确定本轮用户提出的全部问题及仍相关的任务目标，再选择回答所需的结论、关键实验及结果、判断理由、限制和操作，不按完整结果的字段逐项复述。
+outcome 用一句具体结论回答本轮核心问题，由网站加粗。body 用自然段或必要列表展开；一轮有多个问题就分别回答，不为单一 kind 舍弃其他问题。不套“依据一/依据二/待办”等栏目，不复述首句。不要用“范围已缩小”“旧值错误”“独立重放”“短测试包”等孤立或含糊的表述替代具体问题、操作和结果。
+按本轮回答和接手需要保留以下内容，不能仅因完整报告已有说明就省略，也不因某字段非空就全部抄入评论：
+- 涉及归属或交接时，写清主受理及必要协同团队、判断依据和各自待查事项；忠实表达本轮 ownership，不把接手建议写成已经转交，不因内部机制未明就省略已明确的接手判断。区分已观察异常、已确认原因与待查机制。归属变化时明确修正及新增依据；不把后续发现提前写入早期轮次。
+- 需要协助时，集中写清谁需提供什么或执行什么，以及所针对的环境、数据或条件。版本兼容请求点名需确认的组件（如 SDK、PyTorch、镜像）及版本或匹配关系，不只写“配套构建组合”“补齐环境”；未知版本要求确认，不编造兼容组合。请求应让接手者无需再追问任务对象。
+- 本轮涉及修复或交付时，说明修改作用、验证结果及未完成的验收，明确补丁、应用方法或复现材料的用途和必要依赖。不能只写“详见材料”或列文件名；没有实际交付不得声称已提供。诊断程序不称修复，语法检查不称运行验证，沿用结果不写成本轮重跑。
+解释性追问引用回答所需的调用顺序、代码或验证；不因旧结果包含补丁、归属或审核动作，就重发整套报告及审核请求。与答案相关的旧结论保留一句必要上下文，只有本轮改变或用户追问时再展开。状态轮次保留进度、具体阻塞和请求；续办突出新增结果，仍须能独立理解当前结论。已有获准且可执行的关键工作按原任务完成，评论写法不改变结束条件。
+输出前与完整分析和实际产物交叉核对，确保本轮问题没有漏答，必要判断、负责方、限制、请求和交付用途没有遗漏或变义；这是内容核对，不要求逐字段写进评论。同一事实和请求只表达一次。删去一句后若会改变对答案、依据、适用范围或下一步的理解，就保留；无此作用的重复或过程细节合并或留在网站。
+不设统一字数目标，长度不决定合格与否，不截断内容。用户索要的完整命令、支撑判断的对照数据、多目标回答和复杂交接可以较长。资源授权期限及履约结果、影响结论或接手的异常必须保留；正常采集数量、哈希核验、目录核验、压缩与清理过程默认留在网站，用户明确要求或影响判断时再写入。
+body 用 JIRA wiki：空行分段，“* ”列项，{{符号}} 表示代码；不含首句、身份、固定声明、记录编号或链接。commands 仅放用户索要或交付必需的完整命令，不在 body 重复。evidence_indices 最多两项，引用完整 evidence 的零起始序号，仅供追溯，不限制正文保留的必要事实数量。link_text 具体说明网站入口内容，如“候选补丁、应用方法与前后日志”；入口必须有对应材料，不杜撰直达文件链接。网站统一追加实际对话链接、横线、完整声明和发布记录编号，不再自动追加归属或待办。旧 schema 沿用其字段，不添加新字段。"""
+
+
+def continuation_result(result: dict) -> dict:
+    """Keep analysis context independent of the shorter public comment.
+
+    Raw command output stays in the thread/artifacts. Preserve every evidence
+    description instead of selecting the first two or copying a public summary.
+    """
+    keys = ("conclusion", "action_required", "issue_category", "summary", "root_cause",
+            "ownership", "assistance", "reproduction", "fix", "next_steps", "artifacts")
+    context = {key: result[key] for key in keys if key in result}
+    if result.get("evidence"):
+        context["evidence"] = [{"description": item.get("description", "")}
+                               for item in result["evidence"] if isinstance(item, dict)]
+    return context
 
 
 def parse_result(text: str) -> dict:
@@ -663,13 +686,41 @@ def _comment_projection(result: dict) -> dict | None:
 
 
 def comment_quality_warnings(result: dict, body: str) -> list[str]:
-    """Presentation diagnostics only; never restart analysis or suppress a blocker."""
+    """Observable presentation issues, not a claim of semantic completeness.
+
+    Never restart analysis, silently rewrite a judgment or suppress a blocker.
+    Fact/ownership equivalence is covered by generation review, not keyword tests.
+    Length is an informational metric, never a standalone quality warning.
+    """
     warnings = []
-    if _comment_projection(result) is None:
+    comment = _comment_projection(result)
+    if comment is None:
         warnings.append("未提供有效的简短评论，已使用兼容摘要；完整结果仍保留")
-    if len(body) > 600:
-        warnings.append("评论超过建议长度，请核对是否包含必要命令或复杂交接")
+    if comment is not None and "body" in comment:
+        text = comment["body"].strip()
+        _, action = result_state(result)
+        if not text and (action in {"needs_info", "needs_help", "needs_handoff"}
+                         or (result.get("fix") or {}).get("description")):
+            warnings.append("评论只有首句，请核对归属、协助请求或修复验证是否遗漏")
+        # Only flag identical whole paragraphs, never delete partially shared
+        # sentences (they may describe different versions or a correction).
+        paragraphs = [comment["outcome"], *re.split(r"\n\s*\n", text)]
+        normalized = [re.sub(r"[\s*{}]", "", p).rstrip("。.;；") for p in paragraphs if p.strip()]
+        if len(set(normalized)) < len(normalized):
+            warnings.append("评论首句或整段内容重复，请合并重复表述")
+        if _COMMENT_NOTICE in text or re.search(r"记录编号[：:]\s*jat_", text):
+            warnings.append("评论正文包含固定页脚，发布时会重复追加")
     return warnings
+
+
+def comment_visible_length(body: str) -> int:
+    """Approximate JIRA's visible text, excluding link targets and wiki markup."""
+    text = re.sub(r"\[([^\]\n|]+)\|[^\]\n]+\]", r"\1", body)
+    text = re.sub(r"\{(?:noformat|code)(?::[^}]*)?\}|\{\{|\}\}", "", text)
+    text = re.sub(r"(?m)^\s*----\s*$", "", text)
+    text = re.sub(r"(?m)^\* ", "", text)
+    text = re.sub(r"(?<!\w)[*_](?=\S)|(?<=\S)[*_](?!\w)", "", text)
+    return len(text.strip())
 
 
 def render_jira_comment(

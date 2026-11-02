@@ -67,10 +67,11 @@
 | 版本或配置变化后的回退 | regression-analysis | 哪个受控变量改变了结果 |
 | GPU SDK 回退 | gpu-sdk-regression-triage | 实际加载组件、版本差异和组件因果证据 |
 | compiler 生成代码导致 kernel 性能回退 | compiler-kernel-regression | 主要回退 kernel/路径、源码或生成链、真实构建命令和最小复现 |
+| ACL 数学库/算子问题的采集与交接 | [acl-handoff](../modules/problem-analysis/skills/acl-handoff/SKILL.md) | 按问题类型采集日志、shape、对照及 Triton/GEMM 附加材料，生成提单草稿和缺口清单 |
 | 运行期 JIT 或重复编译 | runtime-recompile-analysis | 正常首次 JIT、同进程重复编译及其性能影响 |
 | 需要 kernel/硬件级数据时 | trace-report | 采集并整理能够回答当前问题的 profiling 证据 |
 
-回退分析可以与 crash、正确性或性能分析组合，但不是所有问题的前置步骤。Profiling 也不是默认动作，只在能够改变当前判断时使用。
+回退分析可以与 crash、正确性或性能分析组合，但不是所有问题的前置步骤。Profiling 按诊断需要或已适用的组件交接模板采集，不要求所有工单统一执行。
 
 ### 2.4 HPC 应用处理
 

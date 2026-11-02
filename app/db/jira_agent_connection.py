@@ -334,6 +334,9 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
     # A pending retry still points to the previous Codex turn, allowing restart
     # to distinguish a retry not sent yet from an accepted start with a lost reply.
     _ensure_column(conn, "jira_agent_turns", "retry_pending", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "jira_agent_turns", "failure_kind", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "jira_agent_turns", "resume_from", "TEXT NOT NULL DEFAULT ''")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_jira_test_resume ON jira_agent_turns(resume_from) WHERE resume_from!=''")
     # Analysis completion and file delivery are independent. Empty preserves
     # the meaning of historical turns, whose delivery was not tracked.
     _ensure_column(conn, "jira_agent_turns", "delivery_status", "TEXT NOT NULL DEFAULT '' CHECK (delivery_status IN ('', 'collecting', 'incomplete', 'complete'))")

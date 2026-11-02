@@ -1,0 +1,56 @@
+{
+  "title": "[C500][MatGL] MEGNet 训练概率性出现 NaN",
+  "input": {
+    "files": [],
+    "issue": {
+      "acquisition": {
+        "conflicts": [],
+        "parts": {
+          "attachment_metadata": {
+            "status": "complete"
+          },
+          "comments": {
+            "collected": 0,
+            "reported_total": 0,
+            "status": "complete"
+          },
+          "custom_fields": {
+            "collected": 0,
+            "status": "complete"
+          },
+          "description": {
+            "status": "complete"
+          },
+          "field_definitions": {
+            "status": "complete"
+          },
+          "issue": {
+            "status": "complete"
+          }
+        },
+        "scope": "人工保存的测试输入；不代表 Jira 当前内容或全量采集。",
+        "source": "test_case",
+        "status": "complete"
+      },
+      "attachments": [],
+      "comments": [],
+      "components": [
+        "PDE"
+      ],
+      "custom_fields": {},
+      "description": "MatGL 1.1.3 在 C500 上运行 GPU 单元测试时，MEGNet 训练概率性出现 NaN，原测试记录的失败率约 20%～30%。失败项为 `tests-gpu/utils/test_training.py::TestModelTrainer::test_megnet_training`，报错 `AssertionError: assert tensor(nan, device='cuda:0') < 0`。\n\n单张 C500，驱动 3.9.0.14，SDK 3.9.0.29，HPC 3.9.0.12。\n\n测试镜像：`harbor.sh.mxcr.io/xshi/matgl-maca:mc3-7807-3.9.0.12@sha256:46aef466a799c5d19ad5d2b5c7d3c2fb10fc168490cf0e858166ea5df1ddf25f`\n\n```bash\ndocker run --pull always -v /mnt/hdd:/mnt/hdd --rm \\\n  -e MACA_PERF_DIR=/tmp -u 0 -e MACA_VISIBLE_DEVICES=0 \\\n  --device=/dev/dri --device=/dev/mxcd --group-add video \\\n  harbor.sh.mxcr.io/xshi/matgl-maca:mc3-7807-3.9.0.12@sha256:46aef466a799c5d19ad5d2b5c7d3c2fb10fc168490cf0e858166ea5df1ddf25f \\\n  sh -c 'export && bash /workspace/easy_install/matgl-1.1.3.sh && cd /workspace/test/matgl-1.1.3 && python3 test-gpu.py'\n```",
+      "field_definitions": [],
+      "issue_type": "Bug",
+      "key": "MC3-7807",
+      "labels": [],
+      "project": "MC3",
+      "raw_fields": {},
+      "summary": "[C500][MatGL] MEGNet 训练概率性出现 NaN",
+      "url": "http://10.2.201.98:8080/browse/MC3-7807"
+    },
+    "note": "请复现 MEGNet 训练的 NaN，定位有效触发条件，交付能复现同一异常的独立小程序。"
+  },
+  "provenance": {
+    "issue_key": "MC3-7807"
+  }
+}

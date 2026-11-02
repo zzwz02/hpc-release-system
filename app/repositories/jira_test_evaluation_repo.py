@@ -35,6 +35,9 @@ def initialize(conn):
             evaluation_id TEXT NOT NULL, evidence_key TEXT NOT NULL
         );
     ''')
+    from app.db.jira_agent_connection import _ensure_column
+    _ensure_column(conn, 'jira_test_evaluations', 'retry_count', 'INTEGER NOT NULL DEFAULT 0')
+    _ensure_column(conn, 'jira_test_evaluations', 'retry_at', "TEXT NOT NULL DEFAULT ''")
 
 
 def one(conn, sql, args=()):
@@ -57,7 +60,7 @@ def latest(conn, cid):
 
 def update(conn, eid, **values):
     allowed = {'status', 'material_json', 'material_hash', 'evidence_key', 'config_json', 'result_json',
-               'error', 'thread_id', 'turn_id', 'phase', 'started_at', 'finished_at'}
+               'error', 'thread_id', 'turn_id', 'phase', 'started_at', 'finished_at', 'retry_count', 'retry_at'}
     if not set(values) <= allowed:
         raise ValueError('评价字段无效')
     conn.execute('UPDATE jira_test_evaluations SET ' + ','.join(key + '=?' for key in values) + ' WHERE id=?',

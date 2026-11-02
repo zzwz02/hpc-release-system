@@ -55,6 +55,8 @@ description: 处理指定 HPC Jira：读取要求，复现并定位构建、运�
 
 性能回退经受控对照指向 compiler 生成代码时，进入 [compiler-kernel-regression](modules/problem-analysis/skills/compiler-kernel-regression/SKILL.md) 完成专项定位与复现交接。
 
+证据指向 ACL 数学库/算子或需要准备其交接材料时，进入 [acl-handoff](modules/problem-analysis/skills/acl-handoff/SKILL.md)，按实际问题类型补齐组件日志、shape、性能对照和提单草稿；Triton/GEMM 按需叠加专项材料。普通性能优化用 Improvement，已证实的性能回退用 Bug；仍由 owner 决定提单或转交。
+
 ## 4. 验证并交付
 
 `conclusion` 只表示本轮达到的技术深度，`action_required` 单独表示是否需要补充、协助、审核或转交；出现阻塞时不把已经确认的技术结论退回“无法判断”。两者组合和字段要求以[网站交付规范](modules/jira-evidence/references/result-delivery.md#输出契约)为准。

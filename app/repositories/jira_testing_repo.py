@@ -2,6 +2,7 @@
 import json
 
 from app.config import settings
+from app.domain import jira_testing as domain
 from app.repositories import jira_test_evaluation_repo as evaluations
 from app.repositories.base import dumps_json, new_id
 from app.timeutil import beijing_timestamp
@@ -163,7 +164,7 @@ def can_schedule(conn, conversation_id):
     """Serialize overlapping candidate hosts, including delivery and recovery."""
     ahead = conn.execute("""SELECT count(*) FROM jira_agent_turns t
         JOIN jira_test_runs r ON r.conversation_id=t.conversation_id
-        JOIN jira_agent_turns current ON current.conversation_id=?
+        JOIN jira_agent_turns current ON current.conversation_id=? AND current.status='queued'
         WHERE t.id!=current.id AND (t.status='running' OR t.delivery_status='collecting'
             OR (t.status='queued' AND t.rowid<current.rowid))""", (conversation_id,)).fetchone()[0]
     if ahead >= max(1, settings.jira_testing_max_concurrent):
@@ -174,7 +175,7 @@ def can_schedule(conn, conversation_id):
         JOIN jira_agent_turns t ON t.conversation_id=c.id
         JOIN jira_test_runs r ON r.conversation_id=c.id
         JOIN jira_test_batches b ON b.id=r.batch_id
-        JOIN jira_agent_turns current_turn ON current_turn.conversation_id=?
+        JOIN jira_agent_turns current_turn ON current_turn.conversation_id=? AND current_turn.status='queued'
         WHERE c.id!=current_turn.conversation_id
           AND (t.status='running' OR t.delivery_status='collecting'
                OR (t.status='queued' AND t.rowid<current_turn.rowid))
@@ -194,12 +195,18 @@ def batches(conn, case_id, batch_id=""):
         for key in ('instructions', 'prompt', 'output_schema'):
             batch['config'].pop(key, None)
         batch['runs'] = []
-        for run in conn.execute("""SELECT r.*,t.status,t.delivery_status,t.error,t.conclusion,
+        for run in conn.execute("""SELECT r.*,t.id AS turn_id,t.status,t.delivery_status,t.error,t.conclusion,
+            t.failure_kind,t.result_json,c.thread_id,c.status AS conversation_status,
+            (SELECT count(*) FROM jira_agent_turns attempts WHERE attempts.conversation_id=c.id AND attempts.resume_from!='') AS resume_count,
             t.started_at,t.finished_at,c.machine_used,t.machines_used_json FROM jira_test_runs r
             JOIN jira_agent_conversations c ON c.id=r.conversation_id
-            JOIN jira_agent_turns t ON t.conversation_id=c.id WHERE r.batch_id=? ORDER BY r.ordinal""",
+            JOIN jira_agent_turns t ON t.id=(SELECT id FROM jira_agent_turns WHERE conversation_id=c.id ORDER BY seq DESC LIMIT 1)
+            WHERE r.batch_id=? ORDER BY r.ordinal""",
                                (batch['id'],)):
             item = dict(run)
+            item['can_resume'] = domain.resumable(item) and bool(item['thread_id']) and item['conversation_status'] == 'open'
+            for key in ('failure_kind', 'result_json', 'thread_id', 'conversation_status'):
+                item.pop(key)
             item["machines_used"] = json.loads(item.pop("machines_used_json", "[]"))
             item['reviews'] = [dict(review) for review in conn.execute(
                 'SELECT * FROM jira_test_reviews WHERE conversation_id=? ORDER BY rowid DESC',
