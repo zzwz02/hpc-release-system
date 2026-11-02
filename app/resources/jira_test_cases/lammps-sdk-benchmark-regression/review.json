@@ -1,0 +1,4 @@
+{
+  "criteria": "在相同 C500 环境完成 833、834 的原 benchmark，确认吞吐下降，原计算正常完成。\n区分应用产物与 SDK 影响，将主要差异收敛到 mcruntime/mccompiler 配套运行路径中的具体调用；已有证据涉及 mcLaunchKernel 主机提交和 mcEventRecord→mcStreamSynchronize，需用本次数据说明各自贡献。\n交付不依赖完整 LAMMPS 的独立程序，验证已定位调用在两版中的同向差异及计算正确性；说明它覆盖了原问题的哪些部分，未解释部分不能算作已解决。",
+  "reference": "MC3-7810 只确认镜像边界；MC3-7812 的兼容库组合对照将差异缩小到 SDK 和 Kokkos 归约调用，但未分开主机与设备时间，也未完成独立复现。后续两轮均有原案、独立程序和有效对照，结论比早期更具体，但不能据此选定唯一内部原因。\n\njtr_d687130ff564 复现 5.02% 下降，eventRecord→streamSync 独立程序在 direct dispatch=1 时变慢；关闭后原案差距缩至 0.92%，两版默认实际值均为 1。jtr_6974ceffb501 复现 3.09% 下降，配套替换 libmcruntime.so 与 libmccompiler.so 可翻转性能；mcLaunchKernel 主机时间增加而设备时间接近，独立 Kokkos 程序只覆盖部分增量。两条路径都可作证据，不要求强行合成一个根因或声称每轮都已全部解释。\n\n采用范围：SDK 配套运行路径及有数据支持的具体提交/等待调用。单库混用初始化失败不是单库归因证据；队列创建超时的测试没有复现原性能问题。依据：MC3-7812 / jac_5b0511c6e65d；测试 jtr_d687130ff564、jtr_6974ceffb501。"
+}

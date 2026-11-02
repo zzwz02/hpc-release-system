@@ -47,7 +47,7 @@ def rows():
         return repo.cases(conn)
 
 
-def test_packaged_repository_cases_contain_only_three_inputs(tmp_path):
+def test_packaged_repository_cases_contain_inputs_and_separate_review(tmp_path):
     root = tmp_path / 'catalog'
     root.mkdir()
     # Start with source directories only; no previously generated packages.
@@ -55,9 +55,12 @@ def test_packaged_repository_cases_contain_only_three_inputs(tmp_path):
         if not directory.name.startswith('_'):
             shutil.copytree(directory, root / directory.name)
     original = catalog.load(root)
-    assert len(original) == 3
-    assert {entry['body']['input']['issue']['key'] for entry in original} == {'MC3-7814', 'MC3-7818', 'MC3-7798'}
-    assert build(root, root / '_packages') == 3
+    assert len(original) == 10
+    assert {entry['body']['input']['issue']['key'] for entry in original} == {
+        'MC3-7798', 'MC3-7812', 'MC3-7828', 'MC3-7821', 'MC3-7808',
+        'MC3-7814', 'MC3-7807', 'MC3-7818', 'MC3-7825', 'MC3-7809',
+    }
+    assert build(root, root / '_packages') == 10
     assert catalog.load(root) == original
     for archive in (root / '_packages').glob('*.zip'):
         with zipfile.ZipFile(archive) as files:
@@ -67,7 +70,7 @@ def test_packaged_repository_cases_contain_only_three_inputs(tmp_path):
             assert set(body['provenance']) == {'issue_key'}
         restored = package.decode(archive.read_bytes())
         assert len(restored['criteria'].splitlines()) == 3
-        assert bool(restored['reference']) == (archive.stem == 'amber-memory-growth')
+        assert restored['reference']
     # A packaged deployment needs neither source directories nor the old site.
     for directory in root.iterdir():
         if directory.name != '_packages':

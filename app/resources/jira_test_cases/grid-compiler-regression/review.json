@@ -1,0 +1,4 @@
+{
+  "criteria": "在指定 FP32、32^4 输入下复现 Dhop/DhopEO 吞吐下降，保留原数值校验。\n定位 WilsonKernels<WilsonImplF>::DhopKernel 的 OptHandUnroll→HandDhopSite 设备执行回退；固定运行环境重新编译验证，给出实际编译命令、kernel 耗时及其对总差异的贡献。\n交付不依赖原 Benchmark 或 libGrid.a 的独立程序，验证相关 full/EO 计算的同向性能差异及数值正确性。",
+  "reference": "MC3-7828 已通过重编译和独立 kernel 确认 DhopKernel 的手工展开路径；MC3-7830 只明确到 WilsonImplF 编译单元，定位深度不足，不能替代前者。后续两轮补齐了设备计时和 full/EO 独立程序，支持采用具体 kernel 作为验收目标。\n\n共同结论是编译器及配套资源生成的设备代码造成回退。实测 Dhop/DhopEO 约下降 2.3%/1.7%，不同独立程序幅度不同；寄存器 144→256 只是伴随变化，没有证明具体 LLVM pass、spill 或寄存器变化就是原因。无需把这些内部机制写成必须命中的答案。\n\n依据：MC3-7828 / jac_18b6d5ffa4ed 第 1、2 轮；MC3-7830 / jac_44c4f498378d；测试 jtr_8bd2e1355d46、jtr_3b01ffd76e17。初始化队列超时的轮次不属于原性能回退的定位结果。"
+}
