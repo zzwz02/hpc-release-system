@@ -739,8 +739,7 @@ class JiraAgentRunner:
                     if item["seq"] < turn["seq"] and item["result_json"]]
         previous = previous[-1] if previous else {}
         previous_result = domain.parse_stored_result(previous["result_json"]) if previous else {}
-        previous_summary = {key: previous_result[key] for key in ("conclusion", "summary", "comment", "action_required")
-                            if key in previous_result}
+        previous_summary = domain.continuation_result(previous_result)
         prompt = domain.build_turn_prompt(
             trigger=turn["trigger"],
             seq=turn["seq"],
