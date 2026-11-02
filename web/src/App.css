@@ -990,6 +990,57 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
   width: 144px;
   white-space: nowrap;
 }
+.cicd-agent-lifecycle-dialog .dialog-body label {
+  display: grid;
+  gap: 6px;
+}
+.cicd-agent-lifecycle-dialog .dialog-body {
+  overflow-wrap: anywhere;
+}
+.cicd-agent-lifecycle-record {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 6px 12px;
+  margin: 0;
+}
+.cicd-agent-lifecycle-record dt { color: var(--muted); }
+.cicd-agent-lifecycle-record dd { margin: 0; }
+.cicd-agent-batch-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 36px;
+  margin-bottom: 10px;
+}
+.cicd-agent-selection-cell {
+  width: 40px;
+  min-width: 40px;
+  text-align: center;
+}
+.cicd-agent-selection-cell input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.cicd-agent-batch-records {
+  max-height: 240px;
+  overflow: auto;
+  border-block: 1px solid var(--border);
+}
+.cicd-agent-batch-records table { table-layout: fixed; width: 100%; }
+.cicd-agent-batch-records th:first-child { width: 75px; }
+.cicd-agent-batch-records th:last-child { width: 125px; }
+.cicd-agent-batch-records td { white-space: normal; overflow-wrap: anywhere; }
+.cicd-agent-batch-records small { display: block; color: var(--muted); }
+.cicd-agent-batch-result {
+  margin-bottom: 10px;
+  padding: 10px 0;
+  border-block: 1px solid var(--border);
+}
+.cicd-agent-batch-result .section-head-row { margin-bottom: 0; }
+.cicd-agent-batch-result ul { max-height: 160px; overflow: auto; margin-bottom: 0; }
 .cicd-agent-detail-trigger {
   min-width: 86px;
   border-color: var(--accent-bd);
@@ -1049,6 +1100,9 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
 .cicd-agent-detail-backdrop {
   z-index: 120;
 }
+.dialog-backdrop.cicd-agent-lifecycle-backdrop {
+  z-index: 130;
+}
 .cicd-agent-detail-dialog {
   padding: 0;
   width: min(1120px, calc(100vw - 48px));
@@ -1079,6 +1133,19 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
   gap: 8px;
   flex-wrap: wrap;
 }
+.cicd-agent-detail-trash {
+  color: var(--bad-fg);
+  border-color: var(--bad-bd);
+  background: var(--bad-bg);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.cicd-agent-detail-trash:hover:not(:disabled) {
+  border-color: var(--bad-fg);
+  background: var(--bad-bg);
+  box-shadow: 0 0 0 1px var(--bad-bd);
+}
+.cicd-agent-detail-trash svg { flex-shrink: 0; }
 .cicd-agent-detail-close {
   border-color: var(--border-2);
   background: var(--surface-2);

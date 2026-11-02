@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import pytest
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from app.api.routers import cicd_agent
+from app.api.errors import register_error_handlers
 from app.deps import require_login
 from app.domain.permissions import ALL_ROLES, roles_for_tab
-from app.main import create_app
 
 
 def _client_for_role(monkeypatch: pytest.MonkeyPatch, role: str, responder=None) -> TestClient:
-    app = create_app()
+    app = FastAPI()
+    register_error_handlers(app)
+    app.include_router(cicd_agent.router)
     app.dependency_overrides[require_login] = lambda: {
         "username": role.lower(),
         "display_name": role,

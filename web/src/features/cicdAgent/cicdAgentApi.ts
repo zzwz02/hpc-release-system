@@ -4,7 +4,26 @@ export const CICD_AGENT_FAILURES_KEY = ["cicd-agent", "failures"] as const;
 export const CICD_AGENT_FILTER_OPTIONS_KEY = ["cicd-agent", "filter-options"] as const;
 export const CICD_AGENT_SUMMARY_KEY = ["cicd-agent", "summary"] as const;
 
+export type FailureRecordState = "active" | "trashed" | "deleted";
+export type FailureRecordView = Exclude<FailureRecordState, "deleted">;
+export type FailureLifecycleAction = "trash" | "restore" | "purge";
+
+export interface FailureBatchLifecycleResponse {
+  results: { id: number; success: boolean; status_code: number; error?: string | null }[];
+  succeeded: number;
+  failed: number;
+}
+
+export interface FailureLifecycleResponse {
+  id: number;
+  record_state: FailureRecordState;
+  record_state_updated_by: string | null;
+  record_state_updated_at: string | null;
+  record_state_reason: string | null;
+}
+
 export interface FailureRecordFilters {
+  record_state?: FailureRecordView;
   date_from?: string;
   date_to?: string;
   job_name?: string;
@@ -33,6 +52,10 @@ export interface FailureRecordFilters {
 
 export interface FailureRecordListItem {
   id: number;
+  record_state?: FailureRecordState;
+  record_state_updated_by?: string | null;
+  record_state_updated_at?: string | null;
+  record_state_reason?: string | null;
   job_name: string;
   build_number: number;
   build_url?: string | null;
@@ -356,18 +379,32 @@ export function fetchFailureRecords(
       ...filters,
       page,
       page_size: 20,
-      sort_by: "created_at",
+      sort_by: filters.record_state === "trashed" ? "record_state_updated_at" : "created_at",
       sort_order: "desc",
     })}`,
   );
 }
 
-export function fetchFailureDetail(recordId: number): Promise<FailureRecordDetail> {
-  return apiGet<FailureRecordDetail>(`/api/cicd-agent/failures/${recordId}`);
+export function fetchFailureDetail(recordId: number, recordState: FailureRecordView = "active"): Promise<FailureRecordDetail> {
+  return apiGet<FailureRecordDetail>(`/api/cicd-agent/failures/${recordId}${recordState === "trashed" ? "?record_state=trashed" : ""}`);
+}
+
+export function changeFailureState(
+  recordId: number, action: FailureLifecycleAction, reason: string,
+): Promise<FailureLifecycleResponse> {
+  return apiPost<FailureLifecycleResponse>(`/api/cicd-agent/failures/${recordId}/${action}`, { reason });
+}
+
+export function changeFailureStates(
+  recordIds: number[], action: FailureLifecycleAction, reason: string,
+): Promise<FailureBatchLifecycleResponse> {
+  return apiPost<FailureBatchLifecycleResponse>("/api/cicd-agent/failures/batch/record-state", {
+    record_ids: recordIds, action, reason,
+  });
 }
 
 export function fetchFailureFilterOptions(
-  filters: Pick<FailureRecordFilters, "date_from" | "date_to">,
+  filters: Pick<FailureRecordFilters, "date_from" | "date_to" | "record_state">,
 ): Promise<FailureFilterOptionsResponse> {
   return apiGet<FailureFilterOptionsResponse>(
     `/api/cicd-agent/failures/filter-options${buildQuery(filters)}`,

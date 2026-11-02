@@ -13,12 +13,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import AsyncIterator
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app import runtime_config
 from app.config import settings
@@ -41,6 +41,24 @@ require_responsibility_resolution = require_roles(
     "RM",
     message="无权处理 Jenkins 失败责任争议",
 )
+require_failure_lifecycle = require_roles("RM", message="只有 RM 可以管理 Jenkins 失败回收站")
+
+
+class FailureLifecycleRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    reason: str = Field(default="", max_length=4000)
+
+
+class FailureBatchLifecycleRequest(FailureLifecycleRequest):
+    record_ids: list[Annotated[int, Field(strict=True, gt=0)]] = Field(min_length=1, max_length=100)
+    action: Literal["trash", "restore", "purge"]
+
+    @field_validator("record_ids")
+    @classmethod
+    def unique_ids(cls, value: list[int]) -> list[int]:
+        if len(set(value)) != len(value):
+            raise ValueError("记录 ID 不能重复")
+        return value
 
 
 class AssistantConversationCreate(BaseModel):
@@ -117,12 +135,16 @@ def _request_agent_payload(
     *,
     query: str = "",
     body: Any = None,
+    actor: dict | None = None,
 ) -> tuple[int, Any]:
     data: bytes | None = None
     headers = {"Accept": "application/json"}
     gateway_token = runtime_config.section("cicd_agent").get("REPRO_GATEWAY_TOKEN", "")
     if gateway_token:
         headers["Authorization"] = f"Bearer {gateway_token}"
+    if actor is not None:
+        headers["X-Actor"] = _assistant_user_id(actor)
+        headers["X-Actor-Role"] = str(actor.get("role") or "")
     if body is not None:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -149,8 +171,11 @@ def _request_agent_payload(
         return 502, {"ok": False, "error": f"CICD Agent 不可用：{exc.reason}"}
 
 
-def _request_agent(method: str, path: str, *, query: str = "", body: Any = None) -> JSONResponse:
-    status_code, payload = _request_agent_payload(method, path, query=query, body=body)
+def _request_agent(
+    method: str, path: str, *, query: str = "", body: Any = None, actor: dict | None = None,
+) -> JSONResponse:
+    kwargs = {"actor": actor} if actor is not None else {}
+    status_code, payload = _request_agent_payload(method, path, query=query, body=body, **kwargs)
     if status_code >= 400 and isinstance(payload, dict) and isinstance(payload.get("detail"), str):
         payload = {**payload, "error": payload["detail"]}
     return JSONResponse(status_code=status_code, content=payload)
@@ -658,36 +683,108 @@ def update_failure_notification_preference(payload: FailureNotificationPreferenc
     return response
 
 
+def _read_failures(
+    path: str, request: Request, record_state: str, user: dict,
+) -> JSONResponse:
+    # Reject ambiguous state queries before forwarding to a different query parser.
+    if len(request.query_params.getlist("record_state")) > 1:
+        raise HTTPException(status_code=422, detail="record_state 只能指定一次")
+    if record_state == "trashed":
+        if user.get("role") != "RM":
+            raise HTTPException(status_code=403, detail="只有 RM 可以查看 Jenkins 失败回收站")
+        response = _request_agent("GET", path, query=request.url.query, actor=user)
+    else:
+        response = _request_agent("GET", path, query=request.url.query)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @router.get("/failures")
 def list_failures(
     request: Request,
-    _user: dict = Depends(require_jenkins_access),
+    record_state: Literal["active", "trashed"] = Query(default="active"),
+    user: dict = Depends(require_jenkins_access),
 ) -> JSONResponse:
-    return _request_agent("GET", "/api/v1/failures", query=request.url.query)
+    return _read_failures("/api/v1/failures", request, record_state, user)
 
 
 @router.get("/failures/summary")
 def summarize_failures(
     request: Request,
-    _user: dict = Depends(require_jenkins_access),
+    record_state: Literal["active", "trashed"] = Query(default="active"),
+    user: dict = Depends(require_jenkins_access),
 ) -> JSONResponse:
-    return _request_agent("GET", "/api/v1/failures/summary", query=request.url.query)
+    return _read_failures("/api/v1/failures/summary", request, record_state, user)
 
 
 @router.get("/failures/filter-options")
 def failure_filter_options(
     request: Request,
-    _user: dict = Depends(require_jenkins_access),
+    record_state: Literal["active", "trashed"] = Query(default="active"),
+    user: dict = Depends(require_jenkins_access),
 ) -> JSONResponse:
-    return _request_agent("GET", "/api/v1/failures/filter-options", query=request.url.query)
+    return _read_failures("/api/v1/failures/filter-options", request, record_state, user)
+
+
+@router.post("/failures/batch/record-state")
+def change_failure_states(
+    payload: FailureBatchLifecycleRequest,
+    user: dict = Depends(require_failure_lifecycle),
+) -> JSONResponse:
+    response = _request_agent(
+        "POST", "/api/v1/failures/batch/record-state",
+        body={**payload.model_dump(), "actor": _assistant_user_id(user),
+              "actor_role": str(user.get("role") or "")}, actor=user,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.get("/failures/{record_id}")
 def failure_detail(
     record_id: int,
-    _user: dict = Depends(require_jenkins_access),
+    request: Request,
+    record_state: Literal["active", "trashed"] = Query(default="active"),
+    user: dict = Depends(require_jenkins_access),
 ) -> JSONResponse:
-    return _request_agent("GET", f"/api/v1/failures/{record_id}")
+    return _read_failures(f"/api/v1/failures/{record_id}", request, record_state, user)
+
+
+def _change_failure_state(
+    record_id: int, action: str, payload: FailureLifecycleRequest, user: dict,
+) -> JSONResponse:
+    response = _request_agent(
+        "POST", f"/api/v1/failures/{record_id}/{action}",
+        body={"actor": _assistant_user_id(user), "actor_role": str(user.get("role") or ""),
+              "reason": payload.reason},
+        actor=user,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/failures/{record_id}/trash")
+def trash_failure(
+    record_id: int, payload: FailureLifecycleRequest,
+    user: dict = Depends(require_failure_lifecycle),
+) -> JSONResponse:
+    return _change_failure_state(record_id, "trash", payload, user)
+
+
+@router.post("/failures/{record_id}/restore")
+def restore_failure(
+    record_id: int, payload: FailureLifecycleRequest,
+    user: dict = Depends(require_failure_lifecycle),
+) -> JSONResponse:
+    return _change_failure_state(record_id, "restore", payload, user)
+
+
+@router.post("/failures/{record_id}/purge")
+def purge_failure(
+    record_id: int, payload: FailureLifecycleRequest,
+    user: dict = Depends(require_failure_lifecycle),
+) -> JSONResponse:
+    return _change_failure_state(record_id, "purge", payload, user)
 
 
 @router.post("/failures/{record_id}/responsibility-feedback")

@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "react-router-dom";
-import { Check, CircleAlert, Clock3, FileSearch, History, MessageSquareWarning } from "lucide-react";
+import { Check, CircleAlert, Clock3, FileSearch, History, MessageSquareWarning, RotateCcw, Trash2, X } from "lucide-react";
 import { useAuth } from "../../api/AuthContext";
 import { apiGet } from "../../api/http";
 import type { StatePayload } from "../../types";
 import { FailureReproPanel, type ReproTask } from "./FailureReproPanel";
 import { FailureNotificationToggle } from "./FailureNotificationToggle";
+import { FailureLifecycleDialog } from "./FailureLifecycleDialog";
 import {
   CICD_AGENT_FAILURES_KEY,
   CICD_AGENT_FILTER_OPTIONS_KEY,
   CICD_AGENT_SUMMARY_KEY,
+  changeFailureState,
+  changeFailureStates,
   fetchFailureDetail,
   fetchFailureFilterOptions,
   fetchFailureRecords,
@@ -18,8 +21,12 @@ import {
   resolveFailureResponsibility,
   submitFailureResponsibilityFeedback,
   todayString,
+  type FailureLifecycleAction,
+  type FailureBatchLifecycleResponse,
   type FailureRecordDetail,
   type FailureRecordFilters,
+  type FailureRecordListItem,
+  type FailureRecordView,
   type FailureResponsibilityEvent,
   type FailureResponsibilityFeedbackPayload,
   type FailureResponsibilityResolutionPayload,
@@ -319,8 +326,22 @@ export function JenkinsFailuresPage() {
   const isRm = user?.role === "RM";
   const { search } = useLocation();
   const queryClient = useQueryClient();
-  const [filters, setFilters] = useState<FailureRecordFilters>(() => filtersFromSearch(search, currentUsername, isRm));
-  const [page, setPage] = useState(1);
+  const [view, setView] = useState<FailureRecordView>("active");
+  const recordState = isRm ? view : "active";
+  const isTrashed = recordState === "trashed";
+  const [normalFilters, setNormalFilters] = useState<FailureRecordFilters>(() => filtersFromSearch(search, currentUsername, isRm));
+  const [trashFilters, setTrashFilters] = useState<FailureRecordFilters>({});
+  const filters = isTrashed ? trashFilters : normalFilters;
+  const setFilters = isTrashed ? setTrashFilters : setNormalFilters;
+  const [normalPage, setNormalPage] = useState(1);
+  const [trashPage, setTrashPage] = useState(1);
+  const page = isTrashed ? trashPage : normalPage;
+  const setPage = isTrashed ? setTrashPage : setNormalPage;
+  const [lifecycle, setLifecycle] = useState<{
+    records: FailureRecordListItem[]; action: FailureLifecycleAction; batch: boolean;
+  } | null>(null);
+  const [checkedIds, setCheckedIds] = useState<number[]>([]);
+  const [batchResult, setBatchResult] = useState<(FailureBatchLifecycleResponse & { action: FailureLifecycleAction }) | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(() => linkedFailureId(search));
   const [initialRepro, setInitialRepro] = useState(false);
   const [initialResponsibility, setInitialResponsibility] = useState(false);
@@ -328,21 +349,33 @@ export function JenkinsFailuresPage() {
   const [summaryExpanded, setSummaryExpanded] = useState(false);
 
   useEffect(() => {
-    setPage(1);
+    setView("active");
+    setNormalPage(1);
+    setTrashPage(1);
+    setTrashFilters({});
+    setLifecycle(null);
+    setBatchResult(null);
     setSelectedId(linkedFailureId(search));
     setInitialRepro(false);
     setInitialResponsibility(false);
     setSummaryExpanded(false);
-    setFilters(filtersFromSearch(search, currentUsername, isRm));
+    setNormalFilters(filtersFromSearch(search, currentUsername, isRm));
   }, [search, currentUsername, isRm]);
 
   const activeFilters = useMemo<FailureRecordFilters>(
-    () => Object.fromEntries(Object.entries(filters).filter(([key, value]) => value && (key !== "pending_rm_review" || user?.role === "RM"))),
-    [filters, user?.role],
+    () => ({
+      ...Object.fromEntries(Object.entries(filters).filter(([key, value]) => value && (key !== "pending_rm_review" || (isRm && !isTrashed)))),
+      ...(isTrashed ? { record_state: "trashed" as const } : {}),
+    }),
+    [filters, isRm, isTrashed],
   );
 
+  useEffect(() => {
+    setCheckedIds([]);
+  }, [activeFilters, page, currentUsername, user?.role]);
+
   const recordsQuery = useQuery({
-    queryKey: [...CICD_AGENT_FAILURES_KEY, activeFilters, page],
+    queryKey: [...CICD_AGENT_FAILURES_KEY, activeFilters, page, currentUsername, user?.role],
     queryFn: () => fetchFailureRecords(activeFilters, page),
     refetchInterval: 15000,
     staleTime: Infinity,
@@ -350,17 +383,18 @@ export function JenkinsFailuresPage() {
   });
 
   const optionsQuery = useQuery({
-    queryKey: [...CICD_AGENT_FILTER_OPTIONS_KEY, filters.date_from, filters.date_to],
+    queryKey: [...CICD_AGENT_FILTER_OPTIONS_KEY, recordState, filters.date_from, filters.date_to, currentUsername, user?.role],
     queryFn: () => fetchFailureFilterOptions({
       date_from: filters.date_from,
       date_to: filters.date_to,
+      ...(isTrashed ? { record_state: "trashed" } : {}),
     }),
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   });
 
   const summaryQuery = useQuery({
-    queryKey: [...CICD_AGENT_SUMMARY_KEY, activeFilters, summaryGroup],
+    queryKey: [...CICD_AGENT_SUMMARY_KEY, activeFilters, summaryGroup, currentUsername, user?.role],
     queryFn: () => fetchFailureSummary(activeFilters, summaryGroup),
     refetchInterval: 15000,
     staleTime: Infinity,
@@ -375,8 +409,8 @@ export function JenkinsFailuresPage() {
   });
 
   const detailQuery = useQuery({
-    queryKey: ["cicd-agent", "failure-detail", selectedId],
-    queryFn: () => fetchFailureDetail(selectedId as number),
+    queryKey: ["cicd-agent", "failure-detail", selectedId, recordState, currentUsername, user?.role],
+    queryFn: () => fetchFailureDetail(selectedId as number, recordState),
     enabled: selectedId != null,
     staleTime: 0,
     refetchOnWindowFocus: false,
@@ -385,6 +419,12 @@ export function JenkinsFailuresPage() {
   const filterOptions = optionsQuery.data;
   const displayNames = stateQuery.data?.user_display_names ?? {};
   const records = recordsQuery.data?.records ?? [];
+  const checkedRecords = records.filter(record => checkedIds.includes(record.id));
+  useEffect(() => {
+    if (!recordsQuery.data) return;
+    const visible = new Set(recordsQuery.data.records.map(record => record.id));
+    setCheckedIds(ids => ids.filter(id => visible.has(id)));
+  }, [recordsQuery.data]);
   const pageInfo = recordsQuery.data;
   const allSummaryGroups = summaryQuery.data?.groups ?? [];
   const summaryGroups = summaryExpanded
@@ -439,7 +479,7 @@ export function JenkinsFailuresPage() {
     setPage(1);
     setSelectedId(null);
     setSummaryExpanded(false);
-    setFilters(emptyFilters(currentUsername, isRm));
+    setFilters(isTrashed ? {} : emptyFilters(currentUsername, isRm));
   }
 
   function refresh() {
@@ -451,7 +491,7 @@ export function JenkinsFailuresPage() {
     payload: FailureResponsibilityFeedbackPayload,
   ) {
     const result = await submitFailureResponsibilityFeedback(recordId, payload);
-    queryClient.setQueryData(["cicd-agent", "failure-detail", recordId], result.record);
+    queryClient.setQueryData(["cicd-agent", "failure-detail", recordId, "active", currentUsername, user?.role], result.record);
     await queryClient.invalidateQueries({ queryKey: ["cicd-agent"] });
   }
 
@@ -460,7 +500,7 @@ export function JenkinsFailuresPage() {
     payload: FailureResponsibilityResolutionPayload,
   ) {
     const result = await resolveFailureResponsibility(recordId, payload);
-    queryClient.setQueryData(["cicd-agent", "failure-detail", recordId], result.record);
+    queryClient.setQueryData(["cicd-agent", "failure-detail", recordId, "active", currentUsername, user?.role], result.record);
     await queryClient.invalidateQueries({ queryKey: ["cicd-agent"] });
   }
 
@@ -476,17 +516,74 @@ export function JenkinsFailuresPage() {
     setInitialResponsibility(false);
   }, []);
 
+  function switchView(next: FailureRecordView) {
+    setView(next);
+    closeDetail();
+    setSummaryExpanded(false);
+    setBatchResult(null);
+  }
+
+  function openLifecycle(action: FailureLifecycleAction, selected: FailureRecordListItem[], batch = false) {
+    if (!isRm || !selected.length) return;
+    setBatchResult(null);
+    // Freeze the explicit selection; later polling must not expand the operation's scope.
+    setLifecycle({ action, records: [...selected], batch });
+  }
+
+  async function submitLifecycle(reason: string) {
+    if (!isRm || !lifecycle) return;
+    let successfulIds: number[];
+    if (lifecycle.batch) {
+      const result = await changeFailureStates(lifecycle.records.map(record => record.id), lifecycle.action, reason);
+      setBatchResult({ ...result, action: lifecycle.action });
+      successfulIds = result.results.filter(item => item.success).map(item => item.id);
+      setCheckedIds(result.results.filter(item => !item.success).map(item => item.id));
+    } else {
+      await changeFailureState(lifecycle.records[0].id, lifecycle.action, reason);
+      successfulIds = [lifecycle.records[0].id];
+      setCheckedIds(ids => ids.filter(id => !successfulIds.includes(id)));
+    }
+    closeDetail();
+    if (records.length && records.every(record => successfulIds.includes(record.id)) && page > 1) {
+      setPage((value) => value - 1);
+    }
+    await refreshLifecycle();
+  }
+
+  async function refreshLifecycle() {
+    closeDetail();
+    await queryClient.cancelQueries({ queryKey: ["cicd-agent"] });
+    queryClient.removeQueries({ queryKey: ["cicd-agent", "failure-detail"] });
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["cicd-agent"] }),
+      queryClient.invalidateQueries({ queryKey: ["repro-logs"] }),
+      queryClient.invalidateQueries({ queryKey: ["repro-log"] }),
+    ]);
+  }
+
   useEffect(() => {
-    if (selectedId == null) return undefined;
+    if (pageInfo && !recordsQuery.isFetching && page > Math.max(1, pageInfo.total_pages)) {
+      setPage(Math.max(1, pageInfo.total_pages));
+    }
+  }, [page, pageInfo, recordsQuery.isFetching, setPage]);
+
+  useEffect(() => {
+    if (selectedId == null || lifecycle) return undefined;
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") closeDetail();
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [closeDetail, selectedId]);
+  }, [closeDetail, selectedId, lifecycle]);
 
   return (
     <section className="view active cicd-agent-view">
+      {isRm && <div className="subtabs" role="tablist" aria-label="失败记录状态">
+        <button className={`subtab${!isTrashed ? " active" : ""}`} type="button" role="tab"
+          aria-selected={!isTrashed} onClick={() => switchView("active")}>正常失败</button>
+        <button className={`subtab${isTrashed ? " active" : ""}`} type="button" role="tab"
+          aria-selected={isTrashed} onClick={() => switchView("trashed")}>回收站</button>
+      </div>}
       <div className="page-toolbar">
         <h2>Jenkins失败查询</h2>
         <span className="muted small">匹配记录：{pageInfo?.total ?? summaryQuery.data?.total_records ?? 0}</span>
@@ -499,13 +596,13 @@ export function JenkinsFailuresPage() {
           />
           只看我的
         </label>
-        {user?.role === "RM" && <label className="check cicd-agent-review-toggle">
+        {isRm && !isTrashed && <label className="check cicd-agent-review-toggle">
           <input type="checkbox" checked={Boolean(filters.pending_rm_review)}
             onChange={(event) => togglePendingReview(event.target.checked)} />
           仅看待 RM 裁定 <span className="cicd-agent-review-count">{pageInfo?.pending_rm_review_count ?? 0}</span>
         </label>}
         <div className="spacer" />
-        <FailureNotificationToggle key={currentUsername} username={currentUsername} />
+        {!isTrashed && <FailureNotificationToggle key={currentUsername} username={currentUsername} />}
         <button className="btn sm" type="button" onClick={refresh}>刷新</button>
         <button className="btn ghost sm" type="button" onClick={resetFilters}>重置</button>
       </div>
@@ -640,7 +737,7 @@ export function JenkinsFailuresPage() {
 
       <section className="panel cicd-agent-records">
         <div className="section-head-row">
-          <h3>失败记录</h3>
+          <h3>{isTrashed ? "回收站记录" : "失败记录"}</h3>
           <div className="pager">
             <button
               className="btn sm"
@@ -661,10 +758,43 @@ export function JenkinsFailuresPage() {
             </button>
           </div>
         </div>
+        {isRm && <div className="cicd-agent-batch-toolbar">
+          <span className="muted small">已选 {checkedRecords.length} 条</span>
+          {isTrashed ? <>
+            <button type="button" className="btn sm" disabled={!checkedRecords.length}
+              onClick={() => openLifecycle("restore", checkedRecords, true)}>
+              <RotateCcw size={14} aria-hidden="true" />批量恢复
+            </button>
+            <button type="button" className="btn sm" disabled={!checkedRecords.length}
+              onClick={() => openLifecycle("purge", checkedRecords, true)}>
+              <Trash2 size={14} aria-hidden="true" />批量彻底删除
+            </button>
+          </> : <button type="button" className="btn sm" disabled={!checkedRecords.length}
+            onClick={() => openLifecycle("trash", checkedRecords, true)}>
+            <Trash2 size={14} aria-hidden="true" />批量删除
+          </button>}
+          {checkedRecords.length > 0 && <button type="button" className="btn sm" title="取消选择"
+            aria-label="取消选择" onClick={() => setCheckedIds([])}><X size={14} aria-hidden="true" /></button>}
+        </div>}
+        {isRm && batchResult && <div className="cicd-agent-batch-result" role="status">
+          <div className="section-head-row">
+            <span>批量{({ trash: "移入回收站", restore: "恢复", purge: "彻底删除" })[batchResult.action]}：
+              成功 {batchResult.succeeded} 条，未完成 {batchResult.failed} 条</span>
+            <button type="button" className="btn sm" title="关闭操作结果" aria-label="关闭操作结果"
+              onClick={() => setBatchResult(null)}><X size={14} aria-hidden="true" /></button>
+          </div>
+          {batchResult.failed > 0 && <ul>{batchResult.results.filter(item => !item.success).map(item =>
+            <li key={item.id}>#{item.id}：{item.error || "处理失败，请刷新后重试"}</li>)}</ul>}
+        </div>}
         <div className="table-scroll">
           <table className="data-table cicd-agent-table">
             <thead>
               <tr>
+                {isRm && <th className="cicd-agent-selection-cell"><input type="checkbox" aria-label="选择当前页全部记录"
+                  title="选择当前页全部记录" disabled={!records.length}
+                  checked={records.length > 0 && checkedRecords.length === records.length}
+                  ref={element => { if (element) element.indeterminate = checkedRecords.length > 0 && checkedRecords.length < records.length; }}
+                  onChange={event => setCheckedIds(event.target.checked ? records.map(record => record.id) : [])} /></th>}
                 <th>ID</th>
                 <th>官方名称</th>
                 <th>版本</th>
@@ -675,8 +805,8 @@ export function JenkinsFailuresPage() {
                 <th>Stage</th>
                 <th>Code Owner</th>
                 <th>责任人/角色</th>
-                <th>原因摘要</th>
-                <th>时间</th>
+                <th>{isTrashed ? "删除原因" : "原因摘要"}</th>
+                <th>{isTrashed ? "删除时间" : "时间"}</th>
                 <th>操作</th>
               </tr>
             </thead>
@@ -684,9 +814,13 @@ export function JenkinsFailuresPage() {
               {records.map((record) => (
                 <tr
                   key={record.id}
-                  className={selectedId === record.id ? "selected" : ""}
+                  className={selectedId === record.id || checkedIds.includes(record.id) ? "selected" : ""}
                   onClick={() => openDetail(record.id)}
                 >
+                  {isRm && <td className="cicd-agent-selection-cell" onClick={event => event.stopPropagation()}>
+                    <input type="checkbox" aria-label={`选择记录 #${record.id}`} checked={checkedIds.includes(record.id)}
+                      onChange={event => setCheckedIds(ids => event.target.checked ? [...ids, record.id] : ids.filter(id => id !== record.id))} />
+                  </td>}
                   <td>#{record.id}</td>
                   <td><b>{fmt(record.official_name)}</b></td>
                   <td>{fmt(record.app_version)}</td>
@@ -703,7 +837,7 @@ export function JenkinsFailuresPage() {
                         {fmt(effectiveOwnerRole(record))}
                       </small>
                       {record.responsibility_status && record.responsibility_status !== "ai_suggested" && (
-                        record.responsibility_status === "disputed" ?
+                        record.responsibility_status === "disputed" && !isTrashed ?
                         <button type="button" className="pill responsibility-disputed cicd-agent-dispute-entry"
                           title="查看已提交的责任反馈" onClick={(event) => {
                             event.stopPropagation(); openDetail(record.id, "responsibility");
@@ -714,8 +848,11 @@ export function JenkinsFailuresPage() {
                       )}
                     </div>
                   </td>
-                  <td className="reason-cell">{effectiveReason(record) || "暂无摘要"}</td>
-                  <td>{formatDateTime(record.created_at)}</td>
+                  <td className="reason-cell">{isTrashed ? <>
+                    {fmt(record.record_state_reason)}
+                    <small>删除人：{userDisplayLabel(record.record_state_updated_by, displayNames)}</small>
+                  </> : effectiveReason(record) || "暂无摘要"}</td>
+                  <td>{formatDateTime(isTrashed ? record.record_state_updated_at : record.created_at)}</td>
                   <td className="cicd-agent-table-action">
                     <div className="cicd-agent-row-actions">
                       <button
@@ -729,16 +866,26 @@ export function JenkinsFailuresPage() {
                         <span>查看详情</span>
                         <span aria-hidden="true">›</span>
                       </button>
-                      {(record.normalized_stage || record.failed_stage)?.replace(/_/g, " ") === "build image" && (
+                      {!isTrashed && (record.normalized_stage || record.failed_stage)?.replace(/_/g, " ") === "build image" && (
                         <ReproEntry record={record} onClick={() => openDetail(record.id, "repro")} />
                       )}
+                      {isRm && isTrashed && <>
+                        <button className="btn sm" type="button" title="恢复到正常失败列表"
+                          onClick={(event) => { event.stopPropagation(); openLifecycle("restore", [record]); }}>
+                          <RotateCcw size={14} aria-hidden="true" />恢复
+                        </button>
+                        <button className="btn sm" type="button" title="彻底删除，无法在界面恢复"
+                          onClick={(event) => { event.stopPropagation(); openLifecycle("purge", [record]); }}>
+                          <Trash2 size={14} aria-hidden="true" />彻底删除
+                        </button>
+                      </>}
                     </div>
                   </td>
                 </tr>
               ))}
               {!records.length && (
                 <tr>
-                  <td colSpan={13} className="muted center">
+                  <td colSpan={isRm ? 14 : 13} className="muted center">
                     {recordsQuery.isLoading ? "正在加载..." : "没有匹配记录"}
                   </td>
                 </tr>
@@ -753,25 +900,38 @@ export function JenkinsFailuresPage() {
           加载失败：{recordsQuery.error instanceof Error ? recordsQuery.error.message : String(recordsQuery.error)}
         </div>
       )}
+      {(optionsQuery.error || summaryQuery.error) && <div className="error-banner" role="alert">
+        加载失败：{errorText(optionsQuery.error || summaryQuery.error)}
+      </div>}
+
+      {isRm && lifecycle && <FailureLifecycleDialog
+        key={`${lifecycle.action}:${lifecycle.records.map(record => record.id).join(",")}`} records={lifecycle.records}
+        batch={lifecycle.batch} action={lifecycle.action}
+        onSubmit={submitLifecycle} onRefresh={refreshLifecycle} onClose={() => setLifecycle(null)} />}
 
       {selectedId != null ? (
         <div
           className="dialog-backdrop cicd-agent-detail-backdrop"
           role="dialog"
-          aria-modal="true"
+          aria-modal={!lifecycle}
+          aria-hidden={lifecycle ? true : undefined}
+          ref={element => { element?.toggleAttribute("inert", Boolean(lifecycle)); }}
           aria-labelledby="failure-detail-title"
           onClick={closeDetail}
         >
           <FailureDetail
-            key={`${selectedId}:${initialRepro}:${initialResponsibility}`}
+            key={`${recordState}:${selectedId}:${initialRepro}:${initialResponsibility}`}
             initialRepro={initialRepro}
             initialResponsibility={initialResponsibility}
-            record={detailQuery.data}
+            record={detailQuery.error ? undefined : detailQuery.data}
             loading={detailQuery.isFetching}
+            error={detailQuery.error}
+            readOnly={isTrashed || detailQuery.data?.record_state === "trashed"}
             displayNames={displayNames}
             canResolve={user?.role === "RM"}
             onFeedback={submitResponsibilityFeedback}
             onResolve={resolveResponsibility}
+            onTrash={isRm && !isTrashed ? record => openLifecycle("trash", [record]) : undefined}
             onClose={closeDetail}
           />
         </div>
@@ -819,20 +979,26 @@ function FailureDetail({
   initialResponsibility,
   record,
   loading,
+  error,
+  readOnly,
   displayNames,
   canResolve,
   onFeedback,
   onResolve,
+  onTrash,
   onClose,
 }: {
   initialRepro: boolean;
   initialResponsibility: boolean;
   record?: FailureRecordDetail;
   loading: boolean;
+  error: unknown;
+  readOnly: boolean;
   displayNames: Record<string, string>;
   canResolve: boolean;
   onFeedback: (recordId: number, payload: FailureResponsibilityFeedbackPayload) => Promise<void>;
   onResolve: (recordId: number, payload: FailureResponsibilityResolutionPayload) => Promise<void>;
+  onTrash?: (record: FailureRecordListItem) => void;
   onClose: () => void;
 }) {
   const [actionMode, setActionMode] = useState<"feedback" | "resolution" | null>(null);
@@ -991,7 +1157,8 @@ function FailureDetail({
             关闭
           </button>
         </div>
-        <p className="muted">{loading ? "正在加载..." : "没有找到记录详情"}</p>
+        {error ? <p className="action-err" role="alert">加载失败：{errorText(error)}</p>
+          : <p className="muted">{loading ? "正在加载..." : "没有找到记录详情"}</p>}
       </section>
     );
   }
@@ -1011,14 +1178,14 @@ function FailureDetail({
               打开 Jenkins
             </a>
           )}
-          <button
+          {!readOnly && <button
             className="btn sm cicd-agent-feedback-trigger"
             type="button"
             onClick={openFeedback}
           >
             责任反馈
-          </button>
-          {canResolve && (
+          </button>}
+          {!readOnly && canResolve && (
             <button
               className="btn sm cicd-agent-resolution-trigger"
               type="button"
@@ -1027,7 +1194,7 @@ function FailureDetail({
               处理责任
             </button>
           )}
-          {(record.normalized_stage || record.failed_stage)?.replace(/_/g, " ") === "build image" && (
+          {!readOnly && (record.normalized_stage || record.failed_stage)?.replace(/_/g, " ") === "build image" && (
             <button type="button" className="btn sm cicd-agent-detail-trigger" aria-expanded={reproExpanded}
               onClick={() => { setReproExpanded((value) => !value); setResponsibilityExpanded(false); setActionMode(null); }}>
               复议诊断
@@ -1041,6 +1208,15 @@ function FailureDetail({
           >
             责任链
           </button>
+          {!readOnly && onTrash && <button
+            className="btn sm cicd-agent-detail-trash"
+            type="button" title="移入回收站，需再次确认"
+            disabled={loading || submitting !== null}
+            onClick={() => onTrash(record)}
+          >
+            <Trash2 size={18} strokeWidth={2.2} aria-hidden="true" />
+            移入回收站
+          </button>}
           <button className="btn sm cicd-agent-detail-close" type="button" onClick={onClose}>
             <span aria-hidden="true">×</span>
             关闭
@@ -1055,7 +1231,7 @@ function FailureDetail({
           {responsibilityStatusLabel(record.responsibility_status)}
         </small>
       </div>
-      {reproExpanded && <FailureReproPanel key={record.id} recordId={record.id} canResolve={canResolve} onUseReport={useReproReport} />}
+      {!readOnly && reproExpanded && <FailureReproPanel key={record.id} recordId={record.id} canResolve={canResolve} onUseReport={useReproReport} />}
       {responsibilityExpanded && (
         <section className="cicd-agent-responsibility-panel">
         <div className="cicd-agent-responsibility-head">
@@ -1085,7 +1261,7 @@ function FailureDetail({
           <Detail label="AI定责依据" value={record.route_reason || record.owner_reason} wide />
         </div>
 
-        {actionMode === "feedback" && (
+        {!readOnly && actionMode === "feedback" && (
           <form className="cicd-agent-responsibility-form" onSubmit={(event) => void submitFeedback(event)}>
             <div className="cicd-agent-form-grid">
               <label>
@@ -1159,7 +1335,7 @@ function FailureDetail({
           </form>
         )}
 
-        {actionMode === "resolution" && canResolve && (
+        {!readOnly && actionMode === "resolution" && canResolve && (
           <form className="cicd-agent-responsibility-form" onSubmit={(event) => void submitResolution(event)}>
             <div className="cicd-agent-form-grid">
               <label>
@@ -1271,6 +1447,12 @@ function FailureDetail({
         </section>
       )}
       <div className="cicd-agent-detail-grid">
+        {readOnly && <>
+          <Detail label="记录状态" value="回收站（只读）" />
+          <Detail label="删除人" value={userDisplayLabel(record.record_state_updated_by, displayNames)} />
+          <Detail label="删除时间" value={formatDateTime(record.record_state_updated_at)} />
+          <Detail label="删除原因" value={record.record_state_reason} wide />
+        </>}
         <Detail label="Job" value={`${record.job_name} #${record.build_number}`} />
         <Detail label="Stage" value={record.normalized_stage || record.failed_stage} />
         <Detail label="Code Owner" value={userDisplayLabel(record.code_owner, displayNames)} />
