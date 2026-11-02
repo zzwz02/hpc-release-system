@@ -2504,6 +2504,15 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .jira-agent-event.tool-group > summary > span { flex: none; }
 .jira-agent-tool-group-last { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: normal; color: var(--muted); }
 .jira-agent-tool-group-body { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.jira-agent-process { background: var(--surface-2); }
+.jira-agent-process > summary { list-style: none; }
+.jira-agent-process > summary::-webkit-details-marker { display: none; }
+.jira-agent-process > summary::before { content: '\203a'; color: var(--muted); }
+.jira-agent-process[open] > summary::before { transform: rotate(90deg); }
+.jira-agent-process-active { color: var(--accent); font-weight: 600; }
+.jira-agent-process-collapse, .jira-agent-process[open] > summary .jira-agent-process-expand { display: none; }
+.jira-agent-process[open] > summary .jira-agent-process-collapse { display: inline; }
+.jira-agent-process-body { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .jira-agent-pre { white-space: pre-wrap; word-break: break-word; }
 .jira-agent-output { margin: 6px 0 0; padding: 8px; max-height: 360px; overflow: auto; background: #0f172a; color: #e2e8f0; border-radius: var(--r-sm); font-size: 12px; white-space: pre-wrap; word-break: break-all; }
 .jira-agent-md { font-size: 13px; }

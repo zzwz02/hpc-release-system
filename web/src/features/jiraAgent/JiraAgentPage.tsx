@@ -200,7 +200,7 @@ const TOOL_KINDS = new Set(["command", "file_change", "tool", "reasoning"]);
 interface TimelineItem {
   key: string;
   turnId: string;
-  tools: boolean;
+  kind: "event" | "tools" | "process";
   events: AgentEvent[];
 }
 
@@ -209,13 +209,40 @@ function groupTimeline(events: AgentEvent[]): TimelineItem[] {
   for (const event of events) {
     const tools = TOOL_KINDS.has(event.kind);
     const last = items[items.length - 1];
-    if (tools && last?.tools && last.turnId === event.turn_id) {
+    if (tools && last?.kind === "tools" && last.turnId === event.turn_id) {
       last.events.push(event);
     } else {
       // Keyed by the first event so an expanded group stays open while it grows.
-      items.push({ key: event.id, turnId: event.turn_id, tools, events: [event] });
+      items.push({ key: event.id, turnId: event.turn_id, kind: tools ? "tools" : "event", events: [event] });
     }
   }
+  return items;
+}
+
+const PROCESS_KINDS = new Set([...TOOL_KINDS, "agent_message", "environment_check"]);
+
+/** Keep user messages and actionable events visible, in their original order. */
+function groupProcessTimeline(events: AgentEvent[], pendingTurn?: AgentTurn): TimelineItem[] {
+  const items: TimelineItem[] = [];
+  let boundary = "start";
+  function processGroup(turnId: string) {
+    const last = items.at(-1);
+    if (last?.kind === "process" && last.turnId === turnId) return last;
+    // The empty running group keeps its identity when the first record arrives.
+    const item: TimelineItem = { key: `process-${turnId}-${boundary}`, turnId, kind: "process", events: [] };
+    items.push(item);
+    return item;
+  }
+  for (const event of events) {
+    const progress = event.kind === "status" && ["queued", "running"].includes(String(event.payload.status));
+    if (PROCESS_KINDS.has(event.kind) || progress) {
+      processGroup(event.turn_id).events.push(event);
+    } else {
+      items.push({ key: event.id, turnId: event.turn_id, kind: "event", events: [event] });
+      boundary = event.id;
+    }
+  }
+  if (pendingTurn) processGroup(pendingTurn.id);
   return items;
 }
 
@@ -971,18 +998,28 @@ export function ConversationBody({ id, onChanged, testing }: {
     return <div className="panel empty">加载中...</div>;
   }
 
+  const timelineEvents = events.length ? events : detail.events;
+  const latestTurn = conversation.latest_turn;
+  const pendingTurn = ["queued", "running"].includes(conversation.state)
+    && !timelineEvents.some((event) => event.turn_id === latestTurn?.id && event.kind === "result")
+    ? latestTurn ?? undefined : undefined;
+  const timelineItems = testing
+    ? groupTimeline(timelineEvents.filter((event) => !["result", "delivery", "jira_comment"].includes(event.kind)))
+    : groupProcessTimeline(timelineEvents, pendingTurn);
   let lastTurnId = "";
   const timeline = (
       <div className="panel">
         <div className="panel-body jira-agent-timeline" data-testid="jira-agent-timeline">
-          {groupTimeline(testing ? events.filter((event) => !["result", "delivery", "jira_comment"].includes(event.kind)) : events).map((item) => {
+          {timelineItems.map((item, index) => {
             const turn = turnsById.get(item.turnId);
             const separator = item.turnId && item.turnId !== lastTurnId && turn;
             if (item.turnId) lastTurnId = item.turnId;
             return (
               <div key={item.key}>
                 {separator && <TurnSeparator turn={turn} />}
-                {item.tools ? (
+                {item.kind === "process" ? (
+                  <ProcessGroup events={item.events} state={pendingTurn?.id === item.turnId && index === timelineItems.length - 1 ? conversation.state : undefined} phase={conversation.phase} />
+                ) : item.kind === "tools" ? (
                   <ToolGroup events={item.events} />
                 ) : (
                   <EventRow
@@ -997,14 +1034,14 @@ export function ConversationBody({ id, onChanged, testing }: {
               </div>
             );
           })}
-          {events.length === 0 && <p className="muted">暂无记录</p>}
+          {timelineItems.length === 0 && <p className="muted">暂无记录</p>}
         </div>
       </div>
 
   );
   if (testing) {
     const turn = conversation.latest_turn ?? detail.turns.at(-1);
-    const event = [...events].reverse().find((item) => item.kind === "result" && item.turn_id === turn?.id);
+    const event = [...timelineEvents].reverse().find((item) => item.kind === "result" && item.turn_id === turn?.id);
     const result = turn?.result ?? (event?.payload as unknown as AgentResult | undefined);
     const files = detail.files.filter((file) => file.turn_id === turn?.id && file.source === "artifact");
     const inputs = detail.files.filter((file) => file.direction === "input");
@@ -1042,6 +1079,26 @@ function TurnSeparator({ turn }: { turn: AgentTurn }) {
       </span>
     </div>
   );
+}
+
+function ProcessGroup({ events, state, phase }: { events: AgentEvent[]; state?: ConversationState; phase: string }) {
+  const label = state === "queued" ? "排队中"
+    : state === "running" ? phase === "recovering" ? "正在恢复连接"
+      : phase === "finishing" ? "正在整理结果" : "正在思考"
+      : "处理过程";
+  return <details className="jira-agent-event jira-agent-process" data-testid="jira-agent-process">
+    <summary>
+      <span className={state ? "jira-agent-process-active" : ""} aria-live="polite">{label}</span>
+      <span className="muted jira-agent-process-expand">展开查看过程</span>
+      <span className="muted jira-agent-process-collapse">收起过程</span>
+    </summary>
+    <div className="jira-agent-process-body">
+      {groupTimeline(events).map((item) => item.kind === "tools"
+        ? <ToolGroup key={item.key} events={item.events} />
+        : <EventRow key={item.key} event={item.events[0]} turn={undefined} files={[]} canWrite={false} canRetry={false} onChanged={() => undefined} />)}
+      {events.length === 0 && <p className="muted">正在等待执行记录…</p>}
+    </div>
+  </details>;
 }
 
 function ToolGroup({ events }: { events: AgentEvent[] }) {

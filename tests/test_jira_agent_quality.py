@@ -87,7 +87,7 @@ def test_auto_generated_notice_remains_at_end_for_all_comment_formats(comment):
     assert "[HPC 数字员工" not in body
 
 
-@pytest.mark.parametrize("bad", [{"body": 12}, {"evidence_indices": [99]},
+@pytest.mark.parametrize("bad", [{"body": 12},
                                   {"evidence_indices": [True]}, {"commands": [1]}, {"link_text": None}])
 def test_invalid_narrative_preserves_blocker_via_legacy_fallback(bad):
     result = {**RESULT, "action_required": "needs_help",
@@ -96,6 +96,36 @@ def test_invalid_narrative_preserves_blocker_via_legacy_fallback(bad):
     body = render(result)
     assert "无效正文" not in body and "Docker 无权限" in body and "管理员：恢复 Docker 权限" in body
     assert domain.comment_quality_warnings(result, body)
+
+
+@pytest.mark.parametrize("indices", [[2, 6], [-1], [0]])
+def test_bad_narrative_reference_does_not_replace_valid_text(indices):
+    result = {**copy.deepcopy(RESULT), "evidence": [], "comment": narrative(
+        "N300 测试尚未启动：Docker 权限不足。",
+        "已确认模型可读。请管理员恢复执行账号的 Docker 权限，随后继续测试。",
+        kind="blocked", evidence_indices=indices)}
+    original = copy.deepcopy(result)
+    body = render(result)
+    assert result['comment']['outcome'] in body and result['comment']['body'] in body
+    assert RESULT['summary'] not in body
+    assert domain.comment_quality_warnings(result, body) == [
+        "评论证据索引超出本轮证据范围；正文保持原样，引用需核对，完整结果仍保留"]
+    assert domain.parse_stored_result(json.dumps(result)) == original == result
+
+
+@pytest.mark.parametrize("post", [False, True])
+def test_reference_warning_keeps_narrative_and_publication_choice(env, post):
+    env.fake.comment_override = narrative("Docker 权限不足，训练尚未启动。",
+        "请管理员恢复容器使用权限，恢复后继续采集。", kind="blocked", evidence_indices=[999])
+    cid = _handover(env, post_comment=post)["conversation"]["id"]
+    detail = _wait(env, cid, _done)
+    turn = _latest(detail)
+    assert env.fake.comment_override['body'] in turn['comment_body']
+    assert turn['result']['comment']['evidence_indices'] == [999]
+    assert "证据索引超出" in json.dumps(detail, ensure_ascii=False)
+    assert len(env.jira.comments) == int(post)
+    if post:
+        assert turn['comment_body'].endswith(f"_{domain._COMMENT_NOTICE}_ _记录编号：{turn['id']}_")
 
 
 @pytest.mark.parametrize("post", [False, True])
@@ -116,6 +146,60 @@ def test_narrative_is_preserved_through_runner_and_publication_choice(env, post)
         assert body.splitlines()[-1] == f"_{domain._COMMENT_NOTICE}_ _记录编号：{turn['id']}_"
     else:
         assert turn["comment_status"] == ""
+
+
+@pytest.mark.parametrize("post", [False, True])
+@pytest.mark.parametrize("action", ["needs_info", "needs_help", "needs_handoff"])
+def test_requests_preserve_findings_and_uncertainty_through_runner(env, monkeypatch, post, action):
+    handoff = action == "needs_handoff"
+    outcome = "错误发生在设备缓冲区传输阶段，缺陷责任尚未确定。" if handoff else "按现有条件测试两次，均未复现原失败。"
+    request = {
+        "needs_info": "请原报告人提供失败任务的完整日志、退出码和镜像 digest。",
+        "needs_help": "请原报告人在失败环境运行已交付的诊断脚本，采集日志和退出码。",
+        "needs_handoff": "请运行时维护团队检查设备传输日志，应用维护者核对缓冲区生命周期。",
+    }[action]
+    ownership = {
+        "belongs_to_us": "unclear",
+        "target_group": "运行时维护团队" if handoff else "",
+        "reasoning": "组件日志需要维护团队解读；尚不能区分调用方与运行时缺陷。" if handoff else "当前未复现，无法确认缺陷责任。",
+    }
+    assistance = {
+        "current_issue": "原失败原因尚未确认，需要在失败条件下核对",
+        "owner": "原报告人",
+        "request": request,
+    } if not handoff else {"current_issue": "", "owner": "", "request": ""}
+    updates = {
+        "conclusion": "scope_narrowed" if handoff else "cannot_reproduce",
+        "action_required": action,
+        "summary": outcome,
+        "root_cause": "",
+        "ownership": ownership,
+        "assistance": assistance,
+        "reproduction": {"reproduced": handoff, "environment": "测试镜像", "steps": ["./run-case"]},
+        "evidence": [{"description": outcome, "command": "./run-case", "result": "传输校验失败" if handoff else "PASS exit=0"}],
+        "fix": {"description": ""},
+        "artifacts": [],
+        "next_steps": [request] if handoff else [],
+    }
+    for key, value in updates.items():
+        monkeypatch.setitem(RESULT, key, value)
+    env.fake.comment_override = narrative(outcome, ownership["reasoning"] + "\n\n" + request)
+    cid = _handover(env, post_comment=post)["conversation"]["id"]
+    turn = _latest(_wait(env, cid, _done))
+    assert turn["status"] == "completed"
+    for key in ("conclusion", "action_required", "ownership", "assistance", "reproduction"):
+        assert turn["result"][key] == updates[key]
+    body = turn["comment_body"]
+    assert outcome in body and ownership["reasoning"] in body
+    assert body.count(request) == 1
+    footer = f"_{domain._COMMENT_NOTICE}_"
+    if post:
+        footer += f" _记录编号：{turn['id']}_"
+    assert body.endswith("\n\n----\n\n" + footer)
+    assert len(env.jira.comments) == int(post)
+    assert turn["comment_status"] == ("posted" if post else "")
+    if post:
+        assert env.jira.comments[0][1] == body
 
 
 @pytest.mark.parametrize("name,comment,required,forbidden", [
@@ -285,6 +369,19 @@ def test_short_comment_can_still_have_quality_defects():
     body = render(result)
     assert domain.comment_visible_length(body) < 600
     assert any("重复" in item for item in domain.comment_quality_warnings(result, body))
+
+
+def test_publication_receipt_warning_preserves_delivery_and_original_analysis():
+    result = {**copy.deepcopy(RESULT), "comment": narrative(
+        "复现源码和运行说明已交付。", "本轮只整理材料，未重跑实验。现有记录尚无本轮 JIRA 发布回执。")}
+    original = copy.deepcopy(result)
+    body = render(result)
+    assert any("发布回执" in item for item in domain.comment_quality_warnings(result, body))
+    # Warnings must not erase genuine work, alter conclusions, or suppress a comment.
+    assert "复现源码和运行说明已交付" in body
+    assert result == original
+    result["comment"]["body"] = "独立 Bug 尚未创建，请工单操作人员按已交付模板创建并回填编号。"
+    assert domain.comment_quality_warnings(result, render(result)) == []
 
 
 @pytest.mark.parametrize("url", ["http://host:4510", "host:4510", "ws://", "ws://host:bad", "ws://host:70000",

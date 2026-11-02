@@ -1630,6 +1630,31 @@ def test_handoff_preserves_technical_depth_and_reproduction(conclusion) -> None:
             domain.parse_result(json.dumps({**parsed, "ownership": ownership}))
 
 
+@pytest.mark.parametrize("conclusion", ["scope_narrowed", "root_cause_confirmed"])
+def test_investigative_handoff_preserves_uncertain_ownership(conclusion) -> None:
+    result = {
+        **RESULT,
+        "conclusion": conclusion,
+        "action_required": "needs_handoff",
+        "ownership": {
+            "belongs_to_us": "unclear",
+            "target_group": "运行时维护团队",
+            "reasoning": "错误发生在设备缓冲区传输阶段，需要组件日志继续区分调用方与运行时；缺陷责任未定",
+        },
+        "fix": {"description": ""},
+    }
+    parsed = domain.parse_result(json.dumps(result, ensure_ascii=False))
+    assert parsed["ownership"] == result["ownership"]
+    assert domain.result_state(parsed) == (conclusion, "needs_handoff")
+    for field in ("target_group", "reasoning"):
+        with pytest.raises(ValueError, match="needs_handoff"):
+            domain.parse_result(json.dumps({
+                **result, "ownership": {**result["ownership"], field: "  "},
+            }))
+    with pytest.raises(ValueError, match="not_our_group"):
+        domain.parse_result(json.dumps({**result, "conclusion": "not_our_group"}))
+
+
 def test_new_result_schema_requests_depth_and_keeps_legacy_readable() -> None:
     conclusions = domain.RESULT_SCHEMA["properties"]["conclusion"]["enum"]
     assert "scope_narrowed" in conclusions

@@ -8,6 +8,7 @@ import { apiFetch, apiGet, apiPost, apiPostNdjson } from "../../../api/http";
 import { confirmDialog } from "../../../lib/confirm";
 import { toast } from "../../../lib/toast";
 import { JiraAgentPage } from "../JiraAgentPage";
+import { jiraAgentConversationKey, type AgentEvent } from "../jiraAgentApi";
 import { type LearningJob, type LearningProposal } from "../jiraLearningApi";
 
 vi.mock("../../../api/http", () => ({
@@ -773,7 +774,8 @@ describe("JiraAgentPage", () => {
       "href",
       "/api/jira-agent/conversations/jac_1/files/jaf_1",
     );
-    // tool use is folded into a collapsed group; messages and results stay visible
+    // Process details default to folded; user messages and results stay visible.
+    expect(screen.getByTestId("jira-agent-process")).not.toHaveAttribute("open");
     const toolGroup = screen.getByTestId("jira-agent-tool-group");
     expect(toolGroup).not.toHaveAttribute("open");
     expect(within(toolGroup).getByText("工具调用 · 1 条命令")).toBeInTheDocument();
@@ -791,6 +793,87 @@ describe("JiraAgentPage", () => {
     expect(select.value).toBe("jac_1");
     expect(within(select).getAllByRole("option")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "发送" })).toBeInTheDocument();
+  });
+
+  it("preserves the process toggle as queued work starts, updates and completes", async () => {
+    mockBackend();
+    const base = vi.mocked(apiGet).getMockImplementation()!;
+    const queued = { ...turn, status: "queued", comment_status: "", conclusion: "" };
+    let snapshot: unknown = { ...detail, conversation: { ...conversation, state: "queued", latest_turn: queued }, turns: [queued], events: [detail.events[0]], rev: 1 };
+    vi.mocked(apiGet).mockImplementation(async (path: string) => path === "/api/jira-agent/conversations/jac_1" ? snapshot : base(path));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const update = async (value: unknown) => {
+      snapshot = value;
+      await act(async () => { await client.invalidateQueries({ queryKey: jiraAgentConversationKey("jac_1") }); });
+    };
+    const user = userEvent.setup();
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1", client);
+    const process = await screen.findByTestId("jira-agent-process");
+    expect(process).not.toHaveAttribute("open");
+    expect(within(process).getByText("排队中")).toBeVisible();
+    await user.click(process.querySelector("summary")!);
+    expect(within(process).getByText("正在等待执行记录…")).toBeVisible();
+
+    const progress: AgentEvent = { ...detail.events[0], id: "progress", seq: 2, rev: 2, kind: "agent_message", payload: { text: "已读取输入，开始对照验证" } };
+    const running = { ...queued, status: "running" };
+    const runningDetail = { ...detail, conversation: { ...conversation, state: "running", latest_turn: running }, turns: [running], events: [detail.events[0], progress], rev: 2 };
+    await update(runningDetail);
+    await screen.findByText("已读取输入，开始对照验证");
+    expect(screen.getByTestId("jira-agent-process")).toBe(process);
+    expect(process).toHaveAttribute("open");
+    expect(within(process).getByText("正在思考")).toBeVisible();
+    expect(screen.getByText("已读取输入，开始对照验证")).toBeVisible();
+    await user.click(process.querySelector("summary")!);
+    await update({ ...runningDetail, events: [...runningDetail.events, { ...progress, id: "progress2", seq: 3, rev: 3, payload: { text: "对照结果已经取得" } }], rev: 3 });
+    await screen.findByText("对照结果已经取得");
+    expect(process).not.toHaveAttribute("open");
+    expect(screen.getByText("对照结果已经取得")).not.toBeVisible();
+    expect(screen.getByText("请修复")).toBeVisible();
+
+    await update({ ...detail, events: [detail.events[0], progress, ...detail.events.slice(1)] });
+    await screen.findByTestId("jira-agent-result");
+    expect(screen.getByTestId("jira-agent-process")).toBe(process);
+    expect(process).not.toHaveAttribute("open");
+    expect(within(process).getByText("处理过程")).toBeVisible();
+    expect(screen.queryByText("正在思考")).not.toBeInTheDocument();
+    expect(screen.getByTestId("jira-agent-result")).toBeVisible();
+    expect(screen.getByText(/已在 JIRA 发布评论/)).toBeVisible();
+
+    const next = { ...running, id: "jat_2", seq: 2, trigger: "followup" };
+    await update({ ...detail, conversation: { ...conversation, state: "running", latest_turn: next }, turns: [turn, next], events: [...detail.events, { ...detail.events[0], id: "next-user", turn_id: next.id, seq: 5, rev: 5, payload: { text: "请继续验证", author: "alice", mode: "queued" } }] });
+    await screen.findByText("请继续验证");
+    const groups = screen.getAllByTestId("jira-agent-process");
+    expect(groups).toHaveLength(2);
+    expect(groups[1]).not.toHaveAttribute("open");
+    expect(within(groups[1]).getByText("正在思考")).toBeVisible();
+    expect(screen.getByTestId("jira-agent-result")).toBeVisible();
+  });
+
+  it("keeps steering messages, warnings and failures outside folded process records", async () => {
+    mockBackend();
+    const base = vi.mocked(apiGet).getMockImplementation()!;
+    const event = (id: string, seq: number, kind: string, payload: Record<string, unknown>): AgentEvent => ({ ...detail.events[0], id, seq, rev: seq, kind, payload });
+    const failed = { ...turn, status: "failed", comment_status: "", error: "连接中断" };
+    vi.mocked(apiGet).mockImplementation(async (path: string) => path === "/api/jira-agent/conversations/jac_1" ? {
+      ...detail, conversation: { ...conversation, state: "failed", latest_turn: failed }, turns: [failed],
+      events: [detail.events[0], event("p1", 2, "agent_message", { text: "正在检查原输入" }),
+        event("steer", 3, "user_message", { author: "alice", text: "保留原始输入", mode: "steer" }),
+        event("p2", 4, "agent_message", { text: "已保留原始输入" }),
+        event("warning", 5, "status", { status: "warning", text: "执行资源需要管理员确认" }),
+        event("failure", 6, "error", { text: "连接中断" })],
+    } : base(path));
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
+    const groups = await screen.findAllByTestId("jira-agent-process");
+    expect(groups).toHaveLength(2);
+    expect(groups.every(group => !group.hasAttribute("open"))).toBe(true);
+    expect(screen.getByText("正在检查原输入")).not.toBeVisible();
+    expect(screen.getByText("已保留原始输入")).not.toBeVisible();
+    expect(screen.getByText("保留原始输入")).toBeVisible();
+    expect(screen.getByText("执行资源需要管理员确认")).toBeVisible();
+    expect(screen.getByText("连接中断")).toBeVisible();
+    expect(screen.queryByText("正在思考")).not.toBeInTheDocument();
+    const timeline = screen.getByTestId("jira-agent-timeline");
+    expect(timeline.textContent).toMatch(/正在检查原输入[\s\S]*保留原始输入[\s\S]*已保留原始输入/);
   });
 
   it.each(["", "对话已删除，但 B 上目录未清理：10.2.118.75:/b/workspaces/MC3-7672-jac_0，请联系管理员手动清理"])("lets RM delete history and switches conversations with warning %s", async (warning) => {
