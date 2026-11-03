@@ -2980,6 +2980,8 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .test-selection-info { display: flex; flex-direction: column; gap: 5px; }
 .test-selection-info .hint { margin: 0; }
 .test-suite-summary h3 { margin: 0; font-size: 16px; }
+.test-suite-summary .test-run-heading > div:first-child { min-width: 0; max-width: 100%; }
+.test-suite-config { margin: 6px 0 0; font-size: 13px; white-space: nowrap; overflow-x: auto; }
 .test-suite-meta { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
 .test-suite-summary .test-counts { margin: 14px 0 0; font-size: 16px; font-weight: 600; }
 .test-suite-summary .test-progress { margin-bottom: 0; }
