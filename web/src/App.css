@@ -2496,8 +2496,8 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .jira-agent-event.reasoning, .jira-agent-event.status { border-style: dashed; font-size: 12px; }
 .jira-agent-event.status { padding: 4px 10px; }
 .jira-agent-event.error { background: var(--bad-bg); border-color: var(--bad-bd); color: var(--bad-fg); }
-.jira-agent-event.comment { background: var(--ok-bg); border-color: var(--ok-bd); color: var(--ok-fg); }
 .jira-agent-event.result { border-color: var(--accent-bd); box-shadow: inset 3px 0 0 var(--accent); }
+.jira-agent-result-group { display: flex; flex-direction: column; gap: 8px; }
 .jira-agent-command { font-size: 12px; word-break: break-all; }
 .jira-agent-event.tool-group { background: var(--surface-2); border-style: dashed; font-size: 12.5px; }
 .jira-agent-event.tool-group > summary { flex-wrap: nowrap; min-width: 0; }
@@ -2516,6 +2516,16 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .jira-agent-pre { white-space: pre-wrap; word-break: break-word; }
 .jira-agent-output { margin: 6px 0 0; padding: 8px; max-height: 360px; overflow: auto; background: #0f172a; color: #e2e8f0; border-radius: var(--r-sm); font-size: 12px; white-space: pre-wrap; word-break: break-all; }
 .jira-agent-md { font-size: 13px; }
+.jira-result-disclosure > summary { list-style: none; margin-bottom: 0; }
+.jira-result-disclosure > summary::-webkit-details-marker { display: none; }
+.jira-result-disclosure > summary::after { content: ""; width: 6px; height: 6px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); margin-left: auto; flex-shrink: 0; }
+.jira-result-disclosure[open] > summary { margin-bottom: 8px; }
+.jira-result-disclosure[open] > summary::after { transform: rotate(45deg); }
+.jira-comment-publication { display: inline-flex; flex: 1 1 auto; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 6px; margin-left: auto; color: var(--muted); font-size: 12px; }
+.jira-comment-publication.error { color: var(--bad-fg); }
+.jira-comment > :first-child { margin-top: 0; }
+.jira-comment > :last-child { margin-bottom: 0; }
+.jira-comment pre { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); white-space: pre-wrap; overflow-wrap: anywhere; }
 .jira-agent-result-grid { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 4px 12px; margin: 6px 0; }
 .jira-agent-result-grid dt { color: var(--muted); }
 .jira-agent-result-grid dd { margin: 0; }
@@ -2737,6 +2747,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .test-review-form textarea { display: block; width: 100%; margin: 10px 0; padding: 9px 10px; border: 1px solid var(--border-2); border-radius: var(--r-sm); font: inherit; resize: vertical; }
 .test-conversation { display: flex; flex-direction: column; gap: 16px; }
 .test-delivery { border-top: 1px solid var(--border); padding-top: 14px; }
+.test-delivery > .test-disclosure { margin-top: 10px; }
 .test-process { border: 1px solid var(--border); border-radius: var(--r-sm); }
 .test-process > summary { cursor: pointer; padding: 11px 12px; background: var(--surface-2); border-radius: var(--r-sm); }
 .test-process > summary .muted { margin-left: 10px; font-size: 12px; }

@@ -17,6 +17,7 @@ import { isRM } from "../../lib/roles";
 import { toast } from "../../lib/toast";
 import { ModelChoice, type ModelSelection } from "./ModelChoice";
 import { ArtifactLink } from "./ArtifactPreview";
+import { JiraComment } from "./JiraComment";
 import { MachineChoice } from "./MachineChoice";
 import { MachinesDialog } from "./MachinesDialog";
 import { ExecutionPreflightDialog } from "./ExecutionPreflightDialog";
@@ -1005,7 +1006,7 @@ export function ConversationBody({ id, onChanged, testing }: {
     ? latestTurn ?? undefined : undefined;
   const timelineItems = testing
     ? groupTimeline(timelineEvents.filter((event) => !["result", "delivery", "jira_comment"].includes(event.kind)))
-    : groupProcessTimeline(timelineEvents, pendingTurn);
+    : groupProcessTimeline(timelineEvents.filter((event) => event.kind !== "jira_comment"), pendingTurn);
   let lastTurnId = "";
   const timeline = (
       <div className="panel">
@@ -1027,6 +1028,7 @@ export function ConversationBody({ id, onChanged, testing }: {
                     turn={turn}
                     files={detail.files}
                     canWrite={conversation.can_write}
+                    browseUrl={conversation.browse_url}
                     canRetry={(conversation.can_write || conversation.source_kind === "test") && conversation.latest_turn?.id === item.turnId}
                     onChanged={onChanged}
                   />
@@ -1047,11 +1049,12 @@ export function ConversationBody({ id, onChanged, testing }: {
     const inputs = detail.files.filter((file) => file.direction === "input");
     const pending = turn?.delivery_status === "collecting" || turn?.delivery_status === "incomplete";
     return <div className="test-conversation">
-      {result ? <ResultCard result={result} files={files} pending={pending} showFiles={false} foldEvidence />
+      {turn?.comment_body && <CommentCard key={`comment-${turn.id}`} body={turn.comment_body} result={result} />}
+      {result ? <ResultCard key={`result-${turn?.id}`} title="分析结论" result={result} files={files} pending={pending} showFiles={false} showStatus={!turn?.comment_body} foldEvidence fold />
         : <p className="muted">{active ? "agent 正在处理，尚未生成结论。" : "本次测试没有生成分析结论。"}</p>}
       {pending && <DeliveryEvent turn={turn} canRetry={conversation.can_write || conversation.source_kind === "test"} onChanged={onChanged} />}
       {result && <section className="test-delivery"><h3>交付文件</h3>
-        <ResultFiles result={result} files={files} />
+        {files.length > 0 && <ResultFiles result={result} files={files} fold />}
         {files.length === 0 && <p className="muted">{pending ? "交付文件尚未收齐。" : "本次未交付文件。"}</p>}
       </section>}
       <details className="test-process" open={testing.processOpen} onToggle={(event) => testing.onProcessToggle(event.currentTarget.open)}>
@@ -1157,6 +1160,7 @@ function EventRow({
   turn,
   files,
   canWrite,
+  browseUrl = "",
   canRetry,
   onChanged,
 }: {
@@ -1164,6 +1168,7 @@ function EventRow({
   turn: AgentTurn | undefined;
   files: AgentFile[];
   canWrite: boolean;
+  browseUrl?: string;
   canRetry: boolean;
   onChanged: () => void;
 }) {
@@ -1234,12 +1239,18 @@ function EventRow({
         {checks.map(check => <p key={check.target}><code>{check.target}</code> · SSH：{check.ssh.message}{check.dataset.status !== "skipped" && <> · 数据：{check.dataset.message}</>}</p>)}
       </details>;
     }
-    case "result":
-      return <ResultCard result={payload as unknown as AgentResult} files={files.filter((f) => f.turn_id === event.turn_id && f.source === "artifact")} pending={turn?.delivery_status === "incomplete" || turn?.delivery_status === "collecting"} />;
+    case "result": {
+      const result = payload as unknown as AgentResult;
+      return <div className="jira-agent-result-group">
+        {turn?.comment_body && <CommentCard body={turn.comment_body} result={result}
+          publication={<CommentPublication turn={turn} browseUrl={browseUrl} canWrite={canWrite} onChanged={onChanged} />} />}
+        <ResultCard result={result} files={files.filter((f) => f.turn_id === event.turn_id && f.source === "artifact")}
+          pending={turn?.delivery_status === "incomplete" || turn?.delivery_status === "collecting"}
+          showStatus={!turn?.comment_body} foldEvidence fold />
+      </div>;
+    }
     case "delivery":
       return <DeliveryEvent turn={turn} canRetry={canRetry} onChanged={onChanged} />;
-    case "jira_comment":
-      return <CommentEvent event={event} turn={turn} canWrite={canWrite} onChanged={onChanged} />;
     case "error":
       return <div className="jira-agent-event error">{text || "错误"}</div>;
     default:
@@ -1275,14 +1286,33 @@ function CommandEvent({ event }: { event: AgentEvent }) {
   );
 }
 
-function ResultCard({ result, files, pending, showFiles = true, foldEvidence = false }: {
-  result: AgentResult; files: AgentFile[]; pending: boolean; showFiles?: boolean; foldEvidence?: boolean;
+function CommentCard({ body, result, publication }: { body: string; result?: AgentResult; publication?: ReactNode }) {
+  return <details className="jira-agent-event result jira-result-disclosure" data-testid="jira-agent-comment" open>
+    <summary className="jira-agent-event-head">
+      <strong>Jira 评论</strong>
+      {result && <ResultStatus result={result} />}
+      {publication}
+    </summary>
+    <JiraComment value={body} />
+  </details>;
+}
+
+function ResultStatus({ result }: { result: AgentResult }) {
+  const state = resultState(result.conclusion, result.action_required);
+  const action = ACTION_REQUIRED_LABELS[state.action];
+  return <span className="pill-group">
+    <span className="pill accent">{CONCLUSION_LABELS[state.conclusion] ?? state.conclusion}</span>
+    {action && <span className="pill warn">{action}</span>}
+  </span>;
+}
+
+function ResultCard({ result, files, pending, title = "本轮结论", showFiles = true, showStatus = true, foldEvidence = false, fold = false }: {
+  result: AgentResult; files: AgentFile[]; pending: boolean; title?: string; showFiles?: boolean; showStatus?: boolean; foldEvidence?: boolean; fold?: boolean;
 }) {
   const ownership = result.ownership ?? { belongs_to_us: "", target_group: "", reasoning: "" };
   const state = resultState(result.conclusion, result.action_required);
   const handoff = state.action === "needs_handoff" && ownership.target_group?.trim();
   const reasoning = ownership.reasoning?.trim();
-  const action = ACTION_REQUIRED_LABELS[state.action];
   const assistance = result.assistance;
   const showAssistance = (
     (state.action === "needs_info" || state.action === "needs_help")
@@ -1322,15 +1352,14 @@ function ResultCard({ result, files, pending, showFiles = true, foldEvidence = f
     </div>
   ));
 
+  const Card = fold ? "details" : "div";
+  const Heading = fold ? "summary" : "div";
   return (
-    <div className="jira-agent-event result" data-testid="jira-agent-result">
-      <div className="jira-agent-event-head">
-        <strong>{pending ? "分析结论（文件交付尚未完成）" : foldEvidence ? "分析结论" : "本轮结论"}</strong>
-        <span className="pill-group">
-          <span className="pill accent">{CONCLUSION_LABELS[state.conclusion] ?? state.conclusion}</span>
-          {action && <span className="pill warn">{action}</span>}
-        </span>
-      </div>
+    <Card className={`jira-agent-event result${fold ? " jira-result-disclosure" : ""}`} data-testid="jira-agent-result">
+      <Heading className="jira-agent-event-head">
+        <strong>{pending ? "分析结论（文件交付尚未完成）" : title}</strong>
+        {showStatus && <ResultStatus result={result} />}
+      </Heading>
       <dl className="jira-agent-result-grid">
         <dt>问题分类</dt>
         <dd>{result.issue_category || "未分类"}</dd>
@@ -1435,11 +1464,13 @@ function ResultCard({ result, files, pending, showFiles = true, foldEvidence = f
         </div>
       ))}
       {showFiles && <ResultFiles result={result} files={files} section="artifacts" />}
-    </div>
+    </Card>
   );
 }
 
-function ResultFiles({ result, files, section }: { result: AgentResult; files: AgentFile[]; section?: "patches" | "artifacts" }) {
+function ResultFiles({ result, files, section, fold = false }: {
+  result: AgentResult; files: AgentFile[]; section?: "patches" | "artifacts"; fold?: boolean;
+}) {
   const state = resultState(result.conclusion, result.action_required);
   const repair = state.conclusion === "fix_prepared" || state.conclusion === "fixed_pending_review";
   const showFix = repair && result.fix?.description;
@@ -1448,8 +1479,7 @@ function ResultFiles({ result, files, section }: { result: AgentResult; files: A
     return name.endsWith(".patch") || name.endsWith(".diff");
   }) : [];
   const artifacts = files.filter((file) => !patches.includes(file));
-  return <>
-      {section !== "patches" && files.length > 0 && <a className="btn sm" href={`/api/jira-agent/turns/${encodeURIComponent(files[0].turn_id)}/artifacts.zip`}>打包下载本轮产物（ZIP）</a>}
+  const content = <>
       {section !== "artifacts" && (showFix || patches.length > 0) && (
         <div className="jira-agent-patches">
           <strong>修复补丁</strong>
@@ -1483,6 +1513,13 @@ function ResultFiles({ result, files, section }: { result: AgentResult; files: A
           ))}
         </div>
       )}
+  </>;
+  return <>
+    {section !== "patches" && files.length > 0 && <a className="btn sm" href={`/api/jira-agent/turns/${encodeURIComponent(files[0].turn_id)}/artifacts.zip`}>打包下载本轮产物（ZIP）</a>}
+    {fold ? <details className="test-disclosure" key={files[0]?.turn_id}>
+      <summary>文件列表 <span className="muted">{files.length} 个文件</span></summary>
+      <div className="test-disclosure-body">{content}</div>
+    </details> : content}
   </>;
 }
 
@@ -1524,24 +1561,29 @@ function DeliveryEvent({ turn, canRetry, onChanged }: {
   );
 }
 
-function CommentEvent({
-  event,
+function CommentPublication({
   turn,
+  browseUrl,
   canWrite,
   onChanged,
 }: {
-  event: AgentEvent;
-  turn: AgentTurn | undefined;
+  turn: AgentTurn;
+  browseUrl: string;
   canWrite: boolean;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const posted = event.payload.status === "posted";
-  const skipped = event.payload.status === "skipped";
-  const uncertain = event.payload.status === "uncertain" || turn?.comment_publication_state === "uncertain";
+  const posted = turn.comment_status === "posted";
+  const skipped = !posted && turn.post_comment === false;
+  const uncertain = !posted && !skipped && turn.comment_publication_state === "uncertain";
+  const failed = !posted && !skipped && turn.comment_status === "failed";
+  const waiting = ["collecting", "incomplete"].includes(turn.delivery_status);
+  const label = posted ? "已发布到 Jira" : skipped ? "未发布 · 本轮仅在网站显示"
+    : uncertain ? "发布结果待确认" : failed ? "发布失败" : waiting ? "待发布 · 等待文件收齐" : "待发布";
+  const href = posted && turn.comment_id && /^https?:\/\//i.test(browseUrl)
+    ? `${browseUrl}?focusedCommentId=${encodeURIComponent(turn.comment_id)}#comment-${encodeURIComponent(turn.comment_id)}` : "";
 
   async function retry() {
-    if (!turn) return;
     setBusy(true);
     try {
       const response = await retryTurnComment(turn.id);
@@ -1556,24 +1598,23 @@ function CommentEvent({
   }
 
   return (
-    <div className={`jira-agent-event ${posted || skipped ? "comment" : "error"}`}>
-      {posted && (
-        <span>已在 JIRA 发布评论（#{String(event.payload.comment_id ?? "")}），等待 assignee 决定下一步。</span>
-      )}
-      {skipped && <span>按发送时的选择，本轮结论只在网页显示，未发布到 JIRA。</span>}
-      {!posted && !skipped && <span>{uncertain ? "JIRA 评论发布结果待确认：" : "JIRA 评论发布失败："}{String(event.payload.error ?? "")}</span>}
-      {!posted && !skipped && canWrite && turn?.comment_status === "failed" && (
-        <button type="button" className="btn sm" disabled={busy} onClick={() => void retry()}>
-          {uncertain ? "核对发布结果" : "重试发布"}
+    <span className={`jira-comment-publication${failed || uncertain ? " error" : ""}`}>
+      <span title={turn.comment_error || undefined} aria-label={turn.comment_error ? `${label}：${turn.comment_error}` : undefined}>{label}</span>
+      {posted && turn.comment_id && <>
+        <span>·</span>
+        {href ? <a href={href} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()}>#{turn.comment_id}</a>
+          : <span>#{turn.comment_id}</span>}
+      </>}
+      {failed && canWrite && (
+        <button type="button" className="btn sm" disabled={busy} onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void retry();
+        }}>
+          {busy ? "处理中…" : uncertain ? "核对发布结果" : "重试发布"}
         </button>
       )}
-      {turn?.comment_body && (
-        <details>
-          <summary className="muted">评论内容</summary>
-          <pre className="jira-agent-output">{turn.comment_body}</pre>
-        </details>
-      )}
-    </div>
+    </span>
   );
 }
 

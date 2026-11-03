@@ -80,6 +80,8 @@ def main():
                 jira_learning_repo.add_issue(conn, source.get_issue(key), 'HPC', 'rm')
     for name in ('get_issue', 'get_issue_snapshot', 'download_attachment', 'search_issues', 'add_comment', 'find_agent_comment'):
         setattr(jira, name, getattr(source, name))
+    with (folder / 'runtime.conf').open('a') as config:
+        config.write('\n[jira]\nJIRA_BASE_URL = https://jira.example.test\n')
     app = create_app()
     faults = {'missing_artifacts': False, 'missing_inputs': False}
     publication = {'accepted_timeout': False, 'post_calls': 0}
