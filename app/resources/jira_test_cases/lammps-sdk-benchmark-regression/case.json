@@ -1,0 +1,56 @@
+{
+  "title": "[C500][LAMMPS] 833 到 834 镜像的 benchmark 性能下降",
+  "input": {
+    "files": [],
+    "issue": {
+      "acquisition": {
+        "conflicts": [],
+        "parts": {
+          "attachment_metadata": {
+            "status": "complete"
+          },
+          "comments": {
+            "collected": 0,
+            "reported_total": 0,
+            "status": "complete"
+          },
+          "custom_fields": {
+            "collected": 0,
+            "status": "complete"
+          },
+          "description": {
+            "status": "complete"
+          },
+          "field_definitions": {
+            "status": "complete"
+          },
+          "issue": {
+            "status": "complete"
+          }
+        },
+        "scope": "人工保存的测试输入；不代表 Jira 当前内容或全量采集。",
+        "source": "test_case",
+        "status": "complete"
+      },
+      "attachments": [],
+      "comments": [],
+      "components": [
+        "PDE"
+      ],
+      "custom_fields": {},
+      "description": "LAMMPS stable_22Jul2025 的 benchmark 在 20260915-833 到 20260916-834 之间出现性能下降。历史面板约下降 3%，后续 C500 同机对照约下降 4.5%；实际幅度以当前对照为准。\n\n- good（833）：`harbor.sh.mxcr.io/xshi/lammps-maca:mc3-7812-good-20260915-833@sha256:4cc5df21e7fd6b652e890ef3a1fd6a724d0236fc04d24e3f35bd8e45a5c629be`\n- bad（834）：`harbor.sh.mxcr.io/xshi/lammps-maca:mc3-7812-bad-20260916-834@sha256:adf5c4055fa164b2512b9f0acf967e45223b39a2e5151271913f3c7c67be5ad4`\n\n```bash\ndocker run --rm --init -e MACA_PERF_DIR=/tmp -u 0 \\\n  --device=/dev/dri --device=/dev/mxcd --group-add video \\\n  harbor.sh.mxcr.io/xshi/lammps-maca:mc3-7812-bad-20260916-834@sha256:adf5c4055fa164b2512b9f0acf967e45223b39a2e5151271913f3c7c67be5ad4 \\\n  bash -c 'cd /root/check_example && sh runbenchmark_getPerformance.sh && cat /tmp/perf'\n```\n\n单张 C500，程序及输入在镜像内；正常版替换镜像后执行同一命令。",
+      "field_definitions": [],
+      "issue_type": "Bug",
+      "key": "MC3-7812",
+      "labels": [],
+      "project": "MC3",
+      "raw_fields": {},
+      "summary": "[C500][LAMMPS] 833 到 834 镜像的 benchmark 性能下降",
+      "url": "http://10.2.201.98:8080/browse/MC3-7812"
+    },
+    "note": "请复现 benchmark 性能差异并定位原因，交付验证过同一差异的独立小程序。"
+  },
+  "provenance": {
+    "issue_key": "MC3-7812"
+  }
+}

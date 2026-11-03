@@ -1,14 +1,11 @@
 """RM-managed test cases. Import is explicit; runs never fetch or update Jira."""
-import base64
 import copy
 import json
-from pathlib import PurePosixPath
 
 from app.api.errors import ApiError
 from app.db.connection import transaction
 from app.domain import jira_testing as domain, jira_agent, jira_test_package, jira_execution
 from app.integrations import knowledge_service
-from app.integrations.codex_app_server import CodexAppServerClient
 from app.repositories import jira_testing_repo as repo, jira_agent_repo as agent, jira_test_evaluation_repo as evaluations
 from app.repositories.base import dumps_json, new_id
 from app.services import jira_agent_runner as execution
@@ -43,6 +40,53 @@ def batches(case_id):
         return {'batches': repo.batches(conn, case_id)}
 
 
+def resume(user, cid, turn_id):
+    with execution.open_db() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        with transaction(conn):
+            saved = repo.one(conn, '''SELECT v.* FROM jira_test_runs r JOIN jira_test_batches b ON b.id=r.batch_id
+                JOIN jira_test_versions v ON v.id=b.version_id WHERE r.conversation_id=?''', (cid,))
+            if not saved:
+                raise ApiError(404, '测试运行不存在')
+            previous = repo.one(conn, 'SELECT id FROM jira_agent_turns WHERE conversation_id=? AND resume_from=?', (cid, turn_id))
+            if previous:
+                return {'turn_id': previous['id']}
+            turn = agent.latest_turn(conn, cid)
+            if turn['id'] != turn_id:
+                raise ApiError(409, '测试记录已更新，请刷新后再操作')
+            if not domain.resumable(turn):
+                raise ApiError(409, '仅模型调用或响应处理失败的测试可以继续执行')
+            conversation = agent.get_conversation(conn, cid)
+            if conversation['status'] != 'open' or not conversation['thread_id']:
+                raise ApiError(409, '原对话不可恢复，请重新运行测试')
+            if turn['id'] in execution.runner._active:
+                raise ApiError(409, '上次执行仍在收尾，请稍后再试')
+            evaluation = evaluations.latest(conn, cid)
+            if evaluation and evaluation['status'] in ('queued', 'running'):
+                raise ApiError(409, '初评正在执行，请等待结束后继续')
+            from app.services.jira_testing_batches import occupied
+            if occupied(conn, [saved['case_id']]):
+                raise ApiError(409, '该用例已有测试排队或执行中，请等待结束')
+            group = execution.load_groups().get(conversation['agent_group'])
+            if not group:
+                raise ApiError(409, '原分析服务尚未配置')
+            from app.services.jira_testing_execution import group_for
+            group_for(conn, conversation, group)
+            resumed = agent.create_turn(conn, conversation_id=cid, trigger='followup', created_by=user['username'],
+                                        input_text='继续执行：先核对已有实验和产物，再完成原测试。',
+                                        post_comment=False, model=turn['model'], effort=turn['effort'])
+            agent.update_turn(conn, resumed['id'], resume_from=turn_id,
+                              execution_snapshot_json=turn['execution_snapshot_json'], machines_used_json=turn['machines_used_json'])
+            agent.add_event(conn, conversation_id=cid, turn_id=resumed['id'], kind='status', payload={
+                'status': 'queued', 'text': f"{user['username']} 请求继续执行，已加入队列；上次中断：{turn['error']}",
+                'resume_from': turn_id})
+            if evaluation and evaluation['status'] == 'awaiting':
+                evaluations.update(conn, evaluation['id'], status='skipped', error='上次执行未形成结论，已请求继续执行', finished_at=beijing_timestamp())
+            evaluations.enroll(conn, cid, saved)
+    execution.runner.wake()
+    return {'turn_id': resumed['id']}
+
+
 def export_package(case_id, version_id):
     with execution.open_db() as conn:
         row = repo.one(conn, 'SELECT * FROM jira_test_versions WHERE case_id=? AND id=?', (case_id, version_id))
@@ -58,53 +102,6 @@ def preview_package(raw):
     with execution.open_db() as conn:
         matches = repo.matching_cases(conn, domain.digest(draft['input']), draft['title'], draft['criteria'], draft['reference'])
     return {**draft, **matches}
-
-
-async def import_conversation(conversation_id):
-    with execution.open_db() as conn:
-        conversation = agent.get_conversation(conn, conversation_id)
-        if not conversation or conversation['source_kind'] != 'jira':
-            raise ApiError(404, '原始 Jira 对话不存在')
-        if agent.active_turn(conn, conversation_id):
-            raise ApiError(409, '请等待本轮结束后再保存快照')
-        turns = agent.list_turns(conn, conversation_id)
-        if not turns:
-            raise ApiError(409, '尚无可保存的分析输入')
-        group = execution.load_groups().get(conversation['agent_group'])
-        if not group:
-            raise ApiError(409, '原分析服务配置不可用')
-        files = agent.list_files(conn, conversation_id)
-    async with CodexAppServerClient(group.ws_url, group.ws_token) as client:
-        data = await client.read_file(conversation['workspace'] + '/issue.json')
-        if len(data) > domain.MAX_BYTES:
-            raise ValueError('工单快照过大')
-        issue = json.loads(data)['issue']
-        original_coverage = copy.deepcopy(issue.get('acquisition', {}))
-        inputs = {'issue': issue, 'note': turns[0]['input_text'], 'files': []}
-        paths = [attachment.get('local_path', '') for attachment in issue.get('attachments') or []]
-        paths += [item['remote_path'] for item in files
-                  if item['direction'] == 'input' and item['source'] == 'upload'
-                  and item['turn_id'] == turns[0]['id']]
-        total = len(data)
-        for path in dict.fromkeys(paths):
-            pure = PurePosixPath(path)
-            if (len(pure.parts) != 2 or pure.parts[0] not in ('attachments', 'uploads')
-                    or '..' in pure.parts or '\\' in path):
-                raise ValueError('原始附件路径缺失或不安全，无法保存完整用例')
-            raw = await client.read_file(conversation['workspace'] + '/' + path)
-            total += len(raw)
-            if total > domain.MAX_BYTES:
-                raise ValueError('用例输入超过 20MB 限制')
-            inputs['files'].append({'path': path, 'content_base64': base64.b64encode(raw).decode()})
-    with execution.open_db() as conn:
-        latest = agent.latest_turn(conn, conversation_id)
-        if agent.active_turn(conn, conversation_id) or latest['id'] != turns[-1]['id']:
-            raise ApiError(409, '读取期间对话有新轮次，请稍后重新导入')
-    return {'title': issue['summary'], 'input': domain.validate(inputs),
-            'provenance': {'issue_key': conversation['issue_key'], 'conversation_id': conversation_id,
-                           'original_coverage': original_coverage,
-                           'captured_at': beijing_timestamp()},
-            'notice': '导入的是当前保存的工单快照和首轮要求、上传文件。请移除含有答案的评论、历史分析报告和已有修复。'}
 
 
 def save(user, body, case_id=''):

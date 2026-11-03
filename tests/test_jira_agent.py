@@ -175,6 +175,10 @@ class FakeCodex:
             if method == "fs/readFile" and self.read_delay:
                 await asyncio.sleep(self.read_delay)
             result, error = self._result(ws, method, params)
+            if method == 'turn/start' and getattr(self, 'lose_start_reply', False):
+                self.lose_start_reply = False
+                await ws.close()
+                return
             reply = {"id": message["id"], **({"error": error} if error else {"result": result})}
             try:
                 await ws.send(json.dumps(reply))
@@ -259,6 +263,19 @@ class FakeCodex:
                 import subprocess
                 import sys
                 command = params["command"]
+                if '/tests/jtr_' in command[3]:
+                    import tempfile
+                    with tempfile.TemporaryDirectory() as folder:
+                        root = Path(folder)
+                        (root / '.git').mkdir()
+                        for path, content in self.files.items():
+                            if path.startswith(command[3] + '/'):
+                                target = root / path.removeprefix(command[3] + '/')
+                                target.parent.mkdir(parents=True, exist_ok=True)
+                                target.write_bytes(content)
+                        result = subprocess.run([sys.executable, '-c', command[2], folder, command[4]],
+                                                capture_output=True, text=True, timeout=30)
+                    return {'exitCode': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr}, None
                 result = subprocess.run([sys.executable, "-c", command[2], str(self.pack_root), command[4]],
                                         capture_output=True, text=True, timeout=30)
                 return {"exitCode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}, None
@@ -375,6 +392,11 @@ class FakeCodex:
         if plan == "capacity_after_tool":
             await capacity_failure()
             return
+        if plan in ('stream_error', 'auth_error'):
+            state.update(status='failed', error={'message': 'stream disconnected before completion'
+                         if plan == 'stream_error' else 'Incorrect API key provided'})
+            await self._send(thread_id, {'method': 'turn/completed', 'params': {'threadId': thread_id, 'turn': dict(state)}})
+            return
         if plan == "disconnect":
             await self._subscriber[thread_id].close()
             plan = "gate"
@@ -393,7 +415,7 @@ class FakeCodex:
                 "body": "16777217 个元素验证 PASS，退出码 0。\n\n请 owner 审核候选修改和验证记录。",
                 "evidence_indices": [0], "commands": [], "link_text": "候选修改与验证记录",
             }}
-            await notify("item/completed", {"item": {"type": "agentMessage", "id": f"final_{turn_id}", "text": json.dumps(result, ensure_ascii=False), "phase": "final_answer"}, "completedAtMs": 4})
+            await notify("item/completed", {"item": {"type": "agentMessage", "id": f"final_{turn_id}", "text": 'invalid JSON' if plan == 'invalid_result' else json.dumps(result, ensure_ascii=False), "phase": "final_answer"}, "completedAtMs": 4})
             status = "completed"
         state["status"] = status
         await self._send(thread_id, {"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": status, "items": [], "error": None}}})
@@ -1606,6 +1628,31 @@ def test_handoff_preserves_technical_depth_and_reproduction(conclusion) -> None:
     ]:
         with pytest.raises(ValueError, match="needs_handoff"):
             domain.parse_result(json.dumps({**parsed, "ownership": ownership}))
+
+
+@pytest.mark.parametrize("conclusion", ["scope_narrowed", "root_cause_confirmed"])
+def test_investigative_handoff_preserves_uncertain_ownership(conclusion) -> None:
+    result = {
+        **RESULT,
+        "conclusion": conclusion,
+        "action_required": "needs_handoff",
+        "ownership": {
+            "belongs_to_us": "unclear",
+            "target_group": "运行时维护团队",
+            "reasoning": "错误发生在设备缓冲区传输阶段，需要组件日志继续区分调用方与运行时；缺陷责任未定",
+        },
+        "fix": {"description": ""},
+    }
+    parsed = domain.parse_result(json.dumps(result, ensure_ascii=False))
+    assert parsed["ownership"] == result["ownership"]
+    assert domain.result_state(parsed) == (conclusion, "needs_handoff")
+    for field in ("target_group", "reasoning"):
+        with pytest.raises(ValueError, match="needs_handoff"):
+            domain.parse_result(json.dumps({
+                **result, "ownership": {**result["ownership"], field: "  "},
+            }))
+    with pytest.raises(ValueError, match="not_our_group"):
+        domain.parse_result(json.dumps({**result, "conclusion": "not_our_group"}))
 
 
 def test_new_result_schema_requests_depth_and_keeps_legacy_readable() -> None:

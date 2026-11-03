@@ -1,0 +1,56 @@
+{
+  "title": "[X301][Aurora] 单步耗时明显偏高",
+  "input": {
+    "files": [],
+    "issue": {
+      "acquisition": {
+        "conflicts": [],
+        "parts": {
+          "attachment_metadata": {
+            "status": "complete"
+          },
+          "comments": {
+            "collected": 0,
+            "reported_total": 0,
+            "status": "complete"
+          },
+          "custom_fields": {
+            "collected": 0,
+            "status": "complete"
+          },
+          "description": {
+            "status": "complete"
+          },
+          "field_definitions": {
+            "status": "complete"
+          },
+          "issue": {
+            "status": "complete"
+          }
+        },
+        "scope": "人工保存的测试输入；不代表 Jira 当前内容或全量采集。",
+        "source": "test_case",
+        "status": "complete"
+      },
+      "attachments": [],
+      "comments": [],
+      "components": [
+        "PDE"
+      ],
+      "custom_fields": {},
+      "description": "在 X301 上运行 `ai_models_aurora_test`，三次结果分别为 67.465、67.350、67.335 s/step，平均运行时间为 1 小时 12 分 52 秒。测试可以完成，但单步耗时偏高。\n\n测试环境：HPC 3.9.0.1，驱动 3.9.0.3，宿主 SDK 3.9.0.4，容器 SDK 3.9.0.3。\n\n测试数据：\n- 模型：`/mnt/hdd/pde_hpc/dataset/aimodels/models/aurora`\n- 输入：`/mnt/hdd/pde_hpc/dataset/aimodels/test/two_steps.grib`\n\n测试命令：\n\n```bash\ndocker run --pull always -v /mnt/hdd:/mnt/hdd --rm \\\n  -e MACA_PERF_DIR=/tmp \\\n  -v /mnt/hdd/pde_hpc/dataset:/hpc_dataset:ro -u 0 \\\n  --device=/dev/dri --device=/dev/mxcd --group-add video \\\n  harbor.sh.mxcr.io/xshi/aimodels-maca:mc3-7809-aurora-3.9.0.1@sha256:e1af10661cf4ec540a38bd66423988aa0987a0b7b77c8ef8b1596549333080d9 \\\n  sh -c 'export && cd /test && bash benchmark/run_aurora.sh && cat /tmp/perf'\n```",
+      "field_definitions": [],
+      "issue_type": "Bug",
+      "key": "MC3-7809",
+      "labels": [],
+      "project": "MC3",
+      "raw_fields": {},
+      "summary": "[X301][Aurora] 单步耗时明显偏高",
+      "url": "http://10.2.201.98:8080/browse/MC3-7809"
+    },
+    "note": "请在 X301 上分析 Aurora 单步耗时偏高的原因，给出主要耗时和定位证据。"
+  },
+  "provenance": {
+    "issue_key": "MC3-7809"
+  }
+}

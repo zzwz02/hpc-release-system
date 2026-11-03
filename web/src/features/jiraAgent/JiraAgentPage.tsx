@@ -7,7 +7,7 @@
  * URL: ?issue=KEY[&conversation=ID|new].  "new" is an unsent hand-over
  * draft; a bare ?conversation=ID (links in JIRA comments) resolves its issue.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../../api/AuthContext";
@@ -17,6 +17,7 @@ import { isRM } from "../../lib/roles";
 import { toast } from "../../lib/toast";
 import { ModelChoice, type ModelSelection } from "./ModelChoice";
 import { ArtifactLink } from "./ArtifactPreview";
+import { JiraComment } from "./JiraComment";
 import { MachineChoice } from "./MachineChoice";
 import { MachinesDialog } from "./MachinesDialog";
 import { ExecutionPreflightDialog } from "./ExecutionPreflightDialog";
@@ -61,6 +62,7 @@ import {
   type IssuePreview,
   type IssueSearchItem,
   type IssueSearchResponse,
+  type UploadLimits,
 } from "./jiraAgentApi";
 
 const DRAFT = "new";
@@ -149,8 +151,48 @@ function mergeEvents(previous: AgentEvent[], incoming: AgentEvent[]): AgentEvent
   return [...byId.values()].sort((a, b) => a.seq - b.seq);
 }
 
-async function readFiles(files: FileList | null) {
-  return Promise.all(Array.from(files ?? []).map(fileToUpload));
+function uploadError(files: File[], limits: UploadLimits | undefined) {
+  if (!files.length) return "";
+  if (!limits) return "未获取到附件限制，请刷新页面后重试。";
+  if (files.length > limits.max_files) return `已选择 ${files.length} 个文件，每次最多 ${limits.max_files} 个，请重新选择或清除附件。`;
+  const oversized = files.find(file => file.size > limits.max_file_bytes);
+  if (!oversized) return "";
+  const size = Math.ceil(oversized.size / (1024 * 1024) * 100) / 100;
+  return `文件“${oversized.name}”（${size} MB）超过单个文件 ${limits.max_file_bytes / (1024 * 1024)} MB 的限制，请重新选择或清除附件。`;
+}
+
+async function readFiles(files: File[], limits: UploadLimits | undefined) {
+  const error = uploadError(files, limits);
+  if (error) throw new Error(error);
+  return Promise.all(files.map(fileToUpload));
+}
+
+function AttachmentInput({ files, onChange, limits, disabled, children }: {
+  files: File[];
+  onChange: (files: File[]) => void;
+  limits: UploadLimits | undefined;
+  disabled: boolean;
+  children: ReactNode;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  const id = useId();
+  const error = uploadError(files, limits);
+  useEffect(() => {
+    if (!files.length && input.current) input.current.value = "";
+  }, [files]);
+  return <div>
+    <div className="actions">
+      <input ref={input} type="file" multiple aria-label="附加文件" aria-describedby={id}
+        aria-invalid={Boolean(error)} disabled={disabled || !limits}
+        onChange={event => onChange(Array.from(event.currentTarget.files ?? []))} />
+      {files.length > 0 && <button type="button" className="btn" disabled={disabled} onClick={() => onChange([])}>清除附件</button>}
+      {children}
+    </div>
+    <div id={id}>
+      {limits && <p className="muted">单个文件不超过 {limits.max_file_bytes / (1024 * 1024)} MB，每次最多 {limits.max_files} 个</p>}
+      {error && <p className="jira-agent-warning" role="alert">{error}</p>}
+    </div>
+  </div>;
 }
 
 /** Tool-use steps are folded into one collapsed group per consecutive run. */
@@ -159,7 +201,7 @@ const TOOL_KINDS = new Set(["command", "file_change", "tool", "reasoning"]);
 interface TimelineItem {
   key: string;
   turnId: string;
-  tools: boolean;
+  kind: "event" | "tools" | "process";
   events: AgentEvent[];
 }
 
@@ -168,13 +210,40 @@ function groupTimeline(events: AgentEvent[]): TimelineItem[] {
   for (const event of events) {
     const tools = TOOL_KINDS.has(event.kind);
     const last = items[items.length - 1];
-    if (tools && last?.tools && last.turnId === event.turn_id) {
+    if (tools && last?.kind === "tools" && last.turnId === event.turn_id) {
       last.events.push(event);
     } else {
       // Keyed by the first event so an expanded group stays open while it grows.
-      items.push({ key: event.id, turnId: event.turn_id, tools, events: [event] });
+      items.push({ key: event.id, turnId: event.turn_id, kind: tools ? "tools" : "event", events: [event] });
     }
   }
+  return items;
+}
+
+const PROCESS_KINDS = new Set([...TOOL_KINDS, "agent_message", "environment_check"]);
+
+/** Keep user messages and actionable events visible, in their original order. */
+function groupProcessTimeline(events: AgentEvent[], pendingTurn?: AgentTurn): TimelineItem[] {
+  const items: TimelineItem[] = [];
+  let boundary = "start";
+  function processGroup(turnId: string) {
+    const last = items.at(-1);
+    if (last?.kind === "process" && last.turnId === turnId) return last;
+    // The empty running group keeps its identity when the first record arrives.
+    const item: TimelineItem = { key: `process-${turnId}-${boundary}`, turnId, kind: "process", events: [] };
+    items.push(item);
+    return item;
+  }
+  for (const event of events) {
+    const progress = event.kind === "status" && ["queued", "running"].includes(String(event.payload.status));
+    if (PROCESS_KINDS.has(event.kind) || progress) {
+      processGroup(event.turn_id).events.push(event);
+    } else {
+      items.push({ key: event.id, turnId: event.turn_id, kind: "event", events: [event] });
+      boundary = event.id;
+    }
+  }
+  if (pendingTurn) processGroup(pendingTurn.id);
   return items;
 }
 
@@ -780,12 +849,14 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
   const [postComment, setPostComment] = useState(true);
   // a user-given machine: the SSH key upload dialog that must pass before this hand-over
   const [uploading, setUploading] = useState(false);
-  const fileInput = useRef<HTMLInputElement>(null);
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const invalid = Boolean(uploadError(attachments, preview.upload_limits));
   const recovering = Boolean(preview.open_conversation?.recovering);
   const disabled = !preview.can_handover;
 
 
   async function submit() {
+    if (invalid) return;
     const open = preview.open_conversation;
     if (
       open
@@ -807,7 +878,7 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
   async function handover(submission: ExecutionSubmission) {
     setBusy(true);
     try {
-      const files = await readFiles(fileInput.current?.files ?? null);
+      const files = await readFiles(attachments, preview.upload_limits);
       const result = await handoverIssue({
         ...(isRM(user) ? selection : {}),
         issue_key: preview.issue.key,
@@ -839,17 +910,16 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
         <ModelChoice group={preview.agent_group} value={selection} onChange={setSelection} disabled={disabled || busy || uploading} />
         <MachineChoice agentGroup={preview.agent_group} disabled={disabled || busy || uploading} onChange={setMachine} />
         <PostCommentCheck checked={postComment} disabled={disabled || busy || uploading} onChange={setPostComment} />
-        <div className="actions">
-          <input ref={fileInput} type="file" multiple aria-label="附加文件" disabled={disabled || busy || uploading} />
+        <AttachmentInput files={attachments} onChange={setAttachments} limits={preview.upload_limits} disabled={disabled || busy || uploading || recovering}>
           <button
             type="button"
             className="btn primary"
-            disabled={busy || disabled || recovering || machine === null}
+            disabled={busy || disabled || recovering || uploading || machine === null || invalid}
             onClick={() => void submit()}
           >
             交给 agent
           </button>
-        </div>
+        </AttachmentInput>
         {recovering && <p className="jira-agent-warning">{RECOVERING_TEXT}</p>}
       </div>
       {uploading && machine?.mode === "custom" && <ExecutionPreflightDialog agentGroup={preview.agent_group} execution={machine}
@@ -929,18 +999,28 @@ export function ConversationBody({ id, onChanged, testing }: {
     return <div className="panel empty">加载中...</div>;
   }
 
+  const timelineEvents = events.length ? events : detail.events;
+  const latestTurn = conversation.latest_turn;
+  const pendingTurn = ["queued", "running"].includes(conversation.state)
+    && !timelineEvents.some((event) => event.turn_id === latestTurn?.id && event.kind === "result")
+    ? latestTurn ?? undefined : undefined;
+  const timelineItems = testing
+    ? groupTimeline(timelineEvents.filter((event) => !["result", "delivery", "jira_comment"].includes(event.kind)))
+    : groupProcessTimeline(timelineEvents.filter((event) => event.kind !== "jira_comment"), pendingTurn);
   let lastTurnId = "";
   const timeline = (
       <div className="panel">
         <div className="panel-body jira-agent-timeline" data-testid="jira-agent-timeline">
-          {groupTimeline(testing ? events.filter((event) => !["result", "delivery", "jira_comment"].includes(event.kind)) : events).map((item) => {
+          {timelineItems.map((item, index) => {
             const turn = turnsById.get(item.turnId);
             const separator = item.turnId && item.turnId !== lastTurnId && turn;
             if (item.turnId) lastTurnId = item.turnId;
             return (
               <div key={item.key}>
                 {separator && <TurnSeparator turn={turn} />}
-                {item.tools ? (
+                {item.kind === "process" ? (
+                  <ProcessGroup events={item.events} state={pendingTurn?.id === item.turnId && index === timelineItems.length - 1 ? conversation.state : undefined} phase={conversation.phase} />
+                ) : item.kind === "tools" ? (
                   <ToolGroup events={item.events} />
                 ) : (
                   <EventRow
@@ -948,6 +1028,7 @@ export function ConversationBody({ id, onChanged, testing }: {
                     turn={turn}
                     files={detail.files}
                     canWrite={conversation.can_write}
+                    browseUrl={conversation.browse_url}
                     canRetry={(conversation.can_write || conversation.source_kind === "test") && conversation.latest_turn?.id === item.turnId}
                     onChanged={onChanged}
                   />
@@ -955,24 +1036,25 @@ export function ConversationBody({ id, onChanged, testing }: {
               </div>
             );
           })}
-          {events.length === 0 && <p className="muted">暂无记录</p>}
+          {timelineItems.length === 0 && <p className="muted">暂无记录</p>}
         </div>
       </div>
 
   );
   if (testing) {
     const turn = conversation.latest_turn ?? detail.turns.at(-1);
-    const event = [...events].reverse().find((item) => item.kind === "result" && item.turn_id === turn?.id);
+    const event = [...timelineEvents].reverse().find((item) => item.kind === "result" && item.turn_id === turn?.id);
     const result = turn?.result ?? (event?.payload as unknown as AgentResult | undefined);
     const files = detail.files.filter((file) => file.turn_id === turn?.id && file.source === "artifact");
     const inputs = detail.files.filter((file) => file.direction === "input");
     const pending = turn?.delivery_status === "collecting" || turn?.delivery_status === "incomplete";
     return <div className="test-conversation">
-      {result ? <ResultCard result={result} files={files} pending={pending} showFiles={false} foldEvidence />
+      {turn?.comment_body && <CommentCard key={`comment-${turn.id}`} body={turn.comment_body} result={result} />}
+      {result ? <ResultCard key={`result-${turn?.id}`} title="分析结论" result={result} files={files} pending={pending} showFiles={false} showStatus={!turn?.comment_body} foldEvidence fold />
         : <p className="muted">{active ? "agent 正在处理，尚未生成结论。" : "本次测试没有生成分析结论。"}</p>}
       {pending && <DeliveryEvent turn={turn} canRetry={conversation.can_write || conversation.source_kind === "test"} onChanged={onChanged} />}
       {result && <section className="test-delivery"><h3>交付文件</h3>
-        <ResultFiles result={result} files={files} />
+        {files.length > 0 && <ResultFiles result={result} files={files} fold />}
         {files.length === 0 && <p className="muted">{pending ? "交付文件尚未收齐。" : "本次未交付文件。"}</p>}
       </section>}
       <details className="test-process" open={testing.processOpen} onToggle={(event) => testing.onProcessToggle(event.currentTarget.open)}>
@@ -986,7 +1068,7 @@ export function ConversationBody({ id, onChanged, testing }: {
     <>
       {timeline}
       {detail.files.length > 0 && <FilesPanel files={detail.files} />}
-      {conversation.can_write && <Composer conversation={conversation} onSent={onChanged} />}
+      {conversation.can_write && <Composer conversation={conversation} limits={detail.upload_limits} onSent={onChanged} />}
     </>
   );
 }
@@ -1000,6 +1082,26 @@ function TurnSeparator({ turn }: { turn: AgentTurn }) {
       </span>
     </div>
   );
+}
+
+function ProcessGroup({ events, state, phase }: { events: AgentEvent[]; state?: ConversationState; phase: string }) {
+  const label = state === "queued" ? "排队中"
+    : state === "running" ? phase === "recovering" ? "正在恢复连接"
+      : phase === "finishing" ? "正在整理结果" : "正在思考"
+      : "处理过程";
+  return <details className="jira-agent-event jira-agent-process" data-testid="jira-agent-process">
+    <summary>
+      <span className={state ? "jira-agent-process-active" : ""} aria-live="polite">{label}</span>
+      <span className="muted jira-agent-process-expand">展开查看过程</span>
+      <span className="muted jira-agent-process-collapse">收起过程</span>
+    </summary>
+    <div className="jira-agent-process-body">
+      {groupTimeline(events).map((item) => item.kind === "tools"
+        ? <ToolGroup key={item.key} events={item.events} />
+        : <EventRow key={item.key} event={item.events[0]} turn={undefined} files={[]} canWrite={false} canRetry={false} onChanged={() => undefined} />)}
+      {events.length === 0 && <p className="muted">正在等待执行记录…</p>}
+    </div>
+  </details>;
 }
 
 function ToolGroup({ events }: { events: AgentEvent[] }) {
@@ -1058,6 +1160,7 @@ function EventRow({
   turn,
   files,
   canWrite,
+  browseUrl = "",
   canRetry,
   onChanged,
 }: {
@@ -1065,6 +1168,7 @@ function EventRow({
   turn: AgentTurn | undefined;
   files: AgentFile[];
   canWrite: boolean;
+  browseUrl?: string;
   canRetry: boolean;
   onChanged: () => void;
 }) {
@@ -1135,12 +1239,18 @@ function EventRow({
         {checks.map(check => <p key={check.target}><code>{check.target}</code> · SSH：{check.ssh.message}{check.dataset.status !== "skipped" && <> · 数据：{check.dataset.message}</>}</p>)}
       </details>;
     }
-    case "result":
-      return <ResultCard result={payload as unknown as AgentResult} files={files.filter((f) => f.turn_id === event.turn_id && f.source === "artifact")} pending={turn?.delivery_status === "incomplete" || turn?.delivery_status === "collecting"} />;
+    case "result": {
+      const result = payload as unknown as AgentResult;
+      return <div className="jira-agent-result-group">
+        {turn?.comment_body && <CommentCard body={turn.comment_body} result={result}
+          publication={<CommentPublication turn={turn} browseUrl={browseUrl} canWrite={canWrite} onChanged={onChanged} />} />}
+        <ResultCard result={result} files={files.filter((f) => f.turn_id === event.turn_id && f.source === "artifact")}
+          pending={turn?.delivery_status === "incomplete" || turn?.delivery_status === "collecting"}
+          showStatus={!turn?.comment_body} foldEvidence fold />
+      </div>;
+    }
     case "delivery":
       return <DeliveryEvent turn={turn} canRetry={canRetry} onChanged={onChanged} />;
-    case "jira_comment":
-      return <CommentEvent event={event} turn={turn} canWrite={canWrite} onChanged={onChanged} />;
     case "error":
       return <div className="jira-agent-event error">{text || "错误"}</div>;
     default:
@@ -1176,14 +1286,33 @@ function CommandEvent({ event }: { event: AgentEvent }) {
   );
 }
 
-function ResultCard({ result, files, pending, showFiles = true, foldEvidence = false }: {
-  result: AgentResult; files: AgentFile[]; pending: boolean; showFiles?: boolean; foldEvidence?: boolean;
+function CommentCard({ body, result, publication }: { body: string; result?: AgentResult; publication?: ReactNode }) {
+  return <details className="jira-agent-event result jira-result-disclosure" data-testid="jira-agent-comment" open>
+    <summary className="jira-agent-event-head">
+      <strong>Jira 评论</strong>
+      {result && <ResultStatus result={result} />}
+      {publication}
+    </summary>
+    <JiraComment value={body} />
+  </details>;
+}
+
+function ResultStatus({ result }: { result: AgentResult }) {
+  const state = resultState(result.conclusion, result.action_required);
+  const action = ACTION_REQUIRED_LABELS[state.action];
+  return <span className="pill-group">
+    <span className="pill accent">{CONCLUSION_LABELS[state.conclusion] ?? state.conclusion}</span>
+    {action && <span className="pill warn">{action}</span>}
+  </span>;
+}
+
+function ResultCard({ result, files, pending, title = "本轮结论", showFiles = true, showStatus = true, foldEvidence = false, fold = false }: {
+  result: AgentResult; files: AgentFile[]; pending: boolean; title?: string; showFiles?: boolean; showStatus?: boolean; foldEvidence?: boolean; fold?: boolean;
 }) {
   const ownership = result.ownership ?? { belongs_to_us: "", target_group: "", reasoning: "" };
   const state = resultState(result.conclusion, result.action_required);
   const handoff = state.action === "needs_handoff" && ownership.target_group?.trim();
   const reasoning = ownership.reasoning?.trim();
-  const action = ACTION_REQUIRED_LABELS[state.action];
   const assistance = result.assistance;
   const showAssistance = (
     (state.action === "needs_info" || state.action === "needs_help")
@@ -1223,15 +1352,14 @@ function ResultCard({ result, files, pending, showFiles = true, foldEvidence = f
     </div>
   ));
 
+  const Card = fold ? "details" : "div";
+  const Heading = fold ? "summary" : "div";
   return (
-    <div className="jira-agent-event result" data-testid="jira-agent-result">
-      <div className="jira-agent-event-head">
-        <strong>{pending ? "分析结论（文件交付尚未完成）" : foldEvidence ? "分析结论" : "本轮结论"}</strong>
-        <span className="pill-group">
-          <span className="pill accent">{CONCLUSION_LABELS[state.conclusion] ?? state.conclusion}</span>
-          {action && <span className="pill warn">{action}</span>}
-        </span>
-      </div>
+    <Card className={`jira-agent-event result${fold ? " jira-result-disclosure" : ""}`} data-testid="jira-agent-result">
+      <Heading className="jira-agent-event-head">
+        <strong>{pending ? "分析结论（文件交付尚未完成）" : title}</strong>
+        {showStatus && <ResultStatus result={result} />}
+      </Heading>
       <dl className="jira-agent-result-grid">
         <dt>问题分类</dt>
         <dd>{result.issue_category || "未分类"}</dd>
@@ -1336,11 +1464,13 @@ function ResultCard({ result, files, pending, showFiles = true, foldEvidence = f
         </div>
       ))}
       {showFiles && <ResultFiles result={result} files={files} section="artifacts" />}
-    </div>
+    </Card>
   );
 }
 
-function ResultFiles({ result, files, section }: { result: AgentResult; files: AgentFile[]; section?: "patches" | "artifacts" }) {
+function ResultFiles({ result, files, section, fold = false }: {
+  result: AgentResult; files: AgentFile[]; section?: "patches" | "artifacts"; fold?: boolean;
+}) {
   const state = resultState(result.conclusion, result.action_required);
   const repair = state.conclusion === "fix_prepared" || state.conclusion === "fixed_pending_review";
   const showFix = repair && result.fix?.description;
@@ -1349,8 +1479,7 @@ function ResultFiles({ result, files, section }: { result: AgentResult; files: A
     return name.endsWith(".patch") || name.endsWith(".diff");
   }) : [];
   const artifacts = files.filter((file) => !patches.includes(file));
-  return <>
-      {section !== "patches" && files.length > 0 && <a className="btn sm" href={`/api/jira-agent/turns/${encodeURIComponent(files[0].turn_id)}/artifacts.zip`}>打包下载本轮产物（ZIP）</a>}
+  const content = <>
       {section !== "artifacts" && (showFix || patches.length > 0) && (
         <div className="jira-agent-patches">
           <strong>修复补丁</strong>
@@ -1384,6 +1513,13 @@ function ResultFiles({ result, files, section }: { result: AgentResult; files: A
           ))}
         </div>
       )}
+  </>;
+  return <>
+    {section !== "patches" && files.length > 0 && <a className="btn sm" href={`/api/jira-agent/turns/${encodeURIComponent(files[0].turn_id)}/artifacts.zip`}>打包下载本轮产物（ZIP）</a>}
+    {fold ? <details className="test-disclosure" key={files[0]?.turn_id}>
+      <summary>文件列表 <span className="muted">{files.length} 个文件</span></summary>
+      <div className="test-disclosure-body">{content}</div>
+    </details> : content}
   </>;
 }
 
@@ -1425,24 +1561,29 @@ function DeliveryEvent({ turn, canRetry, onChanged }: {
   );
 }
 
-function CommentEvent({
-  event,
+function CommentPublication({
   turn,
+  browseUrl,
   canWrite,
   onChanged,
 }: {
-  event: AgentEvent;
-  turn: AgentTurn | undefined;
+  turn: AgentTurn;
+  browseUrl: string;
   canWrite: boolean;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const posted = event.payload.status === "posted";
-  const skipped = event.payload.status === "skipped";
-  const uncertain = event.payload.status === "uncertain" || turn?.comment_publication_state === "uncertain";
+  const posted = turn.comment_status === "posted";
+  const skipped = !posted && turn.post_comment === false;
+  const uncertain = !posted && !skipped && turn.comment_publication_state === "uncertain";
+  const failed = !posted && !skipped && turn.comment_status === "failed";
+  const waiting = ["collecting", "incomplete"].includes(turn.delivery_status);
+  const label = posted ? "已发布到 Jira" : skipped ? "未发布 · 本轮仅在网站显示"
+    : uncertain ? "发布结果待确认" : failed ? "发布失败" : waiting ? "待发布 · 等待文件收齐" : "待发布";
+  const href = posted && turn.comment_id && /^https?:\/\//i.test(browseUrl)
+    ? `${browseUrl}?focusedCommentId=${encodeURIComponent(turn.comment_id)}#comment-${encodeURIComponent(turn.comment_id)}` : "";
 
   async function retry() {
-    if (!turn) return;
     setBusy(true);
     try {
       const response = await retryTurnComment(turn.id);
@@ -1457,24 +1598,23 @@ function CommentEvent({
   }
 
   return (
-    <div className={`jira-agent-event ${posted || skipped ? "comment" : "error"}`}>
-      {posted && (
-        <span>已在 JIRA 发布评论（#{String(event.payload.comment_id ?? "")}），等待 assignee 决定下一步。</span>
-      )}
-      {skipped && <span>按发送时的选择，本轮结论只在网页显示，未发布到 JIRA。</span>}
-      {!posted && !skipped && <span>{uncertain ? "JIRA 评论发布结果待确认：" : "JIRA 评论发布失败："}{String(event.payload.error ?? "")}</span>}
-      {!posted && !skipped && canWrite && turn?.comment_status === "failed" && (
-        <button type="button" className="btn sm" disabled={busy} onClick={() => void retry()}>
-          {uncertain ? "核对发布结果" : "重试发布"}
+    <span className={`jira-comment-publication${failed || uncertain ? " error" : ""}`}>
+      <span title={turn.comment_error || undefined} aria-label={turn.comment_error ? `${label}：${turn.comment_error}` : undefined}>{label}</span>
+      {posted && turn.comment_id && <>
+        <span>·</span>
+        {href ? <a href={href} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()}>#{turn.comment_id}</a>
+          : <span>#{turn.comment_id}</span>}
+      </>}
+      {failed && canWrite && (
+        <button type="button" className="btn sm" disabled={busy} onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void retry();
+        }}>
+          {busy ? "处理中…" : uncertain ? "核对发布结果" : "重试发布"}
         </button>
       )}
-      {turn?.comment_body && (
-        <details>
-          <summary className="muted">评论内容</summary>
-          <pre className="jira-agent-output">{turn.comment_body}</pre>
-        </details>
-      )}
-    </div>
+    </span>
   );
 }
 
@@ -1536,7 +1676,7 @@ function FilesPanel({ files }: { files: AgentFile[] }) {
   );
 }
 
-function Composer({ conversation, onSent }: { conversation: AgentConversation; onSent: () => void }) {
+function Composer({ conversation, limits, onSent }: { conversation: AgentConversation; limits: UploadLimits | undefined; onSent: () => void }) {
   const { user } = useAuth();
   const savedModel = conversation.latest_turn?.model || "";
   const savedEffort = conversation.latest_turn?.effort || "";
@@ -1554,7 +1694,8 @@ function Composer({ conversation, onSent }: { conversation: AgentConversation; o
   const latestTurnId = conversation.latest_turn?.id;
   const defaultPostComment = conversation.latest_turn?.post_comment ?? true;
   const [postComment, setPostComment] = useState(defaultPostComment);
-  const fileInput = useRef<HTMLInputElement>(null);
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const invalid = Boolean(uploadError(attachments, limits));
 
   useEffect(() => {
     setPostComment(defaultPostComment);
@@ -1571,12 +1712,12 @@ function Composer({ conversation, onSent }: { conversation: AgentConversation; o
   async function send() {
     setBusy(true);
     try {
-      const files = await readFiles(fileInput.current?.files ?? null);
+      const files = await readFiles(attachments, limits);
       const response = await sendConversationMessage(conversation.id, { text, files, post_comment: postComment, ...(isRM(user) && !activeTurn && modelChanged ? selection : {}) });
       toast.success(MODE_LABELS[response.mode] ?? "已发送");
       setText("");
       setModelChanged(false);
-      if (fileInput.current) fileInput.current.value = "";
+      setAttachments([]);
       onSent();
     } catch (error) {
       toast.error(errorMessage(error));
@@ -1601,17 +1742,16 @@ function Composer({ conversation, onSent }: { conversation: AgentConversation; o
           onChange={setPostComment}
           hint={conversation.state === "running" || conversation.state === "queued" ? "以本轮最后一次发送的选择为准" : ""}
         />
-        <div className="actions">
-          <input ref={fileInput} type="file" multiple aria-label="附加文件" />
+        <AttachmentInput files={attachments} onChange={setAttachments} limits={limits} disabled={busy || recovering || delivering}>
           <button
             type="button"
             className="btn primary"
-            disabled={busy || recovering || delivering || !text.trim()}
+            disabled={busy || recovering || delivering || !text.trim() || invalid}
             onClick={() => void send()}
           >
             发送
           </button>
-        </div>
+        </AttachmentInput>
       </div>
     </div>
   );

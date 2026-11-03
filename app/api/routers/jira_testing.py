@@ -1,5 +1,6 @@
 """Test runs use saved inputs and cannot post Jira comments."""
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
@@ -10,6 +11,7 @@ from app.api.jira_execution_models import ExecutionSubmission
 from app.deps import require_roles
 from app.domain import jira_test_package
 from app.services import jira_testing_service as service, jira_testing_batches as batches_service, jira_test_evaluation as evaluations
+from app.services import jira_testing_import as importing
 
 router = APIRouter(prefix='/api/jira-agent/testing', dependencies=[Depends(require_roles('RM'))])
 reviewer = require_roles('RM')
@@ -52,7 +54,32 @@ def listing(request: Request):
 
 @router.get('/import/{conversation_id}')
 async def import_conversation(conversation_id: str):
-    return await service.import_conversation(conversation_id)
+    return await importing.preview(conversation_id)
+
+
+class ImportComment(BaseModel):
+    id: str = Field(min_length=1, max_length=100)
+    body: str = Field(max_length=1_000_000)
+
+
+class ImportSelection(BaseModel):
+    snapshot: str = Field(min_length=64, max_length=64)
+    comments: list[ImportComment] = Field(default_factory=list, max_length=1000)
+    file_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
+@router.post('/import/{conversation_id}')
+async def prepare_import(conversation_id: str, body: ImportSelection):
+    return await importing.prepare(conversation_id, body.model_dump())
+
+
+@router.get('/import/{conversation_id}/files/{file_id}')
+async def download_import_file(conversation_id: str, file_id: str, snapshot: str):
+    raw, name = await importing.download(conversation_id, file_id, snapshot)
+    return Response(raw, media_type='application/octet-stream', headers={
+        'Content-Disposition': "attachment; filename*=UTF-8''" + quote(name, safe=''),
+        'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+    })
 
 
 @router.post('/packages/preview')
@@ -103,6 +130,15 @@ async def run(case_id: str, body: RunBody, user: dict = Depends(reviewer)):
 @router.post('/runs/{conversation_id}/review')
 def review(conversation_id: str, body: ReviewBody, user: dict = Depends(reviewer)):
     return service.review(user, conversation_id, body.model_dump())
+
+
+class ResumeBody(BaseModel):
+    turn_id: str = Field(min_length=1, max_length=100)
+
+
+@router.post('/runs/{conversation_id}/resume')
+def resume(conversation_id: str, body: ResumeBody, user: dict = Depends(reviewer)):
+    return service.resume(user, conversation_id, body.turn_id)
 
 
 @router.post('/batches/{batch_id}/cancel')

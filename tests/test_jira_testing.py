@@ -63,6 +63,10 @@ def test_saved_case_uses_the_same_prompts_and_skill_loading_as_jira(setup, monke
                          files=[{'filename': 'input.txt', 'content_base64': base64.b64encode(b'original input').decode()}])['conversation']
     _wait(env, original['id'], _done)
     imported = env.client.get(BASE + '/import/' + original['id']).json()
+    imported = env.client.post(BASE + '/import/' + original['id'], json={
+        'snapshot': imported['snapshot'], 'comments': [{'id': item['id'], 'body': item['body']} for item in imported['comments']],
+        'file_ids': [item['id'] for item in imported['files']],
+    }).json()
     saved = env.client.post(BASE + '/cases', json=imported)
     assert saved.status_code == 200, saved.text
     calls = forbid_jira(monkeypatch)
@@ -365,9 +369,15 @@ def test_import_contains_original_files_not_outputs(env):
     assert response.status_code == 200, response.text
     draft = response.json()
     assert 'reference' not in draft and 'criteria' not in draft
-    assert len(draft['input']['files']) == 1
-    assert all(item['path'].startswith('attachments/') for item in draft['input']['files'])
+    assert draft['input']['files'] == [] and draft['input']['issue']['comments'] == []
+    assert len(draft['files']) == 1 and draft['files'][0]['source'] == 'jira'
     assert '.patch' not in json.dumps(draft)
+    selected = env.client.post(BASE + '/import/' + conv['id'], json={
+        'snapshot': draft['snapshot'], 'file_ids': [draft['files'][0]['id']],
+    })
+    assert selected.status_code == 200, selected.text
+    assert len(selected.json()['input']['files']) == 1
+    assert selected.json()['input']['files'][0]['path'].startswith('attachments/')
 
 
 def test_invalid_files_and_model_limits(setup):

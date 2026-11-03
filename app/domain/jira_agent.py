@@ -40,7 +40,7 @@ ACTIONS_REQUIRED: dict[str, str] = {
 ALLOWED_ACTIONS: dict[str, set[str]] = {
     "insufficient_evidence": {"needs_info", "needs_help"},
     "reproduced": {"none", "needs_info", "needs_help"},
-    "cannot_reproduce": {"none"},
+    "cannot_reproduce": {"none", "needs_info", "needs_help"},
     "scope_narrowed": {"none", "needs_info", "needs_help", "needs_handoff"},
     "root_cause_confirmed": {"none", "needs_help", "needs_review", "needs_handoff"},
     "fix_prepared": {"needs_info", "needs_help", "needs_review"},
@@ -508,8 +508,11 @@ def build_turn_prompt(
     machine = f"\n\n{machine_text}" if machine_text else ""
     machine += "\n\n" + COMMENT_INSTRUCTIONS
     if previous_result or previous_comment:
-        machine += ("\n\n上一轮结果与已发布评论（历史资料，只用于区分新增和沿用，不代表本轮重新验证）：\n"
-                    + previous_result + "\n" + previous_comment)
+        machine += ("\n\n上一轮分析记录（历史资料，不代表本轮重新验证；证据这里只列条目说明，"
+                    "具体输出和操作见原报告、产物及线程记录）：\n" + previous_result)
+        if previous_comment:
+            machine += ("\n\n上一轮已发布评论（仅用于识别已通知内容，不能代替上述分析记录；"
+                        "本轮仍须保留读者理解当前判断所需的上下文）：\n" + previous_comment)
     if trigger == "handover":
         return f"""新工单交接：{issue['key']}「{issue.get('summary', '')}」
 owner（当前 assignee）：{owner}；交单人：{created_by}
@@ -526,11 +529,35 @@ owner（当前 assignee）：{owner}；交单人：{created_by}
 issue.json 和 issue.md 已刷新；检查 acquisition 中的完整性和缺失原因，不能把未采集到视为不存在。请在当前工作基础上继续，读取当前相关 skill 的收敛与交接要求，再完成本轮并输出结构化结论。{machine}"""
 
 
-COMMENT_INSTRUCTIONS = """完整报告保留复核细节；comment 是给工单读者的一条直接回复，严格使用本轮 schema。
-outcome 一句话回答本轮问题，网站加粗；body 用自然段或必要列表接着解释，不复述首句，不设“依据/尚未确认/待办”栏目。首句加正文通常控制在 200～360 字符（网站另附身份、链接和固定声明，整条通常约 400～600），无最低长度；必要命令或复杂交接可增加。关键数据保留有意义的精度，详细原值放报告。
-正文只选读者理解结论和采取下一步所需的事实。原始 trace 编号、分配块大小、详细环境检查清单、材料审计过程留在报告；不要逐项反驳本轮未提出的误解。未确认项只保留影响当前判断的边界，避免罗列所有未做工作。沿用历史结果简短说明一次，不重复“仅复核/未连接/未执行/未重新核验”。
-body 保留必要的旧判断修正；只有确有未完成且需他人处理的事项时才集中提出一处具体请求，网站不再追加 assistance、ownership 或 next_steps。解释性追问的回答本身就是交付，不要求 owner 再转述回复、确认或审核，不重发修复报告；续办突出变化，无新增则简短说明状态。调用路径定位不等于已证明内部机制。
-evidence_indices 最多两项，引用完整 evidence 的零起始序号，仅供追溯。body 用 JIRA wiki：空行分段，“* ”列项，{{符号}} 表示代码；不含首句、身份、声明或链接。commands 仅放必需的完整命令；link_text 给出具体入口名称，实际链接由网站生成。旧 schema 沿用其字段，不添加新字段。"""
+COMMENT_INSTRUCTIONS = """comment 是给工单负责人的简短结果通知。首句直接说明当前结果，正文只保留理解该结果和接手所需的信息，多项问题分别交代结果或未解决之处。详细调查由网站报告承接，完整分析与产物照常保存。
+
+按实际任务表达，不固定栏目：
+- 阻塞：交代已经完成的有效工作、已确认可用的条件和实际障碍，再说明谁需恢复什么条件；不要只列失败检查或笼统说“已完成检查”。未启动实验时，不展开各类尚不能作出的技术归因。已定位问题并提出技术接手方时，保留判断依据和分工；资源恢复请求不能替代技术交接。
+- 分析或修复：说明具体问题、原因或已定位范围及关键对照。测试结果对应实际执行的配置；不同标签使用同一命令、未分别执行时，说明这一关系并保留未完成的验收项。有补丁时说明改动作用、原案前后验证和未完成项。涉及缺陷归属、职责变化或技术交接时，说明主受理/协同方及理由；普通进度不重复应用维护范围。
+- 解释或续办：直接回答问题或说明新增结果，仅保留理解所需的旧背景。修正旧判断时说明修正内容和依据，无变化时不重发旧报告、补丁验证或审核请求。
+
+正文不列环境核验清单、发布目录核验、软件包清单、材料数量/哈希、已处理的工具错误、正常清理和完整后续实验计划。这些细节保存在报告；只有直接影响结论、需要接手者处理或用户明确索要时才写入。用户指定的资源期限与释放结果用一句交代；尚未处理的资源异常写明所需操作。限制说明紧随相关结论，不为用户未提出、也不影响当前判断的疑问追加一串“不能证明”。同一事实、限制或请求只说一次。
+
+技术交接写明能复核结论的关键文件或程序、用途、验证范围和复核入口；报告链接不能代替材料说明。候选修复、有效故障复现、当前要求读者执行的诊断程序及用户索要的材料或操作按需展开。其余供 agent 续跑的工具、例行采样及辅助探针留在报告，不逐件介绍；报告和日志已保存也无需另起一段。内部职责约定直接表述为读者需要执行的操作，用户未询问规则或 skill 时不引用指令文件。
+
+请求写清负责人、对象和必要条件，保留定位日志所需的时间范围，保持验证、审核、提交的实际顺序。描述操作时使用“重新运行”“单独执行”等直接表达，写清操作对象和必要输入；只有再次观察到原故障，才称为“复现原问题”。必要术语就地解释。保留故障现象/实测/验收目标、诊断/修复、沿用/新增的区别；机制未知不等于归属未知，接手建议不等于已转交。不编造事实或后续结论，不按字数裁剪必要内容。
+
+按本轮 schema 输出：outcome 是一句具体结果；body 用自然段或必要列表，不重复首句，不套“依据/待办”等固定栏目。使用 JIRA wiki：空行分段、“* ”列项、{{符号}} 标代码。用户索要完整命令或本轮需要读者直接执行时，将命令放 commands，正文称“下方命令”而不重复命令；其他情况说明程序用途及运行说明所在材料，commands 留空。evidence_indices 最多两项，只能引用本轮 evidence 的零起始有效下标，不确定时留空；引用数量不限制正文事实数量。link_text 使用简短的材料名称，不编造文件直链。身份、链接、横线、固定声明和记录编号由网站添加。写作检查和发布回执不进入技术正文；用户询问发布本身时仍回答实际状态。旧 schema 沿用原字段。"""
+
+
+def continuation_result(result: dict) -> dict:
+    """Keep analysis context independent of the shorter public comment.
+
+    Raw command output stays in the thread/artifacts. Preserve every evidence
+    description instead of selecting the first two or copying a public summary.
+    """
+    keys = ("conclusion", "action_required", "issue_category", "summary", "root_cause",
+            "ownership", "assistance", "reproduction", "fix", "next_steps", "artifacts")
+    context = {key: result[key] for key in keys if key in result}
+    if result.get("evidence"):
+        context["evidence"] = [{"description": item.get("description", "")}
+                               for item in result["evidence"] if isinstance(item, dict)]
+    return context
 
 
 def parse_result(text: str) -> dict:
@@ -578,10 +605,15 @@ def parse_result(text: str) -> dict:
             raise ValueError(f"{conclusion} 要求填写 fix.description")
     ownership = data.get("ownership") or {}
     if action == "needs_handoff":
-        if ownership.get("belongs_to_us") != "no":
-            raise ValueError("needs_handoff 要求 ownership.belongs_to_us=no")
+        belongs_to_us = ownership.get("belongs_to_us")
+        if belongs_to_us not in {"no", "unclear"}:
+            raise ValueError("needs_handoff 要求 ownership.belongs_to_us=no 或 unclear")
         if not str(ownership.get("target_group") or "").strip():
             raise ValueError("needs_handoff 要求填写 ownership.target_group")
+        if belongs_to_us == "unclear" and not str(ownership.get("reasoning") or "").strip():
+            raise ValueError("归属未定的 needs_handoff 要求说明接手依据及未确认范围")
+        if belongs_to_us == "unclear" and conclusion == "not_our_group":
+            raise ValueError("not_our_group 与 ownership.belongs_to_us=unclear 不匹配")
     if "machines_used" in data:
         targets = data["machines_used"]
         if not isinstance(targets, list) or any(not isinstance(t, str) for t in targets):
@@ -631,7 +663,7 @@ def _macro_safe(text: str) -> str:
 
 
 def _comment_projection(result: dict) -> dict | None:
-    """Accept old in-flight schemas; malformed projections fall back to full facts."""
+    """Validate prose separately from non-rendered narrative evidence references."""
     comment = result.get("comment")
     if not isinstance(comment, dict) or not isinstance(comment.get("outcome"), str) or not comment["outcome"].strip():
         return None
@@ -645,8 +677,12 @@ def _comment_projection(result: dict) -> dict | None:
         if (not isinstance(comment["body"], str)
                 or not isinstance(comment.get("link_text"), str)
                 or not isinstance(indices, list) or len(indices) > 2
-                or any(type(i) is not int or not 0 <= i < len(result.get("evidence") or []) for i in indices)):
+                or any(type(i) is not int for i in indices)):
             return None
+        # References are traceability metadata, not the source of this prose.
+        # Report out-of-range indices without replacing a valid narrative by
+        # the full summary or altering the saved result. Legacy references
+        # below include rendered evidence summaries and still fail closed.
         return comment
     # Results already produced by the previous schema remain readable.
     if any(not isinstance(comment.get(key), str) for key in ("limitations", "correction")):
@@ -663,13 +699,45 @@ def _comment_projection(result: dict) -> dict | None:
 
 
 def comment_quality_warnings(result: dict, body: str) -> list[str]:
-    """Presentation diagnostics only; never restart analysis or suppress a blocker."""
+    """Observable presentation issues, not a claim of semantic completeness.
+
+    Never restart analysis, silently rewrite a judgment or suppress a blocker.
+    Fact/ownership equivalence is covered by generation review, not keyword tests.
+    Length is an informational metric, never a standalone quality warning.
+    """
     warnings = []
-    if _comment_projection(result) is None:
+    comment = _comment_projection(result)
+    if comment is None:
         warnings.append("未提供有效的简短评论，已使用兼容摘要；完整结果仍保留")
-    if len(body) > 600:
-        warnings.append("评论超过建议长度，请核对是否包含必要命令或复杂交接")
+    if comment is not None and "body" in comment:
+        text = comment["body"].strip()
+        if any(not 0 <= i < len(result.get("evidence") or []) for i in comment["evidence_indices"]):
+            warnings.append("评论证据索引超出本轮证据范围；正文保持原样，引用需核对，完整结果仍保留")
+        _, action = result_state(result)
+        if not text and (action in {"needs_info", "needs_help", "needs_handoff"}
+                         or (result.get("fix") or {}).get("description")):
+            warnings.append("评论只有首句，请核对归属、协助请求或修复验证是否遗漏")
+        # Only flag identical whole paragraphs, never delete partially shared
+        # sentences (they may describe different versions or a correction).
+        paragraphs = [comment["outcome"], *re.split(r"\n\s*\n", text)]
+        normalized = [re.sub(r"[\s*{}]", "", p).rstrip("。.;；") for p in paragraphs if p.strip()]
+        if len(set(normalized)) < len(normalized):
+            warnings.append("评论首句或整段内容重复，请合并重复表述")
+        if _COMMENT_NOTICE in text or re.search(r"记录编号[：:]\s*jat_", text):
+            warnings.append("评论正文包含固定页脚，发布时会重复追加")
+        if re.search(r"(?:尚无|尚未|未取得|没有)[^。\n]{0,30}(?:JIRA\s*)?发布回执", text, re.I):
+            warnings.append("评论包含发布回执状态；请核对是否为本轮用户所问，常规技术评论应将发布状态留在网站")
     return warnings
+
+
+def comment_visible_length(body: str) -> int:
+    """Approximate JIRA's visible text, excluding link targets and wiki markup."""
+    text = re.sub(r"\[([^\]\n|]+)\|[^\]\n]+\]", r"\1", body)
+    text = re.sub(r"\{(?:noformat|code)(?::[^}]*)?\}|\{\{|\}\}", "", text)
+    text = re.sub(r"(?m)^\s*----\s*$", "", text)
+    text = re.sub(r"(?m)^\* ", "", text)
+    text = re.sub(r"(?<!\w)[*_](?=\S)|(?<=\S)[*_](?!\w)", "", text)
+    return len(text.strip())
 
 
 def render_jira_comment(

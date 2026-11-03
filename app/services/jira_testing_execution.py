@@ -1,5 +1,6 @@
 """Frozen inputs for the common runner, without a Jira client dependency."""
 import base64
+import hashlib
 import json
 from dataclasses import replace
 from pathlib import PurePosixPath
@@ -55,3 +56,19 @@ async def prepare(conn, client, conversation, turn_id):
     await client.write_file(workspace + '/issue.json', json.dumps(
         jira_agent.build_issue_snapshot(issue, paths, markdown), ensure_ascii=False).encode())
     return context
+
+
+async def check_workspace(conn, client, conversation):
+    context = tests.context(conn, conversation['id'])
+    jira_testing.verify(context)
+    hashes = {path: hashlib.sha256(text.encode()).hexdigest() for path, text in context['pack']['files'].items()}
+    script = '''import hashlib,json,sys
+from pathlib import Path
+root=Path(sys.argv[1])
+assert (root/'.git').is_dir() and (root/'issue.json').is_file()
+for name,digest in json.loads(sys.argv[2]).items():
+    assert hashlib.sha256((root/name).read_bytes()).hexdigest()==digest, name
+'''
+    result = await client.exec_command(['python3', '-c', script, conversation['workspace'], json.dumps(hashes)], timeout_ms=30000)
+    if result.get('exitCode') != 0:
+        raise ValueError('原工作目录或 skill 快照不可用，未继续执行；请重新运行测试')

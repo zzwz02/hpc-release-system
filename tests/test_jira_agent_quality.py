@@ -87,7 +87,7 @@ def test_auto_generated_notice_remains_at_end_for_all_comment_formats(comment):
     assert "[HPC 数字员工" not in body
 
 
-@pytest.mark.parametrize("bad", [{"body": 12}, {"evidence_indices": [99]},
+@pytest.mark.parametrize("bad", [{"body": 12},
                                   {"evidence_indices": [True]}, {"commands": [1]}, {"link_text": None}])
 def test_invalid_narrative_preserves_blocker_via_legacy_fallback(bad):
     result = {**RESULT, "action_required": "needs_help",
@@ -96,6 +96,36 @@ def test_invalid_narrative_preserves_blocker_via_legacy_fallback(bad):
     body = render(result)
     assert "无效正文" not in body and "Docker 无权限" in body and "管理员：恢复 Docker 权限" in body
     assert domain.comment_quality_warnings(result, body)
+
+
+@pytest.mark.parametrize("indices", [[2, 6], [-1], [0]])
+def test_bad_narrative_reference_does_not_replace_valid_text(indices):
+    result = {**copy.deepcopy(RESULT), "evidence": [], "comment": narrative(
+        "N300 测试尚未启动：Docker 权限不足。",
+        "已确认模型可读。请管理员恢复执行账号的 Docker 权限，随后继续测试。",
+        kind="blocked", evidence_indices=indices)}
+    original = copy.deepcopy(result)
+    body = render(result)
+    assert result['comment']['outcome'] in body and result['comment']['body'] in body
+    assert RESULT['summary'] not in body
+    assert domain.comment_quality_warnings(result, body) == [
+        "评论证据索引超出本轮证据范围；正文保持原样，引用需核对，完整结果仍保留"]
+    assert domain.parse_stored_result(json.dumps(result)) == original == result
+
+
+@pytest.mark.parametrize("post", [False, True])
+def test_reference_warning_keeps_narrative_and_publication_choice(env, post):
+    env.fake.comment_override = narrative("Docker 权限不足，训练尚未启动。",
+        "请管理员恢复容器使用权限，恢复后继续采集。", kind="blocked", evidence_indices=[999])
+    cid = _handover(env, post_comment=post)["conversation"]["id"]
+    detail = _wait(env, cid, _done)
+    turn = _latest(detail)
+    assert env.fake.comment_override['body'] in turn['comment_body']
+    assert turn['result']['comment']['evidence_indices'] == [999]
+    assert "证据索引超出" in json.dumps(detail, ensure_ascii=False)
+    assert len(env.jira.comments) == int(post)
+    if post:
+        assert turn['comment_body'].endswith(f"_{domain._COMMENT_NOTICE}_ _记录编号：{turn['id']}_")
 
 
 @pytest.mark.parametrize("post", [False, True])
@@ -116,6 +146,60 @@ def test_narrative_is_preserved_through_runner_and_publication_choice(env, post)
         assert body.splitlines()[-1] == f"_{domain._COMMENT_NOTICE}_ _记录编号：{turn['id']}_"
     else:
         assert turn["comment_status"] == ""
+
+
+@pytest.mark.parametrize("post", [False, True])
+@pytest.mark.parametrize("action", ["needs_info", "needs_help", "needs_handoff"])
+def test_requests_preserve_findings_and_uncertainty_through_runner(env, monkeypatch, post, action):
+    handoff = action == "needs_handoff"
+    outcome = "错误发生在设备缓冲区传输阶段，缺陷责任尚未确定。" if handoff else "按现有条件测试两次，均未复现原失败。"
+    request = {
+        "needs_info": "请原报告人提供失败任务的完整日志、退出码和镜像 digest。",
+        "needs_help": "请原报告人在失败环境运行已交付的诊断脚本，采集日志和退出码。",
+        "needs_handoff": "请运行时维护团队检查设备传输日志，应用维护者核对缓冲区生命周期。",
+    }[action]
+    ownership = {
+        "belongs_to_us": "unclear",
+        "target_group": "运行时维护团队" if handoff else "",
+        "reasoning": "组件日志需要维护团队解读；尚不能区分调用方与运行时缺陷。" if handoff else "当前未复现，无法确认缺陷责任。",
+    }
+    assistance = {
+        "current_issue": "原失败原因尚未确认，需要在失败条件下核对",
+        "owner": "原报告人",
+        "request": request,
+    } if not handoff else {"current_issue": "", "owner": "", "request": ""}
+    updates = {
+        "conclusion": "scope_narrowed" if handoff else "cannot_reproduce",
+        "action_required": action,
+        "summary": outcome,
+        "root_cause": "",
+        "ownership": ownership,
+        "assistance": assistance,
+        "reproduction": {"reproduced": handoff, "environment": "测试镜像", "steps": ["./run-case"]},
+        "evidence": [{"description": outcome, "command": "./run-case", "result": "传输校验失败" if handoff else "PASS exit=0"}],
+        "fix": {"description": ""},
+        "artifacts": [],
+        "next_steps": [request] if handoff else [],
+    }
+    for key, value in updates.items():
+        monkeypatch.setitem(RESULT, key, value)
+    env.fake.comment_override = narrative(outcome, ownership["reasoning"] + "\n\n" + request)
+    cid = _handover(env, post_comment=post)["conversation"]["id"]
+    turn = _latest(_wait(env, cid, _done))
+    assert turn["status"] == "completed"
+    for key in ("conclusion", "action_required", "ownership", "assistance", "reproduction"):
+        assert turn["result"][key] == updates[key]
+    body = turn["comment_body"]
+    assert outcome in body and ownership["reasoning"] in body
+    assert body.count(request) == 1
+    footer = f"_{domain._COMMENT_NOTICE}_"
+    if post:
+        footer += f" _记录编号：{turn['id']}_"
+    assert body.endswith("\n\n----\n\n" + footer)
+    assert len(env.jira.comments) == int(post)
+    assert turn["comment_status"] == ("posted" if post else "")
+    if post:
+        assert env.jira.comments[0][1] == body
 
 
 @pytest.mark.parametrize("name,comment,required,forbidden", [
@@ -142,7 +226,6 @@ def test_narrative_is_preserved_through_runner_and_publication_choice(env, post)
 def test_redacted_comment_cases(name, comment, required, forbidden):
     result = {**copy.deepcopy(RESULT), "comment": comment, "action_required": "none", "next_steps": []}
     body = render(result)
-    assert len(body) < 600, name
     assert all(text in body for text in required)
     assert all(text not in body for text in forbidden)
     assert body.count("不会修改 assignee、状态或代码；后续操作由 assignee 审核决定。") == 1
@@ -171,7 +254,7 @@ def test_long_required_commands_are_not_cut_or_rejected():
     result = {**RESULT, "comment": projection("按以下命令运行。", kind="explanation", commands=[command])}
     body = render(result)
     assert command in body and body.count("{noformat}") == 2
-    assert domain.comment_quality_warnings(result, body)
+    assert domain.comment_quality_warnings(result, body) == []
     assert domain.parse_result(json.dumps(result))["comment"]["commands"] == [command]
 
 
@@ -205,6 +288,100 @@ def test_invalid_projection_falls_back_without_losing_analysis():
     assert RESULT["root_cause"] in body
     assert domain.comment_quality_warnings(result, body)
     assert domain.parse_stored_result(json.dumps(result)) == result
+
+
+def test_continuation_keeps_analysis_and_handoff_independent_of_public_comment():
+    result = {**copy.deepcopy(RESULT),
+              "summary": "GPU MPI 返回成功，但接收数据与参考不符。",
+              "root_cause": "已定位数据错误环节，内部机制尚未确认。",
+              "ownership": {"belongs_to_us": "no", "target_group": "MPI／UCX",
+                            "reasoning": "原应用中观察到首次跨列传输数据错误。"},
+              "assistance": {"current_issue": "远端测试未运行", "owner": "owner", "request": "恢复 SSH"},
+              "next_steps": ["完成远端编译及数据对照"],
+              "artifacts": ["artifacts/test.cpp", "artifacts/README.md"],
+              "evidence": [{"description": "接收值对照", "command": "./check", "result": "large raw output"},
+                           {"description": "三个单独程序未复现", "command": "./tests", "result": "logs"}],
+              "comment": narrative("短评论。", "已通知内容。")}
+    original = copy.deepcopy(result)
+    context = domain.continuation_result(result)
+    for key in ("summary", "root_cause", "ownership", "assistance", "reproduction", "fix", "next_steps", "artifacts"):
+        assert context[key] == result[key]
+    assert context["evidence"] == [{"description": e["description"]} for e in result["evidence"]]
+    assert "comment" not in context
+    assert "large raw output" not in json.dumps(context)
+    assert result == original
+    assert domain.continuation_result({}) == {}
+
+
+def test_continuation_runner_passes_ownership_not_just_the_published_summary(env):
+    cid = _handover(env)["conversation"]["id"]
+    first = _latest(_wait(env, cid, _done))
+    with runner.open_db() as conn:
+        original = domain.parse_stored_result(repo.get_turn(conn, first["id"])["result_json"])
+    response = env.client.post(f"/api/jira-agent/conversations/{cid}/messages",
+                              json={"text": "说明归属和交接材料", "post_comment": False})
+    assert response.status_code == 200
+    _wait(env, cid, _done)
+    prompt = env.fake.params("turn/start")[-1]["input"][0]["text"]
+    history = prompt.split("上一轮分析记录", 1)[1].split("：\n", 1)[1]
+    previous, _ = json.JSONDecoder().raw_decode(history)
+    assert previous["ownership"] == original["ownership"]
+    assert previous["root_cause"] == original["root_cause"]
+    assert previous["artifacts"] == original["artifacts"]
+    assert "上一轮分析记录" in prompt and "上一轮已发布评论" in prompt
+    assert "不能代替上述分析记录" in prompt
+
+
+def test_quality_checks_flag_empty_handoff_and_exact_repetition_without_rewriting():
+    result = {**copy.deepcopy(RESULT), "action_required": "needs_handoff",
+              "comment": narrative("需要 SDK 接手。", "")}
+    body = render(result)
+    assert any("只有首句" in text for text in domain.comment_quality_warnings(result, body))
+    repeated = {**result, "comment": narrative("接收数据错误。", "接收数据错误。\n\n待完成远端验证。")}
+    before = copy.deepcopy(repeated)
+    assert any("重复" in text for text in domain.comment_quality_warnings(repeated, render(repeated)))
+    assert repeated == before
+    distinct = {**result, "comment": narrative("接收数据错误。", "旧版接收数据正确，新版接收数据错误。")}
+    assert not any("重复" in text for text in domain.comment_quality_warnings(distinct, render(distinct)))
+
+
+def test_visible_length_is_informational_and_counts_link_label_not_internal_url():
+    text = "*结论*\n\n{{mcLaunchKernel}} 调用记录。\n\n[API 日志|https://site/" + "x" * 900 + "]\n\n----\n\n_声明_"
+    assert domain.comment_visible_length(text) < 70
+
+
+def test_long_narrative_is_preserved_without_length_warning():
+    paragraphs = [f"配置 {i} 的独立对照：原参数与候选参数使用相同输入，结果均通过；"
+                  f"原耗时 {100 + i} 秒，候选耗时 {90 + i} 秒，尚未验证其他硬件。"
+                  for i in range(12)]
+    comment = narrative("已完成十二组配置对照，结果及范围如下。", "\n\n".join(paragraphs))
+    result = {**copy.deepcopy(RESULT), "comment": comment}
+    original = copy.deepcopy(result)
+    body = render(result)
+    assert domain.comment_visible_length(body) > 600
+    assert comment["body"] in body
+    assert domain.comment_quality_warnings(result, body) == []
+    assert result == original
+
+
+def test_short_comment_can_still_have_quality_defects():
+    result = {**RESULT, "comment": narrative("需要管理员恢复权限。", "需要管理员恢复权限。")}
+    body = render(result)
+    assert domain.comment_visible_length(body) < 600
+    assert any("重复" in item for item in domain.comment_quality_warnings(result, body))
+
+
+def test_publication_receipt_warning_preserves_delivery_and_original_analysis():
+    result = {**copy.deepcopy(RESULT), "comment": narrative(
+        "复现源码和运行说明已交付。", "本轮只整理材料，未重跑实验。现有记录尚无本轮 JIRA 发布回执。")}
+    original = copy.deepcopy(result)
+    body = render(result)
+    assert any("发布回执" in item for item in domain.comment_quality_warnings(result, body))
+    # Warnings must not erase genuine work, alter conclusions, or suppress a comment.
+    assert "复现源码和运行说明已交付" in body
+    assert result == original
+    result["comment"]["body"] = "独立 Bug 尚未创建，请工单操作人员按已交付模板创建并回填编号。"
+    assert domain.comment_quality_warnings(result, render(result)) == []
 
 
 @pytest.mark.parametrize("url", ["http://host:4510", "host:4510", "ws://", "ws://host:bad", "ws://host:70000",

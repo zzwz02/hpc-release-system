@@ -8,6 +8,7 @@ import { apiFetch, apiGet, apiPost, apiPostNdjson } from "../../../api/http";
 import { confirmDialog } from "../../../lib/confirm";
 import { toast } from "../../../lib/toast";
 import { JiraAgentPage } from "../JiraAgentPage";
+import { jiraAgentConversationKey, type AgentEvent } from "../jiraAgentApi";
 import { type LearningJob, type LearningProposal } from "../jiraLearningApi";
 
 vi.mock("../../../api/http", () => ({
@@ -111,6 +112,7 @@ const result = {
 };
 
 const detail = {
+  upload_limits: { max_files: 10, max_file_bytes: 20 * 1024 * 1024 },
   conversation,
   turns: [turn],
   files: [
@@ -191,6 +193,7 @@ function handledResponse() {
 
 function previewResponse(open: boolean) {
   return {
+    upload_limits: detail.upload_limits,
     issue: { ...issue, attachment_count: 2, comment_count: 1 },
     agent_group: "HPC",
     can_handover: true,
@@ -395,8 +398,10 @@ describe("JiraAgentPage", () => {
     });
     renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
     const card = within(await screen.findByTestId("jira-agent-result"));
-    expect(card.getByText("需要转交")).toBeInTheDocument();
-    expect(card.getByText(conclusion === "scope_narrowed" ? "范围已缩小" : "建议由其他组处理")).toBeInTheDocument();
+    const comment = within(screen.getByTestId("jira-agent-comment"));
+    expect(comment.getByText("需要转交")).toBeVisible();
+    expect(comment.getByText(conclusion === "scope_narrowed" ? "范围已缩小" : "建议由其他组处理")).toBeVisible();
+    await userEvent.setup().click(card.getByText("本轮结论"));
     expect(card.getByText("SDK 维护团队")).toBeInTheDocument();
     expect(card.getByText("复现结果")).toBeInTheDocument();
     expect(card.getByText("./repro --check")).toBeInTheDocument();
@@ -419,7 +424,7 @@ describe("JiraAgentPage", () => {
     });
     vi.mocked(apiPost).mockResolvedValue({ turn: pending });
     renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
-    expect(await screen.findByText(/JIRA 评论发布结果待确认/)).toBeInTheDocument();
+    expect(await screen.findByText("发布结果待确认")).toHaveAttribute("title", "原请求结果未知");
     expect(screen.queryByRole("button", { name: "重试发布" })).not.toBeInTheDocument();
     await userEvent.setup().click(screen.getByRole("button", { name: "核对发布结果" }));
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/turns/jat_1/comment/retry", {}));
@@ -762,8 +767,16 @@ describe("JiraAgentPage", () => {
     await user.click(within(results).getByRole("button", { name: /MC3-7672/ }));
 
     const resultCard = await screen.findByTestId("jira-agent-result");
-    expect(within(resultCard).getByText("修复已验证")).toBeInTheDocument();
-    expect(within(resultCard).getByText("需要审核")).toBeInTheDocument();
+    const comment = screen.getByTestId("jira-agent-comment");
+    expect(comment).toHaveAttribute("open");
+    expect(within(comment).getByRole("heading", { name: "结论" })).toBeVisible();
+    expect(within(comment).getByText("修复已验证")).toBeVisible();
+    expect(within(comment).getByText("需要审核")).toBeVisible();
+    expect(comment.compareDocumentPosition(resultCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(resultCard).not.toHaveAttribute("open");
+    expect(within(resultCard).queryByText("修复已验证")).not.toBeInTheDocument();
+    expect(within(resultCard).getByText("待审核")).not.toBeVisible();
+    await user.click(within(resultCard).getByText("本轮结论"));
     expect(within(resultCard).getByText("待审核")).toBeInTheDocument();
     expect(within(resultCard).getByText("修复补丁")).toBeInTheDocument();
     expect(within(resultCard).getByText(/--- a\/saxpy\.cu/)).toBeInTheDocument();
@@ -771,7 +784,8 @@ describe("JiraAgentPage", () => {
       "href",
       "/api/jira-agent/conversations/jac_1/files/jaf_1",
     );
-    // tool use is folded into a collapsed group; messages and results stay visible
+    // Process details default to folded; user messages and results stay visible.
+    expect(screen.getByTestId("jira-agent-process")).not.toHaveAttribute("open");
     const toolGroup = screen.getByTestId("jira-agent-tool-group");
     expect(toolGroup).not.toHaveAttribute("open");
     expect(within(toolGroup).getByText("工具调用 · 1 条命令")).toBeInTheDocument();
@@ -779,7 +793,10 @@ describe("JiraAgentPage", () => {
     expect(within(toolGroup).getByText("exit 0")).toBeInTheDocument();
     expect(screen.getByText("请修复")).toBeInTheDocument();
     expect(screen.getByText(/机器：/)).toHaveTextContent("机器：hpc@10.2.118.75（agent 选择）");
-    expect(screen.getByText(/已在 JIRA 发布评论（#99）/)).toBeInTheDocument();
+    expect(within(comment).getByText("已发布到 Jira")).toBeVisible();
+    expect(within(comment).getByRole("link", { name: "#99" })).toHaveAttribute(
+      "href", "http://jira/browse/MC3-7672?focusedCommentId=99#comment-99",
+    );
     expect(screen.getByRole("link", { name: "fix.patch" })).toHaveAttribute(
       "href",
       "/api/jira-agent/conversations/jac_1/files/jaf_1",
@@ -789,6 +806,89 @@ describe("JiraAgentPage", () => {
     expect(select.value).toBe("jac_1");
     expect(within(select).getAllByRole("option")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "发送" })).toBeInTheDocument();
+  });
+
+  it("preserves the process toggle as queued work starts, updates and completes", async () => {
+    mockBackend();
+    const base = vi.mocked(apiGet).getMockImplementation()!;
+    const queued = { ...turn, status: "queued", comment_status: "", conclusion: "" };
+    let snapshot: unknown = { ...detail, conversation: { ...conversation, state: "queued", latest_turn: queued }, turns: [queued], events: [detail.events[0]], rev: 1 };
+    vi.mocked(apiGet).mockImplementation(async (path: string) => path === "/api/jira-agent/conversations/jac_1" ? snapshot : base(path));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const update = async (value: unknown) => {
+      snapshot = value;
+      await act(async () => { await client.invalidateQueries({ queryKey: jiraAgentConversationKey("jac_1") }); });
+    };
+    const user = userEvent.setup();
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1", client);
+    const process = await screen.findByTestId("jira-agent-process");
+    expect(process).not.toHaveAttribute("open");
+    expect(within(process).getByText("排队中")).toBeVisible();
+    await user.click(process.querySelector("summary")!);
+    expect(within(process).getByText("正在等待执行记录…")).toBeVisible();
+
+    const progress: AgentEvent = { ...detail.events[0], id: "progress", seq: 2, rev: 2, kind: "agent_message", payload: { text: "已读取输入，开始对照验证" } };
+    const running = { ...queued, status: "running" };
+    const runningDetail = { ...detail, conversation: { ...conversation, state: "running", latest_turn: running }, turns: [running], events: [detail.events[0], progress], rev: 2 };
+    await update(runningDetail);
+    await screen.findByText("已读取输入，开始对照验证");
+    expect(screen.getByTestId("jira-agent-process")).toBe(process);
+    expect(process).toHaveAttribute("open");
+    expect(within(process).getByText("正在思考")).toBeVisible();
+    expect(screen.getByText("已读取输入，开始对照验证")).toBeVisible();
+    await user.click(process.querySelector("summary")!);
+    await update({ ...runningDetail, events: [...runningDetail.events, { ...progress, id: "progress2", seq: 3, rev: 3, payload: { text: "对照结果已经取得" } }], rev: 3 });
+    await screen.findByText("对照结果已经取得");
+    expect(process).not.toHaveAttribute("open");
+    expect(screen.getByText("对照结果已经取得")).not.toBeVisible();
+    expect(screen.getByText("请修复")).toBeVisible();
+
+    await update({ ...detail, events: [detail.events[0], progress, ...detail.events.slice(1)] });
+    await screen.findByTestId("jira-agent-result");
+    expect(screen.getByTestId("jira-agent-process")).toBe(process);
+    expect(process).not.toHaveAttribute("open");
+    expect(within(process).getByText("处理过程")).toBeVisible();
+    expect(screen.queryByText("正在思考")).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("jira-agent-result")).getByText("本轮结论")).toBeVisible();
+    expect(screen.getByTestId("jira-agent-result")).not.toHaveAttribute("open");
+    expect(screen.getByText("已发布到 Jira")).toBeVisible();
+
+    const next = { ...running, id: "jat_2", seq: 2, trigger: "followup" };
+    await update({ ...detail, conversation: { ...conversation, state: "running", latest_turn: next }, turns: [turn, next], events: [...detail.events, { ...detail.events[0], id: "next-user", turn_id: next.id, seq: 5, rev: 5, payload: { text: "请继续验证", author: "alice", mode: "queued" } }] });
+    await screen.findByText("请继续验证");
+    const groups = screen.getAllByTestId("jira-agent-process");
+    expect(groups).toHaveLength(2);
+    expect(groups[1]).not.toHaveAttribute("open");
+    expect(within(groups[1]).getByText("正在思考")).toBeVisible();
+    expect(within(screen.getByTestId("jira-agent-result")).getByText("本轮结论")).toBeVisible();
+    expect(screen.getByTestId("jira-agent-result")).not.toHaveAttribute("open");
+  });
+
+  it("keeps steering messages, warnings and failures outside folded process records", async () => {
+    mockBackend();
+    const base = vi.mocked(apiGet).getMockImplementation()!;
+    const event = (id: string, seq: number, kind: string, payload: Record<string, unknown>): AgentEvent => ({ ...detail.events[0], id, seq, rev: seq, kind, payload });
+    const failed = { ...turn, status: "failed", comment_status: "", error: "连接中断" };
+    vi.mocked(apiGet).mockImplementation(async (path: string) => path === "/api/jira-agent/conversations/jac_1" ? {
+      ...detail, conversation: { ...conversation, state: "failed", latest_turn: failed }, turns: [failed],
+      events: [detail.events[0], event("p1", 2, "agent_message", { text: "正在检查原输入" }),
+        event("steer", 3, "user_message", { author: "alice", text: "保留原始输入", mode: "steer" }),
+        event("p2", 4, "agent_message", { text: "已保留原始输入" }),
+        event("warning", 5, "status", { status: "warning", text: "执行资源需要管理员确认" }),
+        event("failure", 6, "error", { text: "连接中断" })],
+    } : base(path));
+    renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
+    const groups = await screen.findAllByTestId("jira-agent-process");
+    expect(groups).toHaveLength(2);
+    expect(groups.every(group => !group.hasAttribute("open"))).toBe(true);
+    expect(screen.getByText("正在检查原输入")).not.toBeVisible();
+    expect(screen.getByText("已保留原始输入")).not.toBeVisible();
+    expect(screen.getByText("保留原始输入")).toBeVisible();
+    expect(screen.getByText("执行资源需要管理员确认")).toBeVisible();
+    expect(screen.getByText("连接中断")).toBeVisible();
+    expect(screen.queryByText("正在思考")).not.toBeInTheDocument();
+    const timeline = screen.getByTestId("jira-agent-timeline");
+    expect(timeline.textContent).toMatch(/正在检查原输入[\s\S]*保留原始输入[\s\S]*已保留原始输入/);
   });
 
   it.each(["", "对话已删除，但 B 上目录未清理：10.2.118.75:/b/workspaces/MC3-7672-jac_0，请联系管理员手动清理"])("lets RM delete history and switches conversations with warning %s", async (warning) => {
@@ -880,6 +980,46 @@ describe("JiraAgentPage", () => {
       expect.objectContaining({ model: "other-model", effort: "high" }),
     ));
     if (followup) await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("other-model"));
+  });
+
+  it.each([false, true])("rejects invalid attachments before reading and preserves text: followup=%s", async (followup) => {
+    mockBackend({ open: followup });
+    const user = userEvent.setup();
+    renderPage(`/jira-agent?issue=MC3-7672${followup ? "&conversation=jac_1" : ""}`);
+    const input = await screen.findByLabelText("附加文件");
+    const text = screen.getByLabelText(followup ? "补充信息" : "交单说明");
+    const submit = screen.getByRole("button", { name: followup ? "发送" : "交给 agent" });
+    await user.type(text, "请保留这段说明");
+    await waitFor(() => expect(submit).toBeEnabled());
+    expect(screen.getByText("单个文件不超过 20 MB，每次最多 10 个")).toBeVisible();
+
+    const oversized = new File([new Uint8Array(detail.upload_limits.max_file_bytes + 1)], "large.log");
+    const read = vi.fn();
+    Object.defineProperty(oversized, "arrayBuffer", { value: read });
+    const small = new File(["log"], "small.log");
+    Object.defineProperty(small, "arrayBuffer", { value: read });
+    await user.upload(input, [small, oversized]);
+    expect(screen.getByRole("alert")).toHaveTextContent("large.log");
+    expect(submit).toBeDisabled();
+    await user.click(submit);
+    expect(read).not.toHaveBeenCalled();
+    expect(apiPost).not.toHaveBeenCalled();
+    expect((input as HTMLInputElement).files).toHaveLength(2);
+    expect(text).toHaveValue("请保留这段说明");
+
+    await user.upload(input, Array.from({ length: 11 }, (_, i) => new File(["log"], `${i}.log`)));
+    expect(screen.getByRole("alert")).toHaveTextContent("已选择 11 个文件，每次最多 10 个");
+    expect(submit).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "清除附件" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect((input as HTMLInputElement).files).toHaveLength(0);
+    expect(submit).toBeEnabled();
+    expect(text).toHaveValue("请保留这段说明");
+
+    await user.upload(input, [new File([new Uint8Array(detail.upload_limits.max_file_bytes)], "boundary.log"),
+      ...Array.from({ length: 9 }, (_, i) => new File(["log"], `${i}.log`))]);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(submit).toBeEnabled();
   });
 
   it("Owner cannot see model choices", async () => {

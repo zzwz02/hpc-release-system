@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
+import { ArrowLeft, History, Play, Plus, SlidersHorizontal, Upload } from "lucide-react";
 import { useAuth } from "../../api/AuthContext";
 import { Markdown } from "../../components/Markdown";
 import { toast } from "../../lib/toast";
 import { TestingEvaluation } from "./TestingEvaluation";
 import { TestingRecords } from "./TestingRecords";
+import { TestingImport } from "./TestingImport";
 import { ConversationBody } from "./JiraAgentPage";
 import { MachineChoice } from "./MachineChoice";
 import { ModelChoice, type ModelSelection } from "./ModelChoice";
 import { ExecutionPreflightDialog } from "./ExecutionPreflightDialog";
 import { cancelConversationTurn, fileToUpload, jiraAgentConversationKey, defaultExecution, executionRequestId, type ExecutionConfig, type ExecutionSubmission } from "./jiraAgentApi";
 import {
-  getTestCase, importTestCase, listTestCases, REVIEW_LABELS, reviewTestRun, saveTestCase, startTestSuite, listTestSuites, stopTestSuite, retryTestSuite, resultLabel, currentResult, draftTestCriteria,
+  getTestCase, listTestCases, REVIEW_LABELS, reviewTestRun, saveTestCase, startTestSuite, listTestSuites, stopTestSuite, retryTestSuite, resultLabel, currentResult, draftTestCriteria, resumeTestRun,
   exportTestPackage, previewTestPackage,
   type CaseDraft, type CaseVersion, type ReviewDecision, type TestBatch, type TestRun, type TestInput,
 } from "./jiraTestingApi";
@@ -42,7 +44,6 @@ export function TestingWorkspace() {
   const [chosen, setChosen] = useState<string[]>([]);
   const submitting = useRef(false);
   const pending = useRef<string[]>([]);
-  const source = useQuery({ queryKey: ["jira-testing", identity, "import", imported], queryFn: () => importTestCase(imported), enabled: !!imported, retry: false, staleTime: 0, refetchOnMount: "always" });
   const [draft, setDraft] = useState<CaseDraft | null>(null);
   const picker = useRef<HTMLInputElement>(null);
   const [transfer, setTransfer] = useState("");
@@ -51,7 +52,6 @@ export function TestingWorkspace() {
   const [busy, setBusy] = useState(false);
   const [configuring, setConfiguring] = useState(false);
   const [failure, setFailure] = useState("");
-  const [filter, setFilter] = useState("");
   const [groupName, setGroupName] = useState("");
   const [machine, setMachine] = useState<ExecutionConfig | null>(defaultExecution);
   const [uploading, setUploading] = useState(false);
@@ -60,13 +60,14 @@ export function TestingWorkspace() {
   const [folds, setFolds] = useState<Record<string, boolean>>({});
   const group = options.data?.groups.find((item) => item.name === groupName) ?? options.data?.groups[0];
   const current = detail.data?.versions[0];
-  const visible = options.data?.cases.filter((item) => item.title.toLowerCase().includes(filter.trim().toLowerCase())) ?? [];
-  const picked = options.data?.cases.filter((item) => chosen.includes(item.id)) ?? [];
-  const hidden = picked.filter((item) => !visible.some((shown) => shown.id === item.id)).length;
+  const cases = options.data?.cases ?? [];
+  const picked = cases.filter((item) => chosen.includes(item.id));
   const occupied = new Set(suites.data?.suites.flatMap((item) => item.entries.filter((entry) => item.status === "preparing" || entry.batch?.runs.some(isActive)).map((entry) => entry.case_id)) ?? []);
   const conflicts = picked.filter((item) => occupied.has(item.id));
 
-  useEffect(() => { if (source.data) { setDraft(source.data); setEditing(""); } }, [source.data]);
+  const importedReady = useCallback((value: CaseDraft) => {
+    setDraft(value); setEditing(""); setParams({ view: "testing" });
+  }, [setParams]);
   const selectedConversation = entry?.run.conversation_id;
   const selectedStatus = entry?.run.status;
   const selectedDelivery = entry?.run.delivery_status;
@@ -134,27 +135,29 @@ export function TestingWorkspace() {
     setParams((previous) => { const next = new URLSearchParams(previous); next.set("tab", "records"); next.delete("run"); value ? next.set("suite", value) : next.delete("suite"); return next; });
   }
   return <section className="view active jira-agent jira-testing-workspace">
-    <div className="page-toolbar"><div><h2>测试用例</h2><p className="hint">按保存的输入进行完整分析，结果不回写 Jira。</p></div><button className="btn" onClick={() => setParams({ view: "handled" })}>返回工单</button></div>
+    <div className="page-toolbar test-page-toolbar">
+      <div className="test-page-heading"><button className="test-back-button" onClick={() => setParams({ view: "handled" })}><ArrowLeft size={16} aria-hidden="true" />返回工单</button><h2>测试用例</h2></div>
+      <button className={`btn test-records-button ${!id && !draft ? "active" : ""}`} aria-current={!id && !draft ? "page" : undefined} disabled={!!draft} onClick={() => navigate("")}><History size={16} aria-hidden="true" />测试记录</button>
+    </div>
     {failure && <p role="alert" className="jira-agent-warning">{failure}</p>}
     {options.isError && <p role="alert">{errorText(options.error)}</p>}
     {options.data?.builtin_warning && <p role="alert" className="jira-agent-warning">{options.data.builtin_warning}</p>}
-    {source.isFetching && <p role="status">正在读取测试输入…</p>}
-    {source.isError && <p role="alert">{errorText(source.error)}</p>}
+    {imported && <TestingImport key={imported} conversation={imported} ready={importedReady} close={() => navigate("")} />}
     <div className="test-layout">
       <aside className="panel test-sidebar" aria-label="测试用例">
-        <div className="test-sidebar-heading"><h3>用例</h3><div className="actions">
-          <button className="test-text-button" disabled={!!transfer || !!draft} onClick={() => { setDraft(blank()); setEditing(""); }}>新建用例</button>
-          <button className="test-text-button" disabled={!!transfer || !!draft} onClick={() => picker.current?.click()}>{transfer === "import" ? "正在导入…" : "导入用例"}</button>
+        <div className="test-sidebar-heading"><h3>用例 <span className="test-case-count" aria-label={`${cases.length} 个用例`}>{cases.length}</span></h3><div className="actions">
+          <button className="btn sm" aria-label="新建用例" disabled={!!transfer || !!draft} onClick={() => { setDraft(blank()); setEditing(""); }}><Plus size={15} aria-hidden="true" />新建</button>
+          <button className="btn sm" aria-label={transfer === "import" ? "正在导入用例" : "导入用例"} disabled={!!transfer || !!draft} onClick={() => picker.current?.click()}><Upload size={15} aria-hidden="true" />{transfer === "import" ? "正在导入…" : "导入"}</button>
           <input ref={picker} type="file" accept=".zip" aria-label="上传用例包" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importPackage(file); event.target.value = ""; }} />
         </div></div>
-        <button className={`test-overview-button ${!id && !draft ? "selected" : ""}`} aria-current={!id && !draft ? "page" : undefined} disabled={!!draft} onClick={() => navigate("")}><span>测试汇总</span><span aria-hidden="true">→</span></button>
-        <div className="test-sidebar-filter"><input aria-label="筛选用例" placeholder="按名称筛选用例" value={filter} onChange={(event) => setFilter(event.target.value)} /></div>
-        <div className="test-selection-heading"><label><input type="checkbox" aria-label="选择当前列表全部用例" disabled={!visible.length} checked={!!visible.length && visible.every((item) => chosen.includes(item.id))} ref={(element) => { if (element) element.indeterminate = visible.some((item) => chosen.includes(item.id)) && !visible.every((item) => chosen.includes(item.id)); }} onChange={(event) => setChosen((previous) => event.target.checked ? [...new Set([...previous, ...visible.map((item) => item.id)])] : previous.filter((value) => !visible.some((item) => item.id === value)))} />全选</label><span>{visible.length} 个用例</span></div>
+        <div className="test-selection-heading"><label><input type="checkbox" aria-label="选择全部用例" disabled={!cases.length} checked={!!cases.length && picked.length === cases.length} ref={(element) => { if (element) element.indeterminate = picked.length > 0 && picked.length < cases.length; }} onChange={(event) => setChosen(event.target.checked ? cases.map((item) => item.id) : [])} />全选</label>
+          <div className="test-selected-count"><span>{picked.length ? `已选 ${picked.length} 个` : "未选择"}</span>{!!picked.length && <button className="test-text-button" aria-label="清空选择" onClick={() => setChosen([])}>清空</button>}</div>
+        </div>
         <ul className="test-sidebar-list" aria-label="用例列表">
           {options.isPending && <li role="status" className="empty">正在读取用例…</li>}
-          {!options.isPending && !visible.length && <li className="empty">没有符合条件的用例。</li>}
-          {visible.map((item) => <li key={item.id} className={`test-sidebar-case ${id === item.id ? "selected" : ""}`}>
-              <input type="checkbox" aria-label={`选择 ${item.title}`} checked={chosen.includes(item.id)} onChange={(event) => setChosen((previous) => event.target.checked ? [...previous, item.id] : previous.filter((value) => value !== item.id))} />
+          {!options.isPending && !cases.length && <li className="empty">暂无用例，可新建或导入。</li>}
+          {cases.map((item) => <li key={item.id} className={`test-sidebar-case ${id === item.id ? "selected" : ""}`}>
+              <label className="test-case-select"><input type="checkbox" aria-label={`选择 ${item.title}`} checked={chosen.includes(item.id)} onChange={(event) => setChosen((previous) => event.target.checked ? [...previous, item.id] : previous.filter((value) => value !== item.id))} /></label>
               <button className="test-case-button" aria-current={id === item.id ? "page" : undefined} disabled={!!draft} onClick={() => navigate(item.id)}><span>{item.title}</span>
                 {occupied.has(item.id) && <small className="test-running">排队或执行中</small>}
                 {!item.criteria?.trim() && <small className="muted">未设置通过标准</small>}
@@ -162,17 +165,15 @@ export function TestingWorkspace() {
             </li>)}
         </ul>
         <div className="test-sidebar-footer">
-          <div className="test-selection-heading"><strong>已选 {picked.length} 个</strong>{!!picked.length && <button className="test-text-button" onClick={() => setChosen([])}>清空选择</button>}</div>
-          {!!hidden && <p className="hint">有 {hidden} 个被筛选隐藏，仍会一起测试。</p>}
           {picked.some((item) => !item.criteria?.trim()) && <p className="hint">未设置通过标准的用例可执行，AI 不判断通过。</p>}
           {!!conflicts.length && <p className="hint">{conflicts.length} 个所选用例正在测试，请等待或取消勾选。</p>}
-          <div className="test-start-actions"><button className="btn primary" disabled={busy || !!draft || !picked.length || !group || machine === null || !!conflicts.length} onClick={() => void start(picked.map((item) => item.id))}>{busy ? "正在提交…" : `开始测试（${picked.length}）`}</button><button className="test-text-button" disabled={busy} onClick={() => setConfiguring(true)}>测试设置</button></div>
+          <div className="test-start-actions"><button className="test-text-button test-settings-button" disabled={busy} onClick={() => setConfiguring(true)}><SlidersHorizontal size={16} aria-hidden="true" />测试设置</button><button className="btn primary" disabled={busy || !!draft || !picked.length || !group || machine === null || !!conflicts.length} onClick={() => void start(picked.map((item) => item.id))}><Play size={16} aria-hidden="true" />{busy ? "正在提交…" : "开始测试"}</button></div>
         </div>
       </aside>
       <div className="test-main">
         {packageError && <p role="alert" className="jira-agent-warning">{packageError}</p>}
-        {draft ? <CaseEditor draft={draft} save={save} close={() => setDraft(null)} openCase={navigate} group={group?.name ?? ""} /> : <section className="panel test-workspace" aria-label={id ? "用例详情" : "测试汇总"}>
-          <div className="panel-head test-case-heading"><h3>{id ? current?.title || "用例详情" : "测试汇总"}</h3>
+        {draft ? <CaseEditor draft={draft} save={save} close={() => setDraft(null)} openCase={navigate} group={group?.name ?? ""} /> : <section className="panel test-workspace" aria-label={id ? "用例详情" : "测试记录"}>
+          <div className="panel-head test-case-heading"><h3>{id ? current?.title || "用例详情" : "测试记录"}</h3>
             {id && current && <div className="actions"><button className="test-text-button" disabled={!!transfer} onClick={() => void exportPackage()}>{transfer === "export" ? "正在导出…" : "导出用例"}</button><button className="btn sm" onClick={() => { setDraft(current); setEditing(id); }}>修改用例</button></div>}
           </div>
           <div className="panel-body">
@@ -229,13 +230,21 @@ function RunDetail({ title, close, batch, run, input, refresh, review, setReview
     try { await cancelConversationTurn(run.conversation_id); refresh(); }
     catch (error) { toast.error(errorText(error)); } finally { setBusy(false); }
   }
+  async function resume() {
+    if (!run.turn_id) return;
+    setBusy(true);
+    try { await resumeTestRun(run.conversation_id, run.turn_id); refresh(); }
+    catch (error) { toast.error(errorText(error)); } finally { setBusy(false); }
+  }
   return <section id="test-run-detail" className="test-run-detail" aria-label="测试详情">
     <div className="test-run-heading test-detail-heading"><h3>{title}</h3><div className="actions">
+      {run.can_resume && <button className="btn primary sm" disabled={busy} onClick={() => void resume()}>{busy ? "正在提交…" : "继续执行"}</button>}
       {["queued", "running"].includes(run.status) && <button className="btn danger sm" disabled={busy} onClick={() => void cancel()}>取消测试</button>}
       <button className="test-text-button" onClick={close}>收起详情</button></div>
     </div>
     <RunReview run={run} refresh={refresh} draft={review} update={setReview} />
-    {run.error && <p className="jira-agent-warning" role="alert">{run.error}</p>}
+    {run.error && (run.can_resume ? <details className="jira-agent-warning"><summary>模型调用或响应处理失败，可继续执行</summary><p>{run.error}</p></details>
+      : <p className="jira-agent-warning" role="alert">{run.error}</p>)}
     <TestingEvaluation run={run} refresh={refresh} />
     <ConversationBody id={run.conversation_id} onChanged={refresh} testing={{ processOpen, onProcessToggle: toggleProcess }} />
     <details className="test-run-config"><summary>本次配置</summary>
@@ -306,8 +315,11 @@ function CaseEditor({ draft, save, close, openCase, group }: {
     <details open={draft.package_import ? undefined : true}><summary>编辑工单快照</summary>
       <label>工单快照（JSON，可删除含答案的评论）<textarea aria-label="工单快照" rows={12} value={issue} onChange={(event) => setIssue(event.target.value)} /></label>
     </details>
-    <div>输入文件：{files.length === 0 && "无"}{files.map((file) => <p key={file.path}>{file.path} <button className="btn sm" onClick={() => setFiles(files.filter((item) => item.path !== file.path))}>移除</button></p>)}</div>
-    <p className="hint">移除附件时，请同时从工单快照的 attachments 中移除对应记录。</p>
+    <div>输入文件：{files.length === 0 && "无"}{files.map((file) => <p key={file.path}>{file.path} <button className="btn sm" onClick={() => {
+      if (!preview) { toast.error("请先修正工单快照格式"); return; }
+      setFiles(files.filter((item) => item.path !== file.path));
+      setIssue(JSON.stringify({ ...preview, attachments: Array.isArray(preview.attachments) ? preview.attachments.filter((item: { local_path?: string }) => item.local_path !== file.path) : [] }, null, 2));
+    }}>移除</button></p>)}</div>
     <input aria-label="测试输入文件" type="file" multiple onChange={async (event) => {
       const incoming = Array.from(event.target.files ?? []);
       try {

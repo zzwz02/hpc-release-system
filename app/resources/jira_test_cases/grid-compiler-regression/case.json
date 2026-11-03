@@ -1,0 +1,58 @@
+{
+  "title": "[C500][Grid] LLVM 19 构建后的性能回退",
+  "input": {
+    "files": [],
+    "issue": {
+      "acquisition": {
+        "conflicts": [],
+        "parts": {
+          "attachment_metadata": {
+            "status": "complete"
+          },
+          "comments": {
+            "collected": 0,
+            "reported_total": 0,
+            "status": "complete"
+          },
+          "custom_fields": {
+            "collected": 0,
+            "status": "complete"
+          },
+          "description": {
+            "status": "complete"
+          },
+          "field_definitions": {
+            "status": "complete"
+          },
+          "issue": {
+            "status": "complete"
+          }
+        },
+        "scope": "人工保存的测试输入；不代表 Jira 当前内容或全量采集。",
+        "source": "test_case",
+        "status": "complete"
+      },
+      "attachments": [],
+      "comments": [],
+      "components": [
+        "SW_Compiler"
+      ],
+      "custom_fields": {},
+      "description": "Grid 使用 SDK 3.3.0.6（LLVM 19）构建并运行时，相比 SDK 3.2.0.0（LLVM 12）性能下降约 1%～2%。单张 C500，FP32，网格 32^4，保留原数值校验。\n\n- good（SDK 3.2.0.0）：`harbor.sh.mxcr.io/xshi/grid-repro:mc3-7828-sdk3200-ready-20261020@sha256:b6f8aa2f80ccff08dd0070d10e71bee7a96c44d3478e06eaef4bc897f772b6f2`\n- bad（SDK 3.3.0.6）：`harbor.sh.mxcr.io/xshi/grid-repro:mc3-7828-sdk3306-ready-20261020@sha256:691f77958aed3f17dd535726a0d9493c77ca2fed910cc9c9da81fb5ddcb1d38f`\n\n```bash\ndocker run --rm --init -e MACA_PERF_DIR=/tmp -u 0 \\\n  --device=/dev/dri --device=/dev/mxcd --group-add video \\\n  harbor.sh.mxcr.io/xshi/grid-repro:mc3-7828-sdk3306-ready-20261020@sha256:691f77958aed3f17dd535726a0d9493c77ca2fed910cc9c9da81fb5ddcb1d38f \\\n  bash -c 'cd /opt/grid/bin && ./Benchmark_dwf_fp32 --mpi 1.1.1.1 --dslash-unroll --accelerator-threads 32 --grid 32.32.32.32'\n```\n\n正常版替换镜像后执行同一命令。",
+      "field_definitions": [],
+      "issue_type": "Bug",
+      "key": "MC3-7828",
+      "labels": [
+        "hpc_regression"
+      ],
+      "project": "MC3",
+      "raw_fields": {},
+      "summary": "[C500][Grid] LLVM 19 构建后的性能回退",
+      "url": "http://10.2.201.98:8080/browse/MC3-7828"
+    },
+    "note": "请复现 Grid 性能回退，确认受影响的 kernel 和编译条件，并给出可交接的复现程序。"
+  },
+  "provenance": {
+    "issue_key": "MC3-7828"
+  }
+}
