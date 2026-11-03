@@ -222,8 +222,8 @@ describe("JenkinsFailuresPage", () => {
     });
   });
 
-  it("defaults RM to all owners and allows selecting only mine", async () => {
-    renderPage();
+  it.each(["RM", "SPD"])("defaults %s to all owners and allows selecting only mine", async role => {
+    renderPage("/jenkins-failures", role);
     const toggle = screen.getByRole("checkbox", { name: "只看我的" });
     expect(toggle).not.toBeChecked();
     await screen.findByRole("table");
@@ -232,6 +232,43 @@ describe("JenkinsFailuresPage", () => {
     }
     await userEvent.click(toggle);
     await waitFor(() => expect(latestQuery().get("code_owner")).toBe("alice"));
+  });
+
+  it("resets SPD to all owners in the latest seven days", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 12));
+    renderPage("/jenkins-failures?date_from=2026-10-01&date_to=2026-10-23&code_owner=alice", "SPD");
+    const toggle = screen.getByRole("checkbox", { name: "只看我的" });
+    expect(toggle).toBeChecked();
+    await screen.findByRole("table");
+    await userEvent.click(screen.getByRole("button", { name: "重置" }));
+    expect(toggle).not.toBeChecked();
+    expect(screen.getByLabelText("开始时间")).toHaveValue("2026-10-28");
+    expect(screen.getByLabelText("结束时间")).toHaveValue("2026-11-03");
+    await waitFor(() => {
+      for (const endpoint of ["/api/cicd-agent/failures", "/api/cicd-agent/failures/summary"]) {
+        expect(latestQuery(endpoint).has("code_owner")).toBe(false);
+        expect(latestQuery(endpoint).get("date_from")).toBe("2026-10-28");
+        expect(latestQuery(endpoint).get("date_to")).toBe("2026-11-03");
+      }
+    });
+  });
+
+  it("reapplies defaults when the same account changes from Owner to SPD", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = () => <QueryClientProvider client={client}><MemoryRouter>
+      <JenkinsFailuresPage />
+    </MemoryRouter></QueryClientProvider>;
+    const auth = { user: { username: "alice", role: "Owner" } } as ReturnType<typeof useAuth>;
+    vi.mocked(useAuth).mockReturnValue(auth);
+    const view = render(tree());
+    await waitFor(() => expect(latestQuery().get("code_owner")).toBe("alice"));
+    vi.mocked(useAuth).mockReturnValue({ ...auth, user: { ...auth.user!, role: "SPD" } });
+    view.rerender(tree());
+    await waitFor(() => {
+      expect(screen.getByRole("checkbox", { name: "只看我的" })).not.toBeChecked();
+      expect(latestQuery().has("code_owner")).toBe(false);
+    });
   });
 
   it("keeps the personal filter off after unchecking and refreshing", async () => {
@@ -269,8 +306,10 @@ describe("JenkinsFailuresPage", () => {
     });
   });
 
-  it.each(["code_owner", "owner_account"])("respects an explicit %s link instead of adding the personal default", async (field) => {
-    renderPage(`/jenkins-failures?${field}=bob`);
+  it.each([
+    ["RM", "code_owner"], ["RM", "owner_account"], ["SPD", "code_owner"], ["SPD", "owner_account"],
+  ])("respects an explicit link for %s with %s instead of adding the personal default", async (role, field) => {
+    renderPage(`/jenkins-failures?${field}=bob`, role);
     expect(screen.getByRole("checkbox", { name: "只看我的" })).not.toBeChecked();
     await waitFor(() => {
       expect(latestQuery().get(field)).toBe("bob");
@@ -306,7 +345,8 @@ describe("JenkinsFailuresPage", () => {
     renderPage("/jenkins-failures?pending_rm_review=true", "SPD");
     await screen.findByRole("table");
     expect(screen.queryByRole("checkbox", { name: /仅看待 RM 裁定/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "只看我的" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "只看我的" })).not.toBeChecked();
+    expect(latestQuery().has("code_owner")).toBe(false);
     expect(vi.mocked(apiGet).mock.calls.every(([path]) => !path.includes("pending_rm_review"))).toBe(true);
   });
 

@@ -82,14 +82,14 @@ const DATE_PARAM_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 type SummaryGroupKey = (typeof SUMMARY_GROUP_OPTIONS)[number]["value"];
 type ResponsibilityOwnerRole = (typeof RESPONSIBILITY_OWNER_ROLES)[number];
 
-function emptyFilters(username: string, isRm: boolean): FailureRecordFilters {
+function emptyFilters(username: string, role: string | undefined): FailureRecordFilters {
   const today = todayString();
   return {
     date_from: todayString(-6),
     date_to: today,
     job_type: "",
     normalized_stage: "",
-    code_owner: isRm ? "" : username,
+    code_owner: role === "RM" || role === "SPD" ? "" : username,
     owner_account: "",
     maca_project: "",
     maca_version: "",
@@ -103,8 +103,8 @@ function linkedFailureId(search: string): number | null {
   return /^[1-9]\d*$/.test(value) && Number.isSafeInteger(id) ? id : null;
 }
 
-function filtersFromSearch(search: string, username: string, isRm: boolean): FailureRecordFilters {
-  const filters = emptyFilters(username, isRm);
+function filtersFromSearch(search: string, username: string, role: string | undefined): FailureRecordFilters {
+  const filters = emptyFilters(username, role);
   const params = new URLSearchParams(search);
   // Explicit owner links take precedence over the personal default.
   if (params.has("code_owner") || params.has("owner_account")) filters.code_owner = "";
@@ -116,7 +116,7 @@ function filtersFromSearch(search: string, username: string, isRm: boolean): Fai
     }
     filters[key] = value;
   }
-  if (isRm && params.get("pending_rm_review") === "true") {
+  if (role === "RM" && params.get("pending_rm_review") === "true") {
     filters.pending_rm_review = true;
     if (!params.has("code_owner")) filters.code_owner = "";
   }
@@ -323,13 +323,14 @@ function ReproEntry({ record, onClick }: { record: FailureRecordDetail; onClick:
 export function JenkinsFailuresPage() {
   const { user } = useAuth();
   const currentUsername = user?.username ?? "";
-  const isRm = user?.role === "RM";
+  const currentRole = user?.role;
+  const isRm = currentRole === "RM";
   const { search } = useLocation();
   const queryClient = useQueryClient();
   const [view, setView] = useState<FailureRecordView>("active");
   const recordState = isRm ? view : "active";
   const isTrashed = recordState === "trashed";
-  const [normalFilters, setNormalFilters] = useState<FailureRecordFilters>(() => filtersFromSearch(search, currentUsername, isRm));
+  const [normalFilters, setNormalFilters] = useState<FailureRecordFilters>(() => filtersFromSearch(search, currentUsername, currentRole));
   const [trashFilters, setTrashFilters] = useState<FailureRecordFilters>({});
   const filters = isTrashed ? trashFilters : normalFilters;
   const setFilters = isTrashed ? setTrashFilters : setNormalFilters;
@@ -359,8 +360,8 @@ export function JenkinsFailuresPage() {
     setInitialRepro(false);
     setInitialResponsibility(false);
     setSummaryExpanded(false);
-    setNormalFilters(filtersFromSearch(search, currentUsername, isRm));
-  }, [search, currentUsername, isRm]);
+    setNormalFilters(filtersFromSearch(search, currentUsername, currentRole));
+  }, [search, currentUsername, currentRole]);
 
   const activeFilters = useMemo<FailureRecordFilters>(
     () => ({
@@ -479,7 +480,7 @@ export function JenkinsFailuresPage() {
     setPage(1);
     setSelectedId(null);
     setSummaryExpanded(false);
-    setFilters(isTrashed ? {} : emptyFilters(currentUsername, isRm));
+    setFilters(isTrashed ? {} : emptyFilters(currentUsername, currentRole));
   }
 
   function refresh() {

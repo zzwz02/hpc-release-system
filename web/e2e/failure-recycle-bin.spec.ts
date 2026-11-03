@@ -255,10 +255,28 @@ for (const width of [1366, 1920]) {
 }
 
 for (const role of ["Owner", "SPD"]) {
-  test(`${role} has no recycle bin or lifecycle controls`, async ({ page }) => {
+  test(`${role} has no recycle bin or lifecycle controls`, async ({ page }, info) => {
+    await page.setViewportSize({ width: 1366, height: 900 });
     const fixture = await mockFailures(page, role);
+    fixture.records.push({ ...fixture.records[0], id: 303, code_owner: "bob", owner_account: "alice" });
     await page.goto("/jenkins-failures?record_state=trashed");
     await expect(row(page, 101)).toBeVisible();
+    const onlyMine = page.getByRole("checkbox", { name: "只看我的" });
+    if (role === "SPD") {
+      await expect(onlyMine).not.toBeChecked();
+      await expect(row(page, 303)).toBeVisible();
+      expect(fixture.reads.filter(url => ["/api/cicd-agent/failures", "/api/cicd-agent/failures/summary"].includes(url.pathname))
+        .every(url => !url.searchParams.has("code_owner"))).toBe(true);
+      await page.screenshot({ path: info.outputPath("spd-all-owners-default.png"), fullPage: true, animations: "disabled" });
+      await onlyMine.check();
+      await expect(row(page, 303)).toHaveCount(0);
+      await page.getByRole("button", { name: "重置", exact: true }).click();
+      await expect(onlyMine).not.toBeChecked();
+      await expect(row(page, 303)).toBeVisible();
+    } else {
+      await expect(onlyMine).toBeChecked();
+      await expect(row(page, 303)).toHaveCount(0);
+    }
     await expect(page.getByRole("tab", { name: "回收站" })).toHaveCount(0);
     for (const name of ["删除", "恢复", "彻底删除"]) await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
     await row(page, 101).getByRole("button", { name: "查看详情" }).click();
