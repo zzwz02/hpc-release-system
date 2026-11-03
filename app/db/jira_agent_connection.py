@@ -315,6 +315,36 @@ def init_jira_agent_db(conn: sqlite3.Connection) -> None:
                 REFERENCES jira_agent_preflights(id)
         );
     """)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS jira_agent_comment_drafts (
+            turn_id TEXT PRIMARY KEY REFERENCES jira_agent_turns(id) ON DELETE CASCADE,
+            body TEXT NOT NULL, created_by TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS jira_agent_comment_uploads (
+            turn_id TEXT NOT NULL REFERENCES jira_agent_turns(id) ON DELETE CASCADE,
+            file_id TEXT NOT NULL REFERENCES jira_agent_files(id),
+            name TEXT NOT NULL, sha256 TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'ready',
+            attachment_id TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (turn_id, file_id)
+        );
+    """)
+    _ensure_column(conn, "jira_agent_comment_publications", "manual", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "jira_agent_comment_drafts", "status", "TEXT NOT NULL DEFAULT 'ready'")
+    _ensure_column(conn, "jira_agent_comment_drafts", "error", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "jira_agent_comment_drafts", "revision", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "jira_agent_comment_drafts", "selected_files_json", "TEXT NOT NULL DEFAULT '[]'")
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS jira_agent_comment_revisions (
+            turn_id TEXT NOT NULL REFERENCES jira_agent_turns(id) ON DELETE CASCADE,
+            revision INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            body TEXT NOT NULL,
+            file_ids_json TEXT NOT NULL,
+            editor TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (turn_id, revision)
+        );
+    """)
     _ensure_column(conn, "jira_agent_conversations", "execution_config_json", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "jira_agent_conversations", "execution_snapshot_json", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "jira_agent_turns", "execution_snapshot_json", "TEXT NOT NULL DEFAULT ''")

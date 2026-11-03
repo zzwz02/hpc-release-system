@@ -92,6 +92,12 @@ def main():
             raise TimeoutError('Local test: JIRA accepted the comment, response lost')
         return comment_id
     jira.add_comment = post_comment
+    uploaded = {}
+    def upload_attachment(key, name, data):
+        uploaded[(key, name)] = (str(len(uploaded) + 1), data)
+        return uploaded[(key, name)][0]
+    jira.upload_agent_attachment = upload_attachment
+    jira.find_agent_attachment = lambda key, name, digest: uploaded.get((key, name), ("", b""))[0]
     original = fake._result
 
     def result(ws, method, params):

@@ -150,6 +150,11 @@ async def post_turn_comment(conn, turn_id: str) -> dict:
             # unsent request from a POST accepted by Jira. Never assume it did.
             with transaction(conn):
                 publication = repo.prepare_comment(conn, turn_id, turn["comment_body"], legacy=True)
+        if publication["manual"] and conn.execute(
+                "SELECT 1 FROM jira_agent_comment_uploads WHERE turn_id=? AND state!='posted'", (turn_id,)).fetchone():
+            return turn
+        if not publication["manual"] and publication["state"] in {"ready", "rejected"}:
+            return turn
         state, comment_id, error = publication["state"], publication["comment_id"], ""
         if state in {"sending", "uncertain"}:
             try:
@@ -224,11 +229,12 @@ class JiraAgentRunner:
                 ])
             for turn in repo.running_turns(conn):
                 self._recover(conn, turn, groups)
-            pending_comments = [turn["id"] for turn in repo.pending_comment_turns(conn)]
+            # Restart does not authorize external writes. Keep the frozen intent for manual reconciliation.
+            with transaction(conn):
+                for turn in repo.pending_comment_turns(conn):
+                    repo.update_turn(conn, turn["id"], comment_status="failed", comment_error="网站重启，发送结果待核对，请手动重试")
         finally:
             conn.close()
-        for turn_id in pending_comments:
-            self._spawn(self._post_pending_comment(turn_id))
         self._loop_task = asyncio.create_task(self._schedule_loop())
 
     def _recover(self, conn, turn: dict, groups: dict[str, domain.AgentGroup]) -> None:
@@ -270,14 +276,6 @@ class JiraAgentRunner:
             active.stop_reason = "closed"
         self._active[tid] = active
         active.task = asyncio.create_task(self._run_turn(active, group, recover=True))
-
-    async def _post_pending_comment(self, turn_id: str) -> None:
-        """A previous process stopped between finishing a turn and commenting."""
-        conn = open_db()
-        try:
-            await post_turn_comment(conn, turn_id)
-        finally:
-            conn.close()
 
     def _spawn(self, coro) -> None:
         task = asyncio.create_task(coro)
@@ -1196,20 +1194,14 @@ class JiraAgentRunner:
             self._delivery_state(conn, conversation["id"], turn["id"], "incomplete",
                                  [{"path": "", "error": _error_text(exc)}])
             return
-        post = conversation["source_kind"] == "jira" and bool(repo.get_turn(conn, turn["id"])["post_comment"])
-        # The status and comment gate are one transaction, so restart cannot
-        # publish a success comment for an incomplete delivery.
+        # Analysis only renders a draft. Publication requires an explicit reviewed send.
         with transaction(conn):
-            if post and not errors:
-                body = repo.prepare_comment(conn, turn["id"], body)["body"]
-            repo.update_turn(conn, turn["id"], comment_status="pending" if post and not errors else "",
+            repo.update_turn(conn, turn["id"], post_comment=0, comment_status="",
                              comment_body=body, comment_error="")
             self._delivery_state(conn, conversation["id"], turn["id"], "incomplete" if errors else "complete", errors)
-            if not post and not errors:
+            if not errors:
                 repo.add_event(conn, conversation_id=conversation["id"], turn_id=turn["id"], kind="jira_comment",
                                item_id=f"comment-skipped:{turn['id']}", payload={"status": "skipped"})
-        if post and not errors:
-            await post_turn_comment(conn, turn["id"])
 
     async def _pull_artifacts(self, conn, active: ActiveTurn, conversation: dict, result: dict) -> tuple[list[dict], list[dict]]:
         cid, tid, workspace = conversation["id"], active.turn_id, conversation["workspace"]

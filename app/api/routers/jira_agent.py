@@ -16,8 +16,7 @@ from app.deps import require_tab_access
 from app.api.jira_execution_models import ExecutionSubmission, PreflightBody
 from app.services import jira_agent_preflight as preflight
 from app.services import jira_agent_runner, jira_agent_ssh_key, jira_agent_service as service
-
-from app.services import jira_agent_files as files
+from app.services import jira_agent_comments as comments, jira_agent_files as files
 
 router = APIRouter(prefix="/api/jira-agent")
 
@@ -41,8 +40,8 @@ class HandoverBody(ExecutionSubmission):
     machine: str = ""
     # the succeeded SSH key upload for a user@host machine; one per hand-over
     ssh_key_session_id: str = ""
-    # False = the result stays on the website; nothing is posted to JIRA
-    post_comment: bool = True
+    # Legacy input accepted for compatibility; analysis never publishes comments.
+    post_comment: bool = False
     model: str = ""
     effort: str = ""
     model_provider: str = ""
@@ -51,8 +50,8 @@ class HandoverBody(ExecutionSubmission):
 class MessageBody(BaseModel):
     text: str = ""
     files: list[UploadBody] = Field(default_factory=list)
-    # applies to the turn this message starts or joins; the latest message wins
-    post_comment: bool = True
+    # Legacy input ignored; publishing requires the separate reviewed-send endpoint.
+    post_comment: bool = False
     model: str = ""
     effort: str = ""
     model_provider: str = ""
@@ -71,6 +70,36 @@ class KeySessionBody(BaseModel):
 
 class KeyInputBody(BaseModel):
     data: str
+
+
+class CommentSendBody(BaseModel):
+    body: str = Field(max_length=32000)
+    file_ids: list[str] = Field(default_factory=list, max_length=100)
+    revision: int = Field(ge=0)
+
+
+class CommentEditBody(CommentSendBody):
+    body: str = Field(max_length=30000)
+
+
+@router.get("/turns/{turn_id}/comment")
+def comment_state(turn_id: str, user: dict = Depends(require_jira_agent_access)) -> dict:
+    return comments.state(user, turn_id)
+
+
+@router.post("/turns/{turn_id}/comment/send")
+async def send_comment(turn_id: str, body: CommentSendBody, user: dict = Depends(require_jira_agent_access)) -> dict:
+    return await comments.send(user, turn_id, body.body, body.file_ids, body.revision)
+
+
+@router.post("/turns/{turn_id}/comment/draft")
+async def edit_comment(turn_id: str, body: CommentEditBody, user: dict = Depends(require_jira_agent_access)) -> dict:
+    return await comments.edit(user, turn_id, body.body, body.file_ids, body.revision)
+
+
+@router.get("/turns/{turn_id}/comment/history")
+def comment_history(turn_id: str, before: int = 0, user: dict = Depends(require_jira_agent_access)) -> dict:
+    return comments.history(user, turn_id, before)
 
 
 @router.get("/turns/{turn_id}/artifacts.zip")
@@ -163,7 +192,7 @@ async def retry_delivery(turn_id: str, user: dict = Depends(require_jira_agent_a
 
 @router.post("/turns/{turn_id}/comment/retry")
 async def retry_comment(turn_id: str, user: dict = Depends(require_jira_agent_access)) -> dict:
-    return await service.retry_comment(user, turn_id)
+    return await comments.retry(user, turn_id)
 
 
 @router.get("/conversations/{conversation_id}/files/{file_id}")

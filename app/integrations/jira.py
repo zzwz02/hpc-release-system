@@ -789,6 +789,39 @@ def add_comment(issue_key: str, body: str) -> str:
     return comment_id
 
 
+def upload_agent_attachment(issue_key: str, filename: str, data: bytes) -> str:
+    """Upload one reviewed artifact. A lost response must be reconciled before retry."""
+    import uuid
+    cfg = _require_config()
+    boundary = "jira-" + uuid.uuid4().hex
+    safe_name = filename.replace('"', '_').replace('\r', '_').replace('\n', '_')
+    prefix = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{safe_name}"\r\n'
+              'Content-Type: application/octet-stream\r\n\r\n').encode('utf-8')
+    payload = prefix + data + f'\r\n--{boundary}--\r\n'.encode()
+    req = urllib.request.Request(
+        cfg["JIRA_BASE_URL"] + f"/rest/api/2/issue/{quote(issue_key, safe='')}/attachments",
+        data=payload, method="POST", headers={"Authorization": f"Bearer {cfg['JIRA_TOKEN']}",
+            "X-Atlassian-Token": "no-check", "Content-Type": f"multipart/form-data; boundary={boundary}"})
+    with urllib.request.urlopen(req, timeout=120) as response:
+        result = json.loads(response.read(1024 * 1024))
+    if not isinstance(result, list) or len(result) != 1 or not result[0].get("id"):
+        raise ValueError("JIRA 未返回附件 ID，上传结果待核对")
+    return str(result[0]["id"])
+
+
+def find_agent_attachment(issue_key: str, filename: str, sha256: str) -> str:
+    import hashlib
+    matches = [a for a in get_issue(issue_key)["attachments"] if a["filename"] == filename]
+    if len(matches) > 1:
+        raise ValueError("发现同名附件，需要人工核对")
+    if not matches:
+        return ""
+    attachment = matches[0]
+    if hashlib.sha256(download_attachment(attachment["content_url"])).hexdigest() != sha256:
+        raise ValueError("JIRA 同名附件内容不匹配，需要人工核对")
+    return attachment["id"]
+
+
 def find_agent_comment(issue_key: str, body: str, turn_id: str) -> str:
     """Read all comment pages and verify author + frozen body, never a partial snapshot.
 

@@ -82,7 +82,7 @@ def test_saved_case_uses_the_same_prompts_and_skill_loading_as_jira(setup, monke
     assert len(test['input']) == 1 and test['input'][0]['type'] == 'text'
     assert test['outputSchema'] == live['outputSchema']
     assert not calls
-    assert len(env.jira.comments) == 1
+    assert len(env.jira.comments) == 0
     assert not result['turns'][0]['post_comment']
     assert not any(p.get('command', [None])[0] == 'ssh' for p in env.fake.params('command/exec'))
     assert not any(event['kind'] == 'environment_check' for event in result['events'])

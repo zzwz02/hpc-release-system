@@ -21,7 +21,7 @@ from app.integrations import jira
 from app.repositories import jira_agent_repo as repo
 from app.services import jira_agent_runner as runner
 from tests.test_jira_agent import (RESULT, env, _preflight, _handover, _wait, _done, _latest,
-                                   _detail, _db_turn, _phase, _until)
+                                   _detail, _db_turn, _phase, _until, _send_comment)
 
 GROUP = domain.AgentGroup("HPC", "HPC 数字员工", "ws://b:4510", "t", "/w", (), "", 600, 1)
 
@@ -120,6 +120,9 @@ def test_reference_warning_keeps_narrative_and_publication_choice(env, post):
     cid = _handover(env, post_comment=post)["conversation"]["id"]
     detail = _wait(env, cid, _done)
     turn = _latest(detail)
+    assert not env.jira.comments
+    if post:
+        turn = _send_comment(env, turn)
     assert env.fake.comment_override['body'] in turn['comment_body']
     assert turn['result']['comment']['evidence_indices'] == [999]
     assert "证据索引超出" in json.dumps(detail, ensure_ascii=False)
@@ -136,6 +139,9 @@ def test_narrative_is_preserved_through_runner_and_publication_choice(env, post)
         kind="explanation", link_text="调用顺序与已有验证")
     cid = _handover(env, post_comment=post)["conversation"]["id"]
     turn = _latest(_wait(env, cid, _done))
+    assert not env.jira.comments
+    if post:
+        turn = _send_comment(env, turn)
     body = turn["comment_body"]
     assert env.fake.comment_override["body"] in body
     assert "请 owner" not in body and "*待办*" not in body and "*待审核*" not in body
@@ -186,6 +192,9 @@ def test_requests_preserve_findings_and_uncertainty_through_runner(env, monkeypa
     env.fake.comment_override = narrative(outcome, ownership["reasoning"] + "\n\n" + request)
     cid = _handover(env, post_comment=post)["conversation"]["id"]
     turn = _latest(_wait(env, cid, _done))
+    assert not env.jira.comments
+    if post:
+        turn = _send_comment(env, turn)
     assert turn["status"] == "completed"
     for key in ("conclusion", "action_required", "ownership", "assistance", "reproduction"):
         assert turn["result"][key] == updates[key]
@@ -315,7 +324,7 @@ def test_continuation_keeps_analysis_and_handoff_independent_of_public_comment()
 
 def test_continuation_runner_passes_ownership_not_just_the_published_summary(env):
     cid = _handover(env)["conversation"]["id"]
-    first = _latest(_wait(env, cid, _done))
+    first = _send_comment(env, _latest(_wait(env, cid, _done)))
     with runner.open_db() as conn:
         original = domain.parse_stored_result(repo.get_turn(conn, first["id"])["result_json"])
     response = env.client.post(f"/api/jira-agent/conversations/{cid}/messages",
@@ -409,13 +418,14 @@ def test_accepted_post_with_lost_response_is_reconciled_once(env, monkeypatch, r
         raise TimeoutError("response lost")
     monkeypatch.setattr(jira, "add_comment", accepted_then_timeout)
     cid = _handover(env)["conversation"]["id"]
-    turn = _latest(_wait(env, cid, _done))
+    turn = _send_comment(env, _latest(_wait(env, cid, _done)))
     assert turn["comment_publication_state"] == "uncertain"
     assert len(env.jira.comments) == 1
     if restart:
         env.stop_site()
         env.start_site()
-        _until(lambda: _db_turn(turn["id"])["comment_status"] == "posted")
+        assert _db_turn(turn["id"])["comment_status"] == "failed"
+        assert env.client.post(f"/api/jira-agent/turns/{turn['id']}/comment/retry").json()["turn"]["comment_status"] == "posted"
     else:
         response = env.client.post(f"/api/jira-agent/turns/{turn['id']}/comment/retry")
         assert response.status_code == 200
@@ -430,7 +440,7 @@ def test_uncertain_absent_or_unreadable_is_never_reposted(env, monkeypatch):
         raise TimeoutError("unknown")
     monkeypatch.setattr(jira, "add_comment", timed_out)
     cid = _handover(env)["conversation"]["id"]
-    turn = _latest(_wait(env, cid, _done))
+    turn = _send_comment(env, _latest(_wait(env, cid, _done)))
     url = f"/api/jira-agent/turns/{turn['id']}/comment/retry"
     assert env.client.post(url).json()["turn"]["comment_publication_state"] == "uncertain"
     def incomplete(*args):
@@ -443,7 +453,7 @@ def test_uncertain_absent_or_unreadable_is_never_reposted(env, monkeypatch):
 def test_concurrent_publication_retries_only_send_once(env, monkeypatch):
     env.jira.fail_comment = True
     cid = _handover(env)["conversation"]["id"]
-    turn = _latest(_wait(env, cid, _done))
+    turn = _send_comment(env, _latest(_wait(env, cid, _done)))
     env.jira.fail_comment = False
     entered, release = threading.Event(), threading.Event()
     def slow_send(key, body):
@@ -468,10 +478,11 @@ def test_legacy_ambiguous_comment_is_checked_without_adding_marker_or_sending(en
         repo.create_conversation(conn, conversation_id="jac_legacy", issue_key="MC3-1", issue_summary="",
                                  agent_group="HPC", owner="alice", created_by="alice", workspace="/w")
         turn = repo.create_turn(conn, conversation_id="jac_legacy", trigger="handover", created_by="alice", input_text="")
-        repo.update_turn(conn, turn["id"], status="completed", comment_status="pending", comment_body="旧评论")
+        repo.update_turn(conn, turn["id"], status="completed", comment_status="pending", comment_body="旧评论", result_json=json.dumps(RESULT))
     env.jira.comments.append(("MC3-1", "旧评论"))
     env.start_site()
-    _until(lambda: _db_turn(turn["id"])["comment_status"] == "posted")
+    assert _db_turn(turn["id"])["comment_status"] == "failed"
+    assert env.client.post(f"/api/jira-agent/turns/{turn['id']}/comment/retry").json()["turn"]["comment_status"] == "posted"
     assert env.jira.comments == [("MC3-1", "旧评论")]
 
 
@@ -483,8 +494,8 @@ def test_capacity_retry_stays_in_one_business_turn(env, post):
     turn = _latest(detail)
     assert turn["status"] == "completed" and turn["recovery_attempts"] == 1
     assert len(detail["turns"]) == 1 and env.fake.turns == 2
-    assert len(env.jira.comments) == int(post)
-    assert turn["post_comment"] is post
+    assert not env.jira.comments
+    assert turn["post_comment"] is False
 
 
 @pytest.mark.parametrize("plans,expected_attempts,expected_remote,expected_status", [
@@ -506,7 +517,7 @@ def test_disconnect_reattaches_to_running_experiment(env):
     env.fake.release()
     detail = _wait(env, cid, _done)
     assert _latest(detail)["status"] == "completed"
-    assert env.fake.turns == 1 and len(detail["turns"]) == 1 and len(env.jira.comments) == 1
+    assert env.fake.turns == 1 and len(detail["turns"]) == 1 and len(env.jira.comments) == 0
     assert len([e for e in detail["events"] if e["kind"] == "command"]) == 1
 
 
@@ -581,13 +592,18 @@ def test_restart_after_post_before_local_ack_preserves_analysis(env, monkeypatch
         return original(conn, turn_id, state, **kwargs)
     monkeypatch.setattr(repo, "set_comment_publication", lose_ack)
     cid = _handover(env)["conversation"]["id"]
-    _until(lambda: failed and runner.runner.active_for_conversation(cid) is None)
+    turn = _latest(_wait(env, cid, _done))
+    response = env.client.post(f"/api/jira-agent/turns/{turn['id']}/comment/send",
+                               json={"body": turn["comment_body"], "file_ids": [], "revision": 0})
+    assert response.status_code == 400 and "local commit unavailable" in response.text
+    assert failed
     turn = _latest(_detail(env, cid))
     assert turn["status"] == "completed" and turn["comment_status"] == "pending"
     assert turn["comment_publication_state"] == "sending" and turn["result"]
     env.stop_site()
     env.start_site()
-    _until(lambda: _db_turn(turn["id"])["comment_status"] == "posted")
+    assert _db_turn(turn["id"])["comment_status"] == "failed"
+    assert env.client.post(f"/api/jira-agent/turns/{turn['id']}/comment/retry").json()["turn"]["comment_status"] == "posted"
     assert len(env.jira.comments) == 1 and env.fake.turns == 1
 
 

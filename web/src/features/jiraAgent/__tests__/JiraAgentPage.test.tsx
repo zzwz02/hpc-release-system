@@ -114,7 +114,7 @@ const result = {
 const detail = {
   upload_limits: { max_files: 10, max_file_bytes: 20 * 1024 * 1024 },
   conversation,
-  turns: [turn],
+  turns: [{ ...turn, result }],
   files: [
     {
       id: "jaf_1", conversation_id: "jac_1", turn_id: "jat_1", direction: "output", source: "artifact",
@@ -131,6 +131,7 @@ const detail = {
       payload: result, created_at: "", updated_at: "" },
     { id: "e4", conversation_id: "jac_1", turn_id: "jat_1", seq: 4, rev: 4, item_id: "", kind: "jira_comment",
       payload: { status: "posted", comment_id: "99" }, created_at: "", updated_at: "" },
+    { id: "e5", conversation_id: "jac_1", turn_id: "jat_1", seq: 5, rev: 5, item_id: "", kind: "delivery", payload: {}, created_at: "", updated_at: "" },
   ],
   rev: 4,
   issue_conversations: [],
@@ -409,26 +410,19 @@ describe("JiraAgentPage", () => {
     expect(card.queryByText("修复补丁")).not.toBeInTheDocument();
   });
 
-  it("reconciles an uncertain publication without presenting it as a resend", async () => {
+  it("opens uncertain sends for review without immediately resending", async () => {
     mockBackend();
     const base = vi.mocked(apiGet).getMockImplementation()!;
-    const pending = { ...turn, comment_status: "failed", comment_publication_state: "uncertain",
-      comment_error: "原请求结果未知", comment_id: "" };
-    vi.mocked(apiGet).mockImplementation(async (path: string) => {
-      if (path === "/api/jira-agent/conversations/jac_1") return {
-        ...detail, conversation: { ...conversation, latest_turn: pending }, turns: [pending],
-        events: detail.events.map((event) => event.kind === "jira_comment"
-          ? { ...event, payload: { status: "uncertain", error: "原请求结果未知" } } : event),
-      };
-      return base(path);
-    });
-    vi.mocked(apiPost).mockResolvedValue({ turn: pending });
+    const pending = { ...turn, comment_status: "failed", comment_publication_state: "uncertain", comment_id: "" };
+    vi.mocked(apiGet).mockImplementation(async path => path === "/api/jira-agent/conversations/jac_1"
+      ? { ...detail, conversation: { ...conversation, latest_turn: pending }, turns: [pending] } : base(path));
+    vi.mocked(apiFetch).mockResolvedValue({ body: pending.comment_body, frozen: true, revision: 0,
+      selected_file_ids: [], uploads: [], turn: pending });
     renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
-    expect(await screen.findByText("发布结果待确认")).toHaveAttribute("title", "原请求结果未知");
-    expect(screen.queryByRole("button", { name: "重试发布" })).not.toBeInTheDocument();
-    await userEvent.setup().click(screen.getByRole("button", { name: "核对发布结果" }));
-    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/turns/jat_1/comment/retry", {}));
-    expect(apiPost).toHaveBeenCalledTimes(1);
+    await userEvent.click(await screen.findByRole("button", { name: "发送到 JIRA" }));
+    expect(await screen.findByRole("button", { name: "核对并重试发送" })).toBeVisible();
+    expect(screen.getByLabelText("JIRA 评论内容")).toBeDisabled();
+    expect(apiPost).not.toHaveBeenCalled();
   });
 
   it.each([true, false])("retries file delivery with the original comment choice %s", async (post) => {
@@ -443,7 +437,7 @@ describe("JiraAgentPage", () => {
         ...detail,
         conversation: { ...conversation, state: current.turn.delivery_status === "complete" ? "waiting_review" : "delivery_incomplete", latest_turn: current.turn },
         turns: [current.turn],
-        events: [...detail.events.filter((event) => event.kind !== "jira_comment"),
+        events: [...detail.events.filter((event) => !["jira_comment", "delivery"].includes(event.kind)),
           { ...detail.events[3], kind: "delivery", payload: {} }],
       };
       return base(path);
@@ -458,11 +452,10 @@ describe("JiraAgentPage", () => {
     expect(within(panel).getByText("artifacts/report.md")).toBeInTheDocument();
     expect(within(panel).getByText(/重试只回收文件，不重新运行分析/)).toBeInTheDocument();
     expect(screen.getByText("分析结论（文件交付尚未完成）")).toBeInTheDocument();
-    if (post) expect(within(panel).getByText(/暂停发布 JIRA 评论/)).toBeInTheDocument();
-    else expect(within(panel).getByText(/本轮结论仅保留在网站/)).toBeInTheDocument();
+    expect(within(panel).getByText(/文件收齐后可手动发送 JIRA 评论/)).toBeInTheDocument();
     await user.click(within(panel).getByRole("button", { name: "重试回收文件" }));
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/turns/jat_1/delivery/retry", {}));
-    await waitFor(() => expect(within(panel).getByText("交付文件已全部回收")).toBeInTheDocument());
+    await waitFor(() => expect(within(panel).getByText("本轮产物已全部回收")).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: "重试回收文件" })).not.toBeInTheDocument();
     expect(apiPost).toHaveBeenCalledTimes(1);
   });
@@ -778,12 +771,13 @@ describe("JiraAgentPage", () => {
     expect(within(resultCard).getByText("待审核")).not.toBeVisible();
     await user.click(within(resultCard).getByText("本轮结论"));
     expect(within(resultCard).getByText("待审核")).toBeInTheDocument();
-    expect(within(resultCard).getByText("修复补丁")).toBeInTheDocument();
-    expect(within(resultCard).getByText(/--- a\/saxpy\.cu/)).toBeInTheDocument();
-    expect(within(resultCard).getByRole("link", { name: "下载完整补丁" })).toHaveAttribute(
-      "href",
-      "/api/jira-agent/conversations/jac_1/files/jaf_1",
-    );
+    expect(within(resultCard).queryByText("修复补丁")).not.toBeInTheDocument();
+    const artifacts = screen.getByTestId("jira-agent-delivery");
+    expect(artifacts).not.toHaveAttribute("open");
+    expect(within(artifacts).getByRole("link", { name: "打包下载本轮产物（ZIP）" })).toHaveAttribute("href", "/api/jira-agent/turns/jat_1/artifacts.zip");
+    await user.click(within(artifacts).getByText("本轮产物已全部回收"));
+    expect(within(artifacts).getByRole("button", { name: /fix.patch$/ })).toBeVisible();
+    expect(document.querySelector(".jira-agent-files")).toBeNull();
     // Process details default to folded; user messages and results stay visible.
     expect(screen.getByTestId("jira-agent-process")).not.toHaveAttribute("open");
     const toolGroup = screen.getByTestId("jira-agent-tool-group");
@@ -796,10 +790,6 @@ describe("JiraAgentPage", () => {
     expect(within(comment).getByText("已发布到 Jira")).toBeVisible();
     expect(within(comment).getByRole("link", { name: "#99" })).toHaveAttribute(
       "href", "http://jira/browse/MC3-7672?focusedCommentId=99#comment-99",
-    );
-    expect(screen.getByRole("link", { name: "fix.patch" })).toHaveAttribute(
-      "href",
-      "/api/jira-agent/conversations/jac_1/files/jaf_1",
     );
     // old conversations live in a dropdown next to the title
     const select = screen.getByLabelText("对话") as HTMLSelectElement;
@@ -1107,7 +1097,6 @@ describe("JiraAgentPage", () => {
         preflight_id: "",
         request_id: expect.any(String),
         acknowledged_issue_ids: [],
-        post_comment: true,
       });
     });
     expect(screen.queryByRole("dialog", { name: "执行环境检查" })).not.toBeInTheDocument();
@@ -1150,7 +1139,6 @@ describe("JiraAgentPage", () => {
       expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/conversations/jac_1/messages", {
         text: "补充 N=257 验证",
         files: [],
-        post_comment: true,
       });
     });
   });
@@ -1162,15 +1150,13 @@ describe("JiraAgentPage", () => {
     renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1");
 
     await user.type(await screen.findByLabelText("补充信息"), "解释一下根因");
-    await user.click(screen.getByRole("checkbox", { name: /本轮结论发布到 JIRA 评论/ }));
-    expect(screen.getByText(/只在网页显示/)).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /本轮结论发布到 JIRA 评论/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "发送" }));
 
     await waitFor(() => {
       expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/conversations/jac_1/messages", {
         text: "解释一下根因",
         files: [],
-        post_comment: false,
       });
     });
   });
@@ -1190,31 +1176,26 @@ describe("JiraAgentPage", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const user = userEvent.setup();
     renderPage("/jira-agent?issue=MC3-7672&conversation=jac_1", client);
-    const checkbox = await screen.findByRole("checkbox", { name: /本轮结论发布到 JIRA 评论/ });
-    expect(checkbox).not.toBeChecked();
+    await screen.findByLabelText("补充信息");
+    expect(screen.queryByRole("checkbox", { name: /本轮结论发布到 JIRA 评论/ })).not.toBeInTheDocument();
     await user.type(screen.getByLabelText("补充信息"), "补充证据");
     await user.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith(
       "/api/jira-agent/conversations/jac_1/messages",
-      { text: "补充证据", files: [], post_comment: false },
+      { text: "补充证据", files: [] },
     ));
-    expect(checkbox).not.toBeChecked();
 
     // Refreshes and queued -> running must preserve unsent edits.
-    await user.click(checkbox);
     await user.type(screen.getByLabelText("补充信息"), "尚未发送");
     current = { ...current, state: "running", latest_turn: { ...current.latest_turn, status: "running" } };
     await act(async () => { await client.invalidateQueries({ queryKey: ["jira-agent", "conversation", "jac_1"] }); });
-    expect(checkbox).toBeChecked();
-    await user.click(checkbox);
     current = { ...current, state: "waiting_review", latest_turn: { ...current.latest_turn, status: "completed" } };
     await act(async () => { await client.invalidateQueries({ queryKey: ["jira-agent", "conversation", "jac_1"] }); });
-    await waitFor(() => expect(checkbox).not.toBeChecked());
     expect(screen.getByLabelText("补充信息")).toHaveValue("尚未发送");
     await user.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(apiPost).toHaveBeenLastCalledWith(
       "/api/jira-agent/conversations/jac_1/messages",
-      { text: "尚未发送", files: [], post_comment: false },
+      { text: "尚未发送", files: [] },
     ));
   });
 

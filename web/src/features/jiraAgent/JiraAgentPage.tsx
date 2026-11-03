@@ -17,6 +17,7 @@ import { isRM } from "../../lib/roles";
 import { toast } from "../../lib/toast";
 import { ModelChoice, type ModelSelection } from "./ModelChoice";
 import { ArtifactLink } from "./ArtifactPreview";
+import { CommentPublication } from "./CommentPublication";
 import { JiraComment } from "./JiraComment";
 import { MachineChoice } from "./MachineChoice";
 import { MachinesDialog } from "./MachinesDialog";
@@ -45,7 +46,6 @@ import {
   jiraAgentIssueSearchKey,
   listHandledIssues,
   previewIssue,
-  retryTurnComment,
   retryTurnDelivery,
   resultState,
   searchIssues,
@@ -846,7 +846,6 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
   const [busy, setBusy] = useState(false);
   // "" = the agent picks from the system list; null = the choice is not ready yet
   const [machine, setMachine] = useState<ExecutionConfig | null>(null);
-  const [postComment, setPostComment] = useState(true);
   // a user-given machine: the SSH key upload dialog that must pass before this hand-over
   const [uploading, setUploading] = useState(false);
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -886,7 +885,6 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
         files,
         new_conversation: true,
         ...submission,
-        post_comment: postComment,
       });
       setUploading(false);
       toast.success("已交给 agent，进入排队");
@@ -909,7 +907,6 @@ function HandoverComposer({ preview, onCreated }: { preview: IssuePreview; onCre
         />
         <ModelChoice group={preview.agent_group} value={selection} onChange={setSelection} disabled={disabled || busy || uploading} />
         <MachineChoice agentGroup={preview.agent_group} disabled={disabled || busy || uploading} onChange={setMachine} />
-        <PostCommentCheck checked={postComment} disabled={disabled || busy || uploading} onChange={setPostComment} />
         <AttachmentInput files={attachments} onChange={setAttachments} limits={preview.upload_limits} disabled={disabled || busy || uploading || recovering}>
           <button
             type="button"
@@ -1067,7 +1064,6 @@ export function ConversationBody({ id, onChanged, testing }: {
   return (
     <>
       {timeline}
-      {detail.files.length > 0 && <FilesPanel files={detail.files} />}
       {conversation.can_write && <Composer conversation={conversation} limits={detail.upload_limits} onSent={onChanged} />}
     </>
   );
@@ -1182,7 +1178,6 @@ function EventRow({
           <div className="jira-agent-event-head">
             <strong>{String(payload.author ?? "")}</strong>
             <span className="muted">{MODE_LABELS[String(payload.mode)] ?? ""} · {event.created_at}</span>
-            {payload.post_comment === false && <span className="pill">不发 JIRA</span>}
           </div>
           {text && <div className="jira-agent-pre">{text}</div>}
           {attached.length > 0 && <div className="muted">附件：{attached.join("、")}</div>}
@@ -1242,15 +1237,15 @@ function EventRow({
     case "result": {
       const result = payload as unknown as AgentResult;
       return <div className="jira-agent-result-group">
-        {turn?.comment_body && <CommentCard body={turn.comment_body} result={result}
-          publication={<CommentPublication turn={turn} browseUrl={browseUrl} canWrite={canWrite} onChanged={onChanged} />} />}
+        {turn && (turn.comment_body || turn.status === "completed") && <CommentCard body={turn.comment_body} result={result}
+          publication={<CommentPublication turn={turn} files={files} browseUrl={browseUrl} canWrite={canWrite} onChanged={onChanged} />} />}
         <ResultCard result={result} files={files.filter((f) => f.turn_id === event.turn_id && f.source === "artifact")}
           pending={turn?.delivery_status === "incomplete" || turn?.delivery_status === "collecting"}
-          showStatus={!turn?.comment_body} foldEvidence fold />
+          showFiles={false} showStatus={!turn?.comment_body} foldEvidence fold />
       </div>;
     }
     case "delivery":
-      return <DeliveryEvent turn={turn} canRetry={canRetry} onChanged={onChanged} />;
+      return <DeliveryEvent turn={turn} files={files.filter(f => f.turn_id === event.turn_id && f.source === "artifact")} canRetry={canRetry} onChanged={onChanged} />;
     case "error":
       return <div className="jira-agent-event error">{text || "错误"}</div>;
     default:
@@ -1468,8 +1463,8 @@ function ResultCard({ result, files, pending, title = "本轮结论", showFiles 
   );
 }
 
-function ResultFiles({ result, files, section, fold = false }: {
-  result: AgentResult; files: AgentFile[]; section?: "patches" | "artifacts"; fold?: boolean;
+function ResultFiles({ result, files, section, fold = false, showDownload = true }: {
+  result: AgentResult; files: AgentFile[]; section?: "patches" | "artifacts"; fold?: boolean; showDownload?: boolean;
 }) {
   const state = resultState(result.conclusion, result.action_required);
   const repair = state.conclusion === "fix_prepared" || state.conclusion === "fixed_pending_review";
@@ -1515,7 +1510,7 @@ function ResultFiles({ result, files, section, fold = false }: {
       )}
   </>;
   return <>
-    {section !== "patches" && files.length > 0 && <a className="btn sm" href={`/api/jira-agent/turns/${encodeURIComponent(files[0].turn_id)}/artifacts.zip`}>打包下载本轮产物（ZIP）</a>}
+    {showDownload && section !== "patches" && files.length > 0 && <a className="btn sm" href={`/api/jira-agent/turns/${encodeURIComponent(files[0].turn_id)}/artifacts.zip`}>打包下载本轮产物（ZIP）</a>}
     {fold ? <details className="test-disclosure" key={files[0]?.turn_id}>
       <summary>文件列表 <span className="muted">{files.length} 个文件</span></summary>
       <div className="test-disclosure-body">{content}</div>
@@ -1523,7 +1518,8 @@ function ResultFiles({ result, files, section, fold = false }: {
   </>;
 }
 
-function DeliveryEvent({ turn, canRetry, onChanged }: {
+function DeliveryEvent({ turn, files = [], canRetry, onChanged }: {
+  files?: AgentFile[];
   turn: AgentTurn | undefined;
   canRetry: boolean;
   onChanged: () => void;
@@ -1538,7 +1534,7 @@ function DeliveryEvent({ turn, canRetry, onChanged }: {
     setBusy(true);
     try {
       const response = await retryTurnDelivery(turn.id);
-      if (response.turn.delivery_status === "complete") toast.success("交付文件已全部回收");
+      if (response.turn.delivery_status === "complete") toast.success("本轮产物已全部回收");
       else toast.error("仍有文件未收齐，请查看失败清单");
       onChanged();
     } catch (error) {
@@ -1550,99 +1546,19 @@ function DeliveryEvent({ turn, canRetry, onChanged }: {
   }
 
   return (
-    <div className={`jira-agent-event ${incomplete ? "error" : "status"}`} data-testid="jira-agent-delivery">
-      <strong>{incomplete ? "分析已完成，交付不完整" : collecting ? "正在回收交付文件" : "交付文件已全部回收"}</strong>
-      {incomplete && <p>{turn.post_comment ? "文件收齐前暂停发布 JIRA 评论。" : "本轮结论仅保留在网站。"}重试只回收文件，不重新运行分析。</p>}
+    <details className={`jira-agent-event ${incomplete ? "error" : "result"} jira-result-disclosure`} data-testid="jira-agent-delivery" open={incomplete || collecting}>
+      <summary className="jira-agent-event-head">
+        <strong>{incomplete ? "分析已完成，交付不完整" : collecting ? "正在回收交付文件" : "本轮产物已全部回收"}</strong>
+        {files.length > 0 && <a className="btn sm" onClick={event => event.stopPropagation()} href={`/api/jira-agent/turns/${encodeURIComponent(turn.id)}/artifacts.zip`}>打包下载本轮产物（ZIP）</a>}
+      </summary>
+      {turn.result && files.length > 0 && <ResultFiles result={turn.result} files={files} showDownload={false} />}
+      {!incomplete && !collecting && files.length === 0 && <p className="muted">本轮没有产物。</p>}
+      {incomplete && <p>文件收齐后可手动发送 JIRA 评论。重试只回收文件，不重新运行分析。</p>}
       {(turn.delivery_errors ?? []).length > 0 && (
         <ul>{turn.delivery_errors.map((item, index) => <li key={`${item.path}-${index}`}><code>{item.path}</code>{item.path ? "：" : ""}{item.error}</li>)}</ul>
       )}
       {incomplete && canRetry && <button type="button" className="btn sm" disabled={busy} onClick={() => void retry()}>{busy ? "正在重试回收…" : "重试回收文件"}</button>}
-    </div>
-  );
-}
-
-function CommentPublication({
-  turn,
-  browseUrl,
-  canWrite,
-  onChanged,
-}: {
-  turn: AgentTurn;
-  browseUrl: string;
-  canWrite: boolean;
-  onChanged: () => void;
-}) {
-  const [busy, setBusy] = useState(false);
-  const posted = turn.comment_status === "posted";
-  const skipped = !posted && turn.post_comment === false;
-  const uncertain = !posted && !skipped && turn.comment_publication_state === "uncertain";
-  const failed = !posted && !skipped && turn.comment_status === "failed";
-  const waiting = ["collecting", "incomplete"].includes(turn.delivery_status);
-  const label = posted ? "已发布到 Jira" : skipped ? "未发布 · 本轮仅在网站显示"
-    : uncertain ? "发布结果待确认" : failed ? "发布失败" : waiting ? "待发布 · 等待文件收齐" : "待发布";
-  const href = posted && turn.comment_id && /^https?:\/\//i.test(browseUrl)
-    ? `${browseUrl}?focusedCommentId=${encodeURIComponent(turn.comment_id)}#comment-${encodeURIComponent(turn.comment_id)}` : "";
-
-  async function retry() {
-    setBusy(true);
-    try {
-      const response = await retryTurnComment(turn.id);
-      if (response.turn.comment_status === "posted") toast.success("已发布 JIRA 评论");
-      else toast.error(response.turn.comment_error || "发布失败");
-      onChanged();
-    } catch (error) {
-      toast.error(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <span className={`jira-comment-publication${failed || uncertain ? " error" : ""}`}>
-      <span title={turn.comment_error || undefined} aria-label={turn.comment_error ? `${label}：${turn.comment_error}` : undefined}>{label}</span>
-      {posted && turn.comment_id && <>
-        <span>·</span>
-        {href ? <a href={href} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()}>#{turn.comment_id}</a>
-          : <span>#{turn.comment_id}</span>}
-      </>}
-      {failed && canWrite && (
-        <button type="button" className="btn sm" disabled={busy} onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          void retry();
-        }}>
-          {busy ? "处理中…" : uncertain ? "核对发布结果" : "重试发布"}
-        </button>
-      )}
-    </span>
-  );
-}
-
-function PostCommentCheck({
-  checked,
-  disabled = false,
-  hint = "",
-  onChange,
-}: {
-  checked: boolean;
-  disabled?: boolean;
-  hint?: string;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <label className="jira-agent-check">
-      <input
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.checked)}
-      />
-      本轮结论发布到 JIRA 评论
-      <span className="muted">
-        {!checked && "（只在网页显示）"}
-        {hint && ` · ${hint}`}
-      </span>
-    </label>
+    </details>
   );
 }
 
@@ -1691,15 +1607,9 @@ function Composer({ conversation, limits, onSent }: { conversation: AgentConvers
   const [busy, setBusy] = useState(false);
   const activeTurn = conversation.state === "running" || conversation.state === "queued"
     ? conversation.latest_turn : null;
-  const latestTurnId = conversation.latest_turn?.id;
-  const defaultPostComment = conversation.latest_turn?.post_comment ?? true;
-  const [postComment, setPostComment] = useState(defaultPostComment);
   const [attachments, setAttachments] = useState<File[]>([]);
   const invalid = Boolean(uploadError(attachments, limits));
 
-  useEffect(() => {
-    setPostComment(defaultPostComment);
-  }, [conversation.id, latestTurnId, defaultPostComment]);
 
   const recovering = conversation.phase === "recovering";
   const delivering = conversation.state === "delivering";
@@ -1713,7 +1623,7 @@ function Composer({ conversation, limits, onSent }: { conversation: AgentConvers
     setBusy(true);
     try {
       const files = await readFiles(attachments, limits);
-      const response = await sendConversationMessage(conversation.id, { text, files, post_comment: postComment, ...(isRM(user) && !activeTurn && modelChanged ? selection : {}) });
+      const response = await sendConversationMessage(conversation.id, { text, files, ...(isRM(user) && !activeTurn && modelChanged ? selection : {}) });
       toast.success(MODE_LABELS[response.mode] ?? "已发送");
       setText("");
       setModelChanged(false);
@@ -1737,11 +1647,6 @@ function Composer({ conversation, limits, onSent }: { conversation: AgentConvers
           onChange={(event) => setText(event.target.value)}
         />
         <ModelChoice group={conversation.agent_group} value={selection} lockProvider onChange={(value) => { setSelection(value); setModelChanged(true); }} disabled={busy || Boolean(activeTurn) || recovering || delivering} />
-        <PostCommentCheck
-          checked={postComment}
-          onChange={setPostComment}
-          hint={conversation.state === "running" || conversation.state === "queued" ? "以本轮最后一次发送的选择为准" : ""}
-        />
         <AttachmentInput files={attachments} onChange={setAttachments} limits={limits} disabled={busy || recovering || delivering}>
           <button
             type="button"

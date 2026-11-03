@@ -91,7 +91,7 @@ JIRA agent 是按组配置的数字员工，第一阶段处理 HPC 组的 Bug �
 
 要点：只有当前 JIRA assignee 或 RM 能交单和发消息；工单收到 Codex cybersecurity risk warning 后，非 RM 操作锁定，只能由 RM 处理（owner 仍可查看）。锁定跨对话和 assignee 变更保留，删除历史对话不会解锁，部署时会补录历史错误/告警；agent **只在 JIRA 追加评论**，不改 assignee、状态或代码；每组并发由网站排队控制，网站重启不丢轮次。RM 可在“知识学习”中从 agent 处理过的 Jira 或添加的历史 Jira 批量学习，审核提案后人工更新独立 `jira_agent_skill` 仓库，分别登记入库和部署。知识学习见 [docs/jira-learning.md](docs/jira-learning.md)。完整的找单、对话、排队、学习与恢复规则见 [docs/jira-agent.md](docs/jira-agent.md)。
 
-RM 可在新建对话时选择服务商（例如 OpenAI / DeepSeek）、模型和 effort；**同一对话固定服务商，切换服务商必须新建对话**。续办允许调整同一服务商的模型和 effort，排队或运行中不可修改。默认仍使用 B 的默认服务商；默认模型从 app-server 获取，额外服务商从组配置 `MODEL_CATALOGS` 指定的 B 侧模型目录读取，Key 仅保留在 B。模型、effort 和发布评论的选择在对话内持续保留，新建对话恢复默认。
+RM 可在新建对话时选择服务商（例如 OpenAI / DeepSeek）、模型和 effort；**同一对话固定服务商，切换服务商必须新建对话**。续办允许调整同一服务商的模型和 effort，排队或运行中不可修改。默认仍使用 B 的默认服务商；默认模型从 app-server 获取，额外服务商从组配置 `MODEL_CATALOGS` 指定的 B 侧模型目录读取，Key 仅保留在 B。模型和 effort 在对话内持续保留，新建对话恢复默认。分析结果不自动发布；用户在评论框点击“发送到 JIRA”，编辑正文并选择本轮产物后确认发送，编辑历史可查，已发送轮次禁止重复发送。每轮产物在可展开的回收状态栏中预览和打包下载。
 
 实现入口：[jira_agent_service.py](app/services/jira_agent_service.py)（交单与对话规则）、[jira_agent_runner.py](app/services/jira_agent_runner.py)（排队与执行）、[codex_app_server.py](app/integrations/codex_app_server.py)（通用 Codex 协议客户端）、[jira_agent.py](app/domain/jira_agent.py)（结论 schema、提示词、评论格式）、[JiraAgentPage.tsx](web/src/features/jiraAgent/JiraAgentPage.tsx)，B 侧知识包与启动脚本在 [deploy/jira-agent/](deploy/jira-agent/)。
 

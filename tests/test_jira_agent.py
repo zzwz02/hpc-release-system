@@ -636,11 +636,28 @@ def _handover(env, key: str = "MC3-7672", **extra) -> dict:
     return response.json()
 
 
+def _draft_body(env, turn):
+    current = env.client.get(f"/api/jira-agent/turns/{turn['id']}/comment").json()
+    if current["body"]:
+        return current["body"]
+    raise AssertionError(current)
+
+
+def _send_comment(env, turn, body=None, file_ids=()):
+    if body is None:
+        body = _draft_body(env, turn)
+    revision = env.client.get(f"/api/jira-agent/turns/{turn['id']}/comment").json()["revision"]
+    response = env.client.post(f"/api/jira-agent/turns/{turn['id']}/comment/send",
+                               json={"body": body, "file_ids": list(file_ids), "revision": revision})
+    assert response.status_code == 200, response.text
+    return response.json()["turn"]
+
+
 # ─────────────────────────────────────────────────────────────
 # Full flow
 # ─────────────────────────────────────────────────────────────
 
-def test_handover_runs_codex_turn_records_timeline_and_comments(env) -> None:
+def test_handover_renders_comment_without_publishing_until_reviewed_send(env) -> None:
     upload = {"filename": "notes.txt", "content_base64": base64.b64encode(b"use A100").decode()}
     created = _handover(env, "mc3-7672", note="请修复", files=[upload])
     assert created["created"] is True
@@ -652,7 +669,8 @@ def test_handover_runs_codex_turn_records_timeline_and_comments(env) -> None:
     turn = _latest(detail)
     assert turn["status"] == "completed"
     assert turn["conclusion"] == "fixed_pending_review"
-    assert turn["comment_status"] == "posted"
+    assert turn["comment_status"] == ""
+    assert turn["comment_body"] and not env.jira.comments
     assert detail["conversation"]["state"] == "waiting_review"
 
     fake = env.fake
@@ -675,7 +693,7 @@ def test_handover_runs_codex_turn_records_timeline_and_comments(env) -> None:
     assert detail["conversation"]["thread_id"] == "thr_1"
 
     kinds = [event["kind"] for event in detail["events"]]
-    for kind in ("user_message", "command", "agent_message", "result", "jira_comment"):
+    for kind in ("user_message", "command", "agent_message", "result"):
         assert kind in kinds
     command = next(event for event in detail["events"] if event["kind"] == "command")
     assert command["payload"]["status"] == "completed"
@@ -684,6 +702,7 @@ def test_handover_runs_codex_turn_records_timeline_and_comments(env) -> None:
     assert turn["delivery_status"] == "complete"
     assert turn["delivery_errors"] == []
 
+    turn = _send_comment(env, turn)
     [(key, body)] = env.jira.comments
     assert key == "MC3-7672"
     assert "向上取整后原案例验证通过" in body
@@ -895,7 +914,7 @@ def test_handled_issue_repository_returns_more_than_200_issues(tmp_path: Path) -
 
 def test_rm_lists_every_handled_issue_including_closed(env) -> None:
     first = _handover(env, "MC3-1")["conversation"]
-    _wait(env, first["id"], lambda d: _latest(d)["status"] == "completed")
+    _wait(env, first["id"], _done)
     second = _handover(env, "MC3-1", new_conversation=True)["conversation"]
     _handover(env, "MC3-2")
 
@@ -934,7 +953,7 @@ def test_parse_issue_query() -> None:
     )
 
 
-def test_followup_resumes_the_same_thread_and_comments_again(env) -> None:
+def test_followup_resumes_the_same_thread_without_automatic_comments(env) -> None:
     conversation = _handover(env)["conversation"]
     _wait(env, conversation["id"], _done)
 
@@ -950,7 +969,7 @@ def test_followup_resumes_the_same_thread_and_comments_again(env) -> None:
     assert env.fake.threads == 1
     assert env.fake.params("thread/resume")[0]["threadId"] == "thr_1"
     assert "补充 N=257 验证" in env.fake.params("turn/start")[1]["input"][0]["text"]
-    assert len(env.jira.comments) == 2
+    assert len(env.jira.comments) == 0
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1016,12 +1035,14 @@ def test_rm_deletes_latest_conversation_and_can_handover_again(env, with_history
 
 @pytest.mark.parametrize("closed", [False, True])
 @pytest.mark.parametrize("field,value", [("status", "queued"), ("status", "running"), ("delivery_status", "collecting"), ("comment_status", "pending")])
-def test_history_deletion_rejects_unfinished_work(env, field, value, closed) -> None:
+def test_history_deletion_rejects_unfinished_work(env, monkeypatch, field, value, closed) -> None:
     first = _handover(env)["conversation"]
     finished = _wait(env, first["id"], _done)
     if closed:
         second = _handover(env, new_conversation=True)["conversation"]
         _wait(env, second["id"], _done)
+    # Keep the artificial unfinished row stable while checking the delete endpoint.
+    monkeypatch.setattr(jira_agent_runner.runner, "_schedule_once", lambda: None)
     conn = connect_jira_agent(settings.jira_agent_database_url)
     try:
         with transaction(conn):
@@ -1160,6 +1181,7 @@ def test_comment_failure_can_be_retried_without_rerunning(env) -> None:
     env.jira.fail_comment = True
     conversation = _handover(env)["conversation"]
     turn = _latest(_wait(env, conversation["id"], _done))
+    turn = _send_comment(env, turn)
     assert (turn["status"], turn["comment_status"]) == ("completed", "failed")
 
     env.jira.fail_comment = False
@@ -1175,14 +1197,14 @@ def test_turn_can_keep_its_result_on_the_website_only(env) -> None:
     detail = _wait(env, conversation["id"], _done)
     turn = _latest(detail)
     assert (turn["status"], turn["post_comment"], turn["comment_status"]) == ("completed", False, "")
-    assert turn["comment_body"]  # rendered anyway, shown on the website
+    assert turn["comment_body"]  # Rendered locally without publishing.
     assert env.jira.comments == []
     kinds = [(event["kind"], event["payload"].get("status")) for event in detail["events"]]
     assert ("jira_comment", "skipped") in kinds
     assert detail["events"][0]["payload"]["post_comment"] is False
     assert env.client.post(f"/api/jira-agent/turns/{turn['id']}/comment/retry").status_code == 409
 
-    # Follow-ups retain the conversation choice unless explicitly changed.
+    # Legacy automatic-publication flags no longer authorize any external write.
     response = env.client.post(
         f"/api/jira-agent/conversations/{conversation['id']}/messages", json={"text": "继续"},
     )
@@ -1196,8 +1218,8 @@ def test_turn_can_keep_its_result_on_the_website_only(env) -> None:
     )
     assert response.status_code == 200
     turn = _latest(_wait(env, conversation["id"], lambda d: _latest(d)["seq"] == 3 and _done(d)))
-    assert (turn["post_comment"], turn["comment_status"]) == (True, "posted")
-    assert len(env.jira.comments) == 1
+    assert (turn["post_comment"], turn["comment_status"]) == (False, "")
+    assert len(env.jira.comments) == 0
 
 
 def test_latest_message_of_a_turn_decides_whether_it_comments(env) -> None:
@@ -1301,9 +1323,9 @@ def test_site_restart_reattaches_turn_still_running_on_codex(env) -> None:
 
     detail = _wait(env, conversation["id"], _done)
     turn = _latest(detail)
-    assert (turn["status"], turn["comment_status"]) == ("completed", "posted")
+    assert (turn["status"], turn["comment_status"]) == ("completed", "")
     assert env.fake.turns == 1
-    assert len(env.jira.comments) == 1
+    assert len(env.jira.comments) == 0
     assert [params["threadId"] for params in env.fake.params("thread/resume")] == ["thr_1"]
     assert "已重新接管 Codex 上仍在运行的本轮" in _status_texts(detail)
     assert [e["payload"]["status"] for e in detail["events"] if e["kind"] == "command"] == ["completed"]
@@ -1322,14 +1344,14 @@ def test_site_restart_collects_turn_finished_while_site_was_down(env) -> None:
     detail = _wait(env, conversation["id"], _done)
     turn = _latest(detail)
     assert (turn["status"], turn["conclusion"], turn["comment_status"]) == (
-        "completed", "fixed_pending_review", "posted",
+        "completed", "fixed_pending_review", "",
     )
     assert "本轮已在网站重启期间结束，正在收尾" in _status_texts(detail)
     # the command finished while the site was down: backfilled from thread/turns/list
     assert [e["payload"]["status"] for e in detail["events"] if e["kind"] == "command"] == ["completed"]
     assert [f["name"] for f in detail["files"] if f["source"] == "artifact"] == ["fix.patch"]
     assert env.fake.turns == 1
-    assert len(env.jira.comments) == 1
+    assert len(env.jira.comments) == 0
 
 
 def test_site_stopped_while_turn_start_in_flight_adopts_the_started_turn(env) -> None:
@@ -1374,7 +1396,7 @@ def test_unreachable_codex_at_restart_then_followup_stops_leftover_turn(env) -> 
     assert "Codex 上本对话还有未结束的上一轮，先中断它" in _status_texts(detail)
 
 
-def test_startup_requeues_unstarted_turn_and_posts_pending_comment(env) -> None:
+def test_startup_requeues_analysis_but_does_not_publish_pending_comment(env) -> None:
     env.stop_site()
     conn = connect_jira_agent(settings.jira_agent_database_url)
     try:
@@ -1395,8 +1417,8 @@ def test_startup_requeues_unstarted_turn_and_posts_pending_comment(env) -> None:
 
     assert _latest(_wait(env, "jac_new", _done))["status"] == "completed"
     assert env.fake.turns == 1
-    _until(lambda: _db_turn(finished["id"])["comment_status"] == "posted")
-    assert len([item for item in env.jira.comments if item[0] == "MC3-2"]) == 1
+    assert _db_turn(finished["id"])["comment_status"] == "failed"
+    assert len([item for item in env.jira.comments if item[0] == "MC3-2"]) == 0
     assert finished["id"] in _db_turn(finished["id"])["comment_body"]
 
 
@@ -1681,7 +1703,7 @@ def test_ssh_target_and_public_key_fingerprint() -> None:
 # Execution machines
 # ─────────────────────────────────────────────────────────────
 
-def test_auto_machine_prompt_lists_system_machines_and_comment_names_used_machine(env) -> None:
+def test_auto_machine_prompt_lists_system_machines_and_result_records_used_machine(env) -> None:
     conversation = _handover(env)["conversation"]
     assert conversation["machine"] == ""
     _wait(env, conversation["id"], _done)
@@ -1690,8 +1712,7 @@ def test_auto_machine_prompt_lists_system_machines_and_comment_names_used_machin
     assert "按工单需要从下列系统机器中选择一台" in prompt
     assert f"| `{SYSTEM_MACHINE}` | 1×A100 40GB \\| CUDA 12 |" in prompt
     assert "machine" in turn_start["outputSchema"]["required"]
-    [(_, body)] = env.jira.comments
-    assert "*执行机器*" not in body
+    assert not env.jira.comments
     assert _latest(_detail(env, conversation["id"]))["result"]["machine"] == SYSTEM_MACHINE
     assert _detail(env, conversation["id"])["conversation"]["machine_used"] == SYSTEM_MACHINE
 
@@ -1930,10 +1951,11 @@ def test_missing_artifact_can_be_retried_without_running_model(env, monkeypatch,
     assert len([f for f in detail["files"] if f["source"] == "artifact"]) == 2
     assert len([e for e in detail["events"] if e["kind"] == "result"]) == 1
     assert len([e for e in detail["events"] if e["kind"] == "delivery"]) == 1
-    assert len(env.jira.comments) == int(post)
+    assert len(env.jira.comments) == 0
     patch_record = next(f for f in detail["files"] if f["source"] == "artifact" and f["name"] == "fix.patch")
     assert patch_record["preview"] == PATCH.decode()
     if post:
+        _send_comment(env, _latest(detail))
         assert "向上取整后原案例验证通过" in env.jira.comments[0][1]
         assert "different later content" not in env.jira.comments[0][1]
     assert env.client.post(f"/api/jira-agent/turns/{turn['id']}/delivery/retry").status_code == 409
@@ -2000,7 +2022,7 @@ def test_delivery_retry_excludes_parallel_retry_and_followup(env, monkeypatch):
     assert not worker.is_alive()
     assert responses[0].status_code == 200
     assert responses[0].json()["turn"]["delivery_status"] == "complete"
-    assert len(env.jira.comments) == 1
+    assert len(env.jira.comments) == 0
     assert len(env.fake.params("turn/start")) == 1
 
 
@@ -2023,7 +2045,7 @@ def test_restart_retains_analysis_and_allows_delivery_retry(env, monkeypatch):
     env.fake.files[f"{conversation['workspace']}/artifacts/REPORT.md"] = b"Report"
     response = env.client.post(f"/api/jira-agent/turns/{turn['id']}/delivery/retry")
     assert response.status_code == 200 and response.json()["turn"]["delivery_status"] == "complete"
-    assert len(env.jira.comments) == 1
+    assert len(env.jira.comments) == 0
     assert len(env.fake.params("turn/start")) == 1
 
 
@@ -2075,7 +2097,7 @@ def test_rm_model_choice_persists_in_conversation_and_is_validated(env):
     new_cid = _handover(env, new_conversation=True)["conversation"]["id"]
     detail = _wait(env, new_cid, _done)
     assert (_latest(detail)["model"], _latest(detail)["effort"]) == ("default-model", "medium")
-    assert _latest(detail)["post_comment"] is True
+    assert _latest(detail)["post_comment"] is False
 
 
 def test_model_choice_rejected_when_turn_is_active(env):
@@ -2194,7 +2216,8 @@ def test_existing_thread_provider_mismatch_never_sends_a_turn(env):
 @pytest.mark.parametrize("failure", ["remote", "missing_group", "unsafe_path"])
 def test_remote_deletion_failure_still_deletes_history_and_local_files(env, failure):
     first = _handover(env)["conversation"]
-    _wait(env, first["id"], _done)
+    detail = _wait(env, first["id"], _done)
+    _send_comment(env, _latest(detail))
     second = _handover(env, new_conversation=True)["conversation"]
     _wait(env, second["id"], _done)
     env.as_user("carol")

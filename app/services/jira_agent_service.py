@@ -222,6 +222,9 @@ def _turn_view(conn: sqlite3.Connection, turn: dict | None) -> dict | None:
     view["delivery_errors"] = loads_json(view.pop("delivery_errors_json"), [])
     publication = repo.comment_publication(conn, turn["id"])
     view["comment_publication_state"] = publication["state"] if publication else ""
+    draft = conn.execute("SELECT body FROM jira_agent_comment_drafts WHERE turn_id=?", (turn["id"],)).fetchone()
+    if draft and not publication and not turn["comment_status"]:
+        view["comment_body"] = draft["body"]
     view["queue_position"] = (
         repo.queue_position(conn, turn["id"]) if turn["status"] == "queued" else None
     )
@@ -341,7 +344,8 @@ async def delete_conversation(user: dict, conversation_id: str) -> dict:
             raise ApiError(404, "对话不存在或已删除")
         if conversation["source_kind"] == "test":
             raise ApiError(409, "测试记录不能通过 Jira 对话接口删除")
-        if runner.active_for_conversation(conversation_id) or not repo.can_delete_conversation(conn, conversation_id):
+        from app.services.jira_agent_comments import BUSY
+        if any(t["id"] in BUSY for t in repo.list_turns(conn, conversation_id)) or runner.active_for_conversation(conversation_id) or not repo.can_delete_conversation(conn, conversation_id):
             raise ApiError(409, "对话仍在执行、回收文件或发布评论，请稍后再删除")
         host = f"未知机器（组 {conversation['agent_group']}）"
         try:
@@ -608,6 +612,11 @@ def _check_not_recovering(conversation_id: str) -> None:
 
 def _close_conversation_rows(conn, conversation, reason):
     """The caller owns the transaction; remote interruption happens after commit."""
+    if conn.execute("SELECT 1 FROM jira_agent_turns WHERE conversation_id=? AND comment_status='pending'", (conversation["id"],)).fetchone():
+        raise ApiError(409, "正在发送 JIRA 评论，请完成后再关闭对话")
+    from app.services.jira_agent_comments import BUSY
+    if any(t["id"] in BUSY for t in repo.list_turns(conn, conversation["id"])):
+        raise ApiError(409, "正在发送 JIRA 评论，请完成后再关闭对话")
     _check_not_recovering(conversation["id"])
     _check_not_delivering(conn, conversation["id"])
     if not repo.close_conversation(conn, conversation["id"], reason):
@@ -702,7 +711,7 @@ async def handover(user: dict, body: dict) -> dict:
         raise ApiError(409, "工单没有 assignee，请先在 JIRA 指派负责人")
     note = (body.get("note") or "").strip()
     uploads = _decode_uploads(body.get("files"))
-    post_comment = bool(body.get("post_comment", True))
+    post_comment = False
     group = domain.group_for_issue(runner_module.load_groups(), issue["components"])
 
     model, effort, provider = await _model_choice(user, group.name, body)
@@ -779,7 +788,7 @@ async def handover(user: dict, body: dict) -> dict:
 async def send_message(user: dict, conversation_id: str, body: dict) -> dict:
     text = (body.get("text") or "").strip()
     uploads = _decode_uploads(body.get("files"))
-    post_comment = bool(body.get("post_comment", True))
+    post_comment = False
     if not text and not uploads:
         raise ValueError("请输入补充信息或上传文件")
 
@@ -803,7 +812,7 @@ async def send_message(user: dict, conversation_id: str, body: dict) -> dict:
         check_actor(user, issue)
 
         previous = repo.latest_turn(conn, conversation_id) or {}
-        post_comment = bool(body.get("post_comment", previous.get("post_comment", True)))
+        post_comment = False
         changing_model = any(key in body for key in ("model", "effort", "model_provider"))
         if changing_model:
             if not _is_rm(user):
@@ -950,30 +959,6 @@ async def retry_delivery(user: dict, turn_id: str) -> dict:
             runner._delivery_state(conn, conversation["id"], turn_id, "collecting", [])
         await runner.retry_delivery(conn, group, conversation, repo.get_turn(conn, turn_id))
         return {"turn": _turn_view(conn, repo.get_turn(conn, turn_id))}
-    finally:
-        conn.close()
-
-
-async def retry_comment(user: dict, turn_id: str) -> dict:
-    conn = open_db()
-    try:
-        turn = repo.get_turn(conn, turn_id)
-        if turn is None:
-            raise ApiError(404, "轮次不存在")
-        conversation = _get_visible(conn, user, turn["conversation_id"])
-        check_risk_lock(user, conversation["issue_key"], conn)
-        if not (_is_rm(user) or _same_user(jira.agent_username(user), conversation["owner"])):
-            raise AuthzError("只有对话 owner 或 RM 可以重试发布评论")
-        _check_not_deleting(conversation["id"])
-        if conversation["source_kind"] == "test":
-            raise ApiError(409, "测试运行禁止发布 Jira 评论")
-        if not turn["post_comment"] or turn["comment_status"] != "failed" or turn["delivery_status"] not in ("", "complete"):
-            raise ApiError(409, "该轮评论不需要重试")
-        # Mark the in-flight publication before yielding, so history deletion
-        # cannot remove its records while the JIRA request is running.
-        with transaction(conn):
-            repo.update_turn(conn, turn_id, comment_status="pending")
-        return {"turn": _turn_view(conn, await runner_module.post_turn_comment(conn, turn_id))}
     finally:
         conn.close()
 

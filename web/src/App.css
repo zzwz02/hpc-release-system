@@ -3163,3 +3163,14 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .artifact-preview-backdrop { z-index: 1100; }
 .artifact-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .artifact-preview-dialog > .panel-head { justify-content: space-between; }
+
+/* Reviewed JIRA comment editor. */
+.jira-comment-dialog { width: min(960px, 96vw); max-height: 90vh; display: flex; flex-direction: column; }
+.jira-comment-dialog .dialog-body { overflow: auto; min-height: 0; }
+.jira-comment-dialog textarea { display: block; width: 100%; box-sizing: border-box; resize: vertical; margin: 8px 0 16px; }
+.jira-comment-file { display: flex; gap: 12px; flex-wrap: wrap; align-items: baseline; margin: 8px 0; }
+.jira-comment-history { margin-top: 12px; border-top: 1px solid var(--border); }
+.jira-comment-history details { padding: 10px 0; }
+.jira-comment-dialog > .panel-head { justify-content: space-between; }
+[data-testid="jira-agent-delivery"] > summary { cursor: pointer; }
+[data-testid="jira-agent-delivery"] > summary > .btn { margin-left: 12px; }
