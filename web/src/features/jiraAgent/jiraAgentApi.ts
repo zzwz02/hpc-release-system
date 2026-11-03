@@ -39,6 +39,7 @@ export interface AgentResult {
 }
 
 export interface AgentTurn {
+  comment_edited_by?: string;
   model?: string;
   effort?: string;
   execution_snapshot?: ExecutionSnapshot;

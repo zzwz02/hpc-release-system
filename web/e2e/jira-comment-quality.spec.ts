@@ -38,10 +38,10 @@ for (const uncertain of [false, true]) {
     await dialog.getByRole("checkbox", { name: "fix.patch" }).check();
     await dialog.getByRole("button", { name: "关闭", exact: true }).click();
     await page.getByRole("button", { name: "发送到 JIRA", exact: true }).click();
-    await expect(editor).toHaveValue("人工审核后的结论：修复已验证，请审核本轮附件。");
-    await expect(dialog.getByRole("checkbox", { name: "fix.patch" })).toBeChecked();
-    await dialog.getByRole("button", { name: "查看编辑历史" }).click();
-    await expect(dialog.getByText(/用户编辑 · rm/).first()).toBeVisible();
+    await expect(editor).not.toHaveValue("人工审核后的结论：修复已验证，请审核本轮附件。");
+    await expect(dialog.getByRole("checkbox", { name: "fix.patch" })).not.toBeChecked();
+    await editor.fill("人工审核后的结论：修复已验证，请审核本轮附件。");
+    await dialog.getByRole("checkbox", { name: "fix.patch" }).check();
     await dialog.getByRole("button", { name: "确认发送并上传 1 个附件" }).click();
     if (uncertain) {
       await expect(dialog.getByRole("alert")).toContainText("发布结果待确认");
@@ -53,6 +53,9 @@ for (const uncertain of [false, true]) {
     await dialog.getByRole("button", { name: "关闭", exact: true }).click();
     await expect(page.getByTestId("jira-agent-comment").getByRole("link", { name: /^#/ })).toBeVisible();
     await expect(page.getByRole("button", { name: "发送到 JIRA", exact: true })).toHaveCount(0);
+    await expect(page.getByTestId("jira-agent-comment")).toContainText("已由rm编辑并发送到 JIRA");
+    await page.reload();
+    await expect(page.getByTestId("jira-agent-comment")).toContainText("已由rm编辑并发送到 JIRA");
     const after = await (await page.request.post(`${base}/api/_testing/publication`)).json();
     expect(after.post_calls).toBe(initial.post_calls + 1);
     expect(after.comments).toBe(initial.comments + 1);

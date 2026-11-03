@@ -222,9 +222,12 @@ def _turn_view(conn: sqlite3.Connection, turn: dict | None) -> dict | None:
     view["delivery_errors"] = loads_json(view.pop("delivery_errors_json"), [])
     publication = repo.comment_publication(conn, turn["id"])
     view["comment_publication_state"] = publication["state"] if publication else ""
-    draft = conn.execute("SELECT body FROM jira_agent_comment_drafts WHERE turn_id=?", (turn["id"],)).fetchone()
-    if draft and not publication and not turn["comment_status"]:
-        view["comment_body"] = draft["body"]
+    view["comment_edited_by"] = ""
+    if turn["comment_status"] == "posted":
+        sent = conn.execute("SELECT body,editor FROM jira_agent_comment_revisions WHERE turn_id=? AND source='sent' ORDER BY revision DESC LIMIT 1", (turn["id"],)).fetchone()
+        original = conn.execute("SELECT body FROM jira_agent_comment_revisions WHERE turn_id=? AND source='generated' ORDER BY revision LIMIT 1", (turn["id"],)).fetchone()
+        if sent and original and sent["body"].strip() != original["body"].strip():
+            view["comment_edited_by"] = sent["editor"]
     view["queue_position"] = (
         repo.queue_position(conn, turn["id"]) if turn["status"] == "queued" else None
     )

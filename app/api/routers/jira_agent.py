@@ -78,10 +78,6 @@ class CommentSendBody(BaseModel):
     revision: int = Field(ge=0)
 
 
-class CommentEditBody(CommentSendBody):
-    body: str = Field(max_length=30000)
-
-
 @router.get("/turns/{turn_id}/comment")
 def comment_state(turn_id: str, user: dict = Depends(require_jira_agent_access)) -> dict:
     return comments.state(user, turn_id)
@@ -90,11 +86,6 @@ def comment_state(turn_id: str, user: dict = Depends(require_jira_agent_access))
 @router.post("/turns/{turn_id}/comment/send")
 async def send_comment(turn_id: str, body: CommentSendBody, user: dict = Depends(require_jira_agent_access)) -> dict:
     return await comments.send(user, turn_id, body.body, body.file_ids, body.revision)
-
-
-@router.post("/turns/{turn_id}/comment/draft")
-async def edit_comment(turn_id: str, body: CommentEditBody, user: dict = Depends(require_jira_agent_access)) -> dict:
-    return await comments.edit(user, turn_id, body.body, body.file_ids, body.revision)
 
 
 @router.get("/turns/{turn_id}/comment/history")

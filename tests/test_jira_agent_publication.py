@@ -102,34 +102,32 @@ def test_historical_posted_turn_cannot_generate_or_send_again(env):
     assert not env.jira.comments and env.fake.turns == 1
 
 
-def test_draft_edit_history_version_conflict_and_send_lock(env, monkeypatch):
-    detail, turn = completed(env)
-    assert turn["comment_body"] and not env.jira.comments
-    artifact = next(f for f in detail["files"] if f["source"] == "artifact")
+def test_only_send_saves_history_and_attribution_survives_reload(env):
+    _, turn = completed(env)
     url = f"/api/jira-agent/turns/{turn['id']}/comment"
     first = env.client.get(url).json()
+    assert env.client.get(url + "/history").json()["items"] == []
+    assert env.client.post(url + "/draft", json={"body": "未发送修改", "file_ids": [], "revision": 0}).status_code == 405
+    assert env.client.get(url).json()["body"] == first["body"]
+    assert env.client.get(url + "/history").json()["items"] == []
+    assert env.client.post(url + "/send", json={"body": "过期请求", "file_ids": [], "revision": 99}).status_code == 409
+    assert env.client.get(url + "/history").json()["items"] == []
+    sent = _send_comment(env, turn, "审核后的评论")
+    assert sent["comment_edited_by"] == "alice"
     history = env.client.get(url + "/history").json()["items"]
-    assert [(r["revision"], r["source"], r["editor"]) for r in history] == []
-    edit = {"body": "审核后的评论", "file_ids": [artifact["id"]], "revision": first["revision"]}
-    saved = env.client.post(url + "/draft", json=edit)
-    assert saved.status_code == 200 and saved.json()["revision"] == 1
-    assert not env.jira.comments
-    stale = env.client.post(url + "/draft", json={**edit, "body": "另一窗口的过期修改"})
-    assert stale.status_code == 409
-    uploads = []
-    monkeypatch.setattr(jira, "upload_agent_attachment", lambda *args: uploads.append(args) or "att-1")
-    assert env.client.post(url + "/send", json=edit).status_code == 409
-    assert not uploads and not env.jira.comments
-    sent = env.client.post(url + "/send", json={**edit, "revision": 1})
-    assert sent.status_code == 200 and sent.json()["turn"]["comment_status"] == "posted"
-    history = env.client.get(url + "/history").json()["items"]
-    assert [(r["revision"], r["source"]) for r in history] == [(2, "sent"), (1, "edited"), (0, "generated")]
-    assert history[1]["editor"] == "alice" and history[1]["body"] == edit["body"]
-    assert history[1]["file_ids"] == edit["file_ids"] and history[1]["created_at"]
-    assert env.client.post(url + "/draft", json={**edit, "revision": 3}).status_code == 409
-    assert env.client.post(url + "/send", json={**edit, "revision": 3}).status_code == 409
+    assert [(r["revision"], r["source"]) for r in history] == [(1, "sent"), (0, "generated")]
+    assert history[0]["body"] == "审核后的评论" and history[0]["editor"] == "alice"
+    env.stop_site(); env.start_site()
+    assert _latest(_detail(env, turn['conversation_id']))['comment_edited_by'] == 'alice'
     env.as_user("bob")
     assert env.client.get(url + "/history").status_code == 404
+
+
+def test_unchanged_comment_with_attachment_does_not_claim_text_edit(env, monkeypatch):
+    detail, turn = completed(env)
+    artifact = next(f for f in detail['files'] if f['source'] == 'artifact')
+    monkeypatch.setattr(jira, 'upload_agent_attachment', lambda *args: 'att-1')
+    assert _send_comment(env, turn, file_ids=[artifact['id']])['comment_edited_by'] == ''
 
 
 def test_artifact_preview_zip_and_access_control(env):
@@ -172,13 +170,10 @@ def test_old_round_and_input_attachments_cannot_be_selected(env, monkeypatch):
     uploads = []
     monkeypatch.setattr(jira, 'upload_agent_attachment', lambda *args: uploads.append(args) or 'unexpected')
     url = f"/api/jira-agent/turns/{latest['id']}/comment"
-    for endpoint in ('/draft', '/send'):
+    for endpoint in ('/send',):
         response = env.client.post(url + endpoint,
             json={'body': '本轮评论', 'file_ids': [old_file['id']], 'revision': 0})
         assert response.status_code == 400
     assert not uploads and not env.jira.comments
-    saved = env.client.post(url + '/draft', json={'body': '', 'file_ids': [], 'revision': 0})
-    assert saved.status_code == 200
-    assert env.client.get(url).json()['body'] == ''
-    assert env.client.post(url + '/send', json={'body': '', 'file_ids': [], 'revision': 1}).status_code == 400
-    assert env.client.post(url + '/draft', json={'body': '恢复正文', 'file_ids': [], 'revision': 1}).status_code == 200
+    assert env.client.post(url + '/send', json={'body': '', 'file_ids': [], 'revision': 0}).status_code == 400
+    assert env.client.get(url + '/history').json()['items'] == []

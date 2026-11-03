@@ -58,10 +58,10 @@ def state(user, turn_id):
         uploads = [dict(r) for r in conn.execute(
             "SELECT file_id,name,state,attachment_id,error FROM jira_agent_comment_uploads WHERE turn_id=?", (turn_id,))]
         frozen = bool(publication) or bool(turn["comment_status"])
-        return {"body": (publication["body"] if publication else turn["comment_body"]) if frozen else row["body"] if row else turn["comment_body"],
+        return {"body": (publication["body"] if publication else turn["comment_body"]) if frozen else turn["comment_body"],
                 "frozen": bool(frozen), "uploads": uploads,
                 "revision": row["revision"] if row else 0,
-                "selected_file_ids": [u["file_id"] for u in uploads] if frozen else json.loads(row["selected_files_json"]) if row else [],
+                "selected_file_ids": [u["file_id"] for u in uploads] if frozen else [],
                 "draft_status": row["status"] if row else "", "draft_error": row["error"] if row else "",
                 "turn": service._turn_view(conn, turn)}
     finally:
@@ -116,29 +116,6 @@ def _check_revision(conn, turn_id, expected):
     if row["status"] == "running":
         raise ApiError(409, "正在生成评论，请稍后编辑")
     return row
-
-
-async def edit(user, turn_id, body, file_ids, revision):
-    conn = execution.open_db()
-    try:
-        _, conversation = await writable_turn(conn, user, turn_id)
-        if turn_id in BUSY:
-            raise ApiError(409, "本轮正在生成或发送评论")
-        await asyncio.to_thread(_selected_files, conn, user, conversation, turn_id, file_ids, hash_content=False)
-        with transaction(conn):
-            turn, current = visible_turn(conn, user, turn_id)
-            service._check_not_deleting(current["id"])
-            service.check_risk_lock(user, current["issue_key"], conn)
-            if current["status"] != "open":
-                raise ApiError(409, "对话已关闭，未保存编辑")
-            if turn["comment_status"] or repo.comment_publication(conn, turn_id):
-                raise ApiError(409, "本轮已提交发送，不能修改评论")
-            row = _check_revision(conn, turn_id, revision)
-            if row["body"] != body or set(json.loads(row["selected_files_json"])) != set(file_ids):
-                _record_revision(conn, turn_id, body, file_ids, user["username"], "edited")
-        return state(user, turn_id)
-    finally:
-        conn.close()
 
 
 def history(user, turn_id, before=0):

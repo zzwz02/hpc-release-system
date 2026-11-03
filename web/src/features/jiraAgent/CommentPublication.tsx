@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { apiFetch, apiPost } from "../../api/http";
 import { createPortal } from "react-dom";
 import { confirmDialog } from "../../lib/confirm";
@@ -28,82 +28,44 @@ export function CommentPublication({ turn, files: allFiles, onChanged, canWrite 
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [publication, setPublication] = useState<Publication>();
   const [history, setHistory] = useState<History>();
-  const inFlight = useRef<Promise<Publication>>();
-  const edit = useRef({ body: "", files: [] as string[], revision: 0, seq: 0, dirty: false });
   const frozen = publication?.frozen ?? false;
   const posted = publication?.turn.comment_status === "posted" || turn.comment_status === "posted";
   const waiting = turn.status !== "completed" || ["collecting", "incomplete"].includes(turn.delivery_status);
+  const editedBy = publication?.turn.comment_edited_by ?? turn.comment_edited_by;
   const commentId = publication?.turn.comment_id || turn.comment_id;
   const href = posted && commentId && /^https?:\/\//i.test(browseUrl)
     ? `${browseUrl}?focusedCommentId=${encodeURIComponent(commentId)}#comment-${encodeURIComponent(commentId)}` : "";
   const base = `/api/jira-agent/turns/${encodeURIComponent(turn.id)}/comment`;
   useEffect(() => {
     function protect(event: BeforeUnloadEvent) {
-      if (dirty || busy || saving) { event.preventDefault(); event.returnValue = ""; }
+      if (dirty || busy) { event.preventDefault(); event.returnValue = ""; }
     }
     window.addEventListener("beforeunload", protect);
     return () => window.removeEventListener("beforeunload", protect);
-  }, [dirty, busy, saving]);
+  }, [dirty, busy]);
 
   function load(value: Publication) {
     setPublication(value); setBody(value.body); setSelected(value.selected_file_ids ?? []); setDirty(false); setConflict(false);
-    edit.current = { body: value.body, files: value.selected_file_ids ?? [], revision: value.revision, seq: 0, dirty: false };
   }
 
   function change(nextBody: string, nextFiles: string[]) {
-    edit.current = { ...edit.current, body: nextBody, files: nextFiles, seq: edit.current.seq + 1, dirty: true };
     setBody(nextBody); setSelected(nextFiles); setDirty(true);
   }
 
-  async function save(): Promise<void> {
-    if (inFlight.current) { await inFlight.current; return save(); }
-    if (!edit.current.dirty) return;
-    const snapshot = { ...edit.current };
-    setSaving(true);
-    const request = apiPost<Publication>(`${base}/draft`, {
-      body: snapshot.body, file_ids: snapshot.files, revision: snapshot.revision,
-    });
-    inFlight.current = request;
-    try {
-      const response = await request;
-      edit.current.revision = response.revision;
-      if (snapshot.seq === edit.current.seq) { edit.current.dirty = false; setDirty(false); }
-      setPublication(response); setHistory(undefined);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err)); setConflict(true);
-      throw err;
-    } finally { inFlight.current = undefined; setSaving(false); }
-    if (edit.current.dirty) await save();
-  }
-
-  useEffect(() => {
-    if (!open || !dirty || conflict || frozen || busy) return;
-    const timer = window.setTimeout(() => { void save().catch(() => undefined); }, 800);
-    return () => window.clearTimeout(timer);
-    // save reads current values through refs; changes restart only the debounce.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, body, selected, dirty, conflict, frozen, busy]);
-
   async function show() {
-    setOpen(true); setBusy("正在读取草稿…"); setError(""); setHistory(undefined);
+    setPublication(undefined); setBody(""); setSelected([]); setOpen(true); setBusy("正在读取草稿…"); setError(""); setHistory(undefined);
     try { load(await apiFetch<Publication>(base)); }
     catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setBusy(""); }
   }
 
-  async function close() {
+  function close() {
     if (busy) return;
-    try {
-      if (conflict && edit.current.dirty) {
-        if (!await confirmDialog({ title: "关闭评论编辑", body: "当前编辑尚未保存，关闭会丢弃本窗口的修改。是否关闭？" })) return;
-      } else await save();
-      setOpen(false); setDirty(false); onChanged();
-    } catch { /* A failed save keeps the editor open and preserves local edits. */ }
+    setOpen(false); setDirty(false);
   }
 
   async function loadLatest() {
@@ -115,9 +77,7 @@ export function CommentPublication({ turn, files: allFiles, onChanged, canWrite 
   async function send() {
     setBusy("正在上传附件并发送评论…"); setError("");
     try {
-      await save();
-      const current = edit.current;
-      const response = await apiPost<Publication>(`${base}/send`, { body: current.body, file_ids: current.files, revision: current.revision });
+      const response = await apiPost<Publication>(`${base}/send`, { body, file_ids: selected, revision: publication?.revision });
       load(response); setHistory(undefined);
       if (response.turn.comment_status !== "posted") setError(response.turn.comment_error || "发送未完成，请核对后重试");
       onChanged();
@@ -126,6 +86,7 @@ export function CommentPublication({ turn, files: allFiles, onChanged, canWrite 
       try {
         const current = await apiFetch<Publication>(base);
         if (current.frozen) load(current);
+        else if (current.revision !== publication?.revision) setConflict(true);
       } catch { /* Preserve edits when connectivity is unavailable. */ }
       onChanged();
     } finally { setBusy(""); }
@@ -140,7 +101,7 @@ export function CommentPublication({ turn, files: allFiles, onChanged, canWrite 
 
   return <>
     <span className="jira-comment-publication" onClick={event => event.stopPropagation()}>
-      {posted && <><span>已发布到 Jira</span><span> · </span>{href ? <a href={href} target="_blank" rel="noopener noreferrer">#{commentId}</a> : <span>#{commentId}</span>}</>}
+      {posted && <><span>{editedBy ? <>已由<strong>{editedBy}</strong>编辑并发送到 JIRA</> : "已发布到 Jira"}</span><span> · </span>{href ? <a href={href} target="_blank" rel="noopener noreferrer">#{commentId}</a> : <span>#{commentId}</span>}</>}
       <button type="button" className="btn sm" disabled={Boolean(busy) || waiting}
         onClick={event => { event.preventDefault(); void show(); }}>{posted ? "查看编辑历史" : canWrite ? "发送到 JIRA" : "查看评论及编辑历史"}</button>
     </span>
@@ -154,7 +115,7 @@ export function CommentPublication({ turn, files: allFiles, onChanged, canWrite 
           {frozen && !posted && <p>已提交的文字和附件已锁定。重试会核对已有上传及发布结果。</p>}
           <label>评论内容（JIRA 格式）<textarea aria-label="JIRA 评论内容" rows={12} value={body} disabled={Boolean(busy) || frozen || !canWrite}
             onChange={e => change(e.target.value, selected)} /></label>
-          {!frozen && canWrite && <p className="muted" role="status">{saving ? "正在保存编辑版本…" : dirty ? "编辑尚未保存" : `编辑已保存 · 版本 ${publication?.revision ?? 0}`}</p>}
+          {!frozen && canWrite && <p className="muted">仅确认发送时保存，关闭后不保留未发送的修改。</p>}
           {conflict && <button className="btn" onClick={() => void loadLatest()}>载入最新版本</button>}
           <fieldset><legend>选择要上传到 JIRA 的产物</legend>
             {files.length === 0 && <p className="muted">本轮没有产物。</p>}
@@ -178,7 +139,7 @@ export function CommentPublication({ turn, files: allFiles, onChanged, canWrite 
           </div>}
         </div>
         <div className="dialog-actions">
-          {!posted && canWrite && <button className="btn primary" disabled={Boolean(busy) || !body.trim() || conflict} onClick={() => void send()}>
+          {!posted && canWrite && <button className="btn primary" disabled={Boolean(busy) || !publication || !body.trim() || conflict} onClick={() => void send()}>
             {frozen ? "核对并重试发送" : `确认发送${selected.length ? `并上传 ${selected.length} 个附件` : ""}`}
           </button>}
         </div>

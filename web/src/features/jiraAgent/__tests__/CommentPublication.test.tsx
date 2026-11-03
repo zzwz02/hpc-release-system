@@ -47,33 +47,38 @@ describe("reviewed publication", () => {
     await user.clear(editor); await user.type(editor, "人工核对后的评论。");
     await user.click(checkbox);
     await user.click(screen.getByRole("button", { name: "确认发送并上传 1 个附件" }));
-    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/turns/jat_1/comment/draft", {
-      body: "人工核对后的评论。", file_ids: ["file_1"], revision: 1,
-    }));
+    expect(apiPost).toHaveBeenCalledTimes(1);
     expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/turns/jat_1/comment/send", {
-      body: "人工核对后的评论。", file_ids: ["file_1"], revision: 2,
+      body: "人工核对后的评论。", file_ids: ["file_1"], revision: 1,
     });
     expect(await screen.findByText(/已发送 JIRA 评论（#123）/)).toBeVisible();
     expect(screen.queryByRole("button", { name: /确认发送|核对并重试发送/ })).not.toBeInTheDocument();
     expect(editor).toBeDisabled(); expect(changed).toHaveBeenCalled();
   });
 
-  it("saves a version on close without publishing, and can show the saved edit history", async () => {
+  it("discards unsent edits and attachment choices on close without saving", async () => {
     const user = userEvent.setup();
-    render(<CommentPublication turn={turn} files={[]} onChanged={() => {}} />);
+    render(<CommentPublication turn={turn} files={[file]} onChanged={() => {}} />);
     await user.click(screen.getByRole("button", { name: "发送到 JIRA" }));
     const editor = await screen.findByLabelText("JIRA 评论内容");
     await waitFor(() => expect(editor).toBeEnabled());
     await user.type(editor, "未发送修改");
+    await user.click(screen.getByRole("checkbox", { name: "kernel.cu" }));
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    expect(apiPost).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "关闭" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(apiPost).toHaveBeenCalledWith(expect.stringContaining("/draft"), expect.objectContaining({ body: generated + "未发送修改" }));
-    expect(vi.mocked(apiPost).mock.calls.every(([url]) => !url.endsWith("/send"))).toBe(true);
+    expect(apiPost).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "发送到 JIRA" }));
-    await waitFor(() => expect(screen.getByLabelText("JIRA 评论内容")).toHaveValue(generated + "未发送修改"));
-    vi.mocked(apiFetch).mockResolvedValue({ items: [{ revision: 2, source: "edited", editor: "alice", body: generated + "未发送修改", file_ids: [], created_at: "2026-10-30 12:00:00" }], next_before: 0 });
-    await user.click(screen.getByRole("button", { name: "查看编辑历史" }));
-    expect(await screen.findByText(/版本 2 · 用户编辑 · alice/)).toBeVisible();
+    await waitFor(() => expect(screen.getByLabelText("JIRA 评论内容")).toHaveValue(generated));
+    expect(screen.getByRole("checkbox", { name: "kernel.cu" })).not.toBeChecked();
+  });
+
+  it.each(["", "alice"])("shows persisted publication attribution: %s", editedBy => {
+    render(<CommentPublication turn={{ ...turn, comment_status: "posted", comment_id: "123", comment_edited_by: editedBy }}
+      files={[]} browseUrl="https://jira.example/MC3-1" onChanged={() => {}} />);
+    if (editedBy) expect(screen.getByText("alice").closest("span")).toHaveTextContent("已由alice编辑并发送到 JIRA");
+    else expect(screen.getByText("已发布到 Jira")).toBeVisible();
+    expect(screen.getByRole("link", { name: "#123" })).toHaveAttribute("href", "https://jira.example/MC3-1?focusedCommentId=123#comment-123");
   });
 
   it("loads an already published turn as view-only without starting a model", async () => {
@@ -97,6 +102,7 @@ describe("reviewed publication", () => {
     await waitFor(() => expect(editor).toBeEnabled());
     await user.type(editor, "本窗口编辑");
     vi.mocked(apiPost).mockRejectedValue(new Error("评论已被其他用户修改"));
+    vi.mocked(apiFetch).mockResolvedValue({ ...current, revision: 2 });
     await user.click(screen.getByRole("button", { name: "确认发送" }));
     expect(await screen.findByText("评论已被其他用户修改")).toBeVisible();
     expect((editor as HTMLTextAreaElement).value).toContain("本窗口编辑");
