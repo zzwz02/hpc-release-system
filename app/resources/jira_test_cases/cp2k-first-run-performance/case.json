@@ -1,0 +1,56 @@
+{
+  "title": "[C500 单卡][CP2K] Si 案例在 3.9.0.1 首次运行变慢",
+  "input": {
+    "files": [],
+    "issue": {
+      "acquisition": {
+        "conflicts": [],
+        "parts": {
+          "attachment_metadata": {
+            "status": "complete"
+          },
+          "comments": {
+            "collected": 0,
+            "reported_total": 0,
+            "status": "complete"
+          },
+          "custom_fields": {
+            "collected": 0,
+            "status": "complete"
+          },
+          "description": {
+            "status": "complete"
+          },
+          "field_definitions": {
+            "status": "complete"
+          },
+          "issue": {
+            "status": "complete"
+          }
+        },
+        "scope": "人工保存的测试输入；不代表 Jira 当前内容或全量采集。",
+        "source": "test_case",
+        "status": "complete"
+      },
+      "attachments": [],
+      "comments": [],
+      "components": [
+        "PDE"
+      ],
+      "custom_fields": {},
+      "description": "CP2K 2025.2 的 Si 案例在 C500 单卡上测试。相同输入在独立新容器首次运行时，3.8.0.11 平均耗时为 4.451 s，3.9.0.1 为 7.782 s；同一容器后续运行分别约 2.435 s、2.496 s。两版原能量校验均通过。\n\n- good（3.8.0.11）：`harbor.sh.mxcr.io/xshi/cp2k-maca:mc3-7719-good-3.8.0.11@sha256:12bfa984764e30a71bbc1ba0a761b28e16faa6f8c28d576aa77998f0e8dfaf4c`\n- bad（3.9.0.1）：`harbor.sh.mxcr.io/xshi/cp2k-maca:mc3-7719-bad-3.9.0.1@sha256:a38a006142a7223d0d0c6cb2d11e946c7b1b4faf82c3c3a965073ed60393670e`\n- 补充对照版（3.9.0.8）：`harbor.sh.mxcr.io/xshi/cp2k-maca:mc3-7719-compare-3.9.0.8@sha256:e2c07b1324d64310292d0df6e2ce2e5a86152260d92882b7597a7e5b7325b687`\n\n镜像内 `/tmp/tests/Si` 包含 Si_bulk8.inp、基组、赝势、参考输出和 compare.py。输入为 8 个 Si 原子，单 MPI rank，OMP_NUM_THREADS=1。\n\n```bash\ndocker run --rm -u 0 -e MACA_PERF_DIR=/tmp -e MACA_VISIBLE_DEVICES=0 \\\n  -e OMP_NUM_THREADS=1 -e MACA_EXT_CPU_THREAD_POLICY=2 \\\n  --device=/dev/dri --device=/dev/mxcd --group-add video \\\n  harbor.sh.mxcr.io/xshi/cp2k-maca:mc3-7719-bad-3.9.0.1@sha256:a38a006142a7223d0d0c6cb2d11e946c7b1b4faf82c3c3a965073ed60393670e \\\n  bash -c 'source /opt/cp2k-toolchain/install/setup && cd /tmp/tests/Si && mpirun -np 1 cp2k.psmp -i Si_bulk8.inp -o Si_bulk8.out && python3 compare.py && cat /tmp/perf'\n```\n\n其他版本替换镜像后执行同一命令。首次运行使用新容器，不挂载已有编译缓存。性能读取原 compare.py 写入的 `/tmp/perf`，同时保留八项能量校验结果。上述记录来自 C500 64 GiB、KMD 3.4.4 环境。",
+      "field_definitions": [],
+      "issue_type": "Bug",
+      "key": "MC3-7719",
+      "labels": [],
+      "project": "MC3",
+      "raw_fields": {},
+      "summary": "[C500 单卡][CP2K] Si 案例在 3.9.0.1 首次运行变慢",
+      "url": "http://10.2.201.98:8080/browse/MC3-7719"
+    },
+    "note": "请定位 CP2K Si 案例首次运行变慢的原因，并说明后续运行与首次运行的差别。"
+  },
+  "provenance": {
+    "issue_key": "MC3-7719"
+  }
+}

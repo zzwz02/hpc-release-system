@@ -55,12 +55,15 @@ def test_packaged_repository_cases_contain_inputs_and_separate_review(tmp_path):
         if not directory.name.startswith('_'):
             shutil.copytree(directory, root / directory.name)
     original = catalog.load(root)
-    assert len(original) == 10
+    assert len(original) == 17
     assert {entry['body']['input']['issue']['key'] for entry in original} == {
         'MC3-7798', 'MC3-7812', 'MC3-7828', 'MC3-7821', 'MC3-7808',
         'MC3-7814', 'MC3-7807', 'MC3-7818', 'MC3-7825', 'MC3-7809',
+        'MC3-7721', 'MC3-7754',
+        'MC3-7722', 'MC3-7716', 'MC3-7719',
+        'MC3-16033', 'MC3-16177',
     }
-    assert build(root, root / '_packages') == 10
+    assert build(root, root / '_packages') == 17
     assert catalog.load(root) == original
     for archive in (root / '_packages').glob('*.zip'):
         with zipfile.ZipFile(archive) as files:

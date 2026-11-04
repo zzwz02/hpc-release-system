@@ -1,0 +1,56 @@
+{
+  "title": "[C500 单卡][MatterGen] pkg_resources 缺失导致测试失败",
+  "input": {
+    "files": [],
+    "issue": {
+      "acquisition": {
+        "conflicts": [],
+        "parts": {
+          "attachment_metadata": {
+            "status": "complete"
+          },
+          "comments": {
+            "collected": 0,
+            "reported_total": 0,
+            "status": "complete"
+          },
+          "custom_fields": {
+            "collected": 0,
+            "status": "complete"
+          },
+          "description": {
+            "status": "complete"
+          },
+          "field_definitions": {
+            "status": "complete"
+          },
+          "issue": {
+            "status": "complete"
+          }
+        },
+        "scope": "人工保存的测试输入；不代表 Jira 当前内容或全量采集。",
+        "source": "test_case",
+        "status": "complete"
+      },
+      "attachments": [],
+      "comments": [],
+      "components": [
+        "PDE_HPC"
+      ],
+      "custom_fields": {},
+      "description": "C500 单卡执行 MatterGen 的评估、微调、生成和训练测试时，报错 `ModuleNotFoundError: No module named 'pkg_resources'`，未能进入正常计算。测试镜像为 HPC 3.10.0.6，内含 SDK 3.10.0.16、PyTorch 2.4.0+metax3.10.0.8 和 Python 3.10。\n\n镜像：`harbor.sh.mxcr.io/xshi/mattergen-maca:mc3-16033-3.10.0.6@sha256:eb144ee5ac1e478742a569eef7291af60c24ed0385801a6b105d7421a394b7d5`\n\n数据和权重位于 `/pde_hpc/dataset/mattergen`，将数据根目录只读挂载到 `/hpc_dataset`；需要 `data-release` 和 `checkpoints` 中的完整文件。MatterSim 权重位于镜像内。安装步骤需要访问 Python 包仓库。\n\n以评估测试为例：\n\n```bash\ndocker run --rm -u 0 \\\n  -e MACA_VISIBLE_DEVICES=0 -e MACA_PERF_DIR=/tmp -e WANDB_MODE=offline \\\n  --device=/dev/dri --device=/dev/mxcd --group-add video \\\n  -v /pde_hpc/dataset:/hpc_dataset:ro \\\n  harbor.sh.mxcr.io/xshi/mattergen-maca:mc3-16033-3.10.0.6@sha256:eb144ee5ac1e478742a569eef7291af60c24ed0385801a6b105d7421a394b7d5 \\\n  bash -c 'bash /workspace/easy_install/mattergen-0eded60.sh && bash /workspace/test/mattergen-0eded60/Evaluating/Evaluating.mattersim-v1.0.0-5M.sh'\n```\n\n其余测试使用相同安装步骤，将最后一个脚本替换为下表中的路径。路径均相对于 `/workspace/test/mattergen-0eded60/`。\n\n| 测试 | 脚本 |\n| --- | --- |\n| 评估 | `Evaluating/Evaluating.mattersim-v1.0.0-5M.sh` |\n| 多属性微调 | `Finetuning/Finetuning.Multi-property.sh` |\n| 单属性微调 | `Finetuning/Finetuning.Single-property.sh` |\n| 多属性条件生成 | `Generating/Generating.Multiple_property-conditioned-generation.sh` |\n| 单属性条件生成 | `Generating/Generating.Property-conditioned-generation.sh` |\n| 无条件生成 | `Generating/Generating.Unconditional-generation.sh` |\n| 训练 | `Training/Training.mp_20.sh` |\n\n预期七项测试按原脚本完成并产生有效结果。",
+      "field_definitions": [],
+      "issue_type": "Bug",
+      "key": "MC3-16033",
+      "labels": [],
+      "project": "MC3",
+      "raw_fields": {},
+      "summary": "[C500 单卡][MatterGen] pkg_resources 缺失导致测试失败",
+      "url": "https://jira.metax-tech.com/browse/MC3-16033"
+    },
+    "note": "请在 C500 单卡上复现测试失败，定位原因并给出修复，验证上述七项测试。"
+  },
+  "provenance": {
+    "issue_key": "MC3-16033"
+  }
+}

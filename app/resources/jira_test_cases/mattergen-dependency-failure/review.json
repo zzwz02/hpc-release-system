@@ -1,0 +1,4 @@
+{
+  "criteria": "复现原安装及测试入口的 pkg_resources 缺失错误，确认实际 Python 依赖版本和失败调用路径。\n定位到应用依赖兼容问题：旧版 pytorch-lightning 仍导入 pkg_resources，而所用 setuptools 已移除此模块；给出能保留原测试功能的依赖修复。\n验证修复后七项原测试均完成并产生有效输出；保留原训练、微调和生成规模，不能仅凭导入成功或脚本退出码判定通过。",
+  "reference": "MC3-16033 的 jac_f5046efde832 第三、四轮在 10.0.100.156 的 C500 64GiB 单卡上验证。实际 pytorch-lightning=2.0.6、setuptools=84.0.0；后者不再包含 pkg_resources。将应用 pyproject.toml 的 setuptools 约束设为 <82，执行原安装步骤后实际使用 81.0.0，七项测试均通过。原环境的七项测试均失败，属于 HPC 应用依赖问题，不是 SDK 或 GPU 故障。\n\n验证覆盖评估、两项微调、三项生成和训练：训练及微调各 10 epochs，生成每项 16 个结构、1000 步。判断修复有效需检查计算完成和产物，不能只看外层 shell 退出码。不要求与历史秒数完全一致，也不采用原 Jira 模板中的“历史最佳性能 5%”作为本功能故障的标准。其他有证据支持的兼容修复同样可接受。\n\n依据：第三、四轮 REPORT.md、MC3-16033-ACTUAL-COMMANDS.md、round3-validation.json 及第四轮修复前后验证。历史基线使用上述固定镜像，但安装过程仍会从包仓库解析依赖，应记录本次实际版本。"
+}
