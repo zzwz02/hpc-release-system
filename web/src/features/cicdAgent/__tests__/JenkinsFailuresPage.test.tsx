@@ -80,7 +80,7 @@ function renderPage(route = "/jenkins-failures", role = "RM") {
 }
 
 describe("JenkinsFailuresPage", () => {
-  let currentRecord: typeof failureRecord & Pick<FailureRecordDetail, "repro_review_state" | "pending_rm_review"> = failureRecord;
+  let currentRecord: typeof failureRecord & Pick<FailureRecordDetail, "repro_review_state" | "pending_rm_review" | "record_source" | "test_summary"> = failureRecord;
 
   function latestQuery(endpoint = "/api/cicd-agent/failures") {
     const calls = vi.mocked(apiGet).mock.calls.filter(([path]) => path.startsWith(`${endpoint}?`));
@@ -88,6 +88,25 @@ describe("JenkinsFailuresPage", () => {
   }
 
   afterEach(() => vi.useRealTimers());
+
+  it("shows a single build with ECC case groups and rule-assigned responsibility", async () => {
+    currentRecord = {...failureRecord, record_source: "test_case_result", normalized_stage: "test case results",
+      test_summary: {total: 2, counts: {Failed: 1, Timeout: 1}, expected_ecc_states: ["ON", "OFF"],
+        reported_ecc_states: ["ON", "OFF"], groups: ["ON", "OFF"].map(ecc_state => ({
+          ecc_state, chip: "c500", arch: "amd64", platform: "ub24_x86", image_alias: "default",
+          maca_version: "20261103-883", total: 1, counts: {Passed: 0, Failed: 1, Timeout: 0, Aborted: 0, CANCEL: 0},
+          cases: [{name: `unit-${ecc_state}`, status: "Failed", duration: "00:00:10", image: "registry/app:version", image_digest: "sha256:example"}],
+        }))}};
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", {name: "查看详情"}));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("测试结果规则分配")).toBeInTheDocument();
+    expect(within(dialog).queryByText("AI建议")).not.toBeInTheDocument();
+    await userEvent.click(within(dialog).getByText("ECC ON · c500 · ub24_x86 · default"));
+    expect(within(dialog).getByText("unit-ON")).toBeVisible();
+    expect(within(dialog).queryByRole("button", {name: "复议诊断"})).not.toBeInTheDocument();
+    expect(within(dialog).getByText("MACA_VERSION（镜像版本）")).toBeInTheDocument();
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();

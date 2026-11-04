@@ -801,7 +801,7 @@ export function JenkinsFailuresPage() {
                 <th>版本</th>
                 <th>仓库/分支</th>
                 <th>Project/Chip</th>
-                <th>镜像版本</th>
+                <th>MACA_VERSION</th>
                 <th>Job</th>
                 <th>Stage</th>
                 <th>Code Owner</th>
@@ -829,7 +829,7 @@ export function JenkinsFailuresPage() {
                   <td><b>{fmt(record.maca_project)}</b><small>{fmt(record.chip)}</small></td>
                   <td>{fmt(record.maca_version)}</td>
                   <td><b>{record.job_name}</b><small>#{record.build_number} · {fmt(record.job_type)}</small></td>
-                  <td>{fmt(record.normalized_stage || record.failed_stage)}</td>
+                  <td>{record.record_source === "test_case_result" ? "测试 case" : fmt(record.normalized_stage || record.failed_stage)}</td>
                   <td>{userDisplayLabel(record.code_owner, displayNames)}</td>
                   <td>
                     <b>{ownerLabel(record, displayNames)}</b>
@@ -1229,7 +1229,7 @@ function FailureDetail({
         <b>{ownerLabel(record, displayNames)}</b>
         <small>{fmt(effectiveOwnerRole(record))}</small>
         <small className={`pill ${responsibilityStatusClass(record.responsibility_status)}`}>
-          {responsibilityStatusLabel(record.responsibility_status)}
+          {record.record_source === "test_case_result" && record.responsibility_status === "ai_suggested" ? "测试结果规则分配" : responsibilityStatusLabel(record.responsibility_status)}
         </small>
       </div>
       {!readOnly && reproExpanded && <FailureReproPanel key={record.id} recordId={record.id} canResolve={canResolve} onUseReport={useReproReport} />}
@@ -1241,14 +1241,14 @@ function FailureDetail({
             <span className="muted small">
               当前状态：
               <b className={`pill ${responsibilityStatusClass(record.responsibility_status)}`}>
-                {responsibilityStatusLabel(record.responsibility_status)}
+                {record.record_source === "test_case_result" && record.responsibility_status === "ai_suggested" ? "测试结果规则分配" : responsibilityStatusLabel(record.responsibility_status)}
               </b>
             </span>
           </div>
         </div>
         <div className="cicd-agent-responsibility-grid">
-          <Detail label="AI建议责任人" value={userDisplayLabel(record.owner_account, displayNames)} />
-          <Detail label="AI建议角色" value={record.owner_role} />
+          <Detail label={record.record_source === "test_case_result" ? "规则分配责任人" : "AI建议责任人"} value={userDisplayLabel(record.owner_account, displayNames)} />
+          <Detail label={record.record_source === "test_case_result" ? "规则分配角色" : "AI建议角色"} value={record.owner_role} />
           <Detail
             label="反馈建议责任人"
             value={latestSuggestion ? userDisplayLabel(latestSuggestion.account, displayNames) : null}
@@ -1259,7 +1259,7 @@ function FailureDetail({
           <Detail label="最近处理人" value={userDisplayLabel(record.responsibility_updated_by, displayNames)} />
           <Detail label="最近处理时间" value={formatDateTime(record.responsibility_updated_at)} />
           <Detail label="责任备注" value={record.responsibility_note} wide />
-          <Detail label="AI定责依据" value={record.route_reason || record.owner_reason} wide />
+          <Detail label={record.record_source === "test_case_result" ? "分配依据" : "AI定责依据"} value={record.route_reason || record.owner_reason} wide />
         </div>
 
         {!readOnly && actionMode === "feedback" && (
@@ -1455,7 +1455,7 @@ function FailureDetail({
           <Detail label="删除原因" value={record.record_state_reason} wide />
         </>}
         <Detail label="Job" value={`${record.job_name} #${record.build_number}`} />
-        <Detail label="Stage" value={record.normalized_stage || record.failed_stage} />
+        <Detail label="Stage" value={record.record_source === "test_case_result" ? "测试 case（按构建汇总）" : record.normalized_stage || record.failed_stage} />
         <Detail label="Code Owner" value={userDisplayLabel(record.code_owner, displayNames)} />
         <Detail label="责任人" value={ownerLabel(record, displayNames)} />
         <Detail label="责任角色" value={effectiveOwnerRole(record)} />
@@ -1464,12 +1464,32 @@ function FailureDetail({
         <Detail label="仓库" value={record.git_url} />
         <Detail label="分支" value={record.git_branch} />
         <Detail label="Project/Chip" value={`${fmt(record.maca_project)} / ${fmt(record.chip)}`} />
-        <Detail label="镜像版本" value={record.maca_version} />
-        <Detail label="Rule" value={record.matched_rule_id} />
+        <Detail label="MACA_VERSION（镜像版本）" value={record.maca_version} />
+        {record.record_source !== "test_case_result" && <Detail label="Rule" value={record.matched_rule_id} />}
         <Detail label="原因摘要" value={effectiveReason(record)} wide />
-        <Detail label="关键错误" value={record.key_error_snippet} wide preserve />
+        {record.record_source !== "test_case_result" && <Detail label="关键错误" value={record.key_error_snippet} wide preserve />}
         <Detail label="建议" value={effectiveAction(record)} wide />
       </div>
+      {record.test_summary && <section className="cicd-case-results" aria-label="测试 case 结果">
+        <h4>测试 case 结果</h4>
+        {record.test_summary.groups.map(group => <details key={`${group.ecc_state}-${group.chip}-${group.arch}-${group.platform}-${group.image_alias}`}>
+          <summary>
+            <b>ECC {group.ecc_state} · {group.chip} · {group.platform} · {group.image_alias}</b>
+            <span>通过 {group.counts.Passed}/{group.total} · 失败 {group.counts.Failed} · 超时 {group.counts.Timeout} · 中止 {group.counts.Aborted} · 取消 {group.counts.CANCEL}{group.counts.Exception ? ` · 执行异常 ${group.counts.Exception}` : ""}</span>
+          </summary>
+          <table className="cicd-case-table">
+            <thead><tr><th>Case</th><th>结果</th><th>耗时</th><th>测试镜像</th></tr></thead>
+            <tbody>{group.cases.map(testCase => <tr key={`${testCase.name}-${testCase.image}`}>
+              <td>{testCase.name}</td>
+              <td className={testCase.status === "Failed" || testCase.status === "Timeout" ? "case-result-failed" : ""}>{({Passed: "通过", Failed: "失败", Timeout: "超时", Aborted: "中止", CANCEL: "取消", Exception: "执行异常"} as Record<string, string>)[testCase.status] || testCase.status}</td>
+              <td>{testCase.duration || "N/A"}</td><td>{testCase.image}</td>
+            </tr>)}</tbody>
+          </table>
+        </details>)}
+        {record.test_summary.pending_groups ? record.test_summary.pending_groups.map(group =>
+          <p className="muted" key={`${group.ecc_state}-${group.chip}-${group.arch}-${group.platform}-${group.image_alias}`}>ECC {group.ecc_state} · {group.chip} · {group.platform} · {group.image_alias}：尚未收到测试结果</p>) :
+          record.test_summary.expected_ecc_states.filter(mode => !record.test_summary?.reported_ecc_states.includes(mode)).map(mode => <p className="muted" key={mode}>ECC {mode}：尚未收到测试结果</p>)}
+      </section>}
     </section>
   );
 }
