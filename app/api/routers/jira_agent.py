@@ -88,6 +88,16 @@ async def send_comment(turn_id: str, body: CommentSendBody, user: dict = Depends
     return await comments.send(user, turn_id, body.body, body.file_ids, body.revision)
 
 
+class CommentAttachmentsBody(BaseModel):
+    file_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
+@router.post("/turns/{turn_id}/comment/attachments")
+async def add_comment_attachments(turn_id: str, body: CommentAttachmentsBody,
+                                  user: dict = Depends(require_jira_agent_access)) -> dict:
+    return await comments.add_attachments(user, turn_id, body.file_ids)
+
+
 @router.get("/turns/{turn_id}/comment/history")
 def comment_history(turn_id: str, before: int = 0, user: dict = Depends(require_jira_agent_access)) -> dict:
     return comments.history(user, turn_id, before)

@@ -48,8 +48,19 @@ export function CommentPublication({ turn, files: allFiles, onChanged, canWrite 
     return () => window.removeEventListener("beforeunload", protect);
   }, [dirty, busy]);
 
+  // Artifacts the comment names as {{file}} are linked to their JIRA attachment when uploaded.
+  const mentions = (text: string) => files.filter(file => text.includes(`{{${file.name}}}`));
+  // A failed send stays locked; after publication only the comment is final and files may be added.
+  const locked = frozen && !posted;
+  const unselectedMentions = locked ? [] : mentions(body).filter(file => !selected.includes(file.id));
+  const uploaded = new Set(publication?.uploads.map(upload => upload.file_id) ?? []);
+  const extra = posted ? selected.filter(id => !uploaded.has(id)) : [];
+  const unfinished = posted && (publication?.uploads.some(upload => upload.state !== "posted") ?? false);
+
   function load(value: Publication) {
-    setPublication(value); setBody(value.body); setSelected(value.selected_file_ids ?? []); setDirty(false); setConflict(false);
+    setPublication(value); setBody(value.body); setDirty(false); setConflict(false);
+    setSelected(value.frozen ? value.selected_file_ids ?? []
+      : mentions(value.body).filter(file => file.downloadable).map(file => file.id));
   }
 
   function change(nextBody: string, nextFiles: string[]) {
@@ -92,6 +103,18 @@ export function CommentPublication({ turn, files: allFiles, onChanged, canWrite 
     } finally { setBusy(""); }
   }
 
+  async function addAttachments() {
+    setBusy("正在上传附件…"); setError("");
+    try {
+      const response = await apiPost<Publication & { upload_error: string }>(`${base}/attachments`, { file_ids: extra });
+      load(response);
+      if (response.upload_error) setError(`附件未全部上传：${response.upload_error}`);
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally { setBusy(""); }
+  }
+
   async function readHistory(before = 0) {
     try {
       const response = await apiFetch<History>(`${base}/history${before ? `?before=${before}` : ""}`);
@@ -103,7 +126,7 @@ export function CommentPublication({ turn, files: allFiles, onChanged, canWrite 
     <span className="jira-comment-publication" onClick={event => event.stopPropagation()}>
       {posted && <><span>{editedBy ? <>已由<strong>{editedBy}</strong>编辑并发送到 JIRA</> : "已发布到 Jira"}</span><span> · </span>{href ? <a href={href} target="_blank" rel="noopener noreferrer">#{commentId}</a> : <span>#{commentId}</span>}</>}
       <button type="button" className="btn sm" disabled={Boolean(busy) || waiting}
-        onClick={event => { event.preventDefault(); void show(); }}>{posted ? "查看编辑历史" : canWrite ? "发送到 JIRA" : "查看评论及编辑历史"}</button>
+        onClick={event => { event.preventDefault(); void show(); }}>{posted ? canWrite ? "查看历史 / 补充附件" : "查看编辑历史" : canWrite ? "发送到 JIRA" : "查看评论及编辑历史"}</button>
     </span>
     {open && createPortal(<div onClick={event => event.stopPropagation()} className="dialog-backdrop" role="dialog" aria-modal="true" aria-label="发送到 JIRA">
       <div className="dialog-card jira-comment-dialog">
@@ -120,10 +143,15 @@ export function CommentPublication({ turn, files: allFiles, onChanged, canWrite 
           <fieldset><legend>选择要上传到 JIRA 的产物</legend>
             {files.length === 0 && <p className="muted">本轮没有产物。</p>}
             {files.map(file => <div className="jira-comment-file" key={file.id}>
-              <label><input type="checkbox" checked={selected.includes(file.id)} disabled={Boolean(busy) || frozen || !canWrite || !file.downloadable}
+              <label><input type="checkbox" checked={selected.includes(file.id)} disabled={Boolean(busy) || locked || !canWrite || !file.downloadable || uploaded.has(file.id)}
                 onChange={e => change(body, e.target.checked ? [...selected, file.id] : selected.filter(id => id !== file.id))} />{file.name}</label>
               <ArtifactLink file={file} label="预览" />
             </div>)}
+            {!frozen && files.length > 0 && <p className="muted">发送时，正文中以 {"{{文件名}}"} 提到的已勾选产物替换为附件链接，其余已勾选产物列在文末“附件：”行。</p>}
+            {posted && canWrite && files.length > 0 && <p className="muted">评论已发送，不能修改或再次发送；可勾选遗漏的产物补充上传到 JIRA 单，已发送的评论保持不变。</p>}
+            {unselectedMentions.length > 0 && <p className="warn" role="note">
+              {posted ? "正文提到但未上传" : "正文提到但未勾选"}：{unselectedMentions.map(file => file.name).join("、")}。
+              {posted ? "可勾选后补充上传；已发送评论中的名称不会变成链接。" : "这些名称发送后不带附件链接。"}</p>}
           </fieldset>
           {publication?.uploads.map(upload => <p className="muted" key={upload.file_id}>
             {upload.name}：{upload.state === "posted" ? "已上传" : upload.error || "等待上传"}</p>)}
@@ -139,6 +167,10 @@ export function CommentPublication({ turn, files: allFiles, onChanged, canWrite 
           </div>}
         </div>
         <div className="dialog-actions">
+          {posted && canWrite && <button className="btn primary" disabled={Boolean(busy) || (!extra.length && !unfinished)}
+            onClick={() => void addAttachments()}>
+            {extra.length ? `上传 ${extra.length} 个附件` : unfinished ? "重试未完成的附件上传" : "上传附件"}
+          </button>}
           {!posted && canWrite && <button className="btn primary" disabled={Boolean(busy) || !publication || !body.trim() || conflict} onClick={() => void send()}>
             {frozen ? "核对并重试发送" : `确认发送${selected.length ? `并上传 ${selected.length} 个附件` : ""}`}
           </button>}

@@ -19,6 +19,10 @@ export function JiraComment({ value }: { value: string }) {
       const delimiter = fence(text, 1);
       return keep(`${delimiter} ${text} ${delimiter}`);
     })
+    // JIRA attachment links ([^file], [label|^file]) have no URL on this site; show their name.
+    .replace(/\[(?:([^\]\n|]+)\|)?\^([^\]\n]+)\]/g, (_match, label: string | undefined, name: string) => keep(
+      escape((label ?? name).trim()).replace(/[\\`*_[\]()#+.!|~-]/g, "\\$&"),
+    ))
     .replace(/\[([^\]\n|]+)\|([^\]\n]+)\]/g, (_match, label: string, url: string) => keep(
       `[${escape(label).replace(/[\\[\]]/g, "\\$&")}](${url.trim().replace(/[\s<>\\]/g, encodeURIComponent).replace(/\(/g, "%28").replace(/\)/g, "%29")})`,
     ))

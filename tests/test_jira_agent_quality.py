@@ -656,3 +656,38 @@ def test_prestart_reconnect_keeps_early_cancellation_available(env, monkeypatch)
         assert env.fake.turns == 0 and not env.jira.comments
     finally:
         release.set()
+
+
+def test_monospace_is_separated_from_adjacent_letters_outside_macros():
+    text = "GPU：{{A=1}}及{{B=2}}。\n{{x.py}}已复现，{{y}}2次\n{noformat}\n中{{raw}}文\n{noformat}"
+    spaced = domain.jira_monospace_spacing(text)
+    assert spaced == "GPU：{{A=1}} 及 {{B=2}}。\n{{x.py}} 已复现，{{y}} 2次\n{noformat}\n中{{raw}}文\n{noformat}"
+    assert domain.jira_monospace_spacing(spaced) == spaced
+    body = render({**RESULT, "comment": narrative("已定位。", "设置{{MCCL_MAX_NCHANNELS=16}}后恢复。",
+                                                   commands=["echo 中{{x}}文"])})
+    assert "设置 {{MCCL_MAX_NCHANNELS=16}} 后恢复。" in body and "echo 中{{x}}文" in body
+
+
+@pytest.mark.parametrize(("name", "expected"), [
+    ("SOLUTION.md", "SOLUTION-jat_1-jaf_2.md"),
+    ("C600_EVIDENCE.tar.gz", "C600_EVIDENCE-jat_1-jaf_2.tar.gz"),
+    ("a.b.json", "a.b-jat_1-jaf_2.json"),
+    ("Makefile", "Makefile-jat_1-jaf_2"),
+    ("../报告.md", "报告-jat_1-jaf_2.md"),
+])
+def test_attachment_name_puts_file_name_first(name, expected):
+    assert domain.jira_attachment_name(name, "jat_1", "jaf_2") == expected
+
+
+def test_uploaded_artifacts_are_linked_or_listed_before_site_link():
+    body = render({**RESULT, "comment": narrative("已定位。", "{{probe.py}}复现，{{SOLUTION.md}}列出配置。")})
+    linked = domain.link_jira_attachments(domain.jira_monospace_spacing(body),
+                                          [("SOLUTION.md", "SOLUTION-t-f1.md"), ("REPORT.md", "REPORT-t-f2.md")])
+    assert "{{probe.py}} 复现，[SOLUTION.md|^SOLUTION-t-f1.md] 列出配置。" in linked
+    lines = linked.split("\n")
+    at = lines.index("附件：[REPORT.md|^REPORT-t-f2.md]")
+    assert lines[at - 1] == "" and lines[at + 1] == "" and lines[at + 2].startswith("[") and "conversation=" in lines[at + 2]
+    assert domain.link_jira_attachments("正文", [("a.md", "a-t-f.md")]) == "正文\n\n附件：[a.md|^a-t-f.md]"
+    assert domain.link_jira_attachments("正文\n\n----\n\n_声明_", [("a.md", "a-t-f.md")]) == \
+        "正文\n\n附件：[a.md|^a-t-f.md]\n\n----\n\n_声明_"
+    assert domain.link_jira_attachments("{noformat}\n{{a.md}}\n{noformat}", []) == "{noformat}\n{{a.md}}\n{noformat}"

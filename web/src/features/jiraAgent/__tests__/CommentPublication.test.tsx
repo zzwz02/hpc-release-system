@@ -56,6 +56,19 @@ describe("reviewed publication", () => {
     expect(editor).toBeDisabled(); expect(changed).toHaveBeenCalled();
   });
 
+  it("preselects artifacts the comment names and warns about unselected ones", async () => {
+    const report = { ...file, id: "file_2", name: "REPORT.md" };
+    current = { ...current, body: "{{kernel.cu}} 复现，{{REPORT.md}} 汇总。" };
+    const user = userEvent.setup();
+    render(<CommentPublication turn={turn} files={[file, report]} onChanged={() => {}} />);
+    await user.click(screen.getByRole("button", { name: "发送到 JIRA" }));
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "kernel.cu" })).toBeChecked());
+    expect(screen.getByRole("checkbox", { name: "REPORT.md" })).toBeChecked();
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("checkbox", { name: "REPORT.md" }));
+    expect(screen.getByRole("note")).toHaveTextContent("正文提到但未勾选：REPORT.md");
+  });
+
   it("discards unsent edits and attachment choices on close without saving", async () => {
     const user = userEvent.setup();
     render(<CommentPublication turn={turn} files={[file]} onChanged={() => {}} />);
@@ -87,11 +100,38 @@ describe("reviewed publication", () => {
     const user = userEvent.setup();
     render(<CommentPublication turn={posted} files={[]} onChanged={() => {}} />);
     expect(screen.queryByRole("button", { name: "发送到 JIRA" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "查看编辑历史" }));
+    await user.click(screen.getByRole("button", { name: "查看历史 / 补充附件" }));
     expect(await screen.findByText(/已发送 JIRA 评论（#123）/)).toBeVisible();
     expect(screen.queryByRole("button", { name: /生成评论/ })).not.toBeInTheDocument();
     expect(screen.getByLabelText("JIRA 评论内容")).toBeDisabled();
     expect(screen.queryByRole("button", { name: "确认发送" })).not.toBeInTheDocument();
+  });
+
+  it("adds forgotten artifacts after publication without resending the comment", async () => {
+    const report = { ...file, id: "file_2", name: "REPORT.md" };
+    const posted = { ...turn, comment_status: "posted" as const, comment_id: "123", comment_body: "已发布正文 {{REPORT.md}}" };
+    current = { ...current, body: posted.comment_body, frozen: true, selected_file_ids: ["file_1"], turn: posted,
+      uploads: [{ file_id: "file_1", name: "kernel-jat_1-file_1.cu", state: "posted" }] };
+    vi.mocked(apiPost).mockImplementation(async (_path, raw) => {
+      const ids = (raw as { file_ids: string[] }).file_ids;
+      current = { ...current, selected_file_ids: [...current.selected_file_ids, ...ids],
+        uploads: [...current.uploads, ...ids.map(file_id => ({ file_id, name: "REPORT-jat_1-file_2.md", state: "posted" }))] };
+      return { ...current, upload_error: "" };
+    });
+    const user = userEvent.setup();
+    render(<CommentPublication turn={posted} files={[file, report]} onChanged={() => {}} />);
+    await user.click(screen.getByRole("button", { name: "查看历史 / 补充附件" }));
+    const sent = await screen.findByRole("checkbox", { name: "kernel.cu" });
+    expect(sent).toBeChecked(); expect(sent).toBeDisabled();
+    expect(screen.getByLabelText("JIRA 评论内容")).toBeDisabled();
+    expect(screen.getByRole("note")).toHaveTextContent("正文提到但未上传：REPORT.md");
+    expect(screen.getByRole("button", { name: "上传附件" })).toBeDisabled();
+    await user.click(screen.getByRole("checkbox", { name: "REPORT.md" }));
+    await user.click(screen.getByRole("button", { name: "上传 1 个附件" }));
+    expect(apiPost).toHaveBeenCalledTimes(1);
+    expect(apiPost).toHaveBeenCalledWith("/api/jira-agent/turns/jat_1/comment/attachments", { file_ids: ["file_2"] });
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "REPORT.md" })).toBeDisabled());
+    expect(screen.queryByRole("button", { name: /确认发送|核对并重试发送/ })).not.toBeInTheDocument();
   });
 
   it("preserves unsaved text on a version conflict and blocks publication", async () => {

@@ -38,6 +38,12 @@ describe("Jira comment preview", () => {
     expect(container.querySelector("br")).toBeInTheDocument();
   });
 
+  it("shows JIRA attachment links as their names instead of broken links", () => {
+    const { container } = render(<JiraComment value={"[SOLUTION.md|^SOLUTION-jat_1-jaf_2.md] 列出配置；附件：[^a_b-jat_1-jaf_3.md]、[x*y.md|^x-jat_1-jaf_4.md]"} />);
+    expect(container.querySelector("a")).toBeNull();
+    expect(container).toHaveTextContent("SOLUTION.md 列出配置；附件：a_b-jat_1-jaf_3.md、x*y.md");
+  });
+
   it("keeps untrusted markup inert and rejects script links", () => {
     const { container } = render(<JiraComment value={'<script>alert(1)</script>\n<img src=x onerror=alert(1)>\n[危险链接|javascript:alert(1)]\n[报告|https://example.test/a_(b)?x=1&y=2]'} />);
     expect(container.querySelector("script, img, [onerror], a[href^='javascript:']")).toBeNull();

@@ -662,6 +662,79 @@ def _macro_safe(text: str) -> str:
     return text.replace("{noformat}", "{ noformat}").replace("{code}", "{ code}")
 
 
+_MACRO_BLOCK = re.compile(r"\{(noformat|code)(?::[^}\n]*)?\}[\s\S]*?\{\1\}")
+_MONOSPACE = re.compile(r"\{\{(?=\S)(.*?\S)\}\}")
+_SITE_LINK = re.compile(r"\[[^\]\n|]+\|https?://[^\]\s]*[?&]conversation=[^\]\s]+\]")
+
+
+def _outside_macros(text: str, transform) -> str:
+    """Transform wiki text except {noformat}/{code} blocks, which JIRA shows verbatim."""
+    parts, last = [], 0
+    for block in _MACRO_BLOCK.finditer(text):
+        parts += [transform(text[last:block.start()]), block.group(0)]
+        last = block.end()
+    return "".join(parts + [transform(text[last:])])
+
+
+def jira_monospace_spacing(body: str) -> str:
+    """JIRA ignores {{code}} touching a letter or digit, CJK included; separate it by a space."""
+    def spaced(segment: str) -> str:
+        def fix(match: re.Match) -> str:
+            before = segment[match.start() - 1] if match.start() else ""
+            after = segment[match.end()] if match.end() < len(segment) else ""
+            return (" " if before.isalnum() else "") + match.group(0) + (" " if after.isalnum() else "")
+        return _MONOSPACE.sub(fix, segment)
+    return _outside_macros(body, spaced)
+
+
+def jira_attachment_name(name: str, turn_id: str, file_id: str) -> str:
+    """Readable and unique: SOLUTION.md -> SOLUTION-<turn>-<file>.md, keeping .tar.gz whole."""
+    base = safe_filename(name)
+    match = re.fullmatch(r"(.+?)((?:\.tar)?\.[A-Za-z0-9]{1,16})", base)
+    stem, ext = match.groups() if match else (base, "")
+    return f"{stem}-{turn_id}-{file_id}{ext}"
+
+
+def link_jira_attachments(body: str, attachments: list[tuple[str, str]]) -> str:
+    """Link uploaded artifacts given as (artifact name, JIRA attachment name).
+
+    A {{name}} mention becomes [name|^attachment]; uploaded files not mentioned are
+    listed on an "附件：" line before the site link. Callers pass only files that are
+    uploaded, because JIRA prints a link to a missing attachment as raw markup.
+    """
+    targets: dict[str, str] = {}
+    for name, attachment in attachments:
+        targets.setdefault(name, attachment)
+    used: set[str] = set()
+
+    def link(name: str, attachment: str) -> str:
+        label = re.sub(r"[\[\]|\r\n]", " ", name).strip() or attachment
+        return f"[{label}|^{attachment}]"
+
+    def linked(segment: str) -> str:
+        def fix(match: re.Match) -> str:
+            attachment = targets.get(match.group(1))
+            if not attachment:
+                return match.group(0)
+            used.add(attachment)
+            return link(match.group(1), attachment)
+        return _MONOSPACE.sub(fix, segment)
+
+    body = _outside_macros(body, linked)
+    rest = [link(name, attachment) for name, attachment in attachments if attachment not in used]
+    if not rest:
+        return body
+    line = "附件：" + "、".join(rest)
+    lines = body.split("\n")
+    index = next((i for i in range(len(lines) - 1, -1, -1) if _SITE_LINK.fullmatch(lines[i].strip())), None)
+    if index is None:
+        index = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].strip() == "----"), None)
+    if index is None:
+        return body.rstrip() + "\n\n" + line
+    lines[index:index] = ([""] if index and lines[index - 1].strip() else []) + [line, ""]
+    return "\n".join(lines)
+
+
 def _comment_projection(result: dict) -> dict | None:
     """Validate prose separately from non-rendered narrative evidence references."""
     comment = result.get("comment")
@@ -836,7 +909,7 @@ def render_jira_comment(
     elif commands:
         lines.append("操作命令较长，请使用网站本轮记录中的完整命令。")
     lines += footer
-    return "\n".join(lines)
+    return jira_monospace_spacing("\n".join(lines))
 
 
 def is_cybersecurity_risk_warning(text: str) -> bool:

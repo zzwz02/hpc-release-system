@@ -38,7 +38,8 @@ def test_edited_comment_and_only_selected_artifacts_are_sent_once(env, monkeypat
     sent = _send_comment(env, turn, "人工修改后的结论。", [artifact["id"]])
     assert sent["comment_status"] == "posted"
     assert env.jira.comments[0][1].startswith("人工修改后的结论。")
-    assert len(calls) == 1 and calls[0][1].endswith("fix.patch")
+    assert len(calls) == 1 and calls[0][1] == f"fix-{turn['id']}-{artifact['id']}.patch"
+    assert f"附件：[fix.patch|^fix-{turn['id']}-{artifact['id']}.patch]" in env.jira.comments[0][1]
     url = f"/api/jira-agent/turns/{turn['id']}/comment"
     state = env.client.get(url).json()
     assert state["frozen"] and state["uploads"][0]["state"] == "posted"
@@ -52,6 +53,52 @@ def test_edited_comment_and_only_selected_artifacts_are_sent_once(env, monkeypat
     with execution.open_db() as conn:
         for table in ("jira_agent_comment_drafts", "jira_agent_comment_revisions", "jira_agent_comment_uploads"):
             assert conn.execute(f"SELECT count(*) FROM {table} WHERE turn_id=?", (turn['id'],)).fetchone()[0] == 0
+
+
+def test_mentioned_artifacts_link_to_uploads_and_code_is_spaced(env, monkeypatch):
+    detail, turn = completed(env)
+    artifact = next(f for f in detail["files"] if f["source"] == "artifact")
+    monkeypatch.setattr(jira, "upload_agent_attachment", lambda *args: "att-1")
+    reviewed = "设置{{MCCL_MAX_NCHANNELS=16}}后，{{fix.patch}}修复尾部；{{missing.md}}未上传。"
+    sent = _send_comment(env, turn, reviewed, [artifact["id"]])
+    assert sent["comment_status"] == "posted"
+    posted = env.jira.comments[0][1]
+    assert posted.startswith(f"设置 {{{{MCCL_MAX_NCHANNELS=16}}}} 后，[fix.patch|^fix-{turn['id']}-{artifact['id']}.patch] 修复尾部；"
+                             "{{missing.md}} 未上传。")
+    assert "附件：" not in posted
+    history = env.client.get(f"/api/jira-agent/turns/{turn['id']}/comment/history").json()["items"]
+    assert history[0]["source"] == "sent" and history[0]["body"] == reviewed
+
+
+def test_forgotten_artifacts_can_be_uploaded_after_publication_only(env, monkeypatch):
+    detail, turn = completed(env)
+    artifact = next(f for f in detail["files"] if f["source"] == "artifact")
+    url = f"/api/jira-agent/turns/{turn['id']}/comment"
+    uploads = []
+    monkeypatch.setattr(jira, "upload_agent_attachment", lambda key, name, data: uploads.append(name) or "att-1")
+    env.client.get(url)
+    assert env.client.post(url + "/attachments", json={"file_ids": [artifact["id"]]}).status_code == 409
+    assert not uploads
+    _send_comment(env, turn, "已发送的评论")
+    posted = env.jira.comments[0][1]
+
+    def fail(key, name, data):
+        uploads.append(name)
+        raise TimeoutError("lost response")
+    monkeypatch.setattr(jira, "upload_agent_attachment", fail)
+    monkeypatch.setattr(jira, "find_agent_attachment", lambda *args: "")
+    result = env.client.post(url + "/attachments", json={"file_ids": [artifact["id"]]}).json()
+    assert "lost response" in result["upload_error"] and result["uploads"][0]["state"] == "uncertain"
+    assert result["turn"]["comment_status"] == "posted"
+    monkeypatch.setattr(jira, "find_agent_attachment", lambda *args: "att-found")
+    result = env.client.post(url + "/attachments", json={"file_ids": []}).json()
+    assert result["upload_error"] == "" and result["uploads"][0]["state"] == "posted"
+    assert result["selected_file_ids"] == [artifact["id"]]
+    assert uploads == [f"fix-{turn['id']}-{artifact['id']}.patch"]
+    assert env.client.post(url + "/attachments", json={"file_ids": [artifact["id"]]}).status_code == 400
+    assert env.jira.comments == [env.jira.comments[0]] and env.jira.comments[0][1] == posted
+    env.jira.assignee = "bob"
+    assert env.client.post(url + "/attachments", json={"file_ids": []}).status_code == 403
 
 
 def test_upload_lost_response_reconciles_before_comment(env, monkeypatch):
