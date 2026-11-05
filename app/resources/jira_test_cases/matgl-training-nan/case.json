@@ -1,7 +1,16 @@
 {
   "title": "[C500][MatGL] MEGNet 训练概率性出现 NaN",
   "input": {
-    "files": [],
+    "files": [
+      {
+        "path": "uploads/original_rng.pt",
+        "sha256": "e7912951fe0d8fd1626fcc5f5da2d4c6bbf100342a962983311d8947cce09e04"
+      },
+      {
+        "path": "uploads/replay_rng.py",
+        "sha256": "60d127ad69a6554ca5f9341a83631e5ca557dd64321db320ce44c480a22414b2"
+      }
+    ],
     "issue": {
       "acquisition": {
         "conflicts": [],
@@ -38,7 +47,7 @@
         "PDE"
       ],
       "custom_fields": {},
-      "description": "MatGL 1.1.3 在 C500 上运行 GPU 单元测试时，MEGNet 训练概率性出现 NaN，原测试记录的失败率约 20%～30%。失败项为 `tests-gpu/utils/test_training.py::TestModelTrainer::test_megnet_training`，报错 `AssertionError: assert tensor(nan, device='cuda:0') < 0`。\n\n单张 C500，驱动 3.9.0.14，SDK 3.9.0.29，HPC 3.9.0.12。\n\n测试镜像：`harbor.sh.mxcr.io/xshi/matgl-maca:mc3-7807-3.9.0.12@sha256:46aef466a799c5d19ad5d2b5c7d3c2fb10fc168490cf0e858166ea5df1ddf25f`\n\n```bash\ndocker run --pull always -v /mnt/hdd:/mnt/hdd --rm \\\n  -e MACA_PERF_DIR=/tmp -u 0 -e MACA_VISIBLE_DEVICES=0 \\\n  --device=/dev/dri --device=/dev/mxcd --group-add video \\\n  harbor.sh.mxcr.io/xshi/matgl-maca:mc3-7807-3.9.0.12@sha256:46aef466a799c5d19ad5d2b5c7d3c2fb10fc168490cf0e858166ea5df1ddf25f \\\n  sh -c 'export && bash /workspace/easy_install/matgl-1.1.3.sh && cd /workspace/test/matgl-1.1.3 && python3 test-gpu.py'\n```",
+      "description": "MatGL 1.1.3 在 C500 上运行 GPU 单元测试时，MEGNet 训练概率性出现 NaN，原测试记录的失败率约 20%～30%。失败项为 `tests-gpu/utils/test_training.py::TestModelTrainer::test_megnet_training`，报错 `AssertionError: assert tensor(nan, device='cuda:0') < 0`。\n\n原环境为单张 C500、驱动 3.9.0.14、SDK 3.9.0.29、HPC 3.9.0.12；后续在驱动 3.10.0 的 C500 上也复现过相同断言。失败频率随运行条件变化。\n\n测试镜像：`harbor.sh.mxcr.io/xshi/matgl-maca:mc3-7807-3.9.0.12@sha256:46aef466a799c5d19ad5d2b5c7d3c2fb10fc168490cf0e858166ea5df1ddf25f`\n\n使用镜像内现有依赖：MatGL 1.1.3、PyTorch 2.4.0+metax3.9.0.8、DGL 2.4.0、Lightning 2.6.6；不重新执行会在线升级依赖的安装脚本。原完整入口为 `/workspace/test/matgl-1.1.3/test-gpu.py`。\n\n附带两个原测试回放文件：\n- `original_rng.pt`：一次原训练失败前的 CPU/GPU 随机状态。\n- `replay_rng.py`：在目标测试开始前恢复这些状态的 pytest 插件，不修改模型、数据、训练轮数或断言。\n\n将两个文件复制到执行机的同一目录，在该目录执行：\n\n```bash\ndocker run --pull always --rm \\\n  -v \"$PWD\":/replay:ro -e PYTHONPATH=/replay \\\n  -e REPLAY_RNG_PATH=/replay/original_rng.pt \\\n  -e MACA_PERF_DIR=/tmp -u 0 -e MACA_VISIBLE_DEVICES=0 \\\n  --device=/dev/dri --device=/dev/mxcd --group-add video \\\n  harbor.sh.mxcr.io/xshi/matgl-maca:mc3-7807-3.9.0.12@sha256:46aef466a799c5d19ad5d2b5c7d3c2fb10fc168490cf0e858166ea5df1ddf25f \\\n  sh -c 'cd /workspace/test/matgl-1.1.3 && python3 -m pytest -p replay_rng -vv -s tests-gpu/utils/test_training.py::TestModelTrainer::test_megnet_training'\n```\n\n该随机状态曾在原测试中复现相同 NaN，不能保证每次触发。自然运行和回放结果应分别记录；单次通过不代表问题消失。",
       "field_definitions": [],
       "issue_type": "Bug",
       "key": "MC3-7807",
@@ -48,7 +57,7 @@
       "summary": "[C500][MatGL] MEGNet 训练概率性出现 NaN",
       "url": "http://10.2.201.98:8080/browse/MC3-7807"
     },
-    "note": "请复现 MEGNet 训练的 NaN，定位有效触发条件，交付能复现同一异常的独立小程序。"
+    "note": "使用所附随机状态回放原 MEGNet 训练，定位 NaN 的有效触发条件，交付能复现同一异常的独立小程序。"
   },
   "provenance": {
     "issue_key": "MC3-7807"

@@ -55,20 +55,22 @@ def test_packaged_repository_cases_contain_inputs_and_separate_review(tmp_path):
         if not directory.name.startswith('_'):
             shutil.copytree(directory, root / directory.name)
     original = catalog.load(root)
-    assert len(original) == 17
+    assert len(original) == 19
     assert {entry['body']['input']['issue']['key'] for entry in original} == {
         'MC3-7798', 'MC3-7812', 'MC3-7828', 'MC3-7821', 'MC3-7808',
         'MC3-7814', 'MC3-7807', 'MC3-7818', 'MC3-7825', 'MC3-7809',
         'MC3-7721', 'MC3-7754',
         'MC3-7722', 'MC3-7716', 'MC3-7719',
-        'MC3-16033', 'MC3-16177',
+        'MC3-16033', 'MC3-16177', 'MC3-7820', 'PHS-11580',
     }
-    assert build(root, root / '_packages') == 17
+    assert build(root, root / '_packages') == 19
     assert catalog.load(root) == original
     for archive in (root / '_packages').glob('*.zip'):
         with zipfile.ZipFile(archive) as files:
-            assert set(files.namelist()) == {'manifest.json', 'case.json', 'review.json'}
             body = json.loads(files.read('case.json'))
+            assert set(files.namelist()) == {'manifest.json', 'case.json', 'review.json'} | {
+                item['path'] for item in body['input']['files']
+            }
             assert set(body) == {'title', 'input', 'provenance'}
             assert set(body['provenance']) == {'issue_key'}
         restored = package.decode(archive.read_bytes())
