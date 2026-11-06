@@ -1,0 +1,56 @@
+{
+  "title": "[C500 单卡][AlphaGenome] 3.10.0.6 相比 3.9.0.12 预测变慢",
+  "input": {
+    "files": [],
+    "issue": {
+      "acquisition": {
+        "conflicts": [],
+        "parts": {
+          "attachment_metadata": {
+            "status": "complete"
+          },
+          "comments": {
+            "collected": 0,
+            "reported_total": 0,
+            "status": "complete"
+          },
+          "custom_fields": {
+            "collected": 0,
+            "status": "complete"
+          },
+          "description": {
+            "status": "complete"
+          },
+          "field_definitions": {
+            "status": "complete"
+          },
+          "issue": {
+            "status": "complete"
+          }
+        },
+        "scope": "人工保存的测试输入；不代表 Jira 当前内容或全量采集。",
+        "source": "test_case",
+        "status": "complete"
+      },
+      "attachments": [],
+      "comments": [],
+      "components": [
+        "PDE_HPC"
+      ],
+      "custom_fields": {},
+      "description": "AlphaGenome 的 `test_simple_case.sh` 在 C500 单卡上执行成功，但新版预测耗时增加。同机使用相同数据，HPC 3.9.0.12 镜像为 7.02 秒，HPC 3.10.0.6 镜像为 7.77 秒，增加约 10.7%。指标取原脚本输出的 `Predict Time`，包含预热后的五次预测。\n\n- good：AlphaGenome v0.8.0 / HPC 3.9.0.12 / SDK 3.9.0.29，`harbor.sh.mxcr.io/xshi/alphagenome-maca:mc3-16177-good-3.9.0.12@sha256:5ce2fd91202b8847f9ba182ba040a9495253fb87b58f39a388472685a64e8987`\n- bad：AlphaGenome v0.9.0 / HPC 3.10.0.6 / SDK 3.10.0.16，`harbor.sh.mxcr.io/xshi/alphagenome-maca:mc3-16177-bad-3.10.0.6@sha256:a5b78584bdf6d9604db8498fab168948064027767683a496e6909cf2452aaf00`\n\n使用 C500 64GiB 单卡。数据和权重位于 `/pde_hpc/dataset/alphagenome/alphagenome`，包含 `alphagenome-all-folds` 模型权重及 `hg38`、`mm10` 数据，将数据根目录只读挂载到 `/hpc_dataset`。\n\n```bash\ndocker run --rm -u 0 \\\n  -e MACA_VISIBLE_DEVICES=0 -e MACA_PERF_DIR=/tmp \\\n  --device=/dev/dri --device=/dev/mxcd --group-add video \\\n  -v /pde_hpc/dataset:/hpc_dataset:ro \\\n  harbor.sh.mxcr.io/xshi/alphagenome-maca:mc3-16177-bad-3.10.0.6@sha256:a5b78584bdf6d9604db8498fab168948064027767683a496e6909cf2452aaf00 \\\n  bash -c 'cd /workspace/tests/AlphaGenome && bash -o pipefail test_simple_case.sh && cat /tmp/perf'\n```\n\n将镜像替换为 good 镜像执行同一命令进行对照。两版均使用原模型、输入和测试规模。",
+      "field_definitions": [],
+      "issue_type": "Bug",
+      "key": "MC3-16177",
+      "labels": [],
+      "project": "MC3",
+      "raw_fields": {},
+      "summary": "[C500 单卡][AlphaGenome] 3.10.0.6 相比 3.9.0.12 预测变慢",
+      "url": "https://jira.metax-tech.com/browse/MC3-16177"
+    },
+    "note": "请复现预测性能差异，定位到具体库及有证据支持的 API 或调用组合，并交付验证过的独立最小复现程序。"
+  },
+  "provenance": {
+    "issue_key": "MC3-16177"
+  }
+}

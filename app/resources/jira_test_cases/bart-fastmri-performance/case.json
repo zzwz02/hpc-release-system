@@ -1,0 +1,56 @@
+{
+  "title": "[C500 单卡][BART] fastMRI 3.9.0.1 相比 3.8.0.11 性能下降",
+  "input": {
+    "files": [],
+    "issue": {
+      "acquisition": {
+        "conflicts": [],
+        "parts": {
+          "attachment_metadata": {
+            "status": "complete"
+          },
+          "comments": {
+            "collected": 0,
+            "reported_total": 0,
+            "status": "complete"
+          },
+          "custom_fields": {
+            "collected": 0,
+            "status": "complete"
+          },
+          "description": {
+            "status": "complete"
+          },
+          "field_definitions": {
+            "status": "complete"
+          },
+          "issue": {
+            "status": "complete"
+          }
+        },
+        "scope": "人工保存的测试输入；不代表 Jira 当前内容或全量采集。",
+        "source": "test_case",
+        "status": "complete"
+      },
+      "attachments": [],
+      "comments": [],
+      "components": [
+        "PDE"
+      ],
+      "custom_fields": {},
+      "description": "BART v0.8.00 的 fastMRI 测试在 C500 单卡上运行，3.9.0.1 相比 3.8.0.11 报告性能下降 12.46%。另一台 C500 上按同一脚本对照，旧版为 95.04 s、新版为 104.15 s；该现象需要核实并定位。\n\n- 对照版（HPC 发布版本 3.8.0.11）：`harbor.sh.mxcr.io/xshi/bart-maca:mc3-7754-baseline-3.8.0.11@sha256:9edbce58a2b835d1c1b6f23928a2c93d4732b6bdaff8611c73e70d138befbd01`\n- 待分析版（HPC 发布版本 3.9.0.1）：`harbor.sh.mxcr.io/xshi/bart-maca:mc3-7754-reported-3.9.0.1@sha256:7d3dad0b4b9a6bc0982c955e2143276038bb127c1090ca1aae8c06b8989a6dd1`\n\n上述编号为 HPC 发布版本；两份镜像内的实际 MACA SDK 分别为 3.8.0.23 和 3.9.0.3，这是已核验的版本对应关系。使用上述固定 digest 进行对照。\n\n两版镜像内均有测试数据 `/tmp/bart_data/multicoil_val/file1000000.h5`，包含 35 个切片，SHA-256 为 `8f70b200d157aaf592df986c22994571c03b8b869dbed96108eb135efd41f1ca`。\n\n```bash\ndocker run --rm -e MACA_PERF_DIR=/tmp -e MACA_VISIBLE_DEVICES=0 -u 0 \\\n  --device=/dev/dri --device=/dev/mxcd --group-add video \\\n  harbor.sh.mxcr.io/xshi/bart-maca:mc3-7754-reported-3.9.0.1@sha256:7d3dad0b4b9a6bc0982c955e2143276038bb127c1090ca1aae8c06b8989a6dd1 \\\n  sh -c '. /opt/conda/bin/activate && cd /root/ && bash run_fastMRI.sh && cat /tmp/perf'\n```\n\n对照版替换镜像后执行同一命令。性能取原脚本输出的 `/tmp/perf`；原脚本包含预热，指标为正式重建耗时减去 load_unload_time，不能直接当作纯 GPU 耗时。",
+      "field_definitions": [],
+      "issue_type": "Bug",
+      "key": "MC3-7754",
+      "labels": [],
+      "project": "MC3",
+      "raw_fields": {},
+      "summary": "[C500 单卡][BART] fastMRI 3.9.0.1 相比 3.8.0.11 性能下降",
+      "url": "http://10.2.201.98:8080/browse/MC3-7754"
+    },
+    "note": "请核对两版性能差异，定位原因并验证修复。"
+  },
+  "provenance": {
+    "issue_key": "MC3-7754"
+  }
+}

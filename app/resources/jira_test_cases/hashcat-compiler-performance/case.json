@@ -1,0 +1,56 @@
+{
+  "title": "[C500 单卡][Hashcat] ex01000 3.8.0.1 相比 3.7.0.6 性能下降",
+  "input": {
+    "files": [],
+    "issue": {
+      "acquisition": {
+        "conflicts": [],
+        "parts": {
+          "attachment_metadata": {
+            "status": "complete"
+          },
+          "comments": {
+            "collected": 0,
+            "reported_total": 0,
+            "status": "complete"
+          },
+          "custom_fields": {
+            "collected": 0,
+            "status": "complete"
+          },
+          "description": {
+            "status": "complete"
+          },
+          "field_definitions": {
+            "status": "complete"
+          },
+          "issue": {
+            "status": "complete"
+          }
+        },
+        "scope": "人工保存的测试输入；不代表 Jira 当前内容或全量采集。",
+        "source": "test_case",
+        "status": "complete"
+      },
+      "attachments": [],
+      "comments": [],
+      "components": [
+        "PDE"
+      ],
+      "custom_fields": {},
+      "description": "Hashcat 6.2.6 的 ex01000 在 C500 单卡上测试，3.8.0.1 相比 3.7.0.6 性能下降。同机预热后各三次测试的速度中位数分别为 11369.9、12098.6 MH/s，新版下降约 6.02%；两版均完成自检并成功破解目标哈希。\n\n- good（3.7.0.6）：`harbor.sh.mxcr.io/xshi/hashcat-maca:mc3-7716-good-3.7.0.6@sha256:e873da590ebed87e4cd5f36585775af4bfcf6363419d46367e0730f3cd74e0ef`\n- bad（3.8.0.1）：`harbor.sh.mxcr.io/xshi/hashcat-maca:mc3-7716-bad-3.8.0.1@sha256:b5791d2d9ecf4ab944b30433378ce5d49ad2a3f8cd8c94fc73affffcc1e6a1c0`\n\n字典 `example.dict`、目标哈希 `example-hashes/example1000.hash` 和原脚本均在镜像的 `/opt/hashcat-v6.2.6` 中。\n\n```bash\ndocker run --rm -u 0 -e MACA_PERF_DIR=/tmp -e MACA_VISIBLE_DEVICES=0 \\\n  --device=/dev/dri --device=/dev/mxcd --group-add video \\\n  harbor.sh.mxcr.io/xshi/hashcat-maca:mc3-7716-bad-3.8.0.1@sha256:b5791d2d9ecf4ab944b30433378ce5d49ad2a3f8cd8c94fc73affffcc1e6a1c0 \\\n  sh -c 'cd /opt/hashcat-v6.2.6 && ./test-ex01000.sh && cat /tmp/perf && cat log'\n```\n\ngood 版替换镜像后执行同一命令。性能使用原脚本输出的 MH/s，越大越好；同时核对日志中的自检、Status: Cracked 和 Recovered: 1/1。以上记录来自 C500 64 GiB、KMD 3.4.4 环境。",
+      "field_definitions": [],
+      "issue_type": "Bug",
+      "key": "MC3-7716",
+      "labels": [],
+      "project": "MC3",
+      "raw_fields": {},
+      "summary": "[C500 单卡][Hashcat] ex01000 3.8.0.1 相比 3.7.0.6 性能下降",
+      "url": "http://10.2.201.98:8080/browse/MC3-7716"
+    },
+    "note": "请复现并定位 Hashcat ex01000 性能下降的原因。"
+  },
+  "provenance": {
+    "issue_key": "MC3-7716"
+  }
+}
