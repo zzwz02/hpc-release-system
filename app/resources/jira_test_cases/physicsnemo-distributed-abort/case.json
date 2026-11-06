@@ -1,0 +1,56 @@
+{
+  "title": "[C500 单卡][PhysicsNeMo] 分布式测试在 cleanup 阶段异常退出",
+  "input": {
+    "files": [],
+    "issue": {
+      "acquisition": {
+        "conflicts": [],
+        "parts": {
+          "attachment_metadata": {
+            "status": "complete"
+          },
+          "comments": {
+            "collected": 0,
+            "reported_total": 0,
+            "status": "complete"
+          },
+          "custom_fields": {
+            "collected": 0,
+            "status": "complete"
+          },
+          "description": {
+            "status": "complete"
+          },
+          "field_definitions": {
+            "status": "complete"
+          },
+          "issue": {
+            "status": "complete"
+          }
+        },
+        "scope": "人工保存的测试输入；不代表 Jira 当前内容或全量采集。",
+        "source": "test_case",
+        "status": "complete"
+      },
+      "attachments": [],
+      "comments": [],
+      "components": [
+        "PDE"
+      ],
+      "custom_fields": {},
+      "description": "PhysicsNeMo 2.0.0 在 C500 单卡上运行 run_pytest.sh，test_manager_slurm[cuda:0] 通过后，test_manager_ompi[cuda:0] 在 manager.py 的 cleanup() 阶段出现 Fatal Python error: Aborted。脚本统计 Passed: -1、Failed: -1，退出码为 1。\n\n镜像：`harbor.sh.mxcr.io/xshi/physicsnemo-maca-dbg:mc3-7721-original-2.0.0-3.9.0.1@sha256:4a343b013270286da00b330d1a451f6c95e8dcf64b9ab4e857e071723f5528bc`。镜像内包含应用源码和测试；Python 3.12、PyTorch 2.8.0，容器 SDK 版本为 3.9.0.3。\n\n```bash\ndocker run --rm -e MACA_PERF_DIR=/tmp -e MACA_VISIBLE_DEVICES=0 -u 0 \\\n  --device=/dev/dri --device=/dev/mxcd --group-add video \\\n  harbor.sh.mxcr.io/xshi/physicsnemo-maca-dbg:mc3-7721-original-2.0.0-3.9.0.1@sha256:4a343b013270286da00b330d1a451f6c95e8dcf64b9ab4e857e071723f5528bc \\\n  sh -c 'cd /root/physicsnemo && bash ./run_pytest.sh'\n```\n\n该异常已在 C500 64 GiB、KMD 3.4.4 环境复现，未发生容器 OOM。",
+      "field_definitions": [],
+      "issue_type": "Bug",
+      "key": "MC3-7721",
+      "labels": [],
+      "project": "MC3",
+      "raw_fields": {},
+      "summary": "[C500 单卡][PhysicsNeMo] 分布式测试在 cleanup 阶段异常退出",
+      "url": "http://10.2.201.98:8080/browse/MC3-7721"
+    },
+    "note": "请复现并定位异常退出的原因，交付验证过同一问题的独立小程序。"
+  },
+  "provenance": {
+    "issue_key": "MC3-7721"
+  }
+}

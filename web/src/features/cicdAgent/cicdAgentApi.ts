@@ -52,6 +52,7 @@ export interface FailureRecordFilters {
 
 export interface FailureRecordListItem {
   id: number;
+  record_source?: "pipeline_diagnosis" | "test_case_result";
   record_state?: FailureRecordState;
   record_state_updated_by?: string | null;
   record_state_updated_at?: string | null;
@@ -126,6 +127,18 @@ export interface FailureResponsibilityEvent {
 }
 
 export interface FailureRecordDetail extends FailureRecordListItem {
+  test_summary?: {
+    total: number;
+    counts: Record<string, number>;
+    expected_ecc_states: string[];
+    reported_ecc_states: string[];
+    pending_groups?: Array<{ ecc_state: string; chip: string; arch: string; platform: string; image_alias: string }>;
+    groups: Array<{
+      ecc_state: string; chip: string; arch: string; platform: string; image_alias: string;
+      maca_version: string; total: number; counts: Record<string, number>;
+      cases: Array<{ name: string; status: string; image: string; image_digest: string; duration: string }>;
+    }>;
+  } | null;
   status?: string | null;
   node_id?: string | null;
   node_result?: string | null;

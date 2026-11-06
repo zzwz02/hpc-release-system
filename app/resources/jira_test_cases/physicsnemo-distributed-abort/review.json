@@ -1,0 +1,4 @@
+{
+  "criteria": "在指定镜像中复现分布式通信器清理阶段的异常退出；保留触发顺序的相关测试即可，不要求跑完全部 pytest。\n用实测证据定位到 libmccl.so 的 mcclCommDestroy 错误关闭调用者文件描述符，并说明它与后续 TCPStore 报 EBADF、进程 abort 的关系；仅判断为通信库或 PyTorch 问题不算完成。\n交付可独立运行的小程序、运行命令和实际结果，证明同一文件描述符误关闭问题；不要求修复 MCCL 内部代码或完成全部应用回归。",
+  "reference": "来源：MC3-7721，旧分析对话 jac_ac8154125b24；MC3-7732 为同类问题。历史 REPORT.md、独立案例及运行日志已核对。\n\n在 C500 单卡上，mcclCommDestroy 返回成功后调用者的 stdin（fd 0）变成 EBADF；下一轮 TCPStore 的 epoll 复用 fd 0，随后再次被 MCCL 关闭，引发 EBADF 和 SIGABRT。加载库为 /opt/maca-3.9.0/lib/libmccl.so，MCCL 2.30.4。\n\n历史独立程序只调用 MACA runtime/MCCL C API，不依赖 PhysicsNeMo 或 PyTorch，已在全新容器复现 fd 0 被关闭。纯 PyTorch 多轮初始化/销毁也复现第二轮 abort；单轮正常退出不能排除问题。Gloo 和独立 TCPStore 对照未复现。\n\n核心目标是有证据的 API 定位和同一故障的独立复现。直接验证文件描述符误关闭可以作为复现依据，不要求小程序也产生与完整应用完全相同的 Python 栈。未验证 MCCL 修复版本，不以应用全量通过作为本用例门槛。"
+}

@@ -38,7 +38,7 @@
         "PDE"
       ],
       "custom_fields": {},
-      "description": "在 X301 上运行 `ai_models_aurora_test`，三次结果分别为 67.465、67.350、67.335 s/step，平均运行时间为 1 小时 12 分 52 秒。测试可以完成，但单步耗时偏高。\n\n测试环境：HPC 3.9.0.1，驱动 3.9.0.3，宿主 SDK 3.9.0.4，容器 SDK 3.9.0.3。\n\n测试数据：\n- 模型：`/mnt/hdd/pde_hpc/dataset/aimodels/models/aurora`\n- 输入：`/mnt/hdd/pde_hpc/dataset/aimodels/test/two_steps.grib`\n\n测试命令：\n\n```bash\ndocker run --pull always -v /mnt/hdd:/mnt/hdd --rm \\\n  -e MACA_PERF_DIR=/tmp \\\n  -v /mnt/hdd/pde_hpc/dataset:/hpc_dataset:ro -u 0 \\\n  --device=/dev/dri --device=/dev/mxcd --group-add video \\\n  harbor.sh.mxcr.io/xshi/aimodels-maca:mc3-7809-aurora-3.9.0.1@sha256:e1af10661cf4ec540a38bd66423988aa0987a0b7b77c8ef8b1596549333080d9 \\\n  sh -c 'export && cd /test && bash benchmark/run_aurora.sh && cat /tmp/perf'\n```",
+      "description": "在 X301 上运行 `ai_models_aurora_test`，三次结果分别为 67.465、67.350、67.335 s/step，平均运行时间为 1 小时 12 分 52 秒。测试可以完成，但单步耗时偏高。\n\n测试环境：HPC 3.9.0.1，驱动 3.9.0.3，宿主 SDK 3.9.0.4，容器 SDK 3.9.0.3。\n\n模型、静态数据和 GRIB 输入均已包含在镜像中，无需挂载外部数据目录：\n- 模型和静态数据：`/hpc_dataset/aimodels/models/aurora`\n- 输入：`/hpc_dataset/aimodels/test/two_steps.grib`\n\n测试命令：\n\n```bash\ndocker run --pull always --rm \\\n  -e MACA_PERF_DIR=/tmp -u 0 \\\n  --device=/dev/dri --device=/dev/mxcd --group-add video \\\n  harbor.sh.mxcr.io/xshi/aimodels-maca:mc3-7809-aurora-3.9.0.1-data-20261104@sha256:e2f17a00bc1a33748b595af5c84a4c763fd77ef496b9f21ec9053d881e944a71 \\\n  sh -c 'cd /test && bash benchmark/run_aurora.sh && cat /tmp/perf'\n```",
       "field_definitions": [],
       "issue_type": "Bug",
       "key": "MC3-7809",
@@ -48,7 +48,7 @@
       "summary": "[X301][Aurora] 单步耗时明显偏高",
       "url": "http://10.2.201.98:8080/browse/MC3-7809"
     },
-    "note": "请在 X301 上分析 Aurora 单步耗时偏高的原因，给出主要耗时和定位证据。"
+    "note": "请在 X301 上分析 Aurora 单步耗时的主要来源，给出实测贡献，并交付验证过的独立热点调用案例。可保留原模型、输入、精度和计时方式进行稳定的短程推理，说明样本步数；本例没有确认的正常性能基准，不要求性能修复或跨卡对比。"
   },
   "provenance": {
     "issue_key": "MC3-7809"
