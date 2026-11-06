@@ -20,6 +20,15 @@ def conf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
+def _openai_module(fake_openai, http_clients: list[dict] | None = None):
+    """A stand-in openai module; records how each HTTP client is routed."""
+    def http_client(**kwargs):
+        if http_clients is not None:
+            http_clients.append(kwargs)
+        return kwargs
+    return types.SimpleNamespace(OpenAI=fake_openai, DefaultHttpxClient=http_client)
+
+
 def _chunk(content=None, reasoning=None, usage=None, choices=True):
     delta = types.SimpleNamespace(content=content, reasoning_content=reasoning)
     return types.SimpleNamespace(
@@ -35,7 +44,7 @@ def _run(monkeypatch, create):
             self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=create))
 
     stats: list[dict] = []
-    with mock.patch.dict(sys.modules, {"openai": types.SimpleNamespace(OpenAI=FakeOpenAI)}):
+    with mock.patch.dict(sys.modules, {"openai": _openai_module(FakeOpenAI)}):
         result = llm.chat_json("s", "u", progress=stats.append)
     return result, stats
 
@@ -193,7 +202,7 @@ def test_ask_json_counts_streamed_calls_on_the_given_meter(monkeypatch) -> None:
     meter = llm.LlmMeter()
     heard: list[dict] = []
     replies: list[bool] = []
-    with mock.patch.dict(sys.modules, {"openai": types.SimpleNamespace(OpenAI=FakeOpenAI)}):
+    with mock.patch.dict(sys.modules, {"openai": _openai_module(FakeOpenAI)}):
         result = llm.ask_json("s", "u", meter=meter, progress=heard.append, on_reply=lambda: replies.append(True))
 
     assert result == {"ok": True}
@@ -242,7 +251,7 @@ def test_cancel_cuts_a_streamed_reply_that_is_still_coming() -> None:
         except Exception as exc:  # noqa: BLE001 - recorded for the assertion
             outcome["error"] = exc
 
-    with mock.patch.dict(sys.modules, {"openai": types.SimpleNamespace(OpenAI=FakeOpenAI)}):
+    with mock.patch.dict(sys.modules, {"openai": _openai_module(FakeOpenAI)}):
         worker = threading.Thread(target=run)
         worker.start()
         assert reading.wait(5)
@@ -268,3 +277,34 @@ def test_cancel_token_runs_late_closers_at_once_and_forgets_released_ones() -> N
     token.cancel()
     token.on_cancel(lambda: closed.append("late"))
     assert closed == ["kept", "late"]
+
+
+@pytest.mark.parametrize("base_url,via_proxy", [
+    ("https://llm-gw.kai.metax-tech.com/v1", False),
+    ("http://metax-tech.com/v1", False),
+    ("https://llm.METAX-INTERNAL.com./v1", False),
+    ("http://10.1.2.3:8000/v1", True),
+    ("https://api.example.com/v1", True),
+    ("https://notmetax-tech.com/v1", True),
+    ("https://metax-tech.com.evil.example/v1", True),
+])
+def test_llm_uses_shared_proxy_except_company_domains(conf: Path, monkeypatch, base_url, via_proxy) -> None:
+    proxy = "http://proxy.sha-dc01.metax-tech.com:1080"
+    monkeypatch.setenv("HTTPS_PROXY", "http://unrelated-proxy.invalid:8888")
+    conf.write_text(f"[llm]\nLLM_BASE_URL = {base_url}\nLLM_MODEL = m\n\n[proxy]\nURL = {proxy}\n", encoding="utf-8")
+    clients: list[dict] = []
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            assert kwargs["http_client"] is clients[-1]
+            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=lambda **_: iter([_chunk(content="{}")])))
+
+    with mock.patch.dict(sys.modules, {"openai": _openai_module(FakeOpenAI, clients)}):
+        assert llm.chat_json("s", "u") == "{}"
+    assert clients[-1]["proxy"] == (proxy if via_proxy else None)
+    assert clients[-1]["trust_env"] is False
+
+
+def test_llm_connects_directly_without_a_proxy_section(conf: Path) -> None:
+    conf.write_text("[llm]\nLLM_BASE_URL = https://api.example.com/v1\nLLM_MODEL = m\n", encoding="utf-8")
+    assert llm.proxy_for("https://api.example.com/v1") is None

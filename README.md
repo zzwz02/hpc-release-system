@@ -239,7 +239,7 @@ README 负责产品、使用入口和运行方式；技能负责开发约束，`
 
 ## 钉钉通知
 
-在 `release_system.conf` 的 `[dingtalk]` 填写 `ACCESS_TOKEN`、加签 `SECRET` 和要 @ 的 `USERID`（多个 ID 用逗号分隔）。`ACCESS_TOKEN` 留空关闭通知；配置现读，填好后无需重启。机器人须启用加签安全设置。`[proxy]` 的 `URL` 配置公共 HTTP/HTTPS 代理（例如 `http://proxy.sha-dc01.metax-tech.com:1080`），服务按需接入，目前钉钉使用，其他服务不自动切换；修改后下次发送生效；留空或省略则直连，不读取环境代理变量。
+在 `release_system.conf` 的 `[dingtalk]` 填写 `ACCESS_TOKEN`、加签 `SECRET` 和要 @ 的 `USERID`（多个 ID 用逗号分隔）。`ACCESS_TOKEN` 留空关闭通知；配置现读，填好后无需重启。机器人须启用加签安全设置。`[proxy]` 的 `URL` 配置公共 HTTP/HTTPS 代理（例如 `http://proxy.sha-dc01.metax-tech.com:1080`），服务按需接入，目前钉钉和大模型（`[llm]`）使用，其他服务不自动切换；`LLM_BASE_URL` 是 `metax-tech.com`、`metax-internal.com` 或其子域名时大模型直连，不走代理；修改后下次发送或调用生效；留空或省略则直连，不读取环境代理变量。
 
 - JIRA agent 每分钟检查完成、失败或意外中断的轮次，用工单号、本轮发起人的姓名和网页结论/操作标记发送一句话；姓名读取网站用户资料，缺失时回退显示该轮发起人的域账号。失败和意外中断附上简短原因（如 cybersecurity、model capacity、codex disconnected），未分类错误提示查看对话详情；交付不完整时明确提示，不报成功。主动取消不通知。首次启用只接收启用后结束的轮次，之后停机期间漏发的轮次会补发，每轮通知一次。
 - Jenkins 在北京时间每天 10:00–20:00 的整点（包含 10:00 和 20:00，其他时段不查询、不告警）查询一次网页同源的 `/api/v1/failures/summary`，按责任组聚合，北京时间开始/结束日期均为当天，不附加用户筛选。所有 Code Owner 总错误数 **>20**、DevOps（SPD）总错误数 **>30** 时发送一条包含两项数量的通知；当天发送成功后不再发送，次日重新计算。首次启动不立即补查，等待下一个整点；允许时段内整点启动则立即查询。

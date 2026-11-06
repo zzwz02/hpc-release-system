@@ -10,6 +10,9 @@ Reads the [llm] section of release_system.conf at call time:
   LLM_BASE_URL  OpenAI-compatible endpoint, e.g. http://10.x.x.x:8000/v1
   LLM_MODEL     model name passed in the payload
   LLM_API_KEY   bearer token (optional; sent only if set)
+
+Calls go through the shared [proxy] URL, except to the company's own domains
+(DIRECT_DOMAINS and their subdomains), which are reached directly.
 """
 from __future__ import annotations
 
@@ -20,6 +23,7 @@ import threading
 import time
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 from app import runtime_config
 
@@ -28,6 +32,8 @@ SECTION = "llm"
 # say what to rename.
 OLD_SECTION = "qa_llm"
 LLM_CONFIG_KEYS = ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
+# Endpoints on these domains (or their subdomains) bypass the [proxy] URL.
+DIRECT_DOMAINS = ("metax-tech.com", "metax-internal.com")
 # Rough characters per token for mixed Chinese / English / table text; the
 # server's own count replaces the estimate once a call reports usage.
 SENT_CHARS_PER_TOKEN = 3
@@ -125,6 +131,14 @@ def require_config() -> dict[str, str]:
     raise LLMConfigError("未配置 LLM：请在 release_system.conf 的 [llm] 中填写 LLM_BASE_URL 和 LLM_MODEL")
 
 
+def proxy_for(base_url: str) -> str | None:
+    """The proxy to reach *base_url* through: none for DIRECT_DOMAINS, else [proxy] URL."""
+    host = (urlsplit(base_url).hostname or "").rstrip(".").lower()
+    if any(host == domain or host.endswith("." + domain) for domain in DIRECT_DOMAINS):
+        return None
+    return runtime_config.proxy_url()
+
+
 def _stream_delta_text(chunk, field: str) -> str:
     try:
         choice = chunk.choices[0]
@@ -169,12 +183,16 @@ def chat_json(
     base = settings["LLM_BASE_URL"].rstrip("/")
     model = settings["LLM_MODEL"]
     key = settings["LLM_API_KEY"]
+    proxy = proxy_for(base)
     try:
-        from openai import OpenAI
+        import httpx
+        from openai import DefaultHttpxClient, OpenAI
     except ImportError as exc:
         raise LLMConfigError("服务器未安装 OpenAI Python SDK：请运行 python -m pip install openai") from exc
 
-    client = OpenAI(base_url=base, api_key=key or "not-needed", timeout=timeout)
+    # Route explicitly like DingTalk: the [proxy] URL or direct, never environment proxies.
+    http_client = DefaultHttpxClient(proxy=proxy, trust_env=False, timeout=httpx.Timeout(timeout))
+    client = OpenAI(base_url=base, api_key=key or "not-needed", timeout=timeout, http_client=http_client)
     releases: list[Callable[[], None]] = []
     if cancel is not None:
         releases.append(cancel.on_cancel(lambda: client.close()))
