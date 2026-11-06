@@ -226,7 +226,7 @@ class TestCicdFirstHttpLifecycle:
             )
 
         assert state["release"]["snapshots"][app_id]["doc_target"] == "ai4sci"
-        assert state["release"]["snapshots"][app_id]["app_type"] == "科学计算"
+        assert state["release"]["snapshots"][app_id]["type"] == "科学计算"
         assert state["release"]["snapshots"][app_id]["release_decision"] == "release"
         assert _payload(created["request"])["release_decision"] == "release"
         assert app["cicd_onboarding_status"] == "pending_create"
