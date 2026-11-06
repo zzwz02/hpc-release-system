@@ -309,9 +309,12 @@ def _seed_parity_db(db_path: Path) -> dict:
     # 2. Seed default users (idempotent — connect already calls ensure_default_user)
     core.ensure_default_user(conn)
 
-    # 3. Import initial CSV → creates first release and three apps
+    # 3. Import initial CSV → creates first release and three apps.  Use the
+    # app's importer (not legacy core) so snapshots have the site's shape.
+    from app.services import release_service
+
     rows = list(core.parse_csv_text(_PARITY_SEED_CSV))
-    release_id = core.import_initial_rows(
+    release_id = release_service.import_initial_rows(
         conn,
         rows,
         release_name="Golden-Release-1",
@@ -456,6 +459,14 @@ def fastapi_base_url():
     from app.main import create_app
     fastapi_app = create_app()
 
+    # The parity server lives for the whole session in its own thread and event
+    # loop.  Keep it off the process-wide background runners, or their tasks
+    # would belong to this loop and break every later app's lifespan.
+    runner_flags = ("jira_agent_runner_enabled", "jira_learning_runner_enabled", "jira_testing_runner_enabled")
+    original_flags = {name: getattr(_cfg.settings, name) for name in runner_flags}
+    for name in runner_flags:
+        setattr(_cfg.settings, name, False)
+
     server_config = uvicorn.Config(
         fastapi_app,
         host="127.0.0.1",
@@ -470,14 +481,19 @@ def fastapi_base_url():
     # Wait until server is ready
     import time
     deadline = time.monotonic() + 15.0
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.3):
-                break
-        except OSError:
-            time.sleep(0.1)
-    else:
-        raise RuntimeError(f"FastAPI test server did not start on port {port}")
+    try:
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                    break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            raise RuntimeError(f"FastAPI test server did not start on port {port}")
+    finally:
+        # The lifespan has read the flags by the time the port accepts connections.
+        for name, value in original_flags.items():
+            setattr(_cfg.settings, name, value)
 
     yield f"http://127.0.0.1:{port}"
 

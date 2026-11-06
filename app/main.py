@@ -55,23 +55,27 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.jira_testing_warning = await run_in_threadpool(jira_testing_builtins.initialize)
 
     # JIRA agent queue runner (in-process; keep uvicorn at a single worker).
-    if settings.jira_agent_runner_enabled:
+    # Stop exactly the runners started here, even if the flags change meanwhile.
+    agent_runner = settings.jira_agent_runner_enabled
+    learning_runner = settings.jira_learning_runner_enabled
+    testing_runner = settings.jira_testing_runner_enabled
+    if agent_runner:
         await jira_agent_runner.start()
     await notification_poller.start()
-    if settings.jira_learning_runner_enabled:
+    if learning_runner:
         await jira_learning_runner.start()
-    if settings.jira_testing_runner_enabled:
+    if testing_runner:
         await jira_testing_runner.start()
     try:
         yield
     finally:
         await notification_poller.stop()
         await jira_agent_ssh_key.sessions.stop()
-        if settings.jira_testing_runner_enabled:
+        if testing_runner:
             await jira_testing_runner.stop()
-        if settings.jira_learning_runner_enabled:
+        if learning_runner:
             await jira_learning_runner.stop()
-        if settings.jira_agent_runner_enabled:
+        if agent_runner:
             await jira_agent_runner.stop()
 
 
