@@ -39,7 +39,7 @@ JIRA agent 是按组配置的“数字员工”。网站（服务器 A）负责�
    - JIRA 评论中的对话链接会自动打开对应工单和对话。
 
    左侧列表按网站角色区分：
-   - **Owner · 查找**：留空时显示当前指派给本人且状态不是 Resolved/Closed 的工单（`assignee = <本人> AND status not in (Resolved, Closed) ORDER BY summary DESC, created DESC`）；与 RM 一样可按一个 JIRA 编号或任意 JQL 查询服务令牌有权访问的工单，并打开工单查看。
+   - **Owner · 查找**：留空时显示当前指派给本人且状态不是 Resolved/Closed 的工单（`assignee = <本人> AND status not in (Resolved, Closed) ORDER BY updated DESC`）；与 RM 一样可按一个 JIRA 编号或任意 JQL 查询服务令牌有权访问的工单，并打开工单查看。
    - **Owner · agent 处理过**：显示本人曾负责或创建的交单会话，以及本人作为 reporter 的已交单工单，包括已关闭的。仅作为 reporter 时可查看处理记录，不能因此获得交单或续办权限。
    - **RM · 查找**：留空时显示 QA 提交、当前或曾经分配给本组成员、尚未 Resolved/Closed 的 Bug，按创建时间倒序（QA 用户组可通过 `[jira] JIRA_AGENT_OWNER_QA_REPORTER_GROUP` 覆盖，默认 `dl.sw_qa`）。HPC 默认 JQL 为 `type = Bug AND reporter in membersOf("dl.sw_qa") AND (assignee in membersOf("pde_hpc") OR assignee was in membersOf("pde_hpc")) AND status not in (Resolved, Closed) ORDER BY created DESC`；可按一个 JIRA 编号或任意 JQL 查询服务令牌有权访问的工单。一次只能填一个编号；查询多张请用 JQL。
    - **RM · agent 处理过**：显示全部交给过 agent 的工单（含已关闭的），可按编号、标题、状态或人员在列表中过滤。

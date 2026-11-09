@@ -746,7 +746,7 @@ def test_issue_search_default_list_keys_and_jql(env) -> None:
     mine = env.client.get("/api/jira-agent/issues").json()
     assert mine["mode"] == "mine"
     assert mine["jql"] == domain.owner_issue_jql("alice") == (
-        'assignee = "alice" AND status not in (Resolved, Closed) ORDER BY summary DESC, created DESC'
+        'assignee = "alice" AND status not in (Resolved, Closed) ORDER BY updated DESC'
     )
     assert mine["issues"][0]["can_handover"] is True
     assert env.jira.validate_flags[-1] is True

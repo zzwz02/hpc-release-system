@@ -296,7 +296,7 @@ def owner_issue_jql(username: str) -> str:
     """Owner's default list: every unresolved issue currently assigned to them."""
     return (
         f'assignee = {jql_string(username)} AND status not in (Resolved, Closed) '
-        'ORDER BY summary DESC, created DESC'
+        'ORDER BY updated DESC'
     )
 
 
