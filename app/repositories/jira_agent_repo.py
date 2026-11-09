@@ -162,13 +162,6 @@ def handled_issues(conn: sqlite3.Connection) -> tuple[int, list[dict]]:
     return int(total), rows
 
 
-def has_handled_issue(conn: sqlite3.Connection, issue_key: str) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM jira_agent_conversations WHERE source_kind = 'jira' AND issue_key = ? LIMIT 1",
-        (issue_key,),
-    ).fetchone() is not None
-
-
 def has_owner_history(conn: sqlite3.Connection, issue_key: str, username: str) -> bool:
     return conn.execute(
         """SELECT 1 FROM jira_agent_conversations

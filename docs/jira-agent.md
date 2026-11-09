@@ -39,12 +39,12 @@ JIRA agent 是按组配置的“数字员工”。网站（服务器 A）负责�
    - JIRA 评论中的对话链接会自动打开对应工单和对话。
 
    左侧列表按网站角色区分：
-   - **Owner · 我的工单**：只显示 QA 用户组 `dl.sw_qa` 报单、当前指派给本人且状态不是 Resolved/Closed 的 Bug，按标题和创建时间倒序；Owner 没有编号或 JQL 搜索框。QA 用户组可通过 `[jira] JIRA_AGENT_OWNER_QA_REPORTER_GROUP` 覆盖。
+   - **Owner · 查找**：留空时显示当前指派给本人且状态不是 Resolved/Closed 的工单（`assignee = <本人> AND status not in (Resolved, Closed) ORDER BY summary DESC, created DESC`）；与 RM 一样可按一个 JIRA 编号或任意 JQL 查询服务令牌有权访问的工单，并打开工单查看。
    - **Owner · agent 处理过**：显示本人曾负责或创建的交单会话，以及本人作为 reporter 的已交单工单，包括已关闭的。仅作为 reporter 时可查看处理记录，不能因此获得交单或续办权限。
-   - **RM · 查找**：留空时显示 QA 提交、当前或曾经分配给本组成员、尚未 Resolved/Closed 的 Bug，按创建时间倒序。HPC 默认 JQL 为 `type = Bug AND reporter in membersOf("dl.sw_qa") AND (assignee in membersOf("pde_hpc") OR assignee was in membersOf("pde_hpc")) AND status not in (Resolved, Closed) ORDER BY created DESC`；可按一个 JIRA 编号或任意 JQL 查询服务令牌有权访问的工单。一次只能填一个编号；查询多张请用 JQL。
+   - **RM · 查找**：留空时显示 QA 提交、当前或曾经分配给本组成员、尚未 Resolved/Closed 的 Bug，按创建时间倒序（QA 用户组可通过 `[jira] JIRA_AGENT_OWNER_QA_REPORTER_GROUP` 覆盖，默认 `dl.sw_qa`）。HPC 默认 JQL 为 `type = Bug AND reporter in membersOf("dl.sw_qa") AND (assignee in membersOf("pde_hpc") OR assignee was in membersOf("pde_hpc")) AND status not in (Resolved, Closed) ORDER BY created DESC`；可按一个 JIRA 编号或任意 JQL 查询服务令牌有权访问的工单。一次只能填一个编号；查询多张请用 JQL。
    - **RM · agent 处理过**：显示全部交给过 agent 的工单（含已关闭的），可按编号、标题、状态或人员在列表中过滤。
 
-   后端对 Owner 的列表、工单直达链接和交单接口执行同一范围检查；交单及续办仍要求当前 JIRA assignee 或 RM。JIRA 令牌无权读取的工单不会显示。
+   Owner 和 RM 都能打开任意工单查看；交单及续办仍要求当前 JIRA assignee 或 RM，历史对话仍只对对话 owner、交单人、该工单 reporter（Owner）和 RM 可见。JIRA 令牌无权读取的工单不会显示。
 
    RM 可切换到 **知识学习**，从 agent 处理过的工单中勾选一张或多张，也可添加历史 Jira。多选创建一个联合学习任务，综合各张工单生成提案，由 RM 审核后人工更新 skill。
 2. 网站按排队顺序执行：同步 issue.json、issue.md、JIRA 附件和上传文件到 B 的工作目录，新建 Codex thread，按 AGENTS.md 与 skills 完成分类、归属判断、复现、分析和修复。

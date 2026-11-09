@@ -721,9 +721,11 @@ def test_handover_renders_comment_without_publishing_until_reviewed_send(env) ->
 
 
 def test_only_current_assignee_or_rm_can_hand_over(env) -> None:
-    env.as_user("bob")
+    env.as_user("bob")  # any Owner can open the issue, only the assignee can hand it over
     response = env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-1"})
-    assert response.status_code == 404
+    assert response.status_code == 403
+    preview = env.client.get("/api/jira-agent/issues/MC3-1")
+    assert preview.status_code == 200 and preview.json()["can_handover"] is False
 
     env.as_user("carol")  # RM acts on behalf; owner stays the assignee
     conversation = _handover(env, "MC3-1")["conversation"]
@@ -743,12 +745,17 @@ def test_only_current_assignee_or_rm_can_hand_over(env) -> None:
 def test_issue_search_default_list_keys_and_jql(env) -> None:
     mine = env.client.get("/api/jira-agent/issues").json()
     assert mine["mode"] == "mine"
-    assert mine["jql"] == domain.owner_issue_jql("alice")
+    assert mine["jql"] == domain.owner_issue_jql("alice") == (
+        'assignee = "alice" AND status not in (Resolved, Closed) ORDER BY summary DESC, created DESC'
+    )
     assert mine["issues"][0]["can_handover"] is True
     assert env.jira.validate_flags[-1] is True
 
-    for query in ("MC3-1", "project = MC3", "MC3-1, MC3-2"):
-        assert env.client.get("/api/jira-agent/issues", params={"q": query}).status_code == 403
+    owner_key = env.client.get("/api/jira-agent/issues", params={"q": "MC3-1"}).json()
+    assert (owner_key["mode"], owner_key["issues"][0]["key"]) == ("key", "MC3-1")
+    owner_jql = env.client.get("/api/jira-agent/issues", params={"q": "project = MC3"}).json()
+    assert owner_jql["mode"] == "jql" and env.jira.searches[-1] == "project = MC3"
+    assert env.client.get("/api/jira-agent/issues", params={"q": "MC3-1, MC3-2"}).status_code == 400
 
     env.as_user("carol")
     rm = env.client.get("/api/jira-agent/issues").json()
@@ -779,11 +786,10 @@ def test_issue_search_default_list_keys_and_jql(env) -> None:
 
 def test_owner_default_scope_and_handled_history(env) -> None:
     env.jira.issue_overrides["MC3-10"] = {"reporter": {"name": "outsider"}, "assignee": {"name": "alice"}}
-    assert env.client.get("/api/jira-agent/issues/MC3-10").status_code == 404
-    assert env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-10"}).status_code == 404
+    assert env.client.get("/api/jira-agent/issues/MC3-10").json()["can_handover"] is True
 
     env.jira.issue_overrides["MC3-11"] = {"reporter": {"name": "alice"}, "assignee": {"name": "bob"}}
-    assert env.client.get("/api/jira-agent/issues/MC3-11").status_code == 404
+    assert env.client.get("/api/jira-agent/issues/MC3-11").json()["can_handover"] is False
     env.as_user("carol")
     conversation = _handover(env, "MC3-11")["conversation"]
 
@@ -802,7 +808,7 @@ def test_owner_default_scope_and_handled_history(env) -> None:
     assert env.client.post(f"/api/jira-agent/conversations/{conversation['id']}/messages", json={"text": "test"}).status_code == 403
 
     env.as_user("bob")
-    assert env.client.get("/api/jira-agent/issues/MC3-10").status_code == 404
+    assert env.client.get("/api/jira-agent/issues/MC3-10").json()["can_handover"] is False
 
 
 def test_other_roles_cannot_access_jira_agent(env) -> None:
@@ -831,7 +837,7 @@ def test_rm_default_search_includes_former_hpc_qa_bugs(env, overrides, included)
     assert env.client.get("/api/jira-agent/issues").json()["issues"] == []
 
 
-def test_owner_jira_mapping_shares_visibility_without_search_or_rm_access(env):
+def test_owner_jira_mapping_shares_visibility_without_rm_access(env):
     original = env.conf.read_text()
     env.conf.write_text(original + '\n[jira_agent_users]\nbob = alice\ndave = alice\ncarol = alice\n')
     assert jira.agent_username(USERS['carol']) == 'carol'
@@ -847,11 +853,11 @@ def test_owner_jira_mapping_shares_visibility_without_search_or_rm_access(env):
     assert [item['key'] for item in handled['issues']] == ['MC3-1']
     detail = env.client.get(f"/api/jira-agent/conversations/{conversation['id']}")
     assert detail.status_code == 200 and detail.json()['conversation']['can_write']
-    assert env.client.get('/api/jira-agent/issues', params={'q':'MC3-1'}).status_code == 403
+    assert env.client.get('/api/jira-agent/issues', params={'q':'MC3-1'}).status_code == 200
     assert env.client.get('/api/jira-agent/testing/cases').status_code == 403
     env.jira.issue_overrides['MC3-2'] = {'assignee': {'name': 'someone_else'}}
-    assert env.client.get('/api/jira-agent/issues/MC3-2').status_code == 404
-    assert env.client.post('/api/jira-agent/conversations', json={'issue_key':'MC3-2'}).status_code == 404
+    assert env.client.get('/api/jira-agent/issues/MC3-2').json()['can_handover'] is False
+    assert env.client.post('/api/jira-agent/conversations', json={'issue_key':'MC3-2'}).status_code == 403
     env.as_user('dave')
     assert env.client.get('/api/jira-agent/issues').status_code == 403
     env.as_user('bob')
@@ -876,16 +882,17 @@ def test_mapped_owner_actions_keep_the_site_login_as_author(env):
     _wait(env, conversation['id'], _done)
 
 
-def test_owner_qa_scope_requires_reporter_group_bug_and_open_status(env) -> None:
-    for key, change in (
-        ("MC3-20", {"reporter": {"name": "outsider"}}),
-        ("MC3-21", {"issue_type": "Task"}),
-        ("MC3-22", {"status": "Resolved"}),
-        ("MC3-23", {"assignee": {"name": "bob"}}),
+def test_owner_can_open_any_issue_but_only_assignee_can_hand_over(env) -> None:
+    for key, change, can_handover in (
+        ("MC3-20", {"reporter": {"name": "outsider"}}, True),
+        ("MC3-21", {"issue_type": "Task"}, True),
+        ("MC3-22", {"status": "Resolved"}, True),
+        ("MC3-23", {"assignee": {"name": "bob"}}, False),
     ):
         env.jira.issue_overrides[key] = change
-        assert env.client.get(f"/api/jira-agent/issues/{key}").status_code == 404
-    assert env.client.get("/api/jira-agent/issues/MC3-24").status_code == 200
+        preview = env.client.get(f"/api/jira-agent/issues/{key}")
+        assert preview.status_code == 200 and preview.json()["can_handover"] is can_handover
+    assert env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-23"}).status_code == 403
 
 
 def test_handled_issue_repository_returns_more_than_200_issues(tmp_path: Path) -> None:

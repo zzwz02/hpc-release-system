@@ -292,17 +292,12 @@ def jql_string(value: str) -> str:
 OWNER_QA_REPORTER_GROUP = "dl.sw_qa"
 
 
-def owner_issue_jql(
-    username: str, *, issue_key: str = "", reporter_group: str = OWNER_QA_REPORTER_GROUP,
-) -> str:
-    scope = (
-        f'type = Bug AND reporter in membersOf({jql_string(reporter_group)}) '
-        f'AND assignee = {jql_string(username)} '
-        'AND status not in (Resolved, Closed)'
+def owner_issue_jql(username: str) -> str:
+    """Owner's default list: every unresolved issue currently assigned to them."""
+    return (
+        f'assignee = {jql_string(username)} AND status not in (Resolved, Closed) '
+        'ORDER BY summary DESC, created DESC'
     )
-    if issue_key:
-        return f'key = {issue_key} AND {scope}'
-    return f'{scope} ORDER BY summary DESC, created DESC'
 
 
 def default_issue_jql(

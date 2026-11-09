@@ -478,13 +478,13 @@ describe("JiraAgentPage", () => {
     expect(apiPost).not.toHaveBeenCalled();
   });
 
-  it("shows Owner a scoped handled list without search, while RM retains search", async () => {
+  it("lets Owner search with a scoped handled list, while RM also gets filter and learning", async () => {
     mockBackend({ open: false });
     const user = userEvent.setup();
     const { unmount } = renderPage();
     await screen.findByTestId("jira-agent-issue-results");
-    expect(screen.getByRole("button", { name: "我的工单" })).toBeInTheDocument();
-    expect(screen.queryByLabelText("JIRA 编号或 JQL")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "查找" })).toBeInTheDocument();
+    expect(screen.getByLabelText("JIRA 编号或 JQL")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "agent 处理过" }));
     expect(apiGet).toHaveBeenCalledWith("/api/jira-agent/issues?scope=handled");
     expect(screen.queryByLabelText("过滤 agent 处理过的工单")).not.toBeInTheDocument();

@@ -59,7 +59,7 @@ async def prepare(user, body):
     with _db() as conn:
         if kind == "jira":
             issue = await service.fetch_issue(context.get("issue_key", ""))
-            if not await service._owner_can_view_issue(user, issue, conn):
+            if not service.can_view_issue(user):
                 raise ApiError(404, "JIRA 工单不存在或无权访问")
             service.check_actor(user, issue)
             owner = service.assignee_name(issue)

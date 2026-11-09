@@ -146,25 +146,9 @@ def _get_visible(conn: sqlite3.Connection, user: dict, conversation_id: str) -> 
     raise ApiError(404, "对话不存在或无权访问")
 
 
-async def _owner_can_view_issue(user: dict, issue: dict, conn: sqlite3.Connection) -> bool:
-    if _is_rm(user):
-        return True
-    if user.get("role") != "Owner":
-        return False
-    username = jira.agent_username(user)
-    key = issue["key"]
-    if any(repo.has_owner_history(conn, key, name) for name in {username, user['username']}):
-        return True
-    reporter = (issue.get("reporter") or {}).get("name", "")
-    if _same_user(username, reporter) and repo.has_handled_issue(conn, key):
-        return True
-    if (issue.get("issue_type") != "Bug" or not _same_user(username, assignee_name(issue))
-            or issue.get("status") in ("Resolved", "Closed")):
-        return False
-    found = await _jql_search(domain.owner_issue_jql(
-        username, issue_key=key, reporter_group=jira.owner_qa_reporter_group(),
-    ), max_results=1)
-    return any(row["key"] == key for row in found["issues"])
+def can_view_issue(user: dict) -> bool:
+    """RM and Owner may read any JIRA issue; acting on it is still gated by check_actor."""
+    return user.get("role") in ("RM", "Owner")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -410,7 +394,7 @@ async def preview_issue(user: dict, issue_key: str) -> dict:
     issue = await fetch_issue(issue_key)
     conn = open_db()
     try:
-        if not await _owner_can_view_issue(user, issue, conn):
+        if not can_view_issue(user):
             raise ApiError(404, "JIRA 工单不存在或无权访问")
         reporter = (issue.get("reporter") or {}).get("name", "")
         open_conversation = repo.get_open_conversation(conn, issue["key"])
@@ -492,12 +476,13 @@ def _search_item(conn: sqlite3.Connection, user: dict, issue: dict, conversation
 async def search_issues(user: dict, query: str) -> dict:
     """Search box: empty → default list, one issue key → that issue, else JQL.
 
-    The default list is the user's open QA bugs; RM also sees QA bugs
-    previously assigned to the configured JIRA member groups.  Searches run with the JIRA account in
+    The default list is the Owner's unresolved assigned issues; RM sees QA bugs
+    currently or previously assigned to the configured JIRA member groups.  RM and
+    Owner may search any key or JQL.  Searches run with the JIRA account in
     release_system.conf [jira]; hand-over is still limited to the assignee or RM.
     """
-    if not _is_rm(user) and query.strip():
-        raise AuthzError("只有 RM 可以搜索 JIRA 工单")
+    if not can_view_issue(user) and query.strip():
+        raise AuthzError("只有 RM 或 Owner 可以搜索 JIRA 工单")
     mode, value = domain.parse_issue_query(query)
     missing: list[str] = []
     jql = ""
@@ -519,9 +504,7 @@ async def search_issues(user: dict, query: str) -> dict:
                 reporter_group=jira.owner_qa_reporter_group(),
             )
         else:
-            jql = domain.owner_issue_jql(
-                jira.agent_username(user), reporter_group=jira.owner_qa_reporter_group(),
-            )
+            jql = domain.owner_issue_jql(jira.agent_username(user))
         # Jira Server rejects membersOf() in WAS IN during validation, although
         # the search executes it correctly. Only our generated RM query skips it.
         validate = not (mode == "mine" and _is_rm(user) and "assignee was in membersOf(" in jql)
@@ -704,7 +687,7 @@ async def handover(user: dict, body: dict) -> dict:
     issue = await fetch_issue(body.get("issue_key", ""))
     conn = open_db()
     try:
-        if not await _owner_can_view_issue(user, issue, conn):
+        if not can_view_issue(user):
             raise ApiError(404, "JIRA 工单不存在或无权访问")
     finally:
         conn.close()

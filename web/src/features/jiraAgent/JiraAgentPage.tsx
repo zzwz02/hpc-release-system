@@ -361,7 +361,7 @@ function ConversationRedirect({
 type SelectIssue = (key: string, conversation?: string) => void;
 type IssueListView = "search" | "handled" | "learning";
 
-/** RM can search, inspect every handled issue, or select several for knowledge learning. */
+/** RM and Owner can search and inspect handled issues; RM can also select several for knowledge learning. */
 function IssueSearchPanel({
   selectedKey,
   view,
@@ -393,7 +393,7 @@ function IssueSearchPanel({
               aria-pressed={view === "search"}
               onClick={() => onViewChange("search")}
             >
-              {rm ? "查找" : "我的工单"}
+              查找
             </button>
             <button
               type="button"
@@ -421,13 +421,13 @@ function IssueSearchPanel({
           onSelect={onSelect}
         />
       ) : (
-        <IssueSearch selectedKey={selectedKey} onSelect={onSelect} rm={rm} />
+        <IssueSearch selectedKey={selectedKey} onSelect={onSelect} />
       )}
     </div>
   );
 }
 
-function IssueSearch({ selectedKey, onSelect, rm }: { selectedKey: string; onSelect: SelectIssue; rm: boolean }) {
+function IssueSearch({ selectedKey, onSelect }: { selectedKey: string; onSelect: SelectIssue }) {
   const [input, setInput] = useState("");
   const [query, setQuery] = useState("");
   const viewer = useViewerKey();
@@ -445,22 +445,20 @@ function IssueSearch({ selectedKey, onSelect, rm }: { selectedKey: string; onSel
   const result = searchQuery.data;
   return (
     <div className="panel-body jira-agent-search">
-      {rm && (
-        <div className="row">
-          <input
-            aria-label="JIRA 编号或 JQL"
-            placeholder="一个 JIRA 编号或 JQL，留空为默认列表"
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") search();
-            }}
-          />
-          <button type="button" className="btn sm" disabled={searchQuery.isFetching} onClick={search}>
-            查询
-          </button>
-        </div>
-      )}
+      <div className="row">
+        <input
+          aria-label="JIRA 编号或 JQL"
+          placeholder="一个 JIRA 编号或 JQL，留空为默认列表"
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") search();
+          }}
+        />
+        <button type="button" className="btn sm" disabled={searchQuery.isFetching} onClick={search}>
+          查询
+        </button>
+      </div>
       {searchQuery.isError && <p className="jira-agent-warning">{errorMessage(searchQuery.error)}</p>}
       {result && (
         <div className="jira-agent-query-hint muted">

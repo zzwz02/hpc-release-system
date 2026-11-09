@@ -42,7 +42,7 @@ TIMEOUT = 10
 # 必填：地址与 token
 JIRA_BASE_URL = http://jira.metax-tech.com
 JIRA_TOKEN = <personal-access-token>
-# JIRA agent Owner 默认列表中的 QA 报单人用户组；未配置时默认 dl.sw_qa
+# JIRA agent RM 默认列表中的 QA 报单人用户组；未配置时默认 dl.sw_qa
 # JIRA_AGENT_OWNER_QA_REPORTER_GROUP = dl.sw_qa
 # 可选：指派人（Jira 用户名 / domain_id）
 JIRA_ASSIGNEE = m00930
