@@ -62,6 +62,49 @@ test("built-ins carry standards, have no historical runs and can be exported", a
   await expect(page.getByLabel("通过标准", { exact: true })).not.toBeEmpty();
 });
 
+test("partial criteria show progress and re-evaluation preserves the experiment", async ({ page }) => {
+  test.setTimeout(60000);
+  await login(page);
+  const title = "分项部分满足验证";
+  const criteria = "复现并对照验证\n定位并量化影响\n交付独立程序和正确性验证";
+  const saved = await save(page, title, criteria);
+  expect((await page.request.post(`${base}/api/_testing/plan?evaluation_plan=partial`)).ok()).toBeTruthy();
+  await page.goto(`${base}/jira-agent?view=testing`);
+  await page.getByLabel(`选择 ${title}`, { exact: true }).check();
+  await launch(page);
+  await expect(page.locator(".test-run-review")).toHaveText(["部分符合 · AI"], { timeout: 20000 });
+  await openRun(page);
+  const evaluation = detail(page).locator(".test-evaluation");
+  await expect(evaluation.locator(":scope > summary")).toContainText("完全满足 0 项，部分满足 3 项");
+  await evaluation.locator(":scope > summary").click();
+  await expect(evaluation.getByRole("cell", { name: "部分满足", exact: true })).toHaveCount(3);
+  await expect(evaluation.getByRole("cell", { name: /已完成：.*缺项：.*影响：/ })).toHaveCount(3);
+  await evaluation.getByRole("button", { name: "查看依据 1", exact: true }).first().click();
+  const evidence = page.getByRole("dialog", { name: "引用材料", exact: true });
+  await expect(evidence.locator("pre")).toContainText("blocks = (n + 255) / 256;");
+  await evidence.getByRole("button", { name: "关闭", exact: true }).click();
+  const batches = await (await page.request.get(`${api}/cases/${saved.id}/batches`)).json();
+  const cid = batches.batches[0].runs[0].conversation_id;
+  const before = await (await page.request.get(`${base}/api/jira-agent/conversations/${cid}`)).json();
+  const historyUrl = `${api}/runs/${cid}/evaluations`;
+  const original = (await (await page.request.get(historyUrl)).json()).evaluations[0];
+  expect(original.result.criteria.map((item: { status: string }) => item.status)).toEqual(["partial", "partial", "partial"]);
+  expect(original.snapshot.criteria.map((item: { text: string }) => item.text).join("\n")).toBe(criteria);
+  expect((await page.request.post(`${base}/api/_testing/plan?evaluation_plan=partial`)).ok()).toBeTruthy();
+  const posting = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith(`/runs/${cid}/evaluate`));
+  await evaluation.getByRole("button", { name: "重新初评", exact: true }).click();
+  expect((await posting).ok()).toBeTruthy();
+  await expect.poll(async () => (await (await page.request.get(historyUrl)).json()).evaluations[0].status).toBe("completed");
+  const history = (await (await page.request.get(historyUrl)).json()).evaluations;
+  expect(history).toHaveLength(2);
+  expect(history[1]).toEqual(original);
+  expect(history[0].snapshot).toEqual(original.snapshot);
+  expect(history[0].result.decision).toBe("partial");
+  const after = await (await page.request.get(`${base}/api/jira-agent/conversations/${cid}`)).json();
+  expect(after.turns).toEqual(before.turns);
+  await expect(evaluation.locator(":scope > summary")).toContainText("完全满足 0 项，部分满足 3 项", { timeout: 15000 });
+});
+
 test("batch selection, AI verdict, optional review and foldable process share one surface", async ({ page }) => {
   test.setTimeout(60000);
   const errors: string[] = [];
@@ -91,6 +134,7 @@ test("batch selection, AI verdict, optional review and foldable process share on
   const reviewedTitle = await rows(page).first().locator('td').first().innerText();
   await openRun(page);
   await expect(detail(page).getByTestId("jira-agent-result")).toHaveCount(1);
+  await detail(page).getByTestId("jira-agent-result").locator(":scope > summary").click();
   await expect(detail(page).locator('.test-result-evidence')).not.toHaveAttribute('open');
   await detail(page).locator('.test-result-evidence > summary').click();
   await expect(detail(page).locator('.test-result-evidence')).toContainText('PASS exit=0');

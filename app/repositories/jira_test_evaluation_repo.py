@@ -58,6 +58,18 @@ def latest(conn, cid):
     return one(conn, 'SELECT * FROM jira_test_evaluations WHERE conversation_id=? ORDER BY rowid DESC LIMIT 1', (cid,))
 
 
+def previous_error(conn, row):
+    """Return feedback only for an unchanged assessment after its latest failure."""
+    previous = one(conn, '''SELECT status,error,snapshot_json,evidence_key FROM jira_test_evaluations
+        WHERE conversation_id=? AND rowid<(SELECT rowid FROM jira_test_evaluations WHERE id=?)
+        ORDER BY rowid DESC LIMIT 1''', (row['conversation_id'], row['id']))
+    if (previous and previous['status'] == 'failed' and row['evidence_key']
+            and previous['evidence_key'] == row['evidence_key']
+            and previous['snapshot_json'] == row['snapshot_json']):
+        return previous['error']
+    return ''
+
+
 def update(conn, eid, **values):
     allowed = {'status', 'material_json', 'material_hash', 'evidence_key', 'config_json', 'result_json',
                'error', 'thread_id', 'turn_id', 'phase', 'started_at', 'finished_at', 'retry_count', 'retry_at'}

@@ -74,6 +74,16 @@ class Evaluator(FakeCodex):
             for item in material['standards']['criteria']]}
         if plan == 'invalid':
             response['criteria'][0]['evidence_ids'] = ['invented']
+        if plan in ('invalid_partial', 'unmet'):
+            response['decision'] = 'partial' if plan == 'invalid_partial' else 'fail'
+            response['summary'] = '完成部分工作，但未满足完整验收标准。'
+            for item in response['criteria']:
+                item.update(status='unmet', reason='已读取的记录仍缺少要求的验证')
+        if plan == 'partial':
+            response['decision'] = 'partial'
+            response['summary'] = '各项均有证据支持的进展，仍需补充验证。'
+            for item in response['criteria']:
+                item.update(status='partial', reason='已完成：交付修改代码。缺项：完整运行对照。影响：验证完整性，尚不能确认全部要求。')
         self.turn_state[turn_id].update(status='completed', items=[{'type': 'agentMessage', 'id': 'answer', 'text': json.dumps(response)}])
 
 
@@ -275,6 +285,49 @@ def test_failed_grading_retries_without_running_experiment_and_resumes(grading_s
     assert completed['result']['decision'] == 'pass'
     assert env.fake.turns == 1 and peer.turns == 2
     assert len(env.client.get(BASE + f'/runs/{cid}/evaluations').json()['evaluations']) == 2
+    assert failed['error'] in peer.params('turn/start')[-1]['input'][0]['text']
+
+
+@pytest.mark.parametrize('changed_material', [False, True])
+def test_all_unmet_partial_is_rejected_and_retry_accepts_partial_progress(grading_setup, changed_material):
+    env, peer, _, body, case = grading_setup
+    body = copy.deepcopy(body)
+    body['criteria'] = '完整重复验证\n说明有效样本与结论范围\n如实列出待补测项'
+    updated = env.client.post(BASE + f'/cases/{case["id"]}/versions', json=body)
+    assert updated.status_code == 200
+    case = updated.json()
+    peer.plans = ['invalid_partial', 'partial', 'partial']
+    cid = start(env, case)['runs'][0]['conversation_id']
+    failed = wait_eval(env, cid, 'failed')
+    error = '部分符合应包含满足或部分满足项，并存在缺项'
+    assert failed['error'] == error and failed['result'] == {}
+    assert peer.turns == env.fake.turns == 1
+    original_turns = _wait(env, cid, _done)['turns']
+    if changed_material:
+        path = env.tmp / 'supplement.log'
+        path.write_text('Additional evidence after failed evaluation')
+        with jira_agent_runner.open_db() as conn, transaction(conn):
+            agent.add_file(conn, conversation_id=cid, turn_id=original_turns[-1]['id'], direction='output',
+                           source='artifact', name=path.name, size=path.stat().st_size,
+                           local_path=str(path), sha256='new-evidence')
+    assert env.client.post(BASE + f'/runs/{cid}/evaluate').status_code == 200
+    completed = wait_eval(env, cid)
+    prompt = peer.params('turn/start')[-1]['input'][0]['text']
+    assert (error in prompt) is not changed_material
+    assert completed['snapshot'] == failed['snapshot']
+    assert completed['result']['decision'] == 'partial'
+    assert len(completed['result']['criteria']) == 3
+    assert {item['status'] for item in completed['result']['criteria']} == {'partial'}
+    assert all(item['evidence_ids'] for item in completed['result']['criteria'])
+    assert env.fake.turns == 1 and peer.turns == 2
+    assert _wait(env, cid, _done)['turns'] == original_turns
+    assert env.client.get(BASE + f'/runs/{cid}/evaluations').json()['evaluations'][1] == failed
+    assert peer.params('turn/start')[-1]['outputSchema'] == grading.SCHEMA
+    # A new review after a valid verdict must not inherit an older failure.
+    assert env.client.post(BASE + f'/runs/{cid}/evaluate').status_code == 200
+    assert wait_eval(env, cid)['result']['decision'] == 'partial'
+    assert error not in peer.params('turn/start')[-1]['input'][0]['text']
+    assert env.fake.turns == 1 and peer.turns == 3
 
 
 def test_capacity_retry_keeps_model_standards_and_analysis(grading_setup, monkeypatch):
@@ -468,6 +521,37 @@ def test_invalid_ai_verdicts_are_not_saved(change):
         value['decision'] = 'unknown'
     with pytest.raises(ValueError):
         grading.validate(json.dumps(value), snapshot, material)
+
+
+@pytest.mark.parametrize('statuses,decision,accepted', [
+    (['partial', 'partial', 'partial'], 'partial', True),
+    (['met', 'partial'], 'partial', True),
+    (['met', 'unmet'], 'partial', True),
+    (['met', 'unknown'], 'partial', True),
+    (['partial', 'unmet'], 'partial', True),
+    (['partial', 'unmet'], 'fail', True),  # Evidence can still disprove the core conclusion.
+    (['partial', 'unknown'], 'unknown', True),
+    (['unmet', 'unknown'], 'unknown', False),
+    (['met', 'partial'], 'pass', False),
+    (['unmet', 'unmet'], 'partial', False),
+    (['unknown', 'unknown'], 'partial', False),
+    (['met', 'met'], 'partial', False),
+    (['met', 'met'], 'pass', True),
+    (['unmet', 'unmet'], 'fail', True),
+    (['unknown', 'unknown'], 'unknown', True),
+])
+def test_partial_progress_keeps_evidence_and_overall_decision_consistent(statuses, decision, accepted):
+    snapshot = {'criteria': [{'id': f'C{i}', 'text': '复现并提供完整验证'} for i in range(len(statuses))]}
+    material = {'sources': [{'id': 'log', 'text': '运行结果及验证记录'}],
+                'status': 'completed', 'delivery_status': 'complete'}
+    value = {'decision': decision, 'summary': '按证据说明进展、缺项和关键结论。', 'criteria': [
+        {'id': criterion['id'], 'status': status, 'reason': '已完成复现，完整验证待补充。', 'evidence_ids': ['log']}
+        for criterion, status in zip(snapshot['criteria'], statuses)]}
+    if accepted:
+        assert grading.validate(json.dumps(value), snapshot, material) == value
+    else:
+        with pytest.raises(ValueError):
+            grading.validate(json.dumps(value), snapshot, material)
 
 
 def test_restart_during_ambiguous_turn_start_does_not_grade_twice(grading_setup):

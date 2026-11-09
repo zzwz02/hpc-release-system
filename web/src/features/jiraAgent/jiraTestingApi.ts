@@ -94,7 +94,7 @@ export interface Evaluation {
   id: string; status: string; error: string; created_at: string; finished_at: string;
   evidence_key: string; material_hash: string;
   snapshot: { criteria: { id: string; text: string }[]; reference: string; sha256: string };
-  result: { decision?: ReviewDecision; summary?: string; criteria?: { id: string; status: "met" | "unmet" | "unknown"; reason: string; evidence_ids: string[] }[] };
+  result: { decision?: ReviewDecision; summary?: string; criteria?: { id: string; status: "met" | "partial" | "unmet" | "unknown"; reason: string; evidence_ids: string[] }[] };
   config: { model: string; effort: string; rule_sha256: string };
 }
 export interface TestSuite {

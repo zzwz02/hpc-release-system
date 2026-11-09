@@ -188,9 +188,17 @@ class TestingRunner:
                     write(eid, phase='recovering', error='正在核对上次初评请求，不重复启动')
                     return
                 if not remote:
+                    prompt = '阅读 material.json，通过 read_evaluation_material 按需读取结果和证据，按保存的标准逐项评价本次分析。只返回规定的 JSON。'
+                    with execution.open_db() as conn:
+                        previous_error = repo.previous_error(conn, row)
+                    if previous_error:
+                        prompt += ('\n同一标准与材料的上次初评失败信息（仅用于纠错，不是评价依据）：\n'
+                                   + dumps_json({'error': previous_error})
+                                   + '\n请依据本次实际读取的证据检查逐项状态、证据引用与总体评价的一致性。'
+                                   '不要为通过校验改变事实或降低标准；仍有缺口时如实评价。')
                     write(eid, phase='starting')
                     uncertain = True
-                    remote = await client.start_turn(row['thread_id'], '阅读 material.json，通过 read_evaluation_material 按需读取结果和证据，按保存的标准逐项评价本次分析。只返回规定的 JSON。',
+                    remote = await client.start_turn(row['thread_id'], prompt,
                                                      output_schema=grading.SCHEMA, model=config['model'], effort=config['effort'])
                 row['turn_id'] = remote['id']
                 write(eid, turn_id=remote['id'], phase='running', error='')

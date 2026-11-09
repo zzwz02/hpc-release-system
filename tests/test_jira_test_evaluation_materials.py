@@ -155,10 +155,11 @@ def test_inherited_unread_split_archive_keeps_part_references(tmp_path):
     assert read_all(store, listing['items'][0]['id']) == 'original evidence'
 
 
-@pytest.mark.parametrize('status', ['met', 'unmet'])
-def test_verdict_requires_read_evidence_for_positive_and_negative_claims(status):
-    verdict = {'decision': 'pass' if status == 'met' else 'fail', 'summary': 'claim', 'criteria': [
-        {'id': 'C1', 'status': status, 'reason': 'claim', 'evidence_ids': []}]}
+@pytest.mark.parametrize('status', ['met', 'partial', 'unmet'])
+@pytest.mark.parametrize('refs,sources', [([], []), (['log'], [{'id': 'log', 'text': ' \n'}])])
+def test_verdict_requires_read_evidence_for_positive_and_negative_claims(status, refs, sources):
+    verdict = {'decision': {'met': 'pass', 'partial': 'partial', 'unmet': 'fail'}[status], 'summary': 'claim', 'criteria': [
+        {'id': 'C1', 'status': status, 'reason': 'claim', 'evidence_ids': refs}]}
     with pytest.raises(ValueError, match='已读取'):
         grading.validate(json.dumps(verdict), {'criteria': [{'id': 'C1'}]},
-                         {'sources': [], 'status': 'completed', 'delivery_status': 'complete'})
+                         {'sources': sources, 'status': 'completed', 'delivery_status': 'complete'})

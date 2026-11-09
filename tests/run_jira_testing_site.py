@@ -112,10 +112,13 @@ def main():
     fake._result = result
 
     @app.post('/api/_testing/plan')
-    def prepare(plan: str = 'complete', read_delay: float = 0, missing_artifacts: bool = False, missing_inputs: bool = False):
+    def prepare(plan: str = 'complete', read_delay: float = 0, missing_artifacts: bool = False, missing_inputs: bool = False, evaluation_plan: str = 'complete'):
         # Local fixture only; production create_app() has no such route.
         assert plan in ('complete', 'hold', 'capacity_after_tool', 'stream_error', 'auth_error', 'invalid_result')
         assert 0 <= read_delay <= 5
+        assert evaluation_plan in ('complete', 'partial', 'invalid_partial')
+        if evaluator:
+            evaluator.plans = [evaluation_plan]
         faults['missing_artifacts'] = missing_artifacts
         faults['missing_inputs'] = missing_inputs
         fake.plans = [plan]

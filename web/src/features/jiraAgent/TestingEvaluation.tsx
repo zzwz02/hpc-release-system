@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { toast } from "../../lib/toast";
 import { currentResult, CURRENT_LABELS, getTestEvidence, getTestEvaluations, retryTestEvaluation, type TestRun } from "./jiraTestingApi";
 
+const CRITERION_LABELS = { met: "完全满足", partial: "部分满足", unmet: "未满足", unknown: "证据不足" };
+
 export function TestingEvaluation({ run, refresh }: { run: TestRun; refresh: () => void }) {
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState(false);
@@ -22,8 +24,10 @@ export function TestingEvaluation({ run, refresh }: { run: TestRun; refresh: () 
   const active = ["queued", "running"].includes(run.status) || run.delivery_status === "collecting";
   const canRetry = !active && ["failed", "completed"].includes(evaluation.status);
   const result = currentResult(run);
-  const checked = evaluation.result.criteria?.filter((item) => item.status === "met").length ?? 0;
-  const summary = evaluation.status === "completed" ? `${checked}/${evaluation.snapshot.criteria.length} 项满足`
+  const counts = Object.entries(CRITERION_LABELS).map(([status, label]) => ({ status, label,
+    count: evaluation.result.criteria?.filter((item) => item.status === status).length ?? 0 }));
+  const summary = evaluation.status === "completed" ? counts.filter((item) => item.status === "met" || item.count > 0)
+    .map((item) => `${item.label} ${item.count} 项`).join("，")
     : ({ awaiting: "等待分析结束", queued: "等待初评", running: "初评中", failed: "初评失败", skipped: "未初评" }[evaluation.status] ?? "");
   async function retry() {
     setBusy(true);
@@ -40,7 +44,7 @@ export function TestingEvaluation({ run, refresh }: { run: TestRun; refresh: () 
     {!!evaluation.snapshot.criteria.length && <div className="test-table-wrap"><table className="test-criteria-table"><thead><tr><th>标准</th><th>AI 核对</th><th>依据</th></tr></thead>
       <tbody>{evaluation.snapshot.criteria.map((criterion) => {
         const item = evaluation.result.criteria?.find((item) => item.id === criterion.id);
-        return <tr key={criterion.id}><td>{criterion.text}</td><td>{item ? { met: "满足", unmet: "未满足", unknown: "证据不足" }[item.status] : "待核对"}</td>
+        return <tr key={criterion.id}><td>{criterion.text}</td><td>{item ? CRITERION_LABELS[item.status] : "待核对"}</td>
           <td>{item?.reason}{item?.evidence_ids.map((id, index) => <button className="test-evidence-link" key={id} aria-haspopup="dialog" onClick={() => setSource(id)}>查看依据 {index + 1}</button>)}</td></tr>;
       })}</tbody></table></div>}
     <dialog ref={dialog} className="test-dialog test-evidence-dialog" aria-label="引用材料" onCancel={(event) => { event.preventDefault(); setSource(""); }}>

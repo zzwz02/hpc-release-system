@@ -34,9 +34,10 @@ def obj(fields):
 
 
 STR = {'type': 'string'}
+CRITERION_STATUSES = ('met', 'partial', 'unmet', 'unknown')
 SCHEMA = obj({'decision': {'type': 'string', 'enum': ['pass','partial','fail','unknown']}, 'summary': STR,
     'criteria': {'type': 'array', 'items': obj({'id': STR,
-        'status': {'type': 'string', 'enum': ['met','unmet','unknown']}, 'reason': STR,
+        'status': {'type': 'string', 'enum': list(CRITERION_STATUSES)}, 'reason': STR,
         'evidence_ids': {'type': 'array', 'items': STR}})}})
 
 
@@ -58,13 +59,13 @@ def validate(raw, snapshot, material):
         if not isinstance(item['id'], str) or item['id'] not in expected or item['id'] in seen:
             raise ValueError('初评标准重复或不在本次快照中')
         seen.add(item['id'])
-        if item['status'] not in ('met','unmet','unknown') or not isinstance(item['reason'], str) or not item['reason'].strip() or len(item['reason']) > 6000:
+        if item['status'] not in CRITERION_STATUSES or not isinstance(item['reason'], str) or not item['reason'].strip() or len(item['reason']) > 6000:
             raise ValueError('每项标准需要有效状态与依据')
         refs = item['evidence_ids']
         if not isinstance(refs, list) or any(not isinstance(ref, str) or ref not in sources for ref in refs):
             raise ValueError('初评引用了不存在的证据')
-        if item['status'] in ('met', 'unmet') and (not refs or not any(sources[ref].get('text', '').strip() for ref in refs)):
-            raise ValueError('判定满足或未满足标准必须引用已读取的证据')
+        if item['status'] in ('met', 'partial', 'unmet') and (not refs or not any(sources[ref].get('text', '').strip() for ref in refs)):
+            raise ValueError('判定满足、部分满足或未满足标准必须引用已读取的证据')
     statuses = {item['status'] for item in items}
     if value['decision'] == 'pass' and (statuses != {'met'} or material['delivery_status'] != 'complete' or material['status'] != 'completed'):
         raise ValueError('标准未全部满足或交付未完成，不能判定通过')
@@ -72,6 +73,6 @@ def validate(raw, snapshot, material):
         raise ValueError('所有标准均已满足时，总体评价不能与逐项结果冲突')
     if value['decision'] == 'unknown' and 'unmet' in statuses:
         raise ValueError('已有明确未满足项，不能整体判为无法判定')
-    if value['decision'] == 'partial' and ('met' not in statuses or statuses == {'met'}):
-        raise ValueError('部分符合应同时包含已完成项和缺项')
+    if value['decision'] == 'partial' and 'partial' not in statuses and ('met' not in statuses or statuses == {'met'}):
+        raise ValueError('部分符合应包含满足或部分满足项，并存在缺项')
     return value
