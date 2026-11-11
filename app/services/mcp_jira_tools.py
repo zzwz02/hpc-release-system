@@ -21,6 +21,7 @@ from urllib.parse import quote
 
 from app.api.errors import AuthzError
 from app.domain.jira_format import format_jira_comment
+from app.services.mcp_evidence import correlations
 from app.integrations import jira
 from app.services import jira_agent_service, mcp_service
 from app.services.mcp_tools import Tool, ToolContext, ToolError, ToolLog, ToolResult, register
@@ -165,7 +166,7 @@ def render_issue_markdown(issue: dict) -> str:
     if issue["attachments"]:
         jira_base = issue["url"].rsplit("/browse/", 1)[0]
         out += ["## 附件", "", "评论里引用附件时用每行末尾的链接写法（按附件 ID，不会指错同名附件）。", ""] + [
-            f"- {a['filename']}（{a['size']} bytes，{a['mime_type']}）：`{attachment_link(a['filename'], a['id'], jira_base)}`"
+            f"- ID={a['id']} {a['filename']}（{a['size']} bytes，{a['mime_type']}）：`{attachment_link(a['filename'], a['id'], jira_base)}`"
             for a in issue["attachments"]
         ]
     acquisition = issue.get("acquisition") or {}
@@ -216,7 +217,8 @@ def _pull(ctx: ToolContext, args: dict) -> ToolResult:
         ]
     elif issue["attachments"]:
         guide.append("附件未下载（include_attachments=false）。")
-    return ToolResult.text("\n".join(guide), markdown, log=ToolLog(
+    return ToolResult.text("\n".join(guide), markdown,
+                           json.dumps({"correlations": correlations(issue, issue["url"])}, ensure_ascii=False), log=ToolLog(
         target_type="jira_issue", target=key,
         summary=f"{len(issue['comments'])} 评论 / {len(issue['attachments'])} 附件",
         extra={"comments": len(issue["comments"]), "attachments": len(issue["attachments"]),
@@ -233,7 +235,9 @@ register(Tool(
         "Fetch one JIRA issue (fields, description, custom fields, all comments, attachment list) so it "
         "can be saved locally. The result says which files to write: issue.md with the returned Markdown, "
         "and curl commands that download each attachment into <target_dir>/attachments. "
-        "Default target_dir is jira/<ISSUE-KEY> under the current working directory."
+        "Default target_dir is jira/<ISSUE-KEY> under the current working directory. "
+        "Use jira_read_attachment with listed attachment ID to read text without curl. "
+        "Recorded correlation fields and explicit JIRA/Jenkins links are returned with provenance."
     ),
     input_schema={
         "type": "object",

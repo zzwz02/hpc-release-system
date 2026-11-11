@@ -133,7 +133,7 @@ def test_initialize_session_and_tool_list(site):
     tools = rpc(client, token, "tools/list", session=session).json()["result"]["tools"]
     assert {tool["name"] for tool in tools} == {"jira_search", "jira_pull_issue", "jira_add_comment",
                                                 "jira_upload_attachment", "skill_load",
-                                                "jenkins_search_failures", "jenkins_get_failure", "jenkins_get_build_errors"}
+                                                "jenkins_search_failures", "jenkins_get_failure", "jenkins_get_build_errors", "jenkins_list_jobs", "jenkins_list_builds", "jira_read_attachment"}
     assert rpc(client, token, "nope", session=session).json()["error"]["code"] == -32601
 
     [entry] = logs(client)
@@ -146,7 +146,7 @@ def test_pull_issue_returns_markdown_and_working_download_links(site):
     session, _ = connect_client(client, token, "codex-mcp-client")
     result = call(client, token, session, "jira_pull_issue", {"issue_key": "mc3-1"})
     assert result["isError"] is False
-    guide, markdown = (block["text"] for block in result["content"])
+    guide, markdown = (block["text"] for block in result["content"][:2])
     assert "jira/MC3-1/issue.md" in guide
     assert markdown.startswith("# MC3-1 GPU hang") and "log attached" in markdown and "Chip：C500" in markdown
     assert "[run/../x.log|https://jira.example/secure/attachment/77/run%2F..%2Fx.log]" in markdown
@@ -881,7 +881,9 @@ def test_jenkins_search_returns_reasons_and_pagination(site, jenkins_backend, ro
         "page": 2, "pending_rm_review": False,
     })
     assert not result["isError"]
-    assert json.loads(result["content"][0]["text"]) == payload
+    decoded = json.loads(result["content"][0]["text"])
+    assert "correlations" in decoded
+    assert {k: v for k, v in decoded.items() if k != "correlations"} == payload
     request = opener.open.call_args.args[0]
     assert request.method == "GET"
     assert urlsplit(request.full_url).path == "/api/v1/failures"
@@ -909,7 +911,9 @@ def test_jenkins_detail_preserves_diagnostics_and_trash_permissions(site, jenkin
     if not allowed:
         opener.open.assert_not_called()
         return
-    assert json.loads(result["content"][0]["text"]) == payload
+    decoded = json.loads(result["content"][0]["text"])
+    assert "correlations" in decoded
+    assert {k: v for k, v in decoded.items() if k != "correlations"} == payload
     request = opener.open.call_args.args[0]
     assert request.full_url == f"http://agent.invalid/api/v1/failures/101?record_state={state}"
     headers = {key.lower(): value for key, value in request.header_items()}
@@ -986,3 +990,41 @@ def test_comment_preview_and_published_body_share_formatting(site):
     assert '结束 {{END}} 标记' in preview
     assert 'alice' not in ask['params']['message'].casefold()
     assert format_jira_comment(expected) == expected
+
+
+def test_attachment_read_paginates_long_lines_and_checks_identity(site, monkeypatch):
+    from app.services.mcp_jira_attachments import MAX_PAGE_CHARS
+    client, _, token_for, _ = site
+    token = token_for('alice', 'Owner')
+    session, _ = connect_client(client, token)
+    original = '源' * (MAX_PAGE_CHARS+20) + '\nsecond\nthird\n'
+    downloads = []
+    def download(url, **kwargs):
+        downloads.append(kwargs)
+        return original.encode()
+    monkeypatch.setattr(jira, 'download_attachment', download)
+    args = {'issue_key': 'MC3-1', 'attachment_id': '77', 'max_lines': 2}
+    texts = []
+    for _ in range(5):
+        result = call(client, token, session, 'jira_read_attachment', args)
+        assert not result['isError']
+        page = json.loads(result['content'][0]['text'])
+        texts.append(page['content'])
+        if not page['has_more']:
+            break
+        args.update(start_line=page['next_start_line'], start_column=page['next_start_column'], expected_sha256=page['sha256'])
+    assert ''.join(texts) == original
+    assert all(x['max_bytes'] == 2*1024*1024 for x in downloads)
+    before = len(downloads)
+    assert call(client, token, session, 'jira_read_attachment', {'issue_key':'MC3-1','attachment_id':'999'})['isError']
+    assert len(downloads) == before
+    assert call(client, token, session, 'jira_read_attachment', {**args,'expected_sha256':'0'*64})['isError']
+
+
+@pytest.mark.parametrize('data', [b'\x00\x01binary', b'\xff\x00\xaa', b'x'*(2*1024*1024+1)])
+def test_attachment_rejects_binary_or_oversized_content(site, monkeypatch, data):
+    client, _, token_for, _ = site
+    token = token_for('alice','Owner')
+    session, _ = connect_client(client, token)
+    monkeypatch.setattr(jira, 'download_attachment', lambda *a, **kw: data)
+    assert call(client,token,session,'jira_read_attachment',{'issue_key':'MC3-1','attachment_id':'77'})['isError']

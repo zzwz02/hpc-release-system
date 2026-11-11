@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from app.domain.permissions import roles_for_tab
 from app.integrations import cicd_agent
+from app.services.mcp_evidence import correlations
 from app.services.mcp_tools import Tool, ToolContext, ToolError, ToolLog, ToolResult, register
 
 
@@ -84,6 +85,8 @@ def _query(ctx: ToolContext, args: dict, *, detail: bool) -> ToolResult:
         raise ToolError(f"查询 Jenkins 失败记录失败（HTTP {status}）：{error or '后端返回无效结果'}")
     ctx.log.summary = f"记录 {record_id}" if detail else f"匹配 {payload.get('total', '未知')} 条记录"
     ctx.log.extra = {"record_state": state, "page": values.get("page"), "total": payload.get("total")}
+    source = ctx.base_url + "/api/cicd-agent/failures" + (f"/{record_id}" if detail else "")
+    payload = {**payload, "correlations": correlations(payload, source)}
     return ToolResult.text(json.dumps(payload, ensure_ascii=False), log=ctx.log)
 
 
@@ -116,6 +119,7 @@ class BuildErrors(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     build_url: str = Field(description="Exact Jenkins build URL from a failure record, ending in a numeric build number.")
     source: Literal["tests", "console", "artifact"] = Field(default="tests", description="tests: build metadata and failed JUnit cases; console: raw console chunk; artifact: archived JSON test results.")
+    case_name: str | None = Field(default=None, min_length=1, max_length=200, description="Exact test case name; reads case results and bounded error context. Use start to continue log scan.")
     artifact_path: str | None = Field(default=None, description="Exact relativePath of a JSON artifact listed in build metadata; required for source=artifact.")
     start: int = Field(default=0, strict=True, ge=0, description="Console byte offset; use next_start from the preceding console result.")
     case_offset: int = Field(default=0, strict=True, ge=0, description="Failed-case pagination offset for tests source.")
@@ -129,7 +133,12 @@ def _build_errors(ctx: ToolContext, args: dict) -> ToolResult:
         client = JenkinsClient()
         url = client.build_url(query.build_url)
         ctx.log = ToolLog(target_type="jenkins_build", target=url)
-        if query.source == "console":
+        if query.case_name:
+            if query.source == "artifact":
+                raise ToolError("case_name 配合 source=tests 或 console 使用")
+            from app.services.mcp_jenkins_cases import case_evidence
+            result = case_evidence(client, url, query.case_name, query.start, console_only=query.source == "console")
+        elif query.source == "console":
             result = client.console(url, query.start)
         elif query.source == "artifact":
             path = query.artifact_path or ''
@@ -159,6 +168,10 @@ def _build_errors(ctx: ToolContext, args: dict) -> ToolResult:
                       'failed_cases': failed[query.case_offset:end], 'failed_case_total': len(failed),
                       'next_case_offset': end if end < len(failed) else None,
                       'hint': '未发布 JUnit 报告时可用 source=artifact 读取 build.artifacts 中的自定义 JSON 结果，或用 source=console 读取原始日志；报告缺失不等于没有失败，构建 SUCCESS 也不保证每个 case 通过。'}
+        result.setdefault("build_url", url)
+        evidence = result.get("report", result)
+        evidence_source = url+'artifact/'+quote(query.artifact_path, safe='/') if query.source == 'artifact' else url
+        result["correlations"] = correlations(evidence, evidence_source)
         ctx.log.summary = f"Jenkins {query.source}"
         return ToolResult.text(json.dumps(result, ensure_ascii=False), log=ctx.log)
     except (ValidationError, runtime_config.ConfigError, JenkinsError) as exc:
@@ -167,7 +180,9 @@ def _build_errors(ctx: ToolContext, args: dict) -> ToolResult:
 
 register(Tool(
     name="jenkins_get_build_errors", category="jenkins", title="获取 Jenkins 原始错误",
-    description=("Read live Jenkins build errors using the server's bot credential. Start with source=tests "
+    description=("Pass optional case_name to locate exact case results and bounded console context; "
+                 "follow console.next_start when console.has_more. Missing matches only cover the scanned range. "
+                 "Read live Jenkins build errors using the server's bot credential. Start with source=tests "
                  "to get failed JUnit case names, errorDetails/errorStackTrace, stdout/stderr and build metadata. "
                  "Use source=console for original build output when reports are missing or incomplete; follow "
                  "next_start while has_more is true. Failed test cases are paginated with next_case_offset. "

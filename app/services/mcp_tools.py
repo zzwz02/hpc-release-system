@@ -145,7 +145,7 @@ def register(tool: Tool) -> Tool:
 
 def load_tools() -> None:
     """Import every feature module so its tools register (idempotent)."""
-    from app.services import mcp_jenkins_tools, mcp_jira_tools, mcp_skill_tools  # noqa: F401
+    from app.services import mcp_jenkins_tools, mcp_jenkins_discovery, mcp_jira_tools, mcp_jira_attachments, mcp_skill_tools  # noqa: F401
 
 
 def tools_for(role: str) -> list[Tool]:
