@@ -27,6 +27,7 @@ from app.api.routers import (
     notifications,
     jira_learning,
     jira_testing,
+    mcp,
     qa,
     releases,
     state,
@@ -96,6 +97,7 @@ def create_app() -> FastAPI:
     app.include_router(notifications.router)
     app.include_router(jira_learning.router)
     app.include_router(jira_testing.router)
+    app.include_router(mcp.router)
     app.include_router(qa.router)
     app.include_router(releases.router)
     app.include_router(weekly_report.router)

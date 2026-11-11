@@ -3186,3 +3186,31 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .cicd-case-table th:nth-child(2) { width: 10%; }
 .cicd-case-table th:nth-child(3) { width: 12%; }
 .cicd-case-table .case-result-failed { color: #ad2929; font-weight: 600; }
+
+/* ============================ MCP (AI助手 → MCP) ============================ */
+.mcp-page { display: flex; flex-direction: column; gap: 0; }
+.mcp-setup { display: flex; flex-direction: column; gap: 12px; max-width: 1100px; }
+.mcp-code { position: relative; margin: 6px 0; }
+.mcp-code pre { margin: 0; padding: 10px 70px 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r); font-size: 12.5px; white-space: pre-wrap; word-break: break-all; }
+.mcp-code .btn { position: absolute; top: 6px; right: 6px; }
+.mcp-new-token { margin-top: 12px; padding: 10px 12px; background: var(--warn-bg); border: 1px solid var(--warn-bd); border-radius: var(--r); color: var(--warn-fg); }
+.mcp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; align-items: start; }
+.mcp-grid .table { border: 0; border-radius: 0; }
+.mcp-days { display: flex; flex-direction: column; gap: 3px; max-height: 360px; overflow: auto; }
+.mcp-day { display: grid; grid-template-columns: 48px minmax(0, 1fr) 110px; align-items: center; gap: 8px; font-size: 12px; }
+.mcp-day-label { color: var(--muted); font-variant-numeric: tabular-nums; }
+.mcp-day-bar { height: 10px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+.mcp-day-bar span { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+.mcp-day-num { font-variant-numeric: tabular-nums; }
+.mcp-err { color: var(--bad-fg); }
+.mcp-log-row { cursor: pointer; }
+.mcp-log-row:hover { background: var(--surface-2); }
+.mcp-log-detail pre { margin: 4px 0 8px; padding: 8px; background: var(--surface-2); border-radius: var(--r-sm); font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+.mcp-log-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
+.mcp-pager { align-items: center; padding: 8px 14px; }
+.mcp-page .link-btn { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; font: inherit; }
+.mcp-page .link-btn:hover { text-decoration: underline; }
+@media (max-width: 720px) { .mcp-grid { grid-template-columns: minmax(0, 1fr); } }
+.mcp-active-token { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mcp-active-prefix { font-size: 15px; font-weight: 700; padding: 3px 8px; background: var(--surface-2); border-radius: var(--r-sm); }
+.mcp-harnesses { margin: 4px 0 0; padding-left: 20px; } .mcp-harnesses li { margin: 3px 0; overflow-wrap: anywhere; }

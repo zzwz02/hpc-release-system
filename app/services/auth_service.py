@@ -119,6 +119,29 @@ def login_ldap(
 
     Mirrors core.py:ldap_login_or_create (server.py:663-703).
     """
+    ensure_ldap_user(conn, username, display_name, groups)
+    token = secrets.token_urlsafe(32)
+    with transaction(conn):
+        sessions_repo.create_session(
+            conn,
+            token=token,
+            username=username,
+            created_at=beijing_timestamp(),
+        )
+    return token
+
+
+def ensure_ldap_user(
+    conn: sqlite3.Connection,
+    username: str,
+    display_name: str,
+    groups: list[str],
+) -> None:
+    """Provision a first-time LDAP user (role from groups) or refresh display_name.
+
+    Shared by the website login and MCP token setup, which needs the user but
+    not a website session.
+    """
     with transaction(conn):
         existing = users_repo.get_user(conn, username)
         if not existing:
@@ -142,15 +165,6 @@ def login_ldap(
             )
         elif display_name and (existing.get("display_name") or "") != display_name:
             users_repo.update_display_name(conn, username, display_name=display_name)
-    token = secrets.token_urlsafe(32)
-    with transaction(conn):
-        sessions_repo.create_session(
-            conn,
-            token=token,
-            username=username,
-            created_at=beijing_timestamp(),
-        )
-    return token
 
 
 def logout(conn: sqlite3.Connection, token: str) -> None:

@@ -76,6 +76,9 @@ export function TabNav() {
     if (view === "weekly-report") {
       void queryClient.invalidateQueries({ queryKey: ["weekly-report"] });
     }
+    if (view === "mcp") {
+      void queryClient.invalidateQueries({ queryKey: ["mcp"] });
+    }
     if (view === "wiki") {
       void queryClient.invalidateQueries({ queryKey: ["wiki"] });
     }

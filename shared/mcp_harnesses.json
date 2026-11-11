@@ -1,0 +1,40 @@
+{
+  "note": "其他 harness 的 MCP 配置文档与「写操作前能否弹确认」的核实结果；AI助手 → MCP 页面与 /api/mcp/setup.sh 共用此列表。配置时使用同一个 MCP 地址与 Authorization: Bearer 请求头。confirm 取值：form=支持 MCP elicitation，会在发评论/上传附件前弹确认；none=不支持，写操作直接执行；unknown=文档未说明、未实测。checked 为核实日期。",
+  "harnesses": [
+    {
+      "name": "Claude Code",
+      "url": "https://docs.claude.com/en/docs/claude-code/mcp",
+      "confirm": "form",
+      "checked": "2026-11-11",
+      "evidence": "本机实测 2.1.322：发评论前弹出确认表单，Accept/Decline 均正确回传"
+    },
+    {
+      "name": "Codex",
+      "url": "https://developers.openai.com/codex/mcp/",
+      "confirm": "form",
+      "checked": "2026-11-11",
+      "evidence": "本机实测 0.166.0：先弹工具审批，再弹确认表单"
+    },
+    {
+      "name": "OpenCode",
+      "url": "https://opencode.ai/docs/mcp-servers",
+      "confirm": "form",
+      "checked": "2026-11-11",
+      "evidence": "官方文档 Input requests 一节说明支持 MCP elicitation（未实测）"
+    },
+    {
+      "name": "DeepSeek Harness",
+      "url": "https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.zh.md",
+      "confirm": "none",
+      "checked": "2026-11-11",
+      "evidence": "packages/mcp/mcp-client/src/connection.ts 中客户端声明 capabilities: {}，不支持 elicitation"
+    },
+    {
+      "name": "CodeBuddy / WorkBuddy",
+      "url": "https://www.codebuddy.ai/docs/zh/cli/mcp",
+      "confirm": "unknown",
+      "checked": "2026-11-11",
+      "evidence": "文档只说明项目级 MCP 服务器连接前需审批，未提及 elicitation；未实测"
+    }
+  ]
+}

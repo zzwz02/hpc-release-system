@@ -53,6 +53,12 @@ const JiraAgentPage = lazy(() =>
   })),
 );
 
+const McpPage = lazy(() =>
+  import("../features/mcp/McpPage").then((module) => ({
+    default: module.McpPage,
+  })),
+);
+
 const FEATURE_MAP: Record<string, React.ReactNode> = {
   dashboard: <DashboardPage />,
   init:      <ReleaseCyclePage />,
@@ -73,6 +79,11 @@ const FEATURE_MAP: Record<string, React.ReactNode> = {
     </Suspense>
   ),
   "weekly-report": <WeeklyReportPage />,
+  mcp: (
+    <Suspense fallback={<section className="view active p-2r muted">加载 MCP 中...</section>}>
+      <McpPage />
+    </Suspense>
+  ),
   wiki:      <WikiPage />,
   admin:     <AdminPage />,
 };

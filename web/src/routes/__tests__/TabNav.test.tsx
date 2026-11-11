@@ -116,7 +116,7 @@ describe("TabNav", () => {
 
   it("shows the sub-tabs under AI助手 and marks the open one", () => {
     renderTabNav("RM", "/jira-agent?conversation=jac_1");
-    expect(linkLabels(".tab-subnav a")).toEqual(["Jenkins失败查询", "CICD助手", "JIRA agent", "周报"]);
+    expect(linkLabels(".tab-subnav a")).toEqual(["Jenkins失败查询", "CICD助手", "JIRA agent", "周报", "MCP"]);
     expect(screen.getByRole("link", { name: "AI助手" })).toHaveClass("active");
     expect(screen.getByRole("link", { name: "JIRA agent" })).toHaveClass("active");
     expect(screen.getByRole("link", { name: "CICD助手" })).not.toHaveClass("active");
@@ -127,7 +127,7 @@ describe("TabNav", () => {
   });
 
   it.each(ALL_ROLES)("limits AI助手 sub-tabs to the routes %s may open", (role) => {
-    const allowed = (["jenkins-failures", "cicd-assistant-v2", "jira-agent", "weekly-report"] as const)
+    const allowed = (["jenkins-failures", "cicd-assistant-v2", "jira-agent", "weekly-report", "mcp"] as const)
       .map(routeForView)
       .filter((route) => route.roles.includes(role));
     renderTabNav(role, routeForView("weekly-report").path);

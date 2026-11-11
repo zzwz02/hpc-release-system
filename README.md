@@ -19,7 +19,7 @@
 
 App 工作台和 Jenkins 失败查询中，Owner 默认勾选“只看我的”，RM 默认查看全部。Jenkins 查询的 RM“只看我的”默认不勾选，链接中的明确筛选条件优先。
 
-其他页面：开发 WIKI，以及「AI助手」页签下的四个子页签 Jenkins 失败查询、CICD 助手（旧版 V1 只保留直达地址）、JIRA agent、周报，各有自己的地址与权限。完整导航见 [routeConfig.ts](web/src/routes/routeConfig.ts)。
+其他页面：开发 WIKI，以及「AI助手」页签下的五个子页签 Jenkins 失败查询、CICD 助手（旧版 V1 只保留直达地址）、JIRA agent、周报、MCP，各有自己的地址与权限。完整导航见 [routeConfig.ts](web/src/routes/routeConfig.ts)。
 
 ## 发布周期怎么运行
 
@@ -123,6 +123,22 @@ RM 每周上传 PDE HPC Project Plan 周报（.xlsx，每人一页，A 列日期
 - RM 和 Owner 能看各周结果；上传、分析和成员管理需要 `weekly-report.run` 能力（RM）。
 
 实现入口：[weekly_report.py](app/domain/weekly_report.py)（解析、日期规则、问题判定）、[weekly_report_prompts.py](app/domain/weekly_report_prompts.py)（两个 prompt）、[weekly_report_service.py](app/services/weekly_report_service.py)（一次检查、入库、导出）、[weekly_report_jobs.py](app/services/weekly_report_jobs.py)（内存中的上传与后台作业）、[WeeklyReportPage.tsx](web/src/features/weeklyReport/WeeklyReportPage.tsx)。没有单独的配置节：JIRA 用 `[jira]`，大模型用 `[llm]`；JIRA 更新窗口默认 192 小时，在上传周报后的分析窗口里可改。
+
+## MCP（AI助手 → MCP）
+
+网站在 `POST /mcp` 提供 MCP Streamable HTTP 服务（只返回 JSON，不开 SSE），供 Claude Code、Codex 等客户端连接。页面地址是 `/mcp-console`（不能用 `/mcp`，否则浏览器刷新会打到 MCP 接口；浏览器直接访问 `/mcp` 会被跳转到页面）。「接入配置」生成个人 token（只显示一次，库里只存 SHA-256），并给出 Claude Code / Codex 的接入命令；「使用统计」展示调用量、失败率、按工具/分类/用户/token/客户端/日期的统计及调用日志，可按 token 筛选（只显示 token 名称和前缀）。
+
+- 每人只有一个有效 token：生成新的会吊销旧的（鉴权也只认每人最新的一个）。网页「我的 token」只显示前几位，可重新生成或吊销。
+- 配置页面的地址使用浏览器当前访问的协议、域名和端口，不使用 `[site] PUBLIC_BASE_URL` 覆盖；例如通过 `http://127.0.0.1:3577` 访问时，命令也指向该地址。
+- 一键配置：`bash <(curl -fsSL <网站>/api/mcp/setup.sh)`，菜单为 一键配置本机 / 查询 token / 重新生成 / 仅输出配置方法 / 卸载本机配置（也可带参数 `configure|status|regenerate|print|uninstall`）。经 `POST /api/mcp/account`（action=status|regenerate）用域账号密码操作，与登录页同一认证，首次登录同样按 LDAP 组建用户，但不建网站会话；同一用户名 10 分钟内失败 5 次后锁定。脚本直接改 `~/.claude.json` 与 `~/.codex/config.toml`（先备份为 `*.bak-release-mcp`），不依赖 claude/codex 命令，只装 VS Code 扩展也可用；第二台机器复用本机配置里或粘贴的已有 token，选择重新生成则旧 token 在所有机器失效。
+- 按客户端配置已有 token：页面“手动配置”按 Claude Code、Codex、其他 harness 折叠展示。Claude/Codex 的命令使用 `MCP_CLIENTS=claude|codex bash <(curl -fsSL <网站>/api/mcp/setup.sh) use-token`，校验已有 token 后只更新指定客户端；未提供 `MCP_TOKEN` 时安全提示粘贴，不创建或重置 token。脚本仅完成一次性配置，客户端仍直接通过 HTTP 连接网站，无需安装本地转发服务。
+- 写操作的用户确认：服务端统一按 `read_only=False` 且 `destructive=True` 决定是否要求用户名确认，不依赖工具名或是否提供预览函数；只读或非 destructive 工具无需确认。客户端支持 MCP form elicitation 时，`tools/call` 以 SSE 发出 `elicitation/create`（300 秒超时）。`jira_add_comment` 要求用户手工输入域账号用户名，不预填，去除首尾空白并忽略大小写后与 token 所属账号完整匹配才发送；空值、类型错误、不匹配、拒绝、取消、超时均不发送，不支持 form elicitation 的客户端不能发评论。协议仍使用 `action=accept` 表示提交表单，但仅 accept 不足以发布。`jira_upload_attachment` 不请求 elicitation 确认，直接返回上传命令；签发票据和实际上传时仍核验权限。日志 `extra_json.confirm` 记录 `username_matched` / `username_mismatch` / `client_cannot_confirm` / `decline` / `cancel` / `timeout`。待确认请求在进程内，须单 worker；所有写操作要求有效、未结束且属于当前 token 的会话，批量调用被拒绝；确认回复绑定发起 token 和会话，提交前再次核验 token 与当前角色。
+- 其他 harness 的配置文档链接和「能否弹确认」的核实结果维护在 [mcp_harnesses.json](shared/mcp_harnesses.json)（`confirm` 为 form/none/unknown），页面「手动配置」和脚本的配置/输出结果共用这份列表，对不支持的标注「不推荐」。
+- 鉴权：`Authorization: Bearer rsmcp_...`。每次请求实时读取 token 对应用户的当前角色，须在 `shared/access_control.json` 的 `mcp` 页签内；吊销或角色变更在后续鉴权时生效，附件下载、上传及确认后的提交都会重新核验；上传还会重新检查当前 assignee 和风险锁。统计和日志 RM（`mcp.logs.view.all`）看全部，其他人只看自己。
+- 工具：`jira_search`、`jira_pull_issue`（返回 issue.md 内容和附件下载命令，由客户端写入本地，默认 `jira/<KEY>/`；附件链接 30 分钟内有效，票据存在进程内，所以网站须保持单 worker）、`jira_add_comment`（只限当前 assignee 或 RM，沿用 JIRA agent 的风险锁；以 `[jira]` 账号发出，正文末尾注明网站用户和客户端）、`jira_upload_attachment`（同样只限 assignee 或 RM；MCP 读不到本机文件，所以返回一次性的 `curl --data-binary @文件 PUT /api/mcp/uploads/<票据>` 命令，由客户端执行，上传时再核对一次权限，单文件 50 MB，成功一次即失效、失败可重试，记为 `upload` 日志）。
+- HPC 专家方法：`skill_load`（只读，所有可用 MCP 的角色都能调）把 skill 的方法正文下发给客户端，先给主方法，`page=build|diagnosis` 按需再取参考页；目前只暴露 `cu-bridge`，读的是网站随附的知识包副本 `deploy/jira-agent/hpc/`（打包副本，不是正式发布源 `jira_agent_skill` 仓库）。服务端 `instructions` 里提示先调用它，Claude Code 与 Codex ≥ 0.167.1 会自动加载（Codex 0.166 不读服务端 instructions）。只能下发方法文本，不含可执行脚本。
+- 扩展：在新模块里 `register(Tool(...))` 并在 `mcp_tools.load_tools()` 导入。工具声明 `category`、`read_only`、`destructive`、可选 `roles` 与 `log_args`（脱敏）；`confirm` 仅定制确认文案，不提供时使用工具名称和参数的通用预览，不会跳过 destructive 写操作的用户名确认。返回的 `ToolLog` 写入通用日志列 `target_type/target/extra_json`，无需改表即可进入统计页。
+- 代码：[mcp.py](app/api/routers/mcp.py)、[mcp_protocol.py](app/services/mcp_protocol.py)、[mcp_tools.py](app/services/mcp_tools.py)、[mcp_jira_tools.py](app/services/mcp_jira_tools.py)、[mcp_skill_tools.py](app/services/mcp_skill_tools.py)、[mcp_service.py](app/services/mcp_service.py)；表 `mcp_tokens`、`mcp_sessions`、`mcp_call_logs`（主库）。日志目前不自动清理。
 
 ## 数据与文档产物
 

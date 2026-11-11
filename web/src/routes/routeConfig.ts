@@ -49,6 +49,7 @@ export const ROUTES: RouteConfig[] = [
   { path: "/cicd-assistant-v2", view: "cicd-assistant-v2", label: "CICD助手",      roles: rolesForTab("cicd-assistant-v2"), group: "ai-assistant" },
   { path: "/jira-agent", view: "jira-agent", label: "JIRA agent", roles: rolesForTab("jira-agent"), group: "ai-assistant" },
   { path: "/weekly-report", view: "weekly-report", label: "周报", roles: rolesForTab("weekly-report"), group: "ai-assistant" },
+  { path: "/mcp-console", view: "mcp", label: "MCP", roles: rolesForTab("mcp"), group: "ai-assistant" },
   { path: "/wiki",      view: "wiki",      label: "开发 WIKI",  roles: rolesForTab("wiki") },
   { path: "/admin",     view: "admin",     label: "系统管理",   roles: rolesForTab("admin") },
 ];

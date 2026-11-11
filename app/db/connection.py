@@ -422,6 +422,65 @@ def init_db(conn: sqlite3.Connection) -> None:
             items_json TEXT NOT NULL,
             PRIMARY KEY (sheet, text_sha256)
         );
+
+        -- MCP server (AI助手 → MCP): personal access tokens, client sessions
+        -- and one log row per connection / tool call / attachment download.
+        CREATE TABLE IF NOT EXISTS mcp_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            token_hash TEXT NOT NULL UNIQUE,
+            token_prefix TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            last_used_at TEXT NOT NULL DEFAULT '',
+            revoked_at TEXT NOT NULL DEFAULT ''
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_mcp_tokens_user ON mcp_tokens(username);
+
+        CREATE TABLE IF NOT EXISTS mcp_sessions (
+            id TEXT PRIMARY KEY,
+            token_id INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            client_name TEXT NOT NULL DEFAULT '',
+            client_version TEXT NOT NULL DEFAULT '',
+            protocol_version TEXT NOT NULL DEFAULT '',
+            -- The client's declared capabilities (JSON); "elicitation" means the
+            -- client can show a server-requested confirmation to the user.
+            client_capabilities TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            ended_at TEXT NOT NULL DEFAULT ''
+        );
+
+        -- Generic on purpose so new tools need no schema change:
+        --   kind      connection | tool | download | <future kinds>
+        --   category  the tool's feature area (jira, ...), declared by the tool
+        --   target_type / target  the object acted on (jira_issue / MC3-1)
+        --   extra_json  tool-specific fields (counts, ids) that stats may group on later
+        CREATE TABLE IF NOT EXISTS mcp_call_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            username TEXT NOT NULL,
+            token_id INTEGER,
+            session_id TEXT NOT NULL DEFAULT '',
+            client_name TEXT NOT NULL DEFAULT '',
+            client_version TEXT NOT NULL DEFAULT '',
+            kind TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT '',
+            tool TEXT NOT NULL DEFAULT '',
+            target_type TEXT NOT NULL DEFAULT '',
+            target TEXT NOT NULL DEFAULT '',
+            args_json TEXT NOT NULL DEFAULT '',
+            extra_json TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL,
+            error TEXT NOT NULL DEFAULT '',
+            result_summary TEXT NOT NULL DEFAULT '',
+            duration_ms INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_mcp_call_logs_created ON mcp_call_logs(created_at);
+        CREATE INDEX IF NOT EXISTS idx_mcp_call_logs_user ON mcp_call_logs(username, created_at);
+        CREATE INDEX IF NOT EXISTS idx_mcp_call_logs_tool ON mcp_call_logs(category, tool, created_at);
         """
     )
 
@@ -462,6 +521,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         # ``storage_path`` stays in old and new DBs only so startup can import
         # pre-cutover files. Current runtime writes the file body to ``content``.
         ("qa_logs",            "content",            "BLOB"),
+        ("mcp_sessions",       "client_capabilities", "TEXT NOT NULL DEFAULT ''"),
     ]:
         try:
             conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} {_col_def}")
