@@ -70,6 +70,12 @@ LLM_API_KEY = <api-key>
 BASE_URL = http://10.2.118.76:8056
 TIMEOUT_SECONDS = 90
 REPRO_GATEWAY_TOKEN =
+# MCP 直接读取 Jenkins 构建、测试报告及控制台日志（用户名 + API Token）。
+# 以下四项一起填写；API Token 只放真实 release_system.conf，不提交。
+JENKINS_BASE_URL = https://jenkins-pde.sh.metax-internal.com/
+JENKINS_USERNAME = fu_pde-hpc_bot
+JENKINS_API_TOKEN =
+JENKINS_TIMEOUT_SECONDS = 30
 
 
 # ── 网站 ──────────────────────────────────────────────────────

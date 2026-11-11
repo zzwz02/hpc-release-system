@@ -132,7 +132,8 @@ def test_initialize_session_and_tool_list(site):
 
     tools = rpc(client, token, "tools/list", session=session).json()["result"]["tools"]
     assert {tool["name"] for tool in tools} == {"jira_search", "jira_pull_issue", "jira_add_comment",
-                                                "jira_upload_attachment", "skill_load"}
+                                                "jira_upload_attachment", "skill_load",
+                                                "jenkins_search_failures", "jenkins_get_failure", "jenkins_get_build_errors"}
     assert rpc(client, token, "nope", session=session).json()["error"]["code"] == -32601
 
     [entry] = logs(client)
@@ -839,3 +840,149 @@ def test_setup_endpoint_follows_request_origin_not_public_base(site, tmp_path, m
     script = client.get(origin + '/api/mcp/setup.sh').text
     assert f'BASE_URL="{origin}"' in script
     assert 'different.example' not in script
+
+
+@pytest.fixture()
+def jenkins_backend(monkeypatch):
+    from unittest.mock import Mock
+    from app.integrations import cicd_agent
+
+    monkeypatch.setattr(cicd_agent.runtime_config, "section", lambda _: {
+        "BASE_URL": "http://agent.invalid", "TIMEOUT_SECONDS": "5",
+        "REPRO_GATEWAY_TOKEN": "test-gateway-token",
+    })
+    response = Mock(status=200)
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    opener = Mock()
+    opener.open.return_value = response
+    monkeypatch.setattr(cicd_agent.urllib.request, "build_opener", lambda *_: opener)
+    return opener, response
+
+
+@pytest.mark.parametrize("role", ["Owner", "RM", "QA", "SPD"])
+def test_jenkins_search_returns_reasons_and_pagination(site, jenkins_backend, role):
+    from urllib.parse import parse_qs, urlsplit
+    client, _, token_for, _ = site
+    conn = connect(settings.db_path)
+    conn.execute("UPDATE users SET role=? WHERE username='alice'", (role,))
+    conn.commit()
+    conn.close()
+    token = token_for("alice", role)
+    session, _ = connect_client(client, token)
+    opener, response = jenkins_backend
+    payload = {"total": 41, "page": 2, "page_size": 20, "total_pages": 3, "records": [{
+        "id": 101, "reason_summary": "编译失败", "key_error_snippet": "undefined reference",
+        "action_suggestion": "检查链接库", "build_url": "https://jenkins.example/job/test/1/",
+    }]}
+    response.read.return_value = json.dumps(payload).encode()
+    result = call(client, token, session, "jenkins_search_failures", {
+        "keyword": "a+b & c", "date_from": "2026-11-01", "date_to": "2026-11-11",
+        "page": 2, "pending_rm_review": False,
+    })
+    assert not result["isError"]
+    assert json.loads(result["content"][0]["text"]) == payload
+    request = opener.open.call_args.args[0]
+    assert request.method == "GET"
+    assert urlsplit(request.full_url).path == "/api/v1/failures"
+    query = parse_qs(urlsplit(request.full_url).query)
+    assert query == {"keyword": ["a+b & c"], "date_from": ["2026-11-01"], "date_to": ["2026-11-11"],
+                     "page": ["2"], "page_size": ["20"], "pending_rm_review": ["false"],
+                     "record_state": ["active"], "sort_by": ["created_at"], "sort_order": ["desc"]}
+    entry = logs(client, tool="jenkins_search_failures")[0]
+    assert entry["category"] == "jenkins" and entry["status"] == "ok"
+
+
+@pytest.mark.parametrize("state,role,allowed", [("active", "Owner", True), ("trashed", "Owner", False),
+                                                ("trashed", "RM", True)])
+def test_jenkins_detail_preserves_diagnostics_and_trash_permissions(site, jenkins_backend, state, role, allowed):
+    client, _, token_for, _ = site
+    opener, response = jenkins_backend
+    payload = {"id": 101, "reason_summary": "compile failed", "key_error_snippet": "missing.h",
+               "action_suggestion": "install dependency", "responsibility_events": [{"actor": "owner"}],
+               "test_summary": {"total": 3}, "effective_owner_account": "alice"}
+    response.read.return_value = json.dumps(payload).encode()
+    token = token_for("rm" if role == "RM" else "alice", role)
+    session, _ = connect_client(client, token)
+    result = call(client, token, session, "jenkins_get_failure", {"record_id": 101, "record_state": state})
+    assert result["isError"] is not allowed
+    if not allowed:
+        opener.open.assert_not_called()
+        return
+    assert json.loads(result["content"][0]["text"]) == payload
+    request = opener.open.call_args.args[0]
+    assert request.full_url == f"http://agent.invalid/api/v1/failures/101?record_state={state}"
+    headers = {key.lower(): value for key, value in request.header_items()}
+    assert headers["authorization"] == "Bearer test-gateway-token"
+    if state == "trashed":
+        assert headers["x-actor"] == "rm" and headers["x-actor-role"] == "RM"
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("jenkins_search_failures", {"record_state": "trashed"}),
+    ("jenkins_search_failures", {"record_state": "deleted"}),
+    ("jenkins_search_failures", {"page_size": 101}),
+    ("jenkins_search_failures", {"date_from": "2026-11-12", "date_to": "2026-11-01"}),
+    ("jenkins_search_failures", {"actor_role": "RM"}),
+    ("jenkins_get_failure", {"record_id": "../summary"}),
+    ("jenkins_get_failure", {"record_id": True}),
+])
+def test_jenkins_invalid_or_unauthorized_queries_do_not_reach_backend(site, jenkins_backend, tool, args):
+    client, _, token_for, _ = site
+    opener, _ = jenkins_backend
+    token = token_for("alice", "Owner")
+    session, _ = connect_client(client, token)
+    assert call(client, token, session, tool, args)["isError"]
+    opener.open.assert_not_called()
+
+
+@pytest.mark.parametrize("status,payload", [(404, {"detail": "记录不存在"}),
+                                           (503, {"error": "服务不可用"}),
+                                           (200, {"ok": False, "error": "查询失败"})])
+def test_jenkins_upstream_errors_are_not_reported_as_empty_results(site, monkeypatch, status, payload):
+    from app.integrations import cicd_agent
+    monkeypatch.setattr(cicd_agent, "_request_agent_payload", lambda *a, **kw: (status, payload))
+    client, _, token_for, _ = site
+    token = token_for("alice", "Owner")
+    session, _ = connect_client(client, token)
+    result = call(client, token, session, "jenkins_get_failure", {"record_id": 101})
+    assert result["isError"]
+    assert (payload.get("error") or payload["detail"]) in result["content"][0]["text"]
+
+
+def test_jira_format_skill_reuses_reference_and_reloads(site, monkeypatch, tmp_path):
+    from app.services import mcp_skill_tools
+    client, _, token_for, _ = site
+    token = token_for('alice', 'Owner')
+    session, _ = connect_client(client, token)
+    result = call(client, token, session, 'skill_load', {'skill': 'jira-format'})
+    reference = mcp_skill_tools.SKILLS['jira-format']
+    expected = (reference['folder'] / reference['main']).read_text()
+    assert not result['isError'] and expected in result['content'][0]['text']
+    assert 'page=' not in result['content'][0]['text']
+    assert call(client, token, session, 'skill_load', {'skill': 'jira-format', 'page': 'diagnosis'})['isError']
+    (tmp_path / 'format.md').write_text('shared format version one')
+    monkeypatch.setitem(mcp_skill_tools.SKILLS, 'jira-format', {'folder': tmp_path, 'main': 'format.md', 'pages': {}})
+    assert 'version one' in call(client, token, session, 'skill_load', {'skill': 'jira-format'})['content'][0]['text']
+    (tmp_path / 'format.md').write_text('shared format version two')
+    assert 'version two' in call(client, token, session, 'skill_load', {'skill': 'jira-format'})['content'][0]['text']
+
+
+def test_comment_preview_and_published_body_share_formatting(site):
+    from app.domain.jira_format import format_jira_comment
+    client, _, token_for, calls = site
+    token = token_for('alice', 'Owner')
+    session = connect_confirming(client, token)
+    body = '设置{{VALUE}}后重试。\n{noformat}\necho 中{{raw}}文\n{noformat}\n' + '说明。' * 600 + '\n结束{{END}}标记'
+    expected = format_jira_comment(body)
+    ask, result = confirmable_call(client, token, session, 'jira_add_comment',
+                                  {'issue_key': 'MC3-1', 'body': body},
+                                  {'result': {'action': 'accept', 'content': {'username': 'alice'}}})
+    assert not result['result']['isError']
+    preview = ask['params']['message'].split('\n\n', 1)[1]
+    assert preview == expected
+    assert calls['comments'][0][1].split('\n\n----\n', 1)[0] == preview
+    assert 'echo 中{{raw}}文' in preview
+    assert '结束 {{END}} 标记' in preview
+    assert 'alice' not in ask['params']['message'].casefold()
+    assert format_jira_comment(expected) == expected

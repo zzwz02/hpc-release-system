@@ -6,8 +6,8 @@ instead of answering about MetaX products from pretrained knowledge or public
 pages.  The main page comes first; a reference page is fetched on demand, so a
 session only pays for what it reads.
 
-Only ``cu-bridge`` is exposed for now, and it is readable by every role that
-may use the MCP at all.  Adding another skill = one more entry in ``SKILLS``.
+Skills are readable by every role that may use MCP. Entries may expose a
+whole skill or a focused reference page from an existing skill.
 
 The text is read from the knowledge pack shipped with the website
 (``deploy/jira-agent/hpc/``).  That is the packaging copy, not the formal
@@ -33,6 +33,12 @@ SKILLS: dict[str, dict[str, Any]] = {
         # page name -> file inside the skill folder; the agent may only ask for these
         "pages": {"build": "references/build.md", "diagnosis": "references/diagnosis.md"},
     },
+    "jira-format": {
+        "folder": _PACK_ROOT / "modules/jira-evidence/skills/jira-issue-manager",
+        "main": "references/jira-format.md",
+        "summary": "JIRA wiki 评论格式：标题、列表、代码块、行内代码、链接和表格。",
+        "pages": {},
+    },
 }
 
 
@@ -51,8 +57,8 @@ def _read(path: Path) -> str:
 
 
 def _body(skill: dict[str, Any]) -> str:
-    """SKILL.md without its YAML front matter (name/description are metadata)."""
-    text = _read(skill["folder"] / "SKILL.md")
+    """Read the selected skill entry or reference without YAML front matter."""
+    text = _read(skill["folder"] / skill.get("main", "SKILL.md"))
     if text.startswith("---"):
         parts = text.split("---", 2)
         if len(parts) == 3:
@@ -72,11 +78,11 @@ def _load(ctx: ToolContext, args: dict) -> ToolResult:
         text = f"# {name} / {page}（{relative}）\n\n{_read(skill['folder'] / relative)}"
     else:
         pages = "、".join(f'page="{key}"' for key in skill["pages"])
-        text = (
-            f"已加载 skill **{name}**。按下面的方法开展工作；需要细节时再调用 "
-            f'skill_load（skill="{name}"，{pages}）。参考页用本工具读取，不要去找本地文件。'
-            f"\n\n---\n\n{_body(skill)}"
-        )
+        text = f"已加载 skill **{name}**。按下面的方法开展工作。"
+        if pages:
+            text += (f'需要细节时再调用 skill_load（skill="{name}"，{pages}）。'
+                     '参考页用本工具读取，不要去找本地文件。')
+        text += f"\n\n---\n\n{_body(skill)}"
     return ToolResult.text(text, log=ToolLog(
         target_type="skill", target=ctx.log.target,
         summary=f"{len(text)} 字符", extra={"skill": name, "page": page or "main", "chars": len(text)},
@@ -86,9 +92,11 @@ def _load(ctx: ToolContext, args: dict) -> ToolResult:
 register(Tool(
     name="skill_load",
     category=CATEGORY,
-    title="加载 HPC 专家方法",
+    title="加载方法与格式规范",
     description=(
         "Load the authoritative MetaX HPC method for a topic before doing the work. "
+        "For JIRA comment formatting, call skill=\"jira-format\" without page before drafting "
+        "or publishing, including draft-only requests; it reuses jira-issue-manager's format reference. "
         "Available skills: cu-bridge — porting CUDA source applications to MACA with cu-bridge "
         "(SDK/cu-bridge version matching, cucc, cmake_maca/make_maca/ninja_maca builds, API and "
         "library mapping, and triage of migration build, link and runtime failures). "
@@ -102,7 +110,7 @@ register(Tool(
         "type": "object",
         "properties": {
             "skill": {"type": "string", "enum": sorted(SKILLS), "description": "Skill name."},
-            "page": {"type": "string", "enum": sorted(SKILLS["cu-bridge"]["pages"]),
+            "page": {"type": "string", "enum": sorted({page for skill in SKILLS.values() for page in skill["pages"]}),
                      "description": "Optional reference page; omit it on the first call."},
         },
         "required": ["skill"],

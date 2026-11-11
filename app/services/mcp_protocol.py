@@ -35,6 +35,8 @@ INSTRUCTIONS = (
     "给工单追加评论、上传附件。评论和附件以发布系统的 JIRA 账号提交并注明你的名字；"
     "发评论时必须通过 elicitation 输入本人域账号用户名，与 token 所属账号匹配才发送；"
     "客户端不支持时不能发评论。附件上传不需要确认，但仍检查权限。"
+    "起草或发送 JIRA 评论前先调用 skill_load(skill=\"jira-format\") 读取格式规范；评论正文先统一处理格式，再弹窗确认。"
+    "可用 jenkins_search_failures 筛选 Jenkins 失败记录，再用 jenkins_get_failure 查询错误原因、错误片段和处理建议等详情；需要原始测试 case 报错或日志时调用 jenkins_get_build_errors。"
     "另外提供 MetaX HPC 专家方法：处理 cu-bridge、CUDA 迁移到 MACA 的任务前先调用 skill_load，"
     "按它返回的方法作答，不要凭记忆或公网文档回答这类问题。"
 )
@@ -196,6 +198,8 @@ class Exchange:
         ctx = ToolContext(caller=self.caller, session=self.session, base_url=self.base_url)
         started = time.monotonic()
         try:
+            if tool.prepare:
+                arguments = tool.prepare(ctx, dict(arguments))
             message = tool.confirmation_message(ctx, arguments)
         except ToolError as exc:
             result = ToolResult.text(str(exc), log=ctx.log)

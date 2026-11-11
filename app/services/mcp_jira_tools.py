@@ -20,6 +20,7 @@ from typing import Any
 from urllib.parse import quote
 
 from app.api.errors import AuthzError
+from app.domain.jira_format import format_jira_comment
 from app.integrations import jira
 from app.services import jira_agent_service, mcp_service
 from app.services.mcp_tools import Tool, ToolContext, ToolError, ToolLog, ToolResult, register
@@ -266,12 +267,22 @@ def check_can_write(user: dict, key: str, action: str = "评论") -> dict:
     return issue
 
 
+def _prepare_comment(ctx: ToolContext, args: dict) -> dict:
+    _key(args.get("issue_key"))
+    body = format_jira_comment(str(args.get("body") or "").strip())
+    if not body:
+        raise ToolError("评论内容不能为空")
+    if len(body + comment_footer(ctx)) > COMMENT_MAX_CHARS:
+        raise ToolError(f"评论超过 {COMMENT_MAX_CHARS} 字符")
+    return {**args, "body": body}
+
+
 def _confirm_comment(ctx: ToolContext, args: dict) -> str:
     key = _key(args.get("issue_key"))
     body = str(args.get("body") or "").strip()
     return (f"即将在 JIRA {key} 发布下面的评论。"
             "请输入你本人的域账号用户名，匹配发布账号后发送；发布后无法撤回。\n\n"
-            f"{body[:1500]}{'…（已截断）' if len(body) > 1500 else ''}")
+            f"{body}")
 
 
 def comment_footer(ctx: ToolContext) -> str:
@@ -301,7 +312,9 @@ register(Tool(
     title="评论 JIRA",
     description=(
         "Append a comment (JIRA wiki markup) to an issue. Only the issue's current assignee or an RM may "
-        "comment. To cite an attachment, use the [name|url] link that jira_pull_issue or the upload output "
+        "comment. Before drafting, load skill_load(skill=\"jira-format\"), including draft-only requests. "
+        "The server applies shared JIRA wiki formatting before confirmation and posts that same body. "
+        "To cite an attachment, use the [name|url] link that jira_pull_issue or the upload output "
         "gives (it targets the attachment id); [^name] may hit a same-named file. "
         "Before posting, the user must type their own domain username in the MCP elicitation form. "
         "The server compares it with the token owner (trimmed, case-insensitive). Missing or mismatched "
@@ -317,6 +330,7 @@ register(Tool(
         "required": ["issue_key", "body"],
     },
     handler=_comment,
+    prepare=_prepare_comment,
     read_only=False,
     destructive=True,          # a published comment cannot be withdrawn
     confirm=_confirm_comment,

@@ -90,6 +90,11 @@ def test_example_file_parses_into_every_section(monkeypatch: pytest.MonkeyPatch)
     assert runtime_config.section("jira")["JIRA_BASE_URL"]
     assert runtime_config.section("llm")["LLM_MODEL"]
     assert cicd_agent._agent_timeout_seconds() == 90
+    jenkins = runtime_config.section("cicd_agent")
+    assert jenkins["JENKINS_BASE_URL"].startswith("https://")
+    assert jenkins["JENKINS_USERNAME"] == "fu_pde-hpc_bot"
+    assert jenkins["JENKINS_API_TOKEN"] == ""
+    assert int(jenkins["JENKINS_TIMEOUT_SECONDS"]) > 0
     [group] = domain.groups_from_sections(runtime_config.agent_group_sections()).values()
     assert (group.name, group.max_concurrent, group.components) == ("HPC", 2, ("PDE_HPC",))
 

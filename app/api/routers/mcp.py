@@ -227,7 +227,7 @@ def setup_config(endpoint: str, token: str) -> dict:
             f"[mcp_servers.{mcp_protocol.SERVER_NAME}]\n"
             f'url = "{endpoint}"\n'
             f'http_headers = {{ "Authorization" = "Bearer {token}" }}\n'
-            "enabled = true\nrequired = true\nstartup_timeout_sec = 30\n"
+            "enabled = true\nstartup_timeout_sec = 30\n"
         ),
     }
 

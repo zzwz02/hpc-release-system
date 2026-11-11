@@ -153,7 +153,7 @@ elif op in ("write", "remove"):
         if op == "write":
             block = (f"[mcp_servers.{name}]\nurl = \"{url}\"\n"
                      f"http_headers = {{ \"Authorization\" = \"Bearer {token}\" }}\n"
-                     "enabled = true\nrequired = true\nstartup_timeout_sec = 30\n")
+                     "enabled = true\nstartup_timeout_sec = 30\n")
             save(codex_path, (stripped + "\n\n" if stripped else "") + block)
         elif stripped != text.rstrip("\n"):
             save(codex_path, stripped + "\n" if stripped else "")
@@ -233,7 +233,6 @@ claude mcp remove $SERVER_NAME -s user >/dev/null 2>&1; claude mcp add --transpo
 url = "$MCP_URL"
 http_headers = { "Authorization" = "Bearer $token" }
 enabled = true
-required = true
 startup_timeout_sec = 30
 
 EOF

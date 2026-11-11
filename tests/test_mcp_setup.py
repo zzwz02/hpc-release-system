@@ -55,6 +55,7 @@ do_use_token
         assert entry['url'] == 'https://example.test/mcp'
         assert entry['http_headers'] == {'Authorization': 'Bearer rsmcp_test_abcdefghijklmnopqrstuvwxyz0123456789'}
         assert 'command' not in entry
+        assert 'required' not in entry
         assert claude.read_bytes() == originals[claude]
     selected = claude if client == 'claude' else codex
     assert selected.stat().st_mode & 0o777 == 0o600

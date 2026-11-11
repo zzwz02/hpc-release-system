@@ -15,6 +15,8 @@ statistics page without touching them:
                   destructive write requires a matching typed username.
   * ``confirm``   optional custom preview; omitting it uses the generic preview
                   and never disables confirmation for a destructive write.
+  * ``prepare``   optional pre-confirmation normalization; its returned arguments
+                  are used by both the confirmation preview and the handler.
 
 Handlers are synchronous and run in a worker thread.  Raise ToolError for a
 user-facing failure; it becomes an ``isError`` result and an error log row.
@@ -94,6 +96,7 @@ class Tool:
     destructive: bool = True          # only meaningful for write tools
     log_args: Callable[[dict[str, Any]], dict[str, Any]] | None = None
     confirm: Callable[[ToolContext, dict[str, Any]], str] | None = None
+    prepare: Callable[[ToolContext, dict[str, Any]], dict[str, Any]] | None = None
 
     @property
     def requires_confirmation(self) -> bool:
@@ -142,7 +145,7 @@ def register(tool: Tool) -> Tool:
 
 def load_tools() -> None:
     """Import every feature module so its tools register (idempotent)."""
-    from app.services import mcp_jira_tools, mcp_skill_tools  # noqa: F401
+    from app.services import mcp_jenkins_tools, mcp_jira_tools, mcp_skill_tools  # noqa: F401
 
 
 def tools_for(role: str) -> list[Tool]:

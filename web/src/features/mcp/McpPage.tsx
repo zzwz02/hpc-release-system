@@ -264,7 +264,7 @@ function SetupPane({ viewer, tools }: {
                 "[mcp_servers.release-system]",
                 `url = "${url}"`,
                 `http_headers = { "Authorization" = "Bearer ${tokenText}" }`,
-                "enabled = true", "required = true", "startup_timeout_sec = 30",
+                "enabled = true", "startup_timeout_sec = 30",
               ].join("\n")} />
             </details>
           </details>
