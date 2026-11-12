@@ -12,6 +12,7 @@
  */
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { stripDockerPullPrefix } from "../../lib/containerImage";
 import { DateInput } from "../../components/DateInput";
 import { RefreshBar } from "../../components/RefreshBar";
 import { apiGet, apiPost } from "../../api/http";
@@ -320,7 +321,9 @@ function BaseImagesPanel({ release, onMutated }: { release: ReleaseDetail; onMut
     setSaving(true);
     setError("");
     try {
-      await apiPost("/api/releases/base-image", { release_id: release.id, image: draft });
+      await apiPost("/api/releases/base-image", {
+        release_id: release.id, image: { ...draft, reference: stripDockerPullPrefix(draft.reference).trim() },
+      });
       setDraft(EMPTY_IMAGE);
       toast.success("基础镜像已保存");
       onMutated();
@@ -368,7 +371,7 @@ function BaseImagesPanel({ release, onMutated }: { release: ReleaseDetail; onMut
               {editable && (
                 <tr>
                   <td><input className="input sm mono" placeholder="harbor.sh.mxcr.io/hpc-release/amgx-maca@sha256:…" value={draft.reference}
-                    disabled={saving} onChange={(e) => setDraft((d) => ({ ...d, reference: e.target.value }))} aria-label="完整镜像引用" /></td>
+                    disabled={saving} onChange={(e) => setDraft((d) => ({ ...d, reference: stripDockerPullPrefix(e.target.value) }))} aria-label="完整镜像引用" /></td>
                   <td><input className="input sm" placeholder="说明" value={draft.note} disabled={saving}
                     onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} aria-label="说明" /></td>
                   <td className="nowrap">

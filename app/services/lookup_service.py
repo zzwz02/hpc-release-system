@@ -2,11 +2,82 @@
 delivered image digest or an App."""
 from __future__ import annotations
 
+import json
+import re
 import sqlite3
 from typing import Any
 
-from app.repositories import apps_repo, entries_repo, releases_repo
+from app.api.errors import GerritNetworkError
+from app.config import settings
+from app.domain import image_lookup
+from app.integrations import gerrit, harbor
+from app.repositories import app_info_repo, apps_repo, entries_repo, releases_repo
 from app.services import catalog_service, cycle_service, qa_service
+
+
+def _lookup_image(reference: str) -> dict[str, str]:
+    image = image_lookup.parse_lookup_image(reference)
+    if image["host"] != harbor.HARBOR_HOST:
+        raise ValueError(f"仅支持 {harbor.HARBOR_HOST} 的镜像")
+    return image
+
+
+def _image_repository(conn: sqlite3.Connection, image: dict[str, str]) -> str:
+    image_name = image["repository"].rsplit("/", 1)[-1]
+    apps = {app["id"]: app for app in apps_repo.list_apps(conn)}
+    candidate_ids = set()
+    # App identity comes from the catalog, never a guessed hpc_<image> URL.
+    for version in app_info_repo.image_lookup_sources(conn):
+        if image_name in image_lookup.image_repositories(version["raw"]):
+            candidate_ids.add(version["app_id"])
+    if not candidate_ids:
+        raise ValueError("未找到该镜像对应的 App 仓库，请先在 App 工作台登记并同步该 App")
+    urls = {gerrit.gerrit_remote_url(catalog_service.app_info_fetch_target(apps[app_id])[0])
+            for app_id in candidate_ids}
+    if len(urls) != 1:
+        raise ValueError("多个 Gerrit 仓库声明了相同镜像名，无法唯一定位历史 app_info")
+    return urls.pop()
+
+
+def _app_info_at(url: str, commit: str) -> dict[str, Any]:
+    try:
+        raw = gerrit.fetch_app_info_at(url, commit, project_root=settings.db_path.parent)
+    except RuntimeError as exc:
+        raise GerritNetworkError(f"无法读取 Gerrit {url} @ {commit} 的 app_info.json") from exc
+    try:
+        document = json.loads(raw)
+        if not isinstance(document, dict):
+            raise ValueError("app_info 不是 JSON 对象")
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("该 commit 的 app_info.json 格式无效，无法生成测试命令") from exc
+    return document
+
+
+def app_info_source(conn: sqlite3.Connection, reference: str, commit: str) -> dict[str, Any]:
+    """Read the original file at the pinned commit without mutable Harbor tags."""
+    if not re.fullmatch(r"[0-9a-fA-F]{7,40}", commit):
+        raise ValueError("app_info 来源需要有效的 commit id")
+    image = _lookup_image(reference)
+    return _app_info_at(_image_repository(conn, image), commit)
+
+
+def by_image(conn: sqlite3.Connection, reference: str) -> dict[str, Any]:
+    image = _lookup_image(reference)
+    artifact = harbor.get_artifact(image["project"], image["repository"], image["digest"])
+    tags = sorted({tag["name"] for tag in artifact.get("tags") or []
+                   if isinstance(tag, dict) and isinstance(tag.get("name"), str)})
+    commit, selected_tags = image_lookup.commit_tags(tags)
+    url = _image_repository(conn, image)
+    document = _app_info_at(url, commit)
+    try:
+        result = image_lookup.historical_image_commands(
+            document, image=image["image"], repository=image["repository"], tags=selected_tags,
+            architecture=str((artifact.get("extra_attrs") or {}).get("architecture") or ""),
+        )
+    except (TypeError, AttributeError, KeyError) as exc:
+        raise ValueError("该 commit 的 app_info.json 格式无效，无法生成测试命令") from exc
+    return {**result, "image": image["image"], "digest": image["digest"], "tags": tags,
+            "commit_id": commit, "commit_tags": selected_tags, "git_url": url}
 
 
 def _entry_record(conn: sqlite3.Connection, entry: dict[str, Any]) -> dict[str, Any]:

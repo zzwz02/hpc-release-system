@@ -16,6 +16,8 @@ REFERENCE = f"{ADDRESS}@{DIGEST}"
 
 @pytest.mark.parametrize("reference,name,address,digest", [
     (REFERENCE, "amgx-maca", ADDRESS, DIGEST),
+    (f"docker pull {REFERENCE}", "amgx-maca", ADDRESS, DIGEST),
+    (f"  docker\tpull   {REFERENCE}  ", "amgx-maca", ADDRESS, DIGEST),
     (f"registry:5000/hpc/base:3.11@{DIGEST}", "base:3.11", "registry:5000/hpc/base:3.11", DIGEST),
     ("harbor.example/hpc/base:latest", "base:latest", "harbor.example/hpc/base:latest", ""),
     (f"  {ADDRESS}@{DIGEST.upper().replace('SHA256', 'sha256')}  ", "amgx-maca", ADDRESS, DIGEST),
@@ -25,7 +27,7 @@ def test_parse_full_image_reference(reference, name, address, digest):
 
 
 @pytest.mark.parametrize("reference", [
-    "", "hpc/a:1 hpc/b:2", "hpc/a:1\nhpc/b:2", "https://harbor.example/hpc/base:1",
+    "", "docker pull", "docker pull hpc/a:1 hpc/b:2", "hpc/a:1 hpc/b:2", "hpc/a:1\nhpc/b:2", "https://harbor.example/hpc/base:1",
     "harbor.example/hpc/", "harbor.example/hpc/base:", f"@{DIGEST}",
     f"{ADDRESS}@sha256:abc", f"{ADDRESS}@sha256:{'z' * 64}", f"{REFERENCE}@{DIGEST}",
 ])
@@ -52,7 +54,7 @@ def test_http_save_edit_lookup_and_legacy_record_round_trip(temp_db, api):
         user="rm", role="RM",
     )[0]
     response = client.post("/api/releases/base-image", json={
-        "release_id": release_id, "image": {"reference": REFERENCE, "note": " RM 的说明 "},
+        "release_id": release_id, "image": {"reference": f"docker pull {REFERENCE}", "note": " RM 的说明 "},
     })
     assert response.status_code == 200
     image = response.json()["base_images"][-1]

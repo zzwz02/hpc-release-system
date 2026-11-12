@@ -253,12 +253,6 @@ function DetailPanel({ app, entry, release, openRequests, onSaved, onSignup }: D
             title={appDetailDirty ? "请先保存或取消修改，再报名" : app.cicd_status !== "running" ? "CICD 已停止，不能报名" : "选择版本报名"}
             data-testid="app-signup-btn">报名</button>
         )}
-        {canSyncAppInfo(user, app) && (
-          <button className="btn sm" onClick={() => void handleSync()} disabled={syncing || appDetailDirty}
-            title={appDetailDirty ? "请先保存或取消修改，再同步 app_info" : "立即同步 app_info"} data-testid="app-info-sync">
-            {syncing ? "同步中…" : "立即同步"}
-          </button>
-        )}
       </div>
 
       {(pendingScope || scopeBlocked) && (
@@ -280,7 +274,9 @@ function DetailPanel({ app, entry, release, openRequests, onSaved, onSignup }: D
       </div>
 
       {tab === "app_info" && <AppInfoPane app={app} canEdit={editable} canEditRmFields={canEditRmFields(user)}
-        onSaved={onSaved} onDirtyChange={setAppDetailDirty} />}
+        onSaved={onSaved} onDirtyChange={setAppDetailDirty}
+        onSync={canSyncAppInfo(user, app) ? () => void handleSync() : undefined}
+        syncing={syncing} syncDisabled={appDetailDirty} />}
       {tab === "cicd" && (
         <AppCicdPane
           app={app}

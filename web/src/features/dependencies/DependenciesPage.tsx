@@ -9,6 +9,7 @@ import React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../api/http";
 import { RefreshBar } from "../../components/RefreshBar";
+import { QaTabs } from "../qa/QaTabs";
 
 interface DependencyApp {
   app_id: string;
@@ -90,6 +91,7 @@ export function DependenciesPage() {
         <span className="spacer" />
         <RefreshBar dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} onRefresh={() => void refetch()} />
       </div>
+      <QaTabs />
       {error && <div className="lerr p-12-16">加载失败：{(error as Error).message}</div>}
       {data && (
         <>

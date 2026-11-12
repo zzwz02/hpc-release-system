@@ -66,8 +66,8 @@ describe("signup", () => {
 describe("signed-up entry", () => {
   it("after the deadline only allows removing tests and editing the delivery", async () => {
     const entry = makeEntry("a", { excluded_tests: ["hpc.x.t2"], scope_tests: [
-      { path: "hpc.x.t1", command: "run t1", supported_chips: ["C500"], arch_list: [], excluded: false },
-      { path: "hpc.x.t2", command: "run t2", supported_chips: ["C500"], arch_list: [], excluded: true },
+      { path: "hpc.x.t1", command: "run t1", supported_chips: ["C500"], arch_list: [], platforms: [], excluded: false },
+      { path: "hpc.x.t2", command: "run t2", supported_chips: ["C500"], arch_list: [], platforms: [], excluded: true },
     ] });
     mockApi(makeState([makeApp("a")], makeRelease([entry], { phase: "in_progress" })));
     renderSignup();

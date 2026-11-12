@@ -155,7 +155,7 @@ describe("basic information and app_info", () => {
     expect(useUiStore.getState().appDetailDirty).toBe(false);
   });
 
-  it("syncs from the title bar on any tab and refreshes the scope warning", async () => {
+  it("syncs beside the latest app_info heading and refreshes the scope warning without collapsing it", async () => {
     const state = makeState([makeApp("a")], makeRelease([makeEntry("a")], { phase: "in_progress" }));
     mockApi(state);
     vi.mocked(apiPost).mockImplementation(async () => {
@@ -168,13 +168,27 @@ describe("basic information and app_info", () => {
     });
     renderPage("a");
     const header = await screen.findByTestId("app-detail-header");
-    expect(within(header).getByTestId("app-info-sync")).toBeInTheDocument();
+    expect(within(header).queryByTestId("app-info-sync")).toBeNull();
+    const section = screen.getByTestId("latest-app-info-section");
+    expect(within(section.querySelector("summary")!).getByRole("button", { name: "立即同步app_info" })).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("detail-tab-profile"));
-    fireEvent.click(screen.getByTestId("app-info-sync"));
+    expect(screen.queryByTestId("app-info-sync")).toBeNull();
+    fireEvent.click(screen.getByTestId("detail-tab-app_info"));
+    fireEvent.click(screen.getByRole("button", { name: "立即同步app_info" }));
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/app-info/sync", { app_id: "a", force: true }));
     expect(await screen.findByTestId("app-scope-warning")).toHaveTextContent("新增芯片 C600");
     expect(screen.getByTestId("app-scope-warning")).toHaveTextContent("最新 app_info 已同步");
+    expect(screen.getByTestId("latest-app-info-section")).toHaveAttribute("open");
     expect(toast.success).toHaveBeenCalledWith("已同步到新的 app_info");
+  });
+
+  it("keeps synchronization available before the first app_info is fetched", async () => {
+    mockApi(makeState([makeApp("a", { latest_app_info: null })], null));
+    renderPage("a");
+    const section = await screen.findByTestId("latest-app-info-section");
+    expect(within(section).getByText("尚未取得 app_info。")).toBeInTheDocument();
+    fireEvent.click(within(section).getByRole("button", { name: "立即同步app_info" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/app-info/sync", { app_id: "a", force: true }));
   });
 
   it("shows a persistent sync failure and a scope warning after QA rejects the expansion", async () => {

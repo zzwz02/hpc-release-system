@@ -9,6 +9,7 @@ import { formatServerTime } from "../../lib/time";
 import type { App } from "../../types";
 import { orderChips, shortCommit } from "./helpers";
 import { BasicInfoSection } from "./BasicInfoSection";
+import { TestScopeTable } from "../../components/TestScopeTable";
 
 interface AppDetailResponse {
   app_info_versions: Array<{
@@ -35,9 +36,12 @@ interface AppInfoPaneProps {
   canEditRmFields: boolean;
   onSaved: () => void;
   onDirtyChange: (dirty: boolean) => void;
+  onSync?: () => void;
+  syncing: boolean;
+  syncDisabled: boolean;
 }
 
-export function AppInfoPane({ app, canEdit, canEditRmFields, onSaved, onDirtyChange }: AppInfoPaneProps) {
+export function AppInfoPane({ app, canEdit, canEditRmFields, onSaved, onDirtyChange, onSync, syncing, syncDisabled }: AppInfoPaneProps) {
   const info = app.latest_app_info;
   const { data: detail } = useQuery({
     queryKey: ["app-detail", app.id, info?.id ?? 0],
@@ -49,13 +53,27 @@ export function AppInfoPane({ app, canEdit, canEditRmFields, onSaved, onDirtyCha
     <div className="detail-body" data-testid="app-info-pane">
       <BasicInfoSection app={app} canEdit={canEdit} canEditRmFields={canEditRmFields}
         onSaved={onSaved} onDirtyChange={onDirtyChange} />
-      {!info ? (
-        <div className="banner warnp">尚未取得 app_info。</div>
-      ) : (
-        <>
-          <details className="section" open>
-            <summary><span className="chev">▶</span> 最新 app_info</summary>
-            <div className="section-body">
+      <details className="section" open data-testid="latest-app-info-section">
+        <summary>
+          <span className="chev">▶</span> 最新 app_info
+          {onSync && (
+            <button type="button" className="btn sm" disabled={syncing || syncDisabled}
+              title={syncDisabled ? "请先保存或取消修改，再同步 app_info" : "立即同步app_info"}
+              data-testid="app-info-sync"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onSync();
+              }}>
+              {syncing ? "同步中…" : "立即同步app_info"}
+            </button>
+          )}
+        </summary>
+        <div className="section-body">
+          {!info ? (
+            <div className="banner warnp">尚未取得 app_info。</div>
+          ) : (
+            <>
               <div className="form">
                 <label>版本<input className="input" value={info.app_version} disabled /></label>
                 <label>Commit<input className="input mono" value={shortCommit(info.commit_id)} disabled /></label>
@@ -70,26 +88,11 @@ export function AppInfoPane({ app, canEdit, canEditRmFields, onSaved, onDirtyCha
                     value={info.dependencies === null ? "未声明" : info.dependencies.join(", ") || "（空）"} />
                 </label>
               </div>
-              <div className="table mt-10">
-                <table>
-                  <thead><tr><th>测试项</th><th>芯片</th><th>命令</th></tr></thead>
-                  <tbody>
-                    {info.tests.length === 0 ? (
-                      <tr><td colSpan={3} className="muted">没有启用的测试项</td></tr>
-                    ) : info.tests.map((test) => (
-                      <tr key={test.path}>
-                        <td className="mono small">{test.path}</td>
-                        <td className="small">{orderChips(test.supported_chips)}</td>
-                        <td className="mono small break">{test.command}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </details>
-        </>
-      )}
+              <TestScopeTable tests={info.tests} />
+            </>
+          )}
+        </div>
+      </details>
 
       <details className="section">
         <summary><span className="chev">▶</span> app_info 版本历史</summary>

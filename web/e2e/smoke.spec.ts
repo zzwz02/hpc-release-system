@@ -284,7 +284,7 @@ test.describe("App 工作台 details", () => {
     expect(panel!.length).toBeGreaterThan(20);
   });
 
-  test("opens basic information and app_info with sync in the title bar", async ({ page }) => {
+  test("opens basic information and app_info with sync beside the latest info heading", async ({ page }) => {
     await login(page, "rm");
     await ensureWritableAppsRelease(page);
     const firstRow = page.locator('[data-testid^="app-row-"]').first();
@@ -296,7 +296,7 @@ test.describe("App 工作台 details", () => {
     await expect(page.getByTestId("basic-info-section")).toBeVisible();
     await expect(page.getByTestId("detail-tab-app_info")).toHaveText("基本信息和app_info");
     await expect(page.getByTestId("detail-tab-signup")).toHaveCount(0);
-    await expect(page.getByTestId("app-detail-header").getByTestId("app-info-sync")).toBeVisible();
+    await expect(page.getByTestId("latest-app-info-section").locator("summary").getByRole("button", { name: "立即同步app_info", exact: true })).toBeVisible();
   });
 });
 

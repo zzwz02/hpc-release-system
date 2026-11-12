@@ -147,6 +147,26 @@ def make_app_info(
     return data
 
 
+def make_platform_app_info():
+    x86 = ["C500", "C588", "C600", "C600U", "X201-A", "X206", "X301", "X302", "X201"]
+    return {
+        "app_name": "hpcg", "app_version": "0.9.0",
+        "app_build": {
+            "ubuntu20.04_amd64": {"arch": "amd64", "os": "ubuntu20.04", "supported_chip": x86},
+            "kylinv11_amd64": {"arch": "amd64", "os": "kylinv11", "supported_chip": ["X201", "C600"]},
+            "ubuntu20.04_arm64": {"arch": "arm64", "os": "ubuntu20.04", "supported_chip": ["C500", "C600", "X302", "X201"]},
+        },
+        "app_test": {
+            "benchmark": {"test_cmd": "/opt/HPCG/autotest.sh", "img_target": "release", "supported_chip": {
+                chip: ["ubuntu20.04_amd64", "kylinv11_amd64"] if chip in ["X201", "C600"] else ["ubuntu20.04_amd64"]
+                for chip in x86
+            }},
+            "benchmark_arm": {"test_cmd": "/opt/HPCG/arm.sh", "img_target": "release",
+                              "supported_chip": {"C500": ["ubuntu20.04_arm64"]}},
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # Seed / factory helpers
 # ---------------------------------------------------------------------------

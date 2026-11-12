@@ -5,7 +5,7 @@ import re
 
 
 def parse_base_image_reference(value: str) -> dict[str, str]:
-    reference = str(value or "").strip()
+    reference = re.sub(r"^docker\s+pull(?:\s+|$)", "", str(value or "").strip()).strip()
     if not reference:
         raise ValueError("请填写完整镜像引用")
     if any(character.isspace() for character in reference):

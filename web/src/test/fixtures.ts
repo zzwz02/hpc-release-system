@@ -22,8 +22,8 @@ export function makeAppInfo(overrides: Partial<AppInfoVersion> = {}): AppInfoVer
     python_labels: [],
     pytorch_labels: [],
     tests: [
-      { path: "hpc.x.t1", command: "run t1", supported_chips: ["C500"], arch_list: ["ubuntu22.04_amd64"] },
-      { path: "hpc.x.t2", command: "run t2", supported_chips: ["C500"], arch_list: ["ubuntu22.04_amd64"] },
+      { path: "hpc.x.t1", command: "run t1", supported_chips: ["C500"], arch_list: ["ubuntu22.04_amd64"], platforms: [{ build: "ubuntu22.04_amd64", os: "ubuntu22.04", arch: "amd64", chips: ["C500"], python_label: "", pytorch_label: "" }] },
+      { path: "hpc.x.t2", command: "run t2", supported_chips: ["C500"], arch_list: ["ubuntu22.04_amd64"], platforms: [{ build: "ubuntu22.04_amd64", os: "ubuntu22.04", arch: "amd64", chips: ["C500"], python_label: "", pytorch_label: "" }] },
     ],
     community: {},
     dependencies: null,

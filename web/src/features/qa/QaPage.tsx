@@ -3,11 +3,13 @@
  *
  * Roles: RM / Owner / QA / Guest.
  *
- * Three subtabs (index.html:721-728):
- *   1. QA 标注  — scope-expansion requests, log upload, AI analyze (1 s poll
+ * Six peer tabs:
+ *   1. qa log — scope-expansion requests, log upload, AI analyze (1 s poll
  *                 while running), verdict + delivered-image digest editor
- *   2. Release Report — filterable/sortable/column-pick/CSV-export table
- *   3. Test 命令 — same table machinery, no column picker
+ *   2. 本期发布app — filterable/sortable/column-pick/CSV-export table
+ *   3. 测试命令 — same table machinery, no column picker
+ *   4. 开发者社区产物
+ *   5–6. 历史查询 / 组件依赖 — independent routes, shared QA tab row
  *
  * Data:
  *   - QA annotation + log: from GET /api/state (via shared uiStore selectedReleaseId)
@@ -20,7 +22,11 @@
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "react-router-dom";
+import { QaTabs } from "./QaTabs";
+import { qaPaneFromSearch } from "./qaNavigation";
 import { RefreshBar } from "../../components/RefreshBar";
+import { TestScopeTable } from "../../components/TestScopeTable";
 import { apiGet, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
@@ -791,9 +797,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
                       测试范围 {inScope.length} 项{entry.planned_features ? " · 计划 feature" : ""}
                     </summary>
                     {entry.planned_features && <p className="small">{entry.planned_features}</p>}
-                    <ul className="small m-4-0-0">
-                      {inScope.map((t) => <li key={t.path}><span className="mono">{t.path}</span></li>)}
-                    </ul>
+                    <TestScopeTable tests={inScope} />
                   </details>
                   <p className="small muted">
                     Gerrit: {formatGerritUrl(app.git_url)} {app.git_branch || ""}
@@ -1093,6 +1097,15 @@ function ReportPane({ releaseId, kind, title, hint, releases }: ReportPaneProps)
     }
     prevCompareRef.current = filterState.compareId;
   }, [filterState.compareId, data, refetch]);
+
+  const columnsKey = (kind === "release" ? data?.release_report.columns : data?.test_cmd.columns)?.join("\0") ?? "";
+  const previousColumns = useRef("");
+  useEffect(() => {
+    if (previousColumns.current && columnsKey && previousColumns.current !== columnsKey) {
+      setFilterState((previous) => ({ ...previous, colFilters: {}, sort: { col: -1, dir: 1 } }));
+    }
+    if (columnsKey) previousColumns.current = columnsKey;
+  }, [columnsKey]);
 
   if (!releaseId) {
     return (
@@ -1837,14 +1850,13 @@ function usersLabel(
 // QaPage — top-level component
 // ---------------------------------------------------------------------------
 
-type QaSubtab = "mark" | "release" | "test" | "community";
-
 export function QaPage() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const selectedReleaseId = useUiStore((s) => s.selectedReleaseId);
   const setSelectedReleaseId = useUiStore((s) => s.setSelectedReleaseId);
-  const [subtab, setSubtab] = useState<QaSubtab>("mark");
+  const { search } = useLocation();
+  const subtab = qaPaneFromSearch(search);
 
   const { data, isFetching, dataUpdatedAt, refetch, error } = useQuery({
     queryKey: STATE_QK(selectedReleaseId),
@@ -1908,6 +1920,8 @@ export function QaPage() {
         />
       </div>
 
+      <QaTabs />
+
       {error && (
         <div className="lerr p-12-16">
           加载失败：{error instanceof Error ? error.message : String(error)}
@@ -1922,33 +1936,6 @@ export function QaPage() {
 
       {data && (
         <>
-          <div className="subtabs">
-            <button
-              className={`subtab ${subtab === "mark" ? "active" : ""}`}
-              onClick={() => setSubtab("mark")}
-            >
-              QA 标注
-            </button>
-            <button
-              className={`subtab ${subtab === "release" ? "active" : ""}`}
-              onClick={() => setSubtab("release")}
-            >
-              Release Report
-            </button>
-            <button
-              className={`subtab ${subtab === "test" ? "active" : ""}`}
-              onClick={() => setSubtab("test")}
-            >
-              Test 命令
-            </button>
-            <button
-              className={`subtab ${subtab === "community" ? "active" : ""}`}
-              onClick={() => setSubtab("community")}
-            >
-              开发者社区产物
-            </button>
-          </div>
-
           {subtab === "mark" && (
             <div id="qaMarkPane" className="qa-pane active">
               <QaMarkPane payload={data} onStateRefresh={handleRefresh} />
@@ -1959,7 +1946,7 @@ export function QaPage() {
               <ReportPane
                 releaseId={selectedReleaseId || data.release?.id || ""}
                 kind="release"
-                title="Release Report"
+                title="本期发布app"
                 hint="本版本报名 App 的发布信息汇总（列结构参考 release_report.csv，系统未跟踪的列留空）。"
                 releases={data.releases ?? []}
               />
@@ -1970,7 +1957,7 @@ export function QaPage() {
               <ReportPane
                 releaseId={selectedReleaseId || data.release?.id || ""}
                 kind="test"
-                title="Test 命令"
+                title="测试命令"
                 hint="由各报名条目锁定的 app_info（去掉 Owner 删减的测试项）生成的测试命令清单。"
                 releases={data.releases ?? []}
               />

@@ -5,29 +5,18 @@ Pure functions: no HTTP, no DB, unit-testable in isolation.
 from __future__ import annotations
 
 import json
-import re
-from collections.abc import Callable
 from typing import Any
 
 from app.domain.textutil import join_list, order_chips
+from app.domain.test_platforms import (
+    build_platforms, chip_summary, is_enabled_value, public_platform, release_tests,
+    test_platforms, walk_objects,
+)
 from app.repositories.base import new_id
-
-
-def walk_objects(value: Any, visitor: Callable[[dict[str, Any], list[str]], None], path: list[str] | None = None) -> None:
-    path = path or []
-    if isinstance(value, dict):
-        visitor(value, path)
-        for key, child in value.items():
-            walk_objects(child, visitor, path + [str(key)])
-    elif isinstance(value, list):
-        for idx, child in enumerate(value):
-            walk_objects(child, visitor, path + [str(idx)])
 
 
 def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
     data = json.loads(raw) if isinstance(raw, str) else raw
-    x86_chips: set[str] = set()
-    arm_chips: set[str] = set()
     python_labels: list[str] = []
     pytorch_labels: list[str] = []
     build_os_list: list[str] = []
@@ -35,6 +24,7 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
     build_targets: list[dict[str, Any]] = []
     test_targets: list[dict[str, Any]] = []
     tests: list[dict[str, Any]] = []
+    enabled_platforms = build_platforms(data)
 
     def _add_unique(target: list[str], value: Any) -> None:
         v = str(value or "").strip()
@@ -48,8 +38,6 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
         chips = cfg.get("supported_chip") if isinstance(cfg.get("supported_chip"), list) else []
         enabled = is_enabled_value(cfg.get("enabled"))
         if enabled:
-            target = arm_chips if re.search(r"arm|aarch64", arch, re.I) else x86_chips
-            target.update(str(chip).upper() for chip in chips)
             _add_unique(python_labels, cfg.get("python_label"))
             _add_unique(pytorch_labels, cfg.get("pytorch_label"))
             _add_unique(build_os_list, cfg.get("os"))
@@ -65,15 +53,8 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
             "os": str(cfg.get("os") or "").strip(),
         })
 
-    def visitor(node: dict[str, Any], path: list[str]) -> None:
-        if "test_cmd" not in node:
-            return
-        if not is_enabled_value(node.get("enabled")):
-            return
-        if str(node.get("test_period", "")).strip().lower() == "weekly":
-            return
-        if node.get("ignore_release"):
-            return
+    for test_path, node in release_tests(data):
+        path = test_path.split(".")
         supported = node.get("supported_chip") or {}
         if isinstance(supported, dict):
             chips = list(supported.keys())
@@ -90,6 +71,7 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
             "path": ".".join(path),
             "command": str(node.get("test_cmd") or "").strip(),
             "supported_chips": chips,
+            "platforms": [public_platform(platform) for platform in test_platforms(data, node, platforms=enabled_platforms)],
             "arch_list": arch_list,
             "enabled": node.get("enabled") is not False,
             "container_args": node.get("container_args", ""),
@@ -103,17 +85,16 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
                 "command": test["command"],
                 "supported_chips": chips,
                 "arch_list": arch_list,
+                "platforms": test["platforms"],
                 "container_args": test["container_args"],
                 "image_target": test["image_target"],
             }
         )
 
-    walk_objects(data.get("app_test") or {}, visitor)
     return {
         "app_name": data.get("app_name", ""),
         "app_version": data.get("app_version", ""),
-        "x86_chips": order_chips(x86_chips),
-        "arm_chips": order_chips(arm_chips),
+        **chip_summary(enabled_platforms),
         "python_labels": python_labels,
         "pytorch_labels": pytorch_labels,
         "build_os": build_os_list,
@@ -124,17 +105,6 @@ def parse_app_info(raw: str | dict[str, Any]) -> dict[str, Any]:
         "community_artifacts": derive_community_artifacts(data),
         "raw": data,
     }
-
-
-def is_enabled_value(value: Any) -> bool:
-    """Treat only explicit false-like values as disabled.
-
-    app_info historically means missing ``enabled`` is enabled.  Boolean false
-    is authoritative; the string form is accepted for legacy hand-written files.
-    """
-    if value is False:
-        return False
-    return str(value).strip().lower() != "false"
 
 
 def _contains_ai4s(value: Any) -> bool:
@@ -335,6 +305,26 @@ def qa_scope_additions(old_parsed: dict[str, Any], new_parsed: dict[str, Any]) -
             additions.append(
                 f"测试 {path} 新增芯片 " + ", ".join(added_test_chips)
             )
+
+    def platform_chips(parsed: dict[str, Any]) -> dict[str, set[tuple[str, ...]]]:
+        return {
+            test["path"]: {
+                (platform["build"], platform["os"], platform["arch"], platform["python_label"],
+                 platform["pytorch_label"], target, chip)
+                for platform in test.get("platforms", [])
+                for target in platform.get("image_targets", []) for chip in platform["chips"]
+            }
+            for test in parsed.get("tests", [])
+        }
+
+    old_platforms, new_platforms = platform_chips(old_parsed), platform_chips(new_parsed)
+    for path in sorted(old_platforms.keys() & new_platforms.keys()):
+        for build, os, arch, python, pytorch, target, chip in sorted(new_platforms[path] - old_platforms[path]):
+            # Existing new-chip/build notices already describe these additions.
+            if chip not in old_test_chips.get(path, set()) or f"{os}/{arch}" in added_builds:
+                continue
+            labels = " / ".join(value for value in (build, os, arch, python, pytorch, target) if value)
+            additions.append(f"测试 {path} 新增平台芯片 {labels}: {chip}")
     return additions
 
 

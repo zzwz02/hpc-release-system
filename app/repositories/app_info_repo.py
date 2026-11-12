@@ -41,6 +41,16 @@ def latest_version_ids(conn: sqlite3.Connection) -> dict[str, int]:
     }
 
 
+def image_lookup_sources(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Historical image naming metadata; omit the potentially large test payloads."""
+    return [
+        {"app_id": row["app_id"], "raw": json.loads(row["raw_json"])}
+        for row in conn.execute(
+            "SELECT app_id, json_remove(raw_json, '$.app_test') AS raw_json FROM app_info_versions"
+        )
+    ]
+
+
 def list_versions(conn: sqlite3.Connection, app_id: str) -> list[dict[str, Any]]:
     """Version headers (no content), newest first."""
     return [

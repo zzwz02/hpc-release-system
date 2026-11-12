@@ -83,11 +83,21 @@ export interface AppTestDoc {
   pass_criteria?: string;
 }
 
+export interface TestPlatform {
+  build: string;
+  os: string;
+  arch: string;
+  chips: string[];
+  python_label: string;
+  pytorch_label: string;
+}
+
 export interface AppInfoTest {
   path: string;
   command: string;
   supported_chips: string[];
   arch_list: string[];
+  platforms: TestPlatform[];
 }
 
 /** Summary of one stored app_info version. */

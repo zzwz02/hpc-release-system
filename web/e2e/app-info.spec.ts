@@ -19,7 +19,9 @@ test("RM edits metadata, preserves drafts, syncs and sees scope warnings across 
   const basic = page.getByTestId("basic-info-section");
   await expect(page.getByTestId("detail-tab-signup")).toHaveCount(0);
   await expect(page.getByTestId("detail-tab-app_info")).toHaveText("基本信息和app_info");
-  await expect(page.getByTestId("app-detail-header").getByTestId("app-info-sync")).toBeVisible();
+  await expect(page.getByTestId("app-detail-header").getByTestId("app-info-sync")).toHaveCount(0);
+  const latestInfo = page.getByTestId("latest-app-info-section");
+  await expect(latestInfo.locator("summary").getByRole("button", { name: "立即同步app_info", exact: true })).toBeVisible();
   expect(await page.getByTestId("app-info-pane").locator(":scope > :first-child").getAttribute("data-testid"))
     .toBe("basic-info-section");
   await page.screenshot({ path: "/tmp/app-info-basic-check.png", fullPage: true });
@@ -60,9 +62,12 @@ test("RM edits metadata, preserves drafts, syncs and sees scope warnings across 
   await page.getByTestId("detail-tab-profile").click();
   await expect(page.getByLabel("官方名称", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("官方 URL", { exact: true })).toHaveValue("https://example.test");
+  await expect(page.getByTestId("app-info-sync")).toHaveCount(0);
+  await page.getByTestId("detail-tab-app_info").click();
   const syncResponse = page.waitForResponse(r => r.url().endsWith("/api/app-info/sync"));
   await page.getByTestId("app-info-sync").click();
   expect((await (await syncResponse).json()).status).toBe("updated");
+  await expect(latestInfo).toHaveAttribute("open", "");
   await expect(page.getByTestId("app-scope-warning")).toContainText("待 QA 审批");
   await expect(page.getByTestId("app-scope-warning")).toContainText("C600");
   await releases.selectOption(nextRelease);

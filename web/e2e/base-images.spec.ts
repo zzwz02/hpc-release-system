@@ -29,7 +29,8 @@ test("RM saves a full base image per row, edits legacy rows and queries the pars
   await page.getByTestId("save-base-image-btn").click();
   await expect(panel.getByRole("alert")).toContainText("64 位");
   await expect(table.getByRole("textbox", { name: "完整镜像引用", exact: true })).toHaveValue(`${address}@sha256:short`);
-  await table.getByRole("textbox", { name: "完整镜像引用", exact: true }).fill(reference);
+  await table.getByRole("textbox", { name: "完整镜像引用", exact: true }).fill(`docker pull ${reference}`);
+  await expect(table.getByRole("textbox", { name: "完整镜像引用", exact: true })).toHaveValue(reference);
   const saved = page.waitForResponse(response => response.url().endsWith("/api/releases/base-image") && response.request().method() === "POST");
   await page.getByTestId("save-base-image-btn").click();
   const response = await saved;

@@ -82,6 +82,7 @@ def version_summary(version: dict[str, Any] | None) -> dict[str, Any] | None:
                 "command": test["command"],
                 "supported_chips": test.get("supported_chips", []),
                 "arch_list": test.get("arch_list", []),
+                "platforms": test.get("platforms", []),
             }
             for test in parsed.get("tests", [])
         ],

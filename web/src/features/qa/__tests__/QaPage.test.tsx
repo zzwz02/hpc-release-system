@@ -2,7 +2,7 @@
  * QaPage tests.
  *
  * Covers:
- *  - Tab renders with 3 subtabs
+ *  - Tab renders with six peer tabs
  *  - QA mark pane: shows no-release message when no release
  *  - QA mark pane: shows app cards for release-decision=release apps
  *  - QA mark pane: edit button only for writable roles
@@ -131,7 +131,7 @@ function makeQClient() {
 function renderQaPage(qc: QueryClient) {
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={["/qa"]}>
         <QaPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -182,14 +182,16 @@ describe("QaPage structure", () => {
     await waitFor(() => expect(screen.getByText("QA")).toBeDefined());
   });
 
-  it("renders 3 subtabs after data loads", async () => {
+  it("renders six peer tabs after data loads", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
     const qc = makeQClient();
     renderQaPage(qc);
     await waitFor(() => {
-      expect(screen.getByText("QA 标注")).toBeDefined();
-      expect(screen.getByText("Release Report")).toBeDefined();
-      expect(screen.getByText("Test 命令")).toBeDefined();
+      const nav = screen.getByRole("navigation", { name: "QA" });
+      expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual([
+        "qa log", "本期发布app", "测试命令", "开发者社区产物", "历史查询", "组件依赖",
+      ]);
+      expect(within(nav).getByRole("link", { name: "qa log" })).toHaveAttribute("aria-current", "page");
     });
   });
 
@@ -588,36 +590,36 @@ describe("QaPage AI job poll", () => {
 });
 
 describe("QaPage subtab navigation", () => {
-  it("switches to Release Report subtab", async () => {
+  it("switches to 本期发布app subtab", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
       if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
       return Promise.resolve(makePayload());
     });
     const qc = makeQClient();
     renderQaPage(qc);
-    await waitFor(() => expect(screen.getByText("Release Report")).toBeDefined());
-    fireEvent.click(screen.getByText("Release Report"));
+    await waitFor(() => expect(screen.getByText("本期发布app")).toBeDefined());
+    fireEvent.click(screen.getByText("本期发布app"));
     // Report pane appears with load button
     await waitFor(() => {
       expect(screen.getByText(/加载报告/)).toBeDefined();
     });
   });
 
-  it("switches to Test 命令 subtab", async () => {
+  it("switches to 测试命令 subtab", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
       if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
       return Promise.resolve(makePayload());
     });
     const qc = makeQClient();
     renderQaPage(qc);
-    await waitFor(() => expect(screen.getByText("Test 命令")).toBeDefined());
-    fireEvent.click(screen.getByText("Test 命令"));
+    await waitFor(() => expect(screen.getByText("测试命令")).toBeDefined());
+    fireEvent.click(screen.getByText("测试命令"));
     await waitFor(() => {
       expect(screen.getByText(/加载报告/)).toBeDefined();
     });
   });
 
-  it("shows perf_golden and perf_unit from each Test 命令 row", async () => {
+  it("shows perf_golden and perf_unit from each 测试命令 row", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
       if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
       if (path.includes("/api/qa-reports")) {
@@ -643,8 +645,8 @@ describe("QaPage subtab navigation", () => {
     });
     const qc = makeQClient();
     renderQaPage(qc);
-    await waitFor(() => expect(screen.getByText("Test 命令")).toBeDefined());
-    fireEvent.click(screen.getByText("Test 命令"));
+    await waitFor(() => expect(screen.getByText("测试命令")).toBeDefined());
+    fireEvent.click(screen.getByText("测试命令"));
     fireEvent.click(await screen.findByText("加载报告"));
 
     expect(await screen.findByText("perf_golden")).toBeDefined();
@@ -675,8 +677,8 @@ describe("QaPage subtab navigation", () => {
     });
     const qc = makeQClient();
     renderQaPage(qc);
-    await waitFor(() => expect(screen.getByText("Release Report")).toBeDefined());
-    fireEvent.click(screen.getByText("Release Report"));
+    await waitFor(() => expect(screen.getByText("本期发布app")).toBeDefined());
+    fireEvent.click(screen.getByText("本期发布app"));
     fireEvent.click(await screen.findByText("加载报告"));
 
     const compareSelect = await screen.findByDisplayValue("— 不对比 —");

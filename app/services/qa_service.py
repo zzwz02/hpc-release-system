@@ -6,7 +6,6 @@ rules that intentionally differ from the frozen legacy reference.
 from __future__ import annotations
 
 import base64
-import itertools
 import re
 import sqlite3
 from pathlib import Path
@@ -16,6 +15,8 @@ from app.api.errors import AuthzError
 from app.db.connection import transaction
 from app.domain import cycles as cycles_domain
 from app.domain import phases as phase_policy
+from app.domain import test_commands
+from app.domain.test_platforms import build_alias_is_redundant
 from app.domain.permissions import has_capability
 from app.domain.qa import (
     QA_STATUSES,
@@ -47,7 +48,8 @@ QA_RELEASE_REPORT_COLUMNS = [
 
 QA_TEST_CMD_COLUMNS = [
     "app_name", "git_branch", "app_version", "arch",
-    "base_image", "test_name", "docker_cmd", "perf_golden", "perf_unit",
+    "OS", "构建平台", "支持芯片", "commit_id", "test_name", "docker_cmd",
+    "perf_golden", "perf_unit", "Python label", "PyTorch label",
 ]
 
 # ---------------------------------------------------------------------------
@@ -216,239 +218,27 @@ def _owner_display_text(
     return ",".join(labels)
 
 
-def _report_normalize_arch(value: Any) -> str:
-    arch = str(value or "").strip().lower()
-    if arch in ("arm", "arm64", "aarch64"):
-        return "arm64"
-    if arch in ("x86", "x86_64", "amd64"):
-        return "amd64"
-    return arch
-
-
-def _report_denormalize_arch(value: Any) -> str:
-    arch = _report_normalize_arch(value)
-    if arch == "arm64":
-        return "arm"
-    if arch == "amd64":
-        return "x86"
-    return arch
-
-
-def _report_build_arches(app_info: dict[str, Any]) -> set[str]:
-    arches: set[str] = set()
-    for cfg in (app_info.get("app_build") or {}).values():
-        if not isinstance(cfg, dict) or cfg.get("enabled") is False:
-            continue
-        arch = _report_normalize_arch(cfg.get("arch"))
-        if arch:
-            arches.add(arch)
-    return arches
-
-
-def _report_test_arches(test_cfg: dict[str, Any]) -> set[str]:
-    arches: set[str] = set()
-    supported_chip = test_cfg.get("supported_chip")
-    if isinstance(supported_chip, dict):
-        for build_keys in supported_chip.values():
-            if not isinstance(build_keys, list):
-                continue
-            for key in build_keys:
-                arch = _report_normalize_arch(str(key).rsplit("_", 1)[-1])
-                if arch:
-                    arches.add(arch)
-    return arches
-
-
-def _report_test_skip(test_cfg: dict[str, Any], arch: str) -> bool:
-    supported_chip = test_cfg.get("supported_chip")
-    target = _report_normalize_arch(arch)
-    if not (isinstance(supported_chip, dict) and supported_chip) or not target:
-        return False
-    for build_keys in supported_chip.values():
-        keys = build_keys if isinstance(build_keys, list) else []
-        if any(_report_normalize_arch(str(k).rsplit("_", 1)[-1]) == target for k in keys):
-            return False
-    return True
-
-
-_REPORT_IMAGE_TARGET_SUFFIX = {
-    "release": "maca",
-    "dbg": "maca-dbg",
-}
-
-
-def _report_split_image_values(value: Any) -> list[str]:
-    if value in (None, ""):
-        return []
-    raw_values = value if isinstance(value, (list, tuple, set)) else re.split(r"[,，、;；/]+", str(value))
-    values: list[str] = []
-    for item in raw_values:
-        text = str(item or "").strip()
-        if text and text not in values:
-            values.append(text)
-    return values
-
-
-def _report_image_field_options(raw: dict[str, Any], build_cfg: dict[str, Any], field: str) -> list[str]:
-    if field == "sdk_version":
-        return ["<hpc_version>"]
-    if field in ("app_name", "app_version"):
-        value = raw.get(field)
-        if value in (None, ""):
-            value = build_cfg.get(field)
-    else:
-        value = build_cfg.get(field)
-        if value in (None, ""):
-            value = raw.get(field)
-    values = _report_split_image_values(value)
-    return values or [""]
-
-
-def _report_build_target_matches(build_cfg: dict[str, Any], image_target: str) -> bool:
-    targets = {v.lower() for v in _report_split_image_values(build_cfg.get("build_target"))}
-    if not targets:
-        return image_target == "release"
-    return image_target in targets
-
-
-def _report_image_values_for_build(
-    raw: dict[str, Any],
-    build_cfg: dict[str, Any],
-    image_target: str,
-) -> list[tuple[str, str]]:
-    suffix = _REPORT_IMAGE_TARGET_SUFFIX.get(image_target)
-    if not suffix:
-        return []
-    name_fields = [
-        _report_image_field_options(raw, build_cfg, "app_name"),
-        _report_image_field_options(raw, build_cfg, "spec"),
-        [suffix],
-    ]
-    app_versions = _report_image_field_options(raw, build_cfg, "app_version")
-    sdk_versions = _report_image_field_options(raw, build_cfg, "sdk_version")
-    pytorch_labels = _report_image_field_options(raw, build_cfg, "pytorch_label")
-    python_labels = _report_image_field_options(raw, build_cfg, "python_label")
-    os_values = _report_image_field_options(raw, build_cfg, "os")
-    arch_values = _report_image_field_options(raw, build_cfg, "arch")
-
-    images: list[tuple[str, str]] = []
-    for name_parts in itertools.product(*name_fields):
-        image_name = "-".join(part for part in name_parts if part)
-        if not image_name:
-            continue
-        for app_version, sdk_version, pytorch_label, python_label, os_value, arch in itertools.product(
-            app_versions, sdk_versions, pytorch_labels, python_labels, os_values, arch_values
-        ):
-            tag_parts = [app_version, sdk_version, pytorch_label, python_label, os_value, arch]
-            tag = "-".join(part for part in tag_parts if part)
-            image = f"{image_name}:{tag}" if tag else image_name
-            images.append((_report_denormalize_arch(arch), image))
-    return images
-
-
-def _report_docker_images(raw: dict[str, Any], image_target: str) -> list[tuple[str, str]]:
-    image_target = str(image_target or "").strip().lower()
-    if image_target not in _REPORT_IMAGE_TARGET_SUFFIX:
-        return []
-
-    rows: list[tuple[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    app_build = raw.get("app_build") or {}
-    build_items = app_build.values() if isinstance(app_build, dict) else []
-    for cfg in build_items:
-        if not isinstance(cfg, dict) or cfg.get("enabled") is False:
-            continue
-        if not _report_build_target_matches(cfg, image_target):
-            continue
-        for row in _report_image_values_for_build(raw, cfg, image_target):
-            if row not in seen:
-                seen.add(row)
-                rows.append(row)
-
-    if not rows and not app_build:
-        for row in _report_image_values_for_build(raw, {}, image_target):
-            if row not in seen:
-                seen.add(row)
-                rows.append(row)
-    return rows
-
-
-def _report_docker_cmd(test_cfg: dict[str, Any], docker_image: str | None = None) -> str:
-    container_args = str(test_cfg.get("container_args") or "").strip()
-    test_cmd = str(test_cfg.get("test_cmd") or "").strip()
-    img_target = str(test_cfg.get("img_target") or "").strip().lower()
-    if docker_image is not None:
-        image = docker_image
-    else:
-        image = f"[docker_image_{img_target}]" if img_target else "[docker_image]"
-    parts = ["docker run --pull always --rm -e MACA_PERF_DIR=/tmp"]
-    if test_cfg.get("mount_dataset"):
-        parts.append("-v /pde_hpc/dataset:/hpc_dataset:ro")
-    if container_args:
-        parts.append(container_args)
-    parts.append(image)
-    parts.append(f"sh -c '{test_cmd}'")
-    return " ".join(parts)
-
-
-def _report_expanded_docker_cmds(raw: dict[str, Any], test_cfg: dict[str, Any]) -> list[tuple[str, str]]:
-    img_target = str(test_cfg.get("img_target") or "").strip().lower()
-    return [
-        (arch, _report_docker_cmd(test_cfg, image))
-        for arch, image in _report_docker_images(raw, img_target)
-    ]
-
-
 def _report_test_cmd_rows(
     raw: dict[str, Any],
     app_name: str,
     git_branch: str,
-    base_image: str,
+    commit_id: str,
     excluded: set[str],
 ) -> list[list[str]]:
-    version_value = raw.get("app_version")
-    app_version = str(version_value).strip() if version_value not in (None, "") else ""
-    app_arches = _report_build_arches(raw)
-
-    rows: list[list[str]] = []
-    for test_name, test_cfg in (raw.get("app_test") or {}).items():
-        if not isinstance(test_cfg, dict) or test_cfg.get("enabled") is False:
-            continue
-        if str(test_name) in excluded:
-            continue
-        if str(test_cfg.get("test_period") or "").strip().lower() == "weekly":
-            continue
-        if test_cfg.get("ignore_release"):
-            continue
-        perf_golden = str(test_cfg.get("perf_golden") or "").strip()
-        perf_unit = str(test_cfg.get("perf_unit") or "").strip()
-        expanded_cmds = _report_expanded_docker_cmds(raw, test_cfg)
-        if expanded_cmds:
-            for arch, docker_cmd in expanded_cmds:
-                rows.append([app_name, git_branch, app_version, arch, base_image, str(test_name),
-                             docker_cmd, perf_golden, perf_unit])
-            continue
-        docker_cmd = _report_docker_cmd(test_cfg)
-        for arch in sorted(a for a in (_report_test_arches(test_cfg) or app_arches) if a):
-            if _report_test_skip(test_cfg, arch):
-                continue
-            rows.append([app_name, git_branch, app_version, _report_denormalize_arch(arch), base_image,
-                         str(test_name), docker_cmd, perf_golden, perf_unit])
-    return rows
+    return [
+        [app_name, git_branch, str(raw.get("app_version") or ""), test_commands.denormalize_arch(row["arch"]),
+         row["os"], row["build"], ",".join(row["chips"]), commit_id, row["test"], row["command"],
+         row["perf_golden"], row["perf_unit"], row["python_label"], row["pytorch_label"]]
+        for row in test_commands.command_rows(raw, excluded)
+    ]
 
 
-def entry_test_commands(conn: sqlite3.Connection, entry: dict[str, Any]) -> list[dict[str, str]]:
+def entry_test_commands(conn: sqlite3.Connection, entry: dict[str, Any]) -> list[dict[str, Any]]:
     """Docker test commands of an entry's locked scope (used by digest lookup)."""
     version = app_info_repo.get_version(conn, entry.get("locked_version_id"))
     if not version:
         return []
-    app = apps_repo.get_app(conn, entry["app_id"]) or {"id": entry["app_id"]}
-    image = releases_repo.get_base_image(conn, entry["base_image_id"]) if entry.get("base_image_id") else None
-    rows = _report_test_cmd_rows(
-        version["raw"], catalog_service.app_name(app), app.get("git_branch", ""),
-        (image or {}).get("name", ""), set(entry.get("excluded_tests") or []),
-    )
-    return [{"arch": row[3], "test": row[5], "command": row[6]} for row in rows]
+    return test_commands.command_rows(version["raw"], set(entry.get("excluded_tests") or []))
 
 
 def _compare_summary(
@@ -571,15 +361,21 @@ def get_qa_reports(
             if version:
                 test_rows.extend(_report_test_cmd_rows(
                     version["raw"], catalog_service.app_name(app), app.get("git_branch", ""),
-                    image_name, set(entry["excluded_tests"]),
+                    str(version.get("commit_id") or ""), set(entry["excluded_tests"]),
                 ))
     test_rows.sort(key=lambda row: (row[0].lower(), row[1].lower(), row[2].lower(), row[3].lower()))
+    test_columns = list(QA_TEST_CMD_COLUMNS)
+    build_column = test_columns.index("构建平台")
+    os_column, arch_column = test_columns.index("OS"), test_columns.index("arch")
+    if all(build_alias_is_redundant(row[build_column], row[os_column], row[arch_column]) for row in test_rows):
+        test_columns.pop(build_column)
+        test_rows = [row[:build_column] + row[build_column + 1:] for row in test_rows]
     return {
         "release_name": release["name"],
         "compare_release_id": compare_release_id or "",
         "compare_release_name": base_release_name,
         "release_report": {"columns": QA_RELEASE_REPORT_COLUMNS, "rows": release_rows, "rows_meta": rows_meta},
-        "test_cmd": {"columns": QA_TEST_CMD_COLUMNS, "rows": test_rows},
+        "test_cmd": {"columns": test_columns, "rows": test_rows},
         "generated_at": beijing_timestamp(),
     }
 

@@ -27,7 +27,7 @@ API_TARGET=http://127.0.0.1:8001 npm run dev -- --host 127.0.0.1 --port 5173 --s
 | --- | --- |
 | `src/api/` | 同源请求、登录 API 与 AuthContext；401 进入未登录状态 |
 | `src/main.tsx` | React、QueryClient 和 AuthProvider 的全局装配 |
-| `src/routes/` | 页签、路由与角色访问；`routeConfig.ts` 中同一 `group` 的路由合并为一个页签并显示为子页签（QA、AI助手）；Admin 非管理页深链接重定向到 `/admin` |
+| `src/routes/` | 页签、路由与角色访问；`routeConfig.ts` 中同一 `group` 的路由合并为一个顶栏页签（QA、AI助手），QA 的平级工具标签由 `QaTabs` 在内容区渲染；Admin 非管理页深链接重定向到 `/admin` |
 | `src/features/` | 周期、总览、App、QA、文档、CICD、Jenkins、助手、JIRA agent、周报、WIKI、管理页面 |
 | `src/lib/` | 权限、时间、阶段、字段词表和格式化 |
 | `src/store/uiStore.ts` | 共享周期选择、App 选择和编辑等 UI 状态 |
@@ -49,13 +49,15 @@ HTTP 类型声明不会验证真实 JSON。改接口时对照 router/service、�
 
 ## 交互与显示
 
-- QA 顶栏下显示 QA、历史查询、组件依赖子页签；后两项仅 RM、Owner、QA 可访问，前后端共用权限矩阵。历史查询和组件依赖仍使用 `/lookup`、`/dependencies` 地址，深链接进入时 QA 顶栏保持选中。
+- QA 内容区共用一排平级标签：qa log、本期发布app、测试命令、开发者社区产物、历史查询、组件依赖。前四项用 `/qa?tab=mark|release|test|community` 保留选中项，支持刷新和浏览器前进/后退；后两项仍使用 `/lookup`、`/dependencies`，仅 RM、Owner、QA 可访问，前后端共用权限矩阵。所有直达链接都保持 QA 顶栏选中。
+- 历史查询镜像模式调用 `GET /api/lookup/image?image=完整镜像引用`，展示 Harbor tags、commit、app_info 来源与固定到 digest 的 Docker 命令；由后端只读查询 Harbor/Gerrit，不依赖镜像的报名记录。来源链接在新页打开 `/api/lookup/app-info?image=…&commit_id=…`，按原 commit 从已登记仓库读取并展示原始 JSON；复用历史查询权限，不重新解析 Harbor tags，不写业务记录。按 App 查询仍调用 `/api/lookup/app`。原 `/api/lookup/digest` 保留本地报名与基础镜像查询契约。
+- App、QA、历史查询的测试范围使用后端 `test.platforms`，逐行显示 OS、CPU 架构（x86/ARM）、支持芯片及命令，不从 `supported_chips` 的并集推断平台。历史按 App 的两项芯片总览来自当期锁定版本，按镜像则只来自实际匹配的镜像构建。QA 测试命令表/CSV 用 `commit_id` 替换 `base_image`，取当期锁定 app_info 版本的 commit；保留 OS、支持芯片和 Python/PyTorch label，构建别名与 OS/架构完全重复时省略整列，包含其他配置时保留。列结构变化时清除按列筛选和排序，避免索引错位。
 - 周期选择使用共享 `selectedReleaseId`，跳转 App 时保留正确周期；不把不同 release 的编辑草稿或 QA 建议混用。
 - 总览和 App 工作台工具栏的报名截止、QA 截止、发布日横向并排，标签在上、日期在下；空间不足时按完整日期项换行。
 - 总览统计卡片旁显示所选周期 `release.environment` 的组件、版本、说明，取代独立发布时间线；仅展示，随共享周期选择和显式刷新更新，不单独请求或轮询。
-- 周期管理基础镜像每行两个输入：完整镜像引用、说明；提交 `image: {id?, reference, note}`，名称/地址/digest 由后端解析。读取模型保留原字段，显示及编辑时组合引用；校验失败保留输入并显示错误。
+- 周期管理基础镜像每行两个输入：完整镜像引用、说明；提交 `image: {id?, reference, note}`，名称/地址/digest 由后端解析。历史查询和基础镜像输入使用 `stripDockerPullPrefix` 即时移除 `docker pull`，后端共享镜像解析器也接受该前缀。读取模型保留原字段，显示及编辑时组合引用；校验失败保留输入并显示错误。
 - 保留未保存编辑保护，选中 App 后详情应直接可见，长列表与详情按需独立滚动。
-- App 详情默认「基本信息和app_info」，不显示报名 tab。四项基本信息单独保存，资料保存不提交这四项，避免跨 tab 覆盖。单 App 同步按钮在标题栏；范围扩大和同步失败提醒位于 tab 外，切换 tab 后保留，提醒只随显式刷新或写后重取更新。
+- App 详情默认「基本信息和app_info」，不显示报名 tab。四项基本信息单独保存，资料保存不提交这四项，避免跨 tab 覆盖。单 App「立即同步app_info」位于「最新 app_info」标题旁，无 app_info 时也显示该标题与同步入口；范围扩大和同步失败提醒位于 tab 外，切换 tab 后保留，提醒只随显式刷新或写后重取更新。
 - 报名入口为工具栏「批量报名」和应用标题栏「报名」。弹窗按账号、角色和周期独立查询最新状态及环境；切换周期清除勾选，成功后失效共享 state/CICD 缓存并跳到报名周期。批量接口只接收本人负责的 App，整批原子提交；单 App 沿用报名接口及 RM 代报名权限。
 - Markdown 的 `dangerouslySetInnerHTML` 出口集中在 `Markdown.tsx` 的 DOMPurify 流程；业务组件使用该组件。
 - 日期输入使用 `DateInput` 和统一归一化，显示/提交 `YYYY-MM-DD`。
@@ -89,3 +91,7 @@ QA 导航与权限验证使用不带 `--signup` 的同一隔离后端，执行 `
 基础镜像验证使用同一隔离后端，执行 `BASE_IMAGE_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/base-images.spec.ts`。覆盖完整引用新增及解析回读、旧记录编辑、格式错误保留、digest 查询、跨周期显示和发布后只读。
 
 总览组件信息验证使用加 `--signup` 的隔离后端，执行 `DASHBOARD_COMPONENTS_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/dashboard-components.spec.ts`。覆盖跨周期展示、RM 修改环境后显式刷新、保留顶部日期，以及 Owner/QA/Guest 的只读展示。
+
+镜像历史查询验证使用同一隔离后端加 `--lookup`，执行 `IMAGE_LOOKUP_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/image-lookup.spec.ts`。上游使用本地 Harbor/Gerrit 响应，验证完整引用提交、历史版本命令、固定 digest、数据挂载、错误后清除旧结果、按 App 查询及角色权限。
+
+跨平台范围验证使用隔离后端参数 `--lookup --platforms`，执行 `TEST_PLATFORMS_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/test-platforms.spec.ts`。同一份包含不同 OS/x86/ARM 芯片组合的 app_info 验证 App 详情、QA 范围和命令、按 App 历史以及 x86/ARM 镜像查询。

@@ -10,6 +10,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--signup", action="store_true", help="Include signup dialog scenarios")
+    parser.add_argument("--lookup", action="store_true", help="Include Harbor image lookup scenarios")
+    parser.add_argument("--platforms", action="store_true", help="Include OS/architecture/chip mapping scenarios")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="app-info-site-") as temporary:
         folder = Path(temporary)
@@ -28,7 +30,7 @@ def main():
         from app.integrations import gerrit
         from app.main import create_app
         from app.services import catalog_service
-        from tests.conftest import close_signup, make_app_info, seed_app, seed_cycle, seed_signup
+        from tests.conftest import close_signup, make_app_info, make_platform_app_info, seed_app, seed_cycle, seed_signup
         import uvicorn
 
         conn = connect(settings.db_path)
@@ -45,10 +47,46 @@ def main():
             conn, "info-check", {"description": "保留的手册描述", "official_url": "https://example.test"},
             user="app_rm", role="RM",
         )
+        if args.platforms:
+            platform_info = make_platform_app_info()
+            seed_app(conn, "platform-check", official_name="HPCG", app_info=platform_info)
         for name in ["browser-cycle-a", "browser-cycle-b"]:
             release_id = seed_cycle(conn, name=name)
             seed_signup(conn, release_id, "info-check")
+            if args.platforms:
+                seed_signup(conn, release_id, "platform-check")
             close_signup(conn, release_id)
+        if args.lookup:
+            historical = make_app_info(app_name="abacus", app_version="3.9.0.27", tests={"sanity": ["C500"], "dataset": ["C500"]})
+            historical["app_build"]["ubuntu22.04_amd64"] = historical["app_build"].pop("ubuntu20.04_amd64")
+            historical["app_build"]["ubuntu22.04_amd64"]["os"] = "ubuntu22.04"
+            for cfg in historical["app_test"].values():
+                cfg["supported_chip"] = {"C500": ["ubuntu22.04_amd64"]}
+                cfg["img_target"] = "release"
+                cfg["mount_dataset"] = True
+                cfg["container_args"] = "--device=/dev/dri -u 0"
+            seed_app(conn, "lookup-image", app_info=make_app_info(app_name="abacus", app_version="4.0"))
+            from app.api.errors import ApiError
+            from app.integrations import harbor
+
+            def lookup_artifact(project, repository, digest):
+                if digest == "sha256:" + "e" * 64:
+                    raise ValueError("Harbor 中未找到该镜像，请检查镜像名和 digest")
+                if digest == "sha256:" + "d" * 64:
+                    raise ApiError(502, "Harbor 查询失败（ReadTimeout），请稍后重试")
+                tags = [] if digest == "sha256:" + "f" * 64 else [
+                    "3.9.0.27-bb46c60-ubuntu22.04-amd64-3012",
+                    "3.9.0.27-3.10.1.2-ubuntu22.04-amd64-3012",
+                    "3.9.0.27-3.10.1.2-ubuntu22.04-amd64",
+                ]
+                architecture = "amd64"
+                if repository == "hpcg-maca":
+                    architecture = "arm64" if digest == "sha256:" + "b" * 64 else "amd64"
+                    platform_tag = "ubuntu20.04-arm64" if architecture == "arm64" else "kylinv11-amd64"
+                    tags = [f"0.9.0-bb46c60-{platform_tag}-3012"]
+                return {"digest": digest, "tags": [{"name": tag} for tag in tags], "extra_attrs": {"architecture": architecture}}
+
+            harbor.get_artifact = lookup_artifact
         if args.signup:
             from app.services import cicd_service
 
@@ -84,9 +122,14 @@ def main():
             return "expanded-head"
 
         gerrit.head_commit = head_commit
-        gerrit.fetch_app_info_at = lambda *_a, **_k: json.dumps(
-            make_app_info(app_version="2.0", chips=["c500", "c600"])
-        )
+        def fetch_app_info(url, commit, **_kwargs):
+            if args.platforms and url.endswith("hpc_platform-check"):
+                return json.dumps(platform_info)
+            if args.lookup and url.endswith("hpc_lookup-image"):
+                return json.dumps(historical)
+            return json.dumps(make_app_info(app_version="2.0", chips=["c500", "c600"]))
+
+        gerrit.fetch_app_info_at = fetch_app_info
         uvicorn.run(create_app(), host="127.0.0.1", port=args.port)
 
 

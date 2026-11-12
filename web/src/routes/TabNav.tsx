@@ -6,7 +6,7 @@
  * disabled) — identical to the legacy `el.hidden = !allowed` behavior.
  *
  * Routes sharing a group (QA, AI助手) render as one tab; while one of them is
- * open, a second row lists the group's sub-tabs the role may open.
+ * open, AI助手 shows a second row. QA renders its peer tabs inside the page.
  *
  * The CICD tab shows a notification badge (red dot) when count > 0.
  * Mirrors legacy cicdBadge logic (index.html:3940).
@@ -142,7 +142,7 @@ export function TabNav() {
           <span className="tab invisible">&nbsp;</span>
         )}
       </nav>
-      {activeGroup && (
+      {activeGroup && activeGroup.key !== "qa" && (
         <nav className="tab-subnav" aria-label={activeGroup.label}>
           <div className="subtabs">
             {activeGroup.children.map((route) => (
