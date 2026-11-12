@@ -545,6 +545,90 @@ def test_http_signup_and_publish_are_refused_for_the_wrong_role(temp_db, api) ->
     )
 
 
+def test_http_batch_signup_uses_each_latest_version_and_reads_back_environment(temp_db, api) -> None:
+    client, set_user = api
+    first = seed_app(temp_db, "batch_a")
+    second = seed_app(temp_db, "batch_b", app_info=make_app_info(app_version="2.0"))
+    release_id = seed_cycle(temp_db)
+    environment = [
+        {"component": "Driver", "version": "3.0", "note": "driver note"},
+        {"component": "SDK", "version": "3.1", "note": ""},
+        {"component": "PyTorch", "version": "2.5", "note": ""},
+    ]
+    cycle_service.save_environment(temp_db, release_id, environment, user="rm", role="RM")
+    set_user({"username": "owner_test", "role": "Owner", "display_name": "Owner"})
+    response = client.post("/api/entries/signup-batch", json={"release_id": release_id, "app_ids": [first, second, first]})
+    assert response.status_code == 200
+    entries = response.json()["entries"]
+    assert [(entry["app_id"], entry["target_version"]) for entry in entries] == [(first, "1.0"), (second, "2.0")]
+    assert all(entry["base_image_id"] is None and entry["excluded_tests"] == [] for entry in entries)
+    assert all(entry["planned_features"] == "" and entry["locked_version_id"] for entry in entries)
+    state = client.get("/api/state", params={"release_id": release_id, "include_allowed_actions": 1}).json()
+    assert len(state["release"]["entries"]) == 2
+    assert [{key: row[key] for key in ("component", "version", "note")} for row in state["release"]["environment"]] == environment
+    assert all(app["open_signups"] == ["2099-01"] for app in state["apps"])
+
+
+@pytest.mark.parametrize("problem,expected_status", [
+    ("stopped", 400), ("pending_stop", 400), ("no_info", 400), ("no_version", 400),
+    ("already_signed", 400), ("not_owned", 403), ("deleted", 400),
+])
+def test_http_batch_signup_rolls_back_earlier_apps_when_a_later_app_is_invalid(temp_db, api, problem, expected_status) -> None:
+    from app.services import cicd_service
+
+    client, set_user = api
+    first = seed_app(temp_db, "batch_good")
+    second = seed_app(
+        temp_db, "batch_bad", cicd_status="stopped" if problem == "stopped" else "running",
+        app_info=None if problem == "no_info" else make_app_info(app_version="" if problem == "no_version" else "1.0"),
+        owners=["someone_else"] if problem == "not_owned" else ["owner_test"],
+    )
+    release_id = seed_cycle(temp_db)
+    if problem == "pending_stop":
+        cicd_service.submit_request(
+            temp_db, task_id=second, request_type="modify", payload={"status": {"old": "running", "new": "stopped"}},
+            submitter="owner_test", submitter_role="Owner", submitter_display="Owner", source="app_workbench",
+        )
+    if problem == "already_signed":
+        seed_signup(temp_db, release_id, second)
+    if problem == "deleted":
+        second = "deleted-app"
+    before = temp_db.execute("SELECT COUNT(*) FROM audit").fetchone()[0]
+    set_user({"username": "owner_test", "role": "Owner", "display_name": "Owner"})
+    response = client.post("/api/entries/signup-batch", json={"release_id": release_id, "app_ids": [first, second]})
+    assert response.status_code == expected_status
+    assert response.json()["error"]
+    assert entries_repo.find_entry(temp_db, release_id, first) is None
+    assert temp_db.execute("SELECT COUNT(*) FROM audit").fetchone()[0] == before
+    assert len(cycle_service.list_entry_views(temp_db, release_id)) == (1 if problem == "already_signed" else 0)
+
+
+def test_http_batch_signup_rechecks_ownership_role_and_deadline(temp_db, api) -> None:
+    client, set_user = api
+    app_id = seed_app(temp_db)
+    release_id = seed_cycle(temp_db)
+    body = {"release_id": release_id, "app_ids": [app_id]}
+    # RM may sign up another Owner's App individually, but the batch picker is owned-only.
+    assert client.post("/api/entries/signup-batch", json=body).status_code == 403
+    set_user({"username": "owner_test", "role": "QA", "display_name": "QA"})
+    assert client.post("/api/entries/signup-batch", json=body).status_code == 403
+    set_user({"username": "owner_test", "role": "Owner", "display_name": "Owner"})
+    close_signup(temp_db, release_id)
+    response = client.post("/api/entries/signup-batch", json=body)
+    assert response.status_code == 400
+    assert "报名已截止" in response.json()["error"]
+    assert entries_repo.find_entry(temp_db, release_id, app_id) is None
+
+
+@pytest.mark.parametrize("app_ids", [None, [], "testapp", [None], [""]])
+def test_http_batch_signup_requires_an_app_selection(temp_db, api, app_ids) -> None:
+    client, _ = api
+    release_id = seed_cycle(temp_db)
+    response = client.post("/api/entries/signup-batch", json={"release_id": release_id, "app_ids": app_ids})
+    assert response.status_code == 400
+    assert "请选择" in response.json()["error"]
+
+
 def test_http_scope_request_is_decided_by_qa(temp_db, api) -> None:
     client, set_user = api
     app_id = seed_app(temp_db)

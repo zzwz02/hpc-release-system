@@ -34,6 +34,12 @@ vi.mock("../../features/appWorkbench/AppWorkbenchPage", () => ({
 vi.mock("../../features/qa/QaPage", () => ({
   QaPage: () => <div>qa</div>,
 }));
+vi.mock("../../features/lookup/LookupPage", () => ({
+  LookupPage: () => <div data-testid="lookup-page">lookup</div>,
+}));
+vi.mock("../../features/dependencies/DependenciesPage", () => ({
+  DependenciesPage: () => <div data-testid="dependencies-page">dependencies</div>,
+}));
 vi.mock("../../features/artifacts/ArtifactsPage", () => ({
   ArtifactsPage: () => <div>artifacts</div>,
 }));
@@ -125,6 +131,8 @@ describe("AppRouter", () => {
   });
 
   for (const { view, testId } of [
+    { view: "lookup", testId: "lookup-page" },
+    { view: "dependencies", testId: "dependencies-page" },
     { view: "jenkins-failures", testId: "jenkins-failures-page" },
     { view: "cicd-assistant", testId: "cicd-assistant-page" },
     { view: "cicd-assistant-v2", testId: "cicd-assistant-v2-page" },

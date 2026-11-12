@@ -163,13 +163,14 @@ a:hover { text-decoration: underline; }
 /* Compact release deadlines share the page toolbar with release actions. */
 .release-deadlines {
   display: flex; align-items: center; gap: 10px;
-  margin-left: 8px; font-size: 12px;
+  max-width: 100%; margin-left: 8px; font-size: 12px;
 }
 .release-deadlines > .muted { white-space: nowrap; }
-.release-deadlines dl { display: grid; gap: 3px; margin: 0; }
-.release-deadlines dl > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
-.release-deadlines dt { color: var(--ink-2); min-width: 12em; }
+.release-deadlines dl { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0; }
+.release-deadlines dl > div { display: flex; flex-direction: column; gap: 2px; }
+.release-deadlines dt { color: var(--ink-2); white-space: nowrap; }
 .release-deadlines dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.base-images-table th:first-child { width: 70%; }
 
 /* section headings inside pages */
 .view h2 { font-size: 17px; margin: 2px 0 12px; }
@@ -577,6 +578,8 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
 .detail-head .dh-main { flex: 1; min-width: 0; }
 .detail-head h2 { font-size: 16px; margin-bottom: 5px; }
 .detail-head .row2 { gap: 6px; }
+.banner.app-scope-warning { display: block; flex-shrink: 0; margin: 10px 16px; }
+.app-scope-additions { max-height: 80px; overflow: auto; }
 .detail-head .greet { font-size: 12px; color: var(--accent-ink); background: var(--accent-soft); border: 1px solid var(--accent-bd); padding: 4px 9px; border-radius: var(--r-pill); }
 .detail-body {
   flex: 1; min-height: 0; overflow: auto;
@@ -628,6 +631,13 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
 .detail-body .section-body { margin-top: 0; padding: 12px; }
 .detail-body .section .badge { margin-left: auto; }
 .detail-body .form { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.detail-body .basic-info-form { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 1000px) {
+  .detail-body .basic-info-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .detail-body .basic-info-form { grid-template-columns: 1fr; }
+}
 .detail-body .community-doc-form {
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   align-items: end;
@@ -2107,6 +2117,12 @@ textarea.artifact {
 .lerr { font-size: 12.5px; margin-top: 5px; }
 
 /* ============================ dialogs / modals ============================ */
+.dialog-card.signup-dialog { width: min(760px, 100%); max-height: calc(100dvh - 48px); display: flex; flex-direction: column; overflow: hidden; }
+.signup-dialog > .dialog-head, .signup-dialog > .dialog-actions { flex-shrink: 0; }
+.signup-dialog .signup-dialog-body { display: flex; flex-direction: column; overflow: auto; min-height: 0; }
+.signup-dialog-body > * { flex-shrink: 0; }
+.signup-app-toolbar .input { flex: 1; min-width: 160px; width: auto; }
+.signup-app-table { max-height: 320px; overflow: auto; }
 .dialog-backdrop {
   position: fixed; inset: 0; z-index: 100;
   display: grid; place-items: center; padding: 24px;

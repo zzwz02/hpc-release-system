@@ -9,7 +9,7 @@ from app.deps import get_db, require_tab_access
 from app.services import lookup_service
 
 router = APIRouter(prefix="/api/lookup", tags=["lookup"])
-require_lookup_tab = require_tab_access("lookup", message="无权查询")
+require_lookup_tab = require_tab_access("lookup", message="无权查看历史查询")
 
 
 @router.get("/digest")

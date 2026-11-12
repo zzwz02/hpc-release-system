@@ -2,13 +2,11 @@
  * 资料 — optional App profile used by the cumulative manuals.
  *
  * None of these fields is a release prerequisite any more; sections start
- * collapsed.  Owner and official name are RM-only.
+ * collapsed. Basic identity fields are edited in 基本信息和app_info.
  */
 import React from "react";
 import { apiPost } from "../../api/http";
 import { toast } from "../../lib/toast";
-import { appTypeOptionsForTarget, normalizeDocTarget } from "../../lib/domainMetadata";
-import { docTargetLabels, docTargetOptions } from "../../lib/labels";
 import type { App, AppTestDoc } from "../../types";
 import { APP_DESCRIPTION_LIMIT, appDescriptionCount } from "./helpers";
 import { ReadField } from "./pills";
@@ -29,10 +27,6 @@ const TEST_DOC_FIELDS = [
 ] as const;
 
 interface ProfileForm {
-  official_name: string;
-  owners: string;
-  doc_target: string;
-  type: string;
   official_url: string;
   description: string;
   doc: Record<string, string>;
@@ -43,10 +37,6 @@ interface ProfileForm {
 
 function formFromApp(app: App): ProfileForm {
   return {
-    official_name: app.official_name,
-    owners: app.owners.join(", "),
-    doc_target: normalizeDocTarget(app.doc_target),
-    type: app.type,
     official_url: app.official_url,
     description: app.description,
     doc: { ...(app.doc as Record<string, string>) },
@@ -89,7 +79,6 @@ export function ProfilePane({ app, canEdit, canEditRmFields, onSaved, onDirtyCha
   const community = app.latest_app_info?.community ?? {};
   const hasCommunity = (community.image_count ?? 0) > 0 || (community.pkg_count ?? 0) > 0;
   const hasPkg = (community.pkg_count ?? 0) > 0;
-  const typeOptions = appTypeOptionsForTarget(form.doc_target);
 
   function patchTestDoc(path: string, field: keyof AppTestDoc, value: string) {
     const current = testDocsByPath.get(path) ?? { path };
@@ -99,8 +88,6 @@ export function ProfilePane({ app, canEdit, canEditRmFields, onSaved, onDirtyCha
 
   async function handleSave() {
     const fields: Record<string, unknown> = {
-      doc_target: form.doc_target,
-      type: form.type,
       official_url: form.official_url,
       description: form.description,
       doc: form.doc,
@@ -108,8 +95,6 @@ export function ProfilePane({ app, canEdit, canEditRmFields, onSaved, onDirtyCha
       test_docs: form.test_docs.filter((doc) => tests.some((t) => t.path === doc.path)),
     };
     if (canEditRmFields) {
-      fields.official_name = form.official_name;
-      fields.owners = form.owners;
       fields.sanity = form.sanity;
     }
     setSaving(true);
@@ -134,35 +119,9 @@ export function ProfilePane({ app, canEdit, canEditRmFields, onSaved, onDirtyCha
         <div className="banner">这些资料用于使用手册和 AI4Sci 手册，不是报名或发布的前置条件，可按需填写。</div>
 
         <details className="section" open>
-          <summary><span className="chev">▶</span> 基本信息</summary>
+          <summary><span className="chev">▶</span> 应用介绍</summary>
           <div className="section-body">
             <div className="form">
-              <label>官方名称
-                <input className="input" value={form.official_name} onChange={(e) => patch({ official_name: e.target.value })}
-                  disabled={disabled || !canEditRmFields} data-testid="field-official-name" />
-              </label>
-              <label>Owner
-                <input className="input" value={form.owners} onChange={(e) => patch({ owners: e.target.value })}
-                  disabled={disabled || !canEditRmFields} />
-              </label>
-              <label>类型
-                <select className="select" value={form.doc_target} disabled={disabled}
-                  onChange={(e) => {
-                    const target = e.target.value;
-                    patch({ doc_target: target, type: appTypeOptionsForTarget(target).includes(form.type) ? form.type : "" });
-                  }}
-                  data-testid="field-doc-target">
-                  {docTargetOptions.map((v) => <option key={v} value={v}>{docTargetLabels[v]}</option>)}
-                </select>
-              </label>
-              <label>App 类型
-                <select className="select" value={form.type} disabled={disabled}
-                  onChange={(e) => patch({ type: e.target.value })} data-testid="field-app-type">
-                  <option value="">请选择 App 类型</option>
-                  {typeOptions.map((type) => <option key={type} value={type}>{type}</option>)}
-                  {form.type && !typeOptions.includes(form.type) && <option value={form.type}>{form.type}（当前值）</option>}
-                </select>
-              </label>
               <label>官方 URL
                 <input className="input" value={form.official_url} onChange={(e) => patch({ official_url: e.target.value })}
                   disabled={disabled} />

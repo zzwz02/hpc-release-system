@@ -101,6 +101,29 @@ describe("TabNav", () => {
 
   // ── AI助手 group ───────────────────────────────────────────────────────────
 
+  it.each(["RM", "Owner", "QA"] as const)("shows history and dependencies under QA for %s", (role) => {
+    renderTabNav(role, "/lookup");
+    expect(linkLabels("nav.tabs a")).toContain("QA");
+    expect(linkLabels("nav.tabs a")).not.toContain("历史查询");
+    expect(linkLabels("nav.tabs a")).not.toContain("组件依赖");
+    expect(linkLabels(".tab-subnav a")).toEqual(["QA", "历史查询", "组件依赖"]);
+    expect(document.querySelector('nav.tabs a[href="/qa"]')).toHaveClass("active");
+    expect(screen.getByRole("link", { name: "历史查询" })).toHaveClass("active");
+    expect(screen.getByRole("link", { name: "组件依赖" })).not.toHaveClass("active");
+  });
+
+  it("keeps the QA parent active for a dependencies deep link", () => {
+    renderTabNav("Owner", "/dependencies?component=sdk");
+    expect(document.querySelector('nav.tabs a[href="/qa"]')).toHaveClass("active");
+    expect(screen.getByRole("link", { name: "组件依赖" })).toHaveClass("active");
+  });
+
+  it.each(["Guest", "SPD", "Admin"] as const)("hides QA history and dependencies for %s", (role) => {
+    renderTabNav(role, "/qa");
+    expect(screen.queryByRole("link", { name: "历史查询" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "组件依赖" })).toBeNull();
+  });
+
   it("collapses the AI助手 routes into one tab", () => {
     renderTabNav("RM");
     const labels = linkLabels("nav.tabs a");

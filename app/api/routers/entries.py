@@ -1,6 +1,7 @@
 """Signup entries and QA scope requests.
 
   POST /api/entries/signup          — Owner/RM signs an App up for a cycle
+  POST /api/entries/signup-batch    — sign up owned Apps together
   POST /api/entries/update          — plan, scope, actual delivery, known issues
   POST /api/entries/withdraw
   POST /api/scope-requests/decide   — QA approves or rejects a wider scope
@@ -15,6 +16,17 @@ from app.deps import get_db, require_login
 from app.services import cycle_service
 
 router = APIRouter(tags=["entries"])
+
+
+@router.post("/api/entries/signup-batch")
+def post_signup_batch(
+    body: dict,
+    user: dict = Depends(require_login),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    return {"entries": cycle_service.signup_batch(
+        conn, body["release_id"], body.get("app_ids"), user=user["username"], role=user["role"],
+    )}
 
 
 @router.post("/api/entries/signup")

@@ -1,5 +1,5 @@
 /**
- * 查询 — find the cycle, environment, test scope and test commands behind a
+ * 历史查询 — find the cycle, environment, test scope and test commands behind a
  * delivered image digest, or an App's release history.
  */
 import React from "react";
@@ -135,7 +135,7 @@ export function LookupPage() {
   return (
     <section className="view active" data-testid="lookup-page">
       <div className="page-toolbar">
-        <h2>查询</h2>
+        <h2>历史查询</h2>
       </div>
       <div className="subtabs">
         <button className={`subtab${mode === "digest" ? " active" : ""}`} onClick={() => setMode("digest")}>按镜像 digest</button>

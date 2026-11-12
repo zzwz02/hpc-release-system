@@ -303,22 +303,29 @@ function EnvironmentPanel({ release, onMutated }: { release: ReleaseDetail; onMu
 // Base images
 // ---------------------------------------------------------------------------
 
-const EMPTY_IMAGE = { name: "", image: "", digest: "", note: "" };
+const EMPTY_IMAGE = { reference: "", note: "" };
+
+function baseImageReference(image: BaseImage): string {
+  const address = image.image || image.name;
+  return image.digest && !address.includes("@") ? `${address}@${image.digest}` : address;
+}
 
 function BaseImagesPanel({ release, onMutated }: { release: ReleaseDetail; onMutated: () => void }) {
   const editable = !release.released_locked;
-  const [draft, setDraft] = useState<Partial<BaseImage>>(EMPTY_IMAGE);
+  const [draft, setDraft] = useState<{ id?: number; reference: string; note: string }>(EMPTY_IMAGE);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
-  async function save(image: Partial<BaseImage>) {
+  async function save() {
     setSaving(true);
+    setError("");
     try {
-      await apiPost("/api/releases/base-image", { release_id: release.id, image });
+      await apiPost("/api/releases/base-image", { release_id: release.id, image: draft });
       setDraft(EMPTY_IMAGE);
       toast.success("基础镜像已保存");
       onMutated();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);
     }
@@ -328,6 +335,7 @@ function BaseImagesPanel({ release, onMutated }: { release: ReleaseDetail; onMut
     if (!(await confirmDialog({ title: "删除基础镜像", body: `删除「${image.name}」？`, danger: true, confirmText: "删除" }))) return;
     try {
       await apiPost("/api/releases/base-image/delete", { release_id: release.id, image_id: image.id });
+      if (draft.id === image.id) { setDraft(EMPTY_IMAGE); setError(""); }
       onMutated();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
@@ -338,46 +346,45 @@ function BaseImagesPanel({ release, onMutated }: { release: ReleaseDetail; onMut
     <div className="panel">
       <div className="panel-head"><h2>基础镜像</h2></div>
       <div className="panel-body">
-        <div className="table" data-testid="base-images-table">
+        <p className="hint mt-0">每行填写一个完整镜像引用和说明，保存时自动解析名称、镜像地址和 digest。</p>
+        <div className="table base-images-table" data-testid="base-images-table">
           <table>
-            <thead><tr><th>名称</th><th>镜像地址</th><th>Digest</th><th>说明</th>{editable && <th />}</tr></thead>
+            <thead><tr><th>完整镜像引用</th><th>说明</th>{editable && <th />}</tr></thead>
             <tbody>
               {release.base_images.map((image) => (
                 <tr key={image.id}>
-                  <td>{image.name}</td>
-                  <td className="mono small">{image.image}</td>
-                  <td className="mono small">{image.digest}</td>
+                  <td className="mono small break">{baseImageReference(image)}</td>
                   <td>{image.note}</td>
                   {editable && (
                     <td className="nowrap">
-                      <button className="btn ghost sm" onClick={() => setDraft(image)}>编辑</button>
-                      <button className="btn ghost sm" onClick={() => void remove(image)}>删除</button>
+                      <button className="btn ghost sm" disabled={saving} onClick={() => {
+                        setDraft({ id: image.id, reference: baseImageReference(image), note: image.note }); setError("");
+                      }}>编辑</button>
+                      <button className="btn ghost sm" disabled={saving} onClick={() => void remove(image)}>删除</button>
                     </td>
                   )}
                 </tr>
               ))}
               {editable && (
                 <tr>
-                  <td><input className="input sm" placeholder="名称" value={draft.name ?? ""}
-                    onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} aria-label="基础镜像名称" /></td>
-                  <td><input className="input sm" placeholder="镜像地址" value={draft.image ?? ""}
-                    onChange={(e) => setDraft((d) => ({ ...d, image: e.target.value }))} aria-label="镜像地址" /></td>
-                  <td><input className="input sm" placeholder="sha256:…" value={draft.digest ?? ""}
-                    onChange={(e) => setDraft((d) => ({ ...d, digest: e.target.value }))} aria-label="Digest" /></td>
-                  <td><input className="input sm" placeholder="说明" value={draft.note ?? ""}
+                  <td><input className="input sm mono" placeholder="harbor.sh.mxcr.io/hpc-release/amgx-maca@sha256:…" value={draft.reference}
+                    disabled={saving} onChange={(e) => setDraft((d) => ({ ...d, reference: e.target.value }))} aria-label="完整镜像引用" /></td>
+                  <td><input className="input sm" placeholder="说明" value={draft.note} disabled={saving}
                     onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} aria-label="说明" /></td>
                   <td className="nowrap">
-                    <button className="btn primary sm" disabled={saving || !(draft.name ?? "").trim()}
-                      onClick={() => void save(draft)} data-testid="save-base-image-btn">
+                    <button className="btn primary sm" disabled={saving || !draft.reference.trim()}
+                      onClick={() => void save()} data-testid="save-base-image-btn">
                       {draft.id ? "保存" : "添加"}
                     </button>
-                    {draft.id && <button className="btn ghost sm" onClick={() => setDraft(EMPTY_IMAGE)}>取消</button>}
+                    {(draft.id || draft.reference || draft.note) && <button className="btn ghost sm" disabled={saving}
+                      onClick={() => { setDraft(EMPTY_IMAGE); setError(""); }}>取消</button>}
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
+        {error && <div className="banner bad mt-10" role="alert">{error}</div>}
       </div>
     </div>
   );
@@ -748,7 +755,7 @@ export function ReleaseCyclePage() {
               <>
                 <CycleSettingsPanel release={release} onMutated={() => handleMutated()} />
                 <EnvironmentPanel release={release} onMutated={() => handleMutated()} />
-                <BaseImagesPanel release={release} onMutated={() => handleMutated()} />
+                <BaseImagesPanel key={release.id} release={release} onMutated={() => handleMutated()} />
                 <PublishPanel release={release} releases={releases} onMutated={() => handleMutated()} />
               </>
             )}

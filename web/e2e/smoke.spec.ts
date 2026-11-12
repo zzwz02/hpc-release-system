@@ -265,10 +265,10 @@ test.describe("All 8 tabs load", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Suite 3: App 工作台 — select app, change decision, save
+// Suite 3: App 工作台 — select app, basic information and app_info
 // ---------------------------------------------------------------------------
 
-test.describe("App 工作台 decision save", () => {
+test.describe("App 工作台 details", () => {
   test("select first app and verify detail panel appears", async ({ page }) => {
     await login(page, "rm");
     await page.goto(`${BASE}/apps`);
@@ -284,28 +284,19 @@ test.describe("App 工作台 decision save", () => {
     expect(panel!.length).toBeGreaterThan(20);
   });
 
-  test("signs up a running App for an open cycle", async ({ page }) => {
+  test("opens basic information and app_info with sync in the title bar", async ({ page }) => {
     await login(page, "rm");
     await ensureWritableAppsRelease(page);
-    await page.locator('[data-testid="app-status-filter"]').selectOption("not_signed_up");
     const firstRow = page.locator('[data-testid^="app-row-"]').first();
     if (!await firstRow.isVisible({ timeout: 5_000 }).catch(() => false)) {
       test.skip();
       return;
     }
     await firstRow.click();
-    await page.waitForSelector('[data-testid="signup-pane"]', { timeout: 10_000 });
-    const submit = page.locator('[data-testid="signup-submit"]');
-    if (!await submit.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      // e.g. the App has no app_info yet
-      test.skip();
-      return;
-    }
-    const image = page.locator('[data-testid="signup-base-image"]');
-    const imageOptions = await image.locator("option").count();
-    if (imageOptions > 1) await image.selectOption({ index: 1 });
-    await submit.click();
-    await expect(page.locator('[data-testid="entry-withdraw"]')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId("basic-info-section")).toBeVisible();
+    await expect(page.getByTestId("detail-tab-app_info")).toHaveText("基本信息和app_info");
+    await expect(page.getByTestId("detail-tab-signup")).toHaveCount(0);
+    await expect(page.getByTestId("app-detail-header").getByTestId("app-info-sync")).toBeVisible();
   });
 });
 
@@ -485,7 +476,7 @@ test.describe("W3 CICD tab RM/SPD-only gating", () => {
 });
 
 test.describe("W3 App 工作台 sub-tabs", () => {
-  test("detail panel shows 本期报名 and CICD sub-tabs after selecting an app", async ({ page }) => {
+  test("detail panel shows 基本信息和app_info and CICD sub-tabs after selecting an app", async ({ page }) => {
     await login(page, "rm");
     await page.goto(`${BASE}/apps`);
     await page.waitForSelector('[data-testid="app-table"]', { timeout: 15_000 });
@@ -495,7 +486,8 @@ test.describe("W3 App 工作台 sub-tabs", () => {
     await page.waitForSelector('[data-testid="detail-panel"]', { timeout: 10_000 });
 
     // Both sub-tab buttons should be visible
-    await expect(page.locator('[data-testid="detail-tab-signup"]')).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('[data-testid="detail-tab-app_info"]')).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('[data-testid="detail-tab-signup"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="detail-tab-cicd"]')).toBeVisible({ timeout: 5_000 });
   });
 

@@ -5,7 +5,7 @@
  * Tabs whose roles don't include the current user's role are hidden (not
  * disabled) — identical to the legacy `el.hidden = !allowed` behavior.
  *
- * Routes sharing a group (AI助手) render as one tab; while one of them is
+ * Routes sharing a group (QA, AI助手) render as one tab; while one of them is
  * open, a second row lists the group's sub-tabs the role may open.
  *
  * The CICD tab shows a notification badge (red dot) when count > 0.

@@ -84,3 +84,19 @@ def test_guest_cannot_sign_an_app_up(temp_db, client):
         json={"release_id": release_id, "app_id": app_id, "target_version": "1.0"},
     )
     assert resp.status_code == 403
+
+
+@pytest.mark.parametrize("role,expected", [("RM", 200), ("Owner", 200), ("QA", 200), ("Guest", 403), ("SPD", 403), ("Admin", 403)])
+def test_history_and_dependencies_access_including_exports(temp_db, client, role, expected):
+    app_id = seed_app(temp_db)
+    client.app_instance.dependency_overrides[require_login] = lambda: {
+        "username": "reader", "role": role, "display_name": "Reader",
+    }
+    for path, params in [
+        ("/api/lookup/app", {"app_id": app_id}),
+        ("/api/lookup/digest", {"digest": "sha256:missing"}),
+        ("/api/dependencies", {}),
+        ("/api/dependencies/compat.csv", {}),
+    ]:
+        response = client.get(path, params=params)
+        assert response.status_code == expected, (role, path, response.text)

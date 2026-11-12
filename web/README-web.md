@@ -27,7 +27,7 @@ API_TARGET=http://127.0.0.1:8001 npm run dev -- --host 127.0.0.1 --port 5173 --s
 | --- | --- |
 | `src/api/` | 同源请求、登录 API 与 AuthContext；401 进入未登录状态 |
 | `src/main.tsx` | React、QueryClient 和 AuthProvider 的全局装配 |
-| `src/routes/` | 页签、路由与角色访问；`routeConfig.ts` 中同一 `group` 的路由合并为一个页签并显示为子页签（AI助手）；Admin 非管理页深链接重定向到 `/admin` |
+| `src/routes/` | 页签、路由与角色访问；`routeConfig.ts` 中同一 `group` 的路由合并为一个页签并显示为子页签（QA、AI助手）；Admin 非管理页深链接重定向到 `/admin` |
 | `src/features/` | 周期、总览、App、QA、文档、CICD、Jenkins、助手、JIRA agent、周报、WIKI、管理页面 |
 | `src/lib/` | 权限、时间、阶段、字段词表和格式化 |
 | `src/store/uiStore.ts` | 共享周期选择、App 选择和编辑等 UI 状态 |
@@ -49,8 +49,14 @@ HTTP 类型声明不会验证真实 JSON。改接口时对照 router/service、�
 
 ## 交互与显示
 
+- QA 顶栏下显示 QA、历史查询、组件依赖子页签；后两项仅 RM、Owner、QA 可访问，前后端共用权限矩阵。历史查询和组件依赖仍使用 `/lookup`、`/dependencies` 地址，深链接进入时 QA 顶栏保持选中。
 - 周期选择使用共享 `selectedReleaseId`，跳转 App 时保留正确周期；不把不同 release 的编辑草稿或 QA 建议混用。
+- 总览和 App 工作台工具栏的报名截止、QA 截止、发布日横向并排，标签在上、日期在下；空间不足时按完整日期项换行。
+- 总览统计卡片旁显示所选周期 `release.environment` 的组件、版本、说明，取代独立发布时间线；仅展示，随共享周期选择和显式刷新更新，不单独请求或轮询。
+- 周期管理基础镜像每行两个输入：完整镜像引用、说明；提交 `image: {id?, reference, note}`，名称/地址/digest 由后端解析。读取模型保留原字段，显示及编辑时组合引用；校验失败保留输入并显示错误。
 - 保留未保存编辑保护，选中 App 后详情应直接可见，长列表与详情按需独立滚动。
+- App 详情默认「基本信息和app_info」，不显示报名 tab。四项基本信息单独保存，资料保存不提交这四项，避免跨 tab 覆盖。单 App 同步按钮在标题栏；范围扩大和同步失败提醒位于 tab 外，切换 tab 后保留，提醒只随显式刷新或写后重取更新。
+- 报名入口为工具栏「批量报名」和应用标题栏「报名」。弹窗按账号、角色和周期独立查询最新状态及环境；切换周期清除勾选，成功后失效共享 state/CICD 缓存并跳到报名周期。批量接口只接收本人负责的 App，整批原子提交；单 App 沿用报名接口及 RM 代报名权限。
 - Markdown 的 `dangerouslySetInnerHTML` 出口集中在 `Markdown.tsx` 的 DOMPurify 流程；业务组件使用该组件。
 - 日期输入使用 `DateInput` 和统一归一化，显示/提交 `YYYY-MM-DD`。
 - 新服务端时间是北京时间无 offset 字符串；旧数据可能仍含 UTC ISO。当前 formatter 不做完整的旧数据时区转换，禁止给所有值统一加 8 小时。
@@ -71,3 +77,15 @@ HTTP 类型声明不会验证真实 JSON。改接口时对照 router/service、�
 ### MCP 配置页面隔离验证
 
 后端运行 `python -m tests.run_mcp_setup_site --port 18785`；前端在 `web/` 运行 `API_TARGET=http://127.0.0.1:18785 npm run dev -- --host 127.0.0.1 --port 18786 --strictPort`。再执行 `MCP_SETUP_E2E_URL=http://127.0.0.1:18786 npx playwright test e2e/mcp-setup.spec.ts`。测试使用临时数据库验证客户端折叠、复制命令和生成 token 后填充，不访问真实集成。
+
+### App 详情隔离验证
+
+后端运行 `python -m tests.run_app_info_site --port 18787`；前端在 `web/` 运行 `API_TARGET=http://127.0.0.1:18787 npm run dev -- --host 127.0.0.1 --port 18788 --strictPort`。再执行 `APP_INFO_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/app-info.spec.ts`。使用临时数据库与本地 Gerrit 响应，验证 RM/Owner 保存和回读、权限、未保存修改保护、跨周期范围扩大提醒及同步失败；不访问真实仓库。
+
+报名弹窗验证使用同一后端命令加 `--signup`，并执行 `APP_SIGNUP_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/app-signup.spec.ts`。覆盖批量候选筛选、组件环境、取消、跨周期选择、提交后状态、打开弹窗后新增停止申请的整批回滚，以及 RM 单个代报名和窄屏布局。
+
+QA 导航与权限验证使用不带 `--signup` 的同一隔离后端，执行 `QA_NAV_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/qa-navigation.spec.ts`。覆盖 Owner/QA 子页签、历史查询、组件依赖导出及深链接，以及 Guest/SPD 的界面和接口拒绝访问。
+
+基础镜像验证使用同一隔离后端，执行 `BASE_IMAGE_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/base-images.spec.ts`。覆盖完整引用新增及解析回读、旧记录编辑、格式错误保留、digest 查询、跨周期显示和发布后只读。
+
+总览组件信息验证使用加 `--signup` 的隔离后端，执行 `DASHBOARD_COMPONENTS_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/dashboard-components.spec.ts`。覆盖跨周期展示、RM 修改环境后显式刷新、保留顶部日期，以及 Owner/QA/Guest 的只读展示。

@@ -13,7 +13,7 @@ from app.config import settings
 from app.deps import get_db, require_login
 from app.integrations import gerrit as gerrit_integration
 from app.main import create_app
-from app.repositories import apps_repo
+from app.repositories import app_info_repo, apps_repo, entries_repo
 from app.services import (
     catalog_service,
     cycle_service,
@@ -24,6 +24,7 @@ from app.services import (
 from tests.conftest import (
     APP_INFO,
     close_qa,
+    close_signup,
     make_app_info,
     seed_app,
     seed_cycle,
@@ -92,6 +93,46 @@ def test_sync_all_only_visits_running_apps(temp_db, monkeypatch) -> None:
 
     assert visited == ["running_app"]
     assert summary["checked"] == 1
+
+
+@pytest.mark.parametrize("trigger", ["manual", "rm_all", "daily"])
+def test_scope_expansion_from_any_sync_keeps_latest_and_qa_warning(
+    temp_db_with_path, monkeypatch, trigger,
+) -> None:
+    conn, path = temp_db_with_path
+    monkeypatch.setattr(settings, "db_path", path)
+    app_id = seed_app(conn)
+    release_id = seed_cycle(conn)
+    entry = seed_signup(conn, release_id, app_id)
+    close_signup(conn, release_id)
+    raw = json.dumps(make_app_info(app_version="2.0", chips=["c500", "c600"]))
+    monkeypatch.setattr(gerrit_integration, "head_commit", lambda *a, **k: "expanded-head")
+    monkeypatch.setattr(gerrit_integration, "fetch_app_info_at", lambda *a, **k: raw)
+    notices = []
+    monkeypatch.setattr(notification_channels, "notify", lambda _conn, kind, message: notices.append((kind, message)))
+
+    if trigger == "manual":
+        result = catalog_service.sync_app(conn, app_id, user="owner_test", force=True)
+        assert result["status"] == "updated"
+    elif trigger == "rm_all":
+        result = catalog_service.sync_all(conn, user="rm", force=True)
+        assert (result["updated"], result["failed"]) == (1, 0)
+    else:
+        result = catalog_service.AppInfoSyncLoop()._run_once()
+        assert (result["updated"], result["failed"]) == (1, 0)
+
+    latest = app_info_repo.latest_version(conn, app_id)
+    assert catalog_service.version_summary(latest)["app_version"] == "2.0"
+    assert latest["id"] != entry["locked_version_id"]
+    current = cycle_service.entry_view(conn, entries_repo.get_entry(conn, entry["id"]))
+    assert current["locked_version_id"] == entry["locked_version_id"]
+    assert current["behind_latest"] is True
+    assert current["pending_scope_request"]["target_version_id"] == latest["id"]
+    assert any("C600" in addition for addition in current["pending_scope_request"]["additions"])
+    assert len(notices) == 1
+    assert notices[0][0] == "scope_request"
+    assert "测试范围扩大申请" in notices[0][1]
+    assert apps_repo.get_app(conn, app_id)["sync_error"] == ""
 
 
 def test_manifest_apps_resolve_their_project_before_fetching(temp_db, monkeypatch) -> None:

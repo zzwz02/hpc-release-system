@@ -135,6 +135,57 @@ describe("current version", () => {
   });
 });
 
+describe("base images", () => {
+  const address = "harbor.sh.mxcr.io/hpc-release/amgx-maca";
+  const digest = `sha256:${"a".repeat(64)}`;
+  const reference = `${address}@${digest}`;
+
+  it("merges the name, address and digest inputs and submits the full reference with its note", async () => {
+    renderPage(makeRelease([], { base_images: [] }));
+    const table = await screen.findByTestId("base-images-table");
+    expect(within(table).getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["完整镜像引用", "说明", ""]);
+    fireEvent.change(within(table).getByLabelText("完整镜像引用"), { target: { value: reference } });
+    fireEvent.change(within(table).getByLabelText("说明"), { target: { value: "RM 的说明" } });
+    fireEvent.click(screen.getByTestId("save-base-image-btn"));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/releases/base-image", {
+      release_id: "rel-1", image: { reference, note: "RM 的说明" },
+    }));
+    expect(within(table).getByLabelText("完整镜像引用")).toHaveValue("");
+  });
+
+  it("reassembles saved fields for editing and lets RM cancel without writes", async () => {
+    renderPage(makeRelease([], { base_images: [{ id: 1, release_id: "rel-1", name: "amgx-maca", image: address, digest, note: "old note" }] }));
+    const table = await screen.findByTestId("base-images-table");
+    expect(table).toHaveTextContent(reference);
+    fireEvent.click(within(table).getByRole("button", { name: "编辑" }));
+    expect(within(table).getByLabelText("完整镜像引用")).toHaveValue(reference);
+    expect(within(table).getByLabelText("说明")).toHaveValue("old note");
+    fireEvent.click(within(table).getByRole("button", { name: "取消" }));
+    expect(within(table).getByLabelText("完整镜像引用")).toHaveValue("");
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  it("retains invalid input and shows the server validation error", async () => {
+    renderPage(makeRelease([], { base_images: [] }));
+    const table = await screen.findByTestId("base-images-table");
+    vi.mocked(apiPost).mockRejectedValue(new Error("镜像 digest 格式错误"));
+    fireEvent.change(within(table).getByLabelText("完整镜像引用"), { target: { value: `${address}@sha256:bad` } });
+    fireEvent.click(screen.getByTestId("save-base-image-btn"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("镜像 digest 格式错误");
+    expect(within(table).getByLabelText("完整镜像引用")).toHaveValue(`${address}@sha256:bad`);
+  });
+
+  it("shows full references without editing controls after publication", async () => {
+    renderPage(makeRelease([], { phase: "released", released_locked: true, base_images: [
+      { id: 1, release_id: "rel-1", name: "amgx-maca", image: address, digest, note: "saved" },
+    ] }));
+    const table = await screen.findByTestId("base-images-table");
+    expect(table).toHaveTextContent(reference);
+    expect(within(table).queryByRole("textbox")).toBeNull();
+    expect(within(table).queryByRole("button")).toBeNull();
+  });
+});
+
 describe("sub-panes", () => {
   it("lists failed app_info syncs first and filters to failures by default", async () => {
     renderPage(makeRelease([]));

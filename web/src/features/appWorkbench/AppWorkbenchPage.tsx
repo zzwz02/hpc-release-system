@@ -2,8 +2,8 @@
  * App 工作台 — all Apps with their CICD status and signup for the selected
  * monthly cycle.
  *
- * Layout (unchanged): left = App list with search/filters, right = detail
- * panel with sub-tabs 本期报名 / app_info / CICD / 资料 / 变更记录.
+ * Layout: left = App list with search/filters, right = detail
+ * panel with sub-tabs 基本信息和app_info / CICD / 资料 / 变更记录.
  *
  * Data: GET /api/state (?release_id=).  Data moves only via explicit refetch
  * after a mutation or manual refresh.
@@ -20,6 +20,7 @@ import { confirmDialog } from "../../lib/confirm";
 import { docTargetLabels } from "../../lib/labels";
 import { normalizeDocTarget } from "../../lib/domainMetadata";
 import { canCreateApp, canEdit, canEditRmFields, canSyncAppInfo, isOwner, isRM } from "../../lib/roles";
+import { can } from "../../lib/accessControl";
 import { toast } from "../../lib/toast";
 import { useUiStore } from "../../store/uiStore";
 import type { App, AppAuditEntry, Entry, ReleaseDetail, StatePayload } from "../../types";
@@ -38,7 +39,7 @@ import {
 import { NewAppDialog } from "./NewAppDialog";
 import { ChangeLogTable, CicdPendingPill, CicdStatusPill, EntryPill, QaDot, QaPill } from "./pills";
 import { ProfilePane } from "./ProfilePane";
-import { SignupPane } from "./SignupPane";
+import { SignupDialog } from "./SignupDialog";
 
 const STATE_KEY = (releaseId?: string) => (releaseId ? ["state", releaseId] : ["state"]);
 const EMPTY_APPS: App[] = [];
@@ -49,11 +50,10 @@ async function fetchState(releaseId?: string): Promise<StatePayload> {
   return apiGet<StatePayload>(`/api/state?${qs.toString()}`);
 }
 
-type DetailTab = "signup" | "app_info" | "cicd" | "profile" | "changelog";
+type DetailTab = "app_info" | "cicd" | "profile" | "changelog";
 
 const DETAIL_TABS: Array<{ key: DetailTab; label: string }> = [
-  { key: "signup", label: "本期报名" },
-  { key: "app_info", label: "app_info" },
+  { key: "app_info", label: "基本信息和app_info" },
   { key: "cicd", label: "CICD" },
   { key: "profile", label: "资料" },
   { key: "changelog", label: "变更记录" },
@@ -156,13 +156,16 @@ interface DetailPanelProps {
   release: ReleaseDetail | null;
   openRequests: import("../../types").CicdRequest[];
   onSaved: () => void;
+  onSignup: (appId: string) => void;
 }
 
-function DetailPanel({ app, entry, release, openRequests, onSaved }: DetailPanelProps) {
+function DetailPanel({ app, entry, release, openRequests, onSaved, onSignup }: DetailPanelProps) {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const setAppDetailDirty = useUiStore((s) => s.setAppDetailDirty);
   const appDetailDirty = useUiStore((s) => s.appDetailDirty);
-  const [tab, setTab] = useState<DetailTab>("signup");
+  const [tab, setTab] = useState<DetailTab>("app_info");
+  const [syncing, setSyncing] = useState(false);
   const [audit, setAudit] = useState<AppAuditEntry[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
 
@@ -197,6 +200,25 @@ function DetailPanel({ app, entry, release, openRequests, onSaved }: DetailPanel
     setTab(next);
   }
 
+  async function handleSync() {
+    if (!app || appDetailDirty) return;
+    setSyncing(true);
+    try {
+      const result = await apiPost<{ status: "updated" | "unchanged" | "error"; error?: string }>(
+        "/api/app-info/sync", { app_id: app.id, force: true },
+      );
+      if (result.status === "error") toast.error(`同步失败：${result.error ?? ""}`);
+      else if (result.status === "updated") toast.success("已同步到新的 app_info");
+      else toast.info("app_info 没有变化");
+    } catch (e) {
+      toast.error(`同步失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      void queryClient.invalidateQueries({ queryKey: ["app-detail", app.id] });
+      onSaved();
+      setSyncing(false);
+    }
+  }
+
   if (!app) {
     return (
       <div className="detail-panel" data-testid="detail-panel">
@@ -208,10 +230,12 @@ function DetailPanel({ app, entry, release, openRequests, onSaved }: DetailPanel
   const editable = canEdit(user, app);
   const active = entry?.status === "active" ? entry : null;
   const appOpen = openRequests.filter((req) => requestMatchesApp(req, app));
+  const pendingScope = active?.pending_scope_request;
+  const scopeBlocked = active?.behind_latest && release && release.phase !== "signup" && release.phase !== "released";
 
   return (
     <div className="detail-panel" data-testid="detail-panel">
-      <div className="detail-head">
+      <div className="detail-head" data-testid="app-detail-header">
         <QaDot entry={active} />
         <div className="dh-main">
           <h2>{app.name}</h2>
@@ -224,8 +248,27 @@ function DetailPanel({ app, entry, release, openRequests, onSaved }: DetailPanel
             <CicdPendingPill count={uniqueCicdRequestCount(appOpen)} />
           </div>
         </div>
-        {isOwner(user) && editable && <div className="greet">你好 👋 在「本期报名」报名本月发布</div>}
+        {editable && (
+          <button className="btn sm" onClick={() => onSignup(app.id)} disabled={appDetailDirty || app.cicd_status !== "running"}
+            title={appDetailDirty ? "请先保存或取消修改，再报名" : app.cicd_status !== "running" ? "CICD 已停止，不能报名" : "选择版本报名"}
+            data-testid="app-signup-btn">报名</button>
+        )}
+        {canSyncAppInfo(user, app) && (
+          <button className="btn sm" onClick={() => void handleSync()} disabled={syncing || appDetailDirty}
+            title={appDetailDirty ? "请先保存或取消修改，再同步 app_info" : "立即同步 app_info"} data-testid="app-info-sync">
+            {syncing ? "同步中…" : "立即同步"}
+          </button>
+        )}
       </div>
+
+      {(pendingScope || scopeBlocked) && (
+        <div className="banner warnp app-scope-warning" role="status" data-testid="app-scope-warning">
+          <b>{release?.name}：{pendingScope ? `测试范围扩大待 QA 审批（#${pendingScope.id}）` : "测试范围扩大未获 QA 同意"}</b>
+          <div className="small mt-4">最新 app_info 已同步；本期报名仍使用原锁定版本{active?.locked_app_info?.commit_id ? `（${active.locked_app_info.commit_id.slice(0, 12)}）` : ""}测试。</div>
+          {pendingScope && <div className="small mt-4 app-scope-additions">{pendingScope.additions.join("；")}</div>}
+        </div>
+      )}
+      {app.sync_error && <div className="banner bad app-scope-warning" role="alert" data-testid="app-info-sync-error">最近一次同步失败：{app.sync_error}</div>}
 
       <div className="cicd-subtabs bb-border mb-0">
         {DETAIL_TABS.map(({ key, label }) => (
@@ -236,15 +279,8 @@ function DetailPanel({ app, entry, release, openRequests, onSaved }: DetailPanel
         ))}
       </div>
 
-      {tab === "signup" && (
-        release ? (
-          <SignupPane app={app} entry={entry} release={release} canEdit={editable}
-            onSaved={onSaved} onDirtyChange={setAppDetailDirty} />
-        ) : (
-          <div className="detail-body"><p className="muted">还没有版本，等待 RM 新建本月版本。</p></div>
-        )
-      )}
-      {tab === "app_info" && <AppInfoPane app={app} canSync={canSyncAppInfo(user, app)} onSynced={onSaved} />}
+      {tab === "app_info" && <AppInfoPane app={app} canEdit={editable} canEditRmFields={canEditRmFields(user)}
+        onSaved={onSaved} onDirtyChange={setAppDetailDirty} />}
       {tab === "cicd" && (
         <AppCicdPane
           app={app}
@@ -304,6 +340,8 @@ export function AppWorkbenchPage() {
   const [statusFilter, setStatusFilter] = useState<AppStatusFilter>("all");
   const [showNewApp, setShowNewApp] = useState(false);
   const [syncingAll, setSyncingAll] = useState(false);
+  const [detailReset, setDetailReset] = useState(0);
+  const [signupDialog, setSignupDialog] = useState<{ appId?: string } | null>(null);
 
   const release = data?.release ?? null;
   const apps = data?.apps ?? EMPTY_APPS;
@@ -339,16 +377,28 @@ export function AppWorkbenchPage() {
     return counts;
   }, [openRequests, apps]);
 
-  async function handleSelectApp(id: string) {
-    if (selectedApp === id) return;
-    if (appDetailDirty && selectedApp && !(await confirmDialog({
-      title: "未保存的修改", body: "有未保存的修改，确认放弃并切换 app?", danger: true, confirmText: "放弃修改",
-    }))) return;
+  async function discardChanges() {
+    if (appDetailDirty && !(await confirmDialog({
+      title: "未保存的修改", body: "有未保存的修改，确认放弃？", danger: true, confirmText: "放弃修改",
+    }))) return false;
+    if (appDetailDirty) setDetailReset((current) => current + 1);
     setAppDetailDirty(false);
+    return true;
+  }
+
+  async function handleSelectApp(id: string) {
+    if (selectedApp === id || (appDetailDirty && !(await discardChanges()))) return;
     setSelectedApp(id);
   }
 
-  function handleRefresh() {
+  async function handleSelectRelease(id: string) {
+    if (selectedReleaseId === id || (appDetailDirty && !(await discardChanges()))) return;
+    setSelectedReleaseId(id);
+    void queryClient.invalidateQueries({ queryKey: STATE_KEY(id) });
+  }
+
+  async function handleRefresh() {
+    if (appDetailDirty && !(await discardChanges())) return;
     void queryClient.invalidateQueries({ queryKey: ["cicd"] });
     void refetch();
   }
@@ -384,10 +434,7 @@ export function AppWorkbenchPage() {
         <h2>App 工作台</h2>
         {data && releases.length > 0 && (
           <select className="select select-inline" value={selectedReleaseId ?? ""} aria-label="选择版本"
-            onChange={(e) => {
-              setSelectedReleaseId(e.target.value);
-              void queryClient.invalidateQueries({ queryKey: STATE_KEY(e.target.value) });
-            }}>
+            onChange={(e) => void handleSelectRelease(e.target.value)}>
             {releases.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
           </select>
         )}
@@ -399,6 +446,11 @@ export function AppWorkbenchPage() {
         )}
         <ReleaseDeadlines release={release} />
         <span className="spacer" />
+        {(can(user?.role, "app.edit.any") || can(user?.role, "app.edit.owned")) && (
+          <button className="btn primary sm" disabled={appDetailDirty || !data}
+            title={appDetailDirty ? "请先保存或取消修改，再报名" : "为自己名下运行中的 App 批量报名"}
+            onClick={() => setSignupDialog({})} data-testid="batch-signup-btn">批量报名</button>
+        )}
         <RefreshBar dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} onRefresh={handleRefresh} />
       </div>
 
@@ -423,12 +475,13 @@ export function AppWorkbenchPage() {
             onNewApp={() => setShowNewApp(true)}
           />
           <DetailPanel
-            key={selectedRow?.app.id ?? ""}
+            key={`${selectedRow?.app.id ?? ""}:${detailReset}`}
             app={selectedRow?.app ?? null}
             entry={selectedRow?.entry ?? null}
             release={release}
             openRequests={openRequests ?? []}
             onSaved={() => { void queryClient.invalidateQueries({ queryKey: ["cicd"] }); void refetch(); }}
+            onSignup={(appId) => setSignupDialog({ appId })}
           />
         </div>
       )}
@@ -441,6 +494,17 @@ export function AppWorkbenchPage() {
             void queryClient.invalidateQueries({ queryKey: ["cicd"] });
           }}
         />
+      )}
+      {signupDialog && (
+        <SignupDialog key={`${user?.username}:${user?.role}`} appId={signupDialog.appId} releases={releases}
+          initialReleaseId={selectedReleaseId} onClose={() => setSignupDialog(null)}
+          onSignedUp={(releaseId) => {
+            void queryClient.invalidateQueries({ queryKey: ["state"] });
+            void queryClient.invalidateQueries({ queryKey: ["cicd"] });
+            void queryClient.invalidateQueries({ queryKey: ["app-signup"] });
+            setSelectedReleaseId(releaseId);
+            setSignupDialog(null);
+          }} />
       )}
     </section>
   );

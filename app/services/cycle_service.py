@@ -24,6 +24,7 @@ from app.db.connection import run_after_commit, transaction
 from app.domain import cycles as cycles_domain
 from app.domain import phases
 from app.domain import qa as qa_domain
+from app.domain.container_image import parse_base_image_reference
 from app.domain.permissions import has_capability
 from app.repositories import (
     app_info_repo,
@@ -238,6 +239,8 @@ def save_environment(
 
 
 def _clean_image(image: dict[str, Any]) -> dict[str, str]:
+    if "reference" in image:
+        return {**parse_base_image_reference(image["reference"]), "note": str(image.get("note") or "").strip()}
     clean = {key: str(image.get(key) or "").strip() for key in ("name", "image", "digest", "note")}
     if not clean["name"]:
         raise ValueError("基础镜像名称不能为空")
@@ -254,11 +257,10 @@ def save_base_image(
 ) -> list[dict[str, Any]]:
     """Add (no ``id``) or update a base image; allowed until publication."""
     _require_rm(role)
-    release = get_release(conn, release_id)
-    _require_open(release)
     clean = _clean_image(image)
     ts = beijing_timestamp()
     with transaction(conn):
+        _require_open(get_release(conn, release_id))
         if image.get("id"):
             current = releases_repo.get_base_image(conn, int(image["id"]))
             if not current or current["release_id"] != release_id:
@@ -378,6 +380,43 @@ def _validate_excluded(summary: dict[str, Any] | None, excluded: list[str]) -> l
     if unknown:
         raise ValueError("未知的测试项：" + "、".join(unknown))
     return sorted(set(excluded))
+
+
+def signup_batch(
+    conn: sqlite3.Connection,
+    release_id: str,
+    app_ids: list[str],
+    *,
+    user: str,
+    role: str,
+) -> list[dict[str, Any]]:
+    """Sign up owned Apps together, using each latest app_info's defaults."""
+    if not isinstance(app_ids, list) or not app_ids or any(
+        not isinstance(app_id, str) or not app_id.strip() for app_id in app_ids
+    ):
+        raise ValueError("请选择要报名的 App")
+    entries = []
+    with transaction(conn):
+        phases.require_can(get_release(conn, release_id), "signup", "报名已截止，不能新增报名")
+        for app_id in dict.fromkeys(app_ids):
+            app = apps_repo.get_app(conn, app_id)
+            if not app:
+                raise ValueError("所选 App 已不存在，请刷新列表")
+            catalog_service.require_app_editor(app, user, role)
+            if not catalog_service.is_owner(app, user):
+                raise AuthzError("批量报名只能选择自己负责的 App")
+            latest = catalog_service.version_summary(app_info_repo.latest_version(conn, app_id))
+            if not latest or not latest["app_version"].strip():
+                raise RuntimeError(f"{catalog_service.app_name(app)}：请先同步包含 app_version 的 app_info")
+            try:
+                entries.append(signup(
+                    conn, release_id, app_id, base_image_id=None,
+                    target_version=latest["app_version"], planned_features="", excluded_tests=[],
+                    user=user, role=role,
+                ))
+            except (ValueError, RuntimeError) as exc:
+                raise RuntimeError(f"{catalog_service.app_name(app)}：{exc}") from exc
+    return entries
 
 
 def signup(

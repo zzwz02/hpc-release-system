@@ -3,10 +3,10 @@
  *
  * Verifies:
  *  - Stats row renders correct counts from state payload
- *  - Schedule panel renders entries and shows "尚未维护" when empty
+ *  - Selected cycle component information replaces the timeline
  *  - Owner grid shows apps with correct pills
  *  - RefreshBar is present and wired to the query's dataUpdatedAt
- *  - RM sees "+ 新增" button; non-RM does not
+ *  - Component information follows cycle selection and explicit refresh
  *  - Owner sees only their apps; RM sees all
  *  - Loading state shows "加载中…"
  *  - Error state shows error message
@@ -35,31 +35,10 @@ vi.mock("../../../api/AuthContext", () => ({
   useAuth: vi.fn(),
 }));
 
-// Mock uiStore: dashboard reads selectedReleaseId + setSelectedReleaseId.
-// Start empty ("") so the seed-if-unset effect fires on first data load.
-vi.mock("../../../store/uiStore", () => {
-  let _releaseId = "";
-  const setSelectedReleaseId = (id: string) => { _releaseId = id; };
-  const useUiStore = (selector?: (s: { selectedReleaseId: string; setSelectedReleaseId: typeof setSelectedReleaseId }) => unknown) => {
-    const state = { selectedReleaseId: _releaseId, setSelectedReleaseId };
-    return selector ? selector(state) : state;
-  };
-  useUiStore.getState = () => ({ selectedReleaseId: _releaseId, setSelectedReleaseId });
-  return {
-    useUiStore,
-    __setReleaseId: (id: string) => { _releaseId = id; },
-    __resetReleaseId: () => { _releaseId = ""; },
-  };
-});
-
 import { apiGet, apiPost } from "../../../api/http";
 import { useAuth } from "../../../api/AuthContext";
 
-// Top-level import to access the __resetReleaseId helper from the mock
-const uiStoreMod = await import("../../../store/uiStore") as unknown as {
-  __resetReleaseId: () => void;
-  __setReleaseId: (id: string) => void;
-};
+import { useUiStore } from "../../../store/uiStore";
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -126,7 +105,7 @@ function renderDashboard(queryClient: QueryClient) {
 beforeEach(() => {
   vi.clearAllMocks();
   // Reset shared release selector so each test starts from unset state
-  uiStoreMod.__resetReleaseId();
+  useUiStore.setState({ selectedReleaseId: "", selectedApp: "", appDetailDirty: false });
   // Default: logged in as RM
   (useAuth as ReturnType<typeof vi.fn>).mockReturnValue({
     user: { username: "alice", role: "RM", display_name: "Alice" },
@@ -148,7 +127,7 @@ describe("DashboardPage loading state", () => {
 
 describe("DashboardPage stats row", () => {
   it("shows the selected cycle dates and updates after refresh", async () => {
-    uiStoreMod.__setReleaseId("rel-1");
+    useUiStore.setState({ selectedReleaseId: "rel-1" });
     (useAuth as ReturnType<typeof vi.fn>).mockReturnValue({ user: { username: "alice", role: "Owner", display_name: "Alice" } });
     const payload = makePayload();
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
@@ -190,115 +169,78 @@ describe("DashboardPage stats row", () => {
   });
 });
 
-describe("DashboardPage schedule panel", () => {
-  it("shows '尚未维护发布时间线' when no entries and user is RM", async () => {
-    const payload = makePayload({ release_schedule: [] });
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
-    const qc = makeQueryClient();
-    renderDashboard(qc);
-
-    await waitFor(() => {
-      expect(screen.getByText(/尚未维护发布时间线/)).toBeDefined();
-    });
+describe("DashboardPage selected cycle components", () => {
+  it("replaces the timeline with component versions and notes from the selected cycle", async () => {
+    const payload = makePayload({ release_schedule: [makeScheduleEntry("s1", "old-timeline-version")] });
+    payload.release!.environment = [
+      { component: "Driver", version: "driver-3.11", note: "驱动说明" },
+      { component: "SDK", version: "sdk-3.11", note: "" },
+      { component: "PyTorch", version: "torch-3.11", note: "框架说明" },
+    ];
+    vi.mocked(apiGet).mockResolvedValue(payload);
+    renderDashboard(makeQueryClient());
+    const panel = await screen.findByTestId("dashboard-components");
+    expect(panel).toHaveTextContent("2026.12");
+    for (const value of ["driver-3.11", "sdk-3.11", "torch-3.11", "驱动说明", "框架说明"]) {
+      expect(panel).toHaveTextContent(value);
+    }
+    expect(screen.queryByText("发布时间线")).toBeNull();
+    expect(screen.queryByText("old-timeline-version")).toBeNull();
+    expect(screen.queryByRole("button", { name: "+ 新增" })).toBeNull();
+    expect(apiPost).not.toHaveBeenCalled();
   });
 
-  it("shows schedule entries when present", async () => {
-    const payload = makePayload({
-      release_schedule: [
-        makeScheduleEntry("s1", "3.1.0"),
-        makeScheduleEntry("s2", "3.2.0"),
-      ],
-    });
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
-    const qc = makeQueryClient();
-    renderDashboard(qc);
-
-    await waitFor(() => {
-      expect(screen.getByText("3.1.0")).toBeDefined();
-      expect(screen.getByText("3.2.0")).toBeDefined();
-    });
+  it("updates components when a different cycle is selected", async () => {
+    const first = makePayload();
+    const nextRelease = makeRelease([], { id: "rel-2", name: "2027.01", environment: [
+      { component: "SDK", version: "sdk-4.0", note: "新版本说明" },
+    ] });
+    const releases = [first.release!, nextRelease];
+    vi.mocked(apiGet).mockImplementation(async (url) => url.includes("release_id=rel-2")
+      ? { ...first, releases, release: nextRelease }
+      : { ...first, releases });
+    renderDashboard(makeQueryClient());
+    const panel = await screen.findByTestId("dashboard-components");
+    expect(panel).toHaveTextContent("MACA SDK3.3");
+    fireEvent.change(screen.getByRole("combobox", { name: "选择版本" }), { target: { value: "rel-2" } });
+    await waitFor(() => expect(screen.getByTestId("dashboard-components")).toHaveTextContent("sdk-4.0"));
+    expect(screen.getByTestId("dashboard-components")).toHaveTextContent("2027.01");
+    expect(screen.getByTestId("dashboard-components")).not.toHaveTextContent("3.3");
   });
 
-  it("shows '+ 新增' button for RM role", async () => {
+  it("reads current component information after an explicit refresh", async () => {
     const payload = makePayload();
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
-    const qc = makeQueryClient();
-    renderDashboard(qc);
-
-    await waitFor(() => {
-      expect(screen.getByText("+ 新增")).toBeDefined();
-    });
+    vi.mocked(apiGet).mockResolvedValue(payload);
+    renderDashboard(makeQueryClient());
+    await screen.findByTestId("dashboard-components");
+    vi.mocked(apiGet).mockResolvedValue({ ...payload, release: {
+      ...payload.release!, environment: [{ component: "Driver", version: "driver-updated", note: "更新说明" }],
+    } });
+    fireEvent.click(screen.getByTestId("refresh-btn"));
+    await waitFor(() => expect(screen.getByTestId("dashboard-components")).toHaveTextContent("driver-updated"));
   });
 
-  it("uses shared yyyy-mm-dd date inputs when adding schedule entries", async () => {
+  it("explains when the selected cycle has no component information", async () => {
     const payload = makePayload();
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
-    const qc = makeQueryClient();
-    renderDashboard(qc);
-
-    await waitFor(() => {
-      expect(screen.getByText("+ 新增")).toBeDefined();
-    });
-    fireEvent.click(screen.getByText("+ 新增"));
-
-    const branchCut = screen.getByTestId("schedule-branch-cut") as HTMLInputElement;
-    const releaseAt = screen.getByTestId("schedule-release-at") as HTMLInputElement;
-    expect(branchCut.type).toBe("text");
-    expect(releaseAt.type).toBe("text");
-    expect(branchCut.placeholder).toBe("YYYY-MM-DD");
-    expect(releaseAt.placeholder).toBe("YYYY-MM-DD");
-    expect((screen.getByTestId("schedule-branch-cut-native") as HTMLInputElement).type).toBe("date");
-    expect(screen.getByTestId("schedule-branch-cut-calendar")).toBeDefined();
-    expect(screen.getByTestId("schedule-release-at-calendar")).toBeDefined();
+    payload.release!.environment = [];
+    vi.mocked(apiGet).mockResolvedValue(payload);
+    renderDashboard(makeQueryClient());
+    expect(await screen.findByTestId("dashboard-components")).toHaveTextContent("RM 尚未填写该版本的组件信息");
   });
 
-  it("submits schedule dates selected from calendar picker as yyyy-mm-dd", async () => {
-    const payload = makePayload();
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
-    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
-    const qc = makeQueryClient();
-    renderDashboard(qc);
-
-    await waitFor(() => {
-      expect(screen.getByText("+ 新增")).toBeDefined();
-    });
-    fireEvent.click(screen.getByText("+ 新增"));
-    fireEvent.change(screen.getByPlaceholderText("例：3.0.0"), { target: { value: "3.9.0" } });
-    fireEvent.change(screen.getByTestId("schedule-branch-cut-native"), { target: { value: "2026-07-16" } });
-    fireEvent.change(screen.getByTestId("schedule-release-at-native"), { target: { value: "2026-08-27" } });
-    fireEvent.change(screen.getByPlaceholderText("选填"), { target: { value: "direct_dispatch=1" } });
-
-    expect((screen.getByTestId("schedule-branch-cut") as HTMLInputElement).value).toBe("2026-07-16");
-    expect((screen.getByTestId("schedule-release-at") as HTMLInputElement).value).toBe("2026-08-27");
-
-    fireEvent.click(screen.getByText("保存"));
-
-    await waitFor(() => {
-      expect(apiPost).toHaveBeenCalledWith("/api/release-schedule/upsert", {
-        id: "",
-        version: "3.9.0",
-        branch_cut_at: "2026-07-16",
-        release_at: "2026-08-27",
-        note: "direct_dispatch=1",
-      });
-    });
+  it("explains when no cycle exists", async () => {
+    vi.mocked(apiGet).mockResolvedValue(makePayload({ release: null, releases: [] }));
+    renderDashboard(makeQueryClient());
+    expect(await screen.findByTestId("dashboard-components")).toHaveTextContent("还没有版本");
   });
 
-  it("hides '+ 新增' button for Owner role", async () => {
-    (useAuth as ReturnType<typeof vi.fn>).mockReturnValue({
-      user: { username: "alice", role: "Owner", display_name: "Alice" },
-    });
-    const payload = makePayload({
-      user: { username: "alice", role: "Owner", display_name: "Alice" },
-    });
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
-    const qc = makeQueryClient();
-    renderDashboard(qc);
-
-    await waitFor(() => {
-      expect(screen.getByText("发布时间线")).toBeDefined();
-    });
-    expect(screen.queryByText("+ 新增")).toBeNull();
+  it.each(["RM", "Owner", "QA", "Guest"])("shows read-only component information for %s", async (role) => {
+    vi.mocked(useAuth).mockReturnValue({ user: { username: "alice", role, display_name: "Alice" } } as ReturnType<typeof useAuth>);
+    vi.mocked(apiGet).mockResolvedValue(makePayload());
+    renderDashboard(makeQueryClient());
+    const panel = await screen.findByTestId("dashboard-components");
+    expect(panel.querySelector("button, input, select")).toBeNull();
+    expect(panel).toHaveTextContent("MACA SDK");
   });
 });
 

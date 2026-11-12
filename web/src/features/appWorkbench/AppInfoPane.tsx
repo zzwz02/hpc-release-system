@@ -3,13 +3,12 @@
  * automatically every day), the stored version history and the App's
  * official (released) versions.
  */
-import React from "react";
 import { useQuery } from "@tanstack/react-query";
-import { apiGet, apiPost } from "../../api/http";
-import { toast } from "../../lib/toast";
+import { apiGet } from "../../api/http";
 import { formatServerTime } from "../../lib/time";
 import type { App } from "../../types";
 import { orderChips, shortCommit } from "./helpers";
+import { BasicInfoSection } from "./BasicInfoSection";
 
 interface AppDetailResponse {
   app_info_versions: Array<{
@@ -30,58 +29,26 @@ interface AppDetailResponse {
   }>;
 }
 
-interface SyncResult {
-  status: "updated" | "unchanged" | "error";
-  error?: string;
+interface AppInfoPaneProps {
+  app: App;
+  canEdit: boolean;
+  canEditRmFields: boolean;
+  onSaved: () => void;
+  onDirtyChange: (dirty: boolean) => void;
 }
 
-export function AppInfoPane({ app, canSync, onSynced }: { app: App; canSync: boolean; onSynced: () => void }) {
+export function AppInfoPane({ app, canEdit, canEditRmFields, onSaved, onDirtyChange }: AppInfoPaneProps) {
   const info = app.latest_app_info;
-  const [syncing, setSyncing] = React.useState(false);
-  const { data: detail, refetch } = useQuery({
+  const { data: detail } = useQuery({
     queryKey: ["app-detail", app.id, info?.id ?? 0],
     queryFn: () => apiGet<AppDetailResponse>(`/api/apps/detail?app_id=${encodeURIComponent(app.id)}`),
     staleTime: 0,
   });
 
-  async function handleSync() {
-    setSyncing(true);
-    try {
-      const result = await apiPost<SyncResult>("/api/app-info/sync", { app_id: app.id, force: true });
-      if (result.status === "error") toast.error(`同步失败：${result.error ?? ""}`);
-      else if (result.status === "updated") toast.success("已同步到新的 app_info");
-      else toast.info("app_info 没有变化");
-      onSynced();
-      void refetch();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSyncing(false);
-    }
-  }
-
   return (
     <div className="detail-body" data-testid="app-info-pane">
-      <div className="banner plain-strip">
-        <div className="row gap-8 items-center wrap">
-          <b className="fs-12">app_info 来自仓库</b>
-          <span className="small muted">每日自动同步；仓库是唯一来源，不再手工上传。</span>
-          <span className="spacer" />
-          {canSync && (
-            <button className="btn sm" onClick={() => void handleSync()} disabled={syncing} data-testid="app-info-sync">
-              {syncing ? "同步中…" : "立即同步"}
-            </button>
-          )}
-        </div>
-        <div className="small muted mt-2 fs-11">
-          最近检查：{formatServerTime(app.sync_checked_at) || "—"}
-          {app.sync_head_commit && <> · 分支头 {shortCommit(app.sync_head_commit)}</>}
-        </div>
-      </div>
-      {app.sync_error && (
-        <div className="banner bad" data-testid="app-info-sync-error">最近一次同步失败：{app.sync_error}</div>
-      )}
-
+      <BasicInfoSection app={app} canEdit={canEdit} canEditRmFields={canEditRmFields}
+        onSaved={onSaved} onDirtyChange={onDirtyChange} />
       {!info ? (
         <div className="banner warnp">尚未取得 app_info。</div>
       ) : (

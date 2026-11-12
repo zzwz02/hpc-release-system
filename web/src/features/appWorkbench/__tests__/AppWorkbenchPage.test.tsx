@@ -1,13 +1,12 @@
 /**
- * App 工作台 on the monthly signup model: list, signup, phase rules on the
- * signup pane, withdraw, CICD start/stop rules and the new-App request.
+ * App details, basic information, sync feedback, CICD and new-App requests.
  */
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { AppWorkbenchPage } from "../AppWorkbenchPage";
-import { makeApp, makeEntry, makeRelease, makeState } from "../../../test/fixtures";
+import { makeApp, makeAppInfo, makeEntry, makeRelease, makeState } from "../../../test/fixtures";
 import type { StatePayload } from "../../../types";
 
 vi.mock("../../../api/http", () => ({
@@ -22,6 +21,8 @@ import { apiGet, apiPost } from "../../../api/http";
 import { useAuth } from "../../../api/AuthContext";
 import { confirmDialog } from "../../../lib/confirm";
 import { useUiStore } from "../../../store/uiStore";
+import { toast } from "../../../lib/toast";
+import { appTypeOptionsForTarget } from "../../../lib/domainMetadata";
 
 function setUser(username: string, role: string) {
   vi.mocked(useAuth).mockReturnValue({
@@ -79,90 +80,135 @@ describe("App list", () => {
   });
 });
 
-describe("signup", () => {
-  it("signs up with base image, version, features and a reduced scope", async () => {
+describe("basic information and app_info", () => {
+  it("opens basic information first and hides the signup tab", async () => {
+    mockApi(makeState([makeApp("a")], null));
+    renderPage("a");
+    const pane = await screen.findByTestId("app-info-pane");
+    expect(pane.firstElementChild).toBe(screen.getByTestId("basic-info-section"));
+    expect(screen.getByTestId("detail-tab-app_info")).toHaveTextContent("基本信息和app_info");
+    expect(screen.queryByTestId("detail-tab-signup")).toBeNull();
+    expect(screen.queryByTestId("signup-pane")).toBeNull();
+    for (const label of ["官方名称", "Owner", "类型", "App 类型"]) {
+      expect(within(screen.getByTestId("basic-info-section")).getByLabelText(label)).toBeDisabled();
+    }
+    fireEvent.click(screen.getByTestId("detail-tab-profile"));
+    expect(screen.queryByLabelText("官方名称")).toBeNull();
+    expect(screen.getByLabelText("官方 URL")).toBeInTheDocument();
+  });
+
+  it("lets RM save the four fields without submitting manual content", async () => {
+    setUser("rm", "RM");
     mockApi(makeState([makeApp("a")], makeRelease([])));
     renderPage("a");
-    fireEvent.change(await screen.findByTestId("signup-base-image"), { target: { value: "1" } });
-    fireEvent.change(screen.getByTestId("signup-planned-features"), { target: { value: "new solver" } });
-    fireEvent.click(screen.getByLabelText("纳入 hpc.x.t2"));
-    fireEvent.click(screen.getByTestId("signup-submit"));
-    await waitFor(() =>
-      expect(apiPost).toHaveBeenCalledWith("/api/entries/signup", {
-        release_id: "rel-1",
-        app_id: "a",
-        base_image_id: 1,
-        target_version: "1.0",
-        planned_features: "new solver",
-        excluded_tests: ["hpc.x.t2"],
-      }),
-    );
+    fireEvent.click(await screen.findByRole("button", { name: "✎ 修改" }));
+    fireEvent.change(screen.getByLabelText("官方名称"), { target: { value: "New name" } });
+    fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "alice, bob" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/apps/profile", {
+      app_id: "a", fields: { official_name: "New name", owners: "alice, bob", doc_target: "manual", type: "性能基准测试" },
+    }));
   });
 
-  it.each([
-    ["stopped CICD", { cicd_status: "stopped" as const }, "CICD 已停止"],
-    ["open stop request", { open_status_request: { id: 9, target_status: "stopped" as const } }, "#9"],
-    ["missing app_info", { latest_app_info: null }, "还没有 app_info"],
-  ])("blocks signup for %s", async (_label, overrides, text) => {
-    mockApi(makeState([makeApp("a", overrides)], makeRelease([])));
+  it("lets an Owner edit types, keeps RM fields disabled and retains a rejected save", async () => {
+    mockApi(makeState([makeApp("a")], makeRelease([])));
+    vi.mocked(apiPost).mockRejectedValue(new Error("保存冲突，请刷新后重试"));
     renderPage("a");
-    expect(await screen.findByTestId("signup-blocker")).toHaveTextContent(text);
-    expect(screen.queryByTestId("signup-submit")).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "✎ 修改" }));
+    expect(screen.getByLabelText("官方名称")).toBeDisabled();
+    expect(screen.getByLabelText("Owner")).toBeDisabled();
+    const nextType = appTypeOptionsForTarget("manual").find((type) => type !== "性能基准测试")!;
+    fireEvent.change(screen.getByLabelText("App 类型"), { target: { value: nextType } });
+    expect(screen.getByTestId("app-info-sync")).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("保存冲突");
+    expect(screen.getByLabelText("App 类型")).toHaveValue(nextType);
+    expect(apiPost).toHaveBeenCalledWith("/api/apps/profile", {
+      app_id: "a", fields: { doc_target: "manual", type: nextType },
+    });
+    vi.mocked(confirmDialog).mockResolvedValue(false);
+    fireEvent.click(screen.getByTestId("detail-tab-profile"));
+    await waitFor(() => expect(confirmDialog).toHaveBeenCalled());
+    expect(screen.queryByTestId("profile-pane")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(screen.getByLabelText("App 类型")).toHaveValue("性能基准测试");
+    expect(screen.getByTestId("app-info-sync")).not.toBeDisabled();
   });
 
-  it("blocks signup after the deadline", async () => {
-    mockApi(makeState([makeApp("a")], makeRelease([], { phase: "in_progress" })));
+  it("keeps basic information read-only for a different Owner", async () => {
+    mockApi(makeState([makeApp("a", { owners: ["bob"], allowed_actions: [] })], makeRelease([])));
     renderPage("a");
-    expect(await screen.findByTestId("signup-blocker")).toHaveTextContent("报名已截止");
+    await screen.findByTestId("basic-info-section");
+    expect(screen.queryByRole("button", { name: "✎ 修改" })).toBeNull();
+    expect(screen.queryByTestId("app-info-sync")).toBeNull();
   });
-});
 
-describe("signed-up entry", () => {
-  it("after the deadline only allows removing tests and editing the delivery", async () => {
-    const entry = makeEntry("a", { excluded_tests: ["hpc.x.t2"], scope_tests: [
-      { path: "hpc.x.t1", command: "run t1", supported_chips: ["C500"], arch_list: [], excluded: false },
-      { path: "hpc.x.t2", command: "run t2", supported_chips: ["C500"], arch_list: [], excluded: true },
-    ] });
-    mockApi(makeState([makeApp("a")], makeRelease([entry], { phase: "in_progress" })));
+  it("discards the draft after a confirmed refresh even when server data is unchanged", async () => {
+    setUser("rm", "RM");
+    mockApi(makeState([makeApp("a")], makeRelease([])));
     renderPage("a");
-    fireEvent.click(await screen.findByTestId("entry-edit"));
-    expect(screen.getByTestId("entry-target-version")).toBeDisabled();
-    expect(screen.getByLabelText("纳入 hpc.x.t2")).toBeDisabled();
-    const t1 = screen.getByLabelText("纳入 hpc.x.t1");
-    expect(t1).not.toBeDisabled();
-    fireEvent.click(t1);
-    fireEvent.change(screen.getByTestId("entry-actual-delivery"), { target: { value: "shipped A" } });
-    fireEvent.click(screen.getByTestId("entry-save"));
-    await waitFor(() =>
-      expect(apiPost).toHaveBeenCalledWith("/api/entries/update", {
-        entry_id: 1,
-        changes: { excluded_tests: ["hpc.x.t2", "hpc.x.t1"], actual_delivery: "shipped A", known_issues: "" },
-      }),
-    );
+    fireEvent.click(await screen.findByRole("button", { name: "✎ 修改" }));
+    fireEvent.change(screen.getByLabelText("官方名称"), { target: { value: "Draft name" } });
+    fireEvent.click(screen.getByTestId("refresh-btn"));
+    await waitFor(() => expect(screen.getByLabelText("官方名称")).toHaveValue("App a"));
+    expect(screen.getByLabelText("官方名称")).toBeDisabled();
+    expect(useUiStore.getState().appDetailDirty).toBe(false);
   });
 
-  it("shows a pending scope request and withdraws after confirmation", async () => {
-    const entry = makeEntry("a", {
-      pending_scope_request: {
+  it("syncs from the title bar on any tab and refreshes the scope warning", async () => {
+    const state = makeState([makeApp("a")], makeRelease([makeEntry("a")], { phase: "in_progress" }));
+    mockApi(state);
+    vi.mocked(apiPost).mockImplementation(async () => {
+      state.apps[0] = { ...state.apps[0], latest_app_info: makeAppInfo({ id: 2 }) };
+      state.release!.entries[0] = makeEntry("a", { behind_latest: true, pending_scope_request: {
         id: 5, entry_id: 1, base_version_id: 1, target_version_id: 2, additions: ["新增芯片 C600"],
         status: "pending", created_at: "", decided_by: "", decided_at: "", decision_note: "",
-      },
+      } });
+      return { status: "updated" };
     });
-    mockApi(makeState([makeApp("a")], makeRelease([entry], { phase: "in_progress" })));
     renderPage("a");
-    expect(await screen.findByTestId("pending-scope-request")).toHaveTextContent("新增芯片 C600");
-    fireEvent.click(screen.getByTestId("entry-withdraw"));
-    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/entries/withdraw", { entry_id: 1 }));
+    const header = await screen.findByTestId("app-detail-header");
+    expect(within(header).getByTestId("app-info-sync")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("detail-tab-profile"));
+    fireEvent.click(screen.getByTestId("app-info-sync"));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/app-info/sync", { app_id: "a", force: true }));
+    expect(await screen.findByTestId("app-scope-warning")).toHaveTextContent("新增芯片 C600");
+    expect(screen.getByTestId("app-scope-warning")).toHaveTextContent("最新 app_info 已同步");
+    expect(toast.success).toHaveBeenCalledWith("已同步到新的 app_info");
   });
 
-  it("is read-only once published", async () => {
-    mockApi(makeState([makeApp("a")], makeRelease([makeEntry("a", { result: "released" })], {
-      phase: "released", released_locked: true,
-    })));
+  it("shows a persistent sync failure and a scope warning after QA rejects the expansion", async () => {
+    mockApi(makeState([makeApp("a", { sync_error: "Gerrit 不可达" })],
+      makeRelease([makeEntry("a", { behind_latest: true })], { phase: "in_progress" })));
+    vi.mocked(apiPost).mockResolvedValue({ status: "error", error: "Gerrit 不可达" });
     renderPage("a");
-    await screen.findByTestId("signup-pane");
-    expect(screen.queryByTestId("entry-edit")).toBeNull();
-    expect(screen.queryByTestId("entry-withdraw")).toBeNull();
+    expect(await screen.findByTestId("app-info-sync-error")).toHaveTextContent("Gerrit 不可达");
+    expect(screen.getByTestId("app-scope-warning")).toHaveTextContent("未获 QA 同意");
+    fireEvent.click(screen.getByTestId("app-info-sync"));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("同步失败：Gerrit 不可达"));
+    fireEvent.click(screen.getByTestId("detail-tab-cicd"));
+    expect(screen.getByTestId("app-info-sync-error")).toHaveTextContent("Gerrit 不可达");
+    expect(screen.getByTestId("app-scope-warning")).toBeInTheDocument();
+  });
+
+  it("refreshes the stored sync error when the HTTP wrapper throws for an error envelope", async () => {
+    const state = makeState([makeApp("a")], makeRelease([]));
+    mockApi(state);
+    vi.mocked(apiPost).mockImplementation(async () => {
+      state.apps[0] = { ...state.apps[0], sync_error: "Gerrit 不可达" };
+      throw new Error("Gerrit 不可达");
+    });
+    renderPage("a");
+    fireEvent.click(await screen.findByTestId("app-info-sync"));
+    expect(await screen.findByTestId("app-info-sync-error")).toHaveTextContent("Gerrit 不可达");
+    expect(toast.error).toHaveBeenCalledWith("同步失败：Gerrit 不可达");
+  });
+
+  it("does not report historical version differences as a pending scope expansion", async () => {
+    mockApi(makeState([makeApp("a")], makeRelease([makeEntry("a", { behind_latest: true })], { phase: "released" })));
+    renderPage("a");
+    await screen.findByTestId("app-info-pane");
+    expect(screen.queryByTestId("app-scope-warning")).toBeNull();
   });
 });
 
