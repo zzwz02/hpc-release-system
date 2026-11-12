@@ -30,9 +30,6 @@ DISPATCH_ISSUE_TYPE = "Task"
 DISPATCH_SUBTASK_TYPE = "Sub-task"
 EXPECTED_ETA_FIELD = "customfield_10115"
 ESTIMATED_ETA_FIELD = "customfield_10116"
-_CICD_FIRST_ACTION_FIELD = "_cicd_first_action"
-_CICD_FIRST_ACTION_CREATED = "created"
-_CICD_FIRST_ACTION_ASSOCIATED = "associated"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -107,37 +104,17 @@ def _change_side(payload: dict, field: str, side: str) -> str:
 def _is_stop_modify_request(request_type: str, payload: dict) -> bool:
     return (
         request_type == "modify"
-        and _change_side(payload, "status", "old") == "Running"
-        and _change_side(payload, "status", "new") == "Stopped"
+        and _change_side(payload, "status", "new") == "stopped"
     )
 
 
-def _legacy_task_exists_for_app(conn: sqlite3.Connection, app_name: str) -> bool:
+def _is_append_create(conn: sqlite3.Connection, app_name: str) -> bool:
+    """A create request for a name that already has an App adds another branch."""
     if not app_name:
         return False
     return conn.execute(
-        "SELECT 1 FROM cicd_tasks WHERE app_name=?",
-        (app_name,),
+        "SELECT 1 FROM apps WHERE official_name = ?", (app_name,)
     ).fetchone() is not None
-
-
-def _is_append_create(
-    conn: sqlite3.Connection,
-    payload: dict,
-    app_name: str,
-    task_context: dict | None,
-) -> bool:
-    first_action = str(payload.get(_CICD_FIRST_ACTION_FIELD) or "").strip()
-    if first_action == _CICD_FIRST_ACTION_ASSOCIATED:
-        return True
-    if first_action == _CICD_FIRST_ACTION_CREATED:
-        return False
-
-    context_name = str((task_context or {}).get("app_name") or "").strip()
-    if context_name and (not app_name or context_name == app_name):
-        return True
-
-    return _legacy_task_exists_for_app(conn, app_name)
 
 
 def compute_title(
@@ -153,7 +130,7 @@ def compute_title(
     """
     app_name = payload.get("app_name", "") or (task_context or {}).get("app_name", "")
     if not app_name and task_id:
-        row = conn.execute("SELECT app_name FROM cicd_tasks WHERE id=?", (task_id,)).fetchone()
+        row = conn.execute("SELECT official_name FROM apps WHERE id=?", (task_id,)).fetchone()
         if row:
             app_name = row[0]
     app_name = str(app_name or "").strip()
@@ -163,7 +140,7 @@ def compute_title(
             return f"[Stop] {app_name} 【停止发布 {branch} 分支】"
         return f"[Stop] {app_name} 【停止发布】"
     if request_type == "create":
-        if _is_append_create(conn, payload, app_name, task_context):
+        if _is_append_create(conn, app_name):
             return f"[Append] {app_name} 【追加发布新版本】"
         return f"[New] {app_name} 【新发布项目】"
     return f"[Change] {app_name} 【修改项目】"
@@ -179,7 +156,6 @@ _FIELD_LABEL: dict[str, str] = {
     "repo_url":        "代码仓库",
     "repo_name":       "仓库名",
     "branch":          "分支",
-    "release_decision": "Release 决策",
     "build_product":   "构建产物",
     "pipeline_url":    "流水线地址",
     "build_cmd":       "构建命令",

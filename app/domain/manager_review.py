@@ -26,10 +26,5 @@ FIELD_LABELS = {
 DEFAULT_FIELDS = tuple(
     field for field in FIELDS if _FIELD_METADATA[field].get("default") is True
 )
-NON_RELEASE_BLANK_FIELDS = frozenset(
-    field
-    for field in FIELDS
-    if _FIELD_METADATA[field].get("blank_for_non_release") is True
-)
 if not DEFAULT_FIELDS:
     raise RuntimeError("manager_review_fields must define at least one default field")

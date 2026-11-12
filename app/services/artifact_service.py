@@ -1,13 +1,14 @@
-"""Artifact generation service.
+"""Release documents for a monthly cycle.
 
-Full port of the core.py artifact pipeline with the FastAPI runtime rules
-applied directly (they used to be monkeypatch overlays on the frozen legacy
-module):
-  - release note includes QA 状态/QA问题说明 columns and is gated by
-    ``qualifies_for_docs`` (QA status is displayed, not a gate);
-  - guide known-limitations merge QA notes for has_issues AND cannot_release;
-  - Manager Review CSV blanks selected fields for non-release rows;
-  - all timestamps are naive Beijing strings (§5.4).
+* ``release_note`` — only the Apps released in this cycle.  Before
+  publication it previews the entries whose QA verdict is releasable.
+* ``manual`` / ``ai4sci`` — cumulative guides covering the current official
+  version of every running App, refreshed each month.  Before publication the
+  preview assumes this cycle's releasable entries are published.
+* ``data`` — machine-readable JSON of the cycle.
+
+Draft documents can be regenerated until publication; publication writes the
+final, immutable set (``generate_final_artifacts``).
 """
 from __future__ import annotations
 
@@ -18,9 +19,11 @@ import re
 import sqlite3
 from typing import Any
 
+from app.api.errors import AuthzError
 from app.db.connection import transaction
-from app.domain import gates, manager_review, qa
-from app.domain.decisions import normalize_release_decision
+from app.domain import cycles as cycles_domain
+from app.domain import manager_review, qa
+from app.domain.app_profile import display_name, normalize_doc_target
 from app.domain.markdown import (
     guide_test_doc_field,
     inline_code,
@@ -29,259 +32,254 @@ from app.domain.markdown import (
     md_title,
     owner_markdown_block,
 )
-from app.domain.snapshots import app_view, normalize_doc_target
-from app.repositories import releases_repo, snapshots_repo, users_repo
-from app.repositories import apps_repo
+from app.domain.permissions import has_capability, roles_for_tab
+from app.domain.textutil import join_list
+from app.repositories import (
+    app_info_repo,
+    apps_repo,
+    entries_repo,
+    official_repo,
+    releases_repo,
+    users_repo,
+)
 from app.repositories.audit_repo import log_audit
 from app.repositories.base import dumps_json
-from app.services import release_reads
+from app.services import catalog_service, cycle_service
 from app.timeutil import BEIJING_TZ, beijing_now, beijing_timestamp
 
+ARTIFACT_NAMES = {
+    "release_note": "release_note.md",
+    "manual": "hpc_manual_apps.md",
+    "ai4sci": "ai4sci_user_guide_apps.md",
+    "data": "release_data.json",
+}
+PUBLIC_KINDS = frozenset(ARTIFACT_NAMES)
+
+
 # ---------------------------------------------------------------------------
-# QA display helpers
+# Row building
 # ---------------------------------------------------------------------------
 
-def _qa_status_label(snapshot: dict[str, Any]) -> str:
-    status = str(snapshot.get("qa_status", qa.QA_STATUS_DEFAULT))
-    return qa.qa_status_label(status)
+
+def _owner_display_text(owners: list[str] | None, display_names: dict[str, str]) -> str:
+    return ",".join(display_names.get(o, o) for o in owners or [] if str(o).strip())
 
 
-def _qa_issue_note(snapshot: dict[str, Any]) -> str:
-    if qa.issue_note_required(str(snapshot.get("qa_status") or "")):
-        return str(snapshot.get("qa_issue_note") or "")
-    return ""
+def _chips(summary: dict[str, Any] | None) -> tuple[str, str]:
+    summary = summary or {}
+    return join_list(summary.get("x86_chips", [])), join_list(summary.get("arm_chips", []))
 
 
-def _owner_limitations(snapshot: dict[str, Any]) -> str:
-    return (snapshot.get("doc", {}) or {}).get("limitations", "") or ""
-
-
-def _merged_limitations_with_qa_note(snapshot: dict[str, Any]) -> str:
-    text = _owner_limitations(snapshot)
-    note = _qa_issue_note(snapshot)
-    if not note:
-        return text
-    prefix = qa.issue_note_prefix(str(snapshot.get("qa_status") or ""))
-    qa_text = f"{prefix}：{note}"
-    return f"{text}\n\n{qa_text}".strip() if text else qa_text
-
-
-def _chip_support_text(snapshot: dict[str, Any]) -> str:
+def _chip_support_text(summary: dict[str, Any] | None) -> str:
+    x86, arm = _chips(summary)
     parts = []
-    if snapshot.get("x86_chips"):
-        parts.append(f"X86: {snapshot['x86_chips']}")
-    if snapshot.get("arm_chips"):
-        parts.append(f"ARM: {snapshot['arm_chips']}")
-    if snapshot.get("hpcc_chip"):
-        parts.append(f"HPCC: {snapshot['hpcc_chip']}")
+    if x86:
+        parts.append(f"X86: {x86}")
+    if arm:
+        parts.append(f"ARM: {arm}")
     return "; ".join(parts)
 
 
-def _owner_display_text(
-    owners: list[str] | tuple[str, ...] | set[str] | None,
-    display_names: dict[str, str],
-) -> str:
-    labels = []
-    for owner in owners or []:
-        username = str(owner or "").strip()
-        if username:
-            labels.append(display_names.get(username, username))
-    return ",".join(labels)
-
-
-# ---------------------------------------------------------------------------
-# Row selection
-# ---------------------------------------------------------------------------
-
-def _release_rows(
-    conn: sqlite3.Connection,
-    release: dict[str, Any],
-) -> list[tuple[dict[str, Any], dict[str, Any]]]:
-    """Rows for the release note.
-
-    Preview and final Markdown both include only apps that currently qualify
-    (decision=release, no doc-gate items).  Unfinished apps
-    stay visible in missing_items, not generated Markdown.
-    """
+def _entry_rows(conn: sqlite3.Connection, release: dict[str, Any]) -> list[dict[str, Any]]:
+    """Entries that appear in the release note (released, or releasable before publish)."""
     apps = {app["id"]: app for app in apps_repo.list_apps(conn)}
     rows = []
-    for app_id, snapshot in release["snapshots"].items():
-        app = apps.get(app_id)
-        if not app or snapshot.get("release_decision") != "release":
+    for entry in entries_repo.list_for_release(conn, release["id"]):
+        if release["released_locked"]:
+            if entry["result"] != cycles_domain.RESULT_RELEASED:
+                continue
+        elif not qa.is_releasable(entry["qa_status"]):
             continue
-        if not gates.qualifies_for_docs(snapshot):
-            continue
-        rows.append((app_view(app, snapshot), snapshot))
-    return sorted(rows, key=lambda item: item[0]["name"].lower())
-
-
-def _guide_rows(
-    conn: sqlite3.Connection,
-    release: dict[str, Any],
-    doc_target: str,
-) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], list[tuple[dict[str, Any], dict[str, Any]]]]:
-    """Return current release-decision app rows for a manual/ai4sci guide."""
-    apps = {app["id"]: app for app in apps_repo.list_apps(conn)}
-    active: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    stopped: list[tuple[dict[str, Any], dict[str, Any]]] = []
-
-    for app_id, snapshot in release["snapshots"].items():
-        app = apps.get(app_id)
+        app = apps.get(entry["app_id"])
         if not app:
             continue
-        if normalize_doc_target(snapshot.get("doc_target")) != doc_target:
-            continue
-        if gates.qualifies_for_docs(snapshot):
-            active.append((app_view(app, snapshot), snapshot))
+        summary = catalog_service.version_summary(app_info_repo.get_version(conn, entry["locked_version_id"]))
+        known = entry["known_issues"]
+        if not release["released_locked"]:
+            known = cycles_domain.known_issues_at_publish(known, entry["qa_status"], entry["qa_note"])
+        rows.append({"app": app, "entry": entry, "summary": summary, "known_issues": known})
+    rows.sort(key=lambda row: catalog_service.app_name(row["app"]).lower())
+    return rows
 
-    active.sort(key=lambda item: item[0]["name"].lower())
-    return active, stopped
+
+def _guide_rows(conn: sqlite3.Connection, release: dict[str, Any], doc_target: str) -> list[dict[str, Any]]:
+    """Running Apps of *doc_target* with their (prospective) official version."""
+    officials = official_repo.current_by_app(conn)
+    prospective: dict[str, dict[str, Any]] = {}
+    if not release["released_locked"]:
+        for row in _entry_rows(conn, release):
+            prospective[row["app"]["id"]] = row
+    rows = []
+    for app in apps_repo.list_apps(conn):
+        if app["cicd_status"] != cycles_domain.CICD_RUNNING:
+            continue
+        if normalize_doc_target(app.get("doc_target")) != doc_target:
+            continue
+        if app["id"] in prospective:
+            row = prospective[app["id"]]
+            version, version_id, known = row["entry"]["target_version"], row["entry"]["locked_version_id"], row["known_issues"]
+        elif app["id"] in officials:
+            official = officials[app["id"]]
+            version, version_id = official["version"], official["app_info_version_id"]
+            entry = entries_repo.get_entry(conn, official["entry_id"]) if official.get("entry_id") else None
+            known = (entry or {}).get("known_issues", "")
+        else:
+            continue
+        summary = catalog_service.version_summary(app_info_repo.get_version(conn, version_id))
+        rows.append({"app": app, "version": version, "summary": summary, "known_issues": known})
+    rows.sort(key=lambda row: catalog_service.app_name(row["app"]).lower())
+    return rows
 
 
 # ---------------------------------------------------------------------------
 # Renderers
 # ---------------------------------------------------------------------------
 
-def _render_release_note(release: dict[str, Any], rows: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
+
+def _render_release_note(release: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     out = md_title(f"MACA HPC 发布列表 - {release['name']}")
-    headers = [
-        "名称",
-        "类型",
-        "描述",
-        "对应官方版本",
-        "X86支持芯片系列",
-        "ARM支持芯片类型",
-        "QA状态",
-        "QA问题说明",
-    ]
+    headers = ["名称", "类型", "描述", "版本", "X86支持芯片系列", "ARM支持芯片类型", "本期交付", "已知问题"]
     out += "| " + " | ".join(headers) + " |\n"
     out += "| " + " | ".join("---" for _ in headers) + " |\n"
-    for app, snapshot in rows:
+    for row in rows:
+        app, entry = row["app"], row["entry"]
+        x86, arm = _chips(row["summary"])
         cells = [
-            app["name"],
+            display_name(catalog_service.app_name(app), entry["target_version"]),
             app.get("type") or "",
             app.get("description") or "",
-            snapshot.get("version") or "",
-            snapshot.get("x86_chips") or "",
-            snapshot.get("arm_chips") or "",
-            _qa_status_label(snapshot),
-            _qa_issue_note(snapshot),
+            entry["target_version"],
+            x86,
+            arm,
+            entry["actual_delivery"] or entry["planned_features"],
+            row["known_issues"],
         ]
         out += "| " + " | ".join(md_cell(c) for c in cells) + " |\n"
-    out += "\n"
-    return out
+    return out + "\n"
 
 
-def _render_guide_entries(rows: list[tuple[dict[str, Any], dict[str, Any]]], *, stopped: bool = False) -> str:
-    out = ""
-    for app, snapshot in rows:
-        doc = snapshot.get("doc", {})
-        heading = f"{app['name']}（已停止支持）" if stopped else app["name"]
-        out += md_title(heading, 2)
+def _render_guide(title: str, rows: list[dict[str, Any]]) -> str:
+    out = md_title(title)
+    for row in rows:
+        app = row["app"]
+        doc = app.get("doc") or {}
+        out += md_title(display_name(catalog_service.app_name(app), row["version"]), 2)
         out += f"{doc.get('intro') or app.get('description') or ''}\n\n"
-        out += f"版本：{snapshot.get('version') or ''}\n\n"
+        out += f"版本：{row['version']}\n\n"
         if app.get("official_url"):
             out += f"官方网址：{app['official_url']}\n\n"
         out += "**镜像使用方法：**\n\n" + owner_markdown_block(doc.get("image_usage", ""))
         out += "**二进制包使用方法：**\n\n" + owner_markdown_block(doc.get("binary_usage", ""))
         out += "**环境搭建：**\n\n" + owner_markdown_block(doc.get("env_setup", ""))
         out += "**测试方法：**\n\n"
-        for test_doc in snapshot.get("test_docs", []):
-            if test_doc.get("obsolete"):
-                continue
-            out += f"- {test_doc['path']}\n"
+        test_docs = {d.get("path"): d for d in app.get("test_docs") or []}
+        for test in (row["summary"] or {}).get("tests", []):
+            test_doc = test_docs.get(test["path"], {})
+            out += f"- {test['path']}\n"
             out += guide_test_doc_field("测试内容", test_doc.get("content", ""), quote=True)
-            if test_doc.get("command"):
-                out += guide_test_doc_field("测试命令", inline_code(test_doc["command"]))
+            if test.get("command"):
+                out += guide_test_doc_field("测试命令", inline_code(test["command"]))
             out += guide_test_doc_field("测试数据集", test_doc.get("dataset", ""), quote=True)
             out += guide_test_doc_field("结果查看", test_doc.get("result_view", ""), quote=True)
             out += guide_test_doc_field("通过标准", test_doc.get("pass_criteria", ""), quote=True)
             out += "\n"
-        limits = _merged_limitations_with_qa_note(snapshot)
+        limits = "\n\n".join(part for part in ((doc.get("limitations") or "").strip(), row["known_issues"].strip()) if part)
         if limits:
             out += f"**已知限制：**\n\n{limits}\n\n"
-    return out
-
-
-def _render_guide(
-    title: str,
-    rows: list[tuple[dict[str, Any], dict[str, Any]]],
-    stopped_rows: list[tuple[dict[str, Any], dict[str, Any]]] | None = None,
-) -> str:
-    out = md_title(title)
-    out += _render_guide_entries(rows)
-    if stopped_rows:
-        out += _render_guide_entries(stopped_rows, stopped=True)
     return markdown_fences_on_new_lines(out)
 
 
-def _is_non_release_decision(snapshot: dict[str, Any]) -> bool:
-    return normalize_release_decision(snapshot.get("release_decision")) != "release"
-
-
-def _render_manager_review_csv(
-    conn: sqlite3.Connection,
-    release: dict[str, Any],
-    fields: list[str] | None = None,
-) -> str:
-    """Render Manager Review CSV with FastAPI non-release row handling."""
-    field_labels = manager_review.FIELD_LABELS
-    selected = fields or manager_review.DEFAULT_FIELDS
-    if not selected:
-        raise ValueError("至少选择一个输出字段")
-    invalid = [field for field in selected if field not in field_labels]
-    if invalid:
-        raise ValueError(f"未知 Manager Review 字段: {', '.join(invalid)}")
-
-    apps = {app["id"]: app for app in apps_repo.list_apps(conn)}
-    display_names = users_repo.display_name_map(conn)
-    out = io.StringIO()
-    writer = csv.writer(out)
-    writer.writerow([field_labels[field] for field in selected])
-    rows: list[tuple[bool, dict[str, Any], dict[str, Any]]] = []
-    for app_id, snapshot in release["snapshots"].items():
-        app = apps.get(app_id)
-        if not app:
-            continue
-        rows.append((_is_non_release_decision(snapshot), app_view(app, snapshot), snapshot))
-    rows.sort(key=lambda item: (1 if item[0] else 0, item[1].get("name", "").lower()))
-
-    for is_non_release, app, snapshot in rows:
-        values = {
-            "app_name": app.get("name", ""),
-            "official_name": app.get("official_name", ""),
-            "doc_target": "AI4Sci" if normalize_doc_target(app.get("doc_target")) == "ai4sci" else "HPC",
-            "app_type": app.get("type", ""),
-            "version": snapshot.get("version", ""),
-            "owners": _owner_display_text(app.get("owners", []), display_names),
-            "chip_support": _chip_support_text(snapshot),
-            "qa_issue_note": snapshot.get("qa_issue_note", ""),
-            "x86_chips": snapshot.get("x86_chips", ""),
-            "arm_chips": snapshot.get("arm_chips", ""),
-            "release_decision": normalize_release_decision(snapshot.get("release_decision")),
-            "qa_status": snapshot.get("qa_status", qa.QA_STATUS_DEFAULT),
-            "owner_confirmed": "是" if snapshot.get("owner_confirmed") else "否",
-            "releasable": "是" if gates.qualifies_for_final(snapshot) else "否",
-            "not_releasable_reason": gates.not_releasable_reason(snapshot),
-            "known_limitations": _owner_limitations(snapshot),
-            "gerrit_url": app.get("git_url", ""),
-            "git_branch": app.get("git_branch", ""),
+def _render_data(conn: sqlite3.Connection, release: dict[str, Any], ts: str, final: bool) -> str:
+    return dumps_json(
+        {
+            "release": cycle_service.release_detail(conn, release["id"]),
+            "entries": cycle_service.list_entry_views(conn, release["id"], include_withdrawn=False),
+            "apps": catalog_service.list_app_views(conn),
+            "generated_at": ts,
+            "final": final,
         }
-        if is_non_release:
-            for field in manager_review.NON_RELEASE_BLANK_FIELDS:
-                values[field] = ""
-            values["not_releasable_reason"] = "不发布"
-        writer.writerow([values[field] for field in selected])
-    return out.getvalue()
+    )
+
+
+def _render_all(conn: sqlite3.Connection, release: dict[str, Any], ts: str, final: bool) -> dict[str, str]:
+    return {
+        "release_note": _render_release_note(release, _entry_rows(conn, release)),
+        "manual": _render_guide("HPC Manual App 章节", _guide_rows(conn, release, "manual")),
+        "ai4sci": _render_guide("AI4Sci User Guide App 章节", _guide_rows(conn, release, "ai4sci")),
+        "data": _render_data(conn, release, ts, final),
+    }
 
 
 # ---------------------------------------------------------------------------
-# CSV filename helpers
+# Persistence
 # ---------------------------------------------------------------------------
+
+
+def _upsert_artifact(conn, release_id, kind, *, name, content, final, generated_at) -> None:
+    conn.execute(
+        """
+        INSERT INTO artifacts(release_id, kind, name, content, final, generated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(release_id, kind) DO UPDATE SET
+          name=excluded.name, content=excluded.content,
+          final=excluded.final, generated_at=excluded.generated_at
+        """,
+        (release_id, kind, name, content, int(final), generated_at),
+    )
+
+
+def generate_final_artifacts(conn: sqlite3.Connection, release_id: str) -> dict[str, str]:
+    """Final documents; called by cycle_service.publish inside its transaction."""
+    release = cycle_service.get_release(conn, release_id)
+    if not release["released_locked"]:
+        raise RuntimeError("Final artifacts require a published release")
+    ts = beijing_timestamp()
+    artifacts = _render_all(conn, release, ts, True)
+    for kind, content in artifacts.items():
+        _upsert_artifact(conn, release_id, kind, name=ARTIFACT_NAMES[kind], content=content,
+                         final=True, generated_at=ts)
+    return artifacts
+
+
+def generate_artifacts(conn: sqlite3.Connection, release_id: str, *, user: str, role: str) -> dict[str, str]:
+    """Regenerate the draft documents of an unpublished cycle."""
+    if not has_capability(role, "artifact.generate"):
+        raise AuthzError("只有 RM、Owner 可刷新发布文档")
+    release = cycle_service.get_release(conn, release_id)
+    if release["released_locked"]:
+        raise RuntimeError("版本已发布，发布文档不可重新生成")
+    ts = beijing_timestamp()
+    with transaction(conn):
+        artifacts = _render_all(conn, release, ts, False)
+        for kind, content in artifacts.items():
+            _upsert_artifact(conn, release_id, kind, name=ARTIFACT_NAMES[kind], content=content,
+                             final=False, generated_at=ts)
+        log_audit(conn, "刷新发布文档", ts=ts, user=user, role=role, release_id=release_id,
+                  event="generate_artifacts")
+    return artifacts
+
+
+def get_artifact(conn: sqlite3.Connection, release_id: str, kind: str, *, role: str) -> dict:
+    if role not in roles_for_tab("artifacts"):
+        raise AuthzError("无权访问发布文档")
+    if not has_capability(role, "artifact.view.internal") and kind not in PUBLIC_KINDS:
+        raise AuthzError("只有 RM 可查看该 artifact")
+    row = conn.execute(
+        "SELECT name, content, generated_at FROM artifacts WHERE release_id = ? AND kind = ?",
+        (release_id, kind),
+    ).fetchone()
+    if not row:
+        raise KeyError(f"artifact not found: {kind}")
+    return dict(row)
+
+
+# ---------------------------------------------------------------------------
+# CSV exports
+# ---------------------------------------------------------------------------
+
 
 def _csv_filename_component(value: str | None) -> str:
-    text = str(value or "").strip()
-    text = re.sub(r"[\\/:*?\"<>|\s]+", "_", text).strip("._")
+    text = re.sub(r"[\\/:*?\"<>|\s]+", "_", str(value or "").strip()).strip("._")
     return text or "release"
 
 
@@ -298,204 +296,54 @@ def _csv_filename_timestamp(generated_at: str | None = None) -> str:
 
 
 def artifact_csv_filename(prefix: str, release: dict[str, Any], generated_at: str | None = None) -> str:
-    version = _csv_filename_component(release.get("name") or release.get("maca_version") or release.get("id"))
+    version = _csv_filename_component(release.get("name") or release.get("id"))
     return f"{prefix}_{version}_{_csv_filename_timestamp(generated_at)}.csv"
 
 
-# ---------------------------------------------------------------------------
-# Artifact persistence
-# ---------------------------------------------------------------------------
-
-def _upsert_artifact(
-    conn: sqlite3.Connection,
-    release_id: str,
-    kind: str,
-    *,
-    name: str,
-    content: str,
-    final: bool,
-    generated_at: str,
-) -> None:
-    conn.execute(
-        """
-        INSERT INTO artifacts(release_id, kind, name, content, final, generated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(release_id, kind) DO UPDATE SET
-          name=excluded.name,
-          content=excluded.content,
-          final=excluded.final,
-          generated_at=excluded.generated_at
-        """,
-        (release_id, kind, name, content, int(final), generated_at),
-    )
-
-
-def _generate_artifacts(
-    conn: sqlite3.Connection,
-    release_id: str,
-    *,
-    final: bool = False,
-    from_lock: bool = False,
-) -> dict[str, str]:
-    """(Re)generate the four release artifacts — mirrors core.py:generate_artifacts."""
-    from app.services import app_service
-
-    release = release_reads.get_release(conn, release_id)
-    if final and not from_lock:
-        raise RuntimeError("Final artifacts 只能通过 final_lock_release 生成")
-    if from_lock and not final:
-        raise RuntimeError("Lock generation must create final artifacts")
-    if from_lock and not release.get("released_locked"):
-        raise RuntimeError("Final artifacts require a locked release")
-    if release.get("released_locked") and not from_lock:
-        raise RuntimeError("Release 已最终锁定，artifacts 不可重新生成")
-    if final:
-        existing = conn.execute(
-            "SELECT 1 FROM artifacts WHERE release_id = ? AND final = 1 LIMIT 1", (release_id,)
-        ).fetchone()
-        if existing:
-            raise RuntimeError("Final artifacts already exist and are immutable")
-    ts = beijing_timestamp()
-    with transaction(conn):
-        if not final:
-            app_service.refresh_missing_items(conn, release_id)
-            release = release_reads.get_release(conn, release_id)
-        rows = _release_rows(conn, release)
-        manual_active, manual_stopped = _guide_rows(conn, release, "manual")
-        ai4sci_active, ai4sci_stopped = _guide_rows(conn, release, "ai4sci")
-        artifacts = {
-            "release_note": _render_release_note(release, rows),
-            "manual": _render_guide("HPC Manual App 章节", manual_active, manual_stopped),
-            "ai4sci": _render_guide("AI4Sci User Guide App 章节", ai4sci_active, ai4sci_stopped),
-            "data": dumps_json({
-                "release": release,
-                "apps": apps_repo.list_apps(conn),
-                "generated_at": ts,
-                "final": final,
-            }),
+def _render_manager_review_csv(conn: sqlite3.Connection, release: dict[str, Any], fields: list[str] | None) -> str:
+    labels = manager_review.FIELD_LABELS
+    selected = list(fields or manager_review.DEFAULT_FIELDS)
+    if not selected:
+        raise ValueError("至少选择一个输出字段")
+    invalid = [field for field in selected if field not in labels]
+    if invalid:
+        raise ValueError(f"未知 Manager Review 字段: {', '.join(invalid)}")
+    apps = {app["id"]: app for app in apps_repo.list_apps(conn)}
+    images = {image["id"]: image for image in releases_repo.list_base_images(conn, release["id"])}
+    display_names = users_repo.display_name_map(conn)
+    result_labels = {"": "待发布", "released": "已发布", "failed": "发布失败"}
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow([labels[field] for field in selected])
+    rows = []
+    for entry in entries_repo.list_for_release(conn, release["id"]):
+        app = apps.get(entry["app_id"])
+        if app:
+            rows.append((catalog_service.app_name(app).lower(), app, entry))
+    for _, app, entry in sorted(rows, key=lambda item: item[0]):
+        summary = catalog_service.version_summary(app_info_repo.get_version(conn, entry["locked_version_id"]))
+        values = {
+            "app_name": display_name(catalog_service.app_name(app), entry["target_version"]),
+            "official_name": app.get("official_name", ""),
+            "doc_target": "AI4Sci" if normalize_doc_target(app.get("doc_target")) == "ai4sci" else "HPC",
+            "app_type": app.get("type", ""),
+            "target_version": entry["target_version"],
+            "owners": _owner_display_text(app.get("owners"), display_names),
+            "chip_support": _chip_support_text(summary),
+            "base_image": (images.get(entry["base_image_id"]) or {}).get("name", ""),
+            "planned_features": entry["planned_features"],
+            "actual_delivery": entry["actual_delivery"],
+            "qa_status": qa.qa_status_label(entry["qa_status"]),
+            "qa_note": entry["qa_note"],
+            "known_issues": entry["known_issues"],
+            "result": result_labels.get(entry["result"], entry["result"]),
+            "deliverable_image": entry["deliverable_image"],
+            "deliverable_digest": entry["deliverable_digest"],
+            "gerrit_url": app.get("git_url", ""),
+            "git_branch": app.get("git_branch", ""),
         }
-        names = {
-            "release_note": "release_note.md",
-            "manual": "hpc_manual_apps.md",
-            "ai4sci": "ai4sci_user_guide_apps.md",
-            "data": "release_data.json",
-        }
-        for kind, content in artifacts.items():
-            _upsert_artifact(
-                conn, release_id, kind,
-                name=names[kind], content=content, final=final, generated_at=ts,
-            )
-        log_audit(
-            conn,
-            "生成最终 artifacts" if final else "刷新文档 artifacts",
-            ts=ts,
-            release_id=release_id,
-            event="generate_artifacts",
-        )
-    return artifacts
-
-
-# ---------------------------------------------------------------------------
-# Public service functions
-# ---------------------------------------------------------------------------
-
-def get_artifact(
-    conn: sqlite3.Connection,
-    release_id: str,
-    kind: str,
-    *,
-    role: str,
-) -> dict:
-    """Return one artifact row for download.
-
-    Mirrors server.py:501-525 logic.
-    Returns dict with keys: name, content, generated_at.
-    Raises AuthzError if the user's role cannot see this artifact kind.
-    Raises KeyError if the artifact does not exist (caller should return 404).
-    """
-    from app.api.errors import AuthzError
-    from app.domain.permissions import has_capability, roles_for_tab
-
-    if role not in roles_for_tab("artifacts"):
-        raise AuthzError("无权访问发布文档")
-
-    # Non-RM can only see the four public kinds (mirrors server.py:504-505)
-    _public_kinds = {"release_note", "manual", "ai4sci", "data"}
-    if not has_capability(role, "artifact.view.internal") and kind not in _public_kinds:
-        raise AuthzError("只有 RM 可查看该 artifact")
-
-    row = conn.execute(
-        "SELECT name, content, generated_at FROM artifacts"
-        " WHERE release_id = ? AND kind = ?",
-        (release_id, kind),
-    ).fetchone()
-    if not row:
-        raise KeyError(f"artifact not found: {kind}")
-    return dict(row)
-
-
-def generate_artifacts(
-    conn: sqlite3.Connection,
-    release_id: str,
-    *,
-    user: str,
-    role: str,
-) -> dict:
-    """(Re)generate all artifacts for a release.
-
-    Mirrors server.py:722-730 with the FastAPI release-note rules.
-    Raises AuthzError if the caller is not RM or Owner.
-    Returns dict of kind→content (same as core.generate_artifacts).
-    """
-    from app.api.errors import AuthzError
-
-    from app.domain.permissions import has_capability
-
-    if not has_capability(role, "artifact.generate"):
-        raise AuthzError("只有 RM、Owner 可刷新发布文档")
-
-    # final=True is blocked at router level; service enforces the same check
-    return _generate_artifacts(conn, release_id, final=False)
-
-
-def final_lock_release(
-    conn: sqlite3.Connection,
-    release_id: str,
-    *,
-    user: str,
-    role: str,
-) -> dict[str, str]:
-    """Final lock: freeze all writes, generate final artifacts.
-
-    Mirrors core.py:final_lock_release with the FastAPI artifact rules
-    (locked_in_release marking uses the docs gate, not the QA gate).
-    """
-    from app.services import app_service, cicd_service
-
-    cicd_service.ensure_no_open_deferred_release_decision_for_release(conn, release_id)
-    release = release_reads.get_release(conn, release_id)
-    if release.get("released_locked"):
-        raise RuntimeError("Release 已最终锁定")
-    ts = beijing_timestamp()
-    with transaction(conn):
-        app_service.refresh_missing_items(conn, release_id)
-        release = release_reads.get_release(conn, release_id)
-        for app_id, snapshot in release["snapshots"].items():
-            if gates.qualifies_for_docs(snapshot):
-                snapshot["locked_in_release"] = True
-            snapshots_repo.save_snapshot(conn, release_id, app_id, snapshot)
-        releases_repo.lock_release(conn, release_id, locked_at=ts, locked_by=user)
-        artifacts = _generate_artifacts(conn, release_id, final=True, from_lock=True)
-        log_audit(
-            conn,
-            f"Release 最终锁定：{release['name']}",
-            ts=ts,
-            user=user,
-            role=role,
-            release_id=release_id,
-            event="final_lock",
-        )
-    return artifacts
+        writer.writerow([values[field] for field in selected])
+    return out.getvalue()
 
 
 def generate_manager_review(
@@ -506,71 +354,44 @@ def generate_manager_review(
     user: str,
     role: str,
 ) -> str:
-    """Generate (and persist) the manager-review CSV.
-
-    Mirrors server.py:732-742 with the FastAPI CSV ordering rules.
-    Returns the CSV content string.
-    """
-    from app.services import app_service
-
-    release = release_reads.get_release(conn, release_id)
-    if release.get("released_locked"):
-        raise RuntimeError("Release 已最终锁定，Manager Review CSV 不可重新生成")
+    release = cycle_service.get_release(conn, release_id)
+    generated_at = beijing_timestamp()
     with transaction(conn):
-        app_service.refresh_missing_items(conn, release_id)
-        release = release_reads.get_release(conn, release_id)
-        generated_at = beijing_timestamp()
         content = _render_manager_review_csv(conn, release, fields)
-        artifact_name = artifact_csv_filename("manager_review", release, generated_at)
-        _upsert_artifact(
-            conn, release_id, "manager_review",
-            name=artifact_name, content=content, final=False, generated_at=generated_at,
-        )
-        log_audit(
-            conn,
-            "生成 Manager Review CSV",
-            ts=generated_at,
-            user=user,
-            role=role,
-            release_id=release_id,
-            event="generate_manager_review",
-        )
+        _upsert_artifact(conn, release_id, "manager_review",
+                         name=artifact_csv_filename("manager_review", release, generated_at),
+                         content=content, final=False, generated_at=generated_at)
+        log_audit(conn, "生成 Manager Review CSV", ts=generated_at, user=user, role=role,
+                  release_id=release_id, event="generate_manager_review")
     return content
 
 
-def get_test_scope_csv(
-    conn: sqlite3.Connection,
-    release_id: str,
-) -> tuple[str, str]:
-    """Return (csv_text, filename) for the test-scope CSV.
-
-    Mirrors server.py:402-413 and core.py:export_test_scope_csv.
-    """
-    release = release_reads.get_release(conn, release_id)
+def get_test_scope_csv(conn: sqlite3.Connection, release_id: str) -> tuple[str, str]:
+    """One row per (entry, in-scope test) of the cycle's active signups."""
+    release = cycle_service.get_release(conn, release_id)
     apps = {app["id"]: app for app in apps_repo.list_apps(conn)}
     display_names = users_repo.display_name_map(conn)
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(["app_name", "version", "gerrit_url", "branch", "owners"])
-    rows = []
-    for app_id, snapshot in release["snapshots"].items():
-        if snapshot.get("release_decision") != "release":
-            continue
-        app = apps.get(app_id)
+    writer.writerow(["app_name", "version", "gerrit_url", "branch", "owners", "test", "chips", "command"])
+    for view in sorted(
+        cycle_service.list_entry_views(conn, release_id, include_withdrawn=False),
+        key=lambda v: catalog_service.app_name(apps.get(v["app_id"], {"id": v["app_id"]})).lower(),
+    ):
+        app = apps.get(view["app_id"])
         if not app:
             continue
-        view = app_view(app, snapshot)
-        rows.append(
-            (
-                view["name"],
-                snapshot.get("version", ""),
-                view["git_url"],
-                view["git_branch"],
-                _owner_display_text(view["owners"], display_names),
-            )
-        )
-    rows.sort(key=lambda r: r[0].lower())
-    for row in rows:
-        writer.writerow(row)
-    filename = f"test_scope_{release['name']}.csv"
-    return out.getvalue(), filename
+        base = [
+            catalog_service.app_name(app),
+            view["target_version"],
+            app["git_url"],
+            app["git_branch"],
+            _owner_display_text(app.get("owners"), display_names),
+        ]
+        tests = [t for t in view["scope_tests"] if not t["excluded"]] or [None]
+        for test in tests:
+            if test is None:
+                writer.writerow([*base, "", "", ""])
+            else:
+                writer.writerow([*base, test["path"], join_list(test["supported_chips"]), test["command"]])
+    return out.getvalue(), f"test_scope_{release['name']}.csv"

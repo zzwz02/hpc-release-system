@@ -1,4 +1,4 @@
-"""Releases repository — releases table CRUD.
+"""Releases repository — monthly cycles plus their environment and base images.
 
 Convention: pure functions fn(conn, ...), SQL only, no business rules.
 """
@@ -10,139 +10,72 @@ from typing import Any
 from app.repositories.base import row_to_dict
 
 # ---------------------------------------------------------------------------
-# Reads
+# Cycles
 # ---------------------------------------------------------------------------
 
-def get_release_row(conn: sqlite3.Connection, release_id: str) -> dict[str, Any] | None:
-    """Return the raw release row (no snapshots attached) or None."""
-    row = conn.execute("SELECT * FROM releases WHERE id = ?", (release_id,)).fetchone()
-    if not row:
-        return None
+
+def _row(row: sqlite3.Row) -> dict[str, Any]:
     data = row_to_dict(row)
     data["released_locked"] = bool(data.get("released_locked"))
     return data
 
 
+def get_release_row(conn: sqlite3.Connection, release_id: str) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM releases WHERE id = ?", (release_id,)).fetchone()
+    return _row(row) if row else None
+
+
 def list_release_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Return all release rows ordered by created_at, rowid (no snapshots)."""
-    result = []
-    for row in conn.execute("SELECT * FROM releases ORDER BY created_at, rowid"):
-        data = row_to_dict(row)
-        data["released_locked"] = bool(data.get("released_locked"))
-        result.append(data)
-    return result
+    """All cycles, oldest first."""
+    return [_row(row) for row in conn.execute("SELECT * FROM releases ORDER BY created_at, rowid")]
 
 
-def release_is_locked(conn: sqlite3.Connection, release_id: str) -> bool:
-    """True if the release is locked (fast check, no join)."""
+def name_exists(conn: sqlite3.Connection, name: str, *, exclude_id: str = "") -> bool:
     row = conn.execute(
-        "SELECT released_locked FROM releases WHERE id = ?", (release_id,)
+        "SELECT 1 FROM releases WHERE name = ? AND id <> ?", (name, exclude_id)
     ).fetchone()
-    return bool(row and row["released_locked"])
+    return row is not None
 
 
-def previous_release_id(conn: sqlite3.Connection, release_id: str) -> str | None:
-    """Return the id of the release that immediately precedes *release_id*, or None."""
-    releases = list_release_rows(conn)
-    for i, rel in enumerate(releases):
-        if rel["id"] == release_id and i > 0:
-            return releases[i - 1]["id"]
-    return None
-
-
-def future_unlocked_release_ids(
-    conn: sqlite3.Connection,
-    from_release_id: str,
-) -> list[str]:
-    """Return ids of releases from *from_release_id* onward that are not locked.
-
-    Used for forward-propagating new app snapshots (mirrors core.py
-    _future_unlocked_release_ids).
-    """
-    releases = list_release_rows(conn)
-    found = False
-    result = []
-    for rel in releases:
-        if rel["id"] == from_release_id:
-            found = True
-        if found and not rel["released_locked"]:
-            result.append(rel["id"])
-    return result
-
-
-def all_unlocked_release_ids(conn: sqlite3.Connection) -> list[str]:
-    """Return ids of all unlocked releases (for cross-release decision sync)."""
-    return [
-        row["id"]
-        for row in conn.execute(
-            "SELECT id FROM releases WHERE released_locked = 0 ORDER BY created_at, rowid"
-        )
-    ]
-
-
-# ---------------------------------------------------------------------------
-# Writes
-# ---------------------------------------------------------------------------
-
-def save_release(conn: sqlite3.Connection, release: dict[str, Any]) -> None:
-    """Upsert a release row — mirrors core.py:save_release (no deadline normaliz.)."""
+def insert_release(conn: sqlite3.Connection, release: dict[str, Any]) -> None:
     conn.execute(
         """
-        INSERT INTO releases(id, name, maca_version, app_freeze_deadline, doc_deadline,
+        INSERT INTO releases(id, name, signup_deadline, qa_deadline, release_date,
                              released_locked, released_locked_at, released_locked_by,
-                             created_at, source, cloned_from)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          name=excluded.name,
-          maca_version=excluded.maca_version,
-          app_freeze_deadline=excluded.app_freeze_deadline,
-          doc_deadline=excluded.doc_deadline,
-          released_locked=excluded.released_locked,
-          released_locked_at=excluded.released_locked_at,
-          released_locked_by=excluded.released_locked_by,
-          created_at=excluded.created_at,
-          source=excluded.source,
-          cloned_from=excluded.cloned_from
+                             created_at, created_by)
+        VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?)
         """,
         (
             release["id"],
             release["name"],
-            release.get("maca_version", ""),
-            release.get("app_freeze_deadline", ""),
-            release.get("doc_deadline", ""),
-            int(release.get("released_locked", 0)),
-            release.get("released_locked_at", ""),
-            release.get("released_locked_by", ""),
-            release.get("created_at", ""),
-            release.get("source", "manual"),
-            release.get("cloned_from", ""),
+            release["signup_deadline"],
+            release["qa_deadline"],
+            release["release_date"],
+            release["created_at"],
+            release.get("created_by", ""),
         ),
     )
 
 
-def update_deadlines(
+def update_settings(
     conn: sqlite3.Connection,
     release_id: str,
     *,
     name: str,
-    app_freeze_deadline: str,
-    doc_deadline: str,
+    signup_deadline: str,
+    qa_deadline: str,
+    release_date: str,
 ) -> None:
-    """Update name + deadline columns on a release."""
     conn.execute(
-        "UPDATE releases SET name = ?, app_freeze_deadline = ?, doc_deadline = ? WHERE id = ?",
-        (name, app_freeze_deadline, doc_deadline, release_id),
+        """
+        UPDATE releases SET name = ?, signup_deadline = ?, qa_deadline = ?, release_date = ?
+        WHERE id = ?
+        """,
+        (name, signup_deadline, qa_deadline, release_date, release_id),
     )
 
 
-def lock_release(
-    conn: sqlite3.Connection,
-    release_id: str,
-    *,
-    locked_at: str,
-    locked_by: str,
-) -> None:
-    """Set released_locked = 1 on a release."""
+def lock_release(conn: sqlite3.Connection, release_id: str, *, locked_at: str, locked_by: str) -> None:
     conn.execute(
         "UPDATE releases SET released_locked = 1, released_locked_at = ?,"
         " released_locked_by = ? WHERE id = ?",
@@ -151,7 +84,6 @@ def lock_release(
 
 
 def unlock_release(conn: sqlite3.Connection, release_id: str) -> None:
-    """Clear released_locked on a release (admin safety valve)."""
     conn.execute(
         "UPDATE releases SET released_locked = 0, released_locked_at = '',"
         " released_locked_by = '' WHERE id = ?",
@@ -160,5 +92,81 @@ def unlock_release(conn: sqlite3.Connection, release_id: str) -> None:
 
 
 def delete_release(conn: sqlite3.Connection, release_id: str) -> None:
-    """Delete a release (cascades to snapshots, artifacts, qa_logs via FK)."""
     conn.execute("DELETE FROM releases WHERE id = ?", (release_id,))
+
+
+# ---------------------------------------------------------------------------
+# Environment rows
+# ---------------------------------------------------------------------------
+
+
+def list_environment(conn: sqlite3.Connection, release_id: str) -> list[dict[str, Any]]:
+    return [
+        row_to_dict(row)
+        for row in conn.execute(
+            "SELECT id, component, version, note, sort FROM cycle_environment"
+            " WHERE release_id = ? ORDER BY sort, id",
+            (release_id,),
+        )
+    ]
+
+
+def replace_environment(
+    conn: sqlite3.Connection,
+    release_id: str,
+    rows: list[dict[str, str]],
+) -> None:
+    conn.execute("DELETE FROM cycle_environment WHERE release_id = ?", (release_id,))
+    for index, row in enumerate(rows):
+        conn.execute(
+            "INSERT INTO cycle_environment(release_id, component, version, note, sort)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (release_id, row["component"], row.get("version", ""), row.get("note", ""), index),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Base images
+# ---------------------------------------------------------------------------
+
+
+def list_base_images(conn: sqlite3.Connection, release_id: str) -> list[dict[str, Any]]:
+    return [
+        row_to_dict(row)
+        for row in conn.execute(
+            "SELECT id, release_id, name, image, digest, note FROM base_images"
+            " WHERE release_id = ? ORDER BY id",
+            (release_id,),
+        )
+    ]
+
+
+def get_base_image(conn: sqlite3.Connection, image_id: int) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM base_images WHERE id = ?", (image_id,)).fetchone()
+    return row_to_dict(row) if row else None
+
+
+def insert_base_image(conn: sqlite3.Connection, release_id: str, image: dict[str, str]) -> int:
+    cur = conn.execute(
+        "INSERT INTO base_images(release_id, name, image, digest, note) VALUES (?, ?, ?, ?, ?)",
+        (release_id, image["name"], image.get("image", ""), image.get("digest", ""), image.get("note", "")),
+    )
+    return int(cur.lastrowid)
+
+
+def update_base_image(conn: sqlite3.Connection, image_id: int, image: dict[str, str]) -> None:
+    conn.execute(
+        "UPDATE base_images SET name = ?, image = ?, digest = ?, note = ? WHERE id = ?",
+        (image["name"], image.get("image", ""), image.get("digest", ""), image.get("note", ""), image_id),
+    )
+
+
+def delete_base_image(conn: sqlite3.Connection, image_id: int) -> None:
+    conn.execute("DELETE FROM base_images WHERE id = ?", (image_id,))
+
+
+def base_images_by_digest(conn: sqlite3.Connection, digest: str) -> list[dict[str, Any]]:
+    return [
+        row_to_dict(row)
+        for row in conn.execute("SELECT * FROM base_images WHERE digest = ?", (digest,))
+    ]

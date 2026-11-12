@@ -6,6 +6,8 @@
     "apps": ["RM", "Owner", "QA", "Guest"],
     "qa": ["RM", "Owner", "QA", "Guest"],
     "artifacts": ["RM", "Owner", "Guest"],
+    "dependencies": ["RM", "Owner", "QA", "Guest"],
+    "lookup": ["RM", "Owner", "QA", "Guest", "SPD"],
     "cicd": ["RM", "SPD"],
     "jenkins-failures": ["RM", "Owner", "SPD", "QA"],
     "cicd-assistant": ["RM", "Owner", "SPD"],
@@ -19,12 +21,10 @@
   "capabilities": {
     "admin.manage": ["Admin"],
     "release.manage": ["RM"],
-    "app.create": ["RM", "Owner"],
     "app.edit.any": ["RM"],
     "app.edit.owned": ["Owner"],
     "app.edit.rm_fields": ["RM"],
-    "app.owner.confirm": ["Owner"],
-    "app.app_info.update": ["RM", "Owner", "QA"],
+    "app.app_info.sync": ["RM", "Owner"],
     "app.app_info.expand_qa_scope": ["QA"],
     "app.audit.view.any": ["RM", "Admin", "QA"],
     "app.audit.view.owned": ["Owner"],
@@ -48,6 +48,7 @@
     "cicd.delivery.return": ["SPD"],
     "cicd.delivery.redispatch": ["RM"],
     "cicd.delivery.apply_returned": ["RM"],
-    "cicd.delivery.reject_returned": ["RM"]
+    "cicd.delivery.reject_returned": ["RM"],
+    "notification.manage": ["RM"]
   }
 }

@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from app.domain import cicd_requests
 from app.domain.permissions import has_capability
 
 
@@ -48,19 +47,16 @@ def cicd_request_allowed_actions(
     """Return actions currently valid for a CICD request/delivery row."""
     status = str(request.get("status") or "")
     delivery_status = str(request.get("delivery_status") or "")
-    stop_sync = cicd_requests.is_release_decision_sync_stop_request(request)
     actions: list[str] = []
 
     if status == "pending":
         if has_capability(role, "cicd.request.approve"):
             actions.append("cicd.request.approve")
-        if has_capability(role, "cicd.request.reject") and not stop_sync:
+        if has_capability(role, "cicd.request.reject"):
             actions.append("cicd.request.reject")
         can_cancel_others = has_capability(role, "cicd.request.approve")
-        if (
-            has_capability(role, "cicd.request.cancel")
-            and (request.get("submitter") == username or can_cancel_others)
-            and not stop_sync
+        if has_capability(role, "cicd.request.cancel") and (
+            request.get("submitter") == username or can_cancel_others
         ):
             actions.append("cicd.request.cancel")
 
@@ -77,10 +73,7 @@ def cicd_request_allowed_actions(
         ):
             if has_capability(role, capability):
                 actions.append(capability)
-        if (
-            has_capability(role, "cicd.delivery.reject_returned")
-            and not stop_sync
-        ):
+        if has_capability(role, "cicd.delivery.reject_returned"):
             actions.append("cicd.delivery.reject_returned")
 
     return actions

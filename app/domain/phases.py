@@ -1,6 +1,13 @@
-"""Release lifecycle phase logic for the FastAPI runtime.
+"""Monthly release cycle phases and the actions each phase allows.
 
 Pure functions: no HTTP, no DB, unit-testable in isolation.
+
+A cycle moves through four phases, derived from its dates and lock flag:
+
+* ``signup``      — before the signup deadline
+* ``in_progress`` — signup deadline .. QA deadline
+* ``qa_closed``   — QA deadline .. published
+* ``released``    — published (locked); RM may unlock for corrections
 """
 from __future__ import annotations
 
@@ -18,99 +25,69 @@ PHASES = tuple(
         key=lambda item: int(item[1].get("order", -1)),
     )
 )
-if len(PHASES) != 4 or {
-    int(metadata.get("order", -1))
-    for metadata in _PHASE_METADATA.values()
-    if isinstance(metadata, dict)
-} != set(range(4)):
-    raise RuntimeError("release_phases must define four unique orders from 0 to 3")
+if len(PHASES) != 4:
+    raise RuntimeError("release_phases must define four phases")
 
-# Compatibility names are derived from the explicit lifecycle order above;
-# phase identifiers themselves remain defined only in shared metadata.
-BEFORE_APP_FREEZE, AFTER_APP_FREEZE, AFTER_DOC_DEADLINE, RELEASED_LOCKED = PHASES
+SIGNUP, IN_PROGRESS, QA_CLOSED, RELEASED = PHASES
 
 PHASE_LABELS: dict[str, str] = {
     phase: str(metadata.get("label") or phase)
     for phase, metadata in _PHASE_METADATA.items()
 }
 
-# Single source of truth for "what is allowed in each release phase".
-# Entry points consult this table instead of re-deriving rules from
-# is_before(...) checks; that way every action's phase gating stays
-# consistent and changes only need to land here.
+# Single source of truth for "what is allowed in each phase".  Call sites ask
+# can()/require_can() instead of comparing dates themselves.
 _PHASE_POLICY: dict[str, set[str]] = {
-    BEFORE_APP_FREEZE: {
-        "new_app_release", "new_app_non_release",
-        "raise_to_release", "lower_decision",
-        "edit_release_decision",
-        "edit_cicd_config", "edit_gerrit_identity",
-        "edit_release_doc_fields", "edit_app_info", "edit_owner_confirmation",
-        "expand_qa_scope",
-        "edit_qa_status", "upload_qa_log",
-        # Legacy aliases retained for older call sites. New code should prefer
-        # the granular actions above so phase policy remains explicit.
-        "edit_snapshot", "qa_set_status", "qa_upload_log",
+    SIGNUP: {
+        "signup",                # new signup or re-signup after withdrawal
+        "edit_entry_plan",       # base image, target version, planned features
+        "exclude_tests",         # Owner removes tests from scope
+        "include_tests",         # Owner puts removed tests back
+        "withdraw",
+        "edit_environment",      # RM: environment rows and base images
+        "edit_deliverable",      # Owner: actual delivery / known issues
+        "edit_qa",               # QA: verdict, note, digest
+        "upload_qa_log",
     },
-    AFTER_APP_FREEZE: {
-        "new_app_non_release",
-        "lower_decision",
-        "edit_release_decision",
-        "edit_cicd_config", "edit_gerrit_identity",
-        "edit_release_doc_fields", "edit_app_info", "edit_owner_confirmation",
-        "edit_qa_status", "upload_qa_log",
-        "edit_snapshot", "qa_set_status", "qa_upload_log",
+    IN_PROGRESS: {
+        "exclude_tests",
+        "withdraw",
+        "edit_deliverable",
+        "edit_qa",
+        "upload_qa_log",
+        "decide_scope_request",
     },
-    AFTER_DOC_DEADLINE: {
-        "new_app_non_release",
-        "lower_decision",
-        "edit_release_decision",
-        "edit_cicd_config", "edit_gerrit_identity",
-        "edit_qa_status", "upload_qa_log",
-        "qa_set_status", "qa_upload_log",
+    QA_CLOSED: {
+        "withdraw",
+        "edit_deliverable",
+        "edit_qa",               # QA finalises verdicts until RM publishes
+        "upload_qa_log",
+        "decide_scope_request",
+        "publish",
     },
-    RELEASED_LOCKED: set(),
+    RELEASED: {"unlock"},
 }
 
 
-def _has_trait(phase: str, trait: str) -> bool:
-    metadata = _PHASE_METADATA.get(phase)
-    return bool(isinstance(metadata, dict) and metadata.get(trait) is True)
-
-
 def phase_label(phase: str) -> str:
-    """Human label for a release phase; unknown values remain visible."""
     return PHASE_LABELS.get(phase, phase)
 
 
-def is_before_app_freeze_phase(phase: str) -> bool:
-    return _has_trait(phase, "before_app_freeze")
-
-
-def is_before_doc_deadline_phase(phase: str) -> bool:
-    return _has_trait(phase, "before_doc_deadline")
-
-
-def is_qa_scope_frozen_phase(phase: str) -> bool:
-    return _has_trait(phase, "qa_scope_frozen")
-
-
 def current_phase(release: dict[str, Any]) -> str:
-    """Derive the lifecycle phase of a release from its deadlines and lock flag."""
+    """Derive the phase of a cycle from its deadlines and lock flag."""
     if release.get("released_locked"):
-        return RELEASED_LOCKED
-    if not is_before(release.get("doc_deadline", "")):
-        return AFTER_DOC_DEADLINE
-    if not is_before(release.get("app_freeze_deadline", "")):
-        return AFTER_APP_FREEZE
-    return BEFORE_APP_FREEZE
+        return RELEASED
+    if is_before(release.get("signup_deadline", "")):
+        return SIGNUP
+    if is_before(release.get("qa_deadline", "")):
+        return IN_PROGRESS
+    return QA_CLOSED
 
 
 def can(release_or_phase: dict[str, Any] | str, action: str) -> bool:
-    """True if *action* is allowed in the given release's current phase.
+    """True if *action* is allowed in the cycle's current phase.
 
-    Accepts either a release dict (phase is derived) or a phase string.
-    Unknown actions return False so a typo at a call site fails closed
-    rather than silently allowing the write.
+    Unknown actions return False so a typo fails closed.
     """
     if isinstance(release_or_phase, dict):
         phase = current_phase(release_or_phase)
@@ -120,6 +97,11 @@ def can(release_or_phase: dict[str, Any] | str, action: str) -> bool:
 
 
 def require_can(release: dict[str, Any], action: str, message: str) -> None:
-    """Raise RuntimeError with *message* if the release's phase forbids *action*."""
+    """Raise RuntimeError with *message* if the cycle's phase forbids *action*."""
     if not can(release, action):
         raise RuntimeError(message)
+
+
+def is_open(release: dict[str, Any]) -> bool:
+    """True for cycles that are not yet published."""
+    return current_phase(release) != RELEASED

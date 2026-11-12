@@ -284,7 +284,11 @@ def ensure_test_docs(snapshot: dict[str, Any], parsed: dict[str, Any], diffs: li
 
 
 def qa_scope_additions(old_parsed: dict[str, Any], new_parsed: dict[str, Any]) -> list[str]:
-    """Describe new build chips, test paths, or chips on an existing test."""
+    """Describe how *new_parsed* widens QA scope relative to *old_parsed*.
+
+    Widening = a new chip, a new test, a new chip on an existing test, or a
+    new enabled build (OS/arch).  Removals and command edits are not widening.
+    """
     additions: list[str] = []
     old_chips = set(old_parsed.get("x86_chips", [])) | set(old_parsed.get("arm_chips", []))
     new_chips = set(new_parsed.get("x86_chips", [])) | set(new_parsed.get("arm_chips", []))
@@ -311,6 +315,18 @@ def qa_scope_additions(old_parsed: dict[str, Any], new_parsed: dict[str, Any]) -
             chips_by_path.setdefault(path, set()).update(normalized_chips)
         return chips_by_path
 
+    def builds(parsed: dict[str, Any]) -> set[str]:
+        return {
+            f"{target.get('os') or ''}/{target.get('arch') or ''}".strip("/")
+            or str(target.get("path") or "")
+            for target in parsed.get("build_targets", [])
+            if target.get("enabled")
+        }
+
+    added_builds = sorted(build for build in builds(new_parsed) - builds(old_parsed) if build)
+    if added_builds:
+        additions.append("新增构建 " + ", ".join(added_builds))
+
     old_test_chips = test_chips_by_path(old_parsed)
     new_test_chips = test_chips_by_path(new_parsed)
     for path in sorted(old_test_chips.keys() & new_test_chips.keys()):
@@ -320,3 +336,46 @@ def qa_scope_additions(old_parsed: dict[str, Any], new_parsed: dict[str, Any]) -
                 f"测试 {path} 新增芯片 " + ", ".join(added_test_chips)
             )
     return additions
+
+
+# ---------------------------------------------------------------------------
+# Monthly model helpers
+# ---------------------------------------------------------------------------
+
+#: app_info.json field listing the components an App depends on.
+DEPENDENCY_FIELD = "app_dependency"
+
+
+def canonical_json(raw: dict[str, Any]) -> str:
+    """Stable text form of an app_info document (used for storage and hashing)."""
+    return json.dumps(raw, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def content_hash(raw: dict[str, Any]) -> str:
+    import hashlib
+
+    return hashlib.sha256(canonical_json(raw).encode("utf-8")).hexdigest()
+
+
+def declared_dependencies(raw: dict[str, Any]) -> list[str] | None:
+    """Component names from ``app_dependency``; None when the field is absent.
+
+    The field is a list of component names, e.g. ``["mcpy", "sdk"]``.  A single
+    string is accepted as one component; anything else is ignored.
+    """
+    if not isinstance(raw, dict) or DEPENDENCY_FIELD not in raw:
+        return None
+    value = raw.get(DEPENDENCY_FIELD)
+    items = value if isinstance(value, list) else [value]
+    seen: list[str] = []
+    for item in items:
+        name = str(item or "").strip()
+        if name and not isinstance(item, (dict, list)) and name not in seen:
+            seen.append(name)
+    return seen
+
+
+def scope_tests(parsed: dict[str, Any], excluded: list[str] | set[str] | None = None) -> list[dict[str, Any]]:
+    """Tests in a parsed app_info that remain in scope after Owner exclusions."""
+    skip = set(excluded or [])
+    return [test for test in parsed.get("tests", []) if test.get("path") not in skip]

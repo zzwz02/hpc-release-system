@@ -9,7 +9,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, Query
 
 from app.deps import get_db, require_login
-from app.services.app_service import get_state
+from app.services.state_service import get_state
 
 router = APIRouter(prefix="/api", tags=["state"])
 

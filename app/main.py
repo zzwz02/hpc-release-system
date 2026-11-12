@@ -23,10 +23,12 @@ from app.api.routers import (
     auth,
     cicd,
     cicd_agent,
+    entries,
     jira_agent,
     notifications,
     jira_learning,
     jira_testing,
+    lookup,
     mcp,
     qa,
     releases,
@@ -38,6 +40,7 @@ from app.config import settings
 from app.db.connection import connect
 from app.services import auth_service, jira_agent_ssh_key, jira_testing_builtins
 from app.services.jira_agent_runner import runner as jira_agent_runner
+from app.services.catalog_service import sync_loop as app_info_sync_loop
 from app.services.notification_service import poller as notification_poller
 from app.services.jira_learning_runner import runner as jira_learning_runner
 from app.services.jira_testing_runner import runner as jira_testing_runner
@@ -63,6 +66,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     if agent_runner:
         await jira_agent_runner.start()
     await notification_poller.start()
+    await app_info_sync_loop.start()
     if learning_runner:
         await jira_learning_runner.start()
     if testing_runner:
@@ -70,6 +74,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await app_info_sync_loop.stop()
         await notification_poller.stop()
         await jira_agent_ssh_key.sessions.stop()
         if testing_runner:
@@ -91,6 +96,8 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(state.router)
     app.include_router(apps.router)
+    app.include_router(entries.router)
+    app.include_router(lookup.router)
     app.include_router(cicd.router)
     app.include_router(cicd_agent.router)
     app.include_router(jira_agent.router)

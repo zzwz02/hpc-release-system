@@ -53,6 +53,62 @@ def _run_git(
     )
 
 
+def _git_prefix(control_path: Path) -> list[str]:
+    ssh_command = (
+        "ssh -o ControlMaster=auto -o ControlPersist=5s "
+        f"-o ControlPath={shlex.quote(str(control_path))}"
+    )
+    return ["git", "-c", f"core.sshCommand={ssh_command}"]
+
+
+def _ls_remote(git_prefix: list[str], remote_url: str, branch: str, project_root: str | Path) -> str:
+    try:
+        ref = _run_git([*git_prefix, "ls-remote", remote_url, branch], cwd=project_root)
+        line = ref.stdout.decode("utf-8", errors="replace").splitlines()[0]
+        return line.split()[0]
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, IndexError) as exc:
+        raise RuntimeError(f"无法获取 Gerrit commit id: {exc}") from exc
+
+
+def _archive_app_info(git_prefix: list[str], remote_url: str, commit_id: str, project_root: str | Path) -> str:
+    try:
+        archive = _run_git(
+            [*git_prefix, "archive", f"--remote={remote_url}", commit_id, "app_info.json"],
+            cwd=project_root,
+            timeout=GERRIT_FETCH_TIMEOUT_SECONDS,
+        )
+        with tarfile.open(fileobj=io.BytesIO(archive.stdout), mode="r:*") as tar:
+            member = tar.getmember("app_info.json")
+            extracted = tar.extractfile(member)
+            if not extracted:
+                raise RuntimeError("archive 中 app_info.json 为空")
+            return extracted.read().decode("utf-8")
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        tarfile.TarError,
+        KeyError,
+        UnicodeDecodeError,
+    ) as exc:
+        raise RuntimeError(f"无法从 Gerrit 拉取 app_info.json: {exc}") from exc
+
+
+def head_commit(git_url: str, branch: str, *, project_root: str | Path) -> str:
+    """Return the commit id at the head of *branch* (``git ls-remote``)."""
+    if not git_url or not branch:
+        raise RuntimeError("Gerrit URL 和 branch 不能为空")
+    with tempfile.TemporaryDirectory(prefix="release-system-gerrit-") as temp_dir:
+        return _ls_remote(_git_prefix(Path(temp_dir) / "control"), gerrit_remote_url(git_url), branch, project_root)
+
+
+def fetch_app_info_at(git_url: str, commit_id: str, *, project_root: str | Path) -> str:
+    """Return app_info.json at *commit_id*."""
+    with tempfile.TemporaryDirectory(prefix="release-system-gerrit-") as temp_dir:
+        return _archive_app_info(
+            _git_prefix(Path(temp_dir) / "control"), gerrit_remote_url(git_url), commit_id, project_root
+        )
+
+
 def fetch_app_info(
     git_url: str,
     branch: str,
@@ -71,44 +127,6 @@ def fetch_app_info(
         raise RuntimeError("Gerrit URL 和 branch 不能为空")
     remote_url = gerrit_remote_url(git_url)
     with tempfile.TemporaryDirectory(prefix="release-system-gerrit-") as temp_dir:
-        control_path = Path(temp_dir) / "control"
-        ssh_command = (
-            "ssh -o ControlMaster=auto -o ControlPersist=5s "
-            f"-o ControlPath={shlex.quote(str(control_path))}"
-        )
-        git_prefix = ["git", "-c", f"core.sshCommand={ssh_command}"]
-        try:
-            ref = _run_git(
-                [*git_prefix, "ls-remote", remote_url, branch],
-                cwd=project_root,
-            )
-            line = ref.stdout.decode("utf-8", errors="replace").splitlines()[0]
-            commit_id = line.split()[0]
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, IndexError) as exc:
-            raise RuntimeError(f"无法获取 Gerrit commit id: {exc}") from exc
-        try:
-            archive = _run_git(
-                [
-                    *git_prefix,
-                    "archive",
-                    f"--remote={remote_url}",
-                    commit_id,
-                    "app_info.json",
-                ],
-                cwd=project_root,
-                timeout=GERRIT_FETCH_TIMEOUT_SECONDS,
-            )
-            with tarfile.open(fileobj=io.BytesIO(archive.stdout), mode="r:*") as tar:
-                member = tar.getmember("app_info.json")
-                extracted = tar.extractfile(member)
-                if not extracted:
-                    raise RuntimeError("archive 中 app_info.json 为空")
-                return extracted.read().decode("utf-8"), commit_id
-        except (
-            subprocess.CalledProcessError,
-            subprocess.TimeoutExpired,
-            tarfile.TarError,
-            KeyError,
-            UnicodeDecodeError,
-        ) as exc:
-            raise RuntimeError(f"无法从 Gerrit 拉取 app_info.json: {exc}") from exc
+        git_prefix = _git_prefix(Path(temp_dir) / "control")
+        commit_id = _ls_remote(git_prefix, remote_url, branch, project_root)
+        return _archive_app_info(git_prefix, remote_url, commit_id, project_root), commit_id

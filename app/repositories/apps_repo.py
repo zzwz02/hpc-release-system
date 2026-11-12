@@ -14,9 +14,35 @@ from app.repositories.base import dumps_json, loads_json, row_to_dict
 # Row shaping — mirror core.py:row_to_app
 # ---------------------------------------------------------------------------
 
+_JSON_COLUMNS = {
+    "aliases_json": ("aliases", list),
+    "owners_json": ("owners", list),
+    "doc_json": ("doc", dict),
+    "community_json": ("community", dict),
+    "sanity_json": ("sanity", dict),
+    "test_docs_json": ("test_docs", list),
+}
+
+#: Optional Owner profile fields stored on the App (key -> column).
+PROFILE_COLUMNS = {
+    "official_name": "official_name",
+    "type": "app_type",
+    "official_url": "official_url",
+    "description": "description",
+    "doc_target": "doc_target",
+    "owners": "owners_json",
+    "doc": "doc_json",
+    "community": "community_json",
+    "sanity": "sanity_json",
+    "test_docs": "test_docs_json",
+}
+
+
 def _row_to_app(row: sqlite3.Row) -> dict[str, Any]:
     data = row_to_dict(row)
-    data["aliases"] = loads_json(data.pop("aliases_json", None), [])
+    for column, (key, kind) in _JSON_COLUMNS.items():
+        data[key] = loads_json(data.pop(column, None), kind())
+    data["type"] = data.pop("app_type", "")
     return data
 
 
@@ -57,56 +83,85 @@ def all_app_ids(conn: sqlite3.Connection) -> set[str]:
     return {row["id"] for row in conn.execute("SELECT id FROM apps")}
 
 
-def locked_releases_for_app(conn: sqlite3.Connection, app_id: str) -> list[str]:
-    """Return release names where this app appears and the release is locked."""
-    return [
-        row["name"]
+def owned_app_ids(conn: sqlite3.Connection, username: str) -> set[str]:
+    return {
+        row["id"]
         for row in conn.execute(
-            """
-            SELECT releases.name
-            FROM releases
-            JOIN snapshots ON snapshots.release_id = releases.id
-            WHERE snapshots.app_id = ? AND releases.released_locked = 1
-            ORDER BY releases.created_at
-            """,
-            (app_id,),
+            "SELECT apps.id FROM apps, json_each(apps.owners_json) WHERE json_each.value = ?",
+            (username,),
         )
-    ]
-
-
-def affected_release_ids_for_app(conn: sqlite3.Connection, app_id: str) -> list[str]:
-    """Return release_ids where this app has a snapshot (for artifact cleanup)."""
-    return [
-        row["release_id"]
-        for row in conn.execute("SELECT release_id FROM snapshots WHERE app_id = ?", (app_id,))
-    ]
+    }
 
 
 # ---------------------------------------------------------------------------
 # Writes
 # ---------------------------------------------------------------------------
 
-def save_app(conn: sqlite3.Connection, app: dict[str, Any]) -> None:
-    """Upsert an app row — mirrors core.py:save_app."""
+def insert_app(conn: sqlite3.Connection, app: dict[str, Any]) -> None:
+    """Insert a new App row (identity, CICD config and initial profile)."""
     conn.execute(
         """
-        INSERT INTO apps(id, git_url, git_branch, aliases_json, created_by, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          git_url=excluded.git_url,
-          git_branch=excluded.git_branch,
-          aliases_json=excluded.aliases_json,
-          created_by=excluded.created_by
+        INSERT INTO apps(id, git_url, git_branch, aliases_json, created_by, created_at,
+                         cicd_status, official_name, owners_json, doc_target, app_type)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             app["id"],
             app.get("git_url", ""),
             app.get("git_branch", ""),
             dumps_json(sorted(set(app.get("aliases", [])))),
-            app.get("created_by", "import"),
+            app.get("created_by", ""),
             app.get("created_at", ""),
+            app.get("cicd_status", "running"),
+            app.get("official_name", ""),
+            dumps_json(sorted(set(app.get("owners", [])))),
+            app.get("doc_target", "manual"),
+            app.get("type", ""),
         ),
     )
+
+
+def update_identity(conn: sqlite3.Connection, app_id: str, *, git_url: str, git_branch: str) -> None:
+    conn.execute(
+        "UPDATE apps SET git_url = ?, git_branch = ? WHERE id = ?",
+        (git_url, git_branch, app_id),
+    )
+
+
+def update_profile(conn: sqlite3.Connection, app_id: str, fields: dict[str, Any]) -> None:
+    """Persist profile fields (keys of PROFILE_COLUMNS)."""
+    updates: dict[str, Any] = {}
+    for key, value in fields.items():
+        column = PROFILE_COLUMNS[key]
+        updates[column] = dumps_json(value) if column.endswith("_json") else str(value or "")
+    if not updates:
+        return
+    assignments = ", ".join(f"{column} = ?" for column in updates)
+    conn.execute(f"UPDATE apps SET {assignments} WHERE id = ?", [*updates.values(), app_id])
+
+
+def set_cicd_status(conn: sqlite3.Connection, app_id: str, status: str) -> None:
+    conn.execute("UPDATE apps SET cicd_status = ? WHERE id = ?", (status, app_id))
+
+
+def update_sync_state(
+    conn: sqlite3.Connection,
+    app_id: str,
+    *,
+    checked_at: str,
+    error: str,
+    head_commit: str | None = None,
+) -> None:
+    if head_commit is None:
+        conn.execute(
+            "UPDATE apps SET sync_checked_at = ?, sync_error = ? WHERE id = ?",
+            (checked_at, error, app_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE apps SET sync_checked_at = ?, sync_error = ?, sync_head_commit = ? WHERE id = ?",
+            (checked_at, error, head_commit, app_id),
+        )
 
 
 def delete_app(conn: sqlite3.Connection, app_id: str) -> None:
@@ -132,12 +187,3 @@ def update_cicd_config(
         f"UPDATE apps SET {assignments} WHERE id = ?",
         [*updates.values(), app_id],
     )
-
-
-def delete_draft_artifacts_for_releases(
-    conn: sqlite3.Connection,
-    release_ids: list[str],
-) -> None:
-    """Delete draft (non-final) artifacts for a list of releases."""
-    for rid in release_ids:
-        conn.execute("DELETE FROM artifacts WHERE release_id = ? AND final = 0", (rid,))

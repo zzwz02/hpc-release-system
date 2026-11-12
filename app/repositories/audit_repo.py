@@ -62,7 +62,7 @@ def app_audit_log(
     app_id: str,
     release_id: str = "",
 ) -> list[dict[str, Any]]:
-    """Return audit entries for an app (optionally filtered to one release).
+    """Return audit entries for an app (optionally one release plus App-level events).
 
     Mirrors core.py:app_audit_log.
     """
@@ -72,7 +72,7 @@ def app_audit_log(
     )
     if release_id:
         rows = conn.execute(
-            cols + " AND release_id = ? ORDER BY id DESC", (app_id, release_id)
+            cols + " AND release_id IN (?, '') ORDER BY id DESC", (app_id, release_id)
         )
     else:
         rows = conn.execute(cols + " ORDER BY id DESC", (app_id,))

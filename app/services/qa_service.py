@@ -12,21 +12,27 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from app.api.errors import AuthzError
 from app.db.connection import transaction
+from app.domain import cycles as cycles_domain
 from app.domain import phases as phase_policy
-from app.domain.decisions import normalize_release_decision
+from app.domain.permissions import has_capability
 from app.domain.qa import (
     QA_STATUSES,
-    QA_STATUS_DEFAULT,
     issue_note_required,
     qa_status_label,
 )
-from app.domain.snapshots import app_view
 from app.domain.textutil import order_chips
-from app.repositories import apps_repo, qa_repo, releases_repo, snapshots_repo, users_repo
+from app.repositories import (
+    app_info_repo,
+    apps_repo,
+    entries_repo,
+    qa_repo,
+    releases_repo,
+    users_repo,
+)
 from app.repositories.audit_repo import log_audit
-from app.repositories.snapshots_repo import save_snapshot
-from app.services import release_reads
+from app.services import catalog_service, cycle_service
 from app.timeutil import beijing_timestamp
 
 QA_RELEASE_REPORT_COLUMNS = [
@@ -36,19 +42,20 @@ QA_RELEASE_REPORT_COLUMNS = [
     "开发者社区发布情况", "开发者社区一级菜单", "开发者社区说明文档链接",
     "开发者社区描述", "开发者社区发布包支持python版本",
     "开发者社区发布包支持的底层框架及版本",
-    "ARM / Kylin sanity", "Ubuntu / 兼容性 sanity", "CICD状态",
+    "ARM / Kylin sanity", "Ubuntu / 兼容性 sanity", "基础镜像", "计划 feature",
 ]
 
 QA_TEST_CMD_COLUMNS = [
     "app_name", "git_branch", "app_version", "arch",
-    "maca_version", "test_name", "docker_cmd", "perf_golden", "perf_unit",
-    "cicd_status",
+    "base_image", "test_name", "docker_cmd", "perf_golden", "perf_unit",
 ]
-_CICD_PENDING_LABEL = "CICD待完成"
 
 # ---------------------------------------------------------------------------
 # QA status batch update — POST /api/qa/status-batch
 # ---------------------------------------------------------------------------
+
+_DELIVERABLE_FIELDS = ("deliverable_image", "deliverable_digest", "deliverable_commit")
+
 
 def set_qa_status_batch(
     conn: sqlite3.Connection,
@@ -58,78 +65,62 @@ def set_qa_status_batch(
     user: str,
     role: str,
 ) -> dict:
-    """Apply several QA-status updates atomically.
+    """Apply several QA verdicts (and delivered-image digests) atomically.
 
-    ``cannot_release`` follows the same note requirement as ``has_issues``.
-    Returns {"ok": True, "updated": n}.
+    Each item: ``{app_id, status, issue_note, deliverable_image?,
+    deliverable_digest?, deliverable_commit?}``.  ``has_issues`` and
+    ``cannot_release`` require a note.
     """
-    release = release_reads.get_release(conn, release_id)
-    phase_policy.require_can(release, "edit_qa_status", "Release 已最终锁定，不可修改 QA 状态")
-
-    # (app_id, snapshot, status, issue_note, old_status, old_note)
-    prepared: list[tuple[str, dict[str, Any], str, str, str, str]] = []
+    if not has_capability(role, "qa.edit"):
+        raise AuthzError("只有 QA、RM 可以修改 QA 结论")
+    release = cycle_service.get_release(conn, release_id)
+    phase_policy.require_can(release, "edit_qa", "版本已发布，不可修改 QA 结论")
+    prepared: list[tuple[dict[str, Any], dict[str, Any]]] = []
     errors: list[str] = []
     for item in items:
         app_id = item.get("app_id", "")
         status = item.get("status", "")
-        issue_note = (item.get("issue_note") or "").strip()
+        note = (item.get("issue_note") or "").strip()
         if status not in QA_STATUSES:
             errors.append(f"{app_id}：无效的 QA 状态 {status!r}")
             continue
-        snapshot = release["snapshots"].get(app_id)
-        if not snapshot:
-            errors.append(f"{app_id}：不在本 release 中")
+        entry = entries_repo.find_entry(conn, release_id, app_id)
+        if not entry or entry["status"] != cycles_domain.ENTRY_ACTIVE:
+            errors.append(f"{app_id}：未报名本版本")
             continue
-        if snapshot.get("release_decision") != "release":
-            errors.append(f"{app_id}：仅 release 决策的 app 可标注 QA 状态")
+        if issue_note_required(status) and not note:
+            errors.append(f"{app_id}：标注「{qa_status_label(status)}」时必须填写问题说明")
             continue
-        if issue_note_required(status) and not issue_note:
-            label = qa_status_label(status)
-            errors.append(f"{app_id}：标注「{label}」时必须填写问题说明")
-            continue
-        prepared.append((
-            app_id,
-            snapshot,
-            status,
-            issue_note,
-            snapshot.get("qa_status", QA_STATUS_DEFAULT),
-            snapshot.get("qa_issue_note", ""),
-        ))
-
+        update = {"qa_status": status, "qa_note": note if issue_note_required(status) else ""}
+        for key in _DELIVERABLE_FIELDS:
+            if key in item:
+                update[key] = str(item.get(key) or "").strip()
+        prepared.append((entry, update))
     if errors:
         raise ValueError("；".join(errors))
-
     ts = beijing_timestamp()
     with transaction(conn):
-        for app_id, snapshot, status, issue_note, old_status, old_note in prepared:
-            snapshot["qa_status"] = status
-            snapshot["qa_issue_note"] = (
-                issue_note if issue_note_required(status) else ""
-            )
-            save_snapshot(conn, release_id, app_id, snapshot)
-            detail = [{"field": "qa_status", "label": "QA 状态", "old": old_status, "new": status}]
-            if old_note or snapshot["qa_issue_note"]:
-                detail.append({
-                    "field": "qa_issue_note",
-                    "label": "问题说明",
-                    "old": old_note,
-                    "new": snapshot["qa_issue_note"],
-                })
+        for entry, update in prepared:
+            changes = {key: {"old": entry.get(key), "new": value}
+                       for key, value in update.items() if entry.get(key) != value}
+            if not changes:
+                continue
+            entries_repo.update_entry(conn, entry["id"], update, updated_at=ts, updated_by=user)
             log_audit(
                 conn,
-                f"QA 标注 {app_id} 为 {status}" + (f"：{issue_note}" if issue_note else ""),
+                f"QA 标注 {entry['app_id']} 为 {update['qa_status']}"
+                + (f"：{update['qa_note']}" if update["qa_note"] else ""),
                 ts=ts,
                 user=user,
                 role=role,
-                app_id=app_id,
+                app_id=entry["app_id"],
                 release_id=release_id,
                 event="qa_set_status",
-                detail=detail,
+                detail=[{"field": key, "label": key, **value} for key, value in changes.items()],
             )
-        # Saving the statuses is the review of any AI suggestions.
+        # Saving the verdicts is the review of any AI suggestions.
         qa_repo.delete_ai_suggestions(conn, release_id)
-    updated = {app_id: snapshot for app_id, snapshot, *_ in prepared}
-    return {"ok": True, "updated": len(updated)}
+    return {"ok": True, "updated": len(prepared)}
 
 
 # ---------------------------------------------------------------------------
@@ -148,8 +139,8 @@ def upload_qa_log(
     """Decode a base64-encoded QA log and embed it in SQLite."""
     if not content_b64:
         raise ValueError("content_base64 required")
-    release = release_reads.get_release(conn, release_id)
-    phase_policy.require_can(release, "upload_qa_log", "Release 已最终锁定，不可上传 QA log")
+    release = cycle_service.get_release(conn, release_id)
+    phase_policy.require_can(release, "upload_qa_log", "版本已发布，不可上传 QA log")
     content = base64.b64decode(content_b64)
     if not filename:
         raise ValueError("filename required")
@@ -404,8 +395,8 @@ def _report_test_cmd_rows(
     raw: dict[str, Any],
     app_name: str,
     git_branch: str,
-    maca_version: str,
-    cicd_status: str = "",
+    base_image: str,
+    excluded: set[str],
 ) -> list[list[str]]:
     version_value = raw.get("app_version")
     app_version = str(version_value).strip() if version_value not in (None, "") else ""
@@ -414,6 +405,8 @@ def _report_test_cmd_rows(
     rows: list[list[str]] = []
     for test_name, test_cfg in (raw.get("app_test") or {}).items():
         if not isinstance(test_cfg, dict) or test_cfg.get("enabled") is False:
+            continue
+        if str(test_name) in excluded:
             continue
         if str(test_cfg.get("test_period") or "").strip().lower() == "weekly":
             continue
@@ -424,95 +417,57 @@ def _report_test_cmd_rows(
         expanded_cmds = _report_expanded_docker_cmds(raw, test_cfg)
         if expanded_cmds:
             for arch, docker_cmd in expanded_cmds:
-                rows.append([
-                    app_name, git_branch, app_version, arch, maca_version, str(test_name), docker_cmd,
-                    perf_golden, perf_unit, cicd_status,
-                ])
+                rows.append([app_name, git_branch, app_version, arch, base_image, str(test_name),
+                             docker_cmd, perf_golden, perf_unit])
             continue
         docker_cmd = _report_docker_cmd(test_cfg)
         for arch in sorted(a for a in (_report_test_arches(test_cfg) or app_arches) if a):
             if _report_test_skip(test_cfg, arch):
                 continue
-            rows.append([
-                app_name,
-                git_branch,
-                app_version,
-                _report_denormalize_arch(arch),
-                maca_version,
-                str(test_name),
-                docker_cmd,
-                perf_golden,
-                perf_unit,
-                cicd_status,
-            ])
+            rows.append([app_name, git_branch, app_version, _report_denormalize_arch(arch), base_image,
+                         str(test_name), docker_cmd, perf_golden, perf_unit])
     return rows
 
 
-def _compare_summary(snapshot: dict[str, Any], base_snapshot: dict[str, Any] | None) -> str:
-    cur_decision = normalize_release_decision(snapshot.get("release_decision"))
-    if base_snapshot is None:
-        return "新增发布" if cur_decision == "release" else ""
+def entry_test_commands(conn: sqlite3.Connection, entry: dict[str, Any]) -> list[dict[str, str]]:
+    """Docker test commands of an entry's locked scope (used by digest lookup)."""
+    version = app_info_repo.get_version(conn, entry.get("locked_version_id"))
+    if not version:
+        return []
+    app = apps_repo.get_app(conn, entry["app_id"]) or {"id": entry["app_id"]}
+    image = releases_repo.get_base_image(conn, entry["base_image_id"]) if entry.get("base_image_id") else None
+    rows = _report_test_cmd_rows(
+        version["raw"], catalog_service.app_name(app), app.get("git_branch", ""),
+        (image or {}).get("name", ""), set(entry.get("excluded_tests") or []),
+    )
+    return [{"arch": row[3], "test": row[5], "command": row[6]} for row in rows]
 
+
+def _compare_summary(
+    current: dict[str, Any] | None,
+    base: dict[str, Any] | None,
+) -> str:
+    """Differences between an App's entry in two cycles (QA scope view)."""
+    if current and not base:
+        return "新增发布"
+    if base and not current:
+        return "本期未报名"
+    if not current or not base:
+        return ""
     tags: list[str] = []
-    base_decision = normalize_release_decision(base_snapshot.get("release_decision"))
-    if cur_decision == "release" and base_decision != "release":
-        tags.append("新增发布")
-    elif cur_decision != "release" and base_decision == "release":
-        tags.append("停止发布")
-
-    def _chip_set(value: Any) -> tuple[str, ...]:
-        return tuple(order_chips(value or ""))
-
-    if (_chip_set(snapshot.get("x86_chips")) != _chip_set(base_snapshot.get("x86_chips"))
-            or _chip_set(snapshot.get("arm_chips")) != _chip_set(base_snapshot.get("arm_chips"))):
+    cur, old = current.get("locked_app_info") or {}, base.get("locked_app_info") or {}
+    if (tuple(order_chips(cur.get("x86_chips") or [])), tuple(order_chips(cur.get("arm_chips") or []))) != (
+        tuple(order_chips(old.get("x86_chips") or [])), tuple(order_chips(old.get("arm_chips") or []))
+    ):
         tags.append("支持芯片修改")
 
-    def _test_cmd_set(snap: dict[str, Any]) -> set[tuple[str, str]]:
-        raw = (snap.get("app_info") or {}).get("raw")
-        if not isinstance(raw, dict):
-            return set()
-        out: set[tuple[str, str]] = set()
-        for name, cfg in (raw.get("app_test") or {}).items():
-            if not isinstance(cfg, dict) or not cfg.get("enabled"):
-                continue
-            if str(cfg.get("test_period") or "").strip().lower() == "weekly":
-                continue
-            if cfg.get("ignore_release"):
-                continue
-            expanded_cmds = _report_expanded_docker_cmds(raw, cfg)
-            if expanded_cmds:
-                for _, cmd in expanded_cmds:
-                    out.add((str(name), cmd))
-            else:
-                out.add((str(name), _report_docker_cmd(cfg)))
-        return out
+    def scope(view: dict[str, Any]) -> set[tuple[str, str]]:
+        return {(t["path"], t["command"]) for t in view.get("scope_tests", []) if not t["excluded"]}
 
-    if _test_cmd_set(snapshot) != _test_cmd_set(base_snapshot):
+    if scope(current) != scope(base):
         tags.append("测试范围变更")
-
-    def _test_doc_map(snap: dict[str, Any]) -> dict[str, tuple[str, str, str, str, str]]:
-        out: dict[str, tuple[str, str, str, str, str]] = {}
-        for doc in snap.get("test_docs") or []:
-            if not isinstance(doc, dict) or doc.get("obsolete"):
-                continue
-            path = str(doc.get("path") or "")
-            if not path:
-                continue
-            out[path] = (
-                str(doc.get("dataset") or ""),
-                str(doc.get("content") or ""),
-                str(doc.get("result_view") or ""),
-                str(doc.get("pass_criteria") or ""),
-                str(doc.get("command") or ""),
-            )
-        return out
-
-    if _test_doc_map(snapshot) != _test_doc_map(base_snapshot):
-        tags.append("测试说明变更")
-
-    if (snapshot.get("version") or "") != (base_snapshot.get("version") or ""):
+    if (current.get("target_version") or "") != (base.get("target_version") or ""):
         tags.append("版本变更")
-
     return "; ".join(tags)
 
 
@@ -524,30 +479,20 @@ def _user_display_names(conn: sqlite3.Connection) -> dict[str, str]:
     }
 
 
-def _community_report_values(
-    app: dict[str, Any],
-    snapshot: dict[str, Any],
-) -> tuple[str, str, str, str, str, str]:
-    community = snapshot.get("community") or {}
-    if community.get("derived_from_app_info"):
-        return (
-            community.get("release_status", ""),
-            community.get("menu_level1", ""),
-            community.get("doc_url", ""),
-            community.get("description", ""),
-            community.get("python_version", ""),
-            community.get("framework_version", ""),
-        )
-    if not str(app.get("cicd_community_artifact") or "").strip():
-        return "", "", "", "", "", ""
-    return (
-        community.get("release_status", ""),
+def _community_report_values(app: dict[str, Any], summary: dict[str, Any] | None) -> list[str]:
+    derived = (summary or {}).get("community") or {}
+    if not derived.get("image_count") and not derived.get("pkg_count"):
+        return ["", "", "", "", "", ""]
+    community = app.get("community") or {}
+    has_pkg = bool(derived.get("pkg_count"))
+    return [
+        derived.get("release_status", ""),
         community.get("menu_level1", ""),
         community.get("doc_url", ""),
         community.get("description", ""),
-        community.get("python_version", ""),
-        community.get("framework_version", ""),
-    )
+        community.get("python_version", "") if has_pkg else "",
+        community.get("framework_version", "") if has_pkg else "",
+    ]
 
 
 def get_qa_reports(
@@ -555,163 +500,77 @@ def get_qa_reports(
     release_id: str,
     compare_release_id: str = "",
 ) -> dict:
-    """Build and return QA release-report and test-command tables."""
+    """QA release report (one row per signup) and test command table."""
     if not release_id:
         raise ValueError("release_id is required")
-    release = releases_repo.get_release_row(conn, release_id)
-    if not release:
-        raise KeyError(f"Unknown release: {release_id}")
-
+    release = cycle_service.get_release(conn, release_id)
     apps = {app["id"]: app for app in apps_repo.list_apps(conn)}
-    snapshots = snapshots_repo.get_all_for_release(conn, release_id)
-    maca_version = release.get("maca_version", "")
-
-    base_snapshots: dict[str, dict[str, Any]] = {}
+    images = {image["id"]: image for image in releases_repo.list_base_images(conn, release_id)}
+    entries = {e["app_id"]: e for e in cycle_service.list_entry_views(conn, release_id, include_withdrawn=False)}
+    compare_active = bool(compare_release_id) and compare_release_id != release_id
+    base_entries: dict[str, dict[str, Any]] = {}
     base_release_name = ""
-    if compare_release_id and compare_release_id != release_id:
+    if compare_active:
         base_release = releases_repo.get_release_row(conn, compare_release_id)
         if base_release:
-            base_snapshots = snapshots_repo.get_all_for_release(conn, compare_release_id)
-            base_release_name = base_release.get("name", "")
-
-    items = []
-    for app_id, snapshot in snapshots.items():
-        app = apps.get(app_id)
-        if app:
-            items.append((app_view(app, snapshot), app, snapshot, app_id))
-    items.sort(key=lambda item: (
-        0 if normalize_release_decision(item[2].get("release_decision")) == "release" else 1,
-        (item[0]["name"] or "").lower(),
-    ))
-
-    release_rows: list[list[str]] = []
-    release_rows_meta: list[dict[str, Any]] = []
-    test_rows: list[list[str]] = []
-    compare_active = bool(compare_release_id) and compare_release_id != release_id
+            base_release_name = base_release["name"]
+            base_entries = {
+                e["app_id"]: e
+                for e in cycle_service.list_entry_views(conn, compare_release_id, include_withdrawn=False)
+            }
     display_names = _user_display_names(conn)
-    from app.services import cicd_service as _cicd_service
-
-    cicd_pending_app_ids = _cicd_service.cicd_pending_release_app_ids(
-        conn,
-        release_id,
+    app_ids = set(entries) | (set(base_entries) if compare_active else set())
+    ordered = sorted(
+        (app_id for app_id in app_ids if app_id in apps),
+        key=lambda app_id: (app_id not in entries, catalog_service.app_name(apps[app_id]).lower()),
     )
-    for view, app, snapshot, app_id in items:
-        sanity = snapshot.get("sanity") or {}
-        decision = normalize_release_decision(snapshot.get("release_decision"))
-        is_release = decision == "release"
-        base_snapshot = base_snapshots.get(app_id)
-        base_is_release = (
-            base_snapshot is not None
-            and normalize_release_decision(base_snapshot.get("release_decision")) == "release"
-        )
-        # The QA report describes QA scope.  During comparison, keep apps that
-        # enter or leave that scope, but ignore changes wholly between the two
-        # non-QA decisions (cicd_only/stopped).
-        compare_value = (
-            _compare_summary(snapshot, base_snapshot)
-            if compare_active and (is_release or base_is_release)
-            else ""
-        )
-        cicd_pending = app_id in cicd_pending_app_ids
-        cicd_status = _CICD_PENDING_LABEL if cicd_pending else ""
-        if not is_release and not compare_value:
-            continue
-        if is_release:
-            x86_chips = ",".join(order_chips(snapshot.get("x86_chips", "")))
-            arm_chips = ",".join(order_chips(snapshot.get("arm_chips", "")))
-            display_compare = compare_value
-            (
-                community_release,
-                community_menu_level1,
-                community_doc_url,
-                community_description,
-                community_python,
-                community_framework,
-            ) = _community_report_values(app, snapshot)
-            arm_kylin_sanity = "✔" if sanity.get("arm_kylin") else ""
-            ubuntu_sanity = "✔" if sanity.get("ubuntu") else ""
-        else:
-            x86_chips = ""
-            arm_chips = ""
-            display_compare = compare_value
-            community_release = ""
-            community_menu_level1 = ""
-            community_doc_url = ""
-            community_description = ""
-            community_python = ""
-            community_framework = ""
-            arm_kylin_sanity = ""
-            ubuntu_sanity = ""
-        row_meta: dict[str, Any] = {
-            "release_decision": decision,
-            "is_release": decision == "release",
-        }
-        if cicd_pending:
-            row_meta["cicd_pending"] = True
-        release_rows_meta.append(row_meta)
+    release_rows: list[list[str]] = []
+    rows_meta: list[dict[str, Any]] = []
+    test_rows: list[list[str]] = []
+    for app_id in ordered:
+        app = apps[app_id]
+        entry = entries.get(app_id)
+        compare_value = _compare_summary(entry, base_entries.get(app_id)) if compare_active else ""
+        rows_meta.append({"app_id": app_id, "signed_up": entry is not None})
+        summary = (entry or {}).get("locked_app_info") or {}
+        sanity = app.get("sanity") or {}
+        image_name = (images.get((entry or {}).get("base_image_id")) or {}).get("name", "")
+        signed = entry is not None
         release_rows.append([
-            "AI4Sci" if view["doc_target"] == "ai4sci" else "HPC",
-            view["official_name"],
-            _owner_display_text(view["owners"], display_names),
-            view["type"],
-            view["description"],
-            view["official_url"],
+            "AI4Sci" if app.get("doc_target") == "ai4sci" else "HPC",
+            catalog_service.app_name(app),
+            ",".join(display_names.get(o, o) for o in app.get("owners") or []),
+            app.get("type", ""),
+            app.get("description", ""),
+            app.get("official_url", ""),
             app.get("git_url", ""),
             app.get("git_branch", ""),
-            snapshot.get("version", ""),
-            snapshot.get("build_os", ""),
-            snapshot.get("python_labels", ""),
-            snapshot.get("pytorch_labels", ""),
-            x86_chips,
-            arm_chips,
-            display_compare,
-            community_release,
-            community_menu_level1,
-            community_doc_url,
-            community_description,
-            community_python,
-            community_framework,
-            arm_kylin_sanity,
-            ubuntu_sanity,
-            cicd_status,
+            (entry or {}).get("target_version", ""),
+            ",".join(summary.get("build_os", [])),
+            ",".join(summary.get("python_labels", [])),
+            ",".join(summary.get("pytorch_labels", [])),
+            ",".join(order_chips(summary.get("x86_chips", []))) if signed else "",
+            ",".join(order_chips(summary.get("arm_chips", []))) if signed else "",
+            compare_value,
+            *(_community_report_values(app, summary) if signed else [""] * 6),
+            "✔" if signed and sanity.get("arm_kylin") else "",
+            "✔" if signed and sanity.get("ubuntu") else "",
+            image_name,
+            (entry or {}).get("planned_features", ""),
         ])
-        if is_release:
-            raw = (snapshot.get("app_info") or {}).get("raw")
-            app_test_rows: list[list[str]] = []
-            if isinstance(raw, dict):
-                app_test_rows = _report_test_cmd_rows(
-                    raw,
-                    view["official_name"],
-                    app.get("git_branch", ""),
-                    maca_version,
-                    cicd_status,
-                )
-            if cicd_pending and not app_test_rows:
-                app_test_rows.append([
-                    view["official_name"],
-                    app.get("git_branch", ""),
-                    str(snapshot.get("version") or ""),
-                    "",
-                    maca_version,
-                    "",
-                    "",
-                    "",
-                    "",
-                    cicd_status,
-                ])
-            test_rows.extend(app_test_rows)
+        if entry:
+            version = app_info_repo.get_version(conn, entry["locked_version_id"])
+            if version:
+                test_rows.extend(_report_test_cmd_rows(
+                    version["raw"], catalog_service.app_name(app), app.get("git_branch", ""),
+                    image_name, set(entry["excluded_tests"]),
+                ))
     test_rows.sort(key=lambda row: (row[0].lower(), row[1].lower(), row[2].lower(), row[3].lower()))
-
     return {
-        "release_name": release.get("name", ""),
-        "maca_version": maca_version,
+        "release_name": release["name"],
         "compare_release_id": compare_release_id or "",
         "compare_release_name": base_release_name,
-        "release_report": {
-            "columns": QA_RELEASE_REPORT_COLUMNS,
-            "rows": release_rows,
-            "rows_meta": release_rows_meta,
-        },
+        "release_report": {"columns": QA_RELEASE_REPORT_COLUMNS, "rows": release_rows, "rows_meta": rows_meta},
         "test_cmd": {"columns": QA_TEST_CMD_COLUMNS, "rows": test_rows},
         "generated_at": beijing_timestamp(),
     }

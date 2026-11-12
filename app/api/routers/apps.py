@@ -1,46 +1,32 @@
-"""Apps router — app info and snapshot management.
+"""App catalog: profile, app_info sync, history, dependencies.
 
-Faithful port of server.py POST handlers at paths:
-  /api/app-audit    (GET — shares /api prefix, lives here)
-  /api/apps/update
-  /api/app-info
-  /api/app-info/fetch
-  /api/app-info/fetch-all
-
-Note: GET /api/app-audit is a GET endpoint mounted under the top-level
-/api prefix, not /api/apps.  We include it in this router for cohesion
-since it belongs to the apps workbench slice.
+  GET  /api/apps/owner-lookup          — owners by repo suffix + branch (Jenkins tooling)
+  GET  /api/app-audit                  — App change history
+  GET  /api/apps/detail                — app_info versions and official versions of one App
+  POST /api/apps/profile               — optional Owner profile
+  GET  /api/app-info/version           — one stored app_info version
+  POST /api/app-info/sync              — sync one App now
+  POST /api/app-info/sync-all          — start syncing every running App (RM)
+  GET  /api/app-info/sync-status       — per-App sync state (RM)
+  GET  /api/dependencies               — Apps by declared component
+  GET  /api/dependencies/compat.csv    — compatibility list export
 """
 from __future__ import annotations
 
-import json
 import sqlite3
-from collections.abc import Iterable, Iterator
 
-from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, Query, Response
 
-from app.deps import get_db, require_capability, require_login
-from app.services import app_service, release_reads
-from app.services.authz import require_app_info_update, require_owner_or_rm_with_owners
+from app.api.errors import AuthzError
+from app.deps import get_db, require_capability, require_login, require_tab_access
+from app.domain.permissions import has_capability
+from app.services import catalog_service, state_service
 
 router = APIRouter(tags=["apps"])
+require_rm = require_capability("release.manage", message="RM role required")
+require_sync = require_capability("app.app_info.sync", message="无权同步 app_info")
+require_dependencies_tab = require_tab_access("dependencies", message="无权查看组件依赖")
 
-
-def _encode_ndjson_events(
-    events: Iterable[dict],
-) -> Iterator[str]:
-    for event in events:
-        yield json.dumps(
-            event,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ) + "\n"
-
-
-# ---------------------------------------------------------------------------
-# GET /api/apps/owner-lookup
-# ---------------------------------------------------------------------------
 
 @router.get("/api/apps/owner-lookup")
 def api_apps_owner_lookup(
@@ -49,17 +35,8 @@ def api_apps_owner_lookup(
     user: dict = Depends(require_login),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """Return owners/name/version for latest-release apps by repo suffix + branch.
+    return state_service.lookup_latest_app_owner(conn, git_url=git_url, branch=branch)
 
-    Jenkins callers may pass either a short repo name or a full Gerrit URL; the
-    service matches by the last path component and exact branch.
-    """
-    return app_service.lookup_latest_app_owner(conn, git_url=git_url, branch=branch)
-
-
-# ---------------------------------------------------------------------------
-# GET /api/app-audit
-# ---------------------------------------------------------------------------
 
 @router.get("/api/app-audit")
 def api_app_audit(
@@ -68,195 +45,95 @@ def api_app_audit(
     user: dict = Depends(require_login),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """Return audit log entries for an app (optionally filtered to one release).
+    return {
+        "entries": state_service.get_app_audit(
+            conn, app_id=app_id, release_id=release_id, username=user["username"], role=user["role"]
+        )
+    }
 
-    Mirrors server.py:393-400.
-    """
-    if not app_id:
-        raise ValueError("app_id is required")
-    entries = app_service.get_app_audit(
-        conn,
-        app_id=app_id,
-        release_id=release_id,
-        username=user["username"],
-        role=user["role"],
+
+@router.get("/api/apps/detail")
+def api_app_detail(
+    app_id: str = Query(...),
+    user: dict = Depends(require_login),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    return catalog_service.app_detail(conn, app_id)
+
+
+@router.post("/api/apps/profile")
+def api_app_profile(
+    body: dict,
+    user: dict = Depends(require_login),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    app = catalog_service.update_profile(
+        conn, body["app_id"], body.get("fields") or {}, user=user["username"], role=user["role"]
     )
-    return {"entries": entries}
+    return {"app": app}
 
 
-# ---------------------------------------------------------------------------
-# POST /api/apps/update
-# ---------------------------------------------------------------------------
-
-@router.post("/api/apps/update")
-def api_apps_update(
-    body: dict,
+@router.get("/api/app-info/version")
+def api_app_info_version(
+    version_id: int = Query(...),
     user: dict = Depends(require_login),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """Update a snapshot (fields + optional release_decision).
-
-    Mirrors server.py:775-939.
-    Auth is enforced inside update_snapshot (require_owner_or_rm).
-    """
-    return app_service.update_snapshot(
-        conn,
-        body["release_id"],
-        body["app_id"],
-        user=user["username"],
-        role=user["role"],
-        fields=body,
-    )
+    return {"version": catalog_service.get_version_summary(conn, version_id)}
 
 
-# ---------------------------------------------------------------------------
-# POST /api/apps/decision-sync/preview
-# ---------------------------------------------------------------------------
-
-@router.post("/api/apps/decision-sync/preview")
-def api_apps_decision_sync_preview(
+@router.post("/api/app-info/sync")
+def api_app_info_sync(
     body: dict,
-    user: dict = Depends(require_login),
+    user: dict = Depends(require_sync),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """Dry-run the decision-sync gating rule for the owner-choice dialog.
-
-    Body: {release_id, app_id, decision}. Returns
-    {decision, releases:[{release_id, release_name, phase_label,
-    resulting_decision, skipped, is_current, reason?}], forced, scope,
-    blocked_reason?}. The edited release itself is included with
-    is_current=true. No writes.
-
-    Auth mirrors /api/apps/update: RM, or an Owner of the app in this release.
-    """
-    release = release_reads.get_release(conn, body["release_id"])
-    snap = release["snapshots"].get(body["app_id"], {})
-    require_owner_or_rm_with_owners(snap.get("owners"), user["username"], user["role"])
-    return app_service.preview_decision_sync(
-        conn,
-        release_id=body["release_id"],
-        app_id=body["app_id"],
-        decision=body["decision"],
-    )
+    app = catalog_service.get_app_or_raise(conn, body["app_id"])
+    if not has_capability(user["role"], "release.manage") and not catalog_service.is_owner(app, user["username"]):
+        raise AuthzError("只能同步自己负责的 App")
+    return catalog_service.sync_app(conn, app["id"], user=user["username"], force=bool(body.get("force")))
 
 
-# ---------------------------------------------------------------------------
-# POST /api/app-info
-# ---------------------------------------------------------------------------
+@router.post("/api/app-info/sync-all")
+def api_app_info_sync_all(user: dict = Depends(require_rm)) -> dict:
+    return catalog_service.start_sync_all(user=user["username"])
 
-@router.post("/api/app-info")
-def api_app_info(
-    body: dict,
-    user: dict = Depends(require_login),
+
+@router.get("/api/app-info/sync-status")
+def api_app_info_sync_status(
+    user: dict = Depends(require_rm),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """Apply an uploaded app_info to a snapshot.
-
-    Mirrors server.py:1200-1216.  RM, the app's Owner and QA may upload until
-    the doc deadline.  When QA's upload would expand the QA scope after app
-    freeze, nothing is written and the body carries requires_scope_confirmation
-    plus the changes for QA to accept; QA then retries with
-    accept_scope_expansion.
-    """
-    release = release_reads.get_release(conn, body["release_id"])
-    snap = release["snapshots"].get(body["app_id"], {})
-    role = user["role"]
-    username = user["username"]
-    require_app_info_update(snap.get("owners"), username, role)
-
-    try:
-        return app_service.apply_app_info(
-            conn,
-            release_id=body["release_id"],
-            app_id=body["app_id"],
-            app_info=body["app_info"],
-            source=body.get("source", "owner upload"),
-            source_type="owner_upload",
-            uploaded_by=username,
-            role=role,
-            accept_scope_expansion=bool(body.get("accept_scope_expansion")),
-        )
-    except app_service.QaScopeExpansionPending as pending:
-        return pending.payload()
+    return {
+        "apps": catalog_service.sync_status(conn),
+        "job": catalog_service.sync_all_state(),
+        "daily": {
+            "time": catalog_service.settings.app_info_sync_time,
+            "enabled": catalog_service.settings.app_info_sync_enabled,
+            "last_run": catalog_service.sync_loop.last_run,
+            "last_summary": catalog_service.sync_loop.last_summary,
+        },
+    }
 
 
-# ---------------------------------------------------------------------------
-# POST /api/app-info/fetch
-# ---------------------------------------------------------------------------
-
-@router.post("/api/app-info/fetch")
-def api_app_info_fetch(
-    body: dict,
-    user: dict = Depends(require_login),
+@router.get("/api/dependencies")
+def api_dependencies(
+    user: dict = Depends(require_dependencies_tab),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """Fetch app_info from Gerrit and apply it to a snapshot.
-
-    Mirrors server.py:1218-1237.  Same authorization and QA scope-confirmation
-    handshake as POST /api/app-info.
-    """
-    release = release_reads.get_release(conn, body["release_id"])
-    snap = release["snapshots"].get(body["app_id"], {})
-    role = user["role"]
-    username = user["username"]
-    require_app_info_update(snap.get("owners"), username, role)
-
-    try:
-        return app_service.fetch_app_info(
-            conn,
-            release_id=body["release_id"],
-            app_id=body["app_id"],
-            uploaded_by=username,
-            role=role,
-            accept_scope_expansion=bool(body.get("accept_scope_expansion")),
-        )
-    except app_service.QaScopeExpansionPending as pending:
-        return pending.payload()
+    return catalog_service.dependency_overview(conn)
 
 
-# ---------------------------------------------------------------------------
-# POST /api/app-info/fetch-all
-# ---------------------------------------------------------------------------
-
-@router.post("/api/app-info/fetch-all", response_model=None)
-def api_app_info_fetch_all(
-    request: Request,
-    body: dict,
-    user: dict = Depends(
-        require_capability("app.edit.rm_fields", message="RM role required")
-    ),
+@router.get("/api/dependencies/compat.csv")
+def api_compat_csv(
+    component: str = Query(default=""),
+    user: dict = Depends(require_dependencies_tab),
     conn: sqlite3.Connection = Depends(get_db),
-) -> dict | StreamingResponse:
-    """Fetch app_info from Gerrit for all apps in a release (RM only).
-
-    Existing callers receive the original aggregate JSON response.  Clients
-    requesting ``application/x-ndjson`` receive start/item/complete events as
-    each bounded-concurrency fetch finishes.
-    """
-    if "application/x-ndjson" in request.headers.get("accept", ""):
-        plan = app_service.prepare_fetch_all_app_infos(
-            conn,
-            release_id=body["release_id"],
-        )
-        events = app_service.iter_fetch_all_app_infos(
-            conn,
-            plan=plan,
-            uploaded_by=user["username"],
-            role=user["role"],
-        )
-
-        return StreamingResponse(
-            _encode_ndjson_events(events),
-            media_type="application/x-ndjson",
-            headers={
-                "Cache-Control": "no-cache, no-transform",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
-    return app_service.fetch_all_app_infos(
-        conn,
-        release_id=body["release_id"],
-        uploaded_by=user["username"],
-        role=user["role"],
+) -> Response:
+    content = catalog_service.compat_list_csv(conn, component)
+    name = f"compat_{component or 'all'}.csv"
+    return Response(
+        content="﻿" + content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
     )

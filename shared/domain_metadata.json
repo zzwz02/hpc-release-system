@@ -1,53 +1,24 @@
 {
   "release_phases": {
-    "before_app_freeze": {
-      "label": "App 冻结前",
+    "signup": {
+      "label": "报名中",
       "order": 0,
-      "locked": false,
-      "before_app_freeze": true,
-      "before_doc_deadline": true,
-      "qa_scope_frozen": false
+      "locked": false
     },
-    "after_app_freeze": {
-      "label": "App 冻结后",
+    "in_progress": {
+      "label": "进行中",
       "order": 1,
-      "locked": false,
-      "before_app_freeze": false,
-      "before_doc_deadline": true,
-      "qa_scope_frozen": true
+      "locked": false
     },
-    "after_doc_deadline": {
-      "label": "Doc deadline 后",
+    "qa_closed": {
+      "label": "QA 已截止",
       "order": 2,
-      "locked": false,
-      "before_app_freeze": false,
-      "before_doc_deadline": false,
-      "qa_scope_frozen": true
+      "locked": false
     },
-    "released_locked": {
-      "label": "已最终锁定",
+    "released": {
+      "label": "已发布",
       "order": 3,
-      "locked": true,
-      "before_app_freeze": false,
-      "before_doc_deadline": false,
-      "qa_scope_frozen": true
-    }
-  },
-  "release_decisions": {
-    "release": {
-      "label": "release：进入 release note/文档/QA",
-      "order": 0,
-      "cicd_status": "Running"
-    },
-    "cicd_only": {
-      "label": "cicd_only：仅纳入 CICD 构建/测试管控",
-      "order": 1,
-      "cicd_status": "Running"
-    },
-    "stopped": {
-      "label": "stopped：停止维护/停止发布",
-      "order": 2,
-      "cicd_status": "Stopped"
+      "locked": true
     }
   },
   "doc_targets": {
@@ -191,110 +162,160 @@
     "app_name": {
       "label": "App",
       "order": 0,
-      "default": true,
-      "blank_for_non_release": false
+      "default": true
     },
     "official_name": {
       "label": "官方名称",
       "order": 1,
-      "default": false,
-      "blank_for_non_release": false
+      "default": false
     },
     "doc_target": {
       "label": "文档类型",
       "order": 2,
-      "default": false,
-      "blank_for_non_release": false
+      "default": false
     },
     "app_type": {
       "label": "App类型",
       "order": 3,
-      "default": false,
-      "blank_for_non_release": false
+      "default": false
     },
-    "version": {
+    "target_version": {
       "label": "版本号",
       "order": 4,
-      "default": false,
-      "blank_for_non_release": false
+      "default": true
     },
     "owners": {
       "label": "Owner",
       "order": 5,
-      "default": true,
-      "blank_for_non_release": false
+      "default": true
     },
     "chip_support": {
       "label": "支持芯片类型",
       "order": 6,
-      "default": true,
-      "blank_for_non_release": true
+      "default": true
     },
-    "qa_issue_note": {
-      "label": "QA问题",
+    "base_image": {
+      "label": "基础镜像",
       "order": 7,
-      "default": true,
-      "blank_for_non_release": true
+      "default": false
     },
-    "x86_chips": {
-      "label": "X86支持芯片",
+    "planned_features": {
+      "label": "计划 feature",
       "order": 8,
-      "default": false,
-      "blank_for_non_release": false
+      "default": false
     },
-    "arm_chips": {
-      "label": "ARM支持芯片",
+    "actual_delivery": {
+      "label": "实际交付",
       "order": 9,
-      "default": false,
-      "blank_for_non_release": false
-    },
-    "release_decision": {
-      "label": "Release决策",
-      "order": 10,
-      "default": false,
-      "blank_for_non_release": false
+      "default": true
     },
     "qa_status": {
       "label": "QA状态",
+      "order": 10,
+      "default": true
+    },
+    "qa_note": {
+      "label": "QA备注",
       "order": 11,
-      "default": false,
-      "blank_for_non_release": false
+      "default": true
     },
-    "owner_confirmed": {
-      "label": "Owner确认",
+    "known_issues": {
+      "label": "已知问题",
       "order": 12,
-      "default": false,
-      "blank_for_non_release": false
+      "default": true
     },
-    "releasable": {
-      "label": "是否可发布",
+    "result": {
+      "label": "发布结果",
       "order": 13,
-      "default": true,
-      "blank_for_non_release": true
+      "default": true
     },
-    "not_releasable_reason": {
-      "label": "不可发布原因",
+    "deliverable_image": {
+      "label": "交付镜像",
       "order": 14,
-      "default": true,
-      "blank_for_non_release": false
+      "default": false
     },
-    "known_limitations": {
-      "label": "已知限制",
+    "deliverable_digest": {
+      "label": "交付镜像 digest",
       "order": 15,
-      "default": true,
-      "blank_for_non_release": true
+      "default": false
     },
     "gerrit_url": {
       "label": "Gerrit URL",
       "order": 16,
-      "default": false,
-      "blank_for_non_release": false
+      "default": false
     },
     "git_branch": {
       "label": "Branch",
       "order": 17,
-      "default": false,
-      "blank_for_non_release": false
+      "default": false
+    }
+  },
+  "cicd_statuses": {
+    "running": {
+      "label": "运行中",
+      "order": 0
+    },
+    "stopped": {
+      "label": "已停止",
+      "order": 1
+    }
+  },
+  "entry_results": {
+    "": {
+      "label": "待发布",
+      "order": 0
+    },
+    "released": {
+      "label": "已发布",
+      "order": 1
+    },
+    "failed": {
+      "label": "发布失败",
+      "order": 2
+    }
+  },
+  "scope_request_statuses": {
+    "pending": {
+      "label": "待 QA 审批",
+      "order": 0
+    },
+    "approved": {
+      "label": "已同意",
+      "order": 1
+    },
+    "rejected": {
+      "label": "已拒绝",
+      "order": 2
+    },
+    "superseded": {
+      "label": "已被取代",
+      "order": 3
+    },
+    "closed": {
+      "label": "已自动关闭",
+      "order": 4
+    }
+  },
+  "notification_kinds": {
+    "jira_agent_turn": {
+      "label": "JIRA agent 轮次结束",
+      "order": 0
+    },
+    "jenkins_failures": {
+      "label": "Jenkins 失败数超阈值",
+      "order": 1
+    },
+    "scope_request": {
+      "label": "测试范围扩大申请",
+      "order": 2
+    },
+    "scope_decision": {
+      "label": "范围扩大审批结果",
+      "order": 3
+    },
+    "app_info_sync_failed": {
+      "label": "app_info 同步失败汇总",
+      "order": 4
     }
   }
 }

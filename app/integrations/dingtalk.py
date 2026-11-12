@@ -28,41 +28,53 @@ class DingTalkError(RuntimeError):
     pass
 
 
-def configuration() -> dict[str, str] | None:
-    values = runtime_config.section("dingtalk")
-    # A blank token explicitly disables notifications in the shipped template.
-    if not values or not values.get("ACCESS_TOKEN"):
-        return None
-    for key in ("ACCESS_TOKEN", "SECRET", "USERID"):
-        runtime_config.required("dingtalk", values, key)
-    runtime_config.proxy_url()  # Validate shared proxy for status diagnostics.
-    return values
+DINGTALK_SEND_URL = "https://oapi.dingtalk.com/robot/send"
 
 
-async def send_text(message: str) -> bool:
-    config = configuration()
-    if config is None:
-        return False
+def _request(channel: dict, message: str) -> tuple[dict, dict]:
+    token = str(channel.get("access_token") or "").strip()
+    secret = str(channel.get("secret") or "").strip()
+    if not token or not secret:
+        raise DingTalkError("钉钉机器人缺少 ACCESS_TOKEN 或 SECRET")
     timestamp = str(int(time.time() * 1000))
-    digest = hmac.new(config["SECRET"].encode(),
-                      f'{timestamp}\n{config["SECRET"]}'.encode(), hashlib.sha256).digest()
-    params = {"access_token": config["ACCESS_TOKEN"], "timestamp": timestamp,
+    digest = hmac.new(secret.encode(), f"{timestamp}\n{secret}".encode(), hashlib.sha256).digest()
+    params = {"access_token": token, "timestamp": timestamp,
               "sign": base64.b64encode(digest).decode()}
-    users = [item.strip() for item in config["USERID"].split(",") if item.strip()]
-    if not users:
-        raise runtime_config.ConfigError("release_system.conf [dingtalk] USERID 不能为空")
+    users = [str(user).strip() for user in channel.get("at_user_ids") or [] if str(user).strip()]
     body = {"msgtype": "text", "text": {"content": message},
             "at": {"atUserIds": users, "isAtAll": False}}
+    return params, body
+
+
+def _check(result: object) -> None:
+    if not isinstance(result, dict) or result.get("errcode") != 0:
+        raise DingTalkError("钉钉拒绝消息，请检查机器人加签、群和用户配置")
+
+
+async def send_text(channel: dict, message: str) -> None:
+    """Send *message* through the robot described by *channel*."""
+    params, body = _request(channel, message)
     try:
         async with httpx.AsyncClient(
             timeout=15, proxy=runtime_config.proxy_url(), trust_env=False
         ) as client:
-            response = await client.post("https://oapi.dingtalk.com/robot/send", params=params, json=body)
+            response = await client.post(DINGTALK_SEND_URL, params=params, json=body)
             response.raise_for_status()
             result = response.json()
     except (httpx.HTTPError, ValueError):
         # HTTP exceptions contain the full URL, including access_token and sign.
         raise DingTalkError("钉钉请求失败（网络、HTTP 或响应格式错误）") from None
-    if not isinstance(result, dict) or result.get("errcode") != 0:
-        raise DingTalkError("钉钉拒绝消息，请检查机器人加签、群和用户配置")
-    return True
+    _check(result)
+
+
+def send_text_sync(channel: dict, message: str) -> None:
+    """Blocking variant of send_text for worker threads."""
+    params, body = _request(channel, message)
+    try:
+        with httpx.Client(timeout=15, proxy=runtime_config.proxy_url(), trust_env=False) as client:
+            response = client.post(DINGTALK_SEND_URL, params=params, json=body)
+            response.raise_for_status()
+            result = response.json()
+    except (httpx.HTTPError, ValueError):
+        raise DingTalkError("钉钉请求失败（网络、HTTP 或响应格式错误）") from None
+    _check(result)
