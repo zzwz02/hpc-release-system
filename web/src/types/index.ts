@@ -523,9 +523,9 @@ export interface CicdMarkVisitedResponse {
 // ---------------------------------------------------------------------------
 
 export interface QaReportRowMeta {
-  release_decision: ReleaseDecision;
-  is_release: boolean;
-  cicd_pending?: boolean;
+  app_id: string;
+  /** False for rows shown only because they were signed up in the compared cycle. */
+  signed_up: boolean;
 }
 
 export interface QaReportTable {
@@ -536,7 +536,6 @@ export interface QaReportTable {
 
 export interface QaReportsResponse {
   release_name: string;
-  maca_version: string;
   compare_release_id: string;
   compare_release_name: string;
   release_report: QaReportTable;

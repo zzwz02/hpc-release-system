@@ -379,9 +379,9 @@ describe("CicdPage", () => {
     });
   });
 
-  it("ApproveDialog: previews Stop Jira title for Running to Stopped changes", async () => {
+  it("ApproveDialog: previews Stop Jira title for stop requests", async () => {
     const stopReq = makeRequest({
-      payload: { status: { old: "Running", new: "Stopped" } },
+      payload: { status: { old: "running", new: "stopped" } },
       task_app_name: "alignn",
       task_branch: "maca",
     });
@@ -425,7 +425,7 @@ describe("CicdPage", () => {
       id: 11,
       status: "approved",
       delivery_status: "pending",
-      payload: { status: { old: "Running", new: "Stopped" } },
+      payload: { status: { old: "running", new: "stopped" } },
       task_app_name: "Ginkgo",
       task_app_version: "v1.9.0",
       task_repo_name: `${GERRIT_HPC_BASE}/hpc_ginkgo`,
@@ -809,7 +809,7 @@ describe("CicdPage", () => {
 
   // ── F3: 同步联动 badge for decision-sync requests (origin) ──────────────────
 
-  it("PendingPane: shows 同步联动 badge for release_decision_sync request", async () => {
+  it("PendingPane: marks historical release_decision_sync requests", async () => {
     const syncReq = makeRequest({
       submitter: "rm",
       submitter_display: "RM User",
@@ -827,7 +827,7 @@ describe("CicdPage", () => {
     await waitFor(() => expect(screen.getByText("待审批")).toBeInTheDocument());
     await userEvent.click(screen.getByText("待审批"));
     await waitFor(() => {
-      expect(screen.getAllByText("同步联动").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("决策联动（历史）").length).toBeGreaterThan(0);
     });
   });
 
@@ -838,7 +838,7 @@ describe("CicdPage", () => {
       request_type: "modify",
       status: "pending",
       origin: "release_decision_sync",
-      payload: { status: { old: "Running", new: "Stopped" } },
+      payload: { status: { old: "running", new: "stopped" } },
       allowed_actions: ["cicd.request.approve"],
     });
     vi.mocked(apiGet).mockImplementation((url: string) => {
@@ -858,7 +858,7 @@ describe("CicdPage", () => {
     expect(screen.getByRole("button", { name: "通过" })).toBeInTheDocument();
   });
 
-  it("PendingPane: no 同步联动 badge for ordinary cicd_workbench request", async () => {
+  it("PendingPane: no history badge for ordinary cicd_workbench request", async () => {
     const wbReq = makeRequest({
       submitter: "bob",
       submitter_display: "Bob",
@@ -876,6 +876,6 @@ describe("CicdPage", () => {
     await waitFor(() => expect(screen.getByText("待审批")).toBeInTheDocument());
     await userEvent.click(screen.getByText("待审批"));
     await waitFor(() => expect(screen.getAllByText(/Bob/).length).toBeGreaterThan(0));
-    expect(screen.queryByText("同步联动")).not.toBeInTheDocument();
+    expect(screen.queryByText("决策联动（历史）")).not.toBeInTheDocument();
   });
 });

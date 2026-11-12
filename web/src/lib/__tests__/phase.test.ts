@@ -1,115 +1,29 @@
-import { describe, it, expect } from "vitest";
-import {
-  releaseLocked,
-  releasePhase,
-  releasePhaseLabel,
-  beforeAppFreeze,
-  beforeDocDeadline,
-  newAppDecisionOptions,
-} from "../phase";
+import { describe, expect, it } from "vitest";
+import { releaseLocked, releaseOpen, releasePhase, releasePhaseLabel, signupOpen } from "../phase";
 import type { ReleaseSummary } from "../../types";
 
-const makeRelease = (
-  phase: string,
-  released_locked = false,
-): ReleaseSummary =>
-  ({
-    id: "rel1",
-    name: "Test",
-    maca_version: "20260511",
-    app_freeze_deadline: "2026-12-31 23:59",
-    doc_deadline: "2026-12-31 23:59",
-    released_locked,
-    released_locked_at: "",
-    released_locked_by: "",
-    created_at: "",
-    source: "initial_csv",
-    cloned_from: "",
-    phase: phase as ReleaseSummary["phase"],
+const release = (phase: string, locked = false) =>
+  ({ id: "r", name: "2026.12", phase, released_locked: locked }) as unknown as ReleaseSummary;
+
+describe("monthly phase helpers", () => {
+  it("labels the four phases and keeps unknown values", () => {
+    expect(releasePhaseLabel("signup")).toBe("报名中");
+    expect(releasePhaseLabel("in_progress")).toBe("进行中");
+    expect(releasePhaseLabel("qa_closed")).toBe("QA 已截止");
+    expect(releasePhaseLabel("released")).toBe("已发布");
+    expect(releasePhaseLabel("other")).toBe("other");
   });
 
-describe("releaseLocked", () => {
-  it("returns false when released_locked is false", () => {
-    expect(releaseLocked(makeRelease("before_app_freeze", false))).toBe(false);
+  it("signup is open only in the signup phase", () => {
+    expect(signupOpen(release("signup"))).toBe(true);
+    expect(signupOpen(release("in_progress"))).toBe(false);
+    expect(signupOpen(null)).toBe(false);
   });
 
-  it("returns true when released_locked is true", () => {
-    expect(releaseLocked(makeRelease("released_locked", true))).toBe(true);
-  });
-
-  it("returns false for null release", () => {
-    expect(releaseLocked(null)).toBe(false);
-    expect(releaseLocked(undefined)).toBe(false);
-  });
-});
-
-describe("releasePhase", () => {
-  it("returns the phase string", () => {
-    expect(releasePhase(makeRelease("before_app_freeze"))).toBe("before_app_freeze");
-    expect(releasePhase(makeRelease("after_app_freeze"))).toBe("after_app_freeze");
-  });
-
-  it("returns empty string for null release", () => {
-    expect(releasePhase(null)).toBe("");
+  it("reads lock and phase", () => {
+    expect(releaseLocked(release("released", true))).toBe(true);
+    expect(releaseOpen(release("qa_closed"))).toBe(true);
+    expect(releaseOpen(release("released", true))).toBe(false);
     expect(releasePhase(undefined)).toBe("");
-  });
-});
-
-describe("releasePhaseLabel", () => {
-  it("uses the shared phase labels and preserves unknown values", () => {
-    expect(releasePhaseLabel("after_app_freeze")).toBe("App 冻结后");
-    expect(releasePhaseLabel("after_doc_deadline")).toBe("Doc deadline 后");
-    expect(releasePhaseLabel("unknown")).toBe("unknown");
-  });
-});
-
-describe("beforeAppFreeze", () => {
-  it("true only when phase is before_app_freeze", () => {
-    expect(beforeAppFreeze(makeRelease("before_app_freeze"))).toBe(true);
-    expect(beforeAppFreeze(makeRelease("after_app_freeze"))).toBe(false);
-    expect(beforeAppFreeze(makeRelease("released_locked"))).toBe(false);
-  });
-
-  it("false for null release", () => {
-    expect(beforeAppFreeze(null)).toBe(false);
-  });
-});
-
-describe("beforeDocDeadline", () => {
-  it("true for before_app_freeze and after_app_freeze phases", () => {
-    expect(beforeDocDeadline(makeRelease("before_app_freeze"))).toBe(true);
-    expect(beforeDocDeadline(makeRelease("after_app_freeze"))).toBe(true);
-  });
-
-  it("false for released / locked phase", () => {
-    expect(beforeDocDeadline(makeRelease("after_doc_deadline"))).toBe(false);
-    expect(beforeDocDeadline(makeRelease("released_locked"))).toBe(false);
-  });
-
-  it("false for null release", () => {
-    expect(beforeDocDeadline(null)).toBe(false);
-  });
-});
-
-describe("newAppDecisionOptions", () => {
-  it("returns all three options before app freeze", () => {
-    const opts = newAppDecisionOptions(makeRelease("before_app_freeze"));
-    expect(opts).toEqual(["release", "cicd_only", "stopped"]);
-  });
-
-  it("returns only cicd_only and stopped after app freeze", () => {
-    const opts = newAppDecisionOptions(makeRelease("after_app_freeze"));
-    expect(opts).toEqual(["cicd_only", "stopped"]);
-    expect(opts).not.toContain("release");
-  });
-
-  it("returns only cicd_only and stopped for released phase", () => {
-    const opts = newAppDecisionOptions(makeRelease("released_locked"));
-    expect(opts).toEqual(["cicd_only", "stopped"]);
-  });
-
-  it("returns only cicd_only and stopped for null release", () => {
-    const opts = newAppDecisionOptions(null);
-    expect(opts).toEqual(["cicd_only", "stopped"]);
   });
 });

@@ -9,13 +9,13 @@ import {
   DOC_TARGETS,
   QA_STATUS_DEFAULT,
   MANAGER_REVIEW_FIELD_OPTIONS,
-  crossesReleaseDecisionRuntimeBoundary,
+  cicdStatusLabel,
+  entryResultLabel,
+  scopeRequestStatusLabel,
   normalizeDocTarget,
   normalizeCicdCommunityArtifacts,
   normalizeCicdTestTimeout,
   qaStatusRequiresIssueNote,
-  RELEASE_DECISIONS,
-  releaseDecisionCicdStatus,
   APP_TYPES_BY_DOC_TARGET,
   appTypeOptionsForTarget,
 } from "../domainMetadata";
@@ -38,18 +38,14 @@ describe("standard App categories", () => {
   });
 });
 
-describe("release decision metadata", () => {
-  it("provides the canonical order and CICD status mapping", () => {
-    expect(RELEASE_DECISIONS).toEqual(["release", "cicd_only", "stopped"]);
-    expect(releaseDecisionCicdStatus("release")).toBe("Running");
-    expect(releaseDecisionCicdStatus("cicd_only")).toBe("Running");
-    expect(releaseDecisionCicdStatus("stopped")).toBe("Stopped");
-  });
-
-  it("detects only Running/Stopped boundary changes", () => {
-    expect(crossesReleaseDecisionRuntimeBoundary("release", "cicd_only")).toBe(false);
-    expect(crossesReleaseDecisionRuntimeBoundary("release", "stopped")).toBe(true);
-    expect(crossesReleaseDecisionRuntimeBoundary("stopped", "cicd_only")).toBe(true);
+describe("monthly status metadata", () => {
+  it("labels CICD status, entry results and scope requests", () => {
+    expect(cicdStatusLabel("running")).toBe("运行中");
+    expect(cicdStatusLabel("stopped")).toBe("已停止");
+    expect(entryResultLabel("released")).toBe("已发布");
+    expect(entryResultLabel("failed")).toBe("发布失败");
+    expect(scopeRequestStatusLabel("pending")).toBe("待 QA 审批");
+    expect(cicdStatusLabel("unknown")).toBe("unknown");
   });
 });
 
@@ -67,12 +63,14 @@ describe("Manager Review field metadata", () => {
         .map((field) => field.key),
     ).toEqual([
       "app_name",
+      "target_version",
       "owners",
       "chip_support",
-      "qa_issue_note",
-      "releasable",
-      "not_releasable_reason",
-      "known_limitations",
+      "actual_delivery",
+      "qa_status",
+      "qa_note",
+      "known_issues",
+      "result",
     ]);
   });
 });

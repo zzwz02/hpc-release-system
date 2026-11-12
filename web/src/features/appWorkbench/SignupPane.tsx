@@ -279,10 +279,10 @@ export function SignupPane({ app, entry, release, canEdit, onSaved, onDirtyChang
             <summary><span className="chev">▶</span> 报名「{release.name}」</summary>
             <div className="section-body">
               <div className="form">
-                <label>基础镜像{release.base_images.length > 0 && <span className="required"> *</span>}
+                <label>基础镜像{release.base_images.length > 0 && <span className="required" />}
                   {imageSelect(false)}
                 </label>
-                <label>目标版本 <span className="required">*</span>
+                <label>目标版本 <span className="required" />
                   <input className="input" value={form.target_version}
                     onChange={(e) => patch("target_version", e.target.value)}
                     data-testid="signup-target-version" />

@@ -4,6 +4,7 @@
  */
 import type { App, Entry, ReleaseDetail, User } from "../../types";
 import { qaStatusLabels } from "../../lib/labels";
+import { normalizeCicdTestTimeout } from "../../lib/domainMetadata";
 import { appSortName, displayName } from "../../lib/identity";
 import { isOwner } from "../../lib/roles";
 
@@ -153,4 +154,13 @@ export function appDescriptionCount(text: string | null | undefined): number {
 
 export function shortCommit(commit: string | null | undefined): string {
   return (commit ?? "").slice(0, 12);
+}
+
+/** "v1.2" for display; versions that already start with v stay as they are. */
+export function versionTag(version: string): string {
+  return /^v/i.test(version) ? version : `v${version}`;
+}
+
+export function normalizeTimeoutText(value: string | number | null | undefined): string {
+  return String(normalizeCicdTestTimeout(value));
 }

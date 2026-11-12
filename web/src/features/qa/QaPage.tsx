@@ -4,7 +4,8 @@
  * Roles: RM / Owner / QA / Guest.
  *
  * Three subtabs (index.html:721-728):
- *   1. QA 标注  — log upload, AI analyze (1 s poll while running), status-batch editor
+ *   1. QA 标注  — scope-expansion requests, log upload, AI analyze (1 s poll
+ *                 while running), verdict + delivered-image digest editor
  *   2. Release Report — filterable/sortable/column-pick/CSV-export table
  *   3. Test 命令 — same table machinery, no column picker
  *
@@ -30,17 +31,22 @@ import { formatGerritUrl } from "../../lib/git";
 import { formatServerTime } from "../../lib/time";
 import { downloadCsv } from "../../lib/csv";
 import { qaStatusLabels, qaStatusOptions } from "../../lib/labels";
+import { versionTag } from "../appWorkbench/helpers";
 import { qaStatusRequiresIssueNote } from "../../lib/domainMetadata";
-import { confirmDialog } from "../../lib/confirm";
+import { confirmDialog, promptDialog } from "../../lib/confirm";
 import { toast } from "../../lib/toast";
 import type {
   StatePayload,
-  Snapshot,
+  Entry,
   App,
   QaStatus,
   QaAnalysisJob,
   QaReportsResponse,
+  QaReportRowMeta,
+  ScopeRequest,
 } from "../../types";
+import { can } from "../../lib/accessControl";
+import { scopeRequestStatusLabel } from "../../lib/domainMetadata";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -211,18 +217,20 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
   // Local form state: map from app_id → { status, note }
   const rows = qaRows(payload);
   const [formState, setFormState] = useState<
-    Record<string, { status: string; note: string }>
+    Record<string, QaForm>
   >({});
 
   // Sync form state when entering edit mode or when AI suggestions arrive
   useEffect(() => {
     if (!editMode) return;
-    const next: Record<string, { status: string; note: string }> = {};
-    for (const { app, snap } of rows) {
+    const next: Record<string, QaForm> = {};
+    for (const { app, entry } of rows) {
       const suggestion = aiSuggestions[app.id];
       next[app.id] = {
-        status: suggestion?.qa_status ?? (snap.qa_status || "not_checked"),
-        note: suggestion?.qa_issue_note ?? (snap.qa_issue_note || ""),
+        status: suggestion?.qa_status ?? (entry.qa_status || "not_checked"),
+        note: suggestion?.qa_issue_note ?? (entry.qa_note || ""),
+        image: entry.deliverable_image,
+        digest: entry.deliverable_digest,
       };
     }
     setFormState(next);
@@ -487,20 +495,25 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
   }
 
   async function handleSave() {
+    const entries = new Map(rows.map(({ app, entry }) => [app.id, entry]));
     const items = rows
-      .map(({ app, snap }) => {
+      .map(({ app, entry }) => {
         const f = formState[app.id];
         return {
           app_id: app.id,
-          status: f?.status ?? (snap.qa_status || "not_checked"),
-          issue_note: f?.note ?? (snap.qa_issue_note || ""),
+          status: f?.status ?? (entry.qa_status || "not_checked"),
+          issue_note: f?.note ?? (entry.qa_note || ""),
+          deliverable_image: (f?.image ?? entry.deliverable_image).trim(),
+          deliverable_digest: (f?.digest ?? entry.deliverable_digest).trim(),
         };
       })
-      .filter(item => {
-        const snap = (payload.release?.snapshots?.[item.app_id] ?? {}) as Snapshot;
+      .filter((item) => {
+        const entry = entries.get(item.app_id)!;
         return (
-          (snap.qa_status || "not_checked") !== item.status ||
-          (snap.qa_issue_note || "") !== item.issue_note
+          entry.qa_status !== item.status ||
+          entry.qa_note !== item.issue_note ||
+          entry.deliverable_image !== item.deliverable_image ||
+          entry.deliverable_digest !== item.deliverable_digest
         );
       });
 
@@ -543,7 +556,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
     return (
       <div className="panel">
         <div className="panel-body">
-          <p className="muted">请选择 release。</p>
+          <p className="muted">请选择版本。</p>
         </div>
       </div>
     );
@@ -566,7 +579,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
         </>
       ) : (
         <button className="btn primary qaEdit" disabled={!writable} onClick={handleEnterEdit}>
-          ✎ 修改（上传 log / 填写 QA 状态）
+          ✎ 修改（上传 log / 填写 QA 结论和交付 digest）
         </button>
       )}
     </div>
@@ -574,6 +587,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
 
   return (
     <div id="qaPanel">
+      <ScopeRequestsPanel payload={payload} onDecided={onStateRefresh} />
       {actionBar}
 
       {/* Log file panel */}
@@ -598,7 +612,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
               </a>
             </div>
           ) : (
-            <p className="muted small">本 release 暂无 QA log。</p>
+            <p className="muted small">本版本暂无 QA log。</p>
           )}
 
           {editMode && (
@@ -662,11 +676,11 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
       {/* App QA cards */}
       {rows.length === 0 ? (
         <div className="banner mt-14">
-          本 release 暂无 release 决策为 release 的 app。
+          本版本暂无报名的 App。
         </div>
       ) : (
         <div className="qa-grid">
-          {rows.map(({ app, snap }) => {
+          {rows.map(({ app, entry }) => {
             const suggestion = aiSuggestions[app.id];
             const useSuggestion = editMode && !!suggestion;
             const f = formState[app.id];
@@ -674,10 +688,11 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
               (f?.status as QaStatus) ??
               (useSuggestion
                 ? (suggestion.qa_status as QaStatus)
-                : ((snap.qa_status as QaStatus) || "not_checked"));
+                : ((entry.qa_status as QaStatus) || "not_checked"));
             const note =
               f?.note ??
-              (useSuggestion ? (suggestion.qa_issue_note || "") : (snap.qa_issue_note || ""));
+              (useSuggestion ? (suggestion.qa_issue_note || "") : (entry.qa_note || ""));
+            const inScope = entry.scope_tests.filter((t) => !t.excluded);
             const testResults: TestResult[] = useSuggestion
               ? ((suggestion.test_results as TestResult[]) ?? [])
               : [];
@@ -695,20 +710,19 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
               <div key={app.id} className="qa-card" data-qa-app={app.id}>
                 <div className="qa-card-h">
                   <span className="app-ico">
-                    {initials(displayName(snap))}
+                    {initials(displayName(app))}
                   </span>
                   <div>
                     <div className="name">
-                      {displayName(snap)}{" "}
-                      {(app.cicd_release_pending || app.cicd_onboarding_status === "pending_create") && (
-                        <span className="pill warnp">CICD待完成</span>
-                      )}
+                      {displayName(app)}{" "}
+                      {entry.target_version && <span className="ver-tag">{versionTag(entry.target_version)}</span>}{" "}
+                      {entry.pending_scope_request && <span className="pill warnp">范围扩大待审批</span>}
                       {useSuggestion && (
                         <span className="pill ai">AI 建议</span>
                       )}
                     </div>
                     <div className="sub">
-                      {usersLabel(snap.owners, payload.user_display_names ?? {})}
+                      {usersLabel(app.owners, payload.user_display_names ?? {})}
                     </div>
                   </div>
                   <span className="qa-cur">
@@ -756,6 +770,31 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
                       }
                     />
                   </label>
+                  <label>
+                    交付镜像
+                    <input className="input" disabled={!qaFieldsWritable}
+                      value={f?.image ?? entry.deliverable_image}
+                      placeholder={qaFieldsWritable ? "QA 测试的交付镜像地址" : ""}
+                      onChange={(e) => setFormState((prev) => ({ ...prev, [app.id]: { ...prev[app.id], image: e.target.value } }))}
+                      data-testid={`qa-image-${app.id}`} />
+                  </label>
+                  <label>
+                    交付镜像 digest
+                    <input className="input mono" disabled={!qaFieldsWritable}
+                      value={f?.digest ?? entry.deliverable_digest}
+                      placeholder={qaFieldsWritable ? "sha256:…" : ""}
+                      onChange={(e) => setFormState((prev) => ({ ...prev, [app.id]: { ...prev[app.id], digest: e.target.value } }))}
+                      data-testid={`qa-digest-${app.id}`} />
+                  </label>
+                  <details className="mt-6">
+                    <summary className="small muted">
+                      测试范围 {inScope.length} 项{entry.planned_features ? " · 计划 feature" : ""}
+                    </summary>
+                    {entry.planned_features && <p className="small">{entry.planned_features}</p>}
+                    <ul className="small m-4-0-0">
+                      {inScope.map((t) => <li key={t.path}><span className="mono">{t.path}</span></li>)}
+                    </ul>
+                  </details>
                   <p className="small muted">
                     Gerrit: {formatGerritUrl(app.git_url)} {app.git_branch || ""}
                   </p>
@@ -813,7 +852,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
 
 interface QaChangeLogPanelProps {
   payload: StatePayload;
-  rows: Array<{ app: App; snap: Snapshot }>;
+  rows: Array<{ app: App; entry: Entry }>;
   releaseId: string;
 }
 
@@ -868,10 +907,10 @@ function QaChangeLogPanel({ payload, rows, releaseId }: QaChangeLogPanelProps) {
   }, [rows.map((r) => r.app.id).join(","), releaseId]);
 
   // Flatten + sort all entries by timestamp descending
-  const allEntries = rows.flatMap(({ app, snap }) =>
+  const allEntries = rows.flatMap(({ app }) =>
     (auditLogs[app.id] ?? []).map((e) => ({
       ...e,
-      app_label: displayName(snap),
+      app_label: displayName(app),
     })),
   ).sort((a, b) => {
     const at = new Date(a.ts || "").getTime() || 0;
@@ -889,7 +928,7 @@ function QaChangeLogPanel({ payload, rows, releaseId }: QaChangeLogPanelProps) {
   return (
     <details className="section qa-change-log-panel" id="qaChangeLogPanel">
       <summary>
-        <span className="chev">▶</span> QA 变更记录（本 release）
+        <span className="chev">▶</span> QA 变更记录（本版本）
         <span className="badge">{countText}</span>
       </summary>
       <div className="section-body">
@@ -897,7 +936,7 @@ function QaChangeLogPanel({ payload, rows, releaseId }: QaChangeLogPanelProps) {
           <div className="banner bad mb-12">
             部分变更记录加载失败：
             {errorApps
-              .map(({ app, snap }) => `${displayName(snap)}: ${errors[app.id]}`)
+              .map(({ app }) => `${displayName(app)}: ${errors[app.id]}`)
               .join("；")}
           </div>
         )}
@@ -1124,11 +1163,7 @@ interface ReportTableProps {
   data: {
     columns: string[];
     rows: string[][];
-    rows_meta?: Array<{
-      is_release: boolean;
-      release_decision: string;
-      cicd_pending?: boolean;
-    }>;
+    rows_meta?: QaReportRowMeta[];
   };
   filterState: ReportFilterState;
   onFilterChange: React.Dispatch<React.SetStateAction<ReportFilterState>>;
@@ -1382,8 +1417,7 @@ function ReportTable({
             ) : (
               filteredRows.map(({ row, meta }, ri) => {
                 const trCls = [
-                  meta && meta.is_release === false ? "row-not-release" : "",
-                  meta?.cicd_pending ? "row-cicd-pending" : "",
+                  meta && meta.signed_up === false ? "row-not-release" : "",
                 ].filter(Boolean).join(" ");
                 return (
                   <tr key={ri} className={trCls}>
@@ -1675,18 +1709,110 @@ function downloadCommunityArtifactsZip(data: CommunityArtifactsResponse) {
 // Helpers shared within this file
 // ---------------------------------------------------------------------------
 
-function qaRows(
-  payload: StatePayload,
-): Array<{ app: App; snap: Snapshot }> {
-  return (payload.apps ?? [])
-    .map((app) => ({ app, snap: payload.release?.snapshots?.[app.id] ?? null }))
-    .filter(
-      (x): x is { app: App; snap: Snapshot } =>
-        x.snap !== null && x.snap.release_decision === "release",
-    )
-    .sort((a, b) =>
-      displayName(a.snap).localeCompare(displayName(b.snap), "zh-CN"),
-    );
+interface QaForm {
+  status: string;
+  note: string;
+  image: string;
+  digest: string;
+}
+
+/** Active signups of the selected cycle with their App. */
+function qaRows(payload: StatePayload): Array<{ app: App; entry: Entry }> {
+  const apps = new Map((payload.apps ?? []).map((app) => [app.id, app]));
+  return (payload.release?.entries ?? [])
+    .filter((entry) => entry.status === "active" && apps.has(entry.app_id))
+    .map((entry) => ({ app: apps.get(entry.app_id)!, entry }))
+    .sort((a, b) => displayName(a.app).localeCompare(displayName(b.app), "zh-CN"));
+}
+
+// ---------------------------------------------------------------------------
+// Scope-expansion requests (QA approves or rejects)
+// ---------------------------------------------------------------------------
+
+function ScopeRequestsPanel({ payload, onDecided }: { payload: StatePayload; onDecided: () => void }) {
+  const { user } = useAuth();
+  const [showAll, setShowAll] = useState(false);
+  const requests: ScopeRequest[] = payload.release?.scope_requests ?? [];
+  const canDecide = can(user?.role, "app.app_info.expand_qa_scope")
+    && ["in_progress", "qa_closed"].includes(payload.release?.phase ?? "");
+  const pending = requests.filter((r) => r.status === "pending");
+  const shown = showAll ? requests : pending;
+  if (!requests.length) return null;
+
+  async function decide(request: ScopeRequest, approve: boolean) {
+    let note = "";
+    if (!approve) {
+      const reason = await promptDialog({
+        title: "拒绝测试范围扩大",
+        body: `${request.app_name}：拒绝后本期仍按原 app_info 测试。请填写理由。`,
+        confirmText: "拒绝",
+        danger: true,
+      });
+      if (reason === null) return;
+      note = reason;
+    } else if (!(await confirmDialog({
+      title: "同意测试范围扩大",
+      body: `${request.app_name}：同意后报名条目改用新的 app_info，测试范围扩大为：\n${request.additions.join("\n")}`,
+      confirmText: "同意",
+    }))) {
+      return;
+    }
+    try {
+      await apiPost("/api/scope-requests/decide", { request_id: request.id, approve, note });
+      toast.success(approve ? "已同意" : "已拒绝");
+      onDecided();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  return (
+    <div className="panel" data-testid="scope-requests-panel">
+      <div className="panel-head">
+        <h2>测试范围扩大申请</h2>
+        <span className="count">待处理 {pending.length} 条</span>
+        <span className="flex-1" />
+        <label className="check small">
+          <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
+          显示已处理
+        </label>
+      </div>
+      <div className="panel-body">
+        <p className="hint mt-0">报名截止后 app_info 扩大了测试范围（新增芯片、测试项、构建等）时自动生成；同意前报名条目按原版本测试。</p>
+        {shown.length === 0 ? (
+          <p className="muted small">没有待处理的申请。</p>
+        ) : (
+          <div className="table">
+            <table>
+              <thead><tr><th>#</th><th>App</th><th>扩大内容</th><th>时间</th><th>状态</th><th /></tr></thead>
+              <tbody>
+                {shown.map((request) => (
+                  <tr key={request.id} data-testid={`scope-request-${request.id}`}>
+                    <td>{request.id}</td>
+                    <td>{request.app_name}</td>
+                    <td><ul className="small m-0">{request.additions.map((a) => <li key={a}>{a}</li>)}</ul></td>
+                    <td className="small">{formatServerTime(request.created_at)}</td>
+                    <td className="small">
+                      {scopeRequestStatusLabel(request.status)}
+                      {request.decided_by && <div className="muted">{request.decided_by} {request.decision_note}</div>}
+                    </td>
+                    <td className="nowrap">
+                      {request.status === "pending" && canDecide && (
+                        <>
+                          <button className="btn primary sm" onClick={() => void decide(request, true)}>同意</button>
+                          <button className="btn ghost sm" onClick={() => void decide(request, false)}>拒绝</button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function initials(name: string): string {
@@ -1747,9 +1873,6 @@ export function QaPage() {
   }
 
   const canView = canViewQa(user ?? undefined);
-  const currentRelease = data
-    ? (data.releases ?? []).find((r) => r.id === (selectedReleaseId || data.release?.id)) ?? data.release
-    : null;
 
   if (!canView) {
     return (
@@ -1837,7 +1960,7 @@ export function QaPage() {
                 releaseId={selectedReleaseId || data.release?.id || ""}
                 kind="release"
                 title="Release Report"
-                hint="本 release 全部 app 的发布信息汇总（列结构参考 release_report.csv，系统未跟踪的列留空）。"
+                hint="本版本报名 App 的发布信息汇总（列结构参考 release_report.csv，系统未跟踪的列留空）。"
                 releases={data.releases ?? []}
               />
             </div>
@@ -1848,14 +1971,18 @@ export function QaPage() {
                 releaseId={selectedReleaseId || data.release?.id || ""}
                 kind="test"
                 title="Test 命令"
-                hint="由各 app 已上传的 app_info 生成的测试命令清单（输出对应 get_release_report_test_cmd.py）。"
+                hint="由各报名条目锁定的 app_info（去掉 Owner 删减的测试项）生成的测试命令清单。"
                 releases={data.releases ?? []}
               />
             </div>
           )}
           {subtab === "community" && (
             <div id="qaCommunityArtifactsPane" className="qa-pane active">
-              <CommunityArtifactsPane defaultSdkversion={currentRelease?.maca_version ?? ""} />
+              <CommunityArtifactsPane
+                defaultSdkversion={
+                  data.release?.environment.find((row) => /maca|sdk/i.test(row.component))?.version ?? ""
+                }
+              />
             </div>
           )}
         </>
@@ -1879,7 +2006,7 @@ function ReleaseSelector({
   selectedId,
   onChange,
 }: ReleaseSelectorProps) {
-  if (!releases.length) return <span className="muted small">暂无 release</span>;
+  if (!releases.length) return <span className="muted small">暂无版本</span>;
   return (
     <select
       className="input select-inline"
@@ -1890,7 +2017,6 @@ function ReleaseSelector({
       {releases.map((r) => (
         <option key={r.id} value={r.id}>
           {r.name}
-          {r.maca_version ? ` (${r.maca_version})` : ""}
         </option>
       ))}
     </select>

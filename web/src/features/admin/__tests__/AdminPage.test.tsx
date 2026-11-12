@@ -17,7 +17,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { AdminPage } from "../AdminPage";
-import type { StatePayload, App, Snapshot, ReleaseDetail, ReleaseSummary } from "../../../types";
+import type { StatePayload } from "../../../types";
+import { makeApp, makeRelease, makeState } from "../../../test/fixtures";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -54,97 +55,10 @@ import { confirmDialog, promptDialog } from "../../../lib/confirm";
 // Fixtures
 // ---------------------------------------------------------------------------
 
-function makeApp(id: string): App {
-  return {
-    id,
-    git_url: `repo/${id}`,
-    git_branch: "main",
-    created_by: "admin",
-    created_at: "2026-01-01 00:00:00",
-    aliases: [],
-  };
-}
-
-function makeSnap(appId: string): Snapshot {
-  return {
-    app_id: appId,
-    official_name: `App ${appId}`,
-    version: "1.0",
-    description: "",
-    official_url: "",
-    type: "tool",
-    arch: "x86",
-    x86_chips: "",
-    arm_chips: "",
-    hpcc_chip: "",
-    maca_version: "",
-    build_arches: "",
-    build_os: "",
-    doc_target: "manual",
-    release_decision: "release",
-    owners: ["alice"],
-    owner_confirmed: false,
-    qa_status: "not_checked",
-    qa_issue_note: "",
-    doc: { intro: "", image_usage: "", binary_usage: "", env_setup: "", limitations: "" },
-    community: { release_status: "", python_version: "", framework_version: "" },
-    sanity: { arm_kylin: false, ubuntu: false },
-    python_labels: "",
-    pytorch_labels: "",
-    test_docs: [],
-    missing_items: [],
-    app_info: null,
-    app_info_diffs: [],
-  };
-}
-
-function makeRelease(): ReleaseDetail {
-  return {
-    id: "rel-1",
-    name: "3.0",
-    maca_version: "3.0",
-    app_freeze_deadline: "2026-06-01",
-    doc_deadline: "2026-07-01",
-    released_locked: false,
-    released_locked_at: "",
-    released_locked_by: "",
-    created_at: "2026-01-01 00:00:00",
-    source: "manual",
-    cloned_from: "",
-    phase: "before_app_freeze",
-    snapshots: { app1: makeSnap("app1") },
-  };
-}
-
-function makeReleaseSummary(): ReleaseSummary {
-  return {
-    id: "rel-1",
-    name: "3.0",
-    maca_version: "3.0",
-    app_freeze_deadline: "2026-06-01",
-    doc_deadline: "2026-07-01",
-    released_locked: false,
-    released_locked_at: "",
-    released_locked_by: "",
-    created_at: "2026-01-01 00:00:00",
-    source: "manual",
-    cloned_from: "",
-    phase: "before_app_freeze",
-  };
-}
-
 function makeStatePayload(): StatePayload {
-  return {
-    apps: [makeApp("app1")],
-    releases: [makeReleaseSummary()],
-    release: makeRelease(),
-    artifacts: [],
+  return makeState([makeApp("app1", { name: "App app1 1.0" })], makeRelease([]), {
     user: { username: "admin", role: "Admin", display_name: "Admin" },
-    user_display_names: {},
-    qa_log: null,
-    qa_audit_logs: {},
-    release_schedule: [],
-  };
+  });
 }
 
 function makeUsers() {

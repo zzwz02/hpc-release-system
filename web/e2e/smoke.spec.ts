@@ -8,7 +8,7 @@
  * Covers (per brief §4 Wave 4):
  *   1. Auth — logged-out → login page → authenticated shell
  *   2. All 8 tabs load their data (one request per tab, role-gated)
- *   3. App 工作台 — select an app, change release_decision, save
+ *   3. App 工作台 — select an app, sign it up for an open cycle
  *   4. CICD 工作台 — submit a new request (RM role); approve it (RM approves own)
  *   5. 开发 WIKI — create a new article, save
  *
@@ -131,47 +131,31 @@ async function navigateTab(page: Page, href: string, waitForSelector?: string): 
 }
 export { navigateTab };
 
+/** Select (or create) a cycle that is still open for signup. */
 async function ensureWritableAppsRelease(page: Page): Promise<void> {
-  await page.goto(`${BASE}/apps`);
-  await page.waitForSelector('[data-testid="appworkbench-page"]', { timeout: 15_000 });
-  await page.waitForSelector('[data-testid="app-table"]', { timeout: 15_000 });
-
-  const newAppButton = page.locator('[data-testid="new-app-btn"]');
-  if (await newAppButton.isVisible({ timeout: 2_000 }).catch(() => false)) return;
-
-  const releaseSelect = page.locator('select[aria-label="选择 release"]');
-  const options = await releaseSelect.locator("option").evaluateAll((items) =>
-    items.map((item) => (item as HTMLOptionElement).value),
-  );
-  for (const releaseId of options) {
-    await releaseSelect.selectOption(releaseId);
-    await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
-    if (await newAppButton.isVisible({ timeout: 2_000 }).catch(() => false)) return;
-  }
-
-  const created = await page.evaluate(async (name) => {
+  const releaseId = await page.evaluate(async (name) => {
+    const state = await (await fetch("/api/state", { credentials: "include" })).json();
+    const open = (state.releases ?? []).find((r: { phase: string }) => r.phase === "signup");
+    if (open) return open.id as string;
     const res = await fetch("/api/releases/create", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name,
-        maca_version: "",
-        app_freeze_deadline: "2099-12-31",
-        doc_deadline: "2099-12-31",
+        signup_deadline: "2099-12-01",
+        qa_deadline: "2099-12-26",
+        release_date: "2099-12-31",
       }),
     });
     const body = await res.json().catch(() => ({}));
-    if (!res.ok || body.error) {
-      throw new Error(body.error || res.statusText);
-    }
-    return body as { release_id: string };
+    if (!res.ok || body.error) throw new Error(body.error || res.statusText);
+    return body.release_id as string;
   }, `e2e-open-${Date.now()}`);
-
   await page.goto(`${BASE}/apps`);
-  await page.waitForSelector('select[aria-label="选择 release"]', { timeout: 15_000 });
-  await page.locator('select[aria-label="选择 release"]').selectOption(created.release_id);
-  await expect(newAppButton).toBeVisible({ timeout: 10_000 });
+  await page.waitForSelector('select[aria-label="选择版本"]', { timeout: 15_000 });
+  await page.locator('select[aria-label="选择版本"]').selectOption(releaseId);
+  await page.waitForSelector('[data-testid="app-table"]', { timeout: 15_000 });
 }
 
 // ---------------------------------------------------------------------------
@@ -232,7 +216,7 @@ test.describe("All 8 tabs load", () => {
     const body = await page.textContent("body");
     expect(body).toContain("周期管理");
     // The RM create-form should appear once data is loaded
-    expect(body).toContain("新建发布周期");
+    expect(body).toContain("新建版本");
   });
 
   test("App 工作台 loads app list", async ({ page }) => {
@@ -300,84 +284,28 @@ test.describe("App 工作台 decision save", () => {
     expect(panel!.length).toBeGreaterThan(20);
   });
 
-  test("edit mode: release decision remains editable when doc fields are frozen", async ({ page }) => {
+  test("signs up a running App for an open cycle", async ({ page }) => {
     await login(page, "rm");
-    await page.goto(`${BASE}/apps`);
-    await page.waitForSelector('[data-testid="app-table"]', { timeout: 15_000 });
-
-    const frozenRelease = await page.evaluate(async (name) => {
-      const res = await fetch("/api/releases/create", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          maca_version: "",
-          app_freeze_deadline: "2000-01-01",
-          doc_deadline: "2000-01-02",
-        }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok || body.error) {
-        throw new Error(body.error || res.statusText);
-      }
-      return body as { release_id: string };
-    }, `e2e-doc-frozen-${Date.now()}`);
-
-    await page.goto(`${BASE}/apps`);
-    await page.waitForSelector('select[aria-label="选择 release"]', { timeout: 15_000 });
-    await page.locator('select[aria-label="选择 release"]').selectOption(frozenRelease.release_id);
-    await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
-
-    // Click first release-decision=release app row
+    await ensureWritableAppsRelease(page);
+    await page.locator('[data-testid="app-status-filter"]').selectOption("not_signed_up");
     const firstRow = page.locator('[data-testid^="app-row-"]').first();
     if (!await firstRow.isVisible({ timeout: 5_000 }).catch(() => false)) {
       test.skip();
       return;
     }
     await firstRow.click();
-    await page.waitForSelector('[data-testid="detail-panel"]', { timeout: 10_000 });
-
-    // Click 修改 button to enter edit mode
-    const editBtn = page.locator('button:has-text("修改")').first();
-    if (!await editBtn.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      // Detail panel may be read-only (locked release) — skip gracefully
+    await page.waitForSelector('[data-testid="signup-pane"]', { timeout: 10_000 });
+    const submit = page.locator('[data-testid="signup-submit"]');
+    if (!await submit.isVisible({ timeout: 3_000 }).catch(() => false)) {
+      // e.g. the App has no app_info yet
       test.skip();
       return;
     }
-    await editBtn.click();
-
-    // Doc fields may be frozen after doc deadline, but release decision remains editable.
-    const descField = page.locator('[data-testid="field-description"]');
-    await descField.waitFor({ timeout: 5_000 });
-    await expect(descField).toBeDisabled();
-
-    const decisionField = page.locator('[data-testid="field-decision"]');
-    await expect(decisionField).toBeEnabled();
-    const currentDecision = await decisionField.inputValue();
-    const newDecision = currentDecision === "stopped" ? "cicd_only" : "stopped";
-    await decisionField.selectOption(newDecision);
-
-    // Click save — handle alert
-    page.on("dialog", (d) => d.accept());
-    const saveBtn = page.locator('button:has-text("保存")').first();
-    await saveBtn.click();
-
-    const syncLocalOnly = page.locator('[data-testid="sync-local-only"]');
-    if (await syncLocalOnly.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      await syncLocalOnly.click();
-    } else {
-      const syncAll = page.locator('[data-testid="sync-all"]');
-      if (await syncAll.isVisible({ timeout: 3_000 }).catch(() => false)) {
-        await syncAll.click();
-      }
-    }
-
-    // Wait for the "保存成功" alert or confirm saved state (no dirty banner)
-    await page.waitForTimeout(2_000);
-    // Panel should still be visible (no crash)
-    const panelStillVisible = await page.locator('[data-testid="detail-panel"]').isVisible({ timeout: 5_000 }).catch(() => false);
-    expect(panelStillVisible).toBe(true);
+    const image = page.locator('[data-testid="signup-base-image"]');
+    const imageOptions = await image.locator("option").count();
+    if (imageOptions > 1) await image.selectOption({ index: 1 });
+    await submit.click();
+    await expect(page.locator('[data-testid="entry-withdraw"]')).toBeVisible({ timeout: 10_000 });
   });
 });
 
@@ -404,7 +332,7 @@ test.describe("周期管理 create release", () => {
     await page.waitForSelector('[data-testid="releases-table"]', { timeout: 15_000 });
     const tableText = await page.textContent('[data-testid="releases-table"]');
     // Should show at least the header and one row
-    expect(tableText).toContain("Release");
+    expect(tableText).toContain("版本");
     expect(tableText).toContain("阶段");
   });
 });
@@ -557,7 +485,7 @@ test.describe("W3 CICD tab RM/SPD-only gating", () => {
 });
 
 test.describe("W3 App 工作台 sub-tabs", () => {
-  test("detail panel shows 文档信息 and CICD sub-tabs after selecting an app", async ({ page }) => {
+  test("detail panel shows 本期报名 and CICD sub-tabs after selecting an app", async ({ page }) => {
     await login(page, "rm");
     await page.goto(`${BASE}/apps`);
     await page.waitForSelector('[data-testid="app-table"]', { timeout: 15_000 });
@@ -567,7 +495,7 @@ test.describe("W3 App 工作台 sub-tabs", () => {
     await page.waitForSelector('[data-testid="detail-panel"]', { timeout: 10_000 });
 
     // Both sub-tab buttons should be visible
-    await expect(page.locator('[data-testid="detail-tab-docs"]')).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('[data-testid="detail-tab-signup"]')).toBeVisible({ timeout: 5_000 });
     await expect(page.locator('[data-testid="detail-tab-cicd"]')).toBeVisible({ timeout: 5_000 });
   });
 
@@ -589,80 +517,38 @@ test.describe("W3 App 工作台 sub-tabs", () => {
     expect(paneText!.length).toBeGreaterThan(10);
   });
 
-  test("W3 new-app dialog shows CICD-first wizard form", async ({ page }) => {
-    await login(page, "rm");
-    await ensureWritableAppsRelease(page);
-    await page.click('[data-testid="new-app-btn"]');
-    await page.waitForSelector('[data-testid="new-app-dialog"]', { timeout: 5_000 });
-
-    const dialogText = await page.textContent('[data-testid="new-app-dialog"]');
-    expect(dialogText).toContain("CICD-first");
-    // Step 1 fields visible
-    await expect(page.locator('[data-testid="new-app-name"]')).toBeVisible();
-    await expect(page.locator('[data-testid="new-app-fetch"]')).toBeVisible();
-    const releaseDecision = page.locator('[data-testid="new-app-release-decision"]');
-    await expect(releaseDecision).toBeVisible();
-    await expect(releaseDecision.locator("option")).toHaveText(["release", "cicd-only"]);
-    await expect(releaseDecision).toHaveValue("cicd_only");
-    await expect(page.locator('[data-testid="direct-create-btn"]')).toHaveCount(0);
-  });
-
-  test("W3 CICD-first wizard: fetch fails → skip → creates pending request", async ({ page }) => {
-    // Dismiss any browser alert that fires on app creation
-    page.on("dialog", (d) => void d.dismiss());
-
-    // Mock fetch-preview to return 502 immediately — avoids waiting on Gerrit
-    // TCP timeouts (which can exceed the 10 s wait in this environment).
+  test("new-app dialog submits a create request", async ({ page }) => {
     await page.route("**/api/cicd/apps/fetch-preview", async (route) => {
       await route.fulfill({
         status: 502,
         contentType: "application/json",
-        body: JSON.stringify({ ok: false, error: "Gerrit 网络不可达（e2e w3 mock）" }),
+        body: JSON.stringify({ ok: false, error: "Gerrit 网络不可达（e2e mock）" }),
       });
     });
-
     await login(page, "rm");
     await ensureWritableAppsRelease(page);
     await page.click('[data-testid="new-app-btn"]');
     await page.waitForSelector('[data-testid="new-app-dialog"]', { timeout: 5_000 });
 
-    // Step 1: fill identity (unique name per run)
     const uniq = Date.now();
-    await page.fill('[data-testid="new-app-name"]', `e2e-w3-${uniq}`);
-    await expect(page.getByTestId("new-app-doc-target")).toHaveValue("");
-    await expect(page.getByTestId("new-app-type")).toHaveValue("");
+    await page.fill('[data-testid="new-app-name"]', `e2e-new-${uniq}`);
     await page.getByTestId("new-app-doc-target").selectOption("ai4sci");
-    await page.getByTestId("new-app-type").selectOption("other");
-    await page.getByTestId("new-app-custom-type").fill("科学计算");
-    await page.fill('[data-testid="new-app-repo-name"]', `test/e2e-w3-${uniq}`);
-    await page.fill('input[placeholder*="master"]', "main");
+    await page.getByTestId("new-app-type").selectOption({ index: 1 });
+    await page.fill('[data-testid="new-app-repo-name"]', `test/e2e-new-${uniq}`);
+    await page.fill('[data-testid="new-app-branch"]', "main");
 
-    // Click "拉取 Gerrit 信息" — immediately returns 502 via route mock
+    // Preview failure is shown but does not block submitting.
     await page.click('[data-testid="new-app-fetch"]');
-
-    // Error state should appear with "跳过，直接创建" button
-    await page.waitForSelector('[data-testid="new-app-submit"]', { timeout: 5_000 });
-    const errText = await page.textContent('[data-testid="new-app-dialog"]');
-    expect(errText).toContain("拉取失败");
-
-    // Skip Gerrit → submit directly to /api/cicd/apps/new
+    await expect(page.locator('[data-testid="new-app-dialog"]')).toContainText("Gerrit 网络不可达");
     await page.click('[data-testid="new-app-submit"]');
-
-    // Dialog closes on success
     await page.waitForSelector('[data-testid="new-app-dialog"]', { state: "detached", timeout: 15_000 });
 
-    // Navigate to CICD 工作台 → 待审批 tab and verify a "新建" pending request exists
+    // The App is not created yet; a pending create request is waiting for RM.
+    await expect(page.locator(`text=e2e-new-${uniq}`)).toHaveCount(0);
     await page.goto(`${BASE}/cicd`);
     await page.waitForLoadState("networkidle", { timeout: 15_000 });
     await page.locator('button:has-text("待审批")').first().click();
-    // Wait for the pending-request table to finish loading (spinner disappears)
-    await page.waitForFunction(
-      () => !document.body.innerText.includes("加载中"),
-      { timeout: 10_000 },
-    );
-    const pendingBody = await page.textContent("body");
-    // A pending "create" request was produced — CICD table shows "(新建)" for new-task requests
-    expect(pendingBody).toMatch(/新建|create/i);
+    await expect(page.locator("body")).toContainText(`e2e-new-${uniq}`, { timeout: 10_000 });
   });
 });
 
@@ -693,43 +579,8 @@ async function freshLogin(page: Page, username: string): Promise<void> {
   await login(page, username);
 }
 
-test.describe("W4 wizard backend-identity display", () => {
-  test("does not derive an identity when the backend request fails", async ({ page }) => {
-    await page.route("**/api/cicd/apps/fetch-preview", async (route) => {
-      await route.fulfill({
-        status: 502,
-        contentType: "application/json",
-        body: JSON.stringify({ ok: false, error: "Gerrit 网络不可达（e2e w4 mock）" }),
-      });
-    });
-
-    await freshLogin(page, "rm");
-    await ensureWritableAppsRelease(page);
-    await page.click('[data-testid="new-app-btn"]');
-    await page.waitForSelector('[data-testid="new-app-dialog"]', { timeout: 5_000 });
-
-    // Fill a git-type short repo name. The browser must not expand it into a
-    // canonical Gerrit URL when the authoritative backend request fails.
-    const uniq = Date.now();
-    await page.fill('[data-testid="new-app-name"]', `e2e-w4-identity-${uniq}`);
-    await page.fill('[data-testid="new-app-repo-name"]', `sw-metax-open/e2e-app-${uniq}`);
-    await page.fill('input[placeholder*="master"]', "main");
-
-    // Trigger fetch — immediately 502 via our route mock
-    await page.click('[data-testid="new-app-fetch"]');
-
-    await page.waitForSelector('[data-testid="derived-identity-box"]', { timeout: 5_000 });
-
-    const boxText = await page.textContent('[data-testid="derived-identity-box"]');
-    expect(boxText).toContain("服务端未返回解析结果");
-    expect(boxText).not.toContain(`sw-metax-open/e2e-app-${uniq}`);
-    expect(boxText).toContain("Gerrit 身份（服务端解析）");
-
-    // Screenshot for team-lead verification
-    await page.screenshot({ path: "e2e/screenshots/w4-wizard-identity-fetch-error.png", fullPage: false });
-  });
-
-  test("fetch-error step shows 需联网解析 for repo-type", async ({ page }) => {
+test.describe("new-app identity preview", () => {
+  test("shows 需联网解析 when a manifest cannot be resolved", async ({ page }) => {
     await page.route("**/api/cicd/apps/fetch-preview", async (route) => {
       await route.fulfill({
         status: 200,
@@ -747,25 +598,16 @@ test.describe("W4 wizard backend-identity display", () => {
     await freshLogin(page, "rm");
     await ensureWritableAppsRelease(page);
     await page.click('[data-testid="new-app-btn"]');
-    await page.waitForSelector('[data-testid="new-app-dialog"]', { timeout: 5_000 });
-
-    await page.fill('[data-testid="new-app-name"]', `e2e-w4-repo-${Date.now()}`);
-    // Switch to repo type — scope to dialog to avoid hitting the release picker
     const dialog = page.locator('[data-testid="new-app-dialog"]');
-    await dialog.locator('select:not([data-testid="new-app-release-decision"])').selectOption("repo");
-    await dialog.locator('[data-testid="new-app-repo-name"]').fill("manifests/releases/maca-4.0.xml");
-
-    // Trigger fetch — immediately 502 via route mock
+    await dialog.waitFor({ timeout: 5_000 });
+    await page.fill('[data-testid="new-app-name"]', `e2e-repo-${Date.now()}`);
+    await dialog.locator("select").nth(2).selectOption("repo");
+    await dialog.locator('[data-testid="new-app-repo-name"]').fill("APP/x/maca-4.0.xml");
     await page.click('[data-testid="new-app-fetch"]');
 
-    // Error state: identity box should show "需联网解析" since repo-type
-    // requires Gerrit network access to resolve the manifest URL
-    await page.waitForSelector('[data-testid="derived-identity-box"]', { timeout: 5_000 });
-    const boxText = await page.textContent('[data-testid="derived-identity-box"]');
-    expect(boxText).toContain("需联网解析");
-    expect(boxText).toContain("—");
-
-    // Screenshot
-    await page.screenshot({ path: "e2e/screenshots/w4-wizard-identity-repo-type.png", fullPage: false });
+    const box = page.locator('[data-testid="derived-identity-box"]');
+    await box.waitFor({ timeout: 5_000 });
+    await expect(box).toContainText("需联网解析");
+    await expect(box).toContainText("Gerrit 身份（服务端解析）");
   });
 });

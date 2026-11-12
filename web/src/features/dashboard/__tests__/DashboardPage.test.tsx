@@ -17,7 +17,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { DashboardPage } from "../DashboardPage";
-import type { StatePayload, App, Snapshot, ReleaseDetail, ReleaseSummary, ReleaseScheduleEntry } from "../../../types";
+import type { StatePayload, ReleaseScheduleEntry } from "../../../types";
+import { makeApp, makeEntry, makeRelease, makeState } from "../../../test/fixtures";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -64,86 +65,6 @@ const uiStoreMod = await import("../../../store/uiStore") as unknown as {
 // Test fixtures
 // ---------------------------------------------------------------------------
 
-function makeApp(id: string): App {
-  return {
-    id,
-    git_url: `repo/${id}`,
-    git_branch: "main",
-    created_by: "admin",
-    created_at: "2026-01-01 00:00:00",
-    aliases: [],
-  };
-}
-
-function makeSnap(appId: string, overrides: Partial<Snapshot> = {}): Snapshot {
-  return {
-    app_id: appId,
-    official_name: `App ${appId}`,
-    version: "1.0",
-    description: "",
-    official_url: "",
-    type: "tool",
-    arch: "x86",
-    x86_chips: "",
-    arm_chips: "",
-    hpcc_chip: "",
-    maca_version: "",
-    build_arches: "",
-    build_os: "",
-    doc_target: "manual",
-    release_decision: "release",
-    owners: ["alice"],
-    owner_confirmed: false,
-    qa_status: "not_checked" as Snapshot["qa_status"],
-    qa_issue_note: "",
-    doc: { intro: "", image_usage: "", binary_usage: "", env_setup: "", limitations: "" },
-    community: { release_status: "", python_version: "", framework_version: "" },
-    sanity: { arm_kylin: false, ubuntu: false },
-    python_labels: "",
-    pytorch_labels: "",
-    test_docs: [],
-    missing_items: [],
-    app_info: null,
-    app_info_diffs: [],
-    ...overrides,
-  };
-}
-
-function makeRelease(snapshots: Record<string, Snapshot>): ReleaseDetail {
-  return {
-    id: "rel-1",
-    name: "3.0",
-    maca_version: "3.0",
-    app_freeze_deadline: "2026-06-01",
-    doc_deadline: "2026-07-01",
-    released_locked: false,
-    released_locked_at: "",
-    released_locked_by: "",
-    created_at: "2026-01-01 00:00:00",
-    source: "manual",
-    cloned_from: "",
-    phase: "before_app_freeze",
-    snapshots,
-  };
-}
-
-function makeReleaseSummary(): ReleaseSummary {
-  return {
-    id: "rel-1",
-    name: "3.0",
-    maca_version: "3.0",
-    app_freeze_deadline: "2026-06-01",
-    doc_deadline: "2026-07-01",
-    released_locked: false,
-    released_locked_at: "",
-    released_locked_by: "",
-    created_at: "2026-01-01 00:00:00",
-    source: "manual",
-    cloned_from: "",
-    phase: "before_app_freeze",
-  };
-}
-
 function makeScheduleEntry(id: string, version: string): ReleaseScheduleEntry {
   return {
     id,
@@ -159,23 +80,15 @@ function makeScheduleEntry(id: string, version: string): ReleaseScheduleEntry {
 }
 
 function makePayload(overrides: Partial<StatePayload> = {}): StatePayload {
-  const app1 = makeApp("app1");
-  const app2 = makeApp("app2");
-  const snap1 = makeSnap("app1");
-  const snap2 = makeSnap("app2", { release_decision: "cicd_only", owners: ["bob"] });
-
-  return {
-    apps: [app1, app2],
-    releases: [makeReleaseSummary()],
-    release: makeRelease({ app1: snap1, app2: snap2 }),
-    artifacts: [],
+  const apps = [
+    makeApp("app1", { name: "App app1 1.0" }),
+    makeApp("app2", { name: "App app2 1.0", owners: ["bob"] }),
+    makeApp("app3", { name: "App app3 1.0", owners: ["bob"], cicd_status: "stopped", doc_target: "ai4sci" }),
+  ];
+  return makeState(apps, makeRelease([makeEntry("app1")]), {
     user: { username: "alice", role: "RM", display_name: "Alice" },
-    user_display_names: {},
-    qa_log: null,
-    qa_audit_logs: {},
-    release_schedule: [],
     ...overrides,
-  };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -234,80 +147,46 @@ describe("DashboardPage loading state", () => {
 });
 
 describe("DashboardPage stats row", () => {
-
-  it("shows the selected release deadlines to Owner and updates after refresh", async () => {
+  it("shows the selected cycle dates and updates after refresh", async () => {
     uiStoreMod.__setReleaseId("rel-1");
     (useAuth as ReturnType<typeof vi.fn>).mockReturnValue({ user: { username: "alice", role: "Owner", display_name: "Alice" } });
     const payload = makePayload();
-    payload.release!.app_freeze_deadline = "2026-10-27 18:30";
-    payload.release!.doc_deadline = "2026-10-30 23:59";
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
     renderDashboard(makeQueryClient());
-    const deadlines = await screen.findByRole("region", { name: "当前 release 截止时间" });
-    expect(deadlines.closest(".page-toolbar")).not.toBeNull();
-    expect(deadlines).toHaveTextContent("App freeze · 发布范围冻结2026-10-27 18:30:00");
-    expect(deadlines).toHaveTextContent("Doc freeze · 文档截止2026-10-30 23:59:00");
+    const dates = await screen.findByRole("region", { name: "当前版本时间节点" });
+    expect(dates.closest(".page-toolbar")).not.toBeNull();
+    expect(dates).toHaveTextContent("报名截止2026-12-01 23:59:00");
+    expect(dates).toHaveTextContent("QA 截止2026-12-26 23:59:00");
+    expect(dates).toHaveTextContent("发布日2026-12-31");
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue({ ...payload,
-      release: { ...payload.release!, app_freeze_deadline: "2026-11-01 23:59", doc_deadline: "" },
+      release: { ...payload.release!, qa_deadline: "2026-12-25 23:59" },
     });
     fireEvent.click(screen.getByRole("button", { name: /刷新/ }));
-    await waitFor(() => expect(deadlines).toHaveTextContent("2026-11-01 23:59:00"));
-    expect(deadlines).toHaveTextContent("Doc freeze · 文档截止未设置");
-    expect(deadlines).not.toHaveTextContent("2026-10-27");
+    await waitFor(() => expect(dates).toHaveTextContent("2026-12-25 23:59:00"));
   });
 
-  it("shows total app count for RM", async () => {
-    const payload = makePayload();
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
-    const qc = makeQueryClient();
-    renderDashboard(qc);
-
-    // Wait for data to load and stats row to appear
-    await waitFor(() => {
-      expect(screen.getByText("App 总数")).toBeDefined();
-    });
-    // The stat for "App 总数" should show count 2
-    const statEl = screen.getByText("App 总数").closest(".stat");
-    expect(statEl?.querySelector(".num")?.textContent).toBe("2");
+  it("counts running Apps and signups", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    renderDashboard(makeQueryClient());
+    const running = (await screen.findByText("CICD 运行中 App")).closest(".stat");
+    expect(running?.querySelector(".num")).toHaveTextContent("2");
+    expect(running).toHaveTextContent("已停止 1");
+    expect(screen.getByText("本期报名").closest(".stat")?.querySelector(".num")).toHaveTextContent("1");
+    expect(screen.getByText(/QA 待测试 \/ 通过 \/ 存在问题 \/ 不可发布/)).toBeDefined();
   });
 
-  it("shows QA breakdown header", async () => {
+  it("counts pending scope requests", async () => {
     const payload = makePayload();
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
-    const qc = makeQueryClient();
-    renderDashboard(qc);
-
-    await waitFor(() => {
-      expect(screen.getByText(/QA 待测试 \/ 通过 \/ 存在问题 \/ 不可发布/)).toBeDefined();
-    });
-  });
-
-  it("shows doc incomplete count and per-app reminders independently of QA", async () => {
-    const payload = makePayload();
-    payload.release!.snapshots.app1.missing_items = [
-      { kind: "doc", text: "缺少 App类型" }, { kind: "qa", text: "QA 未测试" },
-    ];
-    payload.release!.snapshots.app2.missing_items = [{ kind: "doc", text: "缺少 App类型" }];
+    payload.release!.entries = [makeEntry("app1", {
+      pending_scope_request: {
+        id: 1, entry_id: 1, base_version_id: 1, target_version_id: 2, additions: ["新增芯片 C600"],
+        status: "pending", created_at: "", decided_by: "", decided_at: "", decision_note: "",
+      },
+    })];
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
     renderDashboard(makeQueryClient());
-    await screen.findByTestId("dashboard-app-table");
-    expect(screen.getByText("Doc 未完成 App 数").closest(".stat")?.querySelector(".num")).toHaveTextContent("1");
-    expect(screen.getByTestId("dashboard-app-row-app1")).toHaveTextContent("待补 1 项");
-    expect(screen.getByTestId("dashboard-app-row-app2")).not.toHaveTextContent("待补");
-    expect(screen.queryByText("填写完成度")).not.toBeInTheDocument();
-    expect(screen.queryByText("待办")).not.toBeInTheDocument();
-    expect(screen.getByText("QA", { selector: "th" })).toBeInTheDocument();
-  });
-
-  it("shows release decision count", async () => {
-    const payload = makePayload();
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
-    const qc = makeQueryClient();
-    renderDashboard(qc);
-
-    await waitFor(() => {
-      expect(screen.getByText("release 决策")).toBeDefined();
-    });
+    const stat = (await screen.findByText("范围扩大待 QA 审批")).closest(".stat");
+    expect(stat?.querySelector(".num")).toHaveTextContent("1");
   });
 });
 
@@ -451,80 +330,37 @@ describe("DashboardPage error state", () => {
 });
 
 describe("DashboardPage owner grid", () => {
-  it("shows all apps for RM", async () => {
+  it("shows all apps with CICD, signup and official version for RM", async () => {
     const payload = makePayload();
+    payload.apps[1].official = { release_id: "r0", release_name: "3.10.0", version: "0.9", image: "", digest: "", released_at: "" };
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
-    const qc = makeQueryClient();
-    renderDashboard(qc);
-
-    await waitFor(() => {
-      expect(screen.getByText("App 状态概览")).toBeDefined();
-    });
-    // Both apps are shown (RM sees all) — names may be split across elements
-    expect(screen.getByText(/App app1/)).toBeDefined();
-    expect(screen.getByText(/App app2/)).toBeDefined();
+    renderDashboard(makeQueryClient());
+    const row1 = await screen.findByTestId("dashboard-app-row-app1");
+    expect(row1).toHaveTextContent("已报名");
+    expect(screen.getByTestId("dashboard-app-row-app2")).toHaveTextContent("0.9（3.10.0）");
+    expect(screen.getByTestId("dashboard-app-row-app3")).toHaveTextContent("CICD 已停止");
   });
 
   it("shows only own apps for Owner role", async () => {
     (useAuth as ReturnType<typeof vi.fn>).mockReturnValue({
       user: { username: "alice", role: "Owner", display_name: "Alice" },
     });
-    const payload = makePayload({
-      user: { username: "alice", role: "Owner", display_name: "Alice" },
-    });
-    // alice owns app1; bob owns app2
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
-    const qc = makeQueryClient();
-    renderDashboard(qc);
-
-    await waitFor(() => {
-      expect(screen.getByText("我的 App 状态概览")).toBeDefined();
-    });
-    expect(screen.getByText(/App app1/)).toBeDefined();
-    expect(screen.queryByText(/App app2/)).toBeNull();
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    renderDashboard(makeQueryClient());
+    await screen.findByText("我的 App 状态概览");
+    expect(screen.getByTestId("dashboard-app-row-app1")).toBeDefined();
+    expect(screen.queryByTestId("dashboard-app-row-app2")).toBeNull();
   });
 
-  it("status dropdown separates QA anomalies from incomplete docs", async () => {
-    const apps = [makeApp("qa-app"), makeApp("doc-app"), makeApp("ready-app")];
-    const payload = makePayload({
-      apps,
-      release: makeRelease({
-        "qa-app": makeSnap("qa-app", {
-          qa_status: "cannot_release",
-        }),
-        "doc-app": makeSnap("doc-app", {
-          qa_status: "qa_passed",
-          missing_items: [{ kind: "doc", text: "缺少环境搭建" }],
-        }),
-        "ready-app": makeSnap("ready-app", {
-          qa_status: "qa_passed",
-        }),
-      }),
-    });
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(payload);
-    const qc = makeQueryClient();
-    renderDashboard(qc);
-
-    await waitFor(() => screen.getByTestId("dashboard-app-status-filter"));
-    const filter = screen.getByTestId("dashboard-app-status-filter") as HTMLSelectElement;
-    expect(Array.from(filter.options).map((option) => option.text)).toEqual([
-      "所有",
-      "只看QA异常",
-      "只看doc未完成",
-    ]);
-
-    fireEvent.change(filter, { target: { value: "qa_anomaly" } });
-    await waitFor(() => {
-      expect(screen.getByTestId("dashboard-app-row-qa-app")).toBeDefined();
-      expect(screen.queryByTestId("dashboard-app-row-doc-app")).toBeNull();
-      expect(screen.queryByTestId("dashboard-app-row-ready-app")).toBeNull();
-    });
-
-    fireEvent.change(filter, { target: { value: "doc_incomplete" } });
-    await waitFor(() => {
-      expect(screen.queryByTestId("dashboard-app-row-qa-app")).toBeNull();
-      expect(screen.getByTestId("dashboard-app-row-doc-app")).toBeDefined();
-      expect(screen.queryByTestId("dashboard-app-row-ready-app")).toBeNull();
-    });
+  it("filters by signup state", async () => {
+    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
+    renderDashboard(makeQueryClient());
+    const filter = await screen.findByTestId("dashboard-app-status-filter") as HTMLSelectElement;
+    fireEvent.change(filter, { target: { value: "signed_up" } });
+    await waitFor(() => expect(screen.queryByTestId("dashboard-app-row-app2")).toBeNull());
+    expect(screen.getByTestId("dashboard-app-row-app1")).toBeDefined();
+    fireEvent.change(filter, { target: { value: "stopped" } });
+    await waitFor(() => expect(screen.getByTestId("dashboard-app-row-app3")).toBeDefined());
+    expect(screen.queryByTestId("dashboard-app-row-app1")).toBeNull();
   });
 });

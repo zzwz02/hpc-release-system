@@ -14,18 +14,13 @@
  *  - Error state shown on fetch failure
  */
 
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { QaPage } from "../QaPage";
-import type {
-  StatePayload,
-  App,
-  Snapshot,
-  ReleaseDetail,
-  ReleaseSummary,
-} from "../../../types";
+import type { StatePayload, Entry } from "../../../types";
+import { makeApp as baseApp, makeEntry, makeRelease as baseRelease, makeState } from "../../../test/fixtures";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -38,6 +33,7 @@ vi.mock("../../../api/http", () => ({
 
 vi.mock("../../../lib/confirm", () => ({
   confirmDialog: vi.fn(),
+  promptDialog: vi.fn(),
 }));
 
 vi.mock("../../../api/AuthContext", () => ({
@@ -104,116 +100,19 @@ const uiStoreMod = await import("../../../store/uiStore") as unknown as {
 // Fixtures
 // ---------------------------------------------------------------------------
 
-function makeApp(id: string): App {
-  return {
-    id,
-    git_url: `repo/${id}`,
-    git_branch: "main",
-    created_by: "admin",
-    created_at: "2026-01-01 00:00:00",
-    aliases: [],
-  };
+function makeApp(id: string) {
+  return baseApp(id, { name: `App ${id} 1.0` });
 }
 
-function makeSnap(
-  appId: string,
-  overrides: Partial<Snapshot> = {},
-): Snapshot {
-  return {
-    app_id: appId,
-    official_name: `App ${appId}`,
-    version: "1.0",
-    description: "",
-    official_url: "",
-    type: "tool",
-    arch: "x86",
-    x86_chips: "",
-    arm_chips: "",
-    hpcc_chip: "",
-    maca_version: "",
-    build_arches: "",
-    build_os: "",
-    doc_target: "manual",
-    release_decision: "release",
-    owners: ["alice"],
-    owner_confirmed: false,
-    qa_status: "not_checked" as Snapshot["qa_status"],
-    qa_issue_note: "",
-    doc: {
-      intro: "",
-      image_usage: "",
-      binary_usage: "",
-      env_setup: "",
-      limitations: "",
-    },
-    community: {
-      release_status: "",
-      python_version: "",
-      framework_version: "",
-    },
-    sanity: { arm_kylin: false, ubuntu: false },
-    python_labels: "",
-    pytorch_labels: "",
-    test_docs: [],
-    missing_items: [],
-    app_info: null,
-    app_info_diffs: [],
-    ...overrides,
-  };
-}
-
-function makeRelease(
-  snapshots: Record<string, Snapshot>,
-): ReleaseDetail {
-  return {
-    id: "rel-1",
-    name: "3.0",
-    maca_version: "3.0",
-    app_freeze_deadline: "2026-06-01",
-    doc_deadline: "2026-07-01",
-    released_locked: false,
-    released_locked_at: "",
-    released_locked_by: "",
-    created_at: "2026-01-01 00:00:00",
-    source: "manual",
-    cloned_from: "",
-    phase: "before_app_freeze",
-    snapshots,
-  };
-}
-
-function makeReleaseSummary(): ReleaseSummary {
-  return {
-    id: "rel-1",
-    name: "3.0",
-    maca_version: "3.0",
-    app_freeze_deadline: "2026-06-01",
-    doc_deadline: "2026-07-01",
-    released_locked: false,
-    released_locked_at: "",
-    released_locked_by: "",
-    created_at: "2026-01-01 00:00:00",
-    source: "manual",
-    cloned_from: "",
-    phase: "before_app_freeze",
-  };
+function makeRelease(entries: Entry[]) {
+  return baseRelease(entries, { phase: "in_progress" });
 }
 
 function makePayload(overrides: Partial<StatePayload> = {}): StatePayload {
-  const app1 = makeApp("app1");
-  const snap1 = makeSnap("app1");
-  return {
-    apps: [app1],
-    releases: [makeReleaseSummary()],
-    release: makeRelease({ app1: snap1 }),
-    artifacts: [],
+  return makeState([makeApp("app1")], makeRelease([makeEntry("app1")]), {
     user: { username: "qa_user", role: "QA", display_name: "QA User" },
-    user_display_names: {},
-    qa_log: null,
-    qa_audit_logs: {},
-    release_schedule: [],
     ...overrides,
-  };
+  });
 }
 
 function makeQClient() {
@@ -334,59 +233,63 @@ describe("QaPage mark pane", () => {
     });
   });
 
-  it("marks a release app whose CICD-first delivery is still pending", async () => {
-    const pendingApp = {
-      ...makeApp("app1"),
-      cicd_onboarding_status: "pending_create" as const,
-      cicd_onboarding_request_id: 42,
-      cicd_onboarding_delivery_status: "pending",
-    };
-    const payload = makePayload({ apps: [pendingApp] });
-    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
-      if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
-      return Promise.resolve(payload);
-    });
-    const qc = makeQClient();
-    renderQaPage(qc);
-
-    await waitFor(() => expect(screen.getByText("CICD待完成")).toBeInTheDocument());
-    expect(screen.getByText(/App app1/)).toBeInTheDocument();
-  });
-
-  it("marks an existing release app whose CICD start sync is still pending", async () => {
-    const pendingApp = {
-      ...makeApp("app1"),
-      cicd_release_pending: true,
-    };
-    const payload = makePayload({ apps: [pendingApp] });
-    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
-      if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
-      return Promise.resolve(payload);
-    });
-    const qc = makeQClient();
-    renderQaPage(qc);
-
-    await waitFor(() => expect(screen.getByText("CICD待完成")).toBeInTheDocument());
-    expect(screen.getByText(/App app1/)).toBeInTheDocument();
-  });
-
-  it("does NOT show apps with cicd_only decision", async () => {
+  it("shows only active signups", async () => {
     const payload = makePayload({
-      apps: [makeApp("app1"), makeApp("app2")],
-      release: makeRelease({
-        app1: makeSnap("app1"),
-        app2: makeSnap("app2", { release_decision: "cicd_only" }),
-      }),
+      apps: [makeApp("app1"), makeApp("app2"), makeApp("app3")],
+      release: makeRelease([makeEntry("app1"), makeEntry("app2", { id: 2, status: "withdrawn" })]),
     });
     (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
       if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
       return Promise.resolve(payload);
     });
-    const qc = makeQClient();
-    renderQaPage(qc);
+    renderQaPage(makeQClient());
     await waitFor(() => expect(screen.getByText(/App app1/)).toBeDefined());
-    // app2 is cicd_only, not in QA grid
     expect(screen.queryByText(/App app2/)).toBeNull();
+    expect(screen.queryByText(/App app3/)).toBeNull();
+  });
+
+  it("saves the verdict together with the delivered image digest", async () => {
+    uiStoreMod.__setState({
+      selectedReleaseId: "rel-1", qaEditMode: true, qaEditReleaseId: "rel-1", qaAiJob: null, qaAiSuggestions: {},
+    });
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
+      if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
+      if (path.includes("/api/qa/")) return Promise.resolve({ suggestions: null, job: null });
+      return Promise.resolve(makePayload());
+    });
+    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
+    renderQaPage(makeQClient());
+    fireEvent.change(await screen.findByTestId("qa-status-app1"), { target: { value: "qa_passed" } });
+    fireEvent.change(screen.getByTestId("qa-digest-app1"), { target: { value: "sha256:abc" } });
+    fireEvent.click(screen.getAllByText("保存 QA 状态")[0]);
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/qa/status-batch", {
+      release_id: "rel-1",
+      items: [{
+        app_id: "app1", status: "qa_passed", issue_note: "",
+        deliverable_image: "", deliverable_digest: "sha256:abc",
+      }],
+    }));
+  });
+
+  it("lets QA approve a pending scope request", async () => {
+    const payload = makePayload();
+    payload.release!.scope_requests = [{
+      id: 7, entry_id: 1, app_id: "app1", app_name: "App app1", base_version_id: 1, target_version_id: 2,
+      additions: ["新增测试 hpc.x.t3"], status: "pending", created_at: "", decided_by: "", decided_at: "", decision_note: "",
+    }];
+    (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
+      if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
+      return Promise.resolve(payload);
+    });
+    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
+    vi.mocked(confirmDialog).mockResolvedValue(true);
+    renderQaPage(makeQClient());
+    const row = await screen.findByTestId("scope-request-7");
+    expect(row).toHaveTextContent("新增测试 hpc.x.t3");
+    fireEvent.click(within(row).getByText("同意"));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/scope-requests/decide", {
+      request_id: 7, approve: true, note: "",
+    }));
   });
 
   it("shows 编辑 button for QA/RM (writable roles)", async () => {
@@ -455,9 +358,7 @@ describe("QaPage mark pane", () => {
 
   it("hides the issue-note placeholder in browse mode", async () => {
     const payload = makePayload({
-      release: makeRelease({
-        app1: makeSnap("app1", { qa_status: "cannot_release" }),
-      }),
+      release: makeRelease([makeEntry("app1", { qa_status: "cannot_release" })]),
     });
     (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
       if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
@@ -480,9 +381,7 @@ describe("QaPage mark pane", () => {
       qaAiSuggestions: {},
     });
     const payload = makePayload({
-      release: makeRelease({
-        app1: makeSnap("app1", { qa_status: "cannot_release" }),
-      }),
+      release: makeRelease([makeEntry("app1", { qa_status: "cannot_release" })]),
     });
     (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
       if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
@@ -724,7 +623,6 @@ describe("QaPage subtab navigation", () => {
       if (path.includes("/api/qa-reports")) {
         return Promise.resolve({
           release_name: "3.0",
-          maca_version: "3.0",
           compare_release_id: "",
           compare_release_name: "",
           release_report: { columns: [], rows: [], rows_meta: [] },
@@ -756,25 +654,24 @@ describe("QaPage subtab navigation", () => {
   });
 
   it("does not include the current release in the compare selector", async () => {
-    const previousRelease = { ...makeReleaseSummary(), id: "rel-0", name: "2.9" };
+    const previousRelease = { ...makeRelease([]), id: "rel-0", name: "2.9" };
     (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
       if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
       if (path.includes("/api/qa-reports")) {
         return Promise.resolve({
           release_name: "3.0",
-          maca_version: "3.0",
           compare_release_id: "",
           compare_release_name: "",
           release_report: {
             columns: ["名称", "对比"],
             rows: [["ABACUS", ""]],
-            rows_meta: [{ release_decision: "release", is_release: true }],
+            rows_meta: [{ app_id: "abacus", signed_up: true }],
           },
           test_cmd: { columns: [], rows: [] },
           generated_at: "2026-01-01 00:00:00",
         });
       }
-      return Promise.resolve(makePayload({ releases: [makeReleaseSummary(), previousRelease] }));
+      return Promise.resolve(makePayload({ releases: [makeRelease([]), previousRelease] }));
     });
     const qc = makeQClient();
     renderQaPage(qc);

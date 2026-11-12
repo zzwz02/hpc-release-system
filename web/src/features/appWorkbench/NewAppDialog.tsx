@@ -19,7 +19,8 @@ import {
   GERRIT_MANIFEST_PROJECT,
   formatGerritUrl,
 } from "../../lib/git";
-import { BuildImageLabel, RepoPathInput, normalizeTimeoutText } from "./AppCicdPane";
+import { BuildImageLabel, RepoPathInput } from "./AppCicdPane";
+import { normalizeTimeoutText } from "./helpers";
 
 export function NewAppDialog({ onClose, onSubmitted }: { onClose: () => void; onSubmitted: () => void }) {
   const [officialName, setOfficialName] = React.useState("");
@@ -102,11 +103,11 @@ export function NewAppDialog({ onClose, onSubmitted }: { onClose: () => void; on
         </div>
         <div className="dialog-body">
           <div className="form">
-            <label>官方名称 <span className="required">*</span>
+            <label>官方名称 <span className="required" />
               <input className="input" value={officialName} onChange={(e) => setOfficialName(e.target.value)}
                 placeholder="例：AMBER" disabled={disabled} data-testid="new-app-name" />
             </label>
-            <label>类型 <span className="required">*</span>
+            <label>类型 <span className="required" />
               <select className="select" value={docTarget} disabled={disabled} data-testid="new-app-doc-target"
                 onChange={(e) => {
                   setDocTarget(e.target.value);
@@ -116,7 +117,7 @@ export function NewAppDialog({ onClose, onSubmitted }: { onClose: () => void; on
                 {DOC_TARGETS.map((target) => <option key={target} value={target}>{docTargetMetadata[target].label}</option>)}
               </select>
             </label>
-            <label>APP 类型 <span className="required">*</span>
+            <label>APP 类型 <span className="required" />
               <select className="select" value={appType} disabled={disabled || !docTarget}
                 onChange={(e) => setAppType(e.target.value)} data-testid="new-app-type">
                 <option value="">请选择 APP 类型</option>
@@ -130,7 +131,7 @@ export function NewAppDialog({ onClose, onSubmitted }: { onClose: () => void; on
                 <option value="repo">repo</option>
               </select>
             </label>
-            <label className="grid-span-all">仓库名 / Gerrit 路径 <span className="required">*</span>
+            <label className="grid-span-all">仓库名 / Gerrit 路径 <span className="required" />
               <RepoPathInput repoType={repoType} value={repoName}
                 onChange={(value) => { setRepoName(value); resetPreview(); }}
                 disabled={disabled} testId="new-app-repo-name" />
@@ -140,7 +141,7 @@ export function NewAppDialog({ onClose, onSubmitted }: { onClose: () => void; on
                   : `git 类型只填写 ${GERRIT_HPC_PROJECT} 后的短路径。`}
               </span>
             </label>
-            <label>分支 <span className="required">*</span>
+            <label>分支 <span className="required" />
               <input className="input" value={isRepo ? GERRIT_MANIFEST_BRANCH : branch} disabled={isRepo || disabled}
                 onChange={(e) => { setBranch(e.target.value); resetPreview(); }} data-testid="new-app-branch" />
             </label>

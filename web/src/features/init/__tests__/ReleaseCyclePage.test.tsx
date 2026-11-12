@@ -1,427 +1,159 @@
 /**
- * Tests for ReleaseCyclePage (周期管理, init tab).
- *
- * Verifies:
- *  - Loading state while fetching
- *  - Error state when API fails
- *  - Renders releases table with data from state
- *  - Sub-tab switching (发布周期 ↔ 首次初始化)
- *  - Create release: validates empty name, calls /api/releases/create, refetches
- *  - Save deadlines: validates empty name, calls /api/releases/deadlines
- *  - Final lock: confirm dialog + calls /api/releases/final-lock
- *  - Final unlock: confirm dialog + calls /api/releases/final-unlock
- *  - Import CSV pane renders and shows log on success/failure
- *  - Export CSV button opens window to /api/test-scope.csv
+ * 周期管理: new monthly version with default dates, environment editing,
+ * publish/unlock, app_info sync status and notification settings.
  */
-
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { ReleaseCyclePage } from "../ReleaseCyclePage";
-import type { StatePayload, ReleaseSummary, ReleaseDetail } from "../../../types";
+import { makeApp, makeEntry, makeRelease, makeState } from "../../../test/fixtures";
+import type { ReleaseDetail, StatePayload } from "../../../types";
 
-// ---------------------------------------------------------------------------
-// Mocks
-// ---------------------------------------------------------------------------
-
-vi.mock("../../../api/http", () => ({
-  apiGet: vi.fn(),
-  apiPost: vi.fn(),
-}));
-
-vi.mock("../../../api/AuthContext", () => ({
-  useAuth: vi.fn(),
-}));
-
-vi.mock("../../../lib/toast", () => ({
-  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
-}));
-
-vi.mock("../../../lib/confirm", () => ({
-  confirmDialog: vi.fn(),
-  promptDialog: vi.fn(),
-}));
+vi.mock("../../../api/http", () => ({ apiGet: vi.fn(), apiPost: vi.fn() }));
+vi.mock("../../../api/AuthContext", () => ({ useAuth: vi.fn() }));
+vi.mock("../../../lib/toast", () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
+vi.mock("../../../lib/confirm", () => ({ confirmDialog: vi.fn(), promptDialog: vi.fn() }));
 
 import { apiGet, apiPost } from "../../../api/http";
 import { useAuth } from "../../../api/AuthContext";
-import { confirmDialog } from "../../../lib/confirm";
+import { confirmDialog, promptDialog } from "../../../lib/confirm";
+import { useUiStore } from "../../../store/uiStore";
 
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
-
-function makeReleaseSummary(overrides: Partial<ReleaseSummary> = {}): ReleaseSummary {
-  return {
-    id: "rel-1",
-    name: "3.8.0",
-    maca_version: "3.8.0",
-    app_freeze_deadline: "2026-06-01",
-    doc_deadline: "2026-07-01",
-    released_locked: false,
-    released_locked_at: "",
-    released_locked_by: "",
-    created_at: "2026-01-01 00:00:00",
-    source: "manual",
-    cloned_from: "",
-    phase: "before_app_freeze",
-    ...overrides,
-  };
-}
-
-function makeReleaseDetail(overrides: Partial<ReleaseSummary> = {}): ReleaseDetail {
-  return { ...makeReleaseSummary(overrides), snapshots: {} };
-}
-
-function makePayload(overrides: Partial<StatePayload> = {}): StatePayload {
-  return {
-    apps: [],
-    releases: [makeReleaseSummary()],
-    release: makeReleaseDetail(),
-    artifacts: [],
-    user: { username: "rm", role: "RM", display_name: "RM User" },
-    user_display_names: {},
-    qa_log: null,
-    qa_audit_logs: {},
-    release_schedule: [],
-    ...overrides,
-  };
-}
-
-function makeQueryClient() {
-  return new QueryClient({
-    defaultOptions: {
-      queries: { retry: false, staleTime: 0, refetchOnWindowFocus: false, refetchOnReconnect: false },
+const CHANNELS = {
+  channels: [
+    {
+      kind: "scope_request", label: "测试范围扩大申请", enabled: true, configured: true,
+      access_token_mask: "****abcd", secret_mask: "****wxyz", at_user_ids: ["u1"], updated_at: "", updated_by: "",
     },
+  ],
+};
+
+function mockApi(state: StatePayload) {
+  vi.mocked(apiGet).mockImplementation(async (url: string) => {
+    if (url.startsWith("/api/state")) return state;
+    if (url.startsWith("/api/releases/defaults")) {
+      return { signup_deadline: "2027-01-01 23:59", qa_deadline: "2027-01-26 23:59", release_date: "2027-01-31" };
+    }
+    if (url.startsWith("/api/app-info/sync-status")) {
+      return {
+        apps: [
+          { app_id: "a", name: "Alpha", cicd_status: "running", git_url: "hpc_a", git_branch: "maca",
+            head_commit: "abc", checked_at: "2026-11-12 02:00:00", error: "Permission denied" },
+          { app_id: "b", name: "Beta", cicd_status: "running", git_url: "hpc_b", git_branch: "maca",
+            head_commit: "def", checked_at: "2026-11-12 02:00:00", error: "" },
+        ],
+        job: { running: false, started_at: "", started_by: "", finished_at: "", summary: null },
+        daily: { time: "02:00", enabled: true, last_run: "" },
+      };
+    }
+    if (url.startsWith("/api/notifications/channels")) return CHANNELS;
+    throw new Error(`unexpected GET ${url}`);
   });
+  vi.mocked(apiPost).mockResolvedValue({ release_id: "rel-new" });
 }
 
-function renderPage(qc: QueryClient) {
+function renderPage(release: ReleaseDetail) {
+  mockApi(makeState([makeApp("a")], release));
+  useUiStore.setState({ selectedReleaseId: "" });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter>
-        <ReleaseCyclePage />
-      </MemoryRouter>
+    <QueryClientProvider client={client}>
+      <MemoryRouter><ReleaseCyclePage /></MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
-// ---------------------------------------------------------------------------
-// Setup
-// ---------------------------------------------------------------------------
-
 beforeEach(() => {
   vi.clearAllMocks();
-  (useAuth as ReturnType<typeof vi.fn>).mockReturnValue({
-    user: { username: "rm", role: "RM", display_name: "RM User" },
-    ldapStatus: { enabled: false, uri: "" },
-    login: vi.fn(),
-    logout: vi.fn(),
-    clearUser: vi.fn(),
+  vi.mocked(confirmDialog).mockResolvedValue(true);
+  vi.mocked(useAuth).mockReturnValue({ user: { username: "rm", role: "RM", display_name: "RM" } } as ReturnType<typeof useAuth>);
+});
+
+describe("new version", () => {
+  it("prefills default dates for the month and requires a manual name", async () => {
+    renderPage(makeRelease([]));
+    fireEvent.change(await screen.findByTestId("new-release-month"), { target: { value: "2027-01" } });
+    await waitFor(() => expect(screen.getByTestId("new-qa-deadline")).toHaveValue("2027-01-26"));
+    expect(screen.getByTestId("new-signup-deadline")).toHaveValue("2027-01-01");
+    fireEvent.click(screen.getByTestId("create-release-btn"));
+    expect(await screen.findByTestId("create-err")).toHaveTextContent("请填写版本名");
+    fireEvent.change(screen.getByTestId("new-release-name"), { target: { value: "2027.01" } });
+    fireEvent.click(screen.getByTestId("create-release-btn"));
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/releases/create", {
+        name: "2027.01", signup_deadline: "2027-01-01", qa_deadline: "2027-01-26", release_date: "2027-01-31",
+      }),
+    );
   });
 });
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-describe("ReleaseCyclePage", () => {
-  it("shows loading state while fetching", () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}));
-    renderPage(makeQueryClient());
-    expect(screen.getByText("加载中…")).toBeTruthy();
-  });
-
-  it("shows error message when API fails", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("网络错误"));
-    renderPage(makeQueryClient());
-    await waitFor(() => {
-      expect(screen.getByText(/加载失败/)).toBeTruthy();
-    });
-  });
-
-  it("renders releases table with release data", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    renderPage(makeQueryClient());
-    await waitFor(() => {
-      expect(screen.getByTestId("releases-table")).toBeTruthy();
-      expect(screen.getByTestId("releases-table").textContent).toContain("3.8.0");
-    });
-  });
-
-  it("renders release deadlines as yyyy-mm-dd in the table", async () => {
-    const release = makeReleaseSummary({
-      app_freeze_deadline: "2026-6-1 09:30:00",
-      doc_deadline: "2026/7/2",
-    });
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(
-      makePayload({
-        releases: [release],
-        release: {
-          ...makeReleaseDetail(),
-          app_freeze_deadline: "2026-6-1 09:30:00",
-          doc_deadline: "2026/7/2",
-        },
+describe("current version", () => {
+  it("edits the environment only during signup", async () => {
+    renderPage(makeRelease([]));
+    const table = await screen.findByTestId("environment-table");
+    fireEvent.change(within(table).getAllByLabelText("版本")[0], { target: { value: "3.4" } });
+    fireEvent.click(screen.getByTestId("save-environment-btn"));
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/releases/environment", {
+        release_id: "rel-1", rows: [{ component: "MACA SDK", version: "3.4", note: "" }],
       }),
     );
-    renderPage(makeQueryClient());
-    await waitFor(() => {
-      const text = screen.getByTestId("releases-table").textContent ?? "";
-      expect(text).toContain("2026-06-01");
-      expect(text).toContain("2026-07-02");
-      expect(text).not.toContain("09:30:00");
-      expect(text).not.toContain("2026/7/2");
-    });
   });
 
-  it("shows 未锁 for unlocked release", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    renderPage(makeQueryClient());
-    await waitFor(() => {
-      expect(screen.getByTestId("releases-table").textContent).toContain("未锁");
-    });
+  it("freezes the environment after the signup deadline", async () => {
+    renderPage(makeRelease([], { phase: "in_progress" }));
+    const table = await screen.findByTestId("environment-table");
+    expect(within(table).getAllByLabelText("版本")[0]).toBeDisabled();
+    expect(screen.queryByTestId("save-environment-btn")).toBeNull();
   });
 
-  it("shows 已锁 for locked release", async () => {
-    const locked = makeReleaseSummary({ released_locked: true, released_locked_at: "2026-07-15 10:00:00" });
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(
-      makePayload({ releases: [locked], release: { ...makeReleaseDetail(), released_locked: true, released_locked_at: "2026-07-15 10:00:00" } }),
+  it("publishes only after the QA deadline", async () => {
+    renderPage(makeRelease([makeEntry("a", { qa_status: "qa_passed" })], { phase: "in_progress" }));
+    expect(await screen.findByTestId("final-lock-btn")).toBeDisabled();
+  });
+
+  it("publishes after confirmation and summarises the counts", async () => {
+    const release = makeRelease(
+      [makeEntry("a", { qa_status: "qa_passed" }), makeEntry("b", { id: 2, qa_status: "not_checked" })],
+      { phase: "qa_closed" },
     );
-    renderPage(makeQueryClient());
-    await waitFor(() => {
-      expect(screen.getByTestId("releases-table").textContent).toContain("已锁");
-    });
+    renderPage(release);
+    vi.mocked(apiPost).mockResolvedValue({ released: ["a"], failed: ["b"] });
+    fireEvent.click(await screen.findByTestId("final-lock-btn"));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/releases/publish", { release_id: "rel-1" }));
+    expect(vi.mocked(confirmDialog).mock.calls[0][0].body).toContain("将发布 1 个 App");
   });
 
-  it("sub-tab switch shows 首次初始化 pane", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    renderPage(makeQueryClient());
-    await waitFor(() => screen.getByTestId("subtab-import"));
-    fireEvent.click(screen.getByTestId("subtab-import"));
-    await waitFor(() => {
-      expect(screen.getByTestId("init-import-pane")).toBeTruthy();
-    });
+  it("unlocks a published version with a reason", async () => {
+    vi.mocked(promptDialog).mockResolvedValue("fix QA verdict");
+    renderPage(makeRelease([], { phase: "released", released_locked: true }));
+    fireEvent.click(await screen.findByTestId("final-unlock-btn"));
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/releases/unlock", { release_id: "rel-1", reason: "fix QA verdict" }),
+    );
+  });
+});
+
+describe("sub-panes", () => {
+  it("lists failed app_info syncs first and filters to failures by default", async () => {
+    renderPage(makeRelease([]));
+    fireEvent.click(await screen.findByTestId("subtab-sync"));
+    const pane = await screen.findByTestId("sync-status-pane");
+    await waitFor(() => expect(pane).toHaveTextContent("Permission denied"));
+    expect(pane).not.toHaveTextContent("Beta");
   });
 
-  it("sub-tab switch back to 发布周期 pane", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    renderPage(makeQueryClient());
-    await waitFor(() => screen.getByTestId("subtab-import"));
-    fireEvent.click(screen.getByTestId("subtab-import"));
-    fireEvent.click(screen.getByTestId("subtab-cycle"));
-    await waitFor(() => {
-      expect(screen.getByTestId("release-cycle-pane")).toBeTruthy();
-    });
-  });
-
-  it("create release: validates empty name", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    renderPage(makeQueryClient());
-    await waitFor(() => screen.getByTestId("create-release-btn"));
-    fireEvent.click(screen.getByTestId("create-release-btn"));
-    await waitFor(() => {
-      expect(screen.getByTestId("create-err").textContent).toContain("请填写新 Release 名称");
-    });
-    expect(apiPost).not.toHaveBeenCalled();
-  });
-
-  it("create release: calls /api/releases/create and refetches", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ release_id: "rel-2" });
-    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
-
-    renderPage(makeQueryClient());
-    await waitFor(() => screen.getByTestId("new-release-name"));
-
-    fireEvent.change(screen.getByTestId("new-release-name"), { target: { value: "3.9.0" } });
-    fireEvent.change(screen.getByTestId("new-app-freeze"), { target: { value: "2026-09-01" } });
-    fireEvent.change(screen.getByTestId("new-doc-deadline"), { target: { value: "2026-10-01" } });
-    fireEvent.click(screen.getByTestId("create-release-btn"));
-
-    await waitFor(() => {
-      expect(apiPost).toHaveBeenCalledWith("/api/releases/create", {
-        name: "3.9.0",
-        app_freeze_deadline: "2026-09-01",
-        doc_deadline: "2026-10-01",
-      });
-    });
-
-    alertSpy.mockRestore();
-  });
-
-  it("deadline inputs expose calendar picker buttons", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    renderPage(makeQueryClient());
-    await waitFor(() => screen.getByTestId("new-app-freeze"));
-
-    expect(screen.getByTestId("new-app-freeze-calendar")).toBeTruthy();
-    expect(screen.getByTestId("new-doc-deadline-calendar")).toBeTruthy();
-    expect(screen.getByTestId("edit-app-freeze-calendar")).toBeTruthy();
-    expect(screen.getByTestId("edit-doc-deadline-calendar")).toBeTruthy();
-    expect((screen.getByTestId("new-app-freeze-native") as HTMLInputElement).type).toBe("date");
-  });
-
-  it("create release: accepts deadlines selected from calendar picker", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ release_id: "rel-2" });
-    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
-
-    renderPage(makeQueryClient());
-    await waitFor(() => screen.getByTestId("new-release-name"));
-
-    fireEvent.change(screen.getByTestId("new-release-name"), { target: { value: "3.9.0" } });
-    fireEvent.change(screen.getByTestId("new-app-freeze-native"), { target: { value: "2026-09-01" } });
-    fireEvent.change(screen.getByTestId("new-doc-deadline-native"), { target: { value: "2026-10-01" } });
-
-    expect((screen.getByTestId("new-app-freeze") as HTMLInputElement).value).toBe("2026-09-01");
-    expect((screen.getByTestId("new-doc-deadline") as HTMLInputElement).value).toBe("2026-10-01");
-
-    fireEvent.click(screen.getByTestId("create-release-btn"));
-
-    await waitFor(() => {
-      expect(apiPost).toHaveBeenCalledWith("/api/releases/create", {
-        name: "3.9.0",
-        app_freeze_deadline: "2026-09-01",
-        doc_deadline: "2026-10-01",
-      });
-    });
-
-    alertSpy.mockRestore();
-  });
-
-  it("save deadlines: validates empty name", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    renderPage(makeQueryClient());
-    await waitFor(() => screen.getByTestId("edit-release-name"));
-
-    fireEvent.change(screen.getByTestId("edit-release-name"), { target: { value: "" } });
-    fireEvent.click(screen.getByTestId("save-deadlines-btn"));
-
-    // No POST should be called
-    await waitFor(() => {
-      expect(apiPost).not.toHaveBeenCalled();
-    });
-  });
-
-  it("save deadlines: calls /api/releases/deadlines with correct payload", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
-    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
-
-    renderPage(makeQueryClient());
-    await waitFor(() => screen.getByTestId("edit-release-name"));
-
-    fireEvent.change(screen.getByTestId("edit-release-name"), { target: { value: "3.8.1" } });
-    fireEvent.change(screen.getByTestId("edit-app-freeze"), { target: { value: "2026-06-15" } });
-    fireEvent.change(screen.getByTestId("edit-doc-deadline"), { target: { value: "2026-07-15" } });
-    fireEvent.click(screen.getByTestId("save-deadlines-btn"));
-
-    await waitFor(() => {
-      expect(apiPost).toHaveBeenCalledWith("/api/releases/deadlines", {
-        release_id: "rel-1",
-        name: "3.8.1",
-        app_freeze_deadline: "2026-06-15",
-        doc_deadline: "2026-07-15",
-      });
-    });
-
-    alertSpy.mockRestore();
-  });
-
-  it("final lock: shows confirm dialog, calls /api/releases/final-lock", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ artifacts: [] });
-    vi.mocked(confirmDialog).mockResolvedValue(true);
-
-    renderPage(makeQueryClient());
-    await waitFor(() => screen.getByTestId("final-lock-btn"));
-    fireEvent.click(screen.getByTestId("final-lock-btn"));
-
-    await waitFor(() => {
-      expect(confirmDialog).toHaveBeenCalled();
-      expect(apiPost).toHaveBeenCalledWith("/api/releases/final-lock", { release_id: "rel-1" });
-    });
-  });
-
-  it("final lock: aborts if confirm cancelled", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    vi.mocked(confirmDialog).mockResolvedValue(false);
-
-    renderPage(makeQueryClient());
-    await waitFor(() => screen.getByTestId("final-lock-btn"));
-    fireEvent.click(screen.getByTestId("final-lock-btn"));
-
-    await waitFor(() => {
-      expect(apiPost).not.toHaveBeenCalled();
-    });
-  });
-
-  it("final unlock: shows confirm dialog, calls /api/releases/final-unlock", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
-    vi.mocked(confirmDialog).mockResolvedValue(true);
-
-    renderPage(makeQueryClient());
-    await waitFor(() => screen.getByTestId("final-unlock-btn"));
-    fireEvent.click(screen.getByTestId("final-unlock-btn"));
-
-    await waitFor(() => {
-      expect(confirmDialog).toHaveBeenCalled();
-      expect(apiPost).toHaveBeenCalledWith("/api/releases/final-unlock", { release_id: "rel-1" });
-    });
-  });
-
-  it("import pane: shows '请选择' when no file selected and import clicked", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    renderPage(makeQueryClient());
-    await waitFor(() => screen.getByTestId("subtab-import"));
-    fireEvent.click(screen.getByTestId("subtab-import"));
-
-    await waitFor(() => screen.getByTestId("import-btn"));
-    fireEvent.click(screen.getByTestId("import-btn"));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("import-log").textContent).toContain("请选择");
-    });
-    // No API call made without a file
-    expect(apiPost).not.toHaveBeenCalled();
-  });
-
-  it("import pane: import button is rendered and enabled", async () => {
-    // jsdom file input limitations make e2e file flow unreliable in unit tests;
-    // the file upload path is covered by live smoke. Here we verify the button
-    // and input are rendered and the no-file guard fires correctly.
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    renderPage(makeQueryClient());
-    await waitFor(() => screen.getByTestId("subtab-import"));
-    fireEvent.click(screen.getByTestId("subtab-import"));
-    await waitFor(() => screen.getByTestId("import-btn"));
-
-    expect(screen.getByTestId("import-btn")).toBeTruthy();
-    expect(screen.getByTestId("init-csv-input")).toBeTruthy();
-    expect((screen.getByTestId("import-btn") as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  it("edit form pre-fills from current release", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    renderPage(makeQueryClient());
-    await waitFor(() => screen.getByTestId("edit-release-name"));
-    expect((screen.getByTestId("edit-release-name") as HTMLInputElement).value).toBe("3.8.0");
-    expect((screen.getByTestId("edit-app-freeze") as HTMLInputElement).value).toBe("2026-06-01");
-    expect((screen.getByTestId("edit-doc-deadline") as HTMLInputElement).value).toBe("2026-07-01");
-  });
-
-  it("deadline inputs use yyyy-mm-dd text display instead of native date locale", async () => {
-    (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
-    renderPage(makeQueryClient());
-    await waitFor(() => screen.getByTestId("edit-app-freeze"));
-
-    const editAppFreeze = screen.getByTestId("edit-app-freeze") as HTMLInputElement;
-    expect(editAppFreeze.type).toBe("text");
-    expect(editAppFreeze.placeholder).toBe("YYYY-MM-DD");
-
-    fireEvent.change(editAppFreeze, { target: { value: "2026/6/1" } });
-    fireEvent.blur(editAppFreeze);
-    expect(editAppFreeze.value).toBe("2026-06-01");
+  it("saves a notification channel without resending unchanged secrets", async () => {
+    renderPage(makeRelease([]));
+    fireEvent.click(await screen.findByTestId("subtab-notifications"));
+    const row = await screen.findByTestId("channel-scope_request");
+    expect(within(row).getByLabelText("ACCESS_TOKEN")).toHaveAttribute("placeholder", "****abcd");
+    fireEvent.click(within(row).getByText("保存"));
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/notifications/channels/save", {
+        kind: "scope_request", enabled: true, access_token: null, secret: null, at_user_ids: ["u1"],
+      }),
+    );
   });
 });

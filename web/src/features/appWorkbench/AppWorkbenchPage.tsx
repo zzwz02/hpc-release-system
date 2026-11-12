@@ -32,6 +32,7 @@ import {
   filterAppRows,
   matchesAppStatusFilter,
   usersLabel,
+  versionTag,
   type AppStatusFilter,
 } from "./helpers";
 import { NewAppDialog } from "./NewAppDialog";
@@ -124,7 +125,7 @@ function AppListPanel({
                 <div className="name">
                   <span className="nm-txt">{app.name}</span>
                   {active && active.target_version && !app.name.includes(active.target_version) && (
-                    <span className="ver-tag">v{active.target_version}</span>
+                    <span className="ver-tag">{versionTag(active.target_version)}</span>
                   )}
                 </div>
                 <div className="sub">{app.type || "—"} · {usersLabel(app.owners, displayNames)}</div>

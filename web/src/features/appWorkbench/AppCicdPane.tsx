@@ -20,7 +20,8 @@ import {
   statusModifyBlockMessage,
 } from "../cicd/requestUtils";
 import { confirmDialog } from "../../lib/confirm";
-import { CICD_REPO_TYPE_DEFAULT, CICD_REPO_TYPE_OPTIONS, normalizeCicdTestTimeout } from "../../lib/domainMetadata";
+import { CICD_REPO_TYPE_DEFAULT, CICD_REPO_TYPE_OPTIONS } from "../../lib/domainMetadata";
+import { normalizeTimeoutText } from "./helpers";
 import {
   GERRIT_HPC_BASE,
   GERRIT_HPC_PROJECT,
@@ -71,10 +72,6 @@ export function BuildImageLabel() {
       <span className="field-label-note">（影响 SPD 编排 CICD 构建任务顺序）</span>
     </>
   );
-}
-
-export function normalizeTimeoutText(value: string | number | null | undefined): string {
-  return String(normalizeCicdTestTimeout(value));
 }
 
 interface ConfigForm {
