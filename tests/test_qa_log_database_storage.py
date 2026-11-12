@@ -13,12 +13,12 @@ from app.main import create_app
 from app.repositories import qa_repo
 from app.services import qa_service
 from app.services.qa_analysis_service import analyze_qa_log
-from tests.conftest import seed_release
+from tests.conftest import seed_app, seed_cycle, seed_signup
 
 
 def test_upload_download_and_replace_use_database_blob(temp_db_with_path):
     conn, db_path = temp_db_with_path
-    release_id = seed_release(conn, tmp_path=db_path.parent)
+    release_id = seed_cycle(conn)
 
     first = qa_service.upload_qa_log(
         conn,
@@ -60,7 +60,7 @@ def test_upload_download_and_replace_use_database_blob(temp_db_with_path):
 
 def test_http_upload_state_and_download_round_trip(temp_db_with_path, monkeypatch):
     conn, db_path = temp_db_with_path
-    release_id = seed_release(conn, tmp_path=db_path.parent)
+    release_id = seed_cycle(conn)
     monkeypatch.setattr(settings, "db_path", db_path)
     app = create_app()
 
@@ -167,8 +167,9 @@ def test_startup_imports_legacy_qa_log_file_without_deleting_it(tmp_path):
 
 def test_ai_analysis_reads_log_body_from_database(temp_db_with_path):
     conn, db_path = temp_db_with_path
-    release_id = seed_release(conn, tmp_path=db_path.parent)
-    app_id = next(iter(conn.execute("SELECT id FROM apps")))["id"]
+    app_id = seed_app(conn)
+    release_id = seed_cycle(conn)
+    seed_signup(conn, release_id, app_id)
     qa_service.upload_qa_log(
         conn,
         release_id,
@@ -223,7 +224,9 @@ def test_a_running_analysis_is_shared_single_and_stoppable(temp_db_with_path, tm
     from app.services import qa_jobs
 
     conn, db_path = temp_db_with_path
-    release_id = seed_release(conn, tmp_path=db_path.parent)
+    app_id = seed_app(conn)
+    release_id = seed_cycle(conn)
+    seed_signup(conn, release_id, app_id)
     qa_service.upload_qa_log(
         conn, release_id, content_b64=base64.b64encode(b"run_make_test PASS").decode("ascii"),
         filename="qa.log", user="qa", role="QA",
@@ -293,8 +296,9 @@ def test_a_running_analysis_is_shared_single_and_stoppable(temp_db_with_path, tm
 
 def test_ai_suggestions_are_kept_until_reviewed_discarded_or_the_log_changes(temp_db_with_path, monkeypatch) -> None:
     conn, db_path = temp_db_with_path
-    release_id = seed_release(conn, tmp_path=db_path.parent)
-    app_id = next(iter(conn.execute("SELECT id FROM apps")))["id"]
+    app_id = seed_app(conn)
+    release_id = seed_cycle(conn)
+    seed_signup(conn, release_id, app_id)
 
     def upload(body: bytes) -> None:
         qa_service.upload_qa_log(

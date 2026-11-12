@@ -7,22 +7,26 @@ business logic.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
 
 from app.db.connection import connect, reset_init_state
 from app.repositories import (
+    app_info_repo,
     apps_repo,
     artifacts_repo,
     audit_repo,
     base,
     cicd_repo,
+    entries_repo,
+    notification_channels_repo,
+    official_repo,
     qa_repo,
     releases_repo,
     schedule_repo,
     sessions_repo,
-    snapshots_repo,
     users_repo,
     wiki_repo,
 )
@@ -84,7 +88,7 @@ class TestAppsRepo:
 
     def test_save_and_get_app(self):
         app = self._make_app()
-        apps_repo.save_app(self.conn, app)
+        apps_repo.insert_app(self.conn, app)
         self.conn.commit()
         result = apps_repo.get_app(self.conn, "test-app")
         assert result is not None
@@ -101,7 +105,7 @@ class TestAppsRepo:
 
     def test_find_by_identity(self):
         app = self._make_app(git_url="ssh://gerrit/hpc_foo", branch="maca")
-        apps_repo.save_app(self.conn, app)
+        apps_repo.insert_app(self.conn, app)
         self.conn.commit()
         found = apps_repo.find_by_identity(self.conn, "ssh://gerrit/hpc_foo", "maca")
         assert found is not None
@@ -112,13 +116,13 @@ class TestAppsRepo:
 
     def test_find_by_identity_wrong_branch(self):
         app = self._make_app(git_url="ssh://gerrit/hpc_foo", branch="maca")
-        apps_repo.save_app(self.conn, app)
+        apps_repo.insert_app(self.conn, app)
         self.conn.commit()
         assert apps_repo.find_by_identity(self.conn, "ssh://gerrit/hpc_foo", "master") is None
 
     def test_list_apps(self):
         for i in range(3):
-            apps_repo.save_app(
+            apps_repo.insert_app(
                 self.conn,
                 self._make_app(app_id=f"app-{i}", git_url=f"ssh://gerrit/repo{i}", branch="main"),
             )
@@ -127,7 +131,7 @@ class TestAppsRepo:
         assert len(apps) == 3
 
     def test_delete_app(self):
-        apps_repo.save_app(self.conn, self._make_app())
+        apps_repo.insert_app(self.conn, self._make_app())
         self.conn.commit()
         apps_repo.delete_app(self.conn, "test-app")
         self.conn.commit()
@@ -135,7 +139,7 @@ class TestAppsRepo:
 
     def test_all_app_ids(self):
         for i in range(2):
-            apps_repo.save_app(
+            apps_repo.insert_app(
                 self.conn,
                 self._make_app(app_id=f"a{i}", git_url=f"url{i}", branch="main"),
             )
@@ -146,7 +150,7 @@ class TestAppsRepo:
     def test_aliases_sorted_and_deduped(self):
         app = self._make_app()
         app["aliases"] = ["Z", "A", "Z"]
-        apps_repo.save_app(self.conn, app)
+        apps_repo.insert_app(self.conn, app)
         self.conn.commit()
         result = apps_repo.get_app(self.conn, "test-app")
         assert result["aliases"] == ["A", "Z"]
@@ -163,68 +167,102 @@ class TestReleasesRepo:
     def teardown_method(self):
         self.conn.close()
 
-    def _rel(self, rid="r1", name="v1.0"):
+    def _rel(self, rid="r1", name="2099-01"):
         return {
             "id": rid,
             "name": name,
-            "maca_version": "3.8",
-            "app_freeze_deadline": "",
-            "doc_deadline": "",
-            "released_locked": 0,
-            "released_locked_at": "",
-            "released_locked_by": "",
+            "signup_deadline": "2099-01-01 23:59",
+            "qa_deadline": "2099-01-26 23:59",
+            "release_date": "2099-01-31",
             "created_at": beijing_timestamp(),
-            "source": "manual",
-            "cloned_from": "",
+            "created_by": "rm",
         }
 
-    def test_save_and_get(self):
-        releases_repo.save_release(self.conn, self._rel())
+    def test_insert_and_get(self):
+        releases_repo.insert_release(self.conn, self._rel())
         self.conn.commit()
         row = releases_repo.get_release_row(self.conn, "r1")
         assert row is not None
-        assert row["name"] == "v1.0"
+        assert row["name"] == "2099-01"
+        assert row["signup_deadline"] == "2099-01-01 23:59"
         assert row["released_locked"] is False
 
     def test_get_missing(self):
         assert releases_repo.get_release_row(self.conn, "nope") is None
 
-    def test_list_releases(self):
+    def test_list_releases_is_oldest_first(self):
         for i in range(3):
-            releases_repo.save_release(self.conn, self._rel(rid=f"r{i}", name=f"v{i}"))
+            releases_repo.insert_release(self.conn, self._rel(rid=f"r{i}", name=f"2099-0{i + 1}"))
         self.conn.commit()
-        rows = releases_repo.list_release_rows(self.conn)
-        assert len(rows) == 3
+        assert [row["id"] for row in releases_repo.list_release_rows(self.conn)] == ["r0", "r1", "r2"]
 
-    def test_release_is_locked_false(self):
-        releases_repo.save_release(self.conn, self._rel())
+    def test_name_exists_can_exclude_one_cycle(self):
+        releases_repo.insert_release(self.conn, self._rel())
         self.conn.commit()
-        assert releases_repo.release_is_locked(self.conn, "r1") is False
+        assert releases_repo.name_exists(self.conn, "2099-01") is True
+        assert releases_repo.name_exists(self.conn, "2099-01", exclude_id="r1") is False
+        assert releases_repo.name_exists(self.conn, "other") is False
 
-    def test_lock_release(self):
-        releases_repo.save_release(self.conn, self._rel())
+    def test_lock_and_unlock(self):
+        releases_repo.insert_release(self.conn, self._rel())
         self.conn.commit()
         releases_repo.lock_release(self.conn, "r1", locked_at="2026-01-01 00:00:00", locked_by="rm")
         self.conn.commit()
-        assert releases_repo.release_is_locked(self.conn, "r1") is True
         row = releases_repo.get_release_row(self.conn, "r1")
+        assert row["released_locked"] is True
         assert row["released_locked_by"] == "rm"
+        releases_repo.unlock_release(self.conn, "r1")
+        self.conn.commit()
+        row = releases_repo.get_release_row(self.conn, "r1")
+        assert row["released_locked"] is False
+        assert row["released_locked_at"] == ""
 
-    def test_future_unlocked_release_ids(self):
-        for i in range(4):
-            releases_repo.save_release(self.conn, self._rel(rid=f"r{i}", name=f"v{i}"))
+    def test_update_settings(self):
+        releases_repo.insert_release(self.conn, self._rel())
         self.conn.commit()
-        # Lock r1
-        releases_repo.lock_release(self.conn, "r1", locked_at="2026-01-01 00:00:00", locked_by="rm")
+        releases_repo.update_settings(
+            self.conn, "r1", name="2099-02", signup_deadline="2099-02-01 23:59",
+            qa_deadline="2099-02-23 23:59", release_date="2099-02-28",
+        )
         self.conn.commit()
-        result = releases_repo.future_unlocked_release_ids(self.conn, "r0")
-        # r0 unlocked, r1 locked (excluded), r2 unlocked, r3 unlocked
-        assert "r0" in result
-        assert "r1" not in result
-        assert "r2" in result
+        row = releases_repo.get_release_row(self.conn, "r1")
+        assert (row["name"], row["release_date"]) == ("2099-02", "2099-02-28")
+
+    def test_environment_rows_are_replaced_in_order(self):
+        releases_repo.insert_release(self.conn, self._rel())
+        self.conn.commit()
+        releases_repo.replace_environment(self.conn, "r1", [
+            {"component": "MACA", "version": "3.0", "note": ""},
+            {"component": "driver", "version": "1.2", "note": "n"},
+        ])
+        self.conn.commit()
+        rows = releases_repo.list_environment(self.conn, "r1")
+        assert [row["component"] for row in rows] == ["MACA", "driver"]
+        releases_repo.replace_environment(self.conn, "r1", [{"component": "MACA", "version": "4.0"}])
+        self.conn.commit()
+        rows = releases_repo.list_environment(self.conn, "r1")
+        assert len(rows) == 1 and rows[0]["version"] == "4.0"
+
+    def test_base_images_crud_and_digest_lookup(self):
+        releases_repo.insert_release(self.conn, self._rel())
+        self.conn.commit()
+        image_id = releases_repo.insert_base_image(
+            self.conn, "r1", {"name": "base", "image": "hpc/base:1", "digest": "sha256:aa", "note": ""}
+        )
+        self.conn.commit()
+        assert releases_repo.get_base_image(self.conn, image_id)["name"] == "base"
+        assert [row["id"] for row in releases_repo.base_images_by_digest(self.conn, "sha256:aa")] == [image_id]
+        releases_repo.update_base_image(
+            self.conn, image_id, {"name": "base2", "image": "hpc/base:2", "digest": "", "note": "x"}
+        )
+        self.conn.commit()
+        assert releases_repo.list_base_images(self.conn, "r1")[0]["name"] == "base2"
+        releases_repo.delete_base_image(self.conn, image_id)
+        self.conn.commit()
+        assert releases_repo.list_base_images(self.conn, "r1") == []
 
     def test_delete_release(self):
-        releases_repo.save_release(self.conn, self._rel())
+        releases_repo.insert_release(self.conn, self._rel())
         self.conn.commit()
         releases_repo.delete_release(self.conn, "r1")
         self.conn.commit()
@@ -232,69 +270,193 @@ class TestReleasesRepo:
 
 
 # ---------------------------------------------------------------------------
-# snapshots_repo.py
+# app_info_repo.py / entries_repo.py / official_repo.py
 # ---------------------------------------------------------------------------
 
-class TestSnapshotsRepo:
+class TestMonthlyRepos:
     def setup_method(self):
         self.conn = fresh_conn()
-        # Insert prerequisites
         self.conn.execute(
-            "INSERT INTO releases(id, name, source, created_at)"
-            " VALUES ('r1', 'v1', 'manual', '2026-01-01')"
+            "INSERT INTO releases(id, name, created_at) VALUES ('r1', '2099-01', '2026-01-01')"
         )
         self.conn.execute(
             "INSERT INTO apps(id, git_url, git_branch, created_at)"
-            " VALUES ('app1', 'url', 'main', '2026-01-01')"
+            " VALUES ('app1', 'url', 'maca', '2026-01-01')"
         )
         self.conn.commit()
 
     def teardown_method(self):
         self.conn.close()
 
-    def test_save_and_get_snapshot(self):
-        data = {"release_decision": "release", "version": "1.0"}
-        snapshots_repo.save_snapshot(self.conn, "r1", "app1", data)
-        self.conn.commit()
-        result = snapshots_repo.get_snapshot(self.conn, "r1", "app1")
-        assert result == data
+    def _version(self, app_version="1.0", app_id="app1") -> int:
+        raw = {"app_name": "app1", "app_version": app_version, "app_dependency": ["mcpy"]}
+        return app_info_repo.insert_version(
+            self.conn,
+            app_id=app_id,
+            commit_id="c" * 8,
+            content_hash=app_version,
+            raw_json=json.dumps(raw),
+            source="test",
+            fetched_at="2026-01-01 00:00:00",
+            fetched_by="rm",
+        )
 
-    def test_get_missing_snapshot(self):
-        assert snapshots_repo.get_snapshot(self.conn, "r1", "missing") is None
-
-    def test_snapshot_exists(self):
-        snapshots_repo.save_snapshot(self.conn, "r1", "app1", {})
+    def test_versions_are_listed_newest_first_with_latest_lookup(self):
+        first = self._version("1.0")
+        second = self._version("2.0")
         self.conn.commit()
-        assert snapshots_repo.snapshot_exists(self.conn, "r1", "app1") is True
-        assert snapshots_repo.snapshot_exists(self.conn, "r1", "other") is False
+        assert app_info_repo.latest_version(self.conn, "app1")["id"] == second
+        assert app_info_repo.latest_version_ids(self.conn) == {"app1": second}
+        assert [v["id"] for v in app_info_repo.list_versions(self.conn, "app1")] == [second, first]
+        assert app_info_repo.get_version(self.conn, first)["raw"]["app_version"] == "1.0"
+        assert app_info_repo.get_version(self.conn, None) is None
 
-    def test_get_all_for_release(self):
-        snapshots_repo.save_snapshot(self.conn, "r1", "app1", {"k": "v"})
+    def test_dependencies_are_replaced(self):
+        app_info_repo.replace_dependencies(self.conn, "app1", ["mcpy", "sdk"])
         self.conn.commit()
-        result = snapshots_repo.get_all_for_release(self.conn, "r1")
-        assert "app1" in result
-        assert result["app1"] == {"k": "v"}
+        assert app_info_repo.dependencies_by_app(self.conn) == {"app1": ["mcpy", "sdk"]}
+        app_info_repo.replace_dependencies(self.conn, "app1", ["sdk"])
+        self.conn.commit()
+        assert app_info_repo.dependencies_by_app(self.conn) == {"app1": ["sdk"]}
 
-    def test_upsert_snapshot(self):
-        snapshots_repo.save_snapshot(self.conn, "r1", "app1", {"v": "1"})
-        self.conn.commit()
-        snapshots_repo.save_snapshot(self.conn, "r1", "app1", {"v": "2"})
-        self.conn.commit()
-        result = snapshots_repo.get_snapshot(self.conn, "r1", "app1")
-        assert result == {"v": "2"}
+    def _entry(self, **fields) -> int:
+        entry = {
+            "release_id": "r1",
+            "app_id": "app1",
+            "target_version": "1.0",
+            "planned_features": "f",
+            "excluded_tests": ["a"],
+            "created_at": "2026-01-01 00:00:00",
+            "created_by": "rm",
+        }
+        entry.update(fields)
+        return entries_repo.insert_entry(self.conn, entry)
 
-    def test_app_ids_in_release(self):
-        # Add second app
-        self.conn.execute(
-            "INSERT INTO apps(id, git_url, git_branch, created_at)"
-            " VALUES ('app2', 'url2', 'main', '2026-01-01')"
+    def test_entry_round_trip_and_json_columns(self):
+        entry_id = self._entry()
+        self.conn.commit()
+        entry = entries_repo.get_entry(self.conn, entry_id)
+        assert entry["status"] == "active"
+        assert entry["excluded_tests"] == ["a"]
+        assert entry["qa_status"] == "not_checked"
+        assert entries_repo.find_entry(self.conn, "r1", "app1")["id"] == entry_id
+        assert entries_repo.find_entry(self.conn, "r1", "other") is None
+
+    def test_update_entry_rejects_unknown_columns(self):
+        entry_id = self._entry()
+        with pytest.raises(KeyError):
+            entries_repo.update_entry(
+                self.conn, entry_id, {"nonsense": 1}, updated_at="t", updated_by="rm"
+            )
+
+    def test_listing_respects_withdrawn_and_open_cycles(self):
+        entry_id = self._entry()
+        self.conn.commit()
+        assert len(entries_repo.list_for_release(self.conn, "r1")) == 1
+        assert len(entries_repo.open_active_entries_for_app(self.conn, "app1")) == 1
+        entries_repo.update_entry(
+            self.conn, entry_id, {"status": "withdrawn"}, updated_at="t", updated_by="rm"
         )
         self.conn.commit()
-        snapshots_repo.save_snapshot(self.conn, "r1", "app1", {})
-        snapshots_repo.save_snapshot(self.conn, "r1", "app2", {})
+        assert entries_repo.list_for_release(self.conn, "r1") == []
+        assert len(entries_repo.list_for_release(self.conn, "r1", include_withdrawn=True)) == 1
+        assert entries_repo.open_active_entries_for_app(self.conn, "app1") == []
+
+    def test_published_cycles_are_not_open_signups(self):
+        self._entry()
+        self.conn.execute("UPDATE releases SET released_locked = 1 WHERE id = 'r1'")
         self.conn.commit()
-        ids = snapshots_repo.app_ids_in_release(self.conn, "r1")
-        assert sorted(ids) == ["app1", "app2"]
+        assert entries_repo.open_active_entries_for_app(self.conn, "app1") == []
+
+    def test_entries_are_found_by_delivered_digest(self):
+        entry_id = self._entry()
+        entries_repo.update_entry(
+            self.conn, entry_id, {"deliverable_digest": "sha256:ab"}, updated_at="t", updated_by="qa"
+        )
+        self.conn.commit()
+        assert [e["id"] for e in entries_repo.by_digest(self.conn, "sha256:ab")] == [entry_id]
+
+    def test_scope_requests_lifecycle(self):
+        entry_id = self._entry()
+        version_id = self._version()
+        request_id = entries_repo.insert_scope_request(
+            self.conn,
+            entry_id=entry_id,
+            base_version_id=version_id,
+            target_version_id=version_id,
+            additions=["新增测试 x"],
+            created_at="2026-01-01 00:00:00",
+        )
+        self.conn.commit()
+        pending = entries_repo.pending_scope_request(self.conn, entry_id)
+        assert pending["id"] == request_id
+        assert pending["additions"] == ["新增测试 x"]
+        assert [r["id"] for r in entries_repo.list_scope_requests(self.conn, "r1")] == [request_id]
+        entries_repo.close_scope_request(
+            self.conn, request_id, status="rejected", decided_by="qa",
+            decided_at="2026-01-02 00:00:00", note="no",
+        )
+        self.conn.commit()
+        assert entries_repo.pending_scope_request(self.conn, entry_id) is None
+        rejected = entries_repo.last_rejected_request(self.conn, entry_id, version_id)
+        assert rejected["decision_note"] == "no"
+
+    def test_official_versions_current_history_and_withdrawal(self):
+        entry_id = self._entry()
+        version_id = self._version()
+        for version in ("1.0", "2.0"):
+            official_repo.insert_official(self.conn, {
+                "app_id": "app1",
+                "release_id": "r1",
+                "entry_id": entry_id,
+                "version": version,
+                "app_info_version_id": version_id,
+                "image": "img",
+                "digest": "sha256:cc",
+                "released_at": "2026-01-01 00:00:00",
+            })
+        self.conn.commit()
+        current = official_repo.current_by_app(self.conn)
+        assert current["app1"]["version"] == "2.0"
+        assert current["app1"]["release_name"] == "2099-01"
+        assert [row["version"] for row in official_repo.history_for_app(self.conn, "app1")] == ["2.0", "1.0"]
+        assert len(official_repo.by_digest(self.conn, "sha256:cc")) == 2
+        official_repo.withdraw_for_release(self.conn, "r1")
+        self.conn.commit()
+        assert official_repo.current_by_app(self.conn) == {}
+
+
+# ---------------------------------------------------------------------------
+# notification_channels_repo.py
+# ---------------------------------------------------------------------------
+
+class TestNotificationChannelsRepo:
+    def setup_method(self):
+        self.conn = fresh_conn()
+
+    def teardown_method(self):
+        self.conn.close()
+
+    def test_save_is_an_upsert_per_kind(self):
+        assert notification_channels_repo.get_channel(self.conn, "scope_request") is None
+        notification_channels_repo.save_channel(
+            self.conn, "scope_request", enabled=True, access_token="tok", secret="sec",
+            at_user_ids=["u1"], updated_at="2026-01-01 00:00:00", updated_by="rm",
+        )
+        self.conn.commit()
+        channel = notification_channels_repo.get_channel(self.conn, "scope_request")
+        assert channel["enabled"] is True
+        assert channel["access_token"] == "tok"
+        assert channel["at_user_ids"] == ["u1"]
+        notification_channels_repo.save_channel(
+            self.conn, "scope_request", enabled=False, access_token="tok2", secret="sec",
+            at_user_ids=[], updated_at="2026-01-02 00:00:00", updated_by="rm",
+        )
+        self.conn.commit()
+        channels = notification_channels_repo.list_channels(self.conn)
+        assert set(channels) == {"scope_request"}
+        assert channels["scope_request"]["enabled"] is False
+        assert channels["scope_request"]["access_token"] == "tok2"
 
 
 # ---------------------------------------------------------------------------
@@ -305,8 +467,7 @@ class TestArtifactsRepo:
     def setup_method(self):
         self.conn = fresh_conn()
         self.conn.execute(
-            "INSERT INTO releases(id, name, source, created_at)"
-            " VALUES ('r1', 'v1', 'manual', '2026-01-01')"
+            "INSERT INTO releases(id, name, created_at) VALUES ('r1', 'v1', '2026-01-01')"
         )
         self.conn.commit()
 
@@ -527,8 +688,7 @@ class TestQaRepo:
     def setup_method(self):
         self.conn = fresh_conn()
         self.conn.execute(
-            "INSERT INTO releases(id, name, source, created_at)"
-            " VALUES ('r1', 'v1', 'manual', '2026-01-01')"
+            "INSERT INTO releases(id, name, created_at) VALUES ('r1', 'v1', '2026-01-01')"
         )
         self.conn.commit()
 
@@ -657,11 +817,10 @@ class TestCicdRepo:
             task_id="app1",
             app_id="app1",
             request_type="modify",
-            payload={"status": {"old": "Running", "new": "Stopped"}},
+            payload={"status": {"old": "running", "new": "stopped"}},
             submitter="rm",
             submitted_at=beijing_timestamp(),
             status="pending",
-            origin="release_decision_sync",
         )
         self.conn.commit()
         assert cicd_repo.has_open_modify_on_field(self.conn, "app1", "status") is True
@@ -673,7 +832,7 @@ class TestCicdRepo:
             task_id="app1",
             app_id="app1",
             request_type="modify",
-            payload={"status": {"old": "Running", "new": "Stopped"}},
+            payload={"status": {"old": "running", "new": "stopped"}},
             submitter="rm",
             submitted_at=beijing_timestamp(),
             status="pending",
@@ -689,7 +848,7 @@ class TestCicdRepo:
             task_id="app1",
             app_id="app1",
             request_type="modify",
-            payload={"status": {"old": "Stopped", "new": "Running"}},
+            payload={"status": {"old": "stopped", "new": "running"}},
             submitter="rm",
             submitted_at=beijing_timestamp(),
             status="pending",
@@ -709,7 +868,7 @@ class TestCicdRepo:
             task_id="app1",
             app_id="app1",
             request_type="modify",
-            payload={"status": {"old": "Stopped", "new": "Running"}},
+            payload={"status": {"old": "stopped", "new": "running"}},
             submitter="rm",
             submitted_at=beijing_timestamp(),
             status="pending",
@@ -742,16 +901,16 @@ class TestCicdRepo:
         req = cicd_repo.get_request(self.conn, req_id)
         assert req["origin"] == "cicd_workbench"
 
-    def test_origin_column_release_decision_sync(self):
+    def test_origin_column_records_the_submitting_page(self):
         req_id = cicd_repo.insert_request(
             self.conn, task_id="app1", app_id="app1", request_type="modify",
-            payload={"status": {"old": "Running", "new": "Stopped"}},
+            payload={"status": {"old": "running", "new": "stopped"}},
             submitter="rm", submitted_at=beijing_timestamp(),
-            origin="release_decision_sync",
+            origin="app_workbench",
         )
         self.conn.commit()
         req = cicd_repo.get_request(self.conn, req_id)
-        assert req["origin"] == "release_decision_sync"
+        assert req["origin"] == "app_workbench"
 
     def test_list_requests_since_cutoff(self):
         """since_cutoff uses pre-computed Beijing timestamp (DA C5 fix)."""

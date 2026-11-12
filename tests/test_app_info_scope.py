@@ -1,14 +1,9 @@
+"""Pure app_info parsing rules: community artifacts, QA scope widening, scope."""
 from __future__ import annotations
 
 from copy import deepcopy
 
-import pytest
-
 from app.domain import app_info as app_info_domain
-from app.repositories import apps_repo
-from app.repositories import snapshots_repo
-from app.services import app_service
-
 
 BASE_APP_INFO = {
     "app_name": "testapp",
@@ -16,6 +11,7 @@ BASE_APP_INFO = {
     "app_build": {
         "ubuntu22.04_amd64": {
             "arch": "amd64",
+            "os": "ubuntu22.04",
             "supported_chip": ["c500", "n300"],
             "enabled": True,
         }
@@ -87,138 +83,7 @@ def test_qa_scope_additions_reports_chip_added_to_existing_test_path() -> None:
     old = app_info_domain.parse_app_info(BASE_APP_INFO)
     new = app_info_domain.parse_app_info(_with_sanity_chips("c500", "n300"))
 
-    assert app_info_domain.qa_scope_additions(old, new) == [
-        "测试 sanity 新增芯片 N300"
-    ]
-
-
-def test_apply_app_info_derives_community_fields_and_app_config(
-    release_with_app,
-) -> None:
-    conn, release_id, app_id = release_with_app
-
-    result = app_service.apply_app_info(
-        conn,
-        release_id=release_id,
-        app_id=app_id,
-        app_info=_with_community_pub(),
-        uploaded_by="owner_test",
-        role="Owner",
-    )
-    snapshot = result["snapshot"]
-    app = apps_repo.get_app(conn, app_id)
-
-    assert snapshot["community"]["release_status"] == "镜像：2，二进制包：1"
-    assert snapshot["community"]["menu_level1"] == ""
-    assert snapshot["community"]["doc_url"] == ""
-    assert snapshot["community"]["description"] == ""
-    assert snapshot["community"]["image_count"] == 2
-    assert snapshot["community"]["pkg_count"] == 1
-    assert app["cicd_community_artifact"] == "image, pkg"
-    missing_texts = [item["text"] for item in snapshot["missing_items"]]
-    assert "缺少社区发布情况" not in missing_texts
-    assert "缺少社区一级菜单" in missing_texts
-    assert "缺少社区说明文档链接" in missing_texts
-    assert "缺少社区描述" in missing_texts
-    assert "缺少社区包支持 Python 版本" in missing_texts
-    assert "缺少社区包支持框架及版本" in missing_texts
-
-
-def test_app_info_preserves_community_doc_metadata_when_artifacts_remain() -> None:
-    community = app_info_domain.community_fields_from_app_info(
-        _with_community_pub(),
-        {
-            "menu_level1": "AI4Sci 应用",
-            "doc_url": "https://docs.example.com/app",
-            "description": "社区说明",
-            "python_version": "Python 3.10",
-            "framework_version": "PyTorch 2.1",
-        },
-    )
-
-    assert community["menu_level1"] == "AI4Sci 应用"
-    assert community["doc_url"] == "https://docs.example.com/app"
-    assert community["description"] == "社区说明"
-    assert community["python_version"] == "Python 3.10"
-    assert community["framework_version"] == "PyTorch 2.1"
-
-
-def test_app_info_clears_community_doc_metadata_without_artifacts() -> None:
-    community = app_info_domain.community_fields_from_app_info(
-        BASE_APP_INFO,
-        {
-            "menu_level1": "AI4Sci 应用",
-            "doc_url": "https://docs.example.com/app",
-            "description": "社区说明",
-            "python_version": "Python 3.10",
-            "framework_version": "PyTorch 2.1",
-        },
-    )
-
-    assert community["release_status"] == ""
-    assert community["menu_level1"] == ""
-    assert community["doc_url"] == ""
-    assert community["description"] == ""
-    assert community["python_version"] == ""
-    assert community["framework_version"] == ""
-
-
-def test_refresh_missing_items_requires_partial_community_doc_metadata(
-    release_with_app,
-) -> None:
-    conn, release_id, app_id = release_with_app
-    app_service.apply_app_info(
-        conn,
-        release_id=release_id,
-        app_id=app_id,
-        app_info=_with_community_pub(),
-        uploaded_by="owner_test",
-        role="Owner",
-    )
-    snapshot = snapshots_repo.get_snapshot(conn, release_id, app_id)
-    assert snapshot is not None
-    snapshot["community"].update({
-        "menu_level1": "AI4Sci 应用",
-        "python_version": "Python 3.10",
-        "framework_version": "PyTorch 2.1",
-    })
-    snapshots_repo.save_snapshot(conn, release_id, app_id, snapshot)
-
-    missing = app_service.refresh_missing_items(conn, release_id)[app_id]
-    missing_texts = [item["text"] for item in missing]
-
-    assert "缺少社区一级菜单" not in missing_texts
-    assert "缺少社区说明文档链接" in missing_texts
-    assert "缺少社区描述" in missing_texts
-    assert "缺少社区包支持 Python 版本" not in missing_texts
-    assert "缺少社区包支持框架及版本" not in missing_texts
-
-
-def test_apply_app_info_image_only_does_not_require_package_metadata(
-    release_with_app,
-) -> None:
-    conn, release_id, app_id = release_with_app
-    app_info = _with_community_pub()
-    app_info["app_build"]["ubuntu22.04_amd64"]["pub"] = {"img": ["ai4s"]}
-
-    result = app_service.apply_app_info(
-        conn,
-        release_id=release_id,
-        app_id=app_id,
-        app_info=app_info,
-        uploaded_by="owner_test",
-        role="Owner",
-    )
-    snapshot = result["snapshot"]
-
-    assert snapshot["community"]["release_status"] == "镜像：2"
-    assert snapshot["community"]["pkg_count"] == 0
-    missing_texts = [item["text"] for item in snapshot["missing_items"]]
-    assert "缺少社区一级菜单" in missing_texts
-    assert "缺少社区说明文档链接" in missing_texts
-    assert "缺少社区描述" in missing_texts
-    assert "缺少社区包支持 Python 版本" not in missing_texts
-    assert "缺少社区包支持框架及版本" not in missing_texts
+    assert app_info_domain.qa_scope_additions(old, new) == ["测试 sanity 新增芯片 N300"]
 
 
 def test_qa_scope_additions_normalizes_test_chip_case() -> None:
@@ -228,33 +93,60 @@ def test_qa_scope_additions_normalizes_test_chip_case() -> None:
     assert app_info_domain.qa_scope_additions(old, new) == []
 
 
-def test_app_freeze_blocks_chip_added_to_existing_test_path(
-    release_with_app,
-) -> None:
-    conn, release_id, app_id = release_with_app
-    app_service.apply_app_info(
-        conn,
-        release_id=release_id,
-        app_id=app_id,
-        app_info=BASE_APP_INFO,
-        uploaded_by="owner_test",
-        role="Owner",
-    )
-    before = snapshots_repo.get_snapshot(conn, release_id, app_id)
+def test_qa_scope_additions_reports_new_tests_chips_and_builds() -> None:
+    old = app_info_domain.parse_app_info(BASE_APP_INFO)
+    widened = deepcopy(BASE_APP_INFO)
+    widened["app_build"]["kylin_arm64"] = {
+        "arch": "arm64",
+        "os": "kylin",
+        "supported_chip": ["x201"],
+        "enabled": True,
+    }
+    widened["app_test"]["perf"] = {
+        "test_cmd": "testapp --perf",
+        "supported_chip": {"c500": ["ubuntu22.04_amd64"]},
+        "enabled": True,
+    }
+    new = app_info_domain.parse_app_info(widened)
 
-    conn.execute(
-        "UPDATE releases SET app_freeze_deadline=?, doc_deadline=? WHERE id=?",
-        ("2000-01-01 00:00", "2099-01-01 00:00", release_id),
-    )
+    assert app_info_domain.qa_scope_additions(old, new) == [
+        "新增芯片 X201",
+        "新增测试 perf",
+        "新增构建 kylin/arm64",
+    ]
 
-    with pytest.raises(RuntimeError, match="测试 sanity 新增芯片 N300"):
-        app_service.apply_app_info(
-            conn,
-            release_id=release_id,
-            app_id=app_id,
-            app_info=_with_sanity_chips("c500", "n300"),
-            uploaded_by="owner_test",
-            role="Owner",
-        )
 
-    assert snapshots_repo.get_snapshot(conn, release_id, app_id) == before
+def test_removals_and_command_edits_do_not_widen_scope() -> None:
+    old = app_info_domain.parse_app_info(BASE_APP_INFO)
+    narrowed = deepcopy(BASE_APP_INFO)
+    narrowed["app_test"].pop("regression")
+    narrowed["app_test"]["sanity"]["test_cmd"] = "testapp --version --verbose"
+    new = app_info_domain.parse_app_info(narrowed)
+
+    assert app_info_domain.qa_scope_additions(old, new) == []
+
+
+def test_scope_tests_drop_the_tests_the_owner_removed() -> None:
+    parsed = app_info_domain.parse_app_info(BASE_APP_INFO)
+
+    assert [t["path"] for t in app_info_domain.scope_tests(parsed)] == ["sanity", "regression"]
+    assert [t["path"] for t in app_info_domain.scope_tests(parsed, ["regression"])] == ["sanity"]
+
+
+def test_declared_dependencies_tell_none_from_an_empty_declaration() -> None:
+    assert app_info_domain.declared_dependencies(BASE_APP_INFO) is None
+    assert app_info_domain.declared_dependencies({**BASE_APP_INFO, "app_dependency": []}) == []
+    assert app_info_domain.declared_dependencies(
+        {**BASE_APP_INFO, "app_dependency": ["mcpy", "mcpy", " sdk "]}
+    ) == ["mcpy", "sdk"]
+    assert app_info_domain.declared_dependencies({**BASE_APP_INFO, "app_dependency": "mcpy"}) == [
+        "mcpy"
+    ]
+
+
+def test_content_hash_ignores_key_order_only() -> None:
+    reordered = {key: BASE_APP_INFO[key] for key in reversed(list(BASE_APP_INFO))}
+    assert app_info_domain.content_hash(BASE_APP_INFO) == app_info_domain.content_hash(reordered)
+    changed = deepcopy(BASE_APP_INFO)
+    changed["app_version"] = "2.0"
+    assert app_info_domain.content_hash(changed) != app_info_domain.content_hash(BASE_APP_INFO)

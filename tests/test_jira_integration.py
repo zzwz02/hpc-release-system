@@ -4,10 +4,10 @@ import asyncio
 
 from app.api.routers import cicd as cicd_router
 from app.config import settings
-from app.db.connection import transaction
 from app.integrations import jira
 from app.services import cicd_service
-from tests.test_cicd_ruling_bc import APP_ID, submit_create, approve
+from tests.conftest import seed_app
+from tests.test_cicd_ruling_bc import APP_ID, approve, submit_create
 
 
 def _write_jira_section(tmp_path, monkeypatch, base_url: str):
@@ -92,14 +92,15 @@ def test_auto_jira_description_puts_task_context_in_basic_info(temp_db, tmp_path
     _write_jira_section(tmp_path, monkeypatch, "http://jira")
     create_req = submit_create(temp_db)
     approve(temp_db, create_req["id"])
-    with transaction(temp_db):
-        stop_req = cicd_service.sync_decision_to_cicd(
-            temp_db,
-            APP_ID,
-            "stopped",
-            submitter="rm",
-            current_status_override="Running",
-        )
+    stop_req = cicd_service.submit_request(
+        temp_db,
+        task_id=APP_ID,
+        request_type="modify",
+        payload={"status": {"old": "running", "new": "stopped"}},
+        submitter="rm",
+        submitter_role="RM",
+        source="app_workbench",
+    )
     captured: dict = {}
 
     def fake_create(title, desc, *, jira_config):
@@ -118,7 +119,7 @@ def test_auto_jira_description_puts_task_context_in_basic_info(temp_db, tmp_path
     assert "|仓库名|hpc_ruling_bc|" in basic
     assert "|分支|main|" in basic
     assert basic.index("|项目名称|") < basic.index("|仓库名|") < basic.index("|分支|")
-    assert "|状态|Running|Stopped|" in detail
+    assert "|状态|running|stopped|" in detail
 
 
 def test_auto_jira_repo_branch_modify_keeps_old_context_and_prioritizes_change_detail(
@@ -137,12 +138,12 @@ def test_auto_jira_repo_branch_modify_keeps_old_context_and_prioritizes_change_d
             "notes": {"old": "old note", "new": "new note"},
             "branch": {"old": "main", "new": "develop"},
             "repo_name": {
-                "old": "ssh://gerrit/PDE/HPC/hpc_ruling_bc",
+                "old": "hpc_ruling_bc",
                 "new": "hpc_ruling_bc_next",
             },
         },
-        submitter="owner_test",
-        submitter_role="Owner",
+        submitter="rm",
+        submitter_role="RM",
         source="app_workbench",
     )
     captured: dict = {}
@@ -199,7 +200,7 @@ def test_compute_title_uses_app_backed_task_context_for_modify_status(temp_db):
     assert jira.compute_title(
         temp_db,
         "modify",
-        {"status": {"old": "Running", "new": "Stopped"}},
+        {"status": {"old": "running", "new": "stopped"}},
         APP_ID,
         task_context={"app_name": "alignn", "branch": "maca"},
     ) == "[Stop] alignn 【停止发布 maca 分支】"
@@ -209,48 +210,30 @@ def test_compute_title_uses_change_for_non_stop_modify(temp_db):
     assert jira.compute_title(
         temp_db,
         "modify",
-        {"status": {"old": "Stopped", "new": "Running"}},
+        {"status": {"old": "stopped", "new": "running"}},
         APP_ID,
         task_context={"app_name": "alignn", "branch": "maca"},
     ) == "[Change] alignn 【修改项目】"
 
 
 def test_compute_title_uses_app_backed_append_for_existing_create(temp_db):
+    seed_app(temp_db, "alignn", official_name="alignn")
     assert jira.compute_title(
         temp_db,
         "create",
         {"app_name": "alignn", "app_version": "v2.0"},
-        APP_ID,
+        "alignn",
         task_context={"app_name": "alignn", "app_version": "v1.0"},
     ) == "[Append] alignn 【追加发布新版本】"
 
 
-def test_compute_title_keeps_cicd_first_created_as_new(temp_db):
+def test_compute_title_uses_new_when_no_app_has_that_name(temp_db):
     assert jira.compute_title(
         temp_db,
         "create",
-        {
-            "app_name": "alignn",
-            "app_version": "v1.0",
-            "_cicd_first_action": "created",
-        },
-        APP_ID,
-        task_context={"app_name": "alignn", "app_version": "v1.0"},
+        {"app_name": "alignn", "app_version": "v1.0"},
+        None,
     ) == "[New] alignn 【新发布项目】"
-
-
-def test_compute_title_treats_cicd_first_associated_as_append(temp_db):
-    assert jira.compute_title(
-        temp_db,
-        "create",
-        {
-            "app_name": "alignn",
-            "app_version": "v2.0",
-            "_cicd_first_action": "associated",
-        },
-        APP_ID,
-        task_context={"app_name": "alignn", "app_version": "v1.0"},
-    ) == "[Append] alignn 【追加发布新版本】"
 
 
 def test_create_issue_sends_fixed_project_types_and_eta_fields(monkeypatch):

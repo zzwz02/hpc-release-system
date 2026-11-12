@@ -38,7 +38,7 @@ description: Update the C500/X201 HPC release notes and the per-release internal
 ## 数据来源
 
 - 用户指定的 release 优先。未指定时检查可用 release，选择符合“当前草稿”或“已发布文档”语义的周期；只有存在会改变结果的歧义时才询问。
-- 权威数据是目标周期的快照（`snapshots.data_json`，每个 App 版本一行）。`artifacts` 里每个周期每类产物只有一份：周期锁定后是 final，否则是会被重新生成覆盖的草稿。产物是生成时刻的结果，可能因生成时间、Owner 确认或文档缺项而少条目，不能代替快照里的发布决策；使用草稿时说明生成时间。不能为了拿到 final 而悄悄换成旧周期。
+- 权威数据是目标周期的报名条目（`entries`，每个 App 一行；已发布的 `result = 'released'`），App 名称、类别和 Owner 取 `apps`，版本取条目的 `target_version`，芯片取条目锁定的 `app_info_versions.raw_json`（`locked_version_id`）。累计手册的范围是 `official_versions` 中每个 App 最新未撤销的一行（只含 `apps.cicd_status = 'running'` 的 App）。`artifacts` 里每个周期每类产物只有一份：周期发布后是 final，否则是会被重新生成覆盖的草稿；草稿只预览 QA 可发布的条目，使用时说明生成时间。不能为了拿到 final 而悄悄换成旧周期。
 - 根目录 `release_system.db` 可能是真实业务数据，只读打开（SQLite `mode=ro`）。不调用应用的 `connect()`、`/api/state` 或生成接口来做只读导出。同名文件会被更新，用户要求重新查询时重新读，不复用之前导出的结果。
 - 不导出 users、sessions、集成凭据或无关审计；需要 Owner 署名时只读用户名到显示名的对应。导出的文档和数据也是业务资料，放在指定工作目录或 `/tmp`，不提交原始数据库。
 
@@ -46,8 +46,8 @@ description: Update the C500/X201 HPC release notes and the per-release internal
 
 - 比较条目时同时看 App ID、官方名称、别名、版本和仓库/分支。空格、下划线和大小写只用于找候选，不是合并依据；`Grid` 这类通用名称尤其要确认身份。不能因为归一化名称相同就合并不同仓库或分支。
 - 名称沿用目标文档已有的准确写法；数据库写法不同时（文档 `AlphaFold 3`，数据库 `AlphaFold3`）不改文档，在对比结果里注明。旧名到新名的映射要有数据库别名、历史文档或用户说明支持；改名不算新发布。
-- 芯片支持按版本分别取自快照的 `x86_chips` / `arm_chips`。MACA 文档只收非 X201 芯片，X201 文档只收 X201；X201-A 两份文档都不写；双范围的 App 可以两边都出现，但各版本分别过滤，不能把各版本的芯片取并集。支持范围不明的标记待核实，不猜。
-- 类别自 3.10.0（含）起按发布系统中的类别（快照 `type`，清单见 `shared/domain_metadata.json` 的 `app_types`）填写，不做映射，也不擅自细化；发布说明和 wiki 都一样。类别服务于读者查找，不决定发布资格，也不能推导芯片支持。
+- 芯片支持按版本分别取自锁定 app_info 中启用构建的 `supported_chip`（与网站 `parse_app_info()` 的 `x86_chips` / `arm_chips` 一致）。MACA 文档只收非 X201 芯片，X201 文档只收 X201；X201-A 两份文档都不写；双范围的 App 可以两边都出现，但各版本分别过滤，不能把各版本的芯片取并集。支持范围不明的标记待核实，不猜。
+- 类别自 3.10.0（含）起按发布系统中的类别（`apps.app_type`，清单见 `shared/domain_metadata.json` 的 `app_types`）填写，不做映射，也不擅自细化；发布说明和 wiki 都一样。类别服务于读者查找，不决定发布资格，也不能推导芯片支持。
 - 来源冲突时先看周期、final 状态、完整性和时间。目标周期有明确的非空事实就据其更新；不以空值覆盖已有的可追溯内容。无法判定的留作待核实项，不把“数据库永远覆盖 RST”当成机械规则。
 
 ## 渲染

@@ -1,8 +1,8 @@
 """Admin service — user/role management and system maintenance.
 
-Full port of the admin-related handlers in server.py and release_system/core.py.
-Ruling-C (Admin out of release business) is Phase 4; this service ports existing
-behavior verbatim.
+Admin stays out of release business: it manages accounts, clears the database
+(after a backup) and deletes an App that never took part in a published
+cycle.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from app.api.errors import AuthzError
 from app.config import settings
 from app.db.connection import backup_sqlite, connect, transaction
 from app.domain.permissions import ROLES
-from app.repositories import apps_repo, users_repo
+from app.repositories import apps_repo, artifacts_repo, users_repo
 from app.repositories.audit_repo import log_audit
 from app.services import auth_service
 from app.timeutil import beijing_timestamp
@@ -145,8 +145,15 @@ def clear_business_data(
         with transaction(fresh_conn):
             fresh_conn.execute("DELETE FROM artifacts")
             fresh_conn.execute("DELETE FROM qa_logs")
-            fresh_conn.execute("DELETE FROM snapshots")
+            fresh_conn.execute("DELETE FROM qa_ai_suggestions")
+            fresh_conn.execute("DELETE FROM scope_requests")
+            fresh_conn.execute("DELETE FROM official_versions")
+            fresh_conn.execute("DELETE FROM entries")
+            fresh_conn.execute("DELETE FROM base_images")
+            fresh_conn.execute("DELETE FROM cycle_environment")
             fresh_conn.execute("DELETE FROM releases")
+            fresh_conn.execute("DELETE FROM app_dependencies")
+            fresh_conn.execute("DELETE FROM app_info_versions")
             fresh_conn.execute("DELETE FROM apps")
             fresh_conn.execute("DELETE FROM release_schedule")
             fresh_conn.execute("DELETE FROM wiki_images")
@@ -192,18 +199,34 @@ def delete_app(
         app = apps_repo.get_app(fresh_conn, app_id)
         if not app:
             raise KeyError(f"Unknown app: {app_id}")
-        locked_releases = apps_repo.locked_releases_for_app(fresh_conn, app_id)
-        if locked_releases:
+        published = [
+            row["name"]
+            for row in fresh_conn.execute(
+                """
+                SELECT DISTINCT releases.name FROM entries
+                JOIN releases ON releases.id = entries.release_id
+                WHERE entries.app_id = ? AND releases.released_locked = 1
+                ORDER BY releases.name
+                """,
+                (app_id,),
+            )
+        ]
+        if published:
             raise RuntimeError(
-                f"App is used by locked releases and cannot be deleted: {', '.join(locked_releases)}"
+                f"App is used by published releases and cannot be deleted: {', '.join(published)}"
             )
         with transaction(fresh_conn):
             fresh_conn.execute(
                 "DELETE FROM cicd_task_requests WHERE app_id = ? OR task_id = ?",
                 (app_id, app_id),
             )
-            affected_releases = apps_repo.affected_release_ids_for_app(fresh_conn, app_id)
-            apps_repo.delete_draft_artifacts_for_releases(fresh_conn, affected_releases)
+            # Draft documents of the cycles the App took part in are stale now;
+            # RM regenerates them.  Published cycles keep their final documents.
+            for row in fresh_conn.execute(
+                "SELECT DISTINCT release_id FROM entries WHERE app_id = ?", (app_id,)
+            ).fetchall():
+                artifacts_repo.delete_draft_artifacts(fresh_conn, row["release_id"])
+            # Entries, app_info versions and official versions cascade with the row.
             apps_repo.delete_app(fresh_conn, app_id)
             log_audit(
                 fresh_conn,

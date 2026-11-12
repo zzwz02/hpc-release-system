@@ -4,33 +4,64 @@ import asyncio
 import base64
 import hashlib
 import hmac
-import sqlite3
 from urllib.parse import parse_qs
 
 import httpx
 import pytest
 
 from app.config import settings
-from app.integrations import dingtalk
-from app.services import notification_service as service
+from app.db.connection import connect, reset_init_state
 from app.db.jira_agent_connection import connect_jira_agent
+from app.integrations import dingtalk
+from app.services import notification_channels
+from app.services import notification_service as service
+
+
+CHANNEL = {'access_token': 'test-token', 'secret': 'test-secret', 'at_user_ids': ['u1', 'u2']}
 
 
 @pytest.fixture
 def configured(tmp_path, monkeypatch):
+    """Both polled robots configured in the DB, plus a [cicd_agent] section."""
     conf = tmp_path / 'runtime.conf'
-    conf.write_text('[dingtalk]\nACCESS_TOKEN = test-token\nSECRET = test-secret\nUSERID = u1, u2\n'
-                    '[cicd_agent]\nBASE_URL = http://agent\nTIMEOUT_SECONDS = 5\n')
+    conf.write_text('[cicd_agent]\nBASE_URL = http://agent\nTIMEOUT_SECONDS = 5\n')
     monkeypatch.setattr(settings, 'runtime_conf_path', conf)
     monkeypatch.setattr(settings, 'jira_agent_database_url', f'sqlite:///{tmp_path}/jira.db')
     monkeypatch.setattr(settings, 'db_path', tmp_path / 'main.db')
-    with sqlite3.connect(settings.db_path) as conn:
-        conn.execute('CREATE TABLE users (username TEXT PRIMARY KEY, display_name TEXT)')
-        conn.executemany('INSERT INTO users VALUES (?, ?)', [
+    reset_init_state()
+    conn = connect(settings.db_path)
+    try:
+        for kind in ('jira_agent_turn', 'jenkins_failures'):
+            notification_channels.save_settings(
+                conn, kind, enabled=True, access_token='test-token', secret='test-secret',
+                at_user_ids=['u1', 'u2'], user='rm', role='RM',
+            )
+        for username, display in [
             ('u', 'Xiaoyue Zhao'), ('rm', 'Release Manager'), ('owner', 'Issue Owner'),
-            ('blank', '  '), ('null-name', None),
-        ])
+            ('blank', '  '), ('null-name', ''),
+        ]:
+            conn.execute(
+                'INSERT INTO users(username, password_hash, role, display_name)'
+                ' VALUES (?, "", "Owner", ?)'
+                ' ON CONFLICT(username) DO UPDATE SET display_name = excluded.display_name',
+                (username, display),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    reset_init_state()
     return conf
+
+
+def disable_channel(kind: str) -> None:
+    conn = connect(settings.db_path)
+    try:
+        notification_channels.save_settings(
+            conn, kind, enabled=False, access_token=None, secret=None,
+            at_user_ids=[], user='rm', role='RM',
+        )
+    finally:
+        conn.close()
 
 
 def test_signed_request_and_business_failure(configured, monkeypatch, caplog):
@@ -50,10 +81,10 @@ def test_signed_request_and_business_failure(configured, monkeypatch, caplog):
         assert body['text']['content'] == 'PHS-1 jira agent失败'
         return httpx.Response(200, json={'errcode': 0 if len(seen) == 1 else 310000})
     monkeypatch.setattr(dingtalk.httpx, 'AsyncClient', lambda **kw: real_client(transport=httpx.MockTransport(handle), **kw))
-    assert asyncio.run(dingtalk.send_text('PHS-1 jira agent失败'))
+    asyncio.run(dingtalk.send_text(CHANNEL, 'PHS-1 jira agent失败'))
     assert 'test-token' not in caplog.text
     with pytest.raises(dingtalk.DingTalkError):
-        asyncio.run(dingtalk.send_text('PHS-1 jira agent失败'))
+        asyncio.run(dingtalk.send_text(CHANNEL, 'PHS-1 jira agent失败'))
 
 
 def test_transport_error_is_sanitized(configured, monkeypatch):
@@ -62,7 +93,7 @@ def test_transport_error_is_sanitized(configured, monkeypatch):
         raise httpx.ConnectError(str(request.url), request=request)
     monkeypatch.setattr(dingtalk.httpx, 'AsyncClient', lambda **kw: real_client(transport=httpx.MockTransport(handle), **kw))
     with pytest.raises(dingtalk.DingTalkError) as error:
-        asyncio.run(dingtalk.send_text('test'))
+        asyncio.run(dingtalk.send_text(CHANNEL, 'test'))
     assert 'test-token' not in str(error.value)
     assert 'test-secret' not in str(error.value)
 
@@ -79,11 +110,10 @@ def test_daily_thresholds_retry_restart_and_rollover(configured, monkeypatch):
     monkeypatch.setattr(cicd_agent, '_request_agent_payload', query)
     sent = []
     failing = [False]
-    async def send(message):
+    async def send(_channel, message):
         if failing[0]:
             raise dingtalk.DingTalkError('测试失败')
         sent.append(message)
-        return True
     monkeypatch.setattr(dingtalk, 'send_text', send)
     async def scenario():
         poller = service.NotificationPoller()
@@ -124,13 +154,25 @@ def test_jira_labels(conclusion, action, label):
     assert service.jira_message(turn) == 'PHS-1（交单：m01021）jira agent失败：未返回失败原因，请查看对话详情'
 
 
-def test_config_hot_reload_and_diagnostics(configured):
+def test_channel_settings_are_read_from_the_database_on_every_check(configured):
     poller = service.NotificationPoller()
     assert poller.status()['enabled']
-    configured.write_text('[dingtalk]\nACCESS_TOKEN = token\nUSERID = user\n')
-    assert 'SECRET' in poller.status()['errors']['config']
-    configured.write_text('[dingtalk]\nACCESS_TOKEN =\n')
+    disable_channel('jira_agent_turn')
+    assert poller.status()['enabled']  # the Jenkins robot is still on
+    disable_channel('jenkins_failures')
     assert not poller.status()['enabled']
+
+
+def test_enabling_a_robot_requires_a_token_and_a_secret(configured):
+    conn = connect(settings.db_path)
+    try:
+        with pytest.raises(ValueError, match='ACCESS_TOKEN'):
+            notification_channels.save_settings(
+                conn, 'scope_request', enabled=True, access_token='tok', secret='',
+                at_user_ids=[], user='rm', role='RM',
+            )
+    finally:
+        conn.close()
 
 
 def test_jira_activation_delivery_and_durable_replay(configured, monkeypatch):
@@ -138,9 +180,8 @@ def test_jira_activation_delivery_and_durable_replay(configured, monkeypatch):
     from app.api.routers import cicd_agent
     monkeypatch.setattr(cicd_agent, '_request_agent_payload', lambda *a, **k: (200, {'group_by': 'owner_role', 'groups': []}))
     sent = []
-    async def send(message):
+    async def send(_channel, message):
         sent.append(message)
-        return True
     monkeypatch.setattr(dingtalk, 'send_text', send)
     async def scenario():
         poller = service.NotificationPoller()
@@ -176,7 +217,7 @@ def test_jenkins_only_runs_at_hour_boundaries(configured, monkeypatch):
     monkeypatch.setattr(service, 'beijing_timestamp', lambda: clock[0])
     checks = []
     poller = service.NotificationPoller()
-    async def check(conn):
+    async def check(conn, _channel):
         checks.append(clock[0])
     monkeypatch.setattr(poller, '_jenkins', check)
     async def scenario():
@@ -213,9 +254,9 @@ def test_jenkins_daily_hours_include_both_boundaries(configured, monkeypatch):
     monkeypatch.setattr(service, 'beijing_timestamp', lambda: clock[0])
     checks, jira_checks = [], []
     poller = service.NotificationPoller()
-    async def check(conn):
+    async def check(conn, _channel):
         checks.append(clock[0])
-    async def check_jira(conn):
+    async def check_jira(conn, _channel):
         jira_checks.append(clock[0])
     monkeypatch.setattr(poller, '_jenkins', check)
     monkeypatch.setattr(poller, '_jira', check_jira)
@@ -247,18 +288,19 @@ def test_shared_proxy_is_opt_in_and_hot_reloaded(configured, monkeypatch):
     original = configured.read_text()
     for value in (None, 'http://proxy.sha-dc01.metax-tech.com:1080', ''):
         configured.write_text(original + (f'\n[proxy]\nURL = {value}\n' if value is not None else ''))
-        assert asyncio.run(dingtalk.send_text('test'))
+        asyncio.run(dingtalk.send_text(CHANNEL, 'test'))
         assert options[-1]['proxy'] == (value or None)
         assert options[-1]['trust_env'] is False
     assert __import__('os').environ['HTTPS_PROXY'] == 'http://unrelated-proxy.invalid:8888'
 
 
 def test_invalid_proxy_is_reported_without_credentials(configured):
+    from app import runtime_config
     from app.runtime_config import ConfigError
     configured.write_text(configured.read_text() +
         '\n[proxy]\nURL = http://user:private-password@host:bad-port\n')
     with pytest.raises(ConfigError, match=r'\[proxy\] URL') as error:
-        dingtalk.configuration()
+        runtime_config.proxy_url()
     assert 'private-password' not in str(error.value)
 
 
@@ -288,9 +330,8 @@ def test_jira_notices_use_each_turn_submitter_and_fallback_account(configured, m
     monkeypatch.setattr(service, "beijing_timestamp", lambda: "2026-10-27 12:00:00")
     # This test exercises the real two-database lookup and delivery receipts.
     sent = []
-    async def send(message):
+    async def send(_channel, message):
         sent.append(message)
-        return True
     monkeypatch.setattr(dingtalk, "send_text", send)
     configured.write_text(configured.read_text().split('[cicd_agent]')[0])
     async def scenario():

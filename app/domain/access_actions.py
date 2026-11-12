@@ -1,42 +1,17 @@
 """Contextual actions derived from the shared static access-control policy.
 
 The role-to-capability matrix lives in ``shared/access_control.json``.  This
-module adds resource state (ownership, release lock, request status) without
-duplicating role names.  API read models can expose these results so clients do
+module adds resource state (request status, submitter) without duplicating
+role names.  API read models can expose these results so clients do
 not have to reproduce backend business rules.
 """
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from typing import Any
 
 from app.domain.permissions import has_capability
 
-
-def snapshot_allowed_actions(
-    *,
-    role: str,
-    username: str,
-    owners: Iterable[str] | None,
-    release_locked: bool,
-) -> list[str]:
-    """Return contextual App snapshot actions for one user."""
-    owner_names = set(owners or ())
-    can_edit = has_capability(role, "app.edit.any") or (
-        has_capability(role, "app.edit.owned") and username in owner_names
-    )
-    can_view_audit = has_capability(role, "app.audit.view.any") or (
-        has_capability(role, "app.audit.view.owned") and username in owner_names
-    )
-
-    actions: list[str] = []
-    if can_edit and not release_locked:
-        actions.append("app.edit")
-        if has_capability(role, "app.edit.rm_fields"):
-            actions.append("app.edit.rm_fields")
-    if can_view_audit:
-        actions.append("app.audit.view")
-    return actions
 
 def cicd_request_allowed_actions(
     request: Mapping[str, Any],

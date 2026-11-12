@@ -34,14 +34,14 @@
 |AI4Biomedical|Boltz-2|陈亦奇|蛋白质与生物分子|镜像：1|v2.2.0|……
 ```
 
-数据来自目标周期快照的 `community`，即 App 工作台“社区发布”一栏。只列 `release_decision=release` 且 `image_count` 或 `pkg_count` 大于 0 的条目。
+数据来自目标周期已发布条目（`entries.result = 'released'`）锁定的 app_info 派生的社区产物，以及 `apps.community_json`（App 工作台「资料」的社区一栏）。只列 `image_count` 或 `pkg_count` 大于 0 的条目。
 
 | 列 | 来源 |
 | --- | --- |
 | 一级菜单 | `community.menu_level1`，原样 |
 | 名称、对应官方版本 | `official_name`、`version` |
-| Owner | 中文姓名。快照 `owners` 是域账号，沿用上一周期页面中同一 App 的姓名；新 App 无法确定中文名时写系统显示名，并在交付说明指出 |
-| 类型 | 快照 `type`，即数据库标准分类 |
+| Owner | 中文姓名。`apps.owners_json` 是域账号，沿用上一周期页面中同一 App 的姓名；新 App 无法确定中文名时写系统显示名，并在交付说明指出 |
+| 类型 | `apps.app_type`，即数据库标准分类 |
 | 发布包 | `community.release_status` 原样，如 `镜像：1，二进制包：1`；不放 harbor / S3 链接 |
 | 描述 | `community.description`，原样 |
 
@@ -50,4 +50,4 @@
 
 ## 验收
 
-写入后读取渲染页（`/bin/view/…`），检查三张表的行数、列数和 `rowspan`，确认没有残留的原始语法（`[[`、`(%`、`|=`）。核对两张变更表与发布说明一致，社区表条目与当次只读查询的快照一致。交付说明给出页面 URL 和写入后的版本号。
+写入后读取渲染页（`/bin/view/…`），检查三张表的行数、列数和 `rowspan`，确认没有残留的原始语法（`[[`、`(%`、`|=`）。核对两张变更表与发布说明一致，社区表条目与当次只读查询的数据一致。交付说明给出页面 URL 和写入后的版本号。

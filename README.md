@@ -1,6 +1,6 @@
 # HPC App 发布信息协作系统
 
-用于管理 HPC / AI4Sci App 的发布范围、Owner 文档、Gerrit app_info、QA 结果、CICD 申请与交付，以及发布文档产物。当前运行入口是 `app/main.py`（FastAPI）和 `web/src/main.tsx`（React）。
+用于管理 HPC / AI4Sci App 的每月统一发布：Owner 自主报名、Gerrit app_info 自动同步、QA 结论与交付镜像 digest、CICD 申请与交付，以及发布文档产物。当前运行入口是 `app/main.py`（FastAPI）和 `web/src/main.tsx`（React）。
 
 本文说明当前实现，规则以代码为准；拟建功能见 [发布流程改进建议](docs/release-process-roadmap.md)。仓库根的数据库可能是真实业务库，开发、测试和导出按下文隔离。
 
@@ -8,9 +8,9 @@
 
 | 使用者 | 日常入口与职责 |
 | --- | --- |
-| RM | 周期管理：初始化或克隆周期、设置 deadline、最终锁定；App 工作台：维护范围与信息；CICD：审批、交付处理；发布文档：导出和检查 |
-| Owner | App 工作台：维护和保存本人负责的 App、文档与测试说明，提交新增或 CICD 配置申请 |
-| QA | QA：查看测试范围与命令、批量标注结果、上传日志、使用 AI 分析建议；App 工作台：doc deadline 之前维护任意 App 的 app_info（从 Gerrit 拉取或上传） |
+| RM | 周期管理：新建月度版本、填当月环境和基础镜像、发布与解锁、app_info 同步状态、通知设置；CICD：审批、交付处理；发布文档：导出和检查 |
+| Owner | App 工作台：为本人负责的 App 报名当月发布（基础镜像、目标版本、计划 feature、测试范围），截止后填实际交付和已知问题；提交新增 App、CICD 配置和启停申请；可选维护手册资料 |
+| QA | QA：处理测试范围扩大申请、查看测试范围与命令、填结论和交付镜像 digest、上传日志、使用 AI 分析建议 |
 | SPD | CICD：查看交付任务、确认交付或退回；Jenkins 失败查询和 CICD 助手辅助排查 |
 | Guest | 查看总览、App 和 QA 等矩阵允许的页面；不编辑业务数据 |
 | Admin | 系统管理：角色维护、数据库清理、全局 App 删除；前端只进入 `/admin`，不承担 RM 审批职责 |
@@ -21,63 +21,49 @@ App 工作台和 Jenkins 失败查询中，Owner 默认勾选“只看我的”�
 
 其他页面：开发 WIKI，以及「AI助手」页签下的五个子页签 Jenkins 失败查询、CICD 助手（旧版 V1 只保留直达地址）、JIRA agent、周报、MCP，各有自己的地址与权限。完整导航见 [routeConfig.ts](web/src/routes/routeConfig.ts)。
 
-## 发布周期怎么运行
+## 月度发布怎么运行
 
-1. 首次使用由 RM 导入 CSV。`import_initial_rows()` 只允许在尚无 release 时初始化；同一仓库与分支的行合并为一个 App，没有仓库或分支的行跳过。
-2. 后续周期由 RM 从最近一个 release 克隆。代码继承已有快照和 Owner 确认状态，重置 QA 状态、QA 备注、缺失项缓存及快照锁定标记；不会自动要求每个 Owner 重新确认。
-3. Owner / RM 在 App 工作台维护发布决策、说明与配置。新增 App 时必须选择类型（HPC/AI4Sci，默认留空），App 类型从统一的 23 类标准词表选择，按 HPC/AI4Sci 筛选；走 CICD-first 流程，没有直接 `/api/apps/new` 创建接口。
-4. RM、该 App 的 Owner 和 QA 在 doc deadline 之前从 Gerrit 获取或上传 app_info，记录来源、commit 和同步时间，派生版本、芯片及测试说明。实际内容变化可能使 Owner 确认失效；重复拉取相同内容不会仅因拉取动作而取消确认。
-5. QA 使用范围表、命令表和日志记录结果。AI 分析返回建议，最终状态仍由 QA / RM 保存；分析成功不等于自动批准发布。AI 分析在服务器后台运行，同一发布周期同时只有一个；QA 和 RM 都能看到、也能中止别人发起的分析，刷新页面后会自动接上。分析结果完成即保存为“AI 建议”（`qa_ai_suggestions` 表），直到保存 QA 状态、手动丢弃或上传新 log 为止。
-6. RM 检查范围、缺项、QA、待处理 CICD 申请与产物，再最终锁定。需要修改时可以解锁，解锁会删除最终产物；目前没有独立的签字审批或不可覆盖的发布包版本库。
-
-总览展示 Doc 未完成 App 数和各 App 的 Doc 状态；App 工作台展示文档待补标记及具体缺项清单，均按下述文档完整性规则计算。Owner 使用普通“保存”，无需提交 doc 确认；“只看doc未完成”可筛选仍有文档缺项的 App。
-
-新增 App 和工作台详情中的 App 类型共用 [标准词表](shared/domain_metadata.json)：HPC 14 类、AI4Sci 9 类，按一级类型筛选，不再汇总历史快照的类型。切换一级类型会清空不适用的标准分类。不提供“其他”选项或自填输入框。历史或自定义类型仅作为对应 App 的“当前值”显示，不进入公共选项。沿用文档字段的编辑权限和截止时间限制。
-
-总览和 App 工作台顶部显示当前 release 的 App freeze（发布范围冻结）与 Doc freeze（文档截止）时间，供 Owner 查看；时间按北京时间展示，未填写时显示“未设置”，切换 release 后同步更新。
-
-阶段由 [phases.py](app/domain/phases.py) 根据锁定标记和 deadline 计算，并非人工填写状态。
+1. RM 每月新建一个版本：版本名手工填写；报名截止默认当月 1 日，QA 截止默认当月最后一天减 5（如 10/26、11/25），发布日默认当月最后一天，均可修改。新版本初始为空，上个版本的当月环境复制过来作为起点。
+2. 报名截止前，RM 维护当月环境（组件/版本）和基础镜像；Owner 在 App 工作台「本期报名」为 CICD 运行中的 App 报名：选基础镜像、填目标版本和计划 feature、确认测试范围（取消勾选即不测）。
+3. app_info 只来自仓库：每天（`APP_INFO_SYNC_TIME`，默认 02:00）对每个运行中的 App 执行 `git ls-remote`，分支头变化时取回 `app_info.json`，内容变化才存为新版本并重建组件依赖（`app_dependency` 字段）。RM 在「周期管理 → app_info 同步状态」查看失败，也可立即同步；不再手工上传。
+4. 每条报名锁定一个 app_info 版本。报名截止前跟随最新版本；截止后不扩大范围的变化自动跟进（记审计），扩大范围（新增芯片、测试项、已有测试新增芯片、新增构建）则保持原版本并自动生成范围扩大申请，钉钉通知 QA。QA 同意后条目锁定到新版本；拒绝后同样的扩大不再重复申请。
+5. 报名截止后，环境冻结，测试范围只能删减；Owner 发布前把计划 feature 更新为实际交付和已知问题。撤回报名在发布前任何阶段都允许。
+6. QA 填结论（四个取值沿用）、备注和交付镜像 digest，可上传日志并用 AI 分析（建议需 QA 保存才生效）。
+7. QA 截止后 RM 发布：`qa_passed`、`has_issues`（备注进已知问题）记为已发布并写入正式版；`not_checked`、`cannot_release` 记为本期发布失败，App 保持原正式版。发布同时生成 final 文档并锁定；RM 可填写原因解锁更正，解锁会撤销本期正式版记录和 final 文档。
 
 ```mermaid
 flowchart LR
-    A[App 冻结前] -->|app freeze deadline| B[App 冻结后]
-    B -->|doc deadline| C[文档截止后]
-    A -->|RM 最终锁定| D[已最终锁定]
-    B -->|RM 最终锁定| D
-    C -->|RM 最终锁定| D
-    D -->|RM 解锁| E[按当前 deadline 重新判断阶段]
+    A[报名中] -->|报名截止| B[进行中]
+    B -->|QA 截止| C[QA 已截止]
+    C -->|RM 发布| D[已发布]
+    D -->|RM 解锁更正| C
 ```
 
-- 冻结前可以新增发布范围。冻结后不能升级为 `release`，已在发布范围内的 app_info 更新也不能扩大受控 QA 范围；只有 QA 例外：接口先返回修改点和新增范围不写库，QA 确认接受后才写入，并记一条 `qa_accept_scope_expansion` 审计。RM 和 Owner 仍然被直接拒绝。
-- 文档截止前仍可维护文档、app_info 和 Owner 确认；截止后保留的操作包括符合规则的决策调整、CICD 配置、Gerrit 身份、QA 状态与日志。
-- 最终锁定后阶段操作表为空，受阶段管控的修改全部拒绝。
-- 空 deadline 表示尚未设置截止时间。日期输入提交 `YYYY-MM-DD`，后端 deadline 归一化为该日 `23:59`。
+阶段由 [phases.py](app/domain/phases.py) 按日期和发布标志计算，各阶段允许的操作也只在那里定义。
 
-## 三个概念必须区分
+## CICD 状态与发布参与
 
-| 概念 | 当前实现 |
-| --- | --- |
-| 发布决策 | `release`：计划进入发布/文档/QA；`cicd_only`：仅 CICD；`stopped`：停止维护/发布。后两者不进入当前生成的发布文档 |
-| 文档收录资格 | `qualifies_for_docs()`：决策为 release、无文档类缺项，无需 Owner 确认。**QA 状态不是文档收录门槛** |
-| QA 发布资格 | `qualifies_for_final()`：文档条件成立，且 QA 为 `qa_passed` 或 `has_issues`。Manager Review 使用此资格；`has_issues` 可以通过此门槛，不代表问题已关闭 |
+两件事分开记录、互不自动触发：
 
-文档完整性只检查类型（HPC/AI4Sci）和 App 类型。当 CICD 开发者社区产物选择了镜像或软件包时，还要求填写“开发者社区发布情况”“社区包支持 Python 版本”“社区包支持框架及版本”。文档正文、测试说明、描述、版本、芯片、app_info、Owner 和 Owner 确认均不作为文档完整性门槛。历史 Owner 确认状态仍可保留作记录。
+| 事实 | 存放 | 何时改变 |
+| --- | --- | --- |
+| CICD 运行状态 | `apps.cicd_status`：`running` / `stopped` | 只在启动/停止申请生效时（RM 批准，或派给 SPD 后交付） |
+| 发布参与 | 某版本里有没有未撤回的报名 `entries` | Owner 报名、撤回 |
 
-规则见 [gates.py](app/domain/gates.py)、[qa.py](app/domain/qa.py) 和 [domain_metadata.json](shared/domain_metadata.json)。
+- 报名要求 App 为 `running`，且没有未处理完的停止申请；App 在任何未发布版本里有报名时不能提交停止申请（先撤回）。同一 App 同时最多一个未处理完的启停申请。
+- 新 App 先提交新建申请，申请生效时才建立 App 记录，状态为 `running`，随后自动同步 app_info。
+- `stopped` 的 App 视为停止维护：保留历史正式版和 digest 查询，不进累计手册和兼容验证清单，不做 app_info 自动同步。
+- 审批可立即应用，也可派发 SPD，等交付确认再应用。SPD 可以退回；RM 可以重新派发、直接生效，或填写原因后拒绝退回申请。配置编辑与启停入口在 App 工作台的 CICD tab。
 
-**最终锁定不是“全部 App 已通过 QA”的审批证明。** 当前锁定生成逻辑采用文档收录条件，缺项 App 可被排除在生成文档之外；它会检查特定未完成的 CICD 决策同步，但没有完整的发布签核流程。对外发布前应显式核对完整计划范围和实际收录范围。
+实现入口：[cycle_service.py](app/services/cycle_service.py)、[catalog_service.py](app/services/catalog_service.py)、[cicd_service.py](app/services/cicd_service.py)、[identity.py](app/identity.py)。
 
-## CICD 与 App 的关系
+## 文档产物与查询
 
-- `apps.id` 是当前业务身份。`cicd_task_requests.app_id` 关联 App，兼容字段 `task_id` 也保存同一 App ID。`cicd_tasks` 是遗留兼容表，不是当前任务事实源。
-- CICD 状态由 App / release 快照和未完成请求派生；`release`、`cicd_only` 对应 Running，`stopped` 对应 Stopped。普通配置申请不允许直接修改 `status`。
-- 新增和配置变更均先进入 pending，再由 RM 审批。RM 可以审批自己的申请，记录 `is_self_approved`。
-- 审批可立即应用，也可派发 SPD，等交付确认再应用。SPD 可以退回；RM 可以重新派发、按规则应用退回申请，或填写原因后拒绝退回申请。
-- CICD 工作台的任务配置是只读的，申请审批与交付操作仍在该页；配置编辑入口在 App 工作台的 CICD tab。
-- Running / Stopped 边界变化会联动所有符合条件的未锁定周期，不能只考虑后续周期。启动升级、停止降级、拒绝回滚和冻结跨越的细节见 [业务流程开发约束](.agents/skills/release-system-dev/references/workflows.md)。
-- 不提供 CICD Abandoned / 删除生命周期。全局 App 删除归 Admin 管理，代码会检查锁定周期引用。
+- 发布说明只列当月发布的 App；使用手册和 AI4Sci 手册覆盖所有运行中 App 的当前正式版，每月更新。手册资料（描述、文档字段、测试说明、社区信息）是可选的，在 App 工作台「资料」维护。
+- 「组件依赖」按组件列出依赖它的 App 及各自正式版、digest、测试命令，另列未声明依赖的 App；兼容验证清单可导出 CSV。
+- 「查询」可按交付镜像 digest 或 App 查到当时的版本、环境、测试范围和测试命令。
 
-实现入口：[cicd_service.py](app/services/cicd_service.py)、[decision_sync.py](app/domain/decision_sync.py)、[identity.py](app/identity.py)。仓库身份匹配必须同时考虑仓库与分支；manifest XML 的存储路径与解析后的 Git 身份不能混为一谈。
+旧的按周期快照数据由一次性迁移（[monthly_migration.py](app/db/monthly_migration.py)）转换：只有最近一个已锁定版本写入正式版；迁移前须在旧网站处理完所有未完成的 CICD 申请。
 
 ## JIRA agent（数字员工）
 
@@ -222,7 +208,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 
 ## 集成配置
 
-LDAP、JIRA、大模型、CICD Agent、网站对外地址和各组 JIRA 数字员工的配置统一放在根目录 `release_system.conf`（已 gitignore），分为 `[ldap]`、`[jira]`、`[llm]`、`[cicd_agent]`、`[dingtalk]`、`[proxy]`、`[site]`、`[jira_agent:<组名>]`、`[jira_learning:<组名>]`、`[jira_evaluation:<组名>]` 几节。大模型一节供 QA AI 分析和周报等所有功能共用，代码里统一经 [llm.py](app/integrations/llm.py) 的 `ask_json()` 调用；原来的 `[qa_llm]` 已改名为 `[llm]`，键名去掉 `QA_` 前缀，仍写旧节名时会提示如何改。复制 `release_system.conf.example` 起步，各键含义与必填规则见其中注释。配置在每次使用时现读，修改后即时生效。旧的 `ldap.conf` / `jira.conf` / `qa_llm.env` / `jira_agent.conf` 已不再读取，升级时把内容搬到对应节。
+LDAP、JIRA、大模型、CICD Agent、网站对外地址和各组 JIRA 数字员工的配置统一放在根目录 `release_system.conf`（已 gitignore），分为 `[ldap]`、`[jira]`、`[llm]`、`[cicd_agent]`、`[proxy]`、`[site]`、`[jira_agent:<组名>]`、`[jira_learning:<组名>]`、`[jira_evaluation:<组名>]` 几节。大模型一节供 QA AI 分析和周报等所有功能共用，代码里统一经 [llm.py](app/integrations/llm.py) 的 `ask_json()` 调用；原来的 `[qa_llm]` 已改名为 `[llm]`，键名去掉 `QA_` 前缀，仍写旧节名时会提示如何改。复制 `release_system.conf.example` 起步，各键含义与必填规则见其中注释。配置在每次使用时现读，修改后即时生效。旧的 `ldap.conf` / `jira.conf` / `qa_llm.env` / `jira_agent.conf` 已不再读取，升级时把内容搬到对应节。
 
 环境变量只放文件位置和少数开发参数（下表），由 `app/config.py` 的 `Settings` 从环境变量和根目录 `.env` 读取，改后需重启。前后端共用的约定在 `shared/*.json`；调优参数和固定业务规则（如派单 JIRA 的项目、Component、issue 类型和 ETA 字段）是代码常量。新增配置放在哪里见 [release-system-dev 技能](.agents/skills/release-system-dev/SKILL.md) 的“配置落点”。
 
@@ -253,7 +239,7 @@ with sqlite3.connect(uri, uri=True) as conn:
 
 在线备份用 SQLite backup API 或 `sqlite3 ... .backup`，不要直接复制活跃 WAL 数据库的主文件；主库、助手库、JIRA agent 库分别备份，备份不提交 Git。恢复、迁移和清理先在副本验证。
 
-测试入口：后端 `python -m pytest -q`；前端 `npm run build`、`npm run lint`、`npm test`、`npm run test:e2e`。隔离参数与 E2E 端口见 [验证说明](.agents/skills/release-system-dev/references/verification.md)，golden 见 [golden 说明](tests/golden/README.md)。
+测试入口：后端 `python -m pytest -q`；前端 `npm run build`、`npm run lint`、`npm test`、`npm run test:e2e`。隔离参数与 E2E 端口见 [验证说明](.agents/skills/release-system-dev/references/verification.md)。
 
 ## 文档维护
 
@@ -261,7 +247,7 @@ README 负责产品、使用入口和运行方式；技能负责开发约束，`
 
 ## 钉钉通知
 
-在 `release_system.conf` 的 `[dingtalk]` 填写 `ACCESS_TOKEN`、加签 `SECRET` 和要 @ 的 `USERID`（多个 ID 用逗号分隔）。`ACCESS_TOKEN` 留空关闭通知；配置现读，填好后无需重启。机器人须启用加签安全设置。`[proxy]` 的 `URL` 配置公共 HTTP/HTTPS 代理（例如 `http://proxy.sha-dc01.metax-tech.com:1080`），服务按需接入，目前钉钉和大模型（`[llm]`）使用，其他服务不自动切换；`LLM_BASE_URL` 是 `metax-tech.com`、`metax-internal.com` 或其子域名时大模型直连，不走代理；修改后下次发送或调用生效；留空或省略则直连，不读取环境代理变量。
+每种通知各用一个钉钉机器人，由 RM 在「周期管理 → 通知设置」页面逐项填写 `ACCESS_TOKEN`、加签 `SECRET` 和要 @ 的钉钉用户 ID，并可发送测试消息；保存后密钥只显示掩码，未配置或未启用的通知类型不发送。机器人须启用加签安全设置。通知类型：JIRA agent 轮次结束、Jenkins 失败数超阈值、测试范围扩大申请、范围扩大审批结果、app_info 同步失败汇总。`[proxy]` 的 `URL` 配置公共 HTTP/HTTPS 代理（例如 `http://proxy.sha-dc01.metax-tech.com:1080`），服务按需接入，目前钉钉和大模型（`[llm]`）使用，其他服务不自动切换；`LLM_BASE_URL` 是 `metax-tech.com`、`metax-internal.com` 或其子域名时大模型直连，不走代理；修改后下次发送或调用生效；留空或省略则直连，不读取环境代理变量。
 
 - JIRA agent 每分钟检查完成、失败或意外中断的轮次，用工单号、本轮发起人的姓名和网页结论/操作标记发送一句话；姓名读取网站用户资料，缺失时回退显示该轮发起人的域账号。失败和意外中断附上简短原因（如 cybersecurity、model capacity、codex disconnected），未分类错误提示查看对话详情；交付不完整时明确提示，不报成功。主动取消不通知。首次启用只接收启用后结束的轮次，之后停机期间漏发的轮次会补发，每轮通知一次。
 - Jenkins 在北京时间每天 10:00–20:00 的整点（包含 10:00 和 20:00，其他时段不查询、不告警）查询一次网页同源的 `/api/v1/failures/summary`，按责任组聚合，北京时间开始/结束日期均为当天，不附加用户筛选。所有 Code Owner 总错误数 **>20**、DevOps（SPD）总错误数 **>30** 时发送一条包含两项数量的通知；当天发送成功后不再发送，次日重新计算。首次启动不立即补查，等待下一个整点；允许时段内整点启动则立即查询。
