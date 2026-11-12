@@ -1,41 +1,16 @@
 /**
  * Human-readable labels for enum-like values displayed in the UI.
  *
- * Mirrors the label maps scattered throughout index.html
- * (e.g. releaseDecisionLabels, docTargetLabels, qaStatusLabels,
- * cicdTaskStatusLabels, etc.).
+ * (docTargetLabels, qaStatusLabels, cicdTaskStatusLabels, …).
  */
 
-import type {
-  QaStatus,
-  ReleaseDecision,
-  ArtifactKind,
-} from "../types";
+import type { QaStatus, ArtifactKind } from "../types";
 import {
   DOC_TARGETS,
   QA_STATUSES,
-  RELEASE_DECISIONS,
   docTargetMetadata,
   qaStatusMetadata,
-  releaseDecisionMetadata,
 } from "./domainMetadata";
-
-// ---------------------------------------------------------------------------
-// Release decision
-// ---------------------------------------------------------------------------
-
-export const releaseDecisionOptions: ReleaseDecision[] = [...RELEASE_DECISIONS];
-
-// Mirrors index.html:1454-1458 exactly (full label strings used in selects;
-// Wave-2 components split on ：to extract the short display portion).
-export const releaseDecisionLabels = Object.fromEntries(
-  releaseDecisionOptions.map((decision) => [decision, releaseDecisionMetadata[decision].label]),
-) as Record<ReleaseDecision, string>;
-
-/** Order for sorting apps by release decision in the app workbench. */
-export const releaseDecisionOrder = Object.fromEntries(
-  releaseDecisionOptions.map((decision) => [decision, releaseDecisionMetadata[decision].order]),
-) as Record<ReleaseDecision, number>;
 
 // ---------------------------------------------------------------------------
 // Doc target
@@ -75,11 +50,11 @@ export const artifactKindLabels: Record<ArtifactKind, string> = {
 // ---------------------------------------------------------------------------
 
 export const cicdTaskStatusLabels: Record<string, string> = {
-  Running: "运行中",
-  Stopped: "停止",
+  running: "运行中",
+  stopped: "已停止",
 };
 
-export const cicdTaskStatusOptions = ["Running", "Stopped"];
+export const cicdTaskStatusOptions = ["running", "stopped"];
 
 // ---------------------------------------------------------------------------
 // CICD request type

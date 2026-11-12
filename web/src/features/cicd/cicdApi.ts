@@ -159,47 +159,18 @@ export function applyReturnedCicdRequest(body: {
 // ---------------------------------------------------------------------------
 
 export interface FetchPreviewPayload {
-  official_name?: string;
   repo_type: string;
   repo_name: string;
   branch: string;
 }
 
-/** Fields returned by POST /api/cicd/apps/fetch-preview (exact backend keys).
- *
- * Wave 4 (impl-1) new contract — always HTTP 200; Gerrit failures are soft flags:
- *
- * Always present:
- *   git_url            — derived identity URL; null only when manifest needs network
- *   git_branch         — derived branch; null only when manifest needs network
- *   needs_network      — true for .xml manifest repos (identity resolution needs Gerrit)
- *   app_info_unavailable — true when Gerrit app_info content fetch failed
- *   app_info_error     — error detail when unavailable; null on success
- *
- * Only present when app_info_unavailable === false (happy path):
- *   app_version, x86_chips, arm_chips, python_label, pytorch_label,
- *   os, arch, commit_id, parsed
- *
- * HTTP errors (still raised):
- *   400 — empty repo_name / branch (bad input)
- *   403 — role not in CICD_CREATE_ROLES
- */
+/** Identity + app_info preview for the new-App form (no writes). */
 export interface FetchPreviewResponse {
-  // ── Identity (always present) ────────────────────────────────────────────
-  /** Derived Gerrit SSH URL; null when manifest resolution requires Gerrit network. */
   git_url: string | null;
-  /** Derived branch; null when manifest resolution requires Gerrit network. */
   git_branch: string | null;
-  /** True for repo-type .xml manifests: identity resolution needs Gerrit network. */
   needs_network: boolean;
-
-  // ── App-info availability flags (always present) ─────────────────────────
-  /** True when the Gerrit app_info content fetch failed (unreachable, archive error, …). */
   app_info_unavailable: boolean;
-  /** Human-readable error when app_info_unavailable is true; null otherwise. */
   app_info_error: string | null;
-
-  // ── App-info content fields (only when app_info_unavailable === false) ───
   app_version?: string;
   x86_chips?: string;
   arm_chips?: string;
@@ -208,96 +179,33 @@ export interface FetchPreviewResponse {
   os?: string;
   arch?: string;
   community_release_status?: string;
-  community_image_count?: number;
-  community_pkg_count?: number;
+  community_artifact?: string[];
+  dependencies?: string[] | null;
   commit_id?: string;
-  /** Full parsed blob — pass as app_info_parsed to POST /api/cicd/apps/new. */
-  parsed?: Record<string, unknown>;
-
-  // ── Re-apply metadata for rejected/cancelled CICD-first app creates ──────
-  retry_existing_app_id?: string;
-  retry_existing_app_name?: string;
-  retry_onboarding_status?: "rejected_create" | "cancelled_create";
-  retry_review_note?: string;
-  retry_reviewed_at?: string;
-
-  // ── Legacy / backward-compat ─────────────────────────────────────────────
-  /** Present in older responses; unused by new wizard logic. */
-  ok?: boolean;
 }
 
 export function fetchCicdPreview(body: FetchPreviewPayload): Promise<FetchPreviewResponse> {
   return apiPost<FetchPreviewResponse>("/api/cicd/apps/fetch-preview", body);
 }
 
-export interface CicdFirstDecisionPreviewRow {
-  release_id: string;
-  release_name: string;
-  phase_label: string;
-  resulting_decision: "release" | "cicd_only" | null;
-  skipped: boolean;
-  reason?: string;
-  is_current: boolean;
-}
-
-export interface CicdFirstDecisionPreviewResponse {
-  decision: "release" | "cicd_only";
-  releases: CicdFirstDecisionPreviewRow[];
-  scope: "current_and_later";
-}
-
-export function fetchCicdFirstDecisionPreview(body: {
-  release_id: string;
-  release_decision: "release" | "cicd_only";
-}): Promise<CicdFirstDecisionPreviewResponse> {
-  return apiPost<CicdFirstDecisionPreviewResponse>(
-    "/api/cicd/apps/new/decision-preview",
-    body,
-  );
-}
-
-// ---------------------------------------------------------------------------
-// POST — CICD-first app creation (Wave 3)
-// ---------------------------------------------------------------------------
-
-export interface CicdFirstNewAppPayload {
+export interface NewAppPayload {
+  official_name: string;
   doc_target: string;
   app_type: string;
-  release_id: string;
-  /** Owner decision visible immediately while CICD approval/delivery is pending. */
-  release_decision: "release" | "cicd_only";
-  /** Human-readable name stored in apps table — required by backend (cicd_service.cicd_first_new_app). */
-  official_name: string;
-  /** Optional CICD-task display name; defaults to official_name server-side when omitted/empty. */
-  app_name?: string;
-  app_version?: string;
-  owner_username: string;
   repo_type: string;
   repo_name: string;
   branch: string;
-  build_product?: string[];
-  community_artifact?: string[];
-  build_image?: string;
-  test_timeout?: number;
-  notes?: string;
-  cicd_repo_type?: string;
-  cicd_community_artifact?: string;
   cicd_build_image?: string;
-  cicd_test_timeout?: string;
+  cicd_test_timeout?: number;
+  cicd_community_artifact?: string[];
   cicd_notes?: string;
-  /** Parsed app_info blob from fetch-preview; backend persists it directly. */
-  app_info_parsed?: Record<string, unknown> | null;
-  /** Gerrit commit ID accompanying the parsed blob. */
-  app_info_commit_id?: string;
+  app_version?: string;
 }
 
-export function cicdFirstNewApp(body: CicdFirstNewAppPayload): Promise<{ ok: boolean; app_id: string; request_id: number }> {
-  return apiPost<{ ok: boolean; app_id: string; request_id: number }>("/api/cicd/apps/new", body);
+/** Submit a request for a new App; the App appears once RM's approval takes effect. */
+export function submitNewApp(body: NewAppPayload): Promise<{ ok: boolean; request: import("../../types").CicdRequest }> {
+  return apiPost("/api/cicd/apps/new", body);
 }
-
-// ---------------------------------------------------------------------------
-// POST — notifications
-// ---------------------------------------------------------------------------
 
 export function markCicdVisited(): Promise<CicdMarkVisitedResponse> {
   return apiPost<CicdMarkVisitedResponse>("/api/cicd/notifications/mark-visited", {});

@@ -55,6 +55,13 @@ QA_TEST_CMD_COLUMNS = [
 # ---------------------------------------------------------------------------
 
 _DELIVERABLE_FIELDS = ("deliverable_image", "deliverable_digest", "deliverable_commit")
+_QA_FIELD_LABELS = {
+    "qa_status": "QA 状态",
+    "qa_note": "问题说明",
+    "deliverable_image": "交付镜像",
+    "deliverable_digest": "交付镜像 digest",
+    "deliverable_commit": "源码 commit",
+}
 
 
 def set_qa_status_batch(
@@ -116,7 +123,8 @@ def set_qa_status_batch(
                 app_id=entry["app_id"],
                 release_id=release_id,
                 event="qa_set_status",
-                detail=[{"field": key, "label": key, **value} for key, value in changes.items()],
+                detail=[{"field": key, "label": _QA_FIELD_LABELS.get(key, key), **value}
+                        for key, value in changes.items()],
             )
         # Saving the verdicts is the review of any AI suggestions.
         qa_repo.delete_ai_suggestions(conn, release_id)

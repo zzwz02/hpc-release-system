@@ -7,10 +7,6 @@ function orderedKeys<T extends Record<string, { order: number }>>(items: T): Arr
 
 export const releasePhaseMetadata = metadata.release_phases;
 export type ReleasePhase = keyof typeof releasePhaseMetadata;
-export type ReleasePhaseTrait =
-  | "before_app_freeze"
-  | "before_doc_deadline"
-  | "qa_scope_frozen";
 
 export const RELEASE_PHASES = orderedKeys(releasePhaseMetadata);
 
@@ -19,26 +15,19 @@ export function releasePhaseLabel(phase: string): string {
   return item?.label ?? phase;
 }
 
-export function releasePhaseHasTrait(phase: string, trait: ReleasePhaseTrait): boolean {
-  const item = releasePhaseMetadata[phase as ReleasePhase];
-  return item?.[trait] === true;
+export const cicdStatusMetadata = metadata.cicd_statuses;
+export function cicdStatusLabel(status: string): string {
+  return cicdStatusMetadata[status as keyof typeof cicdStatusMetadata]?.label ?? status;
 }
 
-export const releaseDecisionMetadata = metadata.release_decisions;
-export type ReleaseDecision = keyof typeof releaseDecisionMetadata;
-
-export const RELEASE_DECISIONS = orderedKeys(releaseDecisionMetadata);
-
-export function releaseDecisionCicdStatus(decision: string): "Running" | "Stopped" {
-  const item = releaseDecisionMetadata[decision as ReleaseDecision];
-  return item?.cicd_status === "Stopped" ? "Stopped" : "Running";
+export const entryResultMetadata = metadata.entry_results;
+export function entryResultLabel(result: string): string {
+  return entryResultMetadata[result as keyof typeof entryResultMetadata]?.label ?? result;
 }
 
-export function crossesReleaseDecisionRuntimeBoundary(
-  oldDecision: string,
-  newDecision: string,
-): boolean {
-  return releaseDecisionCicdStatus(oldDecision) !== releaseDecisionCicdStatus(newDecision);
+export const scopeRequestStatusMetadata = metadata.scope_request_statuses;
+export function scopeRequestStatusLabel(status: string): string {
+  return scopeRequestStatusMetadata[status as keyof typeof scopeRequestStatusMetadata]?.label ?? status;
 }
 
 export const docTargetMetadata = metadata.doc_targets;

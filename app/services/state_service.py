@@ -51,6 +51,7 @@ def get_state(
             if status_request
             else None
         )
+        app["open_signups"] = cycle_service.has_open_signup(conn, app["id"])
         if include_allowed_actions:
             app["allowed_actions"] = _app_actions(app, role=user["role"], username=user["username"])
 

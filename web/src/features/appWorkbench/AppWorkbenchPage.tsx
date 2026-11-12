@@ -1,152 +1,45 @@
 /**
- * App 工作台 (App Workbench) tab — index.html:2038+
+ * App 工作台 — all Apps with their CICD status and signup for the selected
+ * monthly cycle.
  *
- * Layout mirrors the legacy two-column split:
- *   left panel  = app list (search, own-only filter, new-app button)
- *   right panel = detail editor for the selected app
+ * Layout (unchanged): left = App list with search/filters, right = detail
+ * panel with sub-tabs 本期报名 / app_info / CICD / 资料 / 变更记录.
  *
- * Data: GET /api/state (with optional ?release_id=)
- * Mutations: POST /api/apps/update, /api/app-info,
- *            /api/app-info/fetch, GET /api/app-audit
- *
- * R2: data moves only via explicit refetch after mutation or manual refresh.
- * No polling.
+ * Data: GET /api/state (?release_id=).  Data moves only via explicit refetch
+ * after a mutation or manual refresh.
  */
 import React, { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  cicdFirstNewApp,
-  fetchCicdDeliveries,
-  fetchCicdFirstDecisionPreview,
-  fetchCicdPreview,
-  fetchCicdRequests,
-  submitCicdRequest,
-} from "../cicd/cicdApi";
-import type { CicdFirstDecisionPreviewResponse, FetchPreviewResponse } from "../cicd/cicdApi";
+import { fetchCicdDeliveries, fetchCicdRequests } from "../cicd/cicdApi";
+import { requestMatchesApp, uniqueCicdRequestCount } from "../cicd/requestUtils";
 import { RefreshBar } from "../../components/RefreshBar";
 import { ReleaseDeadlines } from "../../components/ReleaseDeadlines";
-import { Markdown } from "../../components/Markdown";
-import { AppInfoDiffView } from "../../components/AppInfoDiffView";
-import { formatServerTime } from "../../lib/time";
-import { toast } from "../../lib/toast";
-import { confirmDialog } from "../../lib/confirm";
-import { apiGet, apiPost, apiPostNdjson } from "../../api/http";
+import { apiGet, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
+import { confirmDialog } from "../../lib/confirm";
+import { docTargetLabels } from "../../lib/labels";
+import { normalizeDocTarget } from "../../lib/domainMetadata";
+import { canCreateApp, canEdit, canEditRmFields, canSyncAppInfo, isOwner, isRM } from "../../lib/roles";
+import { toast } from "../../lib/toast";
 import { useUiStore } from "../../store/uiStore";
-import { isOwner, canCreateApp, canEdit, canEditRmFields, canUpdateAppInfo } from "../../lib/roles";
-import { beforeAppFreeze, beforeDocDeadline, releaseLocked } from "../../lib/phase";
+import type { App, AppAuditEntry, Entry, ReleaseDetail, StatePayload } from "../../types";
+import { AppCicdPane } from "./AppCicdPane";
+import { AppInfoPane } from "./AppInfoPane";
 import {
-  CICD_REPO_TYPE_DEFAULT,
-  CICD_REPO_TYPE_OPTIONS,
-  CICD_TEST_TIMEOUT_DEFAULT,
-  DOC_TARGET_DEFAULT,
-  DOC_TARGETS,
-  docTargetMetadata,
-  cicdPayloadConfigLabels,
-  crossesReleaseDecisionRuntimeBoundary,
-  normalizeCicdTestTimeout,
-  normalizeDocTarget,
-  appTypeOptionsForTarget,
-} from "../../lib/domainMetadata";
-import { displayName } from "../../lib/identity";
-import {
-  GERRIT_HPC_BASE,
-  GERRIT_HPC_PROJECT,
-  GERRIT_MANIFEST_BRANCH,
-  GERRIT_MANIFEST_PROJECT,
-  GERRIT_MANIFEST_REPO_URL,
-  formatCicdRepoPath,
-  formatGerritUrl,
-} from "../../lib/git";
-import {
-  releaseDecisionLabels,
-  releaseDecisionOptions,
-  docTargetLabels,
-  docTargetOptions,
-  qaStatusLabels,
-} from "../../lib/labels";
-import type { StatePayload, App, Snapshot, ReleaseSummary, ReleaseDetail, AppAuditEntry, SnapshotTestDoc, CicdRequest, ReleaseDecision, AppInfoDiff } from "../../types";
-import {
-  releaseSnap,
-  isReleaseSnap,
+  APP_STATUS_FILTER_OPTIONS,
+  appEntry,
   compareAppRows,
   filterAppRows,
-  qaDotClass,
-  qaDotTitle,
-  docsItems,
-  missingItemText,
-  APP_STATUS_FILTER_OPTIONS,
   matchesAppStatusFilter,
-  type AppStatusFilter,
-  appInfoSource,
-  orderChips,
   usersLabel,
-  APP_DESCRIPTION_LIMIT,
-  appDescriptionCount,
-  copiedScalarFields,
-  mergeCopiedTestDocs,
+  type AppStatusFilter,
 } from "./helpers";
+import { NewAppDialog } from "./NewAppDialog";
+import { ChangeLogTable, CicdPendingPill, CicdStatusPill, EntryPill, QaDot, QaPill } from "./pills";
+import { ProfilePane } from "./ProfilePane";
+import { SignupPane } from "./SignupPane";
 
-// ---------------------------------------------------------------------------
-// F1 — decision-sync preview types
-// ---------------------------------------------------------------------------
-
-interface DecisionSyncPreviewRow {
-  release_id: string;
-  release_name: string;
-  phase_label: string;
-  resulting_decision: string | null;
-  skipped: boolean;
-  reason?: string;
-  is_current?: boolean;
-}
-
-interface DecisionSyncPreview {
-  decision: string;
-  releases: DecisionSyncPreviewRow[];
-  forced?: boolean;
-  scope?: "later" | "all_unlocked";
-  blocked_reason?: string;
-}
-
-interface AppInfoFetchProgress {
-  title: string;
-  currentApp?: string;
-  currentIdentity?: string;
-  maxWorkers?: number;
-  total: number;
-  completed: number;
-  ok: number;
-  failed: number;
-  failures: string[];
-  finished?: boolean;
-}
-
-interface AppInfoFetchResult {
-  app_id: string;
-  ok: boolean;
-  error?: string;
-}
-
-type AppInfoFetchStreamEvent =
-  | { type: "start"; total: number; max_workers: number }
-  | ({ type: "item"; completed: number; total: number } & AppInfoFetchResult)
-  | {
-      type: "complete";
-      ok: true;
-      total: number;
-      succeeded: number;
-      failed: number;
-      results: AppInfoFetchResult[];
-    };
-
-// ---------------------------------------------------------------------------
-// Query key + fetcher
-// ---------------------------------------------------------------------------
-
-const STATE_KEY = (releaseId?: string) =>
-  releaseId ? ["state", releaseId] : ["state"];
-
+const STATE_KEY = (releaseId?: string) => (releaseId ? ["state", releaseId] : ["state"]);
 const EMPTY_APPS: App[] = [];
 
 async function fetchState(releaseId?: string): Promise<StatePayload> {
@@ -155,315 +48,28 @@ async function fetchState(releaseId?: string): Promise<StatePayload> {
   return apiGet<StatePayload>(`/api/state?${qs.toString()}`);
 }
 
-// ---------------------------------------------------------------------------
-// Shared pill components
-// ---------------------------------------------------------------------------
+type DetailTab = "signup" | "app_info" | "cicd" | "profile" | "changelog";
 
-function DecisionPill({ decision }: { decision: string }) {
-  const short = (releaseDecisionLabels[decision as keyof typeof releaseDecisionLabels] ?? decision)
-    .split("：")[0];
-  if (decision === "release") return <span className="pill accent">{short}</span>;
-  if (decision === "cicd_only") return <span className="pill">{short}</span>;
-  if (decision === "stopped") return <span className="pill bad">{short}</span>;
-  return <span className="pill">{short}</span>;
-}
-
-function QaPill({ status }: { status?: string }) {
-  const s = status ?? "not_checked";
-  const cls = s === "qa_passed" ? "ok" : s === "has_issues" ? "warnp" : s === "cannot_release" ? "bad" : "";
-  return <span className={`pill ${cls}`}>{qaStatusLabels[s as keyof typeof qaStatusLabels] ?? s}</span>;
-}
-
-function QaDot({ snap }: { snap: Snapshot }) {
-  return (
-    <span
-      className={`app-dot ${qaDotClass(snap)}`}
-      title={qaDotTitle(snap)}
-    />
-  );
-}
-
-/**
- * Backend answer when an app_info update after app freeze would grow the QA
- * scope: nothing was written, QA must accept the listed changes first.
- */
-interface AppInfoScopeConfirmation {
-  requires_scope_confirmation?: boolean;
-  scope_additions?: string[];
-  changes?: AppInfoDiff[];
-  message?: string;
-}
-
-/** Pinned dialog text: why we are asking, plus what the QA scope gains. */
-function scopeConfirmationBody(result: AppInfoScopeConfirmation): string {
-  const additions = (result.scope_additions ?? []).map((item) => `· ${item}`);
-  return [
-    result.message || "此次 app_info 更新会扩大 QA 范围，需要确认后才会生效。",
-    "",
-    "QA 范围新增：",
-    ...(additions.length ? additions : ["（无）"]),
-  ].join("\n");
-}
-
-/** Scrollable dialog content: every app_info change behind the scope additions. */
-function scopeConfirmationDetails(result: AppInfoScopeConfirmation) {
-  const changes = result.changes ?? [];
-  return (
-    <AppInfoDiffView
-      diffs={changes}
-      caption={`app_info 修改点（${changes.length} 项）：`}
-      emptyText="app_info 修改点：（无）"
-    />
-  );
-}
-
-function CicdPendingPill({ count }: { count: number }) {
-  if (count <= 0) return null;
-  return (
-    <span className="pill warnp" title="此 App 有待审批或待交付的 CICD 流程" data-testid="app-cicd-pending-pill">
-      CICD 待处理 {count}
-    </span>
-  );
-}
-
-/**
- * Browse-mode renderer for a free-text field: renders the value as Markdown
- * (via the sole <Markdown> sink) inside a capped-height, internally-scrolling
- * box so one long field can't blow up the page.  Empty → muted placeholder.
- */
-function ReadField({ value, code = false }: { value?: string | null; code?: boolean }) {
-  const v = (value ?? "").trim();
-  if (!v) return <div className="readfield empty">（空）</div>;
-  // Shell commands are shown verbatim as plain text (NOT a Markdown sink).
-  if (code) return <div className="readfield code-block"><pre>{v}</pre></div>;
-  return (
-    <div className="readfield">
-      <Markdown value={value} className="md-view" />
-    </div>
-  );
-}
-
-const CICD_FIRST_RELEASE_DECISION_OPTIONS: Array<{
-  value: Extract<ReleaseDecision, "release" | "cicd_only">;
-  label: string;
-}> = [
-  { value: "release", label: "release" },
-  { value: "cicd_only", label: "cicd-only" },
+const DETAIL_TABS: Array<{ key: DetailTab; label: string }> = [
+  { key: "signup", label: "本期报名" },
+  { key: "app_info", label: "app_info" },
+  { key: "cicd", label: "CICD" },
+  { key: "profile", label: "资料" },
+  { key: "changelog", label: "变更记录" },
 ];
 
-function BuildImageLabel() {
-  return (
-    <>
-      构建依赖镜像
-      <span className="field-label-note">（影响 SPD 编排 CICD 构建任务顺序）</span>
-    </>
-  );
-}
-
-function normalizeTimeoutText(value: string | number | null | undefined): string {
-  return String(normalizeCicdTestTimeout(value));
-}
-
-function numberValue(value: unknown): number {
-  const n = Number(value ?? 0);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function crossesDecisionRuntimeBoundary(oldDecision: string, newDecision: string): boolean {
-  return crossesReleaseDecisionRuntimeBoundary(oldDecision, newDecision);
-}
-
-const CICD_REQ_TYPE_LABEL: Record<string, string> = {
-  create: "新建",
-  modify: "修改",
-  owner_transfer: "负责人变更",
-};
-
-const CICD_REQ_STATUS_LABEL: Record<string, string> = {
-  pending: "待审批",
-  approved: "已审批",
-  rejected: "已拒绝",
-  cancelled: "已取消",
-};
-
-const CICD_DELIVERY_STATUS_LABEL: Record<string, string> = {
-  pending: "待交付",
-  delivered: "已交付",
-  returned: "已退回",
-};
-
-const CICD_FIELD_LABEL: Record<string, string> = {
-  app_name: "App",
-  app_version: "版本",
-  repo_name: "Gerrit 路径",
-  branch: "Branch",
-  release_decision: "Release 决策",
-  build_product: "构建产物",
-  owner_username: "负责人",
-  status: "状态",
-  ...cicdPayloadConfigLabels,
-};
-
-const CICD_ONBOARDING_LABEL: Record<string, string> = {
-  pending_create: "CICD 创建待处理",
-  rejected_create: "CICD 创建被拒绝",
-  cancelled_create: "CICD 创建已取消",
-};
-
-function cicdOnboardingLabel(app: App): string {
-  const status = app.cicd_onboarding_status ?? "";
-  return CICD_ONBOARDING_LABEL[status] ?? "";
-}
-
-function cicdOnboardingClass(app: App): string {
-  if (app.cicd_onboarding_status === "pending_create") return "warnp";
-  if (app.cicd_onboarding_status === "rejected_create") return "bad";
-  return "";
-}
-
-function sameScalarValue(a: unknown, b: unknown): boolean {
-  return String(a ?? "").trim() === String(b ?? "").trim();
-}
-
-function cicdValueText(value: unknown, field?: string): string {
-  if (Array.isArray(value)) return value.join(", ") || "(空)";
-  if (field === "repo_name") {
-    return formatCicdRepoPath(String(value ?? "")) || "(空)";
-  }
-  return String(value ?? "").trim() || "(空)";
-}
-
-function cicdRequestSummary(req: CicdRequest): string {
-  const payload = (req.payload ?? {}) as Record<string, unknown>;
-  const entries = Object.entries(payload).filter(([field]) => field !== "app_id" && !field.startsWith("_"));
-  if (!entries.length) return "无字段变更";
-  return entries.map(([field, raw]) => {
-    const label = CICD_FIELD_LABEL[field] ?? field;
-    const change = raw as { old?: unknown; new?: unknown };
-    if (
-      raw &&
-      typeof raw === "object" &&
-      !Array.isArray(raw) &&
-      ("old" in change || "new" in change)
-    ) {
-      return `${label}: ${cicdValueText(change.old, field)} -> ${cicdValueText(change.new, field)}`;
-    }
-    return `${label}: ${cicdValueText(raw, field)}`;
-  }).join("；");
-}
-
-function cicdWorkflowState(req: CicdRequest): string {
-  if (req.delivery_status) {
-    return CICD_DELIVERY_STATUS_LABEL[req.delivery_status] ?? req.delivery_status;
-  }
-  return CICD_REQ_STATUS_LABEL[req.status] ?? req.status;
-}
-
-function requestMatchesApp(req: CicdRequest, app: App): boolean {
-  const payload = (req.payload ?? {}) as Record<string, unknown>;
-  if (req.app_id) return req.app_id === app.id;
-  if (payload.app_id) return payload.app_id === app.id;
-  if (req.task_id === app.id) return true;
-
-  // Legacy requests may not carry app_id. In that case repo alone is not a
-  // stable App identity: multiple Apps can share one Gerrit URL with different
-  // branches. Fall back only when both repo and branch match.
-  const reqRepo = String(req.task_repo_name ?? "").trim();
-  const reqBranch = String(req.task_branch ?? "").trim();
-  return !!reqRepo &&
-    !!reqBranch &&
-    reqRepo === String(app.git_url ?? "").trim() &&
-    reqBranch === String(app.git_branch ?? "").trim();
-}
-
-function isOpenCreateRequest(req: CicdRequest): boolean {
-  return req.is_open === true && req.blocker_kind === "create";
-}
-
-function isOpenJiraModifyRequest(req: CicdRequest): boolean {
-  return req.is_open === true && req.blocker_kind === "jira";
-}
-
-function isOpenStatusModifyRequest(req: CicdRequest): boolean {
-  return req.is_open === true && req.blocker_kind === "status";
-}
-
-function isReplaceablePendingModifyRequest(req: CicdRequest): boolean {
-  return req.replaceable === true;
-}
-
-function jiraModifyBlockMessage(req: CicdRequest): string {
-  return `已有 Jira 申请 #${req.id} / ${req.jira_id} 正在交付，不能提交新的 CICD 修改。请先让 SPD 退回需求，再由 RM 在待交付页拒绝旧申请。`;
-}
-
-function statusModifyBlockMessage(req: CicdRequest): string {
-  return `该 app 已有运行/停止状态同步申请 #${req.id} 未完成，不能提交新的 CICD 修改；请先等待该申请审批/交付完成。`;
-}
-
-function uniqueCicdRequestCount(requests: CicdRequest[]): number {
-  return new Set(
-    requests.map((req) => req.id ?? `${req.request_type}-${req.task_id}-${req.submitted_at}`),
-  ).size;
-}
-
-function AppInfoFetchProgressDialog({
-  progress,
-  onClose,
-}: {
-  progress: AppInfoFetchProgress;
-  onClose?: () => void;
-}) {
-  const pct = progress.total ? Math.round((progress.completed / progress.total) * 100) : 0;
-  const visibleFailures = progress.finished ? progress.failures : progress.failures.slice(-4);
-  return (
-    <div className="dialog-backdrop" role="dialog" aria-modal="true" data-testid="app-info-fetch-progress">
-      <div className="dialog-box maxw-520">
-        <div className="dialog-head"><h3>{progress.title}</h3></div>
-        <div className="dialog-body">
-          <div className="row justify-between gap-12">
-            <span className="small muted">进度 {progress.completed}/{progress.total}</span>
-            <span className="small">成功 {progress.ok} · 失败 {progress.failed}</span>
-          </div>
-          <div className="bar h-9">
-            <span style={{ width: `${pct}%` }} />
-          </div>
-          <div className="banner m-0">
-            <div>
-              <b>{progress.finished ? "状态：" : "最近完成："}</b>
-              {progress.currentApp ?? (progress.maxWorkers ? `服务端 ${progress.maxWorkers} 路并发拉取中...` : "准备中...")}
-            </div>
-            {progress.currentIdentity && (
-              <div className="small muted mt-4">{progress.currentIdentity}</div>
-            )}
-          </div>
-          {visibleFailures.length > 0 && (
-            <div className="small warnp prewrap app-info-fetch-errors" data-testid="app-info-fetch-errors">
-              {visibleFailures.join("\n")}
-            </div>
-          )}
-          {!progress.finished && (
-            <p className="small muted m-0">
-              Gerrit 拉取可能耗时较久。窗口关闭前请不要刷新页面。
-            </p>
-          )}
-        </div>
-        {progress.finished && onClose && (
-          <div className="dialog-actions">
-            <button className="btn primary" onClick={onClose} data-testid="app-info-fetch-close">关闭</button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
-// App list panel
+// App list
 // ---------------------------------------------------------------------------
+
+interface Row {
+  app: App;
+  entry: Entry | null;
+}
 
 interface AppListProps {
-  rows: { app: App; snap: Snapshot }[];
-  selectedAppId: string;
+  rows: Row[];
+  selectedAppId: string | null;
   onSelectApp: (id: string) => void;
   search: string;
   onSearchChange: (v: string) => void;
@@ -479,960 +85,62 @@ interface AppListProps {
 }
 
 function AppListPanel({
-  rows, selectedAppId, onSelectApp, search, onSearchChange,
-  ownOnly, onOwnOnlyChange, showOwnOnly, statusFilter, onStatusFilterChange,
-  displayNames, cicdPendingCounts, canCreateApp, onNewApp,
+  rows, selectedAppId, onSelectApp, search, onSearchChange, ownOnly, onOwnOnlyChange, showOwnOnly,
+  statusFilter, onStatusFilterChange, displayNames, cicdPendingCounts, canCreateApp, onNewApp,
 }: AppListProps) {
   return (
     <div className="app-list-panel">
       <div className="app-list-toolbar">
-        <input
-          className="input"
-          placeholder="搜索 app…"
-          value={search}
-          onChange={(e) => onSearchChange(e.target.value)}
-          data-testid="app-search"
-        />
+        <input className="input" placeholder="搜索 app…" value={search}
+          onChange={(e) => onSearchChange(e.target.value)} data-testid="app-search" />
         {showOwnOnly && (
           <label className="check nowrap">
-            <input
-              type="checkbox"
-              checked={ownOnly}
-              onChange={(e) => onOwnOnlyChange(e.target.checked)}
-              data-testid="own-only-checkbox"
-            />
+            <input type="checkbox" checked={ownOnly} onChange={(e) => onOwnOnlyChange(e.target.checked)}
+              data-testid="own-only-checkbox" />
             只看我的
           </label>
         )}
-        <select
-          className="select sm select-inline"
-          aria-label="App 状态筛选"
-          value={statusFilter}
-          onChange={(e) => onStatusFilterChange(e.target.value as AppStatusFilter)}
-          data-testid="app-status-filter"
-        >
+        <select className="select sm select-inline" aria-label="App 状态筛选" value={statusFilter}
+          onChange={(e) => onStatusFilterChange(e.target.value as AppStatusFilter)} data-testid="app-status-filter">
           {APP_STATUS_FILTER_OPTIONS.map((option) => (
             <option key={option.value} value={option.value}>{option.label}</option>
           ))}
         </select>
         <span className="count" data-testid="app-count">共 {rows.length} 个</span>
         {canCreateApp && (
-          <button className="btn sm primary" onClick={onNewApp} data-testid="new-app-btn">
-            + 新增
-          </button>
+          <button className="btn sm primary" onClick={onNewApp} data-testid="new-app-btn">+ 新增</button>
         )}
       </div>
       <div className="app-table" data-testid="app-table">
         {rows.length === 0 ? (
           <p className="muted small p-14 ta-c">无数据</p>
-        ) : (
-          rows.map(({ app, snap }) => {
-            const nm = displayName(snap);
-            const ver = (snap.version ?? "").trim();
-            // E: only show the small version chip when the name does NOT already
-            // carry that version (avoids "Amber 22 · v22" duplication).
-            const showVer = !!ver && !nm.includes(ver);
-            const rel = isReleaseSnap(snap);
-            const docMissing = docsItems(snap).length;
-            return (
-              <div
-                key={app.id}
-                className={`app-row ${selectedAppId === app.id ? "active" : ""}`}
-                onClick={() => onSelectApp(app.id)}
-                data-testid={`app-row-${app.id}`}
-              >
-                <QaDot snap={snap} />
-                <div className="app-meta">
-                  <div className="name">
-                    <span className="nm-txt">{nm}</span>
-                    {showVer && <span className="ver-tag">v{ver}</span>}
-                  </div>
-                  <div className="sub">
-                    {snap.type || "—"} · {usersLabel(snap.owners, displayNames)}
-                  </div>
-                  {/* Release decision, QA and CICD status */}
-                  <div className="app-status">
-                    <DecisionPill decision={snap.release_decision} />
-                    {rel && docMissing > 0 && (
-                      <span className="pill warnp" title="文档信息待补充">文档待补 {docMissing}</span>
-                    )}
-                    {rel && <QaPill status={snap.qa_status} />}
-                    {app.cicd_onboarding_status && (
-                      <span
-                        className={`pill ${cicdOnboardingClass(app)}`}
-                        title={app.cicd_onboarding_review_note || cicdOnboardingLabel(app)}
-                      >
-                        {cicdOnboardingLabel(app)}
-                      </span>
-                    )}
-                    <CicdPendingPill count={cicdPendingCounts[app.id] ?? 0} />
-                  </div>
-                </div>
-              </div>
-            );
-          })
-        )}
-      </div>
-    </div>
-  );
-}
-
-function sameCicdRepoName(
-  oldRepoType: string,
-  newRepoType: string,
-  oldValue: string,
-  newValue: string,
-): boolean {
-  if (oldRepoType !== newRepoType) return false;
-  const oldPath = formatCicdRepoPath(oldValue, oldRepoType).trim();
-  const newPath = newValue.trim();
-  return oldPath === newPath;
-}
-
-function RepoPathInput({
-  repoType,
-  value,
-  disabled,
-  onChange,
-  testId,
-}: {
-  repoType: string;
-  value: string;
-  disabled?: boolean;
-  onChange: (value: string) => void;
-  testId?: string;
-}) {
-  const isRepoType = repoType === "repo";
-  const prefix = isRepoType ? GERRIT_MANIFEST_REPO_URL : `${GERRIT_HPC_BASE}/`;
-  const placeholder = isRepoType
-    ? "xml地址，例如APP/openfoam/hpc_v2206_v0.xml"
-    : "例如hpc_amber";
-  return (
-    <div className="repo-input-group">
-      <span className="repo-input-prefix">{prefix}</span>
-      <input
-        className="input"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        disabled={disabled}
-        data-testid={testId}
-      />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// IdentityBox — W4: prominent display of derived Gerrit identity in the wizard
-// ---------------------------------------------------------------------------
-
-/**
- * Displays only the identity returned by the backend. The browser formats the
- * URL for readability but never derives the canonical Gerrit identity itself.
- */
-function IdentityBox({
-  gitUrl,
-  gitBranch,
-  needsNetwork = false,
-}: {
-  gitUrl: string | null;
-  gitBranch: string | null;
-  needsNetwork?: boolean;
-}) {
-  const isUnresolved = !gitUrl;
-  return (
-    <div className="idbox" data-testid="derived-identity-box">
-      <div className="idbox-title">
-        🔗 Gerrit 身份（服务端解析）
-      </div>
-      <div className="idbox-line break">
-        <span className="idbox-label">git_url:</span>
-        {isUnresolved
-          ? <span className="idbox-warn">{needsNetwork ? "需联网解析" : "服务端未返回解析结果"}</span>
-          : <span className="idbox-value" title={gitUrl}>{formatGerritUrl(gitUrl)}</span>
-        }
-      </div>
-      <div className="idbox-line">
-        <span className="idbox-label">git_branch:</span>
-        <span className="fw-500">{gitBranch || "—"}</span>
-      </div>
-    </div>
-  );
-}
-
-function ReleaseDecisionPreviewTable({
-  rows,
-  requestedDecision,
-  rowTestIdPrefix,
-}: {
-  rows: DecisionSyncPreviewRow[];
-  requestedDecision: string;
-  rowTestIdPrefix: string;
-}) {
-  return (
-    <div className="table">
-      <table>
-        <thead>
-          <tr><th>RELEASE</th><th>阶段</th><th>RELEASE 决策</th></tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => {
-            const gated = !row.skipped && row.resulting_decision !== requestedDecision;
-            return (
-              <tr
-                key={row.release_id}
-                className={row.skipped ? "muted dim-55" : ""}
-                data-testid={`${rowTestIdPrefix}-${row.release_id}`}
-              >
-                <td>{row.release_name}{row.is_current ? "（当前）" : ""}</td>
-                <td>{row.phase_label}</td>
-                <td>
-                  {row.skipped ? (
-                    <span className="muted small">跳过：{row.reason}</span>
-                  ) : gated ? (
-                    <span className="pill warnp" title="该 release 处于冻结期，升级为 release 会扩大 QA 范围，已降级为 cicd_only">
-                      调整为 {row.resulting_decision}（冻结期降级）
-                    </span>
-                  ) : (
-                    <span>调整为 {row.resulting_decision}</span>
+        ) : rows.map(({ app, entry }) => {
+          const active = entry?.status === "active" ? entry : null;
+          return (
+            <div key={app.id} className={`app-row ${selectedAppId === app.id ? "active" : ""}`}
+              onClick={() => onSelectApp(app.id)} data-testid={`app-row-${app.id}`}>
+              <QaDot entry={active} />
+              <div className="app-meta">
+                <div className="name">
+                  <span className="nm-txt">{app.name}</span>
+                  {active && active.target_version && !app.name.includes(active.target_version) && (
+                    <span className="ver-tag">v{active.target_version}</span>
                   )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function NewAppDecisionPlan({
-  preview,
-  loading,
-  error,
-  onRetry,
-}: {
-  preview: CicdFirstDecisionPreviewResponse | null;
-  loading: boolean;
-  error: string;
-  onRetry: () => void;
-}) {
-  return (
-    <div data-testid="new-app-decision-preview">
-      <h4>当前及后续 release 的发布决策</h4>
-      <p className="small muted">
-        请确认以下决策；已进入冻结期的后续版本会自动调整为 cicd_only。点击下方创建按钮即按此计划提交。
-      </p>
-      {loading && <div className="banner">正在计算各版本发布决策…</div>}
-      {!loading && error && (
-        <div className="banner bad">
-          发布决策预览失败：{error}{" "}
-          <button className="btn sm" onClick={onRetry} data-testid="new-app-decision-retry">重试</button>
-        </div>
-      )}
-      {!loading && preview && (
-        <ReleaseDecisionPreviewTable
-          rows={preview.releases}
-          requestedDecision={preview.decision}
-          rowTestIdPrefix="new-app-decision-row"
-        />
-      )}
-    </div>
-  );
-}
-
-function isDuplicateIdentityError(message: string): boolean {
-  return message.includes("Gerrit URL + branch") && message.includes("已存在 app");
-}
-
-function duplicateAppIdFromError(message: string): string {
-  const match = message.match(/已存在 app[（(]([^）)]+)[）)]/);
-  return match?.[1] ?? "";
-}
-
-// ---------------------------------------------------------------------------
-// New-app dialog (CICD-first wizard, Wave 3 / 3.1)
-// ---------------------------------------------------------------------------
-
-interface NewAppDialogProps {
-  apps: App[];
-  release: ReleaseDetail | null;
-  initialValues?: NewAppInitialValues | null;
-  currentReleaseId: string;
-  currentUsername: string;
-  onClose: () => void;
-  onCreated: (appId: string) => void;
-}
-
-interface NewAppInitialValues {
-  officialName: string;
-  repoType: string;
-  repoName: string;
-  branch: string;
-}
-
-interface RetryCreateInfo {
-  appId: string;
-  appName: string;
-  status: "rejected_create" | "cancelled_create";
-  reviewNote: string;
-}
-
-function NewAppDialog({ apps, release, initialValues, currentReleaseId, currentUsername, onClose, onCreated }: NewAppDialogProps) {
-  // ── Wizard state (CICD-first, step 1 → fetch → step 2 confirm) ──────────
-  const [officialName, setOfficialName] = useState(initialValues?.officialName ?? "");
-  const [repoType, setRepoType] = useState(initialValues?.repoType ?? CICD_REPO_TYPE_DEFAULT);
-  const [repoName, setRepoName] = useState(initialValues?.repoName ?? "");
-  const [branch, setBranch] = useState(initialValues?.branch ?? "");
-
-  const [docTarget, setDocTarget] = useState("");
-  const [appTypeChoice, setAppTypeChoice] = useState("");
-  const appType = appTypeChoice.slice("existing:".length);
-  const existingAppTypes = appTypeOptionsForTarget(docTarget);
-
-  type WizardStep = "form" | "fetching" | "preview" | "fetch-error" | "creating";
-  const [step, setStep] = useState<WizardStep>("form");
-  const [preview, setPreview] = useState<FetchPreviewResponse | null>(null);
-  const [retryCreateInfo, setRetryCreateInfo] = useState<RetryCreateInfo | null>(null);
-  const [fetchErrMsg, setFetchErrMsg] = useState("");
-  const [fetchErrBlocking, setFetchErrBlocking] = useState(false);
-  const [createErrMsg, setCreateErrMsg] = useState("");
-  const [decisionPreview, setDecisionPreview] = useState<CicdFirstDecisionPreviewResponse | null>(null);
-  const [decisionPreviewLoading, setDecisionPreviewLoading] = useState(false);
-  const [decisionPreviewError, setDecisionPreviewError] = useState("");
-
-  // Canonical identity is owned by the backend. A null state means the API did
-  // not return an identity response (for example, the HTTP request itself failed).
-  const [serverIdentity, setServerIdentity] = useState<{
-    gitUrl: string | null;
-    gitBranch: string | null;
-    needsNetwork: boolean;
-  } | null>(null);
-
-  const [cicdFirstDecision, setCicdFirstDecision] = useState<"release" | "cicd_only">("cicd_only");
-  const [newCicdBuildImage, setNewCicdBuildImage] = useState("");
-  const [newCicdTimeout, setNewCicdTimeout] = useState(String(CICD_TEST_TIMEOUT_DEFAULT));
-  const [newCicdNotes, setNewCicdNotes] = useState("");
-  const isRepo = repoType === "repo";
-  const effectiveBranch = isRepo ? GERRIT_MANIFEST_BRANCH : branch.trim();
-
-  function retryInfoForDuplicate(message: string): RetryCreateInfo | null {
-    const duplicateAppId = duplicateAppIdFromError(message);
-    const app = apps.find((item) => item.id === duplicateAppId);
-    const status = app?.cicd_onboarding_status;
-    if (!app || (status !== "rejected_create" && status !== "cancelled_create")) {
-      return null;
-    }
-    const snap = releaseSnap(release, app.id);
-    const existingName = (snap?.official_name ?? app.aliases?.[0] ?? app.id).trim();
-    if (existingName !== officialName.trim()) return null;
-    return {
-      appId: app.id,
-      appName: existingName,
-      status,
-      reviewNote: app.cicd_onboarding_review_note ?? "",
-    };
-  }
-
-  function retryInfoFromPreview(data: FetchPreviewResponse): RetryCreateInfo | null {
-    if (!data.retry_existing_app_id || !data.retry_existing_app_name || !data.retry_onboarding_status) {
-      return null;
-    }
-    return {
-      appId: data.retry_existing_app_id,
-      appName: data.retry_existing_app_name,
-      status: data.retry_onboarding_status,
-      reviewNote: data.retry_review_note ?? "",
-    };
-  }
-
-  // ── Wizard handlers ──────────────────────────────────────────────────────
-
-  function resetDecisionPreview() {
-    setDecisionPreview(null);
-    setDecisionPreviewLoading(false);
-    setDecisionPreviewError("");
-  }
-
-  async function loadDecisionPreview(): Promise<CicdFirstDecisionPreviewResponse | null> {
-    setDecisionPreview(null);
-    setDecisionPreviewError("");
-    setDecisionPreviewLoading(true);
-    try {
-      const data = await fetchCicdFirstDecisionPreview({
-        release_id: currentReleaseId,
-        release_decision: cicdFirstDecision,
-      });
-      if (!Array.isArray(data.releases)) throw new Error("服务端未返回版本决策明细");
-      setDecisionPreview(data);
-      return data;
-    } catch (error) {
-      setDecisionPreviewError(error instanceof Error ? error.message : "无法获取版本决策");
-      return null;
-    } finally {
-      setDecisionPreviewLoading(false);
-    }
-  }
-
-  async function handleFetch() {
-    if (!officialName.trim()) { setFetchErrMsg("请填写官方名称"); return; }
-    if (!docTarget) { setFetchErrMsg("请选择类型（HPC/AI4Sci）"); return; }
-    if (!appTypeChoice) { setFetchErrMsg("请选择 APP 类型"); return; }
-    const submittedRepoName = repoName.trim();
-    setRepoName(submittedRepoName);
-    if (!submittedRepoName) { setFetchErrMsg("请填写仓库路径"); return; }
-    if (!effectiveBranch) { setFetchErrMsg("请填写分支"); return; }
-
-    setFetchErrMsg("");
-    setFetchErrBlocking(false);
-    setRetryCreateInfo(null);
-    setServerIdentity(null);
-    setStep("fetching");
-    const decisionPreviewPromise = loadDecisionPreview();
-    try {
-      const data = await fetchCicdPreview({
-        official_name: officialName.trim(),
-        repo_type: repoType,
-        repo_name: submittedRepoName,
-        branch: effectiveBranch,
-      });
-      const retryInfo = retryInfoFromPreview(data);
-      setRetryCreateInfo(retryInfo);
-
-      setServerIdentity({
-        gitUrl: data.git_url,
-        gitBranch: data.git_branch,
-        needsNetwork: data.needs_network,
-      });
-
-      if (data.app_info_unavailable) {
-        // Gerrit content fetch failed (soft 200); identity already updated above.
-        setFetchErrMsg(data.app_info_error ?? "Gerrit app_info 不可用");
-        setFetchErrBlocking(false);
-        await decisionPreviewPromise;
-        setStep("fetch-error");
-        return;
-      }
-
-      setPreview(data);
-      await decisionPreviewPromise;
-      setStep("preview");
-    } catch (e) {
-      // Only 400 / 403 / network errors reach here under the new impl-1 contract.
-      const message = e instanceof Error ? e.message : "Gerrit 信息拉取失败";
-      const retryInfo = isDuplicateIdentityError(message) ? retryInfoForDuplicate(message) : null;
-      setFetchErrMsg(message);
-      setRetryCreateInfo(retryInfo);
-      setFetchErrBlocking(isDuplicateIdentityError(message) && !retryInfo);
-      await decisionPreviewPromise;
-      setStep("fetch-error");
-    }
-  }
-
-  /** Create without Gerrit preview (fetch failed or user skipped). */
-  async function handleSkipAndCreate() {
-    if (!decisionPreview) {
-      setCreateErrMsg("请先成功加载当前及后续 release 的发布决策");
-      return;
-    }
-    setStep("creating");
-    setCreateErrMsg("");
-    const submittedRepoName = repoName.trim();
-    try {
-      const r = await cicdFirstNewApp({
-        release_id: currentReleaseId,
-        official_name: officialName.trim(),
-        app_name: officialName.trim(),
-        doc_target: docTarget,
-        app_type: appType.trim(),
-        owner_username: currentUsername,
-        repo_type: repoType,
-        repo_name: submittedRepoName,
-        branch: effectiveBranch,
-        cicd_repo_type: repoType,
-        cicd_build_image: newCicdBuildImage,
-        cicd_test_timeout: newCicdTimeout,
-        cicd_notes: newCicdNotes,
-        release_decision: cicdFirstDecision,
-      });
-      onCreated(r.app_id);
-    } catch (e) {
-      setCreateErrMsg(e instanceof Error ? e.message : "创建失败");
-      setStep("fetch-error");
-    }
-  }
-
-  /** Create with fetched app_info (step 2 confirm). */
-  async function handleConfirmCreate() {
-    if (!decisionPreview) {
-      setCreateErrMsg("请先成功加载当前及后续 release 的发布决策");
-      return;
-    }
-    setStep("creating");
-    setCreateErrMsg("");
-    const submittedRepoName = repoName.trim();
-    try {
-      const r = await cicdFirstNewApp({
-        release_id: currentReleaseId,
-        official_name: officialName.trim(),
-        app_name: officialName.trim(),
-        doc_target: docTarget,
-        app_type: appType.trim(),
-        owner_username: currentUsername,
-        repo_type: repoType,
-        repo_name: submittedRepoName,
-        branch: effectiveBranch,
-        cicd_repo_type: repoType,
-        cicd_build_image: newCicdBuildImage,
-        cicd_test_timeout: newCicdTimeout,
-        cicd_notes: newCicdNotes,
-        release_decision: cicdFirstDecision,
-        app_info_parsed: preview?.parsed ?? undefined,
-        app_info_commit_id: preview?.commit_id ?? undefined,
-      });
-      onCreated(r.app_id);
-    } catch (e) {
-      setCreateErrMsg(e instanceof Error ? e.message : "创建失败");
-      setStep("preview");
-    }
-  }
-
-  // ── Step 2: preview confirmation ─────────────────────────────────────────
-  if (step === "preview" || (step === "creating" && preview !== null)) {
-    const isCreating = step === "creating";
-    const isRetryCreate = retryCreateInfo !== null;
-    const identityUrl = preview?.git_url ?? serverIdentity?.gitUrl ?? null;
-    const identityBranch = preview?.git_branch ?? serverIdentity?.gitBranch ?? null;
-    return (
-      <div className="dialog-backdrop" data-testid="new-app-dialog">
-        <div className="dialog-box minw-560 maxw-720">
-          <div className="dialog-head"><h3>确认 App 信息（CICD-first）</h3></div>
-          <div className="dialog-body">
-            <div className="banner accent-strip">
-              ✅ Gerrit 信息已拉取。确认后{isRetryCreate ? "重新提交新建申请" : "提交创建请求"}；发布决策立即用于 QA 规划，CICD 创建仍需 RM 审批/交付。
-            </div>
-            {retryCreateInfo && (
-              <div className="banner warnp mb-8" data-testid="new-app-retry-banner">
-                曾提交新建 App 申请，但已{retryCreateInfo.status === "rejected_create" ? "被拒绝" : "取消"}。
-                {retryCreateInfo.reviewNote ? ` 原因：${retryCreateInfo.reviewNote}` : ""}
-                确认后将为 {retryCreateInfo.appName} 重新提交“新建”CICD 申请。
-              </div>
-            )}
-            <IdentityBox
-              gitUrl={identityUrl}
-              gitBranch={identityBranch}
-              needsNetwork={preview?.needs_network ?? serverIdentity?.needsNetwork ?? false}
-            />
-            <div className="form overlay-freeze" data-testid="new-app-preview">
-              <label>官方名称<input className="input" value={officialName.trim()} disabled /></label>
-              <label>仓库<input className="input" value={`${repoName.trim()} @ ${effectiveBranch}`} disabled /></label>
-              <label>Release 决策<input className="input" value={cicdFirstDecision === "cicd_only" ? "cicd-only" : "release"} disabled /></label>
-              {preview && (<>
-                <label>版本<input className="input" value={preview.app_version || "—"} disabled /></label>
-                <label>x86 芯片<input className="input" value={preview.x86_chips || "—"} disabled /></label>
-                <label>arm 芯片<input className="input" value={preview.arm_chips || "—"} disabled /></label>
-                <label>Python label<input className="input" value={preview.python_label || "—"} disabled /></label>
-                <label>PyTorch label<input className="input" value={preview.pytorch_label || "—"} disabled /></label>
-                <label>OS<input className="input" value={preview.os || "—"} disabled /></label>
-                <label>架构<input className="input" value={preview.arch || "—"} disabled /></label>
-                {preview.community_release_status && (
-                  <label>开发者社区发布情况<input className="input" value={preview.community_release_status} disabled /></label>
-                )}
-              </>)}
-            </div>
-            <NewAppDecisionPlan
-              preview={decisionPreview}
-              loading={decisionPreviewLoading}
-              error={decisionPreviewError}
-              onRetry={() => void loadDecisionPreview()}
-            />
-            {createErrMsg && <p className="lerr">{createErrMsg}</p>}
-          </div>
-          <div className="dialog-actions">
-            <button className="btn ghost sm mr-auto" onClick={() => { resetDecisionPreview(); setStep("form"); }} disabled={isCreating}>← 重新填写</button>
-            <button className="btn" onClick={onClose} disabled={isCreating}>取消</button>
-            <button className="btn primary" onClick={() => void handleConfirmCreate()} disabled={isCreating || decisionPreviewLoading || !decisionPreview} data-testid="new-app-submit">
-              {isCreating ? "提交中…" : isRetryCreate ? "重新申请" : "确认并创建"}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Fetch-error: Gerrit unreachable ──────────────────────────────────────
-  if (step === "fetch-error" || (step === "creating" && preview === null)) {
-    const isCreating = step === "creating";
-    return (
-      <div className="dialog-backdrop" data-testid="new-app-dialog">
-        <div className="dialog-box minw-560 maxw-720">
-          <div className="dialog-head"><h3>新增 App（CICD-first）</h3></div>
-          <div className="dialog-body">
-            <div className="banner bad mb-8">
-              {fetchErrBlocking ? "无法继续创建" : "⚠️ Gerrit 信息拉取失败"}：{fetchErrMsg || "网络不可达"}
-              {!fetchErrBlocking && (
-                <>
-                  <br />
-                  <span className="small muted mt-4 block">
-                    注：本环境 Gerrit 不可达，芯片/版本信息可在创建后于文档信息页手动完善。
-                  </span>
-                </>
-              )}
-            </div>
-            {retryCreateInfo && (
-              <div className="banner warnp mb-8" data-testid="new-app-retry-banner">
-                曾提交新建 App 申请，但已{retryCreateInfo.status === "rejected_create" ? "被拒绝" : "取消"}。
-                {retryCreateInfo.reviewNote ? ` 原因：${retryCreateInfo.reviewNote}` : ""}
-                可为 {retryCreateInfo.appName} 重新提交“新建”CICD 申请。
-              </div>
-            )}
-            <IdentityBox
-              gitUrl={serverIdentity?.gitUrl ?? null}
-              gitBranch={serverIdentity?.gitBranch ?? null}
-              needsNetwork={serverIdentity?.needsNetwork ?? false}
-            />
-            <p className="small muted">
-              <b>官方名称：</b>{officialName.trim()}<br />
-              <b>仓库：</b>{repoName.trim()} @ {effectiveBranch}<br />
-              <b>Release 决策：</b>{cicdFirstDecision === "cicd_only" ? "cicd-only" : "release"}
-            </p>
-            <NewAppDecisionPlan
-              preview={decisionPreview}
-              loading={decisionPreviewLoading}
-              error={decisionPreviewError}
-              onRetry={() => void loadDecisionPreview()}
-            />
-            {createErrMsg && <p className="lerr">{createErrMsg}</p>}
-          </div>
-          <div className="dialog-actions">
-            <button className="btn ghost sm mr-auto" onClick={() => { setFetchErrMsg(""); setFetchErrBlocking(false); setRetryCreateInfo(null); resetDecisionPreview(); setStep("form"); }} disabled={isCreating}>← 返回修改</button>
-            <button className="btn" onClick={onClose} disabled={isCreating}>取消</button>
-            {!fetchErrBlocking && (
-              <>
-                <button className="btn warn" onClick={() => void handleFetch()} disabled={isCreating || decisionPreviewLoading}>重试拉取</button>
-                <button className="btn primary" onClick={() => void handleSkipAndCreate()} disabled={isCreating || decisionPreviewLoading || !decisionPreview} data-testid="new-app-submit">
-                  {isCreating ? "提交中…" : retryCreateInfo ? "重新申请" : "跳过，直接创建"}
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Step 1: identity form (default / fetching) ───────────────────────────
-  const isFetching = step === "fetching";
-  return (
-    <div className="dialog-backdrop" data-testid="new-app-dialog">
-      <div className="dialog-box maxw-520">
-        <div className="dialog-head">
-          <div>
-            <h3>新增 App（CICD-first）</h3>
-            <p className="muted small m-4-0-0">
-              发布决策提交后立即用于 QA 规划；CICD 创建进入 RM 审批，版本和芯片信息将从 Gerrit app_info 拉取。
-            </p>
-          </div>
-        </div>
-        <div className="dialog-body">
-          <div className="form">
-            <label>官方名称 <span className="required">*</span>
-              <input className="input" value={officialName} onChange={(e) => setOfficialName(e.target.value)}
-                data-testid="new-app-name" placeholder="例：AMBER" disabled={isFetching} />
-            </label>
-            <label>类型 <span className="required">*</span>
-              <select className="select" value={docTarget} required disabled={isFetching}
-                onChange={(e) => {
-                  const target = e.target.value;
-                  setDocTarget(target);
-                  if (!appTypeOptionsForTarget(target).includes(appType)) {
-                    setAppTypeChoice("");
-                  }
-                }} data-testid="new-app-doc-target">
-                <option value="">请选择 HPC/AI4Sci</option>
-                {DOC_TARGETS.map((target) => <option key={target} value={target}>{docTargetMetadata[target].label}</option>)}
-              </select>
-            </label>
-            <label>APP 类型 <span className="required">*</span>
-              <select className="select" value={appTypeChoice} required disabled={isFetching || !docTarget}
-                onChange={(e) => setAppTypeChoice(e.target.value)} data-testid="new-app-type">
-                <option value="">请选择 APP 类型</option>
-                {existingAppTypes.map((type) => <option key={type} value={`existing:${type}`}>{type}</option>)}
-              </select>
-            </label>
-            <label>仓库类型
-              <select className="select" value={repoType} disabled={isFetching} onChange={(e) => {
-                const v = e.target.value;
-                setRepoType(v);
-                if (v === "repo") setBranch(GERRIT_MANIFEST_BRANCH);
-              }}>
-                <option value="git">git</option>
-                <option value="repo">repo</option>
-              </select>
-            </label>
-            <label>仓库名 / Gerrit 路径 <span className="required">*</span>
-              <RepoPathInput
-                repoType={repoType}
-                value={repoName}
-                onChange={setRepoName}
-                disabled={isFetching}
-                testId="new-app-repo-name"
-              />
-              <span className="hint">
-                {isRepo
-                  ? `repo 类型只填写 ${GERRIT_MANIFEST_PROJECT} 仓库内的 XML 路径；分支固定为 ${GERRIT_MANIFEST_BRANCH}。`
-                  : `git 类型只填写 ${GERRIT_HPC_PROJECT} 后的短路径。`}
-              </span>
-            </label>
-            <label>分支 <span className="required">*</span>
-              <input className="input" value={isRepo ? GERRIT_MANIFEST_BRANCH : branch} disabled={isRepo || isFetching}
-                onChange={(e) => setBranch(e.target.value)} placeholder={`例：${GERRIT_MANIFEST_BRANCH}`} />
-            </label>
-            <div className="new-app-community-decision-grid">
-              <label>Release 决策
-                <select
-                  className="select"
-                  value={cicdFirstDecision}
-                  onChange={(e) => setCicdFirstDecision(e.target.value as "release" | "cicd_only")}
-                  disabled={isFetching}
-                  data-testid="new-app-release-decision"
-                >
-                  {CICD_FIRST_RELEASE_DECISION_OPTIONS.map(({ value, label }) => (
-                    <option key={value} value={value} disabled={value === "release" && !beforeAppFreeze(release)}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <label><BuildImageLabel />
-              <input className="input" value={newCicdBuildImage}
-                onChange={(e) => setNewCicdBuildImage(e.target.value)}
-                disabled={isFetching} />
-            </label>
-            <label>超时(min)
-              <input className="input" type="number" min={1} step={1} value={newCicdTimeout}
-                onChange={(e) => setNewCicdTimeout(normalizeTimeoutText(e.target.value))}
-                disabled={isFetching} />
-            </label>
-            <label>备注
-              <input className="input" value={newCicdNotes}
-                onChange={(e) => setNewCicdNotes(e.target.value)}
-                disabled={isFetching} />
-            </label>
-          </div>
-          {fetchErrMsg && <p className="lerr">{fetchErrMsg}</p>}
-        </div>
-        <div className="dialog-actions">
-          <button className="btn" onClick={onClose} disabled={isFetching}>取消</button>
-          <button className="btn primary" onClick={() => void handleFetch()} disabled={isFetching} data-testid="new-app-fetch">
-            {isFetching ? "拉取中…" : "拉取 Gerrit 信息 →"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-
-// ---------------------------------------------------------------------------
-// AppCicdPane — CICD sub-tab inside the App detail panel
-// ---------------------------------------------------------------------------
-
-function appCicdStatus(decision: string): "Running" | "Stopped" {
-  return decision === "stopped" ? "Stopped" : "Running";
-}
-
-interface AppCicdPaneProps {
-  app: App;
-  releaseDecision: string;
-  displayedStatus: "Running" | "Stopped";
-  editMode: boolean;
-  canEdit: boolean;
-  form: FormState;
-  pendingRequests: CicdRequest[];
-  historyRequests: CicdRequest[];
-  repoError?: string;
-  onPatch: <K extends keyof FormState>(key: K, value: FormState[K]) => void;
-}
-
-function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit, form, pendingRequests, historyRequests, repoError, onPatch }: AppCicdPaneProps) {
-  const status = displayedStatus;
-  const statusCls = status === "Running" ? "ok" : "warnp";
-  const disabled = !editMode || !canEdit;
-  const onboardingLabel = cicdOnboardingLabel(app);
-  const openCreate = pendingRequests.find(isOpenCreateRequest);
-  const openStatusModify = pendingRequests.find(isOpenStatusModifyRequest);
-  const openJiraModify = pendingRequests.find(isOpenJiraModifyRequest);
-
-  return (
-    <div data-testid="cicd-link-card" className="stack-12">
-      <div className="banner plain-strip">
-        <div className="row gap-8 items-center wrap">
-          <b className="fs-12">App CICD 配置</b>
-          <span className={`pill ${statusCls}`}>{status}</span>
-          {onboardingLabel && (
-            <span className={`pill ${cicdOnboardingClass(app)}`}>{onboardingLabel}</span>
-          )}
-          <span className="small muted" title={`${app.git_url}@${app.git_branch}`}>{formatCicdRepoPath(app.git_url, app.cicd_repo_type || CICD_REPO_TYPE_DEFAULT)}@{app.git_branch}</span>
-        </div>
-        <div className="small muted mt-2 fs-11">
-          运行/停止由本 app 决策决定：{releaseDecisionLabels[releaseDecision as keyof typeof releaseDecisionLabels] ?? releaseDecision}
-        </div>
-      </div>
-
-      {app.cicd_onboarding_status === "rejected_create" && (
-        <div className="banner bad m-0" data-testid="app-cicd-rejected-banner">
-          <b>CICD 创建申请已被拒绝</b>
-          <div className="small mt-4">
-            拒绝原因：{app.cicd_onboarding_review_note?.trim() || "未填写"}
-          </div>
-        </div>
-      )}
-
-      {app.cicd_onboarding_status === "cancelled_create" && (
-        <div className="banner warnp m-0" data-testid="app-cicd-cancelled-banner">
-          <b>CICD 创建申请已取消</b>
-        </div>
-      )}
-
-      {openCreate && (
-        <div className="banner warnp m-0" data-testid="app-cicd-create-block-banner">
-          CICD 新建申请 #{openCreate.id} 未完成，不能提交新的 CICD 修改。
-        </div>
-      )}
-
-      {openJiraModify && (
-        <div className="banner warnp m-0" data-testid="app-cicd-jira-block-banner">
-          {jiraModifyBlockMessage(openJiraModify)}
-        </div>
-      )}
-
-      {openStatusModify && (
-        <div className="banner warnp m-0" data-testid="app-cicd-status-block-banner">
-          {statusModifyBlockMessage(openStatusModify)}
-        </div>
-      )}
-
-      {pendingRequests.length > 0 && (
-        <div className="banner m-0" data-testid="app-cicd-pending-banner">
-          <b>有待处理 CICD 流程</b>
-          <div className="table mt-8">
-            <table className="cicd-diff-table">
-              <thead><tr><th>申请</th><th>状态</th><th>Jira</th><th>内容</th></tr></thead>
-              <tbody>
-                {pendingRequests.map((req) => (
-                  <tr key={req.id}>
-                    <td>#{req.id} {CICD_REQ_TYPE_LABEL[req.request_type] ?? req.request_type}</td>
-                    <td>{cicdWorkflowState(req)}</td>
-                    <td>{req.jira_id || "—"}</td>
-                    <td>{cicdRequestSummary(req)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      <details className="section" open>
-        <summary><span className="chev">▶</span> App CICD 配置</summary>
-        <div className="section-body">
-          <div className="form">
-            <label>仓库类型
-              <select className="select" value={form.cicd_repo_type || CICD_REPO_TYPE_DEFAULT}
-                onChange={(e) => {
-                  const nextRepoType = e.target.value;
-                  onPatch("cicd_repo_type", nextRepoType);
-                  if (nextRepoType === "repo") onPatch("git_branch", GERRIT_MANIFEST_BRANCH);
-                }}
-                disabled={disabled}
-                data-testid="field-cicd-repo-type">
-                {CICD_REPO_TYPE_OPTIONS.map((value) => (
-                  <option key={value} value={value}>{value}</option>
-                ))}
-              </select>
-            </label>
-            <label>Gerrit 路径
-              <RepoPathInput
-                repoType={form.cicd_repo_type || CICD_REPO_TYPE_DEFAULT}
-                value={formatCicdRepoPath(form.git_url, form.cicd_repo_type || CICD_REPO_TYPE_DEFAULT)}
-                onChange={(value) => onPatch("git_url", value)}
-                disabled={disabled}
-                testId="field-cicd-git-url"
-              />
-              <span className="field-help">
-                git 类型只填 {GERRIT_HPC_PROJECT} 后路径；repo 类型只填 {GERRIT_MANIFEST_PROJECT} 内 XML 路径。
-              </span>
-              {repoError && (
-                <span className="field-error" data-testid="field-cicd-git-url-error" aria-live="polite">
-                  {repoError}
-                </span>
-              )}
-            </label>
-            <label>Branch
-              <input className="input" value={form.git_branch}
-                onChange={(e) => onPatch("git_branch", e.target.value)}
-                disabled={disabled}
-                data-testid="field-cicd-git-branch" />
-            </label>
-            {form.community_release && (
-              <div>
-                <div className="field-label">开发者社区产物</div>
-                <div className="readfield" data-testid="field-cicd-community-artifact">
-                  {form.community_release}
+                </div>
+                <div className="sub">{app.type || "—"} · {usersLabel(app.owners, displayNames)}</div>
+                <div className="app-status">
+                  {app.cicd_status === "stopped" && <CicdStatusPill app={app} />}
+                  <EntryPill entry={entry} />
+                  {active && <QaPill status={active.qa_status} />}
+                  {active?.pending_scope_request && <span className="pill warnp">范围扩大待审批</span>}
+                  {app.sync_error && app.cicd_status === "running" && <span className="pill bad">app_info 同步失败</span>}
+                  <CicdPendingPill count={cicdPendingCounts[app.id] ?? 0} />
                 </div>
               </div>
-            )}
-            <label><BuildImageLabel />
-              <input className="input" value={form.cicd_build_image}
-                onChange={(e) => onPatch("cicd_build_image", e.target.value)}
-                disabled={disabled}
-                data-testid="field-cicd-build-image" />
-            </label>
-            <label>超时(min)
-              <input className="input" type="number" min={1} step={1} value={normalizeTimeoutText(form.cicd_test_timeout)}
-                onChange={(e) => onPatch("cicd_test_timeout", normalizeTimeoutText(e.target.value))}
-                disabled={disabled}
-                data-testid="field-cicd-timeout" />
-            </label>
-            <label className="grid-span-all">备注
-              <input className="input" value={form.cicd_notes}
-                onChange={(e) => onPatch("cicd_notes", e.target.value)}
-                disabled={disabled}
-                data-testid="field-cicd-notes" />
-            </label>
-          </div>
-        </div>
-      </details>
-
-      <details className="section" open>
-        <summary><span className="chev">▶</span> CICD 变更历史</summary>
-        <div className="section-body">
-          {!historyRequests.length ? (
-            <p className="muted small">暂无 CICD 变更历史。</p>
-          ) : (
-            <div className="table">
-              <table className="cicd-diff-table">
-                <thead><tr><th>申请</th><th>提交人</th><th>时间</th><th>状态</th><th>Jira</th><th>审批备注</th><th>内容</th></tr></thead>
-                <tbody>
-                  {historyRequests.map((req) => (
-                    <tr key={req.id}>
-                      <td>#{req.id} {CICD_REQ_TYPE_LABEL[req.request_type] ?? req.request_type}</td>
-                      <td>{req.submitter_display || req.submitter}</td>
-                      <td>{formatServerTime(req.reviewed_at || req.submitted_at || "")}</td>
-                      <td>{cicdWorkflowState(req)}</td>
-                      <td>{req.jira_id || "—"}</td>
-                      <td>{req.review_note || "—"}</td>
-                      <td>{cicdRequestSummary(req)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
-          )}
-        </div>
-      </details>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1441,1449 +149,135 @@ function AppCicdPane({ app, releaseDecision, displayedStatus, editMode, canEdit,
 // Detail panel
 // ---------------------------------------------------------------------------
 
-interface FormState {
-  official_name: string;
-  type: string;
-  official_url: string;
-  description: string;
-  doc_target: string;
-  owners: string;
-  release_decision: string;
-  git_url: string;
-  git_branch: string;
-  cicd_repo_type: string;
-  cicd_build_image: string;
-  cicd_test_timeout: string;
-  cicd_notes: string;
-  intro: string;
-  image_usage: string;
-  binary_usage: string;
-  env_setup: string;
-  limitations: string;
-  community_release: string;
-  community_menu_level1: string;
-  community_doc_url: string;
-  community_description: string;
-  community_python: string;
-  community_framework: string;
-  sanity_arm: boolean;
-  sanity_ubuntu: boolean;
-  test_docs: SnapshotTestDoc[];
-}
-
 interface DetailPanelProps {
   app: App | null;
-  snap: Snapshot | null;
-  release: import("../../types").ReleaseDetail | null;
-  releases: ReleaseSummary[];
-  user: import("../../types").User | null | undefined;
-  displayNames: Record<string, string>;
+  entry: Entry | null;
+  release: ReleaseDetail | null;
+  openRequests: import("../../types").CicdRequest[];
   onSaved: () => void;
-  onRetryCreate: (app: App, snap: Snapshot) => void;
 }
 
-function DetailPanel({ app, snap, release, releases, user, displayNames: _displayNames, onSaved, onRetryCreate }: DetailPanelProps) {
-  const queryClient = useQueryClient();
-  const canEditRmOnlyFields = canEditRmFields(user);
-  const userIsOwner = isOwner(user);
-  const locked = releaseLocked(release);
-  const docDeadline = beforeDocDeadline(release);
-  const beforeAppFreezeDeadline = beforeAppFreeze(release);
-  const canEditDetail = !!(app && snap && canEdit(user, snap) && !locked);
-  // app_info stays maintainable by QA until the doc deadline, so QA gets the
-  // upload / fetch controls without the App edit mode the other roles use.
-  const canUpdateAppInfoNow = !!(app && snap && canUpdateAppInfo(user, snap) && !locked && docDeadline);
-
-  // W3: two sub-tabs in the detail panel
-  const [detailTab, setDetailTab] = useState<"docs" | "cicd">("docs");
-
-  const [editMode, setEditMode] = useState(false);
-  const canEditDocFields = editMode && docDeadline;
-  // Roles that edit the whole App keep the controls behind 「修改」; roles that
-  // may only touch app_info (QA) see them directly.
-  const showAppInfoActions = canUpdateAppInfoNow && (editMode || !canEditDetail);
-  const [dirty, setDirty] = useState(false);
-
-  // Form state (mirrors snapshot fields editable in legacy)
-  const [form, setForm] = useState<FormState>(() => snap ? snapshotToForm(snap, app!) : emptyForm());
-  const existingAppTypes = appTypeOptionsForTarget(form.doc_target);
-  const showCurrentAppType = !!form.type.trim() && !existingAppTypes.includes(form.type.trim());
-  const [saving, setSaving] = useState(false);
-  const [saveErr, setSaveErr] = useState("");
-  const [cicdRepoErr, setCicdRepoErr] = useState("");
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
-  const [auditEntries, setAuditEntries] = useState<AppAuditEntry[] | null>(null);
-  const [auditLoading, setAuditLoading] = useState(false);
-  const [fetchProgress, setFetchProgress] = useState<AppInfoFetchProgress | null>(null);
-  // F1: pending decision-sync owner-choice dialog (null = closed)
-  const [syncDialog, setSyncDialog] = useState<{
-    preview: DecisionSyncPreview;
-    newDecision: string;
-    forced: boolean;
-    snapshotUpdate: Record<string, unknown>;
-  } | null>(null);
-  // F2: copy-from-version picker (null = closed)
-  const [showCopyDialog, setShowCopyDialog] = useState(false);
-
-  const {
-    data: appCicdOpenRequests,
-    isLoading: appCicdOpenLoading,
-  } = useQuery({
-    queryKey: ["cicd", "requests", "app-workbench", "open", app?.id ?? ""],
-    queryFn: async () => {
-      const [pending, deliveries] = await Promise.all([
-        fetchCicdRequests({ status: "pending" }),
-        fetchCicdDeliveries("pending_or_returned"),
-      ]);
-      return [...(pending.requests ?? []), ...(deliveries.deliveries ?? [])];
-    },
-    enabled: !!app,
-    staleTime: 0,
-    refetchOnMount: true,
-  });
-  const { data: appCicdHistoryRequests } = useQuery({
-    queryKey: ["cicd", "requests", "app-workbench", "history", app?.id ?? ""],
-    queryFn: () => fetchCicdRequests({ sinceDays: 3650 }),
-    enabled: !!app && detailTab === "cicd",
-    staleTime: 0,
-    refetchOnMount: true,
-  });
-
-  // F3: keep the shared store in sync so the page-level app-switch guard and
-  // the TabNav tab-switch guard know whether the detail form is dirty.
+function DetailPanel({ app, entry, release, openRequests, onSaved }: DetailPanelProps) {
+  const { user } = useAuth();
   const setAppDetailDirty = useUiStore((s) => s.setAppDetailDirty);
+  const appDetailDirty = useUiStore((s) => s.appDetailDirty);
+  const [tab, setTab] = useState<DetailTab>("signup");
+  const [audit, setAudit] = useState<AppAuditEntry[] | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+
+  const { data: history } = useQuery({
+    queryKey: ["cicd", "requests", "app-workbench", "history", app?.id ?? ""],
+    queryFn: () => fetchCicdRequests({ taskId: app!.id }),
+    enabled: !!app && tab === "cicd",
+    staleTime: 0,
+  });
+
   React.useEffect(() => {
-    setAppDetailDirty(dirty);
-  }, [dirty, setAppDetailDirty]);
-  // Reset the shared dirty flag when the panel unmounts (e.g. leaving the tab).
-  React.useEffect(() => () => setAppDetailDirty(false), [setAppDetailDirty]);
+    setAudit(null);
+  }, [app?.id, release?.id]);
 
-  // F3: native browser "Leave site?" prompt on refresh/close while dirty.
   React.useEffect(() => {
-    if (!dirty) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
-      return "";
-    };
-    window.addEventListener("beforeunload", handler);
-    return () => window.removeEventListener("beforeunload", handler);
-  }, [dirty]);
-
-  const previousAppIdRef = React.useRef<string | null>(null);
-
-  // Sync form when the selected app changes, or when fresh data arrives for
-  // the same app and the local form has no unsaved edits.
-  React.useEffect(() => {
-    if (!snap || !app) return;
-    const appChanged = previousAppIdRef.current !== app.id;
-    previousAppIdRef.current = app.id;
-    if (appChanged || !dirty) {
-      setForm(snapshotToForm(snap, app));
-    }
-    if (appChanged) {
-      setEditMode(false);
-      setDirty(false);
-      setSaveErr("");
-      setCicdRepoErr("");
-      setPendingFile(null);
-      setAuditEntries(null);
-      setFetchProgress(null);
-      setSyncDialog(null);
-      setShowCopyDialog(false);
-      setDetailTab("docs");
-    }
-  }, [app, snap, dirty]);
-
-  function snapshotToForm(s: Snapshot, a: App): FormState {
-    return {
-      official_name: s.official_name ?? "",
-      type: s.type ?? "",
-      official_url: s.official_url ?? "",
-      description: s.description ?? "",
-      doc_target: normalizeDocTarget(s.doc_target),
-      owners: (s.owners ?? []).join(","),
-      release_decision: s.release_decision ?? "release",
-      git_url: formatCicdRepoPath(
-        a.git_url,
-        a.cicd_repo_type || CICD_REPO_TYPE_DEFAULT,
-      ),
-      git_branch: a.git_branch ?? "",
-      cicd_repo_type: a.cicd_repo_type || CICD_REPO_TYPE_DEFAULT,
-      cicd_build_image: a.cicd_build_image ?? "",
-      cicd_test_timeout: normalizeTimeoutText(a.cicd_test_timeout),
-      cicd_notes: a.cicd_notes ?? "",
-      // doc fields
-      intro: s.doc?.intro ?? "",
-      image_usage: s.doc?.image_usage ?? "",
-      binary_usage: s.doc?.binary_usage ?? "",
-      env_setup: s.doc?.env_setup ?? "",
-      limitations: s.doc?.limitations ?? "",
-      // community
-      community_release: s.community?.release_status ?? "",
-      community_menu_level1: s.community?.menu_level1 ?? "",
-      community_doc_url: s.community?.doc_url ?? "",
-      community_description: s.community?.description ?? "",
-      community_python: s.community?.python_version ?? "",
-      community_framework: s.community?.framework_version ?? "",
-      // sanity
-      sanity_arm: s.sanity?.arm_kylin ?? false,
-      sanity_ubuntu: s.sanity?.ubuntu ?? false,
-      // test_docs — managed as mutable array
-      test_docs: (s.test_docs ?? []).filter((d) => !d.obsolete).map((d) => ({ ...d })),
-    };
-  }
-
-  function emptyForm(): FormState {
-    return {
-      official_name: "", type: "", official_url: "", description: "",
-      doc_target: DOC_TARGET_DEFAULT, owners: "", release_decision: "release",
-      git_url: "", git_branch: "",
-      cicd_repo_type: CICD_REPO_TYPE_DEFAULT, cicd_build_image: "", cicd_test_timeout: String(CICD_TEST_TIMEOUT_DEFAULT), cicd_notes: "",
-      intro: "", image_usage: "", binary_usage: "", env_setup: "", limitations: "",
-      community_release: "", community_menu_level1: "", community_doc_url: "", community_description: "",
-      community_python: "", community_framework: "",
-      sanity_arm: false, sanity_ubuntu: false,
-      test_docs: [],
-    };
-  }
-
-  function patch<K extends keyof FormState>(key: K, value: FormState[K]) {
-    setForm((f) => ({ ...f, [key]: value }));
-    if (key === "git_url" || key === "cicd_repo_type") {
-      setCicdRepoErr("");
-    }
-    setDirty(true);
-  }
-
-  async function loadAudit() {
-    if (!app || !snap || !release) return;
+    if (tab !== "changelog" || !app || audit || auditLoading) return;
     setAuditLoading(true);
-    try {
-      const data = await apiGet<{ entries: AppAuditEntry[] }>(
-        `/api/app-audit?app_id=${encodeURIComponent(app.id)}&release_id=${encodeURIComponent(release.id)}`,
-      );
-      setAuditEntries(data.entries ?? []);
-    } catch {
-      setAuditEntries([]);
-    } finally {
-      setAuditLoading(false);
-    }
-  }
+    const qs = new URLSearchParams({ app_id: app.id });
+    if (release) qs.set("release_id", release.id);
+    apiGet<{ entries: AppAuditEntry[] }>(`/api/app-audit?${qs.toString()}`)
+      .then((r) => setAudit(r.entries))
+      .catch((e) => toast.error(e instanceof Error ? e.message : String(e)))
+      .finally(() => setAuditLoading(false));
+  }, [tab, app, release, audit, auditLoading]);
 
-  function buildSnapshotUpdate(): Record<string, unknown> {
-    if (!docDeadline) {
-      return { release_decision: form.release_decision };
-    }
-    const imageCount = numberValue(snap?.community?.image_count);
-    const pkgCount = numberValue(snap?.community?.pkg_count);
-    const hasCommunityArtifacts = imageCount > 0 || pkgCount > 0;
-    const snapshotUpdate: Record<string, unknown> = {
-      release_decision: form.release_decision,
-      official_name: form.official_name,
-      type: form.type.trim(),
-      official_url: form.official_url,
-      description: form.description,
-      doc_target: form.doc_target,
-      owners: form.owners.split(/[,，、;；/]+/).map((x) => x.trim()).filter(Boolean),
-      doc: {
-        intro: form.intro,
-        image_usage: form.image_usage,
-        binary_usage: form.binary_usage,
-        env_setup: form.env_setup,
-        limitations: form.limitations,
-      },
-      community: {
-        release_status: form.community_release,
-        menu_level1: hasCommunityArtifacts ? form.community_menu_level1 : "",
-        doc_url: hasCommunityArtifacts ? form.community_doc_url : "",
-        description: hasCommunityArtifacts ? form.community_description : "",
-        python_version: pkgCount > 0 ? form.community_python : "",
-        framework_version: pkgCount > 0 ? form.community_framework : "",
-      },
-      sanity: {
-        arm_kylin: form.sanity_arm,
-        ubuntu: form.sanity_ubuntu,
-      },
-      test_docs: form.test_docs,
-    };
-    return snapshotUpdate;
-  }
-
-  async function handleSave() {
-    if (!app || !snap || !release) return;
-    if (detailTab === "cicd") {
-      await submitAppCicdChange();
-      return;
-    }
-    if (decisionChangeBlockedReason) {
-      setSaveErr(decisionChangeBlockedReason);
-      return;
-    }
-    if (canEditDocFields && form.doc_target !== normalizeDocTarget(snap.doc_target) && !form.type.trim()) {
-      setSaveErr("请选择 App 类型");
-      return;
-    }
-    const descCount = appDescriptionCount(form.description);
-    if (descCount > APP_DESCRIPTION_LIMIT) {
-      setSaveErr(`描述不能超过${APP_DESCRIPTION_LIMIT}字（当前 ${descCount}/${APP_DESCRIPTION_LIMIT}）`);
-      return;
-    }
-    const snapshotUpdate = buildSnapshotUpdate();
-    const newDecision = form.release_decision;
-
-    // F1: optional sync only matters when there are later releases. Running/
-    // Stopped boundary changes are mandatory and may target earlier releases too,
-    // so they must always ask the backend preview.
-    if (newDecision !== snap.release_decision) {
-      const idx = releases.findIndex((r) => r.id === release.id);
-      const hasLater = idx >= 0 && idx < releases.length - 1;
-      const forcedSync = crossesDecisionRuntimeBoundary(snap.release_decision, newDecision);
-      if (hasLater || forcedSync) {
-        try {
-          const preview = await apiPost<DecisionSyncPreview>("/api/apps/decision-sync/preview", {
-            release_id: release.id,
-            app_id: app.id,
-            decision: newDecision,
-          });
-          if (preview.blocked_reason) {
-            setSaveErr(preview.blocked_reason);
-            return;
-          }
-          const applicable = (preview.releases ?? []).filter((r) => !r.skipped && !r.is_current);
-          if (applicable.length > 0) {
-            setSyncDialog({
-              preview,
-              newDecision,
-              forced: preview.forced ?? forcedSync,
-              snapshotUpdate,
-            });
-            return; // wait for the user's choice
-          }
-        } catch {
-          // Preview failed → fall through to a plain save (no sync).
-        }
-      }
-    }
-
-    await doSave(snapshotUpdate, false);
-  }
-
-  function buildAppCicdDiff(): Record<string, { old: unknown; new: unknown }> {
-    if (!app) return {};
-    const diff: Record<string, { old: unknown; new: unknown }> = {};
-    const originalRepoType = app.cicd_repo_type || CICD_REPO_TYPE_DEFAULT;
-    const nextRepoType = form.cicd_repo_type || CICD_REPO_TYPE_DEFAULT;
-    if (!sameScalarValue(originalRepoType, nextRepoType)) {
-      diff.repo_type = { old: originalRepoType, new: nextRepoType };
-    }
-    if (!sameCicdRepoName(originalRepoType, nextRepoType, app.git_url || "", form.git_url)) {
-      diff.repo_name = {
-        old: formatCicdRepoPath(app.git_url || "", originalRepoType).trim(),
-        new: form.git_url.trim(),
-      };
-    }
-    if (!sameScalarValue(app.git_branch, form.git_branch)) {
-      diff.branch = { old: app.git_branch || "", new: form.git_branch.trim() };
-    }
-    if (!sameScalarValue(app.cicd_build_image || "", form.cicd_build_image)) {
-      diff.build_image = { old: app.cicd_build_image || "", new: form.cicd_build_image.trim() };
-    }
-    const originalTimeout = normalizeTimeoutText(app.cicd_test_timeout);
-    const nextTimeout = normalizeTimeoutText(form.cicd_test_timeout);
-    if (originalTimeout !== nextTimeout) {
-      diff.test_timeout = { old: Number(originalTimeout), new: Number(nextTimeout) };
-    }
-    if (!sameScalarValue(app.cicd_notes || "", form.cicd_notes)) {
-      diff.notes = { old: app.cicd_notes || "", new: form.cicd_notes.trim() };
-    }
-    return diff;
-  }
-
-  async function submitAppCicdChange() {
-    if (!app) return;
-    setSaving(true);
-    setSaveErr("");
-    setCicdRepoErr("");
-    try {
-      const diff = buildAppCicdDiff();
-      if (!Object.keys(diff).length) {
-        setSaveErr("CICD 配置没有任何字段发生变化。");
-        return;
-      }
-      const openCreate = appOpenCicd.find(isOpenCreateRequest);
-      if (openCreate) {
-        setSaveErr(`该 app 已有 CICD 新建申请 #${openCreate.id} 未完成，不能提交新的 CICD 修改；请等待新建申请审批/交付完成后再修改。`);
-        return;
-      }
-      const openStatusModify = appOpenCicd.find(isOpenStatusModifyRequest);
-      const openJiraModify = appOpenCicd.find(isOpenJiraModifyRequest);
-      if (openJiraModify) {
-        setSaveErr(jiraModifyBlockMessage(openJiraModify));
-        return;
-      }
-      if (openStatusModify) {
-        setSaveErr(statusModifyBlockMessage(openStatusModify));
-        return;
-      }
-      const replaceable = appOpenCicd.filter(isReplaceablePendingModifyRequest);
-      const replaceOpen = replaceable.length > 0;
-      if (replaceOpen) {
-        const ids = replaceable.map((req) => `#${req.id}`).join("、");
-        if (!(await confirmDialog({
-          title: "替换待审批申请",
-          body: `已有待审批 CICD 修改申请 ${ids}。继续将取消旧申请，并只提交当前改动作为新申请。`,
-          confirmText: "继续提交",
-        }))) {
-          return;
-        }
-      }
-      await submitCicdRequest({
-        task_id: app.id,
-        request_type: "modify",
-        payload: diff,
-        source: "app_workbench",
-        replace_open: replaceOpen,
-      });
-      setDirty(false);
-      setEditMode(false);
-      snap && setForm(snapshotToForm(snap, app));
-      void queryClient.invalidateQueries({ queryKey: ["cicd", "requests"] });
-      void queryClient.invalidateQueries({ queryKey: ["cicd", "tasks"] });
-      void queryClient.invalidateQueries({ queryKey: ["cicd", "requests", "app-workbench"] });
-      toast.success("CICD 变更申请已提交，等待 RM 审批。");
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      if (
-        message.includes("git 类型只填写")
-        || message.includes("repo 类型只填写")
-        || message.includes("repo 类型必须填写")
-        || message.includes("manifest XML")
-      ) {
-        setCicdRepoErr(`Gerrit 路径校验失败：${message}`);
-      } else {
-        setSaveErr("提交 CICD 变更申请失败：" + message);
-      }
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function doSave(
-    snapshotUpdate: Record<string, unknown>,
-    syncDecision: boolean,
-  ) {
-    if (!app || !snap || !release) return;
-    setSaving(true);
-    setSaveErr("");
-    try {
-      await apiPost("/api/apps/update", {
-        release_id: release.id,
-        app_id: app.id,
-        app: {
-          git_url: form.git_url,
-          git_branch: form.git_branch,
-          cicd_repo_type: form.cicd_repo_type,
-          cicd_build_image: form.cicd_build_image,
-          cicd_test_timeout: form.cicd_test_timeout,
-          cicd_notes: form.cicd_notes,
-        },
-        snapshot: snapshotUpdate,
-        sync_decision: syncDecision,
-      });
-
-      setSyncDialog(null);
-      setDirty(false);
-      setEditMode(false);
-      void queryClient.invalidateQueries({ queryKey: ["cicd", "requests"] });
-      onSaved();
-
-      toast.success("保存成功");
-    } catch (e) {
-      setSaveErr(e instanceof Error ? e.message : "保存失败");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  // F2: copy this app's editable content fields from another release.
-  async function handleCopyFromVersion(sourceReleaseId: string) {
-    if (!app) return;
-    setShowCopyDialog(false);
-    if (dirty && !(await confirmDialog({
-      body: "当前表单已有未保存修改，从其他版本复制会覆盖这些内容。确认继续？",
-      confirmText: "继续复制",
-    }))) {
-      return;
-    }
-    try {
-      const state = await fetchState(sourceReleaseId);
-      const srcSnap = state.release?.snapshots?.[app.id] ?? null;
-      const srcName = state.release?.name ?? sourceReleaseId;
-      if (!srcSnap) {
-        toast.error(`版本「${srcName}」中没有此 app，无法复制。`);
-        return;
-      }
-      setForm((f) => ({
-        ...f,
-        ...copiedScalarFields(srcSnap),
-        test_docs: mergeCopiedTestDocs(f.test_docs, srcSnap.test_docs ?? []),
-      }));
-      setDirty(true);
-      toast.success(`已从版本「${srcName}」复制可编辑信息（文档/测试/社区/Sanity）。请检查后保存。`);
-    } catch (e) {
-      toast.error(`从其他版本复制失败：\n\n${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-
-  async function handleUploadAppInfo() {
-    if (!app || !release || !pendingFile) return;
-    try {
-      const text = await pendingFile.text();
-      const post = (acceptScopeExpansion: boolean) =>
-        apiPost<AppInfoScopeConfirmation>("/api/app-info", {
-          release_id: release.id,
-          app_id: app.id,
-          source: pendingFile.name,
-          app_info: text,
-          accept_scope_expansion: acceptScopeExpansion,
-        });
-      const first = await post(false);
-      if (first?.requires_scope_confirmation) {
-        if (!(await confirmDialog({
-          title: "app_info 会扩大 QA 范围",
-          body: scopeConfirmationBody(first),
-          details: scopeConfirmationDetails(first),
-          confirmText: "接受并更新",
-        }))) {
-          toast.info("已取消，app_info 未更新。");
-          return;
-        }
-        await post(true);
-      }
-      setPendingFile(null);
-      setDirty(false);
-      onSaved();
-      toast.success(`app_info.json 上传成功：${pendingFile.name}\n\n已停留在编辑状态，可继续补充文档 / 测试说明。`);
-    } catch (e) {
-      toast.error(`app_info.json 上传失败：\n\n${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-
-  async function handleFetchAppInfo() {
-    if (!app || !snap || !release) return;
-    if (!(await confirmDialog({
-      title: "拉取 app_info",
-      body: `从 Gerrit 拉取 ${formatCicdRepoPath(app.git_url, app.cicd_repo_type || CICD_REPO_TYPE_DEFAULT)} ${app.git_branch} 的 app_info.json？`,
-      confirmText: "拉取",
+  async function switchTab(next: DetailTab) {
+    if (next === tab) return;
+    if (appDetailDirty && !(await confirmDialog({
+      title: "未保存的修改", body: "有未保存的修改，确认放弃并切换？", danger: true, confirmText: "放弃修改",
     }))) return;
-    if (dirty && !(await confirmDialog({
-      body: "拉取 app_info 会用服务端最新内容刷新表单，未保存的表单修改会丢失。是否继续？",
-      danger: true,
-      confirmText: "继续拉取",
-    }))) return;
-    setFetchProgress({
-      title: "正在从 Gerrit 拉取 app_info",
-      currentApp: displayName(snap),
-      currentIdentity: `${formatCicdRepoPath(app.git_url, app.cicd_repo_type || CICD_REPO_TYPE_DEFAULT)} @ ${app.git_branch}`,
-      total: 1,
-      completed: 0,
-      ok: 0,
-      failed: 0,
-      failures: [],
-    });
-    try {
-      const post = (acceptScopeExpansion: boolean) =>
-        apiPost<{ commit_id?: string; source?: string } & AppInfoScopeConfirmation>(
-          "/api/app-info/fetch",
-          {
-            release_id: release.id,
-            app_id: app.id,
-            accept_scope_expansion: acceptScopeExpansion,
-          },
-        );
-      let result = await post(false);
-      if (result?.requires_scope_confirmation) {
-        setFetchProgress(null);
-        if (!(await confirmDialog({
-          title: "app_info 会扩大 QA 范围",
-          body: scopeConfirmationBody(result),
-          details: scopeConfirmationDetails(result),
-          confirmText: "接受并更新",
-        }))) {
-          toast.info("已取消，app_info 未更新。");
-          return;
-        }
-        result = await post(true);
-      }
-      setFetchProgress((p) => p && { ...p, completed: 1, ok: 1 });
-      setDirty(false);
-      onSaved();
-      toast.success(`Gerrit app_info.json 拉取成功，已停留在编辑状态，可继续编辑。\n\ncommit: ${result.commit_id ?? "未知"}\nsource: ${result.source ?? ""}`);
-    } catch (e) {
-      setFetchProgress((p) => p && {
-        ...p,
-        completed: 1,
-        failed: 1,
-        failures: [`${app.id}: ${e instanceof Error ? e.message : String(e)}`],
-      });
-      toast.error(`Gerrit app_info.json 拉取失败：\n\n${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setFetchProgress(null);
-    }
+    setAppDetailDirty(false);
+    setTab(next);
   }
 
-  if (!app || !snap) {
+  if (!app) {
     return (
-      <div className="detail-empty" data-testid="detail-empty">
-        <div className="empty-ic">▤</div>
-        <p>从左侧选择一个 App，查看与编辑发布信息。</p>
+      <div className="detail-panel" data-testid="detail-panel">
+        <div className="detail-body"><p className="muted p-1r">← 选择左侧 App 查看详情</p></div>
       </div>
     );
   }
 
-  const rel = isReleaseSnap(snap);
-  const todo = docsItems(snap);
-  const descCount = appDescriptionCount(form.description);
-  const communityImageCount = numberValue(snap?.community?.image_count);
-  const communityPkgCount = numberValue(snap?.community?.pkg_count);
-  const communityHasArtifacts = communityImageCount > 0 || communityPkgCount > 0;
-  const communityPkgRequired = communityPkgCount > 0;
-  const appOpenCicd = app
-    ? (appCicdOpenRequests ?? []).filter((req) => requestMatchesApp(req, app))
-    : [];
-  const appCicdHistory = app
-    ? (appCicdHistoryRequests?.requests ?? [])
-      .filter((req) => requestMatchesApp(req, app))
-      .sort((a, b) => String(b.submitted_at || "").localeCompare(String(a.submitted_at || "")))
-    : [];
-  const cicdOpenCreate = appOpenCicd.find(isOpenCreateRequest);
-  const cicdOpenStatusModify = appOpenCicd.find(isOpenStatusModifyRequest);
-  const cicdOpenJiraModify = appOpenCicd.find(isOpenJiraModifyRequest);
-  const cicdModifyBlockedReason = appCicdOpenLoading
-    ? "正在检查 CICD 待处理流程，请稍候"
-    : cicdOpenCreate
-    ? `该 app 已有 CICD 新建申请 #${cicdOpenCreate.id} 未完成，不能提交新的 CICD 修改；请等待新建申请审批/交付完成后再修改`
-    : cicdOpenJiraModify
-    ? jiraModifyBlockMessage(cicdOpenJiraModify)
-    : cicdOpenStatusModify
-    ? statusModifyBlockMessage(cicdOpenStatusModify)
-    : "";
-  const decisionChangeNeedsCicdSync = crossesDecisionRuntimeBoundary(snap.release_decision, form.release_decision);
-  const decisionChanged = snap.release_decision !== form.release_decision;
-  const decisionChangeBlockedReason = decisionChanged && (cicdOpenCreate || cicdOpenStatusModify)
-    ? cicdModifyBlockedReason
-    : decisionChangeNeedsCicdSync && cicdModifyBlockedReason
-      ? cicdModifyBlockedReason
-      : "";
-  const activeSaveBlockedReason = detailTab === "cicd"
-    ? cicdModifyBlockedReason
-    : decisionChangeBlockedReason;
-  const decisionSyncReq = appOpenCicd.find((req) => !!req.status_sync_direction);
-  const displayedCicdStatus = (() => {
-    if (decisionSyncReq?.status_sync_direction === "stop") return "Running";
-    if (decisionSyncReq?.status_sync_direction === "start") return "Stopped";
-    return appCicdStatus(snap.release_decision);
-  })();
-  const onboardingLabel = app ? cicdOnboardingLabel(app) : "";
-  const canRetryCreate = !!(
-    app &&
-    snap &&
-    canEditDetail &&
-    ["rejected_create", "cancelled_create"].includes(app.cicd_onboarding_status ?? "")
-  );
-
-  const footNote = editMode
-    ? "编辑中 · 刷新前请先保存或取消"
-    : locked ? "Release 已锁定，只读"
-    : !docDeadline ? "Doc deadline 已过，文档/app_info 只读；release 决策只能改为 CICD only 或 Stop"
-    : canEditDetail ? "点击「修改」开始编辑"
-    : "你没有此 app 的编辑权限";
-
-  // After app freeze/doc deadline, existing apps may still lower or stop their
-  // release decision, but cannot be raised back to release.
-  const allowedDecisions = beforeAppFreezeDeadline || snap.release_decision === "release"
-    ? releaseDecisionOptions
-    : releaseDecisionOptions.filter((value) => value !== "release");
+  const editable = canEdit(user, app);
+  const active = entry?.status === "active" ? entry : null;
+  const appOpen = openRequests.filter((req) => requestMatchesApp(req, app));
 
   return (
     <div className="detail-panel" data-testid="detail-panel">
-      {/* Header */}
       <div className="detail-head">
-        <QaDot snap={snap} />
+        <QaDot entry={active} />
         <div className="dh-main">
-          <h2>{displayName(snap)}</h2>
+          <h2>{app.name}</h2>
           <div className="row2">
-            <DecisionPill decision={snap.release_decision} />
-            {onboardingLabel && (
-              <span
-                className={`pill ${cicdOnboardingClass(app)}`}
-                title={app.cicd_onboarding_review_note || onboardingLabel}
-              >
-                {onboardingLabel}
-              </span>
-            )}
-            {snap.version && <span className="pill">版本 {snap.version}</span>}
-            <span className="pill">{docTargetLabels[normalizeDocTarget(snap.doc_target)]}</span>
-            {rel && todo.length > 0 && <span className="pill warnp">待补 {todo.length} 项</span>}
-            {rel && <QaPill status={snap.qa_status} />}
-            <CicdPendingPill count={uniqueCicdRequestCount(appOpenCicd)} />
+            <CicdStatusPill app={app} />
+            <EntryPill entry={entry} />
+            {active && <QaPill status={active.qa_status} />}
+            <span className="pill">{docTargetLabels[normalizeDocTarget(app.doc_target)]}</span>
+            {app.official && <span className="pill" title={`${app.official.release_name} 发布`}>正式版 {app.official.version}</span>}
+            <CicdPendingPill count={uniqueCicdRequestCount(appOpen)} />
           </div>
         </div>
-        {userIsOwner && <div className="greet">你好 👋 编辑信息后保存</div>}
+        {isOwner(user) && editable && <div className="greet">你好 👋 在「本期报名」报名本月发布</div>}
       </div>
 
-      {/* W3: Sub-tab navigation */}
       <div className="cicd-subtabs bb-border mb-0">
-        <button
-          className={`cicd-subtab${detailTab === "docs" ? " active" : ""}`}
-          onClick={() => setDetailTab("docs")}
-          data-testid="detail-tab-docs"
-        >
-          文档信息
-        </button>
-        <button
-          className={`cicd-subtab rel${detailTab === "cicd" ? " active" : ""}`}
-          onClick={() => setDetailTab("cicd")}
-          data-testid="detail-tab-cicd"
-        >
-          CICD
-        </button>
-      </div>
-
-      {detailTab === "cicd" ? (
-        <div className="detail-body" data-testid="detail-cicd-pane">
-          <AppCicdPane
-            app={app}
-            releaseDecision={snap.release_decision}
-            displayedStatus={displayedCicdStatus}
-            editMode={editMode}
-            canEdit={canEditDetail}
-            form={form}
-            pendingRequests={appOpenCicd}
-            historyRequests={appCicdHistory}
-            repoError={cicdRepoErr}
-            onPatch={patch}
-          />
-        </div>
-      ) : (
-      <div className="detail-body">
-        {/* Phase/lock banners */}
-        {locked && (
-          <div className="banner bad">🔒 Release 已最终锁定，所有信息冻结。</div>
-        )}
-        {!locked && !docDeadline && (
-          <div className="banner warnp">⏰ 已过 Doc deadline：文档、表单内容和 app_info 已冻结；release 决策只能改为 CICD only 或 Stop，CICD 配置仍可修改。</div>
-        )}
-        {!locked && docDeadline && !beforeAppFreezeDeadline && (
-          <div className="banner warnp">❄️ 已过 App 冻结 deadline：本 release 不可再新增或切换为 release；已有 app 只能改为 CICD only 或 Stop。</div>
-        )}
-        {app.cicd_onboarding_status === "rejected_create" && (
-          <div className="banner bad" data-testid="app-detail-rejected-banner">
-            <b>CICD 创建申请已被拒绝</b>
-            <div className="small mt-4">
-              拒绝原因：{app.cicd_onboarding_review_note?.trim() || "未填写"}
-            </div>
-          </div>
-        )}
-        {app.cicd_onboarding_status === "cancelled_create" && (
-          <div className="banner warnp" data-testid="app-detail-cancelled-banner">
-            CICD 创建申请已取消。
-          </div>
-        )}
-
-        {/* Dirty banner */}
-        {(dirty || editMode) && (
-          <div className="banner warnp">
-            {dirty ? "有未保存修改，刷新前请先保存或取消编辑。" : "当前处于编辑状态，刷新前请先保存或取消编辑。"}
-          </div>
-        )}
-
-        {rel && todo.length > 0 && (
-          <details className="section checklist compact" open data-testid="app-doc-missing-checklist">
-            <summary>
-              <div className="checklist-h"><h3>⚠️ Doc 还需完成 {todo.length} 项</h3></div>
-            </summary>
-            <div className="checklist-items">
-              {todo.map((item, i) => (
-                <div key={i} className="check-item">
-                  <span className="box" />
-                  <span className="ct">{missingItemText(item)}</span>
-                </div>
-              ))}
-            </div>
-          </details>
-        )}
-        {!rel && (
-          <div className="banner">本 app 本轮决策为 <b>{snap.release_decision}</b>，不进入文档生成与 QA，无需补充文档 / 测试说明。</div>
-        )}
-
-        {/* QA issue note */}
-        {(snap.qa_status === "has_issues" || snap.qa_status === "cannot_release") && snap.qa_issue_note && (
-          <div className={snap.qa_status === "cannot_release" ? "banner bad" : "banner warnp"}>
-            QA 标注「{qaStatusLabels[snap.qa_status] ?? snap.qa_status}」：{snap.qa_issue_note}
-            （会写入 Release Note，并附加到已知限制段）
-          </div>
-        )}
-
-        {/* Basic info section */}
-        <details className="section" open>
-          <summary><span className="chev">▶</span> 基本信息</summary>
-          <div className="section-body">
-            <div className="form">
-              <label>官方名称
-                <input className="input" value={form.official_name}
-                  onChange={(e) => patch("official_name", e.target.value)}
-                  disabled={!canEditDocFields || !canEditRmOnlyFields} data-testid="field-official-name" />
-              </label>
-              <label>Owner
-                <input className="input" value={form.owners}
-                  onChange={(e) => patch("owners", e.target.value)}
-                  disabled={!canEditDocFields || !canEditRmOnlyFields} />
-              </label>
-              <label>类型
-                <select className="select" value={form.doc_target}
-                  onChange={(e) => {
-                    const target = e.target.value;
-                    patch("doc_target", target);
-                    if (!appTypeOptionsForTarget(target).includes(form.type.trim())) {
-                      patch("type", "");
-                    }
-                  }}
-                  disabled={!canEditDocFields || !canEditRmOnlyFields} data-testid="field-doc-target">
-                  {docTargetOptions.map((v) => (
-                    <option key={v} value={v}>{docTargetLabels[v]}</option>
-                  ))}
-                </select>
-              </label>
-              <label>App 类型
-                <select className="select" value={form.type.trim() ? `existing:${form.type.trim()}` : ""}
-                  onChange={(e) => patch("type", e.target.value.slice("existing:".length))}
-                  disabled={!canEditDocFields} data-testid="field-app-type">
-                  <option value="">请选择 App 类型</option>
-                  {existingAppTypes.map((type) => <option key={type} value={`existing:${type}`}>{type}</option>)}
-                  {showCurrentAppType && <option value={`existing:${form.type.trim()}`}>{form.type.trim()}（当前值）</option>}
-                </select>
-              </label>
-              <label>Gerrit 路径
-                <input className="input" value={formatCicdRepoPath(form.git_url, form.cicd_repo_type || CICD_REPO_TYPE_DEFAULT)}
-                  disabled
-                  data-testid="field-git-url" />
-                <span className="field-help">Gerrit 身份属于 CICD 配置，请在本 App 的 CICD tab 中修改。</span>
-              </label>
-              <label>Branch
-                <input className="input" value={form.git_branch}
-                  disabled
-                  data-testid="field-git-branch" />
-                <span className="field-help">Gerrit 分支属于 CICD 配置，请在本 App 的 CICD tab 中修改。</span>
-              </label>
-              <label>官方 URL
-                <input className="input" value={form.official_url}
-                  onChange={(e) => patch("official_url", e.target.value)}
-                  disabled={!canEditDocFields} />
-              </label>
-              <label>Release 决策
-                <select className="select" value={form.release_decision}
-                  onChange={(e) => patch("release_decision", e.target.value as typeof form["release_decision"])}
-                  disabled={!editMode}
-                  data-testid="field-decision">
-                  {allowedDecisions.map((v) => (
-                    <option
-                      key={v}
-                      value={v}
-                      disabled={v === "release" && !beforeAppFreezeDeadline}
-                    >
-                      {releaseDecisionLabels[v]}
-                    </option>
-                  ))}
-                </select>
-                {!beforeAppFreezeDeadline && (
-                  <span className="field-help">
-                    已过 App freeze / Doc deadline 后，不能再切换为 release，只能选择 CICD only 或 Stop。
-                  </span>
-                )}
-                {decisionSyncReq && (
-                  <span className="field-help">
-                    CICD 状态变更正在{cicdWorkflowState(decisionSyncReq)}
-                    （申请 #{decisionSyncReq.id}
-                    {decisionSyncReq.jira_id ? `，Jira ${decisionSyncReq.jira_id}` : ""}）：
-                    {cicdRequestSummary(decisionSyncReq)}
-                  </span>
-                )}
-              </label>
-              {/* Inline preview: show expected CICD status change when decision differs */}
-              {editMode && form.release_decision !== snap.release_decision && (
-                <div className="grid-span-all mt-n4 mb-4" data-testid="cicd-decision-preview">
-                  <span className="small warnp">
-                    ⟳ App CICD 状态将显示为{" "}
-                    <b>{form.release_decision === "stopped" ? "Stopped" : "Running"}</b>
-                  </span>
-                </div>
-              )}
-              <label>版本（来自 app_info）
-                <input className="input" value={snap.version ?? ""} disabled />
-              </label>
-              <label>X86 芯片（来自 app_info）
-                <input className="input" value={orderChips(snap.x86_chips)} disabled />
-                <span className="field-help">由 app_info.json 解析生成，不能在文档信息中手动修改。</span>
-              </label>
-              <label>ARM 芯片（来自 app_info）
-                <input className="input" value={orderChips(snap.arm_chips)} disabled />
-                <span className="field-help">由 app_info.json 解析生成，不能在文档信息中手动修改。</span>
-              </label>
-              <label>Python label（来自 app_info）
-                <input className="input" value={snap.python_labels ?? ""} disabled />
-                <span className="field-help">由 app_info.json 解析生成，不能在文档信息中手动修改。</span>
-              </label>
-              <label>PyTorch label（来自 app_info）
-                <input className="input" value={snap.pytorch_labels ?? ""} disabled />
-                <span className="field-help">由 app_info.json 解析生成，不能在文档信息中手动修改。</span>
-              </label>
-              <label>OS（来自 app_info）
-                <input className="input" value={snap.build_os ?? ""} disabled />
-                <span className="field-help">由 app_info.json 解析生成，不能在文档信息中手动修改。</span>
-              </label>
-              <label>Arch（来自 app_info）
-                <input className="input" value={snap.build_arches ?? ""} disabled />
-                <span className="field-help">由 app_info.json 解析生成，不能在文档信息中手动修改。</span>
-              </label>
-            </div>
-            {/* Description with char counter */}
-            <label className="docfield desc-field">
-              描述（30字内）
-              {editMode ? (
-                <div className="textarea-wrap">
-                  <textarea
-                    value={form.description}
-                    onChange={(e) => patch("description", e.target.value)}
-                    data-testid="field-description"
-                    disabled={!canEditDocFields}
-                  />
-                  <span className={`desc-counter ${descCount > APP_DESCRIPTION_LIMIT ? "over" : ""}`}>
-                    {descCount}/{APP_DESCRIPTION_LIMIT}
-                  </span>
-                </div>
-              ) : (
-                <ReadField value={form.description} />
-              )}
-            </label>
-          </div>
-        </details>
-
-        {/* app_info section */}
-        <details className="section" open>
-          <summary>
-            <span className="chev">▶</span> app_info 与 diff
-            {rel && (
-              snap.app_info && (snap.app_info as Record<string, unknown>)["source_type"]
-                ? ((snap.app_info_diffs ?? []).length
-                    ? <span className="badge">{snap.app_info_diffs.length} 项差异</span>
-                    : <span className="badge ok">已上传</span>)
-                : <span className="badge warnp">待上传</span>
-            )}
-          </summary>
-          <div className="section-body">
-            <div className="src-line">app_info 来源：{appInfoSource(snap)}</div>
-            {showAppInfoActions && (
-              <div className="row mb-12" data-testid="app-info-actions">
-                <label className="btn ghost sm pointer">
-                  选择 app_info.json
-                  <input
-                    type="file" accept=".json" hidden
-                    onChange={(e) => setPendingFile(e.target.files?.[0] ?? null)}
-                  />
-                </label>
-                <span className="small muted">
-                  {pendingFile ? `已选择：${pendingFile.name}` : "未选择文件"}
-                </span>
-                {pendingFile && (
-                  <button className="btn ghost sm" onClick={() => setPendingFile(null)}>清除</button>
-                )}
-                <button className="btn sm" onClick={() => void handleUploadAppInfo()} disabled={!pendingFile}>
-                  上传 app_info
-                </button>
-                <button className="btn sm" onClick={() => void handleFetchAppInfo()}>从 Gerrit 拉取</button>
-              </div>
-            )}
-            <AppInfoDiffView
-              diffs={snap.app_info_diffs ?? []}
-              caption={`与上一版本的差异（${(snap.app_info_diffs ?? []).length} 项）`}
-            />
-          </div>
-        </details>
-
-        {/* Community & Sanity section */}
-        <details className="section" open>
-          <summary><span className="chev">▶</span> 社区发布与 Sanity</summary>
-          <div className="section-body">
-            {communityHasArtifacts && (
-              <div className="form community-doc-form">
-                <label>开发者社区发布情况
-                  <input className="input" aria-label="开发者社区发布情况" value={form.community_release} disabled />
-                </label>
-                <label>一级菜单
-                  <input className="input" aria-label="社区一级菜单" value={form.community_menu_level1}
-                    onChange={(e) => patch("community_menu_level1", e.target.value)}
-                    disabled={!canEditDocFields} />
-                </label>
-                {communityPkgRequired && (
-                  <>
-                    <label>社区包支持 Python 版本
-                      <input className="input" aria-label="社区包支持 Python 版本" value={form.community_python}
-                        onChange={(e) => patch("community_python", e.target.value)}
-                        disabled={!canEditDocFields} />
-                    </label>
-                    <label>社区包支持框架及版本
-                      <input className="input" aria-label="社区包支持框架及版本" value={form.community_framework}
-                        onChange={(e) => patch("community_framework", e.target.value)}
-                        disabled={!canEditDocFields} />
-                    </label>
-                  </>
-                )}
-                <label className="grid-span-all">说明文档链接
-                  <input className="input" aria-label="社区说明文档链接" value={form.community_doc_url}
-                    onChange={(e) => patch("community_doc_url", e.target.value)}
-                    disabled={!canEditDocFields} />
-                </label>
-                <label className="grid-span-all community-description-field">描述
-                  <textarea aria-label="社区描述" value={form.community_description}
-                    onChange={(e) => patch("community_description", e.target.value)}
-                    disabled={!canEditDocFields} />
-                </label>
-              </div>
-            )}
-            {!userIsOwner && (
-              <div className="row mt-11 gap-24 wrap">
-                <label className="check">
-                  <input type="checkbox" checked={form.sanity_arm}
-                    onChange={(e) => patch("sanity_arm", e.target.checked)}
-                    disabled={!canEditDocFields || !canEditRmOnlyFields} />
-                  ARM / Kylin Sanity <span className="small muted">（RM 填写）</span>
-                </label>
-                <label className="check">
-                  <input type="checkbox" checked={form.sanity_ubuntu}
-                    onChange={(e) => patch("sanity_ubuntu", e.target.checked)}
-                    disabled={!canEditDocFields || !canEditRmOnlyFields} />
-                  Ubuntu / 兼容性 Sanity <span className="small muted">（RM 填写）</span>
-                </label>
-              </div>
-            )}
-          </div>
-        </details>
-
-        {/* Documentation fields */}
-        <details className="section" open>
-          <summary>
-            <span className="chev">▶</span> 文档字段（Markdown 格式）
-          </summary>
-          <div className="section-body docfields-2col">
-            {(["intro", "image_usage", "binary_usage", "env_setup", "limitations"] as const).map((key) => {
-              const labels: Record<string, string> = {
-                intro: "基本介绍", image_usage: "镜像使用方法", binary_usage: "二进制包使用方法",
-                env_setup: "环境搭建", limitations: "已知限制",
-              };
-              return (
-                <label key={key} className="docfield docfield-split">
-                  <span className="df-label">{labels[key]}</span>
-                  {editMode ? (
-                    <textarea
-                      value={form[key]}
-                      onChange={(e) => patch(key, e.target.value)}
-                      data-testid={`field-doc-${key}`}
-                      disabled={!canEditDocFields}
-                    />
-                  ) : (
-                    <ReadField value={form[key]} />
-                  )}
-                </label>
-              );
-            })}
-          </div>
-        </details>
-
-        {/* Test docs section */}
-        <details className="section" open>
-          <summary><span className="chev">▶</span> 测试说明（各 test_cmd）</summary>
-          <div className="section-body">
-            <TestDocsEditor
-              testDocs={form.test_docs}
-              editMode={canEditDocFields}
-              userIsOwner={userIsOwner}
-              onChange={(docs) => { setForm((f) => ({ ...f, test_docs: docs })); setDirty(true); }}
-            />
-          </div>
-        </details>
-
-        {/* Change log / audit */}
-        <details className="section" onToggle={(e) => {
-          if ((e.target as HTMLDetailsElement).open && !auditEntries && !auditLoading) {
-            void loadAudit();
-          }
-        }}>
-          <summary><span className="chev">▶</span> 变更记录（本 release）</summary>
-          <div className="section-body">
-            <ChangeLogTable entries={auditEntries} loading={auditLoading} />
-          </div>
-        </details>
-      </div>
-      )}
-
-      {/* Footer actions */}
-      <div className="detail-foot">
-        <span className="foot-note">{footNote}</span>
-        {detailTab === "docs" && canEditDetail && editMode && (
-          <button
-            className="btn ghost sm"
-            onClick={() => setShowCopyDialog(true)}
-            data-testid="copy-from-version-btn"
-            title="从其他 release 复制本 app 的文档 / 测试说明 / 社区 / Sanity 等可编辑信息到当前表单"
-          >
-            ⇄ 从其他版本复制信息
+        {DETAIL_TABS.map(({ key, label }) => (
+          <button key={key} className={`cicd-subtab${tab === key ? " active" : ""}`}
+            onClick={() => void switchTab(key)} data-testid={`detail-tab-${key}`}>
+            {label}
           </button>
-        )}
-        <div className="spacer" />
-        {/* Messages stay left of every button so the buttons keep the right edge. */}
-        {editMode && activeSaveBlockedReason && (
-          <span className="foot-blocker" data-testid="app-save-blocked-reason">
-            {activeSaveBlockedReason}
-          </span>
-        )}
-        {saveErr && (
-          <span className="foot-blocker" role="alert" data-testid="app-save-error">
-            {saveErr}
-          </span>
-        )}
-        {canRetryCreate && !editMode && app && snap && (
-          <button className="btn primary" onClick={() => onRetryCreate(app, snap)} data-testid="retry-create-btn">重新申请</button>
-        )}
-        {canEditDetail && !canRetryCreate && !editMode && (
-          <button className="btn primary" onClick={() => setEditMode(true)}>✎ 修改</button>
-        )}
-        {canEditDetail && editMode && (canEditRmOnlyFields || userIsOwner) && (
-          <>
-            <button className="btn" onClick={() => { setEditMode(false); setDirty(false); setSaveErr(""); snap && app && setForm(snapshotToForm(snap, app)); }}>取消</button>
-            <button
-              className="btn primary"
-              onClick={() => void handleSave()}
-              disabled={saving || !!activeSaveBlockedReason}
-              title={activeSaveBlockedReason || undefined}
-            >
-              {detailTab === "cicd" ? "提交 CICD 变更申请" : "保存"}
-            </button>
-          </>
-        )}
+        ))}
       </div>
 
-      {/* F1 — decision-sync owner-choice dialog */}
-      {syncDialog && (
-        <DecisionSyncDialog
-          preview={syncDialog.preview}
-          newDecision={syncDialog.newDecision}
-          forced={syncDialog.forced}
-          saving={saving}
-          onCancel={() => setSyncDialog(null)}
-          onLocalOnly={() => void doSave(syncDialog.snapshotUpdate, false)}
-          onSyncAll={() => void doSave(syncDialog.snapshotUpdate, true)}
+      {tab === "signup" && (
+        release ? (
+          <SignupPane app={app} entry={entry} release={release} canEdit={editable}
+            onSaved={onSaved} onDirtyChange={setAppDetailDirty} />
+        ) : (
+          <div className="detail-body"><p className="muted">还没有版本，等待 RM 新建本月版本。</p></div>
+        )
+      )}
+      {tab === "app_info" && <AppInfoPane app={app} canSync={canSyncAppInfo(user, app)} onSynced={onSaved} />}
+      {tab === "cicd" && (
+        <AppCicdPane
+          app={app}
+          signedUpCycles={app.open_signups}
+          canEdit={editable}
+          pendingRequests={appOpen}
+          historyRequests={(history?.requests ?? []).filter((req) => !req.is_open)}
+          onSubmitted={onSaved}
+          onDirtyChange={setAppDetailDirty}
         />
       )}
-
-      {/* F2 — copy-from-version picker */}
-      {showCopyDialog && release && (
-        <CopyFromVersionDialog
-          releases={releases}
-          currentReleaseId={release.id}
-          onClose={() => setShowCopyDialog(false)}
-          onPick={(rid) => void handleCopyFromVersion(rid)}
-        />
+      {tab === "profile" && (
+        <ProfilePane app={app} canEdit={editable} canEditRmFields={canEditRmFields(user)}
+          onSaved={onSaved} onDirtyChange={setAppDetailDirty} />
       )}
-      {fetchProgress && <AppInfoFetchProgressDialog progress={fetchProgress} />}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// F1 — DecisionSyncDialog (the image.png owner-choice dialog)
-// ---------------------------------------------------------------------------
-
-interface DecisionSyncDialogProps {
-  preview: DecisionSyncPreview;
-  newDecision: string;
-  forced: boolean;
-  saving: boolean;
-  onCancel: () => void;
-  onLocalOnly: () => void;
-  onSyncAll: () => void;
-}
-
-function DecisionSyncDialog({
-  preview, newDecision, forced, saving, onCancel, onLocalOnly, onSyncAll,
-}: DecisionSyncDialogProps) {
-  const rows = preview.releases ?? [];
-  const applicable = rows.filter((r) => !r.skipped && !r.is_current);
-  const targetLabel = preview.scope === "all_unlocked" ? "所有未锁定 release" : "后续 release";
-  return (
-    <div className="dialog-backdrop" data-testid="decision-sync-dialog">
-      <div className="dialog-box minw-560 maxw-720">
-        <div className="dialog-head"><h3>{forced ? "必须同步 release 决策" : "同步 release 决策到后续 release?"}</h3></div>
-        <div className="dialog-body">
-          <p className="muted">
-            {forced
-              ? `你把 release 决策改为「${newDecision}」，这会改变全局 CICD 运行/停止状态。必须同步到下列 ${applicable.length} 个${targetLabel}，避免不同 release 对同一个 CICD task 给出矛盾状态。`
-              : `你把 release 决策改为「${newDecision}」。是否把该决策同步到下列 ${applicable.length} 个${targetLabel}?`}
-          </p>
-          {forced && newDecision !== "stopped" && (
-            <div className="banner warnp" data-testid="decision-sync-cicd-pending-note">
-              确认后，当前及下列 release 将立即展示提交时计算的发布决策，并标注「CICD待完成」；
-              RM 审批或 SPD 交付期间跨过冻结线不会重算这些决策。
-            </div>
-          )}
-          <ReleaseDecisionPreviewTable
-            rows={rows}
-            requestedDecision={newDecision}
-            rowTestIdPrefix="sync-row"
-          />
-        </div>
-        <div className="dialog-actions">
-          <button className="btn" onClick={onCancel} disabled={saving} data-testid="sync-cancel">取消</button>
-          {!forced && (
-            <button className="btn" onClick={onLocalOnly} disabled={saving} data-testid="sync-local-only">
-              不同步，仅本 release
-            </button>
-          )}
-          <button className="btn primary" onClick={onSyncAll} disabled={saving} data-testid="sync-all">
-            {forced ? "确认并同步" : "同步到后续 release"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// F2 — CopyFromVersionDialog
-// ---------------------------------------------------------------------------
-
-interface CopyFromVersionDialogProps {
-  releases: ReleaseSummary[];
-  currentReleaseId: string;
-  onClose: () => void;
-  onPick: (releaseId: string) => void;
-}
-
-function CopyFromVersionDialog({
-  releases, currentReleaseId, onClose, onPick,
-}: CopyFromVersionDialogProps) {
-  const others = releases.filter((r) => r.id !== currentReleaseId);
-  const [selected, setSelected] = useState(others[0]?.id ?? "");
-  return (
-    <div className="dialog-backdrop" data-testid="copy-from-version-dialog">
-      <div className="dialog-box">
-        <div className="dialog-head"><h3>从其他版本复制</h3></div>
-        <div className="dialog-body">
-          {others.length === 0 ? (
-            <p className="muted">没有其他 release 可供复制。</p>
-          ) : (
-            <div className="form">
-              <p className="muted small">
-                选择一个 release，复制其中本 app 的文档 / 测试说明 / 社区 / Sanity 等可编辑信息到当前表单。
-                不会复制 Owner / Gerrit / 版本 / release 决策 / QA 等信息。
-              </p>
-              <label>源 release
-                <select
-                  className="select"
-                  value={selected}
-                  onChange={(e) => setSelected(e.target.value)}
-                  data-testid="copy-source-select"
-                >
-                  {others.map((r) => (
-                    <option key={r.id} value={r.id}>{r.name}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-          )}
-        </div>
-        <div className="dialog-actions">
-          <button className="btn" onClick={onClose}>取消</button>
-          <button
-            className="btn primary"
-            disabled={!selected}
-            onClick={() => selected && onPick(selected)}
-            data-testid="copy-confirm"
-          >
-            复制
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// TestDocsEditor
-// ---------------------------------------------------------------------------
-
-interface TestDocsEditorProps {
-  testDocs: SnapshotTestDoc[];
-  editMode: boolean;
-  userIsOwner: boolean;
-  onChange: (docs: SnapshotTestDoc[]) => void;
-}
-
-function TestDocsEditor({ testDocs, editMode, userIsOwner, onChange }: TestDocsEditorProps) {
-  const active = testDocs.filter((d) => !d.obsolete);
-
-  if (!active.length) {
-    return <p className="muted small">上传 app_info 后会自动生成测试项。</p>;
-  }
-
-  function patchDoc(id: string, field: keyof SnapshotTestDoc, value: unknown) {
-    onChange(testDocs.map((d) => d.id === id ? { ...d, [field]: value } : d));
-  }
-
-  return (
-    <>
-      {active.map((d) => (
-        <div key={d.id} className="tcard">
-          <div className="tcard-h">
-            <span className="code">{d.path}</span>
-            {d.owner_added && <span className="pill">owner-added</span>}
-          </div>
-          <div className="tcard-b">
-            <label className="full">命令
-              {editMode ? (
-                <textarea className="code"
-                  value={d.command ?? ""}
-                  onChange={(e) => patchDoc(d.id, "command", e.target.value)}
-                  disabled={!d.owner_added} />
-              ) : (
-                <ReadField value={d.command} code />
-              )}
-            </label>
-            <label>测试内容
-              {editMode
-                ? <textarea value={d.content ?? ""} onChange={(e) => patchDoc(d.id, "content", e.target.value)} />
-                : <ReadField value={d.content} />}
-            </label>
-            <label>测试数据集
-              {editMode
-                ? <textarea value={d.dataset ?? ""} onChange={(e) => patchDoc(d.id, "dataset", e.target.value)} />
-                : <ReadField value={d.dataset} />}
-            </label>
-            <label>结果查看
-              {editMode
-                ? <textarea value={d.result_view ?? ""} onChange={(e) => patchDoc(d.id, "result_view", e.target.value)} />
-                : <ReadField value={d.result_view} />}
-            </label>
-            <label>通过标准
-              {editMode
-                ? <textarea value={d.pass_criteria ?? ""} onChange={(e) => patchDoc(d.id, "pass_criteria", e.target.value)} />
-                : <ReadField value={d.pass_criteria} />}
-            </label>
-          </div>
-        </div>
-      ))}
-      {editMode && userIsOwner && (
-        <div className="row mt-10">
-          <button className="btn sm" onClick={() => {
-            const newId = `new_${Date.now()}`;
-            onChange([...testDocs, {
-              id: newId, path: `owner_added.${active.length + 1}`,
-              command: "", dataset: "", content: "", result_view: "", pass_criteria: "",
-              owner_added: true,
-            }]);
-          }}>
-            + 新增 owner-added 测试项
-          </button>
+      {tab === "changelog" && (
+        <div className="detail-body">
+          <ChangeLogTable entries={audit} loading={auditLoading} />
         </div>
       )}
-    </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// ChangeLogTable
-// ---------------------------------------------------------------------------
-
-interface ChangeLogTableProps {
-  entries: AppAuditEntry[] | null;
-  loading: boolean;
-}
-
-function ChangeLogTable({ entries, loading }: ChangeLogTableProps) {
-  const [openRows, setOpenRows] = useState<Record<number, boolean>>({});
-  if (loading) return <p className="muted small">加载中…</p>;
-  if (!entries) return <p className="muted small">展开后自动加载</p>;
-  if (!entries.length) return <p className="muted small">暂无变更记录</p>;
-  return (
-    <div className="table" data-testid="changelog-table">
-      <table>
-        <thead>
-          <tr><th>时间</th><th>操作人</th><th>角色</th><th>事件</th></tr>
-        </thead>
-        <tbody>
-          {entries.map((e, i) => {
-            const detail = e.detail ?? [];
-            const hasDetail = detail.length > 0;
-            return (
-              <React.Fragment key={i}>
-                <tr
-                  className={hasDetail ? "cl-clickable pointer" : ""}
-                  onClick={() => hasDetail && setOpenRows((rows) => ({ ...rows, [i]: !rows[i] }))}
-                >
-                  <td>{formatServerTime(e.ts)}</td>
-                  <td>{e.user}</td>
-                  <td>{e.role}</td>
-                  <td>{e.message}{hasDetail ? <span className="small muted"> ▸ 详情</span> : null}</td>
-                </tr>
-                {hasDetail && openRows[i] && (
-                  <tr className="cl-detail">
-                    <td colSpan={4}>
-                      <table className="cl-detail-table">
-                        <thead><tr><th>字段</th><th>原值</th><th>新值</th></tr></thead>
-                        <tbody>
-                          {detail.map((d, j) => (
-                            <tr key={j}>
-                              <td>{d.label || d.field}</td>
-                              <td>{cicdValueText(d.old, d.field)}</td>
-                              <td>{cicdValueText(d.new, d.field)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </td>
-                  </tr>
-                )}
-              </React.Fragment>
-            );
-          })}
-        </tbody>
-      </table>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// AppWorkbenchPage — root
+// Page
 // ---------------------------------------------------------------------------
 
 export function AppWorkbenchPage() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const userIsOwner = isOwner(user);
-  const canEditRmOnlyFields = canEditRmFields(user);
-
-  const {
-    selectedApp, setSelectedApp,
-    appDetailDirty,
-  } = useUiStore();
-
-  // Shared release selector — "" in store becomes undefined so the bootstrap
-  // query fires (key ["state"] → default release); once data arrives the
-  // effect below seeds the store and the key flips to ["state", "<id>"].
+  const { selectedApp, setSelectedApp, appDetailDirty, setAppDetailDirty } = useUiStore();
   const selectedReleaseId = useUiStore((s) => s.selectedReleaseId) || undefined;
   const setSelectedReleaseId = useUiStore((s) => s.setSelectedReleaseId);
-
   const queryKey = STATE_KEY(selectedReleaseId);
 
   const { data, isFetching, dataUpdatedAt, refetch, error } = useQuery({
@@ -2896,46 +290,33 @@ export function AppWorkbenchPage() {
     refetchOnMount: true,
   });
 
-  // Seed shared store + specific cache key after first load (mirrors DashboardPage).
   React.useEffect(() => {
     if (data?.release?.id && !selectedReleaseId) {
       queryClient.setQueryData(STATE_KEY(data.release.id), data);
       setSelectedReleaseId(data.release.id);
     }
-  }, [data, data?.release?.id, selectedReleaseId, setSelectedReleaseId, queryClient]);
+  }, [data, selectedReleaseId, setSelectedReleaseId, queryClient]);
 
   const [search, setSearch] = useState("");
   const [ownOnly, setOwnOnly] = useState(user?.role === "Owner");
-  React.useEffect(() => {
-    setOwnOnly(user?.role === "Owner");
-  }, [user?.username, user?.role]);
+  React.useEffect(() => setOwnOnly(user?.role === "Owner"), [user?.username, user?.role]);
   const [statusFilter, setStatusFilter] = useState<AppStatusFilter>("all");
   const [showNewApp, setShowNewApp] = useState(false);
-  const [newAppInitialValues, setNewAppInitialValues] = useState<NewAppInitialValues | null>(null);
-  const [bulkFetching, setBulkFetching] = useState(false);
-  const [bulkProgress, setBulkProgress] = useState<AppInfoFetchProgress | null>(null);
+  const [syncingAll, setSyncingAll] = useState(false);
 
   const release = data?.release ?? null;
   const apps = data?.apps ?? EMPTY_APPS;
   const releases = data?.releases ?? [];
   const displayNames = data?.user_display_names ?? {};
-  const locked = releaseLocked(release);
-  const docDeadline = beforeDocDeadline(release);
 
-  // Build filtered + sorted app rows
-  const allRows = apps
-    .map((app) => ({ app, snap: releaseSnap(release, app.id) }))
-    .filter((x): x is { app: App; snap: Snapshot } => x.snap !== null);
-
-  const filteredRows = filterAppRows(allRows, search, ownOnly, user, displayNames)
-    .filter((r) => matchesAppStatusFilter(r.snap, statusFilter))
+  const allRows: Row[] = apps.map((app) => ({ app, entry: appEntry(release, app.id) }));
+  const rows = filterAppRows(allRows, search, ownOnly, user, displayNames)
+    .filter((row) => matchesAppStatusFilter(row.app, row.entry, statusFilter))
     .sort((a, b) => compareAppRows(a, b, user));
+  const selectedRow = allRows.find((row) => row.app.id === selectedApp) ?? null;
 
-  const selectedAppObj = apps.find((a) => a.id === selectedApp) ?? null;
-  const selectedSnap = selectedAppObj ? releaseSnap(release, selectedAppObj.id) : null;
-
-  const { data: appWorkbenchOpenRequests } = useQuery({
-    queryKey: ["cicd", "requests", "app-workbench", "open-summary", selectedReleaseId ?? ""],
+  const { data: openRequests } = useQuery({
+    queryKey: ["cicd", "requests", "app-workbench", "open-summary"],
     queryFn: async () => {
       const [pending, deliveries] = await Promise.all([
         fetchCicdRequests({ status: "pending" }),
@@ -2950,177 +331,42 @@ export function AppWorkbenchPage() {
 
   const cicdPendingCounts = React.useMemo(() => {
     const counts: Record<string, number> = {};
-    const open = appWorkbenchOpenRequests ?? [];
     for (const app of apps) {
-      const seen = new Set<number | string>();
-      for (const req of open) {
-        if (requestMatchesApp(req, app)) {
-          seen.add(req.id ?? `${req.request_type}-${req.task_id}-${req.submitted_at}`);
-        }
-      }
-      if (seen.size > 0) counts[app.id] = seen.size;
+      const count = uniqueCicdRequestCount((openRequests ?? []).filter((req) => requestMatchesApp(req, app)));
+      if (count) counts[app.id] = count;
     }
     return counts;
-  }, [appWorkbenchOpenRequests, apps]);
-
-  const canCreateAppForUser = !!(data?.release && !locked && canCreateApp(user));
+  }, [openRequests, apps]);
 
   async function handleSelectApp(id: string) {
     if (selectedApp === id) return;
-    if (appDetailDirty && selectedApp && selectedApp !== id) {
-      if (!(await confirmDialog({
-        title: "未保存的修改",
-        body: "有未保存的修改，确认放弃并切换 app?",
-        danger: true,
-        confirmText: "放弃修改",
-      }))) return;
-    }
+    if (appDetailDirty && selectedApp && !(await confirmDialog({
+      title: "未保存的修改", body: "有未保存的修改，确认放弃并切换 app?", danger: true, confirmText: "放弃修改",
+    }))) return;
+    setAppDetailDirty(false);
     setSelectedApp(id);
   }
 
-  function handleSaved() {
-    void refetch();
-  }
-
   function handleRefresh() {
-    void queryClient.invalidateQueries({ queryKey: ["cicd", "requests"] });
-    void queryClient.invalidateQueries({ queryKey: ["cicd", "deliveries"] });
-    void queryClient.invalidateQueries({ queryKey: ["cicd", "tasks"] });
+    void queryClient.invalidateQueries({ queryKey: ["cicd"] });
     void refetch();
   }
 
-  function handleOpenNewApp() {
-    if (!canCreateAppForUser) return;
-    setNewAppInitialValues(null);
-    setShowNewApp(true);
-  }
-
-  function handleRetryCreate(app: App, snap: Snapshot) {
-    if (!canCreateAppForUser) return;
-    setNewAppInitialValues({
-      officialName: snap.official_name || app.aliases?.[0] || app.id,
-      repoType: app.cicd_repo_type || (app.git_url.endsWith(".xml") ? "repo" : CICD_REPO_TYPE_DEFAULT),
-      repoName: formatCicdRepoPath(
-        app.git_url,
-        app.cicd_repo_type || (app.git_url.endsWith(".xml") ? "repo" : CICD_REPO_TYPE_DEFAULT),
-      ),
-      branch: app.git_branch,
-    });
-    setShowNewApp(true);
-  }
-
-  async function handleFetchAllAppInfos() {
-    if (!release || bulkFetching) return;
-    if (appDetailDirty && !(await confirmDialog({
-      body: "当前表单已有未保存修改，批量拉取后页面会刷新。是否继续？",
-      danger: true,
-      confirmText: "继续",
-    }))) return;
+  async function handleSyncAll() {
     if (!(await confirmDialog({
-      title: "批量拉取 app_info",
-      body: `从 Gerrit 批量拉取「${release.name}」中 ${allRows.length} 个 App 的 app_info.json？`,
-      confirmText: "开始拉取",
+      title: "同步全部 app_info",
+      body: "对所有 CICD 运行中的 App 立即检查仓库并同步 app_info.json？同步在后台进行，结果可在「周期管理 → app_info 同步状态」查看。",
+      confirmText: "开始同步",
     }))) return;
-
-    setBulkFetching(true);
-    setBulkProgress({
-      title: "正在批量拉取 Gerrit app_info",
-      total: allRows.length,
-      completed: 0,
-      ok: 0,
-      failed: 0,
-      failures: [],
-    });
-    const rowByAppId = new Map(allRows.map((row) => [row.app.id, row]));
-    const failureText = (result: AppInfoFetchResult) => {
-      const row = rowByAppId.get(result.app_id);
-      const name = row ? displayName(row.snap) : result.app_id;
-      return `- ${name} (${result.app_id}): ${result.error ?? "未知错误"}`;
-    };
-    const finalResult: {
-      event: Extract<AppInfoFetchStreamEvent, { type: "complete" }> | null;
-    } = { event: null };
+    setSyncingAll(true);
     try {
-      await apiPostNdjson<AppInfoFetchStreamEvent>(
-        "/api/app-info/fetch-all",
-        { release_id: release.id },
-        (event) => {
-          if (event.type === "start") {
-            setBulkProgress((p) => p && {
-              ...p,
-              total: event.total,
-              maxWorkers: event.max_workers,
-            });
-            return;
-          }
-          if (event.type === "item") {
-            const row = rowByAppId.get(event.app_id);
-            const failure = event.ok ? null : failureText(event);
-            setBulkProgress((p) => p && {
-              ...p,
-              currentApp: row ? displayName(row.snap) : event.app_id,
-              currentIdentity: row
-                ? `${formatCicdRepoPath(row.app.git_url, row.app.cicd_repo_type || CICD_REPO_TYPE_DEFAULT)} @ ${row.app.git_branch}`
-                : undefined,
-              total: event.total,
-              completed: event.completed,
-              ok: p.ok + (event.ok ? 1 : 0),
-              failed: p.failed + (event.ok ? 0 : 1),
-              failures: failure ? [...p.failures, failure] : p.failures,
-            });
-            return;
-          }
-
-          finalResult.event = event;
-          const allFailures = event.results.filter((result) => !result.ok).map(failureText);
-          setBulkProgress((p) => p && {
-            ...p,
-            title: "Gerrit app_info 批量拉取完成",
-            currentApp: "全部任务已完成",
-            currentIdentity: undefined,
-            total: event.total,
-            completed: event.total,
-            ok: event.succeeded,
-            failed: event.failed,
-            failures: allFailures,
-            finished: true,
-          });
-        },
-      );
-      const completedEvent = finalResult.event;
-      if (!completedEvent) {
-        throw new Error("批量拉取进度流意外结束，缺少完成结果");
-      }
-      await refetch();
-
-      const summary = `Gerrit app_info.json 批量拉取完成：成功 ${completedEvent.succeeded}，失败 ${completedEvent.failed}。`;
-      if (completedEvent.failed) {
-        toast.error(`${summary}\n请在结果窗口查看全部错误。`);
-      } else {
-        toast.success(summary);
-      }
+      await apiPost("/api/app-info/sync-all", {});
+      toast.success("已开始同步全部 app_info，稍后刷新查看结果。");
     } catch (e) {
-      const errorMessage = e instanceof Error ? e.message : String(e);
-      setBulkProgress((p) => p && {
-        ...p,
-        title: "Gerrit app_info 批量拉取异常结束",
-        currentApp: "连接或响应异常",
-        currentIdentity: undefined,
-        failures: [...p.failures, `- 批量请求：${errorMessage}`],
-        finished: true,
-      });
-      await refetch();
-      toast.error(`Gerrit app_info.json 批量拉取失败：\n\n${errorMessage}`);
+      toast.error(e instanceof Error ? e.message : String(e));
     } finally {
-      setBulkFetching(false);
+      setSyncingAll(false);
     }
-  }
-
-  function handleNewAppCreated(appId: string) {
-    setShowNewApp(false);
-    setNewAppInitialValues(null);
-    void refetch().then(() => setSelectedApp(appId));
-    toast.success("新增 app 已创建");
   }
 
   if (error) {
@@ -3135,46 +381,24 @@ export function AppWorkbenchPage() {
     <section className="view view--split active" data-testid="appworkbench-page">
       <div className="page-toolbar">
         <h2>App 工作台</h2>
-        {data && (
-          <select
-            className="select select-inline"
-            value={selectedReleaseId ?? ""}
+        {data && releases.length > 0 && (
+          <select className="select select-inline" value={selectedReleaseId ?? ""} aria-label="选择版本"
             onChange={(e) => {
-              const id = e.target.value;
-              setSelectedReleaseId(id);
-              void queryClient.invalidateQueries({ queryKey: STATE_KEY(id) });
-            }}
-            aria-label="选择 release"
-          >
-            {releases.map((r) => (
-              <option key={r.id} value={r.id}>{r.name}</option>
-            ))}
+              setSelectedReleaseId(e.target.value);
+              void queryClient.invalidateQueries({ queryKey: STATE_KEY(e.target.value) });
+            }}>
+            {releases.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
           </select>
         )}
-        {canEditRmOnlyFields && release && (
-          <button
-            className="btn sm"
-            onClick={() => void handleFetchAllAppInfos()}
-            disabled={bulkFetching || locked || !docDeadline}
-            title={
-              locked
-                ? "Release 已锁定，不能拉取 app_info"
-                : !docDeadline
-                  ? "Doc deadline 已过，app_info 已冻结"
-                  : "从 Gerrit 批量拉取当前 release 的 app_info.json"
-            }
-            data-testid="fetch-all-app-info-btn"
-          >
-            {bulkFetching ? "批量拉取中..." : "批量拉取 Gerrit app_info"}
+        {isRM(user) && (
+          <button className="btn sm" onClick={() => void handleSyncAll()} disabled={syncingAll}
+            title="立即对所有运行中的 App 同步 app_info" data-testid="sync-all-app-info-btn">
+            同步全部 app_info
           </button>
         )}
         <ReleaseDeadlines release={release} />
         <span className="spacer" />
-        <RefreshBar
-          dataUpdatedAt={dataUpdatedAt}
-          isFetching={isFetching}
-          onRefresh={handleRefresh}
-        />
+        <RefreshBar dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} onRefresh={handleRefresh} />
       </div>
 
       {isFetching && !data ? (
@@ -3182,49 +406,39 @@ export function AppWorkbenchPage() {
       ) : (
         <div className="apps-layout">
           <AppListPanel
-            rows={filteredRows}
+            rows={rows}
             selectedAppId={selectedApp}
-            onSelectApp={handleSelectApp}
+            onSelectApp={(id) => void handleSelectApp(id)}
             search={search}
             onSearchChange={setSearch}
             ownOnly={ownOnly}
             onOwnOnlyChange={setOwnOnly}
-            showOwnOnly={userIsOwner}
+            showOwnOnly={isOwner(user)}
             statusFilter={statusFilter}
             onStatusFilterChange={setStatusFilter}
             displayNames={displayNames}
             cicdPendingCounts={cicdPendingCounts}
-            canCreateApp={canCreateAppForUser}
-            onNewApp={handleOpenNewApp}
+            canCreateApp={canCreateApp(user)}
+            onNewApp={() => setShowNewApp(true)}
           />
           <DetailPanel
-            app={selectedAppObj}
-            snap={selectedSnap}
+            key={selectedRow?.app.id ?? ""}
+            app={selectedRow?.app ?? null}
+            entry={selectedRow?.entry ?? null}
             release={release}
-            releases={releases}
-            user={user}
-            displayNames={displayNames}
-            onSaved={handleSaved}
-            onRetryCreate={handleRetryCreate}
+            openRequests={openRequests ?? []}
+            onSaved={() => { void queryClient.invalidateQueries({ queryKey: ["cicd"] }); void refetch(); }}
           />
         </div>
       )}
 
-      {showNewApp && release && (
+      {showNewApp && (
         <NewAppDialog
-          apps={apps}
-          release={release}
-          initialValues={newAppInitialValues}
-          currentReleaseId={release.id}
-          currentUsername={user?.username ?? ""}
-          onClose={() => { setShowNewApp(false); setNewAppInitialValues(null); }}
-          onCreated={handleNewAppCreated}
-        />
-      )}
-      {bulkProgress && (
-        <AppInfoFetchProgressDialog
-          progress={bulkProgress}
-          onClose={bulkProgress.finished ? () => setBulkProgress(null) : undefined}
+          onClose={() => setShowNewApp(false)}
+          onSubmitted={() => {
+            setShowNewApp(false);
+            void queryClient.invalidateQueries({ queryKey: ["cicd"] });
+          }}
         />
       )}
     </section>

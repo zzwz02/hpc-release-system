@@ -1,200 +1,141 @@
 /**
- * Pure helper functions for the App 工作台 tab.
- *
- * All derived from legacy index.html — no React, no side-effects.
+ * Pure helpers shared by App 工作台, 总览 and QA: entry lookup, status
+ * filters, sorting and labels.  No React, no side effects.
  */
-import type { Snapshot, SnapshotMissingItem, App, ReleaseDetail, SnapshotTestDoc } from "../../types";
-import {
-  releaseDecisionOrder,
-  qaStatusLabels,
-} from "../../lib/labels";
-import { displayName, appSortName } from "../../lib/identity";
-import { normalizeDocTarget } from "../../lib/domainMetadata";
+import type { App, Entry, ReleaseDetail, User } from "../../types";
+import { qaStatusLabels } from "../../lib/labels";
+import { appSortName, displayName } from "../../lib/identity";
 import { isOwner } from "../../lib/roles";
-import type { User } from "../../types";
 
 // ---------------------------------------------------------------------------
-// Snapshot lookup
+// Entry lookup
 // ---------------------------------------------------------------------------
 
-export function releaseSnap(
-  release: ReleaseDetail | null | undefined,
-  appId: string,
-): Snapshot | null {
-  return release?.snapshots?.[appId] ?? null;
+/** The App's entry in the cycle (active or withdrawn), if any. */
+export function appEntry(release: ReleaseDetail | null | undefined, appId: string): Entry | null {
+  return release?.entries?.find((entry) => entry.app_id === appId) ?? null;
 }
 
-export function isReleaseSnap(snap: Snapshot | null | undefined): boolean {
-  return snap?.release_decision === "release";
+/** The App's active signup in the cycle, if any. */
+export function activeEntry(release: ReleaseDetail | null | undefined, appId: string): Entry | null {
+  const entry = appEntry(release, appId);
+  return entry && entry.status === "active" ? entry : null;
 }
 
 // ---------------------------------------------------------------------------
-// Missing-item helpers (mirrors index.html:2095-2108)
+// Status filter
 // ---------------------------------------------------------------------------
 
-export function missingItemKind(item: SnapshotMissingItem | string): string {
-  if (item && typeof item === "object") return (item as SnapshotMissingItem).kind || "doc";
-  return String(item || "").startsWith("QA ") ? "qa" : "doc";
-}
+export type AppStatusFilter = "all" | "signed_up" | "not_signed_up" | "qa_anomaly" | "stopped";
 
-export function missingItemText(item: SnapshotMissingItem | string): string {
-  if (item && typeof item === "object") return (item as SnapshotMissingItem).text || "";
-  return String(item || "");
-}
-
-export function docsItems(snap: Snapshot | null | undefined): SnapshotMissingItem[] {
-  return ((snap?.missing_items ?? []) as (SnapshotMissingItem | string)[])
-    .filter((item) => missingItemKind(item) !== "qa") as SnapshotMissingItem[];
-}
-
-export function docsOk(snap: Snapshot | null | undefined): boolean {
-  return isReleaseSnap(snap) && docsItems(snap).length === 0;
-}
-
-export function qaOk(snap: Snapshot | null | undefined): boolean {
-  return ["qa_passed", "has_issues"].includes(snap?.qa_status ?? "");
-}
-
-export type AppStatusFilter = "all" | "qa_anomaly" | "doc_incomplete";
-
-export const APP_STATUS_FILTER_OPTIONS: readonly {
-  value: AppStatusFilter;
-  label: string;
-}[] = [
+export const APP_STATUS_FILTER_OPTIONS: readonly { value: AppStatusFilter; label: string }[] = [
   { value: "all", label: "所有" },
+  { value: "signed_up", label: "只看已报名" },
+  { value: "not_signed_up", label: "只看未报名" },
   { value: "qa_anomaly", label: "只看QA异常" },
-  { value: "doc_incomplete", label: "只看doc未完成" },
+  { value: "stopped", label: "只看CICD已停止" },
 ];
 
-/** Shared App 工作台 / 总览 status filter predicate. */
-export function matchesAppStatusFilter(
-  snap: Snapshot | null | undefined,
-  filter: AppStatusFilter,
-): boolean {
-  if (filter === "all") return snap != null;
-  if (!isReleaseSnap(snap)) return false;
-  if (filter === "qa_anomaly") {
-    return ["has_issues", "cannot_release"].includes(snap?.qa_status ?? "");
+export function matchesAppStatusFilter(app: App, entry: Entry | null, filter: AppStatusFilter): boolean {
+  const active = entry?.status === "active";
+  switch (filter) {
+    case "signed_up":
+      return active;
+    case "not_signed_up":
+      return !active && app.cicd_status === "running";
+    case "qa_anomaly":
+      return active && ["has_issues", "cannot_release"].includes(entry?.qa_status ?? "");
+    case "stopped":
+      return app.cicd_status === "stopped";
+    default:
+      return true;
   }
-  return docsItems(snap).length > 0;
 }
 
 // ---------------------------------------------------------------------------
-// QA dot CSS class (mirrors index.html:2082-2093)
+// QA dot
 // ---------------------------------------------------------------------------
 
-export function qaDotClass(snap: Snapshot | null | undefined): string {
-  if (!isReleaseSnap(snap)) return "na";
-  const s = snap?.qa_status ?? "not_checked";
+export function qaDotClass(entry: Entry | null | undefined): string {
+  if (!entry || entry.status !== "active") return "na";
+  const s = entry.qa_status;
   if (s === "qa_passed") return "ok";
   if (s === "has_issues") return "warn";
   if (s === "cannot_release") return "bad";
   return "todo";
 }
 
-export function qaDotTitle(snap: Snapshot | null | undefined): string {
-  if (!isReleaseSnap(snap)) return `${snap?.release_decision ?? "非 release"}：不纳入 QA`;
-  const s = snap?.qa_status ?? "not_checked";
-  return "QA：" + (qaStatusLabels[s as keyof typeof qaStatusLabels] ?? s);
+export function qaDotTitle(entry: Entry | null | undefined): string {
+  if (!entry || entry.status !== "active") return "未报名本版本";
+  return "QA：" + (qaStatusLabels[entry.qa_status] ?? entry.qa_status);
 }
 
 // ---------------------------------------------------------------------------
-// App sorting (mirrors index.html:1741-1749)
+// Sorting and search
 // ---------------------------------------------------------------------------
 
+/** Owner's own Apps first, then signed-up, running, stopped; then by name. */
 export function compareAppRows(
-  a: { snap: Snapshot },
-  b: { snap: Snapshot },
+  a: { app: App; entry: Entry | null },
+  b: { app: App; entry: Entry | null },
   user: User | null | undefined,
 ): number {
   if (isOwner(user)) {
     const un = user?.username ?? "";
-    const ownA = (a.snap.owners ?? []).includes(un) ? 0 : 1;
-    const ownB = (b.snap.owners ?? []).includes(un) ? 0 : 1;
+    const ownA = a.app.owners.includes(un) ? 0 : 1;
+    const ownB = b.app.owners.includes(un) ? 0 : 1;
     if (ownA !== ownB) return ownA - ownB;
   }
-  const da = releaseDecisionOrder[a.snap.release_decision] ?? 99;
-  const db = releaseDecisionOrder[b.snap.release_decision] ?? 99;
-  if (da !== db) return da - db;
-  return appSortName(a.snap).localeCompare(appSortName(b.snap), "zh-CN");
+  const rank = (row: { app: App; entry: Entry | null }) =>
+    row.entry?.status === "active" ? 0 : row.app.cicd_status === "running" ? 1 : 2;
+  if (rank(a) !== rank(b)) return rank(a) - rank(b);
+  return appSortName(a.app).localeCompare(appSortName(b.app), "zh-CN");
 }
 
-// ---------------------------------------------------------------------------
-// User label / display helpers
-// ---------------------------------------------------------------------------
-
-export function userLabel(
-  username: string,
-  displayNames: Record<string, string>,
-): string {
+export function userLabel(username: string, displayNames: Record<string, string>): string {
   const dn = displayNames[username];
   return dn && dn !== username ? `${dn} (${username})` : username;
 }
 
-export function usersLabel(
-  owners: string[] | null | undefined,
-  displayNames: Record<string, string>,
-): string {
+export function usersLabel(owners: string[] | null | undefined, displayNames: Record<string, string>): string {
   if (!owners?.length) return "无 owner";
-  return owners.map((u) => {
-    const dn = displayNames[u];
-    return dn && dn !== u ? dn : u;
-  }).join(", ");
+  return owners.map((u) => displayNames[u] || u).join(", ");
 }
 
-export function usersSearchText(
-  owners: string[] | null | undefined,
+export function usersSearchText(owners: string[] | null | undefined, displayNames: Record<string, string>): string {
+  return (owners ?? []).map((u) => `${u} ${displayNames[u] ?? ""}`).join(" ");
+}
+
+export function filterAppRows<T extends { app: App }>(
+  rows: T[],
+  query: string,
+  ownOnly: boolean,
+  user: User | null | undefined,
   displayNames: Record<string, string>,
-): string {
-  return (owners ?? []).map((u) => {
-    const dn = displayNames[u] ?? "";
-    return `${u} ${dn}`;
-  }).join(" ");
+): T[] {
+  const q = query.toLowerCase().trim();
+  let result = rows;
+  if (ownOnly && user) result = result.filter((r) => r.app.owners.includes(user.username));
+  if (q) {
+    result = result.filter(({ app }) =>
+      [displayName(app), app.id, app.type, usersSearchText(app.owners, displayNames)]
+        .join(" ")
+        .toLowerCase()
+        .includes(q),
+    );
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
-// Progress completion (mirrors index.html:2135-2150)
+// Chips and description
 // ---------------------------------------------------------------------------
 
-export function ownerProgress(snap: Snapshot): { done: number; total: number; pct: number } {
-  const doc = snap.doc ?? { intro: "", image_usage: "", binary_usage: "", env_setup: "", limitations: "" };
-  const t = (snap.test_docs ?? []).filter((d) => !d.obsolete);
-  const hasInfo = !!(snap.app_info && (snap.app_info as Record<string, unknown>)["source_type"]);
-  const checks = [
-    hasInfo,
-    !!(doc.intro ?? "").trim(),
-    !!(doc.image_usage ?? "").trim(),
-    !!(doc.binary_usage ?? "").trim(),
-    !!(doc.env_setup ?? "").trim(),
-    !!(doc.limitations ?? "").trim(),
-    hasInfo && t.length > 0 && t.every(
-      (d) => (d.dataset ?? "").trim() && (d.content ?? "").trim() && (d.pass_criteria ?? "").trim(),
-    ),
-  ];
-  const done = checks.filter(Boolean).length;
-  return { done, total: checks.length, pct: Math.round((done / checks.length) * 100) };
-}
-
-// ---------------------------------------------------------------------------
-// app_info source label (mirrors index.html:2165-2170)
-// ---------------------------------------------------------------------------
-
-export function appInfoSource(snap: Snapshot | null | undefined): string {
-  const info = (snap?.app_info ?? {}) as Record<string, unknown>;
-  if (!info["source_type"]) return "未提供";
-  if (info["source_type"] === "gerrit_fetch")
-    return `Gerrit 拉取；commit=${info["commit_id"] ?? "未知"}；${info["source"] ?? ""}`;
-  if (info["source_type"] === "owner_upload")
-    return `Owner 上传；上传人=${info["uploaded_by"] ?? "未知"}；文件=${info["source"] ?? ""}`;
-  return `${info["source_type"]}: ${info["source"] ?? ""}`;
-}
-
-// ---------------------------------------------------------------------------
-// orderChips (mirrors index.html:2344-2351)
-// ---------------------------------------------------------------------------
-
-export function orderChips(value: string | null | undefined): string {
-  const items = String(value ?? "").split(/[,，、;；/]+/).map((s) => s.trim()).filter(Boolean);
+/** Chip list in display order: alphabetical with X201 last. */
+export function orderChips(value: string | readonly string[] | null | undefined): string {
+  const items = (Array.isArray(value) ? value : String(value ?? "").split(/[,，、;；/]+/))
+    .map((s) => String(s).trim())
+    .filter(Boolean);
   const seen: string[] = [];
   items.forEach((c) => { if (!seen.includes(c)) seen.push(c); });
   const rest = seen.filter((c) => c.toLowerCase() !== "x201")
@@ -203,128 +144,13 @@ export function orderChips(value: string | null | undefined): string {
   return [...rest, ...tail].join(",");
 }
 
-// ---------------------------------------------------------------------------
-// Description count (mirrors the backend app_description_count): a contiguous
-// ASCII alphanumeric run is one word; every other non-whitespace code point,
-// including each Chinese character and punctuation mark, counts as one.
-// ---------------------------------------------------------------------------
+export const APP_DESCRIPTION_LIMIT = 30;
 
-const APP_DESCRIPTION_LIMIT = 30;
-
-export { APP_DESCRIPTION_LIMIT };
-
+/** Mirrors the backend: an ASCII alphanumeric run is one unit; other characters one each. */
 export function appDescriptionCount(text: string | null | undefined): number {
   return ((text ?? "").trim().match(/[A-Za-z0-9]+|[^\s]/gu) ?? []).length;
 }
 
-// ---------------------------------------------------------------------------
-// F2 — copy editable fields from another release's snapshot
-//
-// Copies the owner-editable doc/test CONTENT fields an owner would re-enter.
-// Deliberately does NOT copy identity/version/owner-confirmed/QA fields
-// (official_name, owners, git_url/branch, release_decision, version, qa_*),
-// which are release-specific or come from app_info.
-// ---------------------------------------------------------------------------
-
-export interface CopiedSnapshotFields {
-  type: string;
-  official_url: string;
-  description: string;
-  doc_target: string;
-  intro: string;
-  image_usage: string;
-  binary_usage: string;
-  env_setup: string;
-  limitations: string;
-  community_release: string;
-  community_menu_level1: string;
-  community_doc_url: string;
-  community_description: string;
-  community_python: string;
-  community_framework: string;
-  sanity_arm: boolean;
-  sanity_ubuntu: boolean;
-}
-
-export function copiedScalarFields(s: Snapshot): CopiedSnapshotFields {
-  return {
-    type: s.type ?? "",
-    official_url: s.official_url ?? "",
-    description: s.description ?? "",
-    doc_target: normalizeDocTarget(s.doc_target),
-    intro: s.doc?.intro ?? "",
-    image_usage: s.doc?.image_usage ?? "",
-    binary_usage: s.doc?.binary_usage ?? "",
-    env_setup: s.doc?.env_setup ?? "",
-    limitations: s.doc?.limitations ?? "",
-    community_release: s.community?.release_status ?? "",
-    community_menu_level1: s.community?.menu_level1 ?? "",
-    community_doc_url: s.community?.doc_url ?? "",
-    community_description: s.community?.description ?? "",
-    community_python: s.community?.python_version ?? "",
-    community_framework: s.community?.framework_version ?? "",
-    sanity_arm: s.sanity?.arm_kylin ?? false,
-    sanity_ubuntu: s.sanity?.ubuntu ?? false,
-  };
-}
-
-/**
- * Merge a source release's test_docs content into the current form's test_docs.
- *
- * Matches by `path`: for each current entry that exists in the source, copy the
- * text fields (and `command` only for owner-added rows, since auto rows keep the
- * app_info command). Source owner-added rows whose path is absent are appended.
- * Current rows with no source match are left untouched.
- */
-export function mergeCopiedTestDocs(
-  current: SnapshotTestDoc[],
-  source: SnapshotTestDoc[],
-): SnapshotTestDoc[] {
-  const sourceByPath = new Map(source.map((d) => [d.path, d]));
-  const result: SnapshotTestDoc[] = current.map((d) => {
-    const src = sourceByPath.get(d.path);
-    if (!src) return { ...d };
-    return {
-      ...d,
-      content: src.content ?? d.content,
-      dataset: src.dataset ?? d.dataset,
-      result_view: src.result_view ?? d.result_view,
-      pass_criteria: src.pass_criteria ?? d.pass_criteria,
-      ...(d.owner_added ? { command: src.command ?? d.command } : {}),
-    };
-  });
-  const currentPaths = new Set(current.map((d) => d.path));
-  source
-    .filter((d) => d.owner_added && !currentPaths.has(d.path))
-    .forEach((d) => {
-      result.push({ ...d, id: `copied_${d.path}` });
-    });
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// App-row filter (mirrors renderApps filter logic)
-// ---------------------------------------------------------------------------
-
-export function filterAppRows(
-  rows: { app: App; snap: Snapshot }[],
-  query: string,
-  ownOnly: boolean,
-  user: User | null | undefined,
-  displayNames: Record<string, string>,
-): { app: App; snap: Snapshot }[] {
-  const q = query.toLowerCase().trim();
-  let result = rows;
-  if (ownOnly && user) {
-    result = result.filter((r) => (r.snap.owners ?? []).includes(user.username));
-  }
-  if (q) {
-    result = result.filter(({ snap }) =>
-      [displayName(snap), snap.type, usersSearchText(snap.owners, displayNames)]
-        .join(" ")
-        .toLowerCase()
-        .includes(q),
-    );
-  }
-  return result;
+export function shortCommit(commit: string | null | undefined): string {
+  return (commit ?? "").slice(0, 12);
 }

@@ -13,7 +13,6 @@
 import type {
   DocTarget as SharedDocTarget,
   QaStatus as SharedQaStatus,
-  ReleaseDecision as SharedReleaseDecision,
   ReleasePhase as SharedReleasePhase,
 } from "../lib/domainMetadata";
 import type { LlmTotals } from "../lib/llmProgress";
@@ -50,32 +49,119 @@ export interface LogoutResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Apps (global app registry, not release-scoped)
+// Apps (catalog: identity, CICD status, optional profile, app_info)
 // ---------------------------------------------------------------------------
+
+export type CicdStatus = "running" | "stopped";
+
+export interface AppDoc {
+  intro?: string;
+  image_usage?: string;
+  binary_usage?: string;
+  env_setup?: string;
+  limitations?: string;
+}
+
+export interface AppCommunity {
+  menu_level1?: string;
+  doc_url?: string;
+  description?: string;
+  python_version?: string;
+  framework_version?: string;
+}
+
+export interface AppSanity {
+  arm_kylin?: boolean;
+  ubuntu?: boolean;
+}
+
+export interface AppTestDoc {
+  path: string;
+  dataset?: string;
+  content?: string;
+  result_view?: string;
+  pass_criteria?: string;
+}
+
+export interface AppInfoTest {
+  path: string;
+  command: string;
+  supported_chips: string[];
+  arch_list: string[];
+}
+
+/** Summary of one stored app_info version. */
+export interface AppInfoVersion {
+  id: number;
+  commit_id: string;
+  fetched_at: string;
+  source: string;
+  app_version: string;
+  x86_chips: string[];
+  arm_chips: string[];
+  build_os: string[];
+  build_arches: string[];
+  python_labels: string[];
+  pytorch_labels: string[];
+  tests: AppInfoTest[];
+  community: { release_status?: string; image_count?: number; pkg_count?: number };
+  /** null = the app_info has no app_dependency field. */
+  dependencies: string[] | null;
+}
+
+export interface OfficialVersion {
+  release_id: string;
+  release_name: string;
+  version: string;
+  image: string;
+  digest: string;
+  released_at: string;
+}
 
 export interface App {
   id: string;
+  name: string;
   git_url: string;
   git_branch: string;
+  aliases: string[];
+  created_by: string;
+  created_at: string;
   cicd_repo_type?: string;
   cicd_community_artifact?: string;
   cicd_build_image?: string;
   cicd_test_timeout?: string;
   cicd_notes?: string;
-  cicd_onboarding_status?: "pending_create" | "rejected_create" | "cancelled_create";
-  cicd_onboarding_request_id?: number;
-  cicd_onboarding_review_note?: string;
-  cicd_onboarding_reviewed_at?: string;
-  cicd_onboarding_delivery_status?: string;
-  /** Selected release is visible for planning while CICD is unfinished. */
-  cicd_release_pending?: boolean;
-  created_by: string;
-  created_at: string;
-  aliases: string[];
+  cicd_status: CicdStatus;
+  official_name: string;
+  type: string;
+  official_url: string;
+  description: string;
+  doc_target: DocTarget;
+  owners: string[];
+  doc: AppDoc;
+  community: AppCommunity;
+  sanity: AppSanity;
+  test_docs: AppTestDoc[];
+  sync_head_commit: string;
+  sync_checked_at: string;
+  sync_error: string;
+  latest_app_info: AppInfoVersion | null;
+  dependencies: string[];
+  dependency_declared: boolean;
+  official: OfficialVersion | null;
+  open_status_request: { id: number; target_status: CicdStatus } | null;
+  /** Unpublished cycles where the App has an active signup (blocks stopping CICD). */
+  open_signups: string[];
+  /** Contextual actions computed by the backend for the current user. */
+  allowed_actions?: string[];
 }
 
+export type QaStatus = SharedQaStatus;
+
+export type DocTarget = SharedDocTarget;
+
 // ---------------------------------------------------------------------------
-// Release
+// Monthly cycles
 // ---------------------------------------------------------------------------
 
 export type ReleasePhase = SharedReleasePhase;
@@ -83,129 +169,90 @@ export type ReleasePhase = SharedReleasePhase;
 export interface ReleaseSummary {
   id: string;
   name: string;
-  maca_version: string;
-  app_freeze_deadline: string;
-  doc_deadline: string;
+  signup_deadline: string;
+  qa_deadline: string;
+  release_date: string;
   released_locked: boolean;
   released_locked_at: string;
   released_locked_by: string;
   created_at: string;
-  source: string;
-  cloned_from: string;
+  created_by: string;
   phase: ReleasePhase;
+  entry_count: number;
+  released_count: number;
 }
 
-// ---------------------------------------------------------------------------
-// Snapshot (release-scoped app entry)
-// ---------------------------------------------------------------------------
-
-export interface SnapshotDoc {
-  intro: string;
-  image_usage: string;
-  binary_usage: string;
-  env_setup: string;
-  limitations: string;
-}
-
-export interface SnapshotCommunity {
-  release_status: string;
-  menu_level1?: string;
-  doc_url?: string;
-  description?: string;
-  python_version: string;
-  framework_version: string;
-  image_count?: number;
-  pkg_count?: number;
-  image_aliases?: string[];
-  pkg_aliases?: string[];
-  derived_from_app_info?: boolean;
-}
-
-export interface SnapshotSanity {
-  arm_kylin: boolean;
-  ubuntu: boolean;
-}
-
-export interface SnapshotMissingItem {
-  kind: string;  // "doc" | "qa" | etc.
-  text: string;
-}
-
-export interface SnapshotTestDoc {
-  /** Unique ID within the snapshot (from app_info or owner-added). */
-  id: string;
-  /** Relative path of the test script (e.g. "tests/test_foo.sh"). */
-  path: string;
-  command: string;
-  dataset: string;
-  content: string;
-  result_view: string;
-  pass_criteria: string;
-  /** True when this entry was added by an Owner (not from app_info). */
-  owner_added?: boolean;
-  /** True when obsolete (app_info no longer contains this path). */
-  obsolete?: boolean;
-}
-
-export type QaStatus = SharedQaStatus;
-
-export type ReleaseDecision = SharedReleaseDecision;
-
-export type DocTarget = SharedDocTarget;
-
-export interface AppInfoSnapshot {
-  // Opaque dict from Gerrit/upload; shape varies
-  [key: string]: unknown;
-}
-
-export interface AppInfoDiff {
-  id: string;
-  type: string;
-  field: string;
-  old_value: unknown;
-  new_value: unknown;
-  qa_impact: boolean;
-}
-
-export interface Snapshot {
-  app_id: string;
-  official_name: string;
+export interface EnvironmentRow {
+  id?: number;
+  component: string;
   version: string;
-  description: string;
-  official_url: string;
-  type: string;
-  arch: string;
-  x86_chips: string;
-  arm_chips: string;
-  hpcc_chip: string;
-  maca_version: string;
-  build_arches: string;
-  build_os: string;
-  doc_target: DocTarget;
-  release_decision: ReleaseDecision;
-  owners: string[];
-  owner_confirmed: boolean;
-  qa_status: QaStatus;
-  qa_issue_note: string;
-  doc: SnapshotDoc;
-  community: SnapshotCommunity;
-  sanity: SnapshotSanity;
-  python_labels: string;
-  pytorch_labels: string;
-  test_docs: SnapshotTestDoc[];
-  missing_items: SnapshotMissingItem[];
-  app_info: AppInfoSnapshot | null;
-  app_info_diffs: AppInfoDiff[];
-  /** Contextual actions computed by the backend for the current user. */
-  allowed_actions?: string[];
+  note: string;
 }
 
-// ---------------------------------------------------------------------------
-// Release detail (with snapshots)
-// ---------------------------------------------------------------------------
+export interface BaseImage {
+  id: number;
+  release_id: string;
+  name: string;
+  image: string;
+  digest: string;
+  note: string;
+}
+
+export type EntryResult = "" | "released" | "failed";
+
+export interface ScopeTest extends AppInfoTest {
+  excluded: boolean;
+}
+
+export interface ScopeRequest {
+  id: number;
+  entry_id: number;
+  app_id?: string;
+  app_name?: string;
+  release_id?: string;
+  base_version_id: number;
+  target_version_id: number;
+  additions: string[];
+  status: "pending" | "approved" | "rejected" | "superseded" | "closed";
+  created_at: string;
+  decided_by: string;
+  decided_at: string;
+  decision_note: string;
+}
+
+export interface Entry {
+  id: number;
+  release_id: string;
+  app_id: string;
+  status: "active" | "withdrawn";
+  base_image_id: number | null;
+  target_version: string;
+  planned_features: string;
+  actual_delivery: string;
+  known_issues: string;
+  locked_version_id: number | null;
+  excluded_tests: string[];
+  qa_status: QaStatus;
+  qa_note: string;
+  deliverable_image: string;
+  deliverable_digest: string;
+  deliverable_commit: string;
+  result: EntryResult;
+  created_at: string;
+  created_by: string;
+  updated_at: string;
+  updated_by: string;
+  locked_app_info: AppInfoVersion | null;
+  scope_tests: ScopeTest[];
+  pending_scope_request: ScopeRequest | null;
+  behind_latest: boolean;
+}
 
 export interface ReleaseDetail extends ReleaseSummary {
-  snapshots: Record<string, Snapshot>;
+  environment: EnvironmentRow[];
+  base_images: BaseImage[];
+  entries: Entry[];
+  scope_requests: ScopeRequest[];
 }
 
 // ---------------------------------------------------------------------------
@@ -387,15 +434,12 @@ export interface CicdRequest {
   task_repo_name: string;
   task_branch: string;
   task_status: string;
-  // origin distinguishes build-config requests ("cicd_workbench") from
-  // decision-sync requests ("release_decision_sync") auto-created when an
-  // App's release_decision changes (R3 Ruling D). Exposed by the API (F3).
   origin?: string;
   /** Backend-derived lifecycle fields returned with include_allowed_actions=1. */
   is_open?: boolean;
   blocker_kind?: "create" | "jira" | "status" | "modify" | "";
   replaceable?: boolean;
-  status_sync_direction?: "start" | "stop" | "";
+  status_direction?: "start" | "stop" | "";
   /** Contextual actions computed by the backend for the current user. */
   allowed_actions?: string[];
 }

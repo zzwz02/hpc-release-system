@@ -185,8 +185,9 @@ def update_profile(
     unknown = set(fields) - allowed
     if unknown:
         raise ValueError(f"不支持的字段：{', '.join(sorted(unknown))}")
-    if "owners" in fields and not has_capability(role, "app.edit.rm_fields"):
-        raise AuthzError("只有 RM 可以修改 Owner")
+    rm_only = {"owners", "official_name", "sanity"} & set(fields)
+    if rm_only and not has_capability(role, "app.edit.rm_fields"):
+        raise AuthzError("只有 RM 可以修改 Owner、官方名称和 Sanity")
     update: dict[str, Any] = {}
     for key in PROFILE_TEXT_FIELDS:
         if key in fields:

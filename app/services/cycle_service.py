@@ -38,6 +38,27 @@ from app.repositories.base import new_id
 from app.services import catalog_service
 from app.timeutil import beijing_timestamp
 
+ENTRY_FIELD_LABELS = {
+    "base_image_id": "基础镜像",
+    "target_version": "目标版本",
+    "planned_features": "计划 feature",
+    "excluded_tests": "去掉的测试项",
+    "actual_delivery": "实际交付",
+    "known_issues": "已知问题",
+    "locked_version_id": "锁定的 app_info 版本",
+    "status": "报名状态",
+}
+
+
+def _detail(old: dict[str, Any], new: dict[str, Any]) -> list[dict[str, Any]]:
+    """Audit detail rows ({field, label, old, new}) for changed entry fields."""
+    return [
+        {"field": key, "label": ENTRY_FIELD_LABELS.get(key, key), "old": old.get(key), "new": value}
+        for key, value in new.items()
+        if old.get(key) != value
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Cycle reads
 # ---------------------------------------------------------------------------
@@ -437,7 +458,7 @@ def signup(
             app_id=app_id,
             release_id=release_id,
             event="signup",
-            detail={**fields, "planned_features": fields["planned_features"]},
+            detail=_detail({}, fields),
         )
     return entry_view(conn, _get_entry(conn, entry_id))
 
@@ -507,7 +528,7 @@ def update_entry(
             app_id=entry["app_id"],
             release_id=entry["release_id"],
             event="update_entry",
-            detail={key: {"old": entry.get(key), "new": value} for key, value in update.items()},
+            detail=_detail(entry, update),
         )
     return entry_view(conn, _get_entry(conn, entry_id))
 
