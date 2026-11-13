@@ -74,7 +74,7 @@ flowchart LR
 ## 文档产物与查询
 
 - 发布说明只列当月发布的 App；使用手册和 AI4Sci 手册覆盖所有运行中 App 的当前正式版，每月更新。手册资料（描述、文档字段、测试说明、社区信息）是可选的，在 App 工作台「资料」维护。
-- 「QA → 组件依赖」按组件列出依赖它的运行中 App，每个组件默认收起。「最新hpc release版本」只显示 HPC 发布周期，不附加 App 官方版本。展示该 App 最新发布时冻结的全部交付镜像，按 OS、CPU 架构、Python/PyTorch 和 release/dbg 配置分别列出命令，匹配到交付镜像时固定到对应 digest；未填镜像的构建明确显示命令模板，旧镜像未指定构建时不猜测平台。兼容清单 CSV 包含全部平台命令及没有关联测试的交付镜像。支持 `app_dependency` 声明及 PyTorch + Python 组合依赖：组合取最新 app_info 同一启用 `app_build` 的两个 label，缺任一标签不生成组合，重复平台去重，不跨构建拼接；直接从已保存内容计算，无需重新同步或迁移。另列未声明 `app_dependency` 的 App；组件筛选及导出同样包含组合依赖，导出只含已发布 App。
+- 「QA → 组件依赖」按组件列出依赖它的运行中 App，每个组件及其中每个 App 默认收起；点击 App 名称独立展开或收起其全部交付镜像和测试命令，收起时保留 Owner、HPC release 版本与镜像、命令数量。「最新hpc release版本」只显示 HPC 发布周期，不附加 App 官方版本。展示该 App 最新发布时冻结的全部交付镜像，按 OS、CPU 架构、Python/PyTorch 和 release/dbg 配置分别列出命令，匹配到交付镜像时固定到对应 digest；未填镜像的构建明确显示命令模板，旧镜像未指定构建时不猜测平台。兼容清单 CSV 包含全部平台命令及没有关联测试的交付镜像。支持 `app_dependency` 声明及 PyTorch + Python 组合依赖：组合取最新 app_info 同一启用 `app_build` 的两个 label，缺任一标签不生成组合，重复平台去重，不跨构建拼接；直接从已保存内容计算，无需重新同步或迁移。另列未声明 `app_dependency` 的 App；组件筛选及导出同样包含组合依赖，导出只含已发布 App。
 - 「QA → 历史查询」默认展示「发布app列表」，下拉菜单仅列已发布并锁定的版本，默认最新版本。选中后自动列出该版本发布成功的 App、当期 App 版本、包含 digest 的完整交付镜像名、QA 结论和备注；可按 App、镜像或 QA 结果筛选。历史记录缺少完整镜像信息时明确标注，已停止维护的 App 仍保留在历史发布列表。解锁的版本不再提供查询，重新发布后按更正结果展示。「按 App」界面已移除，旧接口保留兼容。
 - 历史查询的「按镜像 digest」输入完整引用（`harbor.sh.mxcr.io/项目/镜像@sha256:…`）：从 Harbor 查询该 digest 的所有 tags，取第二字段为十六进制 commit id 的 tag，按已登记 App 的仓库身份读取 Gerrit 对应 commit 的 `app_info.json`，生成固定到输入 digest 的 Docker 测试命令；app_info 来源提供只读查看链接，在新页显示从 Gerrit 对应 commit 读取的原始 `app_info.json`，查看时不重新解析可能变化的 Harbor tags。只列镜像相应构建平台和 release/dbg 类型的启用发布测试，保留容器参数及数据挂载；不使用最新分支内容，也不写入 App 或报名记录。App 须已登记并同步过 app_info，历史镜像名可从已存版本识别；镜像本身无需有本系统报名记录。无 commit tag、commit 冲突、仓库不唯一或上游失败时显示错误。
 

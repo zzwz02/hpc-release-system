@@ -55,7 +55,7 @@ HTTP 类型声明不会验证真实 JSON。改接口时对照 router/service、�
 - App、QA、历史镜像查询的测试范围使用后端 `test.platforms`，逐行显示 OS、CPU 架构（x86/ARM）、支持芯片及命令，不从 `supported_chips` 的并集推断平台。镜像的两项芯片总览只来自实际匹配的镜像构建。QA 测试命令表/CSV 用 `commit_id` 替换 `base_image`，取当期锁定 app_info 版本的 commit；保留 OS、支持芯片和 Python/PyTorch label，构建别名与 OS/架构完全重复时省略整列，包含其他配置时保留。列结构变化时清除按列筛选和排序，避免索引错位。
 - 最新 app_info 的 OS 与 CPU 架构分别使用独立信息框。QA 测试命令表中的 `commit_id` 显示前 12 位，悬停查看完整 ID；筛选、排序和 CSV 导出仍使用完整值。
 - 组件依赖沿用组件分组与筛选，下拉项包含从最新已保存 app_info 的同一启用构建提取的 PyTorch + Python 组合，名称简写为 `torch 2.10 + py312`。复用构建平台解析的标签选项及顶层默认值，缺任一标签时不生成组合；同一 App 的相同组合只计一次，禁用构建与停止 App 不列入。兼容验证 CSV 按相同组合筛选，依赖列保留普通组件及所有组合；无正式版的 App 不导出。`app_dependency` 的声明状态仍单独展示。
-- 各组件使用默认关闭的 `details`；版本列「最新hpc release版本」仅显示 `official.release_name`。`official.images` 消费最新发布的完整镜像快照，复用 `DeliveryImages` 展示全部 OS/CPU/标签/镜像类型；`tests` 由发布时锁定 app_info 和未排除测试生成，按相同构建标识绑定交付镜像并输出固定 digest 的 Docker 命令。缺少对应交付镜像时保留模板并明确提示，不把未指定构建的旧镜像套到所有平台。CSV 去掉 App 官方版本列，增加平台、镜像类型、标签、芯片和镜像来源，包含所有命令及没有关联测试的镜像。
+- 各组件使用默认关闭的 `details`；其中每个 App 的镜像与测试命令也默认折叠，点击 App 名称独立展开，支持键盘操作，折叠时保留 Owner、HPC release 版本及镜像、命令数量。未声明依赖的 App 同样处理；版本列「最新hpc release版本」仅显示 `official.release_name`。`official.images` 消费最新发布的完整镜像快照，复用 `DeliveryImages` 展示全部 OS/CPU/标签/镜像类型；`tests` 由发布时锁定 app_info 和未排除测试生成，按相同构建标识绑定交付镜像并输出固定 digest 的 Docker 命令。缺少对应交付镜像时保留模板并明确提示，不把未指定构建的旧镜像套到所有平台。CSV 去掉 App 官方版本列，增加平台、镜像类型、标签、芯片和镜像来源，包含所有命令及没有关联测试的镜像。
 - 周期选择使用共享 `selectedReleaseId`，跳转 App 时保留正确周期；不把不同 release 的编辑草稿或 QA 建议混用。
 - 总览和 App 工作台工具栏的报名截止、QA 截止、发布日横向并排，标签在上、日期在下；空间不足时按完整日期项换行。
 - 总览统计卡片旁显示所选周期 `release.environment` 的组件、版本、说明，取代独立发布时间线；仅展示，随共享周期选择和显式刷新更新，不单独请求或轮询。
@@ -99,7 +99,7 @@ HTTP 类型声明不会验证真实 JSON。改接口时对照 router/service、�
 
 QA 导航与权限验证使用不带 `--signup` 的同一隔离后端，执行 `QA_NAV_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/qa-navigation.spec.ts`。覆盖 Owner/QA 子页签、历史查询、组件依赖导出及深链接，以及 Guest/SPD 的界面和接口拒绝访问。
 
-组合依赖验证使用隔离后端参数 `--dependencies`，执行 `DEPENDENCIES_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/dependencies.spec.ts`。覆盖 Owner/QA 的组件默认收起和展开、组合配对与去重、HPC release 版本、停止 App 排除、全部平台镜像及固定 digest 的命令、缺失镜像模板、CSV 仅导出已发布 App，以及窄屏展示。
+组合依赖验证使用隔离后端参数 `--dependencies`，执行 `DEPENDENCIES_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/dependencies.spec.ts`。覆盖 Owner/QA 的组件及 App 默认收起、独立展开/收起和键盘操作、组合配对与去重、HPC release 版本、停止 App 排除、全部平台镜像及固定 digest 的命令、缺失镜像模板、CSV 仅导出已发布 App，以及窄屏展示。
 
 基础镜像验证使用同一隔离后端，执行 `BASE_IMAGE_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/base-images.spec.ts`。覆盖完整引用新增及解析回读、旧记录编辑、格式错误保留、digest 查询、跨周期显示和发布后只读。
 

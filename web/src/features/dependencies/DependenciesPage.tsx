@@ -30,6 +30,54 @@ interface DependencyOverview {
   undeclared: DependencyApp[];
 }
 
+function AppRow({ app }: { app: DependencyApp }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const detailId = React.useId();
+  const images = recordedImages(app.official?.images, app.official?.image, app.official?.digest);
+
+  return (
+    <tr data-testid={`dependency-app-${app.app_id}`}>
+      <td>
+        <button type="button" className="dependency-app-toggle" aria-expanded={expanded}
+          aria-controls={`${detailId}-images ${detailId}-commands`}
+          aria-label={`${expanded ? "收起" : "展开"} ${app.name} 的镜像和测试命令`}
+          onClick={() => setExpanded((value) => !value)}>
+          <span className={`chev${expanded ? " open" : ""}`} aria-hidden="true">▶</span>
+          <span>{app.name}<span className="small muted dependency-app-id">{app.app_id}</span></span>
+        </button>
+      </td>
+      <td className="small">{app.owners.join(", ")}</td>
+      <td data-testid="dependency-release">{app.official?.release_name || <span className="muted">无</span>}</td>
+      <td>
+        {!expanded && <span className="small muted">{images.length} 个镜像</span>}
+        <div id={`${detailId}-images`} hidden={!expanded}>
+          <DeliveryImages compact images={images} />
+        </div>
+      </td>
+      <td className="small">
+        {!expanded && <span className="muted">{app.tests.length} 条命令</span>}
+        <div id={`${detailId}-commands`} hidden={!expanded}>
+          {app.tests.length === 0 ? "—" : (
+            <div data-testid="dependency-test-commands">
+              {app.tests.map((test, index) => (
+                <div key={`${test.path}-${index}`} className="dependency-command">
+                  <b className="mono">{test.path}</b>
+                  <div className="muted small">
+                    {[test.os, test.arch === "amd64" ? "x86" : test.arch === "arm64" ? "ARM" : test.arch,
+                      test.image_target, test.python_label, test.pytorch_label, test.chips.join(", ")].filter(Boolean).join(" · ")}
+                  </div>
+                  {!test.delivery_reference && <div className="muted small">未填写对应交付镜像，命令使用镜像模板。</div>}
+                  <div className="mono cell-wrap" data-testid="dependency-docker-command">{test.command}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 function AppsTable({ apps, testId }: { apps: DependencyApp[]; testId?: string }) {
   return (
     <div className="table" data-testid={testId}>
@@ -38,33 +86,7 @@ function AppsTable({ apps, testId }: { apps: DependencyApp[]; testId?: string })
           <tr><th>App</th><th>Owner</th><th>最新hpc release版本</th><th>交付镜像 / Digest</th><th>测试命令</th></tr>
         </thead>
         <tbody>
-          {apps.map((app) => (
-            <tr key={app.app_id} data-testid={`dependency-app-${app.app_id}`}>
-              <td>{app.name}<div className="small muted">{app.app_id}</div></td>
-              <td className="small">{app.owners.join(", ")}</td>
-              <td data-testid="dependency-release">{app.official?.release_name || <span className="muted">无</span>}</td>
-              <td>
-                <DeliveryImages compact images={recordedImages(app.official?.images, app.official?.image, app.official?.digest)} />
-              </td>
-              <td className="small">
-                {app.tests.length === 0 ? "—" : (
-                  <div data-testid="dependency-test-commands">
-                    {app.tests.map((test, index) => (
-                      <div key={`${test.path}-${index}`} className="dependency-command">
-                        <b className="mono">{test.path}</b>
-                        <div className="muted small">
-                          {[test.os, test.arch === "amd64" ? "x86" : test.arch === "arm64" ? "ARM" : test.arch,
-                            test.image_target, test.python_label, test.pytorch_label, test.chips.join(", ")].filter(Boolean).join(" · ")}
-                        </div>
-                        {!test.delivery_reference && <div className="muted small">未填写对应交付镜像，命令使用镜像模板。</div>}
-                        <div className="mono cell-wrap" data-testid="dependency-docker-command">{test.command}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </td>
-            </tr>
-          ))}
+          {apps.map((app) => <AppRow key={app.app_id} app={app} />)}
         </tbody>
       </table>
     </div>

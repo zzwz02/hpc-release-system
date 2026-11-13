@@ -485,6 +485,11 @@ tbody tr:hover td { background: var(--surface-2); }
 .dependencies-table th:nth-child(4) { width: 29%; }
 .dependencies-table th:nth-child(5) { width: 35%; }
 .dependencies-table td { vertical-align: top; overflow-wrap: anywhere; }
+.dependency-app-toggle { display: flex; align-items: baseline; gap: 8px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.dependency-app-toggle > .chev { flex-shrink: 0; font-size: 11px; }
+.dependency-app-toggle:hover { color: var(--accent); }
+.dependency-app-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.dependency-app-id { display: block; }
 .dependency-command + .dependency-command { margin-top: 16px; }
 .dependency-group > summary { cursor: pointer; list-style: none; }
 .dependency-group > summary::-webkit-details-marker { display: none; }

@@ -31,7 +31,22 @@ for (const username of ["app_owner", "app_qa"]) {
     await expect(group.getByRole("columnheader", { name: "最新hpc release版本", exact: true })).toBeVisible();
     await expect(group.getByRole("columnheader", { name: "当前正式版", exact: true })).toHaveCount(0);
     const published = group.getByTestId("dependency-app-runtime-published");
+    const unpublished = group.getByTestId("dependency-app-runtime-unpublished");
+    const publishedToggle = published.getByRole("button");
+    const unpublishedToggle = unpublished.getByRole("button");
+    await expect(publishedToggle).toHaveAttribute("aria-expanded", "false");
+    await expect(unpublishedToggle).toHaveAttribute("aria-expanded", "false");
     await expect(published.getByTestId("dependency-release")).toHaveText("runtime-published-cycle");
+    await expect(published.getByText("5 个镜像", { exact: true })).toBeVisible();
+    await expect(published.getByText("5 条命令", { exact: true })).toBeVisible();
+    await expect(published.getByTestId("delivery-images")).not.toBeVisible();
+    await expect(published.getByTestId("dependency-test-commands")).not.toBeVisible();
+    await publishedToggle.click();
+    await expect(publishedToggle).toHaveAttribute("aria-expanded", "true");
+    await expect(published.getByTestId("delivery-images")).toBeVisible();
+    await expect(published.getByTestId("dependency-test-commands")).toBeVisible();
+    await expect(unpublishedToggle).toHaveAttribute("aria-expanded", "false");
+    await expect(unpublished.getByTestId("delivery-images")).not.toBeVisible();
     await expect(published.locator(".delivery-image-item")).toHaveCount(5);
     await expect(published.getByTestId("dependency-docker-command")).toHaveCount(5);
     await expect(published.getByTestId("dependency-docker-command").filter({ hasText: "@sha256:" })).toHaveCount(4);
@@ -41,6 +56,16 @@ for (const username of ["app_owner", "app_qa"]) {
     await expect(published.getByTestId("dependency-test-commands")).toContainText("ubuntu22.04");
     await expect(published.getByTestId("dependency-test-commands")).toContainText("runtime-published-maca-dbg@sha256:");
     await expect(published.getByTestId("dependency-test-commands")).toContainText("-v /pde_hpc/dataset:/hpc_dataset:ro");
+
+    await publishedToggle.click();
+    await expect(published.getByTestId("delivery-images")).not.toBeVisible();
+    await expect(published.getByTestId("dependency-test-commands")).not.toBeVisible();
+    await publishedToggle.press("Enter");
+    await unpublishedToggle.click();
+    await expect(publishedToggle).toHaveAttribute("aria-expanded", "true");
+    await expect(unpublishedToggle).toHaveAttribute("aria-expanded", "true");
+    await expect(unpublished.getByTestId("delivery-images")).toBeVisible();
+    await expect(unpublished.getByRole("cell").last()).toHaveText("—");
 
     const exported = page.waitForEvent("download");
     await page.getByTestId("compat-csv-link").click();
@@ -60,6 +85,15 @@ for (const username of ["app_owner", "app_qa"]) {
     await expect(sdk).not.toHaveAttribute("open", "");
     await sdk.locator("summary").click();
     await expect(page.getByTestId("component-sdk").locator("tbody tr")).toHaveCount(2);
+    await expect(page.getByTestId("component-sdk").getByRole("button", { expanded: true })).toHaveCount(0);
+    const undeclared = page.getByTestId("undeclared-apps");
+    await undeclared.locator("summary").click();
+    const noRelease = undeclared.getByTestId("dependency-app-info-check");
+    await expect(noRelease.getByRole("button")).toHaveAttribute("aria-expanded", "false");
+    await expect(noRelease.getByTestId("dependency-release")).toHaveText("无");
+    await expect(noRelease.getByTestId("delivery-images")).not.toBeVisible();
+    await noRelease.getByRole("button").press("Space");
+    await expect(noRelease.getByTestId("delivery-images")).toBeVisible();
     await expect(page.getByRole("navigation", { name: "QA", exact: true })
       .getByRole("link", { name: "组件依赖", exact: true })).toHaveClass(/active/);
     await page.setViewportSize({ width: 390, height: 844 });
@@ -70,6 +104,11 @@ for (const username of ["app_owner", "app_qa"]) {
     await expect(panel).not.toHaveAttribute("open", "");
     await panel.locator("summary").click();
     await expect(group).toBeVisible();
+    await expect(publishedToggle).toHaveAttribute("aria-expanded", "true");
+    await expect(unpublishedToggle).toHaveAttribute("aria-expanded", "true");
+    await publishedToggle.click();
+    await expect(published.getByTestId("delivery-images")).not.toBeVisible();
+    await expect(unpublished.getByTestId("delivery-images")).toBeVisible();
     await page.screenshot({ path: `/tmp/dependencies-${username}.png`, fullPage: true });
   });
 }
