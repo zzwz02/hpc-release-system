@@ -12,7 +12,7 @@ from app.config import settings
 from app.domain import cycles, delivery_images, image_lookup
 from app.domain.container_image import delivered_image_reference
 from app.integrations import gerrit, harbor
-from app.repositories import app_info_repo, apps_repo, entries_repo, releases_repo
+from app.repositories import app_info_repo, apps_repo, entries_repo, official_repo, releases_repo
 from app.services import catalog_service, cycle_service, qa_service
 
 
@@ -186,3 +186,45 @@ def published_apps(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
         "release": {key: release[key] for key in ("id", "name", "release_date")},
         "apps": rows,
     }
+
+
+def latest_running_releases(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Latest successful publication for every running App, including migration-only history."""
+    officials = official_repo.current_by_app(conn)
+    rows = []
+    apps = sorted((app for app in apps_repo.list_apps(conn) if app["cicd_status"] == cycles.CICD_RUNNING),
+                  key=lambda app: (catalog_service.app_name(app).casefold(), app["id"]))
+    for app in apps:
+        official = officials.get(app["id"])
+        if not official:
+            official = next((record for record in official_repo.history_for_app(conn, app["id"])
+                             if not record["withdrawn"]), None)
+        common = {"app_id": app["id"], "app_name": catalog_service.app_name(app),
+                  "hpc_version": official["release_name"] if official else "",
+                  "app_version": official["version"] if official else "",
+                  "app_info_version_id": official.get("app_info_version_id") if official else None}
+        if not official:
+            rows.append({**common, "note": "尚无成功发布记录"})
+            continue
+        images = delivery_images.recorded(official["images"], official["image"], official["digest"])
+        snapshot = app_info_repo.get_version(conn, official.get("app_info_version_id"))
+        valid = snapshot is not None and snapshot["app_id"] == app["id"]
+        entry = entries_repo.get_entry(conn, official["entry_id"]) if official.get("entry_id") else None
+        commands = delivery_images.published_commands(snapshot["raw"], images, set(entry["excluded_tests"] if entry else [])) if valid else []
+        used = {command["delivery_build_key"] for command in commands}
+        inventory = list(commands)
+        inventory.extend({**image, "delivery_reference": image.get("reference", ""),
+                          "delivery_build_key": image["build_key"]}
+                         for image in images if image["build_key"] not in used)
+        for item in inventory or [{}]:
+            notes = []
+            if not valid:
+                notes.append("正式版 app_info 快照缺失或归属不符，无法还原测试命令")
+            if item.get("delivery_build_key") == "legacy":
+                notes.append("历史镜像未指定构建，无法确定 OS/架构")
+            if item.get("command") and not item.get("delivery_reference"):
+                notes.append("缺少对应交付镜像，命令为模板")
+            if not item.get("command"):
+                notes.append("无对应启用测试命令")
+            rows.append({**item, **common, "note": "；".join(notes)})
+    return {"app_count": len(apps), "rows": rows}

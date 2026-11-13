@@ -3,6 +3,7 @@
  * for an immutable Harbor image.
  */
 import React from "react";
+import { LatestRunningReleasesPane } from "./LatestRunningReleasesPane";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
@@ -135,7 +136,7 @@ function PublishedAppsPane() {
 }
 
 export function LookupPage() {
-  const [mode, setMode] = React.useState<"releases" | "digest">("releases");
+  const [mode, setMode] = React.useState<"releases" | "digest" | "latest-running">("releases");
   const [image, setImage] = React.useState("");
   const [imageResult, setImageResult] = React.useState<ImageResult | null>(null);
   const [error, setError] = React.useState("");
@@ -160,7 +161,7 @@ export function LookupPage() {
     }
   }
 
-  function changeMode(next: "digest" | "releases") {
+  function changeMode(next: "digest" | "releases" | "latest-running") {
     requestId.current++;
     setMode(next);
     setError("");
@@ -179,9 +180,11 @@ export function LookupPage() {
       <QaTabs />
       <div className="subtabs">
         <button className={`subtab${mode === "releases" ? " active" : ""}`} onClick={() => changeMode("releases")}>发布app列表</button>
+        <button className={`subtab${mode === "latest-running" ? " active" : ""}`} onClick={() => changeMode("latest-running")}>兼容性测试基线</button>
         <button className={`subtab${mode === "digest" ? " active" : ""}`} onClick={() => changeMode("digest")}>按镜像 digest</button>
       </div>
       {mode === "releases" && <PublishedAppsPane />}
+      {mode === "latest-running" && <LatestRunningReleasesPane />}
       {mode === "digest" && (
         <div className="panel">
           <div className="panel-body">

@@ -51,6 +51,7 @@ HTTP 类型声明不会验证真实 JSON。改接口时对照 router/service、�
 
 - QA 内容区共用一排平级标签：QA log、本期发布app、测试命令、开发者社区产物、历史查询、组件依赖。前四项用 `/qa?tab=mark|release|test|community` 保留选中项，支持刷新和浏览器前进/后退；后两项仍使用 `/lookup`、`/dependencies`，仅 RM、Owner、QA 可访问，前后端共用权限矩阵。所有直达链接都保持 QA 顶栏选中。
 - 历史查询默认打开「发布app列表」，排在「按镜像 digest」之前，移除「按 App」界面。`GET /api/lookup/releases` 返回已发布锁定周期（最新优先），选择版本自动请求 `/api/lookup/release?release_id=…`，展示当期发布成功的 App、版本、完整镜像引用及 QA 结果/备注。失败和撤回报名不列入；缺失或无效镜像信息保留原字段并明确标注。版本与列表查询键含账号、角色和周期，进入时重取，另提供显式刷新；不请求全量 `/api/state`。表格支持关键词筛选，跨周期加载或出错时清除旧版显示。旧 `/api/lookup/app`、`/api/lookup/digest` 接口保留兼容。
+- 历史查询新增「兼容性测试基线」：逐个运行中的 App 选最新未撤销成功发布，后续发布失败、未报名或撤回不覆盖此前成功版本；从未发布也明确列出。展示 HPC/App 版本、各 OS/CPU 架构、对应支持芯片与镜像配置、完整 digest 镜像及测试命令，支持筛选和导出当前结果 CSV。数据只取发布时 app_info 和镜像快照，兼容仅留在报名中的迁移历史；未指定构建的旧镜像不猜测平台，缺少镜像时标注命令模板，快照缺失不借用开发版命令。入口 `GET /api/lookup/latest-running` 复用历史查询权限与显式刷新，无全量 state 请求或自动轮询。
 - 历史查询镜像模式调用 `GET /api/lookup/image?image=完整镜像引用`，展示 Harbor tags、commit、app_info 来源与固定到 digest 的 Docker 命令；由后端只读查询 Harbor/Gerrit，不依赖镜像的报名记录。来源链接在新页打开 `/api/lookup/app-info?image=…&commit_id=…`，按原 commit 从已登记仓库读取并展示原始 JSON；复用历史查询权限，不重新解析 Harbor tags，不写业务记录。
 - App、QA、历史镜像查询的测试范围使用后端 `test.platforms`，逐行显示 OS、CPU 架构（x86/ARM）、支持芯片及命令，不从 `supported_chips` 的并集推断平台。镜像的两项芯片总览只来自实际匹配的镜像构建。QA 测试命令表/CSV 用 `commit_id` 替换 `base_image`，取当期锁定 app_info 版本的 commit；保留 OS、支持芯片和 Python/PyTorch label，构建别名与 OS/架构完全重复时省略整列，包含其他配置时保留。列结构变化时清除按列筛选和排序，避免索引错位。
 - 最新 app_info 的 OS 与 CPU 架构分别使用独立信息框。QA 测试命令表中的 `commit_id` 显示前 12 位，悬停查看完整 ID；筛选、排序和 CSV 导出仍使用完整值。
@@ -114,3 +115,5 @@ QA 导航与权限验证使用不带 `--signup` 的同一隔离后端，执行 `
 跨平台范围验证使用隔离后端参数 `--lookup --platforms`，执行 `TEST_PLATFORMS_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/test-platforms.spec.ts`。同一份包含不同 OS/x86/ARM 芯片组合的 app_info 验证 App 详情、QA 范围和命令以及 x86/ARM 镜像查询。
 
 发布列表验证使用隔离后端参数 `--releases`，执行 `PUBLISHED_APPS_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/published-apps.spec.ts`。验证 RM/Owner/QA 默认入口、已冻结版本筛选、跨版本的完整镜像和 QA 结果、空版本、关键词筛选及窄屏；所有发布操作只用于临时库造数。
+
+兼容性测试基线的浏览器验证使用隔离后端 `python -m tests.run_app_info_site --port 18787 --latest-running`，前端 `API_TARGET=http://127.0.0.1:18787 npm run dev -- --host 127.0.0.1 --port 18788 --strictPort`，执行 `LATEST_RUNNING_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/latest-running-releases.spec.ts`。验证 QA/Owner 访问、后续失败回退、多 OS/CPU/镜像类型、从未发布、停止 App 排除、筛选与 CSV 导出。后端回归见 `tests/test_latest_running_releases.py`。

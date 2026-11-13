@@ -1,0 +1,62 @@
+import { test, expect } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+
+const base = process.env.LATEST_RUNNING_E2E_URL ?? "";
+test.skip(!/^http:\/\/127\.0\.0\.1:\d+$/.test(base), "Requires isolated tests.run_app_info_site --latest-running and Vite");
+
+for (const username of ["app_qa", "app_owner"]) {
+  test(`${username} gets each running App's latest success and exports all platforms`, async ({ page }) => {
+    expect((await page.request.post(base + "/api/login", { data: { username, password: "test-password" } })).ok()).toBeTruthy();
+    await page.goto(base + "/lookup");
+    await page.getByRole("button", { name: "兼容性测试基线", exact: true }).click();
+    const pane = page.getByTestId("latest-running-releases-pane");
+    const table = page.getByTestId("latest-running-releases-table");
+    await expect(table).toBeVisible();
+    await expect(table).not.toContainText("stopped");
+    await expect(table).toContainText("尚无成功发布记录");
+    const amber = table.getByTestId("latest-running-release-row").filter({ hasText: "AMBER" });
+    const hpl = table.getByTestId("latest-running-release-row").filter({ hasText: "HPL" });
+    await expect(amber.first()).toContainText("amber-3.9");
+    await expect(amber.first()).not.toContainText("amber-3.10");
+    await expect(hpl.first()).toContainText("hpl-3.10");
+    await expect(table).toContainText("ubuntu22.04");
+    await expect(table).toContainText("centos9");
+    await expect(table).toContainText("ARM");
+    await expect(table).toContainText("x86");
+    await expect(table.getByRole("columnheader", { name: "支持芯片", exact: true })).toBeVisible();
+    const ubuntu22 = hpl.filter({ hasText: "ubuntu22.04" });
+    await expect(ubuntu22.first().locator("td").nth(5)).toHaveText("C600");
+    const arm = hpl.filter({ hasText: "ARM" });
+    await expect(arm.first().locator("td").nth(5)).toHaveText("C500");
+    await expect(table).toContainText("@sha256:");
+    await expect(table).toContainText("docker run");
+    await pane.getByRole("textbox", { name: "筛选最新成功发布" }).fill("AMBER");
+    await expect(table).not.toContainText("HPL");
+    const download = page.waitForEvent("download");
+    await pane.getByRole("button", { name: "导出 CSV" }).click();
+    const csv = await readFile((await (await download).path())!, "utf8");
+    expect(csv).toContain("HPC version");
+    expect(csv).toContain("支持芯片");
+    expect(csv).toContain("C500");
+    expect(csv).toContain("C600");
+    expect(csv).toContain("C588");
+    expect(csv).toContain("amber-3.9");
+    expect(csv).not.toContain("amber-3.10");
+    expect(csv).not.toContain("hpl-3.10");
+    expect(csv).toContain("ARM");
+    expect(csv).toContain("x86");
+    expect(csv).toContain("@sha256:");
+    await pane.getByRole("textbox", { name: "筛选最新成功发布" }).fill("C600");
+    await expect(table).toContainText("ubuntu22.04");
+    await expect(table).not.toContainText("ubuntu24.04");
+    await pane.getByRole("textbox", { name: "筛选最新成功发布" }).fill("does-not-exist");
+    await expect(table).toContainText("没有匹配的记录。");
+    await pane.getByRole("textbox", { name: "筛选最新成功发布" }).fill("");
+    await pane.getByRole("button", { name: "刷新当前页" }).click();
+    await expect(table).toContainText("hpl-3.10");
+    await page.setViewportSize({ width: 2560, height: 1000 });
+    const commandBounds = await table.getByRole("columnheader", { name: "测试命令", exact: true }).boundingBox();
+    expect(commandBounds!.width).toBeGreaterThanOrEqual(400);
+    await page.screenshot({ path: `/tmp/latest-running-${username}.png`, fullPage: true });
+  });
+}

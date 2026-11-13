@@ -15,6 +15,7 @@ def main():
     parser.add_argument("--releases", action="store_true", help="Include frozen publication history scenarios")
     parser.add_argument("--legacy-history", action="store_true", help="Include entry-only migrated publication history")
     parser.add_argument("--dependencies", action="store_true", help="Include paired Python/PyTorch dependency scenarios")
+    parser.add_argument("--latest-running", action="store_true", help="Include latest successful running App publications")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="app-info-site-") as temporary:
         folder = Path(temporary)
@@ -77,6 +78,25 @@ def main():
             for build in development_info["app_build"].values():
                 build.update(python_label="py313", pytorch_label="torch2.10")
             catalog_service.store_app_info(conn, "runtime-published", development_info, commit_id="development-runtime", source="test", user="app_rm")
+        if args.latest_running:
+            from app.services import cycle_service, qa_service
+
+            for name in ("amber", "hpl", "stopped"):
+                seed_app(conn, name, official_name=name.upper(), app_info=make_dependency_app_info(name))
+            for version in ("3.9", "3.10"):
+                release_id = seed_cycle(conn, name=version)
+                for name in ("amber", "hpl", "stopped"):
+                    entry = seed_signup(conn, release_id, name, target_version=f"{name}-{version}")
+                    images = [{**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].partition(':')[0]}@sha256:{str(index + 1) * 64}"}
+                              for index, build in enumerate(entry["delivery_builds"])]
+                    qa_service.set_qa_status_batch(conn, release_id, [{"app_id": name,
+                        "status": "cannot_release" if name == "amber" and version == "3.10" else "qa_passed",
+                        "issue_note": "QA 测试未通过" if name == "amber" and version == "3.10" else "",
+                        "deliverable_images": images, "delivery_revision": entry["delivery_revision"]}], user="app_qa", role="QA")
+                close_qa(conn, release_id)
+                cycle_service.publish(conn, release_id, user="app_rm", role="RM")
+            conn.execute("UPDATE apps SET cicd_status='stopped' WHERE id='stopped'")
+            conn.commit()
         if args.releases or args.legacy_history:
             from app.services import cycle_service, qa_service
 

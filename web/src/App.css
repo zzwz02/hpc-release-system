@@ -478,6 +478,19 @@ tbody tr:hover td { background: var(--surface-2); }
 .qa-delivery-images { grid-column: 1 / -1; min-width: 0; }
 .official-history-version + .official-history-version { margin-top: 16px; }
 .delivery-image-item + .delivery-image-item { margin-top: 10px; }
+.latest-running-releases-table { table-layout: fixed; min-width: 2140px; }
+.latest-running-releases-table th:nth-child(1) { width: 130px; }
+.latest-running-releases-table th:nth-child(2) { width: 100px; }
+.latest-running-releases-table th:nth-child(3) { width: 120px; }
+.latest-running-releases-table th:nth-child(4) { width: 120px; }
+.latest-running-releases-table th:nth-child(5) { width: 80px; }
+.latest-running-releases-table th:nth-child(7) { width: 140px; }
+.latest-running-releases-table th:nth-child(8) { width: 360px; }
+.latest-running-releases-table th:nth-child(9) { width: 150px; }
+.latest-running-releases-table th:nth-child(10) { width: 560px; }
+.latest-running-releases-table th:nth-child(11) { width: 240px; }
+.latest-running-releases-table th:nth-child(6) { width: 140px; }
+.latest-running-releases-table td { vertical-align: top; overflow-wrap: anywhere; }
 .dependencies-table { table-layout: fixed; min-width: 1000px; }
 .dependencies-table th:nth-child(1) { width: 14%; }
 .dependencies-table th:nth-child(2) { width: 9%; }
