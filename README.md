@@ -129,7 +129,7 @@ RM 每周上传 PDE HPC Project Plan 周报（.xlsx，每人一页，A 列日期
 网站在 `POST /mcp` 提供 MCP Streamable HTTP 服务（只返回 JSON，不开 SSE），供 Claude Code、Codex 等客户端连接。页面地址是 `/mcp-console`（不能用 `/mcp`，否则浏览器刷新会打到 MCP 接口；浏览器直接访问 `/mcp` 会被跳转到页面）。「接入配置」生成个人 token（只显示一次，库里只存 SHA-256），并给出 Claude Code / Codex 的接入命令；「使用统计」展示调用量、失败率、按工具/分类/用户/token/客户端/日期的统计及调用日志，可按 token 筛选（只显示 token 名称和前缀）。
 
 - 每人只有一个有效 token：生成新的会吊销旧的（鉴权也只认每人最新的一个）。网页「我的 token」只显示前几位，可重新生成或吊销。
-- 配置页面的地址使用浏览器当前访问的协议、域名和端口，不使用 `[site] PUBLIC_BASE_URL` 覆盖；例如通过 `http://127.0.0.1:3577` 访问时，命令也指向该地址。
+- MCP 接入配置页面统一生成 HTTP 的一键安装命令、各客户端命令和手动配置地址，沿用浏览器当前域名及非默认端口，不使用 `[site] PUBLIC_BASE_URL` 覆盖，也不提供协议选择；网站继续通过原地址访问。服务器须开放对应 HTTP 入口，容器无需配置网站证书；HTTP 会明文传输账号密码和 token，仅用于受控内网。安装脚本按下载请求的协议生成后续账号请求及 MCP 地址，已安装客户端可复用原 token 更新配置，无需卸载。
 - HTTPS 由 Nginx 等反向代理终止时，代理须覆盖设置 `proxy_set_header Host $http_host;` 和 `proxy_set_header X-Forwarded-Proto $scheme;`。MCP 返回的脚本、接入地址和附件传输链接会据此保留 HTTPS，避免登录 POST 请求误发到 HTTP 后遇到 301；不会使用 `X-Forwarded-Host` 替换目标主机，也不会将 HTTPS 降级到 HTTP。
 - 一键配置：`bash <(curl -fsSL <网站>/api/mcp/setup.sh)`，菜单为 一键配置本机 / 查询 token / 重新生成 / 仅输出配置方法 / 卸载本机配置（也可带参数 `configure|status|regenerate|print|uninstall`）。经 `POST /api/mcp/account`（action=status|regenerate）用域账号密码操作，与登录页同一认证，首次登录同样按 LDAP 组建用户，但不建网站会话；同一用户名 10 分钟内失败 5 次后锁定。脚本直接改 `~/.claude.json` 与 `~/.codex/config.toml`（先备份为 `*.bak-release-mcp`），不依赖 claude/codex 命令，只装 VS Code 扩展也可用；第二台机器复用本机配置里或粘贴的已有 token，选择重新生成则旧 token 在所有机器失效。
 - 按客户端配置已有 token：页面“手动配置”按 Claude Code、Codex、其他 harness 折叠展示。Claude/Codex 的命令使用 `MCP_CLIENTS=claude|codex bash <(curl -fsSL <网站>/api/mcp/setup.sh) use-token`，校验已有 token 后只更新指定客户端；未提供 `MCP_TOKEN` 时安全提示粘贴，不创建或重置 token。脚本仅完成一次性配置，客户端仍直接通过 HTTP 连接网站，无需安装本地转发服务。
