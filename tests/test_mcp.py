@@ -1016,24 +1016,56 @@ def test_jira_format_skill_reuses_reference_and_reloads(site, monkeypatch, tmp_p
     assert 'version two' in call(client, token, session, 'skill_load', {'skill': 'jira-format'})['content'][0]['text']
 
 
-def test_comment_preview_and_published_body_share_formatting(site):
+@pytest.mark.parametrize('repetitions', [1, 600])
+def test_comment_preview_and_published_body_share_formatting(site, repetitions):
     from app.domain.jira_format import format_jira_comment
     client, _, token_for, calls = site
     token = token_for('alice', 'Owner')
     session = connect_confirming(client, token)
-    body = '设置{{VALUE}}后重试。\n{noformat}\necho 中{{raw}}文\n{noformat}\n' + '说明。' * 600 + '\n结束{{END}}标记'
+    body = '设置{{VALUE}}后重试。\n{noformat}\necho 中{{raw}}文\n{noformat}\n' + '说明。' * repetitions + '\n结束{{END}}标记'
     expected = format_jira_comment(body)
     ask, result = confirmable_call(client, token, session, 'jira_add_comment',
                                   {'issue_key': 'MC3-1', 'body': body},
                                   {'result': {'action': 'accept', 'content': {'username': 'alice'}}})
     assert not result['result']['isError']
-    preview = ask['params']['message'].split('\n\n', 1)[1]
-    assert preview == expected
-    assert calls['comments'][0][1].split('\n\n----\n', 1)[0] == preview
+    message = ask['params']['message']
+    if repetitions == 1:
+        preview = message.split('\n\n', 1)[1]
+        assert preview == expected
+    else:
+        preview = message.split('评论摘要：\n', 1)[1].split('\n…', 1)[0]
+        assert expected.startswith(preview)
+        assert '摘要已截断' in message and '结束 {{END}} 标记' not in message
+    published = calls['comments'][0][1].split('\n\n----\n', 1)[0]
+    assert published == expected
     assert 'echo 中{{raw}}文' in preview
-    assert '结束 {{END}} 标记' in preview
+    assert '结束 {{END}} 标记' in published
     assert 'alice' not in ask['params']['message'].casefold()
     assert format_jira_comment(expected) == expected
+
+
+@pytest.mark.parametrize('body', ['长评论' * 10000, '逐行说明\n' * 1000, '首行\n' + '\n' * 1000 + '结束'])
+@pytest.mark.parametrize('username', ['alice', 'carol'])
+def test_long_comment_confirmation_is_compact_without_truncating_publication(site, body, username):
+    client, _, token_for, calls = site
+    token = token_for('alice', 'Owner')
+    session = connect_confirming(client, token)
+    ask, result = confirmable_call(client, token, session, 'jira_add_comment',
+                                  {'issue_key': 'MC3-1', 'body': body},
+                                  {'result': {'action': 'accept', 'content': {'username': username}}})
+    message = ask['params']['message']
+    assert len(message) <= 500 and len(message.splitlines()) <= 13
+    assert 'MC3-1' in message and '摘要已截断' in message
+    assert '完整正文请在对话中核对' in message
+    assert message.endswith('请输入本人域账号用户名：')
+    field = ask['params']['requestedSchema']['properties']['username']
+    assert field['title'] == '请输入本人域账号用户名' and 'default' not in field
+    assert ask['params']['requestedSchema']['required'] == ['username']
+    if username == 'alice':
+        assert not result['result']['isError']
+        assert calls['comments'][0][1].split('\n\n----\n', 1)[0] == body.strip()
+    else:
+        assert result['result']['isError'] and calls['comments'] == []
 
 
 def test_attachment_read_paginates_long_lines_and_checks_identity(site, monkeypatch):
