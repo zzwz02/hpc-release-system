@@ -44,7 +44,7 @@ export const ROUTES: RouteConfig[] = [
   { path: "/apps",      view: "apps",      label: "App 工作台", roles: rolesForTab("apps") },
   { path: "/qa",        view: "qa",        label: "QA",         roles: rolesForTab("qa"), group: "qa" },
   { path: "/lookup",    view: "lookup",    label: "历史查询",   roles: rolesForTab("lookup"), group: "qa" },
-  { path: "/dependencies", view: "dependencies", label: "组件依赖", roles: rolesForTab("dependencies"), group: "qa" },
+  { path: "/dependencies", view: "dependencies", label: "兼容性验证", roles: rolesForTab("dependencies"), group: "qa" },
   { path: "/artifacts", view: "artifacts", label: "发布文档",   roles: rolesForTab("artifacts") },
   { path: "/cicd",      view: "cicd",      label: "CICD 工作台", roles: rolesForTab("cicd") },
   { path: "/jenkins-failures", view: "jenkins-failures", label: "Jenkins失败查询", roles: rolesForTab("jenkins-failures"), group: "ai-assistant" },

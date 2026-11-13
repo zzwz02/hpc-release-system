@@ -9,7 +9,7 @@
  *   2. 本期发布app — filterable/sortable/column-pick/CSV-export table
  *   3. 测试命令 — same table machinery, no column picker
  *   4. 开发者社区产物
- *   5–6. 历史查询 / 组件依赖 — independent routes, shared QA tab row
+ *   5–6. 历史查询 / 兼容性验证 — independent routes, shared QA tab row
  *
  * Data:
  *   - QA annotation + log: from GET /api/state (via shared uiStore selectedReleaseId)

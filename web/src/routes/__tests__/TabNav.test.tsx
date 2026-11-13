@@ -105,7 +105,7 @@ describe("TabNav", () => {
     renderTabNav(role, "/lookup");
     expect(linkLabels("nav.tabs a")).toContain("QA");
     expect(linkLabels("nav.tabs a")).not.toContain("历史查询");
-    expect(linkLabels("nav.tabs a")).not.toContain("组件依赖");
+    expect(linkLabels("nav.tabs a")).not.toContain("兼容性验证");
     expect(document.querySelector(".tab-subnav")).toBeNull();
     expect(document.querySelector('nav.tabs a[href="/qa"]')).toHaveClass("active");
   });
@@ -119,7 +119,7 @@ describe("TabNav", () => {
   it.each(["Guest", "SPD", "Admin"] as const)("hides QA history and dependencies for %s", (role) => {
     renderTabNav(role, "/qa");
     expect(screen.queryByRole("link", { name: "历史查询" })).toBeNull();
-    expect(screen.queryByRole("link", { name: "组件依赖" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "兼容性验证" })).toBeNull();
   });
 
   it("collapses the AI助手 routes into one tab", () => {

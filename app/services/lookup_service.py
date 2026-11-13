@@ -9,7 +9,7 @@ from typing import Any
 
 from app.api.errors import GerritNetworkError
 from app.config import settings
-from app.domain import cycles, delivery_images, image_lookup
+from app.domain import app_info as app_info_domain, cycles, delivery_images, image_lookup
 from app.domain.container_image import delivered_image_reference
 from app.integrations import gerrit, harbor
 from app.repositories import app_info_repo, apps_repo, entries_repo, official_repo, releases_repo
@@ -199,16 +199,24 @@ def latest_running_releases(conn: sqlite3.Connection) -> dict[str, Any]:
         if not official:
             official = next((record for record in official_repo.history_for_app(conn, app["id"])
                              if not record["withdrawn"]), None)
+        snapshot = app_info_repo.get_version(conn, official.get("app_info_version_id")) if official else None
+        valid = snapshot is not None and snapshot["app_id"] == app["id"]
+        declared = app_info_domain.declared_dependencies(snapshot["raw"]) if valid else None
+        dependencies = list(dict.fromkeys([
+            *(declared or []),
+            *(app_info_domain.python_pytorch_dependencies(snapshot["raw"]) if valid else []),
+        ]))
         common = {"app_id": app["id"], "app_name": catalog_service.app_name(app),
+                  "owners": app.get("owners") or [], "dependencies": dependencies,
+                  "scope_pending": declared is None or not dependencies,
                   "hpc_version": official["release_name"] if official else "",
                   "app_version": official["version"] if official else "",
+                  "app_info_commit_id": snapshot["commit_id"] if valid else "",
                   "app_info_version_id": official.get("app_info_version_id") if official else None}
         if not official:
             rows.append({**common, "note": "尚无成功发布记录"})
             continue
         images = delivery_images.recorded(official["images"], official["image"], official["digest"])
-        snapshot = app_info_repo.get_version(conn, official.get("app_info_version_id"))
-        valid = snapshot is not None and snapshot["app_id"] == app["id"]
         entry = entries_repo.get_entry(conn, official["entry_id"]) if official.get("entry_id") else None
         commands = delivery_images.published_commands(snapshot["raw"], images, set(entry["excluded_tests"] if entry else [])) if valid else []
         used = {command["delivery_build_key"] for command in commands}

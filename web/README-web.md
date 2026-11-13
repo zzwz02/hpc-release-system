@@ -49,17 +49,14 @@ HTTP 类型声明不会验证真实 JSON。改接口时对照 router/service、�
 
 ## 交互与显示
 
-- QA 内容区共用一排平级标签：QA log、本期发布app、测试命令、开发者社区产物、历史查询、组件依赖。前四项用 `/qa?tab=mark|release|test|community` 保留选中项，支持刷新和浏览器前进/后退；后两项仍使用 `/lookup`、`/dependencies`，仅 RM、Owner、QA 可访问，前后端共用权限矩阵。所有直达链接都保持 QA 顶栏选中。
+- QA 内容区共用一排平级标签：QA log、本期发布app、测试命令、开发者社区产物、历史查询、兼容性验证。前四项用 `/qa?tab=mark|release|test|community` 保留选中项，支持刷新和浏览器前进/后退；后两项仍使用 `/lookup`、`/dependencies`，仅 RM、Owner、QA 可访问，前后端共用权限矩阵。所有直达链接都保持 QA 顶栏选中。
 - 历史查询默认打开「发布app列表」，排在「按镜像 digest」之前，移除「按 App」界面。`GET /api/lookup/releases` 返回已发布锁定周期（最新优先），选择版本自动请求 `/api/lookup/release?release_id=…`，展示当期发布成功的 App、版本、完整镜像引用及 QA 结果/备注。失败和撤回报名不列入；缺失或无效镜像信息保留原字段并明确标注。版本与列表查询键含账号、角色和周期，进入时重取，另提供显式刷新；不请求全量 `/api/state`。表格支持关键词筛选，跨周期加载或出错时清除旧版显示。旧 `/api/lookup/app`、`/api/lookup/digest` 接口保留兼容。
-- 历史查询新增「兼容性测试基线」：逐个运行中的 App 选最新未撤销成功发布，后续发布失败、未报名或撤回不覆盖此前成功版本；从未发布也明确列出。展示 HPC/App 版本、各 OS/CPU 架构、对应支持芯片与镜像配置、完整 digest 镜像及测试命令，支持筛选和导出当前结果 CSV。数据只取发布时 app_info 和镜像快照，兼容仅留在报名中的迁移历史；未指定构建的旧镜像不猜测平台，缺少镜像时标注命令模板，快照缺失不借用开发版命令。入口 `GET /api/lookup/latest-running` 复用历史查询权限与显式刷新，无全量 state 请求或自动轮询。
+- 「兼容性验证」（`/dependencies`）合并原历史查询基线与正式版兼容验证；组件筛选作为同一 App 清单的过滤条件。`CompatibilityPane` 统一消费 `GET /api/lookup/latest-running`，每个运行中 App 选最近有效成功发布（含迁移历史回查），默认一行展示 Owner、App/HPC 版本及镜像/测试项/命令数量，说明仅保留在展开后的镜像明细，展开显示平台、镜像、该次发布 app_info 的 commit id 与完整命令文本。commit id 位于镜像列后，显示前 12 位、悬停显示完整值，筛选与 CSV 使用完整值；缺少有效快照时显示空值，不使用开发版或镜像构建 commit。组件、CPU 架构、OS、GPU 芯片、Python/PyTorch 配置及关键词筛选共同作用于明细，CSV 导出当前结果。未声明依赖、依赖为空、缺少快照或尚未发布的 App 单列「范围待确认」；选择组件仍保留，导出标注范围状态。后续失败、未报名或撤回不替换此前成功版。权限与查询键按账号/角色隔离，进入与手工刷新更新，该面板不请求全量 state 或新增自动轮询（共用布局仍会初始化周期状态）；加载或失败时隐藏旧清单并禁用导出。
 - 历史查询镜像模式调用 `GET /api/lookup/image?image=完整镜像引用`，展示 Harbor tags、commit、app_info 来源与固定到 digest 的 Docker 命令；由后端只读查询 Harbor/Gerrit，不依赖镜像的报名记录。来源链接在新页打开 `/api/lookup/app-info?image=…&commit_id=…`，按原 commit 从已登记仓库读取并展示原始 JSON；复用历史查询权限，不重新解析 Harbor tags，不写业务记录。
 - App、QA、历史镜像查询的测试范围使用后端 `test.platforms`，逐行显示 OS、CPU 架构（x86/ARM）、支持芯片及命令，不从 `supported_chips` 的并集推断平台。镜像的两项芯片总览只来自实际匹配的镜像构建。QA 测试命令表/CSV 用 `commit_id` 替换 `base_image`，取当期锁定 app_info 版本的 commit；保留 OS、支持芯片和 Python/PyTorch label，构建别名与 OS/架构完全重复时省略整列，包含其他配置时保留。列结构变化时清除按列筛选和排序，避免索引错位。
 - 最新 app_info 的 OS 与 CPU 架构分别使用独立信息框。QA 测试命令表中的 `commit_id` 显示前 12 位，悬停查看完整 ID；筛选、排序和 CSV 导出仍使用完整值。
-- 组件依赖沿用组件分组与筛选，正式版视图的下拉项包含从 `official.app_info_version_id` 指向的同一启用构建提取的 PyTorch + Python 组合，名称简写为 `torch 2.10 + py312`。复用构建平台解析的标签选项及顶层默认值，缺任一标签时不生成组合；同一 App 的相同组合只计一次，禁用构建与停止 App 不列入。兼容验证 CSV 按相同组合筛选，依赖列保留普通组件及所有组合；无正式版的 App 不导出。`app_dependency` 的声明状态仍单独展示。
-
-兼容验证默认只使用当前正式版：组件声明、Python/PyTorch 组合与命令均来自 `official.app_info_version_id`，镜像来自同一正式版冻结记录，不读取开发态依赖索引。开发分支更新不会改变旧正式版分组。独立「开发态依赖」视图只展示最新 app_info 的依赖和 commit，不混入正式版镜像、命令，不提供兼容清单导出；切换来源清空组件筛选。全量导出包含未声明依赖及显式空依赖的正式版；快照缺失或归属错误会明确提示并拒绝导出，不回退到开发版本。
-
-- 各组件使用默认关闭的 `details`；其中每个 App 的镜像与测试命令也默认折叠，点击 App 名称独立展开，支持键盘操作，折叠时保留 Owner、HPC release 版本及镜像、命令数量。未声明依赖的 App 同样处理；版本列「最新hpc release版本」仅显示 `official.release_name`。`official.images` 消费最新发布的完整镜像快照，复用 `DeliveryImages` 展示全部 OS/CPU/标签/镜像类型；`tests` 由发布时锁定 app_info 和未排除测试生成，按相同构建标识绑定交付镜像并输出固定 digest 的 Docker 命令。缺少对应交付镜像时保留模板并明确提示，不把未指定构建的旧镜像套到所有平台。CSV 去掉 App 官方版本列，增加平台、镜像类型、标签、芯片和镜像来源，包含所有命令及没有关联测试的镜像。
+- 兼容性验证的组件声明及 PyTorch + Python 组合来自所选发布的同一 app_info 快照；组合取同一启用构建的两个 label，不跨构建拼接，缺任一标签不生成，按 App 去重。镜像来自同次发布，测试排除项沿用该发布报名。CSV 包含没有关联测试的镜像；未填镜像明确标记模板，未指定构建的旧镜像不猜测平台，快照缺失不借用开发版。当前命令仍通过历史配置与现行生成规则计算，尚未在发布时封存最终命令。
+- 「开发态依赖」仅作为次级参考入口，组件分组默认折叠，展示最新 app_info 的依赖、版本和 commit，不混入正式版镜像或命令，不提供清单导出。切换入口重新挂载表单并清空筛选。旧 `/api/dependencies?source=official` 与 `/api/dependencies/compat.csv` 保留兼容，合并页面不再分别请求它们。
 - MCP 使用统计的时间范围、用户和 Token 筛选在桌面端横向并排，选择框按内容设置宽度，不各占整行。
 - 周期选择使用共享 `selectedReleaseId`，跳转 App 时保留正确周期；不把不同 release 的编辑草稿或 QA 建议混用。
 - 总览和 App 工作台工具栏的报名截止、QA 截止、发布日横向并排，标签在上、日期在下；空间不足时按完整日期项换行。
@@ -102,9 +99,9 @@ HTTP 类型声明不会验证真实 JSON。改接口时对照 router/service、�
 
 报名弹窗验证使用同一后端命令加 `--signup`，并执行 `APP_SIGNUP_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/app-signup.spec.ts`。覆盖批量候选筛选、组件环境、取消、跨周期选择、提交后状态、打开弹窗后新增停止申请的整批回滚，以及 RM 单个代报名和窄屏布局。
 
-QA 导航与权限验证使用不带 `--signup` 的同一隔离后端，执行 `QA_NAV_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/qa-navigation.spec.ts`。覆盖 Owner/QA 子页签、历史查询、组件依赖导出及深链接，以及 Guest/SPD 的界面和接口拒绝访问。
+QA 导航与权限验证使用不带 `--signup` 的同一隔离后端，执行 `QA_NAV_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/qa-navigation.spec.ts`。覆盖 Owner/QA 子页签、历史查询、兼容性验证导出及深链接，以及 Guest/SPD 的界面和接口拒绝访问。
 
-组合依赖验证使用隔离后端参数 `--dependencies`，执行 `DEPENDENCIES_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/dependencies.spec.ts`。覆盖 Owner/QA 的组件及 App 默认收起、独立展开/收起和键盘操作、组合配对与去重、HPC release 版本、停止 App 排除、全部平台镜像及固定 digest 的命令、缺失镜像模板、CSV 仅导出已发布 App，以及窄屏展示。
+组合依赖验证使用隔离后端参数 `--dependencies`，执行 `DEPENDENCIES_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/dependencies.spec.ts`。覆盖 Owner/QA 的 App 默认收起、展开与键盘操作、正式版/开发态来源切换、组合配对与去重、范围待确认保留、平台组合筛选及导出一致、缺失镜像模板、无关联测试镜像、刷新失败隐藏旧清单，以及窄屏展示。
 
 基础镜像验证使用同一隔离后端，执行 `BASE_IMAGE_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/base-images.spec.ts`。覆盖完整引用新增及解析回读、旧记录编辑、格式错误保留、digest 查询、跨周期显示和发布后只读。
 
@@ -116,4 +113,4 @@ QA 导航与权限验证使用不带 `--signup` 的同一隔离后端，执行 `
 
 发布列表验证使用隔离后端参数 `--releases`，执行 `PUBLISHED_APPS_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/published-apps.spec.ts`。验证 RM/Owner/QA 默认入口、已冻结版本筛选、跨版本的完整镜像和 QA 结果、空版本、关键词筛选及窄屏；所有发布操作只用于临时库造数。
 
-兼容性测试基线的浏览器验证使用隔离后端 `python -m tests.run_app_info_site --port 18787 --latest-running`，前端 `API_TARGET=http://127.0.0.1:18787 npm run dev -- --host 127.0.0.1 --port 18788 --strictPort`，执行 `LATEST_RUNNING_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/latest-running-releases.spec.ts`。验证 QA/Owner 访问、后续失败回退、多 OS/CPU/镜像类型、从未发布、停止 App 排除、筛选与 CSV 导出。后端回归见 `tests/test_latest_running_releases.py`。
+兼容性验证的浏览器验证使用隔离后端 `python -m tests.run_app_info_site --port 18787 --latest-running`，前端 `API_TARGET=http://127.0.0.1:18787 npm run dev -- --host 127.0.0.1 --port 18788 --strictPort`，执行 `LATEST_RUNNING_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/latest-running-releases.spec.ts`。验证 RM/QA/Owner 访问、后续失败回退、多 OS/CPU/镜像类型、从未发布、停止 App 排除、筛选与 CSV 导出。后端回归见 `tests/test_latest_running_releases.py`。

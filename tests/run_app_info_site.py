@@ -58,11 +58,17 @@ def main():
         if args.dependencies:
             from app.services import cycle_service, qa_service
 
-            for app_id in ["runtime-published", "runtime-unpublished", "runtime-stopped"]:
+            for app_id in ["runtime-published", "runtime-unpublished", "runtime-stopped", "runtime-unknown"]:
                 runtime_info = make_dependency_app_info(app_id)
+                if app_id == "runtime-unknown":
+                    runtime_info.pop("app_dependency")
                 seed_app(conn, app_id, official_name=app_id, owners=["app_owner"], app_info=runtime_info,
+                         commit_id="0123456789abcdef0123456789abcdef01234567",
                          cicd_status="stopped" if app_id == "runtime-stopped" else "running")
             dependency_release = seed_cycle(conn, name="runtime-published-cycle")
+            seed_signup(conn, dependency_release, "runtime-unknown")
+            qa_service.set_qa_status_batch(conn, dependency_release, [{"app_id": "runtime-unknown", "status": "qa_passed"}],
+                                           user="app_qa", role="QA")
             entry = seed_signup(conn, dependency_release, "runtime-published")
             images = [
                 {**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].partition(':')[0]}@sha256:{digit * 64}"}

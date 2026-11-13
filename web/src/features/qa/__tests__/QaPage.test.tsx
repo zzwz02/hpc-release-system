@@ -189,7 +189,7 @@ describe("QaPage structure", () => {
     await waitFor(() => {
       const nav = screen.getByRole("navigation", { name: "QA" });
       expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual([
-        "QA log", "本期发布app", "测试命令", "开发者社区产物", "历史查询", "组件依赖",
+        "QA log", "本期发布app", "测试命令", "开发者社区产物", "历史查询", "兼容性验证",
       ]);
       expect(within(nav).getByRole("link", { name: "QA log" })).toHaveAttribute("aria-current", "page");
     });
