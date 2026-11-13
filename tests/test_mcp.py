@@ -842,6 +842,50 @@ def test_setup_endpoint_follows_request_origin_not_public_base(site, tmp_path, m
     assert 'different.example' not in script
 
 
+@pytest.mark.parametrize(('origin', 'forwarded_proto', 'expected'), [
+    ('http://127.0.0.1:3577', '', 'http://127.0.0.1:3577'),
+    ('http://release.example', 'https', 'https://release.example'),
+    ('http://release.example:8443', 'https', 'https://release.example:8443'),
+    ('https://release.example', 'http', 'https://release.example'),
+    ('http://release.example', 'ftp', 'http://release.example'),
+    ('http://release.example', 'https, http', 'http://release.example'),
+])
+def test_setup_preserves_https_behind_proxy(site, origin, forwarded_proto, expected):
+    client, _, _, _ = site
+    headers = {'X-Forwarded-Proto': forwarded_proto, 'X-Forwarded-Host': 'other.example'}
+    response = client.get(origin + '/api/mcp/setup.sh', headers=headers)
+    assert response.status_code == 200
+    assert f'BASE_URL="{expected}"' in response.text
+    info = client.get(origin + '/api/mcp/info', headers=headers)
+    assert info.status_code == 200
+    assert info.json()['endpoint'] == expected + '/mcp'
+
+
+def test_proxy_https_used_for_account_config_and_attachment_commands(site, monkeypatch):
+    from app.services import mcp_service
+    monkeypatch.setattr(mcp_service, '_SETUP_FAILURES', {})
+    client, _, _, _ = site
+    client.headers.update({'Host': 'release.example:8443', 'X-Forwarded-Proto': 'https'})
+    _set_password('alice', 'pw-alice')
+    response = account(client, 'regenerate')
+    assert response.status_code == 200
+    created = response.json()
+    origin = 'https://release.example:8443'
+    assert created['endpoint'] == origin + '/mcp'
+    assert created['config']['claude_json']['mcpServers']['release-system']['url'] == origin + '/mcp'
+    assert f'url = "{origin}/mcp"' in created['config']['codex_toml']
+    session, _ = connect_client(client, created['token'])
+    for name, args, path in (
+        ('jira_pull_issue', {'issue_key': 'MC3-1'}, 'downloads'),
+        ('jira_upload_attachment', {'issue_key': 'MC3-1', 'file_path': 'test.log'}, 'uploads'),
+    ):
+        result = call(client, created['token'], session, name, args)
+        assert not result.get('isError')
+        guide = result['content'][0]['text']
+        assert f'{origin}/api/mcp/{path}/' in guide
+        assert 'http://release.example' not in guide
+
+
 @pytest.fixture()
 def jenkins_backend(monkeypatch):
     from unittest.mock import Mock
