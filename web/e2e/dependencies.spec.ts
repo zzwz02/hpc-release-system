@@ -46,6 +46,8 @@ for (const username of ["app_owner", "app_qa"]) {
     await expect(detail).toBeVisible();
     await selector.selectOption("sdk");
     await expect(pane.getByTestId("compatibility-pending")).toContainText("runtime-unknown");
+    await pane.getByRole("button", { name: "展开 runtime-unknown 的镜像和测试命令", exact: true }).click();
+    await expect(pane.getByTestId("compat-detail-runtime-unknown")).toContainText("根据历史配置生成（未在发布时封存）");
     const exported = page.waitForEvent("download");
     await pane.getByRole("button", { name: "导出当前测试清单 CSV" }).click();
     const csv = await readFile((await (await exported).path())!, "utf8");
@@ -54,6 +56,8 @@ for (const username of ["app_owner", "app_qa"]) {
     expect(csv).toContain("app_info commit id");
     expect(csv).toContain("0123456789abcdef0123456789abcdef01234567");
     expect(csv).not.toContain("development-runtime");
+    expect(csv).toContain("发布时封存");
+    expect(csv).toContain("根据历史配置生成");
     await pane.getByRole("textbox", { name: "筛选兼容性验证" }).fill("0123456789abcdef0123456789abcdef01234567");
     await expect(published).toBeVisible();
     await pane.getByRole("textbox", { name: "筛选兼容性验证" }).fill("development-runtime");

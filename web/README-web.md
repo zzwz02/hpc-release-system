@@ -55,7 +55,7 @@ HTTP 类型声明不会验证真实 JSON。改接口时对照 router/service、�
 - 历史查询镜像模式调用 `GET /api/lookup/image?image=完整镜像引用`，展示 Harbor tags、commit、app_info 来源与固定到 digest 的 Docker 命令；由后端只读查询 Harbor/Gerrit，不依赖镜像的报名记录。来源链接在新页打开 `/api/lookup/app-info?image=…&commit_id=…`，按原 commit 从已登记仓库读取并展示原始 JSON；复用历史查询权限，不重新解析 Harbor tags，不写业务记录。
 - App、QA、历史镜像查询的测试范围使用后端 `test.platforms`，逐行显示 OS、CPU 架构（x86/ARM）、支持芯片及命令，不从 `supported_chips` 的并集推断平台。镜像的两项芯片总览只来自实际匹配的镜像构建。QA 测试命令表/CSV 用 `commit_id` 替换 `base_image`，取当期锁定 app_info 版本的 commit；保留 OS、支持芯片和 Python/PyTorch label，构建别名与 OS/架构完全重复时省略整列，包含其他配置时保留。列结构变化时清除按列筛选和排序，避免索引错位。
 - 最新 app_info 的 OS 与 CPU 架构分别使用独立信息框。QA 测试命令表中的 `commit_id` 显示前 12 位，悬停查看完整 ID；筛选、排序和 CSV 导出仍使用完整值。
-- 兼容性验证的组件声明及 PyTorch + Python 组合来自所选发布的同一 app_info 快照；组合取同一启用构建的两个 label，不跨构建拼接，缺任一标签不生成，按 App 去重。镜像来自同次发布，测试排除项沿用该发布报名。CSV 包含没有关联测试的镜像；未填镜像明确标记模板，未指定构建的旧镜像不猜测平台，快照缺失不借用开发版。当前命令仍通过历史配置与现行生成规则计算，尚未在发布时封存最终命令。
+- 兼容性验证的组件声明及 PyTorch + Python 组合来自所选发布的同一 app_info 快照；组合取同一启用构建的两个 label，不跨构建拼接，缺任一标签不生成，按 App 去重。新发布的依赖、平台、镜像、测试排除项和最终命令均优先取 `official_versions.test_manifest_json` 的封存清单，`manifest_source=sealed`；不再调用当前命令生成器重算。CSV 包含没有关联测试的镜像；未填镜像明确标记模板，未指定构建的旧镜像不猜测平台，快照缺失不借用开发版。旧发布不自动补封存，`manifest_source=reconstructed` 表示按历史配置与现行规则还原，明细说明和 CSV 清单来源均明确标注；`unavailable` 表示历史快照缺失/归属错误，`unpublished` 表示尚未发布。已存在但版本不支持或损坏的封存清单会报错，不回退生成命令。原始 QA 按 App 级封存，每个 App/周期只保留一份最终记录；解锁删除原记录及清单，重新发布保存替换结果，不保留修订或撤销状态。
 - 「开发态依赖」仅作为次级参考入口，组件分组默认折叠，展示最新 app_info 的依赖、版本和 commit，不混入正式版镜像或命令，不提供清单导出。切换入口重新挂载表单并清空筛选。旧 `/api/dependencies?source=official` 与 `/api/dependencies/compat.csv` 保留兼容，合并页面不再分别请求它们。
 - MCP 使用统计的时间范围、用户和 Token 筛选在桌面端横向并排，选择框按内容设置宽度，不各占整行。
 - 周期选择使用共享 `selectedReleaseId`，跳转 App 时保留正确周期；不把不同 release 的编辑草稿或 QA 建议混用。
@@ -64,7 +64,7 @@ HTTP 类型声明不会验证真实 JSON。改接口时对照 router/service、�
 - 周期管理基础镜像每行两个输入：完整镜像引用、说明；提交 `image: {id?, reference, note}`，名称/地址/digest 由后端解析。历史查询和基础镜像输入使用 `stripDockerPullPrefix` 即时移除 `docker pull`，后端共享镜像解析器也接受该前缀。读取模型保留原字段，显示及编辑时组合引用；校验失败保留输入并显示错误。
 - 保留未保存编辑保护，选中 App 后详情应直接可见，长列表与详情按需独立滚动。
 - App 详情默认「基本信息和app_info」，不显示报名 tab。四项基本信息单独保存，资料保存不提交这四项，避免跨 tab 覆盖。单 App「立即同步app_info」位于「最新 app_info」标题旁，无 app_info 时也显示该标题与同步入口；范围扩大和同步失败提醒位于 tab 外，切换 tab 后保留，提醒只随显式刷新或写后重取更新。
-- 底部「正式版发布历史」消费 `/api/apps/detail` 的完整 `official_versions`：正式版表与尚无正式版行的已冻结成功发布报名合并，按发布时间倒序，保留撤销记录，不按 App 版本字符串去重。由报名补充的行 `id=null`，使用 `entry_id` 保持稳定的行标识；历史查询不写入正式版表，不改变当前正式版和兼容清单。进入基本信息时重取，工作台手动刷新同时失效当前 App 详情；加载失败单独提示。
+- 底部「正式版发布历史」消费 `/api/apps/detail` 的完整 `official_versions`：正式版表与尚无正式版行的已冻结成功发布报名合并，每个 App/周期一份，按周期发布日倒序，同日按周期创建顺序，不按 App 版本字符串去重，不显示撤销状态。由报名补充的行 `id=null`，使用 `entry_id` 保持稳定的行标识；读取不写入正式版表；当前正式版和历史查询使用相同的周期顺序，重发旧周期不会覆盖较新周期。进入基本信息时重取，工作台手动刷新同时失效当前 App 详情；加载失败单独提示。
 - `DeliveryImages` 在 QA、App 发布历史、历史发布列表共用，按 OS/CPU、镜像类型、Python/PyTorch 展示每个完整镜像引用。QA 的 `delivery_builds` 来自报名锁定 app_info 的启用 app_build；提交 `deliverable_images` 与 `delivery_revision`，只写已填写的构建行，支持直接粘贴 `docker pull`。后端验证构建归属、重复行和 sha256，使用事务及 revision 阻止并发覆盖。`entries.deliverable_images_json` 保存当前镜像组，`official_versions.images_json` 保存发布时快照；旧标量字段保留首条供旧调用方读取。旧单条数据以「未指定构建」显示，不推断平台；所有 digest 均可查询。
 - 应用标题栏「撤销报名」仅对可编辑 App 的 Owner/RM、当前有效报名且未发布锁定的周期显示；取消不提交，确认后回读报名状态。后端在同一写事务中检查权限/锁定并撤销；报名截止后不能重新报名，发布后不提供入口。
 - 报名入口为工具栏「批量报名」和应用标题栏「报名」。弹窗按账号、角色和周期独立查询最新状态及环境；切换周期清除勾选，成功后失效共享 state/CICD 缓存并跳到报名周期。批量接口只接收本人负责的 App，整批原子提交；单 App 沿用报名接口及 RM 代报名权限。
@@ -93,7 +93,7 @@ HTTP 类型声明不会验证真实 JSON。改接口时对照 router/service、�
 
 后端运行 `python -m tests.run_app_info_site --port 18787`；前端在 `web/` 运行 `API_TARGET=http://127.0.0.1:18787 npm run dev -- --host 127.0.0.1 --port 18788 --strictPort`。再执行 `APP_INFO_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/app-info.spec.ts`。使用临时数据库与本地 Gerrit 响应，验证 RM/Owner 保存和回读、权限、未保存修改保护、跨周期范围扩大提醒及同步失败；不访问真实仓库。
 
-正式版历史验证使用同一后端命令加 `--legacy-history`，执行 `APP_HISTORY_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/app-official-history.spec.ts`。验证早期迁移记录的补充、发布周期切换、失败及撤回过滤、解锁重新发布后的撤销标记和刷新回读，以及 Owner 和窄屏展示。
+正式版历史验证使用同一后端命令加 `--legacy-history`，执行 `APP_HISTORY_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/app-official-history.spec.ts`。验证早期迁移记录的补充、发布周期切换、失败及撤回过滤、解锁删除旧清单、重新发布替换结果、重发旧周期仍保持新周期为最新正式版及刷新回读，以及 Owner 和窄屏展示。
 
 多镜像和撤销报名验证使用后端参数 `--platforms`，执行 `MULTI_DELIVERY_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/multi-delivery.spec.ts`。覆盖 Owner 取消/确认撤销、QA 上传 log 并按 x86/ARM 保存两条 digest、发布冻结、App 历史及历史查询回读。每日同步仅限「报名截止后、QA 截止前」周期中有效报名的运行中 App；报名未截止、QA 已截止和发布锁定周期不触发自动拉取，同 App 跨周期去重；手动和 RM 全量同步保持原范围。
 

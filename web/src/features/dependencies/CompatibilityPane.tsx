@@ -4,6 +4,7 @@ import { useAuth } from "../../api/AuthContext";
 import { apiGet } from "../../api/http";
 import { RefreshBar } from "../../components/RefreshBar";
 import { downloadCsv } from "../../lib/csv";
+import { publicationManifestSourceLabel, type PublicationManifestSource } from "../../lib/domainMetadata";
 
 interface ReleaseRow {
   app_id: string;
@@ -14,6 +15,7 @@ interface ReleaseRow {
   hpc_version: string;
   app_version: string;
   app_info_commit_id: string;
+  manifest_source: PublicationManifestSource;
   os?: string;
   arch?: string;
   chips?: string[];
@@ -26,11 +28,11 @@ interface ReleaseRow {
   note: string;
 }
 
-const columns = ["App", "Owner", "依赖组件", "范围状态", "HPC version", "App version", "OS", "CPU 架构", "支持芯片", "镜像类型", "Python label", "PyTorch label", "完整镜像名", "app_info commit id", "测试项", "测试命令", "说明"];
+const columns = ["App", "Owner", "依赖组件", "范围状态", "HPC version", "App version", "清单来源", "OS", "CPU 架构", "支持芯片", "镜像类型", "Python label", "PyTorch label", "完整镜像名", "app_info commit id", "测试项", "测试命令", "说明"];
 const archName = (arch?: string) => arch === "amd64" ? "x86" : arch === "arm64" ? "ARM" : arch || "";
 function cells(row: ReleaseRow): string[] {
   return [row.app_name, row.owners.join(", "), row.dependencies.join(", "), row.scope_pending ? "范围待确认" : "已声明",
-    row.hpc_version, row.app_version, row.os || "", archName(row.arch), (row.chips || []).join(", "), row.image_target || "",
+    row.hpc_version, row.app_version, publicationManifestSourceLabel(row.manifest_source), row.os || "", archName(row.arch), (row.chips || []).join(", "), row.image_target || "",
     row.python_label || "", row.pytorch_label || "", row.delivery_reference || "", row.app_info_commit_id, row.path || "", row.command || "", row.note];
 }
 
@@ -119,7 +121,7 @@ export function CompatibilityPane() {
       <RefreshBar dataUpdatedAt={result.dataUpdatedAt} isFetching={result.isFetching} onRefresh={() => void result.refetch()} />
     </div>
     <div className="panel-body">
-      <p className="hint">每个运行中 App 选最近一次有效成功发布；后续失败、未报名或撤回不替换此前成功版本。依赖、镜像和测试范围均来自该次发布；展开 App 查看平台与完整命令。</p>
+      <p className="hint">每个运行中 App 选最近一次有效成功发布；后续失败、未报名或撤回不替换此前成功版本。新发布读取发布时封存的清单；未封存的历史记录按原配置生成，并在明细标注。展开 App 查看平台与完整命令。</p>
       <div className="row compatibility-filters">
         <label>组件<select className="select select-inline" value={component} onChange={(event) => setComponent(event.target.value)} aria-label="按组件筛选">
           <option value="">全部组件</option>

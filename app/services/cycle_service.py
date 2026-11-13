@@ -25,7 +25,7 @@ from app.domain import cycles as cycles_domain
 from app.domain import phases
 from app.domain import qa as qa_domain
 from app.domain.container_image import parse_base_image_reference
-from app.domain import delivery_images
+from app.domain import delivery_images, publication_manifest
 from app.domain.permissions import has_capability
 from app.repositories import (
     app_info_repo,
@@ -785,17 +785,28 @@ def publish(
     from app.services import artifact_service
 
     _require_rm(role)
-    release = get_release(conn, release_id)
-    phases.require_can(release, "publish", "QA 截止后才能发布")
-    ts = beijing_timestamp()
     released, failed = [], []
-    with transaction(conn):
+    with transaction(conn, immediate=True):
+        release = release_detail(conn, release_id)
+        phases.require_can(release, "publish", "QA 截止后才能发布")
+        ts = beijing_timestamp()
         for entry in entries_repo.list_for_release(conn, release_id):
             result = cycles_domain.publish_result(entry["qa_status"])
             known = cycles_domain.known_issues_at_publish(entry["known_issues"], entry["qa_status"], entry["qa_note"])
             entries_repo.update_entry(conn, entry["id"], {"result": result, "known_issues": known},
                                       updated_at=ts, updated_by=user)
             if result == cycles_domain.RESULT_RELEASED:
+                app = apps_repo.get_app(conn, entry["app_id"])
+                version = app_info_repo.get_version(conn, entry["locked_version_id"])
+                if not version or version["app_id"] != entry["app_id"]:
+                    raise ValueError(f'{entry["app_id"]}：报名锁定的 app_info 快照缺失或归属不符，无法封存发布测试清单')
+                images = delivery_images.recorded(entry.get('deliverable_images') or [],
+                    entry['deliverable_image'], entry['deliverable_digest'], entry['deliverable_commit'])
+                manifest = publication_manifest.capture(
+                    app=app, app_name=catalog_service.app_name(app), release=release,
+                    entry={**entry, "result": result, "known_issues": known}, version=version, images=images,
+                    published_at=ts, published_by=user,
+                )
                 official_repo.insert_official(
                     conn,
                     {
@@ -806,9 +817,9 @@ def publish(
                         "app_info_version_id": entry["locked_version_id"],
                         "image": entry["deliverable_image"],
                         "digest": entry["deliverable_digest"],
-                        "images": delivery_images.recorded(entry.get('deliverable_images') or [],
-                            entry['deliverable_image'], entry['deliverable_digest'], entry['deliverable_commit']),
+                        "images": images,
                         "released_at": ts,
+                        "test_manifest": manifest,
                     },
                 )
                 released.append(entry["app_id"])
@@ -843,19 +854,19 @@ def unlock(
 ) -> dict[str, Any]:
     """Reopen a published cycle for corrections (audited).
 
-    Results and the cycle's official versions are withdrawn; publishing again
-    recomputes them.
+    The cycle's final publications and manifests are deleted; publishing again
+    creates the replacement records.
     """
     _require_rm(role)
-    release = get_release(conn, release_id)
-    phases.require_can(release, "unlock", "版本未发布，无需解锁")
     if not (reason or "").strip():
         raise ValueError("解锁必须填写原因")
-    ts = beijing_timestamp()
-    with transaction(conn):
+    with transaction(conn, immediate=True):
+        release = get_release(conn, release_id)
+        phases.require_can(release, "unlock", "版本未发布，无需解锁")
+        ts = beijing_timestamp()
         for entry in entries_repo.list_for_release(conn, release_id):
             entries_repo.update_entry(conn, entry["id"], {"result": ""}, updated_at=ts, updated_by=user)
-        official_repo.withdraw_for_release(conn, release_id)
+        official_repo.delete_for_release(conn, release_id)
         artifacts_repo.delete_final_artifacts(conn, release_id)
         releases_repo.unlock_release(conn, release_id)
         log_audit(conn, f"解锁「{release['name']}」以更正：{reason.strip()}", ts=ts, user=user,

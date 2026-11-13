@@ -59,9 +59,8 @@ def test_multiple_build_images_are_published_and_every_digest_is_searchable(temp
     save(temp_db, delivery, values=changed, revision=fresh['delivery_revision'])
     cycle_service.publish(temp_db, release, user='rm', role='RM')
     history = catalog_service.app_detail(temp_db, app)['official_versions']
-    assert [row['withdrawn'] for row in history] == [0, 1]
+    assert len(history) == 1
     assert history[0]['images'][1]['digest'] == 'sha256:' + 'c' * 64
-    assert history[1]['images'][1]['digest'] == 'sha256:' + 'b' * 64
     with pytest.raises(RuntimeError, match='已发布'):
         save(temp_db, delivery)
 

@@ -6,6 +6,12 @@ function orderedKeys<T extends Record<string, { order: number }>>(items: T): Arr
 }
 
 export const releasePhaseMetadata = metadata.release_phases;
+export const publicationManifestSourceMetadata = metadata.publication_manifest_sources;
+export type PublicationManifestSource = keyof typeof publicationManifestSourceMetadata;
+
+export function publicationManifestSourceLabel(source: PublicationManifestSource): string {
+  return publicationManifestSourceMetadata[source]?.label ?? source;
+}
 export type ReleasePhase = keyof typeof releasePhaseMetadata;
 
 export const RELEASE_PHASES = orderedKeys(releasePhaseMetadata);

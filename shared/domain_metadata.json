@@ -1,4 +1,10 @@
 {
+  "publication_manifest_sources": {
+    "sealed": { "label": "发布时封存" },
+    "reconstructed": { "label": "根据历史配置生成" },
+    "unavailable": { "label": "无法还原" },
+    "unpublished": { "label": "尚未发布" }
+  },
   "release_phases": {
     "signup": {
       "label": "报名中",

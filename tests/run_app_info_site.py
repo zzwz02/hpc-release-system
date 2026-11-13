@@ -79,6 +79,9 @@ def main():
                                            user="app_qa", role="QA")
             close_qa(conn, dependency_release)
             cycle_service.publish(conn, dependency_release, user="app_rm", role="RM")
+            # An older publication has no publication-time manifest; reads must label reconstruction.
+            conn.execute("UPDATE official_versions SET test_manifest_json=NULL WHERE app_id='runtime-unknown'")
+            conn.commit()
             development_info = make_dependency_app_info("runtime-published")
             development_info["app_dependency"] = ["development-sdk"]
             for build in development_info["app_build"].values():

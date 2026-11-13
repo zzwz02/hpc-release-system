@@ -401,27 +401,27 @@ class TestMonthlyRepos:
         rejected = entries_repo.last_rejected_request(self.conn, entry_id, version_id)
         assert rejected["decision_note"] == "no"
 
-    def test_official_versions_current_history_and_withdrawal(self):
+    def test_official_versions_are_unique_per_cycle_and_deleted_on_unlock(self):
         entry_id = self._entry()
         version_id = self._version()
-        for version in ("1.0", "2.0"):
-            official_repo.insert_official(self.conn, {
-                "app_id": "app1",
-                "release_id": "r1",
-                "entry_id": entry_id,
-                "version": version,
-                "app_info_version_id": version_id,
-                "image": "img",
-                "digest": "sha256:cc",
-                "released_at": "2026-01-01 00:00:00",
-            })
+        record = {
+            "app_id": "app1", "release_id": "r1", "entry_id": entry_id,
+            "version": "1.0", "app_info_version_id": version_id,
+            "image": "img", "digest": "sha256:cc", "released_at": "2026-01-01 00:00:00",
+        }
+        official_repo.insert_official(self.conn, record)
+        releases_repo.lock_release(self.conn, "r1", locked_at="2026-01-01 00:00:00", locked_by="rm")
         self.conn.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            official_repo.insert_official(self.conn, {**record, "version": "2.0"})
+        self.conn.rollback()
         current = official_repo.current_by_app(self.conn)
-        assert current["app1"]["version"] == "2.0"
+        assert current["app1"]["version"] == "1.0"
         assert current["app1"]["release_name"] == "2099-01"
-        assert [row["version"] for row in official_repo.history_for_app(self.conn, "app1")] == ["2.0", "1.0"]
-        assert len(official_repo.by_digest(self.conn, "sha256:cc")) == 2
-        official_repo.withdraw_for_release(self.conn, "r1")
+        assert [row["version"] for row in official_repo.history_for_app(self.conn, "app1")] == ["1.0"]
+        assert len(official_repo.by_digest(self.conn, "sha256:cc")) == 1
+        official_repo.delete_for_release(self.conn, "r1")
+        releases_repo.unlock_release(self.conn, "r1")
         self.conn.commit()
         assert official_repo.current_by_app(self.conn) == {}
 

@@ -39,9 +39,10 @@ from app.domain.cycles import CICD_RUNNING, CICD_STOPPED
 from app.domain.permissions import has_capability
 from app.repositories import app_info_repo, apps_repo, official_repo
 from app.repositories.audit_repo import log_audit
-from app.domain import delivery_images
+from app.domain import delivery_images, publication_manifest
 from app.domain import phases
 from app.timeutil import beijing_timestamp
+from app.services import publication_service
 
 logger = logging.getLogger(__name__)
 
@@ -544,21 +545,6 @@ sync_loop = AppInfoSyncLoop()
 # ---------------------------------------------------------------------------
 
 
-def _official_tests(conn: sqlite3.Connection, official: dict[str, Any] | None, images: list[dict]) -> list[dict[str, Any]]:
-    if not official or not official.get("app_info_version_id"):
-        return []
-    version = app_info_repo.get_version(conn, official["app_info_version_id"])
-    if not version:
-        return []
-    excluded: list[str] = []
-    if official.get("entry_id"):
-        row = conn.execute(
-            "SELECT excluded_tests_json FROM entries WHERE id = ?", (official["entry_id"],)
-        ).fetchone()
-        excluded = json.loads(row[0]) if row else []
-    return delivery_images.published_commands(version["raw"], images, set(excluded))
-
-
 def dependency_overview(conn: sqlite3.Connection, source: str = "official") -> dict[str, Any]:
     """Group dependencies from one explicit snapshot source; never mix development and release."""
     if source not in {"official", "development"}:
@@ -575,15 +561,15 @@ def dependency_overview(conn: sqlite3.Connection, source: str = "official") -> d
         official = officials.get(app["id"]) if source == "official" else None
         if source == "official" and not official:
             continue
-        version_id = official.get("app_info_version_id") if official else latest_ids.get(app["id"])
-        snapshot = app_info_repo.get_version(conn, version_id)
-        if snapshot and snapshot["app_id"] != app["id"]:
+        manifest, manifest_source = publication_service.read_manifest(conn, official, app=app, app_name=app_name(app)) if official else (None, "development")
+        snapshot = manifest["app_info"] if manifest else app_info_repo.get_version(conn, latest_ids.get(app["id"])) if source == "development" else None
+        if source == "development" and snapshot and snapshot["app_id"] != app["id"]:
             snapshot = None
         if official and not snapshot:
             snapshot_errors.append(f"{app_name(app)}：正式版缺少有效 app_info 快照，无法确定兼容依赖")
-        images = delivery_images.recorded(official["images"], official["image"], official["digest"]) if official else []
-        declared = app_info_domain.declared_dependencies(snapshot["raw"]) if snapshot else None
-        combined_dependencies = list(dict.fromkeys([
+        images = manifest["images"] if manifest else delivery_images.recorded(official["images"], official["image"], official["digest"]) if official else []
+        declared = manifest["declared_dependencies"] if manifest else app_info_domain.declared_dependencies(snapshot["raw"]) if snapshot else None
+        combined_dependencies = manifest["dependencies"] if manifest else list(dict.fromkeys([
             *(declared or []),
             *(app_info_domain.python_pytorch_dependencies(snapshot["raw"]) if snapshot else []),
         ]))
@@ -597,8 +583,8 @@ def dependency_overview(conn: sqlite3.Connection, source: str = "official") -> d
             "app_version": snapshot["raw"].get("app_version", "") if snapshot else "",
             "official": (
                 {
-                    "release_name": official["release_name"],
-                    "app_info_version_id": official["app_info_version_id"],
+                    "release_name": manifest["release"]["name"] if manifest else official["release_name"],
+                    "app_info_version_id": snapshot["id"] if snapshot else official["app_info_version_id"],
                     "version": official["version"],
                     "image": official["image"],
                     "digest": official["digest"],
@@ -607,7 +593,8 @@ def dependency_overview(conn: sqlite3.Connection, source: str = "official") -> d
                 if official
                 else None
             ),
-            "tests": _official_tests(conn, official, images) if snapshot else [],
+            "tests": manifest["commands"] if manifest else [],
+            "manifest_source": manifest_source,
         }
         all_rows.append(row)
         if declared is None or not combined_dependencies:
@@ -643,7 +630,7 @@ def compat_list_csv(conn: sqlite3.Connection, component: str = "") -> str:
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(["App", "依赖组件", "Owner", "最新hpc release版本", "OS", "CPU 架构", "镜像类型",
-                     "Python label", "PyTorch label", "支持芯片", "镜像", "Digest", "镜像来源", "测试项", "测试命令"])
+                     "Python label", "PyTorch label", "支持芯片", "镜像", "Digest", "镜像来源", "测试项", "测试命令", "清单来源"])
     for row in compat_list(conn, component):
         official = row["official"]
         tests = list(row["tests"])
@@ -675,6 +662,7 @@ def compat_list_csv(conn: sqlite3.Connection, component: str = "") -> str:
                     source,
                     test.get("path", ""),
                     test.get("command", ""),
+                    publication_manifest.source_label(row["manifest_source"]),
                 ]
             )
     return buffer.getvalue()

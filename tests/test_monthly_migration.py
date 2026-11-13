@@ -315,7 +315,7 @@ def test_app_detail_recovers_older_publications_without_changing_current_officia
     assert history[1]["id"] is None
     assert history[1]["entry_id"] is not None
     assert history[1]["released_at"] == "2026-03-25 10:00:00"
-    assert history[1]["withdrawn"] == 0
+    assert "withdrawn" not in history[1]
     # This App has an older release but no current official row after migration.
     older_only = catalog_service.app_detail(migrated, "lammps")["official_versions"]
     assert [(row["release_id"], row["version"]) for row in older_only] == [("rel-1", "2024")]

@@ -85,7 +85,7 @@ def test_handles_migrated_publications_and_unlocked_latest_release(temp_db, inve
 
 
 def test_missing_snapshot_does_not_borrow_development_commands(temp_db, inventory):
-    temp_db.execute("UPDATE official_versions SET app_info_version_id=NULL WHERE app_id='hpl'")
+    temp_db.execute("UPDATE official_versions SET app_info_version_id=NULL, test_manifest_json=NULL WHERE app_id='hpl'")
     temp_db.commit()
     rows = [row for row in lookup_service.latest_running_releases(temp_db)["rows"] if row["app_id"] == "hpl"]
     assert rows and all(not row.get("command") for row in rows)
@@ -118,7 +118,7 @@ def test_empty_inventory(temp_db):
 
 def test_legacy_images_and_unfilled_builds_are_not_assigned_to_guessed_platforms(temp_db, inventory):
     digest = "sha256:" + "a" * 64
-    temp_db.execute("UPDATE official_versions SET images_json='[]', image='harbor.sh.mxcr.io/hpc-release/hpl-maca', digest=? WHERE app_id='hpl'", (digest,))
+    temp_db.execute("UPDATE official_versions SET test_manifest_json=NULL, images_json='[]', image='harbor.sh.mxcr.io/hpc-release/hpl-maca', digest=? WHERE app_id='hpl'", (digest,))
     temp_db.commit()
     rows = [row for row in lookup_service.latest_running_releases(temp_db)["rows"] if row["app_id"] == "hpl"]
     legacy = [row for row in rows if row.get("delivery_build_key") == "legacy"]

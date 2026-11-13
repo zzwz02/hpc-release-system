@@ -314,8 +314,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_scope_requests_entry
             ON scope_requests(entry_id, status);
 
-        -- An App's official (released) versions; the newest non-withdrawn row
-        -- is the App's current official version.
+        -- One final publication per App/cycle. Current official is selected by cycle date.
         CREATE TABLE IF NOT EXISTS official_versions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
@@ -326,11 +325,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             image TEXT NOT NULL DEFAULT '',
             digest TEXT NOT NULL DEFAULT '',
             released_at TEXT NOT NULL,
-            withdrawn INTEGER NOT NULL DEFAULT 0,
-            images_json TEXT NOT NULL DEFAULT '[]'
+            images_json TEXT NOT NULL DEFAULT '[]',
+            test_manifest_json TEXT
         );
-        CREATE INDEX IF NOT EXISTS idx_official_versions_app
-            ON official_versions(app_id, withdrawn, id);
 
         -- One DingTalk robot per notification kind, managed by RM in the UI.
         CREATE TABLE IF NOT EXISTS notification_channels (
@@ -645,6 +642,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     for _tbl, _col, _col_def in [
         ("entries", "deliverable_images_json", "TEXT NOT NULL DEFAULT '[]'"),
         ("official_versions", "images_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("official_versions", "test_manifest_json", "TEXT"),
         ("apps", "cicd_repo_type", "TEXT NOT NULL DEFAULT ''"),
         ("apps", "cicd_community_artifact", "TEXT NOT NULL DEFAULT ''"),
         ("apps", "cicd_build_image", "TEXT NOT NULL DEFAULT ''"),
@@ -688,7 +686,29 @@ def init_db(conn: sqlite3.Connection) -> None:
     if legacy_snapshots:
         monthly_migration.convert_snapshots(conn)
 
+    _migrate_official_versions(conn)
+
     conn.commit()
+
+
+def _migrate_official_versions(conn: sqlite3.Connection) -> None:
+    """Retire revision history and enforce one final record per App/cycle, without backfilling manifests."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(official_versions)")}
+    unique_index = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_official_versions_app_release'"
+    ).fetchone()
+    if "withdrawn" not in columns and unique_index:
+        return
+    with transaction(conn, immediate=True):
+        conn.execute("DROP INDEX IF EXISTS idx_official_versions_app")
+        if "withdrawn" in columns:
+            conn.execute("DELETE FROM official_versions WHERE withdrawn <> 0")
+            conn.execute("ALTER TABLE official_versions DROP COLUMN withdrawn")
+        conn.execute("DELETE FROM official_versions WHERE release_id IN (SELECT id FROM releases WHERE released_locked=0)")
+        conn.execute("DELETE FROM official_versions WHERE id NOT IN "
+                     "(SELECT MAX(id) FROM official_versions GROUP BY app_id,release_id)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_official_versions_app_release "
+                     "ON official_versions(app_id,release_id)")
 
 
 def _migrate_repo_manifest_paths(conn: sqlite3.Connection) -> None:

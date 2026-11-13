@@ -342,7 +342,7 @@ def test_runtime_pair_filters_compatibility_csv_using_official_snapshot(temp_db)
 # ---------------------------------------------------------------------------
 
 
-def test_official_history_keeps_same_version_across_cycles_and_records_corrections(temp_db) -> None:
+def test_official_history_keeps_one_final_version_per_cycle_after_corrections(temp_db) -> None:
     app_id = seed_app(temp_db)
     releases = []
     for name in ("3.9.0", "3.10.0"):
@@ -366,9 +366,8 @@ def test_official_history_keeps_same_version_across_cycles_and_records_correctio
     cycle_service.unlock(temp_db, releases[1], reason="更正版本", user="rm", role="RM")
     cycle_service.publish(temp_db, releases[1], user="rm", role="RM")
     history = official_repo.history_for_app(temp_db, app_id)
-    assert [row["withdrawn"] for row in history] == [0, 1, 0]
-    assert [row["release_name"] for row in history] == ["3.10.0", "3.10.0", "3.9.0"]
-    assert len({(row["id"], row["entry_id"]) for row in history}) == 3
+    assert [row["release_name"] for row in history] == ["3.10.0", "3.9.0"]
+    assert len({(row["id"], row["entry_id"]) for row in history}) == 2
     assert official_repo.current_by_app(temp_db)[app_id]["release_id"] == releases[1]
 
 
@@ -548,7 +547,7 @@ def test_compatibility_export_includes_published_apps_without_component_groups(t
     assert [row["app_id"] for row in catalog_service.dependency_overview(temp_db)["undeclared"]] == ["ungrouped"]
     assert [row["app_id"] for row in catalog_service.compat_list(temp_db)] == ["ungrouped"]
     assert len(list(csv.DictReader(io.StringIO(catalog_service.compat_list_csv(temp_db))))) == 1
-    temp_db.execute("UPDATE official_versions SET app_info_version_id=NULL WHERE app_id='ungrouped'")
+    temp_db.execute("UPDATE official_versions SET app_info_version_id=NULL, test_manifest_json=NULL WHERE app_id='ungrouped'")
     temp_db.commit()
     overview = catalog_service.dependency_overview(temp_db)
     assert overview["snapshot_errors"]

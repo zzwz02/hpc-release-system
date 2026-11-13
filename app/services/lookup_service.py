@@ -9,11 +9,11 @@ from typing import Any
 
 from app.api.errors import GerritNetworkError
 from app.config import settings
-from app.domain import app_info as app_info_domain, cycles, delivery_images, image_lookup
+from app.domain import cycles, delivery_images, image_lookup
 from app.domain.container_image import delivered_image_reference
 from app.integrations import gerrit, harbor
 from app.repositories import app_info_repo, apps_repo, entries_repo, official_repo, releases_repo
-from app.services import catalog_service, cycle_service, qa_service
+from app.services import catalog_service, cycle_service, publication_service, qa_service
 
 
 def _lookup_image(reference: str) -> dict[str, str]:
@@ -84,40 +84,45 @@ def by_image(conn: sqlite3.Connection, reference: str) -> dict[str, Any]:
 def _entry_record(conn: sqlite3.Connection, entry: dict[str, Any]) -> dict[str, Any]:
     release = cycle_service.get_release(conn, entry["release_id"])
     app = apps_repo.get_app(conn, entry["app_id"]) or {"id": entry["app_id"]}
-    view = cycle_service.entry_view(conn, entry)
-    image = releases_repo.get_base_image(conn, entry["base_image_id"]) if entry.get("base_image_id") else None
+    official = official_repo.current_for_release(conn, release["id"]).get(entry["app_id"]) if release["released_locked"] else None
+    manifest, source = publication_service.read_manifest(conn, official, app=app, app_name=catalog_service.app_name(app)) if official else (None, "unpublished")
+    if manifest:
+        entry = manifest["entry"]
+        release = {**release, **manifest["release"]}
+        info = manifest["app_info"]
+        info = {**info, "app_version": info["raw"].get("app_version", "")}
+        scope_tests = manifest["scope"]["tests"]
+        commands = manifest["commands"]
+        image = next((image for image in release["base_images"] if image["id"] == entry.get("base_image_id")), None)
+        environment = release["environment"]
+    elif official:
+        # Missing legacy publication evidence must not borrow a later entry's configuration.
+        info, scope_tests, commands, image = None, [], [], None
+        environment = releases_repo.list_environment(conn, release["id"])
+    else:
+        view = cycle_service.entry_view(conn, entry)
+        info = view["locked_app_info"]
+        scope_tests = [test for test in view["scope_tests"] if not test["excluded"]]
+        commands = qa_service.entry_test_commands(conn, entry)
+        image = releases_repo.get_base_image(conn, entry["base_image_id"]) if entry.get("base_image_id") else None
+        environment = releases_repo.list_environment(conn, release["id"])
     return {
         "app_id": entry["app_id"],
         "app_name": catalog_service.app_name(app),
-        "release": {
-            "id": release["id"],
-            "name": release["name"],
-            "phase": release["phase"],
-            "release_date": release["release_date"],
-        },
-        "environment": releases_repo.list_environment(conn, release["id"]),
+        "release": {key: release[key] for key in ("id", "name", "phase", "release_date")},
+        "environment": environment,
         "base_image": image,
         "entry": {
-            "id": entry["id"],
-            "status": entry["status"],
-            "target_version": entry["target_version"],
-            "actual_delivery": entry["actual_delivery"],
-            "known_issues": entry["known_issues"],
-            "qa_status": entry["qa_status"],
-            "qa_note": entry["qa_note"],
-            "result": entry["result"],
-            "deliverable_image": entry["deliverable_image"],
-            "deliverable_digest": entry["deliverable_digest"],
-            "deliverable_commit": entry["deliverable_commit"],
-            "deliverable_images": delivery_images.recorded(entry.get('deliverable_images') or [],
+            **{key: entry[key] for key in ("id", "status", "target_version", "actual_delivery", "known_issues",
+                "qa_status", "qa_note", "result", "deliverable_image", "deliverable_digest", "deliverable_commit")},
+            "deliverable_images": manifest["images"] if manifest else delivery_images.recorded(entry.get('deliverable_images') or [],
                 entry['deliverable_image'], entry['deliverable_digest'], entry['deliverable_commit']),
         },
-        "app_info": view["locked_app_info"] and {
-            key: view["locked_app_info"][key]
-            for key in ("id", "commit_id", "app_version", "x86_chips", "arm_chips")
-        },
-        "scope_tests": [t for t in view["scope_tests"] if not t["excluded"]],
-        "test_commands": qa_service.entry_test_commands(conn, entry),
+        "app_info": {key: info[key] for key in ("id", "commit_id", "app_version", "x86_chips", "arm_chips")} if info else None,
+        "scope_tests": scope_tests,
+        "test_commands": commands,
+        "manifest_source": source,
+        "official_version_id": official["id"] if official else None,
     }
 
 
@@ -164,11 +169,16 @@ def published_apps(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
     if not release["released_locked"]:
         raise ValueError("该版本尚未发布冻结或已解锁，请重新选择已冻结版本")
     apps = {app["id"]: app for app in apps_repo.list_apps(conn)}
+    officials = official_repo.current_for_release(conn, release_id)
     rows = []
     for entry in entries_repo.list_for_release(conn, release_id):
         if entry["result"] != cycles.RESULT_RELEASED:
             continue
         app = apps.get(entry["app_id"]) or {"id": entry["app_id"]}
+        official = officials.get(entry["app_id"])
+        manifest, source = publication_service.read_manifest(conn, official, app=app, app_name=catalog_service.app_name(app)) if official else (None, "reconstructed")
+        if manifest:
+            entry = manifest["entry"]
         rows.append({
             "app_id": entry["app_id"],
             "app_name": catalog_service.app_name(app),
@@ -178,6 +188,8 @@ def published_apps(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
                 entry['deliverable_image'], entry['deliverable_digest'], entry['deliverable_commit']),
             "deliverable_image": entry["deliverable_image"],
             "deliverable_digest": entry["deliverable_digest"],
+            "manifest_source": source,
+            "official_version_id": official["id"] if official else None,
             "qa_status": entry["qa_status"],
             "qa_note": entry["qa_note"],
         })
@@ -196,29 +208,23 @@ def latest_running_releases(conn: sqlite3.Connection) -> dict[str, Any]:
                   key=lambda app: (catalog_service.app_name(app).casefold(), app["id"]))
     for app in apps:
         official = officials.get(app["id"])
-        if not official:
-            official = next((record for record in official_repo.history_for_app(conn, app["id"])
-                             if not record["withdrawn"]), None)
-        snapshot = app_info_repo.get_version(conn, official.get("app_info_version_id")) if official else None
-        valid = snapshot is not None and snapshot["app_id"] == app["id"]
-        declared = app_info_domain.declared_dependencies(snapshot["raw"]) if valid else None
-        dependencies = list(dict.fromkeys([
-            *(declared or []),
-            *(app_info_domain.python_pytorch_dependencies(snapshot["raw"]) if valid else []),
-        ]))
+        manifest, source = publication_service.read_manifest(conn, official, app=app, app_name=catalog_service.app_name(app)) if official else (None, "unpublished")
         common = {"app_id": app["id"], "app_name": catalog_service.app_name(app),
-                  "owners": app.get("owners") or [], "dependencies": dependencies,
-                  "scope_pending": declared is None or not dependencies,
-                  "hpc_version": official["release_name"] if official else "",
-                  "app_version": official["version"] if official else "",
-                  "app_info_commit_id": snapshot["commit_id"] if valid else "",
-                  "app_info_version_id": official.get("app_info_version_id") if official else None}
+                  "owners": app.get("owners") or [], "dependencies": manifest["dependencies"] if manifest else [],
+                  "scope_pending": manifest["scope_pending"] if manifest else True,
+                  "hpc_version": manifest["release"]["name"] if manifest else official["release_name"] if official else "",
+                  "app_version": manifest["entry"]["target_version"] if manifest else official["version"] if official else "",
+                  "app_info_commit_id": manifest["app_info"]["commit_id"] if manifest else "",
+                  "app_info_version_id": manifest["app_info"]["id"] if manifest else official.get("app_info_version_id") if official else None,
+                  "official_version_id": official["id"] if official else None,
+                  "manifest_source": source,
+                  "qa_status": manifest["qa"]["status"] if manifest else "",
+                  "qa_note": manifest["qa"]["note"] if manifest else ""}
         if not official:
             rows.append({**common, "note": "尚无成功发布记录"})
             continue
-        images = delivery_images.recorded(official["images"], official["image"], official["digest"])
-        entry = entries_repo.get_entry(conn, official["entry_id"]) if official.get("entry_id") else None
-        commands = delivery_images.published_commands(snapshot["raw"], images, set(entry["excluded_tests"] if entry else [])) if valid else []
+        images = manifest["images"] if manifest else delivery_images.recorded(official["images"], official["image"], official["digest"])
+        commands = manifest["commands"] if manifest else []
         used = {command["delivery_build_key"] for command in commands}
         inventory = list(commands)
         inventory.extend({**image, "delivery_reference": image.get("reference", ""),
@@ -226,7 +232,9 @@ def latest_running_releases(conn: sqlite3.Connection) -> dict[str, Any]:
                          for image in images if image["build_key"] not in used)
         for item in inventory or [{}]:
             notes = []
-            if not valid:
+            if source == "reconstructed":
+                notes.append("根据历史配置生成（未在发布时封存）")
+            if not manifest:
                 notes.append("正式版 app_info 快照缺失或归属不符，无法还原测试命令")
             if item.get("delivery_build_key") == "legacy":
                 notes.append("历史镜像未指定构建，无法确定 OS/架构")

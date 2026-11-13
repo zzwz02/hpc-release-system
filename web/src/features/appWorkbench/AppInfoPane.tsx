@@ -30,7 +30,6 @@ interface AppDetailResponse {
     digest: string;
     images?: DeliveryImage[];
     released_at: string;
-    withdrawn: number;
   }>;
 }
 
@@ -133,12 +132,11 @@ export function AppInfoPane({ app, canEdit, canEditRmFields, onSaved, onDirtyCha
             <div data-testid="official-version-table">
               {(detail?.official_versions ?? []).map((row) => (
                 <div key={row.id ?? `entry-${row.entry_id}`} data-testid="official-version-row"
-                  className={`official-history-version${row.withdrawn ? " muted dim-55" : ""}`}>
+                  className="official-history-version">
                   <div className="row2 mb-8">
                     <b data-testid="official-release-name">{row.release_name}</b>
                     <span>版本 <span data-testid="official-app-version">{row.version}</span></span>
                     <span className="small muted">{formatServerTime(row.released_at)}</span>
-                    <span className="pill" data-testid="official-release-status">{row.withdrawn ? "已撤销" : "已发布"}</span>
                   </div>
                   <DeliveryImages images={recordedImages(row.images, row.image, row.digest)} />
                 </div>

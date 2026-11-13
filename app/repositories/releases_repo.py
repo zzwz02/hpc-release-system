@@ -13,6 +13,15 @@ from app.repositories.base import row_to_dict
 # Cycles
 # ---------------------------------------------------------------------------
 
+# Scheduled publication date defines cycle chronology; creation only breaks date ties.
+_CYCLE_ORDER_COLUMNS = ("release_date", "created_at", "rowid")
+
+
+def cycle_order_sql(alias: str, *, newest_first: bool = False) -> str:
+    """SQL fragment for trusted repository aliases, never request input."""
+    direction = "DESC" if newest_first else "ASC"
+    return ", ".join(f"{alias}.{column} {direction}" for column in _CYCLE_ORDER_COLUMNS)
+
 
 def _row(row: sqlite3.Row) -> dict[str, Any]:
     data = row_to_dict(row)
@@ -27,7 +36,7 @@ def get_release_row(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]
 
 def list_release_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """All cycles, oldest first."""
-    return [_row(row) for row in conn.execute("SELECT * FROM releases ORDER BY created_at, rowid")]
+    return [_row(row) for row in conn.execute(f"SELECT * FROM releases r ORDER BY {cycle_order_sql('r')}")]
 
 
 def name_exists(conn: sqlite3.Connection, name: str, *, exclude_id: str = "") -> bool:
