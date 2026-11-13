@@ -268,7 +268,7 @@ def test_stopped_apps_are_left_out_of_sync_and_dependency_reads(temp_db) -> None
 def catalog_dependency_ids(conn) -> set[str]:
     from app.services import catalog_service
 
-    overview = catalog_service.dependency_overview(conn)
+    overview = catalog_service.dependency_overview(conn, "development")
     ids = {row["app_id"] for row in overview["undeclared"]}
     for group in overview["components"]:
         ids.update(row["app_id"] for row in group["apps"])

@@ -72,6 +72,11 @@ def main():
                                            user="app_qa", role="QA")
             close_qa(conn, dependency_release)
             cycle_service.publish(conn, dependency_release, user="app_rm", role="RM")
+            development_info = make_dependency_app_info("runtime-published")
+            development_info["app_dependency"] = ["development-sdk"]
+            for build in development_info["app_build"].values():
+                build.update(python_label="py313", pytorch_label="torch2.10")
+            catalog_service.store_app_info(conn, "runtime-published", development_info, commit_id="development-runtime", source="test", user="app_rm")
         if args.releases or args.legacy_history:
             from app.services import cycle_service, qa_service
 

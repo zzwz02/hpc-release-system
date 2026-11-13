@@ -54,7 +54,10 @@ HTTP 类型声明不会验证真实 JSON。改接口时对照 router/service、�
 - 历史查询镜像模式调用 `GET /api/lookup/image?image=完整镜像引用`，展示 Harbor tags、commit、app_info 来源与固定到 digest 的 Docker 命令；由后端只读查询 Harbor/Gerrit，不依赖镜像的报名记录。来源链接在新页打开 `/api/lookup/app-info?image=…&commit_id=…`，按原 commit 从已登记仓库读取并展示原始 JSON；复用历史查询权限，不重新解析 Harbor tags，不写业务记录。
 - App、QA、历史镜像查询的测试范围使用后端 `test.platforms`，逐行显示 OS、CPU 架构（x86/ARM）、支持芯片及命令，不从 `supported_chips` 的并集推断平台。镜像的两项芯片总览只来自实际匹配的镜像构建。QA 测试命令表/CSV 用 `commit_id` 替换 `base_image`，取当期锁定 app_info 版本的 commit；保留 OS、支持芯片和 Python/PyTorch label，构建别名与 OS/架构完全重复时省略整列，包含其他配置时保留。列结构变化时清除按列筛选和排序，避免索引错位。
 - 最新 app_info 的 OS 与 CPU 架构分别使用独立信息框。QA 测试命令表中的 `commit_id` 显示前 12 位，悬停查看完整 ID；筛选、排序和 CSV 导出仍使用完整值。
-- 组件依赖沿用组件分组与筛选，下拉项包含从最新已保存 app_info 的同一启用构建提取的 PyTorch + Python 组合，名称简写为 `torch 2.10 + py312`。复用构建平台解析的标签选项及顶层默认值，缺任一标签时不生成组合；同一 App 的相同组合只计一次，禁用构建与停止 App 不列入。兼容验证 CSV 按相同组合筛选，依赖列保留普通组件及所有组合；无正式版的 App 不导出。`app_dependency` 的声明状态仍单独展示。
+- 组件依赖沿用组件分组与筛选，正式版视图的下拉项包含从 `official.app_info_version_id` 指向的同一启用构建提取的 PyTorch + Python 组合，名称简写为 `torch 2.10 + py312`。复用构建平台解析的标签选项及顶层默认值，缺任一标签时不生成组合；同一 App 的相同组合只计一次，禁用构建与停止 App 不列入。兼容验证 CSV 按相同组合筛选，依赖列保留普通组件及所有组合；无正式版的 App 不导出。`app_dependency` 的声明状态仍单独展示。
+
+兼容验证默认只使用当前正式版：组件声明、Python/PyTorch 组合与命令均来自 `official.app_info_version_id`，镜像来自同一正式版冻结记录，不读取开发态依赖索引。开发分支更新不会改变旧正式版分组。独立「开发态依赖」视图只展示最新 app_info 的依赖和 commit，不混入正式版镜像、命令，不提供兼容清单导出；切换来源清空组件筛选。全量导出包含未声明依赖及显式空依赖的正式版；快照缺失或归属错误会明确提示并拒绝导出，不回退到开发版本。
+
 - 各组件使用默认关闭的 `details`；其中每个 App 的镜像与测试命令也默认折叠，点击 App 名称独立展开，支持键盘操作，折叠时保留 Owner、HPC release 版本及镜像、命令数量。未声明依赖的 App 同样处理；版本列「最新hpc release版本」仅显示 `official.release_name`。`official.images` 消费最新发布的完整镜像快照，复用 `DeliveryImages` 展示全部 OS/CPU/标签/镜像类型；`tests` 由发布时锁定 app_info 和未排除测试生成，按相同构建标识绑定交付镜像并输出固定 digest 的 Docker 命令。缺少对应交付镜像时保留模板并明确提示，不把未指定构建的旧镜像套到所有平台。CSV 去掉 App 官方版本列，增加平台、镜像类型、标签、芯片和镜像来源，包含所有命令及没有关联测试的镜像。
 - 周期选择使用共享 `selectedReleaseId`，跳转 App 时保留正确周期；不把不同 release 的编辑草稿或 QA 建议混用。
 - 总览和 App 工作台工具栏的报名截止、QA 截止、发布日横向并排，标签在上、日期在下；空间不足时按完整日期项换行。

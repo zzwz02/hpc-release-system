@@ -24,7 +24,7 @@ import sqlite3
 import threading
 from typing import Any
 
-from app.api.errors import AuthzError
+from app.api.errors import ApiError, AuthzError
 from app.config import settings
 from app.db.connection import connect, transaction
 from app.domain import app_info as app_info_domain
@@ -559,31 +559,46 @@ def _official_tests(conn: sqlite3.Connection, official: dict[str, Any] | None, i
     return delivery_images.published_commands(version["raw"], images, set(excluded))
 
 
-def dependency_overview(conn: sqlite3.Connection) -> dict[str, Any]:
-    """Running Apps grouped by declared components and paired Python/PyTorch labels."""
+def dependency_overview(conn: sqlite3.Connection, source: str = "official") -> dict[str, Any]:
+    """Group dependencies from one explicit snapshot source; never mix development and release."""
+    if source not in {"official", "development"}:
+        raise ApiError(400, "未知依赖数据来源")
     officials = official_repo.current_by_app(conn)
-    deps = app_info_repo.dependencies_by_app(conn)
-    latest_ids = app_info_repo.latest_version_ids(conn)
+    latest_ids = app_info_repo.latest_version_ids(conn) if source == "development" else {}
+    snapshot_errors: list[str] = []
+    all_rows: list[dict[str, Any]] = []
     components: dict[str, list[dict[str, Any]]] = {}
     undeclared: list[dict[str, Any]] = []
     for app in apps_repo.list_apps(conn):
         if app["cicd_status"] != CICD_RUNNING:
             continue
-        official = officials.get(app["id"])
+        official = officials.get(app["id"]) if source == "official" else None
+        if source == "official" and not official:
+            continue
+        version_id = official.get("app_info_version_id") if official else latest_ids.get(app["id"])
+        snapshot = app_info_repo.get_version(conn, version_id)
+        if snapshot and snapshot["app_id"] != app["id"]:
+            snapshot = None
+        if official and not snapshot:
+            snapshot_errors.append(f"{app_name(app)}：正式版缺少有效 app_info 快照，无法确定兼容依赖")
         images = delivery_images.recorded(official["images"], official["image"], official["digest"]) if official else []
-        latest = app_info_repo.get_version(conn, latest_ids.get(app["id"]))
+        declared = app_info_domain.declared_dependencies(snapshot["raw"]) if snapshot else None
         combined_dependencies = list(dict.fromkeys([
-            *deps.get(app["id"], []),
-            *(app_info_domain.python_pytorch_dependencies(latest["raw"]) if latest else []),
+            *(declared or []),
+            *(app_info_domain.python_pytorch_dependencies(snapshot["raw"]) if snapshot else []),
         ]))
         row = {
             "app_id": app["id"],
             "name": app_name(app),
             "owners": app.get("owners") or [],
             "dependencies": combined_dependencies,
+            "app_info_version_id": snapshot["id"] if snapshot else None,
+            "commit_id": snapshot["commit_id"] if snapshot else "",
+            "app_version": snapshot["raw"].get("app_version", "") if snapshot else "",
             "official": (
                 {
                     "release_name": official["release_name"],
+                    "app_info_version_id": official["app_info_version_id"],
                     "version": official["version"],
                     "image": official["image"],
                     "digest": official["digest"],
@@ -592,14 +607,17 @@ def dependency_overview(conn: sqlite3.Connection) -> dict[str, Any]:
                 if official
                 else None
             ),
-            "tests": _official_tests(conn, official, images),
+            "tests": _official_tests(conn, official, images) if snapshot else [],
         }
-        declared = app_info_domain.declared_dependencies(latest["raw"]) if latest else None
-        if declared is None:
+        all_rows.append(row)
+        if declared is None or not combined_dependencies:
             undeclared.append(row)
         for component in combined_dependencies:
             components.setdefault(component, []).append(row)
     return {
+        "source": source,
+        "snapshot_errors": snapshot_errors,
+        "apps": sorted(all_rows, key=lambda r: r["name"].lower()),
         "components": [
             {"component": name, "apps": sorted(rows, key=lambda r: r["name"].lower())}
             for name, rows in sorted(components.items())
@@ -611,17 +629,13 @@ def dependency_overview(conn: sqlite3.Connection) -> dict[str, Any]:
 def compat_list(conn: sqlite3.Connection, component: str = "") -> list[dict[str, Any]]:
     """Running Apps with a current official version, optionally by component."""
     overview = dependency_overview(conn)
+    if overview["snapshot_errors"]:
+        raise ApiError(409, "；".join(overview["snapshot_errors"]))
     if component:
         group = next((g for g in overview["components"] if g["component"] == component), None)
         rows = group["apps"] if group else []
     else:
-        seen: dict[str, dict[str, Any]] = {}
-        for group in overview["components"]:
-            for row in group["apps"]:
-                seen[row["app_id"]] = row
-        for row in overview["undeclared"]:
-            seen[row["app_id"]] = row
-        rows = sorted(seen.values(), key=lambda r: r["name"].lower())
+        rows = overview["apps"]
     return [row for row in rows if row["official"]]
 
 

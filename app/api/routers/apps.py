@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import sqlite3
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Response
 
@@ -118,10 +119,11 @@ def api_app_info_sync_status(
 
 @router.get("/api/dependencies")
 def api_dependencies(
+    source: Literal["official", "development"] = Query(default="official"),
     user: dict = Depends(require_dependencies_tab),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    return catalog_service.dependency_overview(conn)
+    return catalog_service.dependency_overview(conn, source)
 
 
 @router.get("/api/dependencies/compat.csv")

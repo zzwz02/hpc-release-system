@@ -240,7 +240,7 @@ def test_dependency_overview_groups_by_component_and_lists_undeclared_apps(temp_
     _published_app(temp_db, "gamma")  # no app_dependency field at all
     seed_app(temp_db, "stopped_app", cicd_status="stopped")
 
-    overview = catalog_service.dependency_overview(temp_db)
+    overview = catalog_service.dependency_overview(temp_db, "development")
 
     components = {group["component"]: [row["app_id"] for row in group["apps"]]
                   for group in overview["components"]}
@@ -289,7 +289,7 @@ def test_dependency_overview_derives_runtime_pairs_from_existing_latest_app_info
     seed_app(temp_db, "stopped", app_info=raw, cicd_status="stopped")
 
     before = temp_db.total_changes
-    overview = catalog_service.dependency_overview(temp_db)
+    overview = catalog_service.dependency_overview(temp_db, "development")
     assert temp_db.total_changes == before
     groups = {group["component"]: [row["app_id"] for row in group["apps"]] for group in overview["components"]}
     assert groups == {"sdk": ["alpha"], "torch 2.8 + py312": ["alpha", "beta"]}
@@ -300,12 +300,12 @@ def test_dependency_overview_derives_runtime_pairs_from_existing_latest_app_info
     updated["app_build"]["ubuntu20.04_amd64"].update(python_label="py310", pytorch_label="torch2.4")
     store_app_info(temp_db, "alpha", updated, commit_id="updated-runtime")
     groups = {group["component"]: [row["app_id"] for row in group["apps"]]
-              for group in catalog_service.dependency_overview(temp_db)["components"]}
+              for group in catalog_service.dependency_overview(temp_db, "development")["components"]}
     assert groups["torch 2.8 + py312"] == ["beta"]
     assert groups["torch 2.4 + py310"] == ["alpha"]
 
 
-def test_runtime_pair_filters_compatibility_csv_using_latest_labels(temp_db) -> None:
+def test_runtime_pair_filters_compatibility_csv_using_official_snapshot(temp_db) -> None:
     raw = make_app_info(dependencies=["sdk"])
     raw["app_build"]["ubuntu20.04_amd64"].update(python_label="py310", pytorch_label="torch2.4")
     seed_app(temp_db, "alpha", official_name="Alpha", app_info=raw)
@@ -316,15 +316,25 @@ def test_runtime_pair_filters_compatibility_csv_using_latest_labels(temp_db) -> 
     close_qa(temp_db, release_id)
     cycle_service.publish(temp_db, release_id, user="rm", role="RM")
     raw["app_build"]["ubuntu20.04_amd64"].update(python_label="py312", pytorch_label="torch2.8")
+    raw["app_dependency"] = ["new-sdk"]
+    raw["app_test"]["sanity"]["test_cmd"] = "development-only-command"
     store_app_info(temp_db, "alpha", raw, commit_id="new-runtime")
     seed_app(temp_db, "unpublished", app_info=raw)
 
-    rows = list(csv.DictReader(io.StringIO(catalog_service.compat_list_csv(temp_db, "torch 2.8 + py312"))))
+    rows = list(csv.DictReader(io.StringIO(catalog_service.compat_list_csv(temp_db, "torch 2.4 + py310"))))
     assert len(rows) == 1
     assert rows[0]["App"] == "Alpha"
-    assert rows[0]["依赖组件"] == "sdk,torch 2.8 + py312"
+    assert rows[0]["依赖组件"] == "sdk,torch 2.4 + py310"
+    assert "development-only-command" not in rows[0]["测试命令"]
+    assert len(catalog_service.compat_list(temp_db, "sdk")) == 1
+    assert catalog_service.compat_list(temp_db, "new-sdk") == []
+    official_row = catalog_service.compat_list(temp_db)[0]
+    assert official_row["app_info_version_id"] == official_row["official"]["app_info_version_id"]
+    development = catalog_service.dependency_overview(temp_db, "development")
+    assert "new-sdk" in development["apps"][0]["dependencies"]
+    assert all(row["official"] is None and row["tests"] == [] for row in development["apps"])
     assert rows[0]["测试项"] == "sanity"
-    assert catalog_service.compat_list(temp_db, "torch 2.4 + py310") == []
+    assert catalog_service.compat_list(temp_db, "torch 2.8 + py312") == []
 
 
 # ---------------------------------------------------------------------------
@@ -525,3 +535,24 @@ def test_http_channel_settings_are_rm_only_and_never_return_secrets(temp_db) -> 
         assert client.post(
             "/api/notifications/channels/save", json={"kind": "scope_request", "enabled": False}
         ).status_code == 403
+
+
+@pytest.mark.parametrize("dependencies", [None, []])
+def test_compatibility_export_includes_published_apps_without_component_groups(temp_db, dependencies):
+    seed_app(temp_db, "ungrouped", app_info=make_app_info(dependencies=dependencies))
+    release_id = seed_cycle(temp_db)
+    seed_signup(temp_db, release_id, "ungrouped")
+    qa_service.set_qa_status_batch(temp_db, release_id, [{"app_id": "ungrouped", "status": "qa_passed"}], user="qa", role="QA")
+    close_qa(temp_db, release_id)
+    cycle_service.publish(temp_db, release_id, user="rm", role="RM")
+    assert [row["app_id"] for row in catalog_service.dependency_overview(temp_db)["undeclared"]] == ["ungrouped"]
+    assert [row["app_id"] for row in catalog_service.compat_list(temp_db)] == ["ungrouped"]
+    assert len(list(csv.DictReader(io.StringIO(catalog_service.compat_list_csv(temp_db))))) == 1
+    temp_db.execute("UPDATE official_versions SET app_info_version_id=NULL WHERE app_id='ungrouped'")
+    temp_db.commit()
+    overview = catalog_service.dependency_overview(temp_db)
+    assert overview["snapshot_errors"]
+    assert overview["apps"][0]["dependencies"] == []
+    from app.api.errors import ApiError
+    with pytest.raises(ApiError, match="正式版缺少有效 app_info 快照"):
+        catalog_service.compat_list_csv(temp_db)

@@ -1,12 +1,7 @@
-/**
- * 组件依赖 — Apps grouped by the components they declare in app_info
- * (`app_dependency`) and paired PyTorch/Python build labels, with each App's current official version, delivered
- * digest and test commands.  Running Apps without a declaration are listed
- * separately so they can be chased.  The compatibility list (running Apps
- * with an official version) exports as CSV for QA.
- */
+/** Official compatibility snapshots and a separate development dependency reference. */
 import React from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useAuth } from "../../api/AuthContext";
 import { apiGet } from "../../api/http";
 import { RefreshBar } from "../../components/RefreshBar";
 import { DeliveryImages } from "../../components/DeliveryImages";
@@ -18,6 +13,10 @@ interface DependencyApp {
   app_id: string;
   name: string;
   owners: string[];
+  dependencies: string[];
+  app_info_version_id: number | null;
+  commit_id: string;
+  app_version: string;
   official: { release_name: string; image: string; digest: string; images: DeliveryImage[] } | null;
   tests: Array<{
     path: string; command: string; os: string; arch: string; image_target: string;
@@ -28,6 +27,7 @@ interface DependencyApp {
 interface DependencyOverview {
   components: Array<{ component: string; apps: DependencyApp[] }>;
   undeclared: DependencyApp[];
+  snapshot_errors: string[];
 }
 
 function AppRow({ app }: { app: DependencyApp }) {
@@ -78,7 +78,15 @@ function AppRow({ app }: { app: DependencyApp }) {
   );
 }
 
-function AppsTable({ apps, testId }: { apps: DependencyApp[]; testId?: string }) {
+function AppsTable({ apps, testId, development = false }: { apps: DependencyApp[]; testId?: string; development?: boolean }) {
+  if (development) return (
+    <div className="table" data-testid={testId}><table><thead><tr><th>App</th><th>Owner</th><th>开发版 app_info</th><th>依赖组件</th></tr></thead>
+      <tbody>{apps.map((app) => <tr key={app.app_id} data-testid={`dependency-app-${app.app_id}`}>
+        <td>{app.name}<div className="small muted">{app.app_id}</div></td><td>{app.owners.join(", ")}</td>
+        <td>{app.app_version || "—"}<div className="small muted" title={app.commit_id}>{app.commit_id.slice(0, 12)}</div></td>
+        <td>{app.dependencies.join(", ") || "未声明"}</td>
+      </tr>)}</tbody></table></div>
+  );
   return (
     <div className="table" data-testid={testId}>
       <table className="dependencies-table">
@@ -94,10 +102,12 @@ function AppsTable({ apps, testId }: { apps: DependencyApp[]; testId?: string })
 }
 
 export function DependenciesPage() {
+  const { user } = useAuth();
+  const [source, setSource] = React.useState<"official" | "development">("official");
   const [component, setComponent] = React.useState("");
   const { data, isFetching, dataUpdatedAt, refetch, error } = useQuery({
-    queryKey: ["dependencies"],
-    queryFn: () => apiGet<DependencyOverview>("/api/dependencies"),
+    queryKey: ["dependencies", user?.username, user?.role, source],
+    queryFn: () => apiGet<DependencyOverview>(`/api/dependencies?source=${source}`),
     staleTime: Infinity,
     refetchOnMount: true,
   });
@@ -115,42 +125,51 @@ export function DependenciesPage() {
             <option key={g.component} value={g.component}>{g.component}（{g.apps.length}）</option>
           ))}
         </select>
-        <a className="btn sm" href={`/api/dependencies/compat.csv${component ? `?component=${encodeURIComponent(component)}` : ""}`}
+        {source === "official" && !data?.snapshot_errors.length && <a className="btn sm" href={`/api/dependencies/compat.csv${component ? `?component=${encodeURIComponent(component)}` : ""}`}
           data-testid="compat-csv-link">
           导出兼容验证清单 CSV
-        </a>
+        </a>}
         <span className="spacer" />
         <RefreshBar dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} onRefresh={() => void refetch()} />
       </div>
       <QaTabs />
+      <div className="subtabs" role="group" aria-label="依赖数据来源">
+        {(["official", "development"] as const).map((value) => <button key={value} type="button"
+          className={`subtab${source === value ? " active" : ""}`} aria-pressed={source === value}
+          onClick={() => { setSource(value); setComponent(""); }}>
+          {value === "official" ? "正式版兼容验证" : "开发态依赖"}
+        </button>)}
+      </div>
       {error && <div className="lerr p-12-16">加载失败：{(error as Error).message}</div>}
       {data && (
         <>
           <p className="hint">
-            依赖来自各 App 最新 app_info 的 <code>app_dependency</code> 字段，以及同一启用构建的 PyTorch label + Python label 组合；只列 CICD 运行中的 App。
-            兼容验证清单 = 运行中且已发布 HPC release 的 App；镜像和命令按最新发布时的 OS、CPU 架构和构建配置展示。
+            {source === "official"
+              ? "依赖、交付镜像和测试命令统一来自最新 HPC release 的同一正式版 app_info 快照；仅列运行中且已发布的 App。"
+              : "开发态依赖来自最新 app_info，仅供开发参考，不包含正式版镜像、命令，也不用于兼容验证清单。"}
           </p>
+          {data.snapshot_errors.map((message) => <div key={message} className="lerr p-12-16" role="alert">{message}；已暂停兼容清单导出。</div>)}
           {groups.length === 0 && <div className="banner">暂无匹配的组件或 PyTorch + Python 组合依赖。</div>}
           {groups.map((group) => (
-            <details key={group.component} className="panel section dependency-group" data-testid={`dependency-group-${group.component}`}>
+            <details key={`${source}-${group.component}`} className="panel section dependency-group" data-testid={`dependency-group-${group.component}`}>
               <summary className="panel-head">
                 <span className="chev" aria-hidden="true">▶</span>
                 <h2>{group.component}</h2>
                 <span className="count">{group.apps.length} 个 App</span>
               </summary>
               <div className="panel-body p-0">
-                <AppsTable apps={group.apps} testId={`component-${group.component}`} />
+                <AppsTable development={source === "development"} apps={group.apps} testId={`component-${group.component}`} />
               </div>
             </details>
           ))}
           {!component && (
             <details className="panel section" data-testid="undeclared-apps">
               <summary className="panel-head">
-                <h2>尚未声明 app_dependency 的 App</h2>
+                <h2>未声明组件依赖的 App</h2>
                 <span className="count">{data.undeclared.length} 个</span>
               </summary>
               <div className="panel-body p-0">
-                <AppsTable apps={data.undeclared} />
+                <AppsTable development={source === "development"} apps={data.undeclared} />
               </div>
             </details>
           )}
