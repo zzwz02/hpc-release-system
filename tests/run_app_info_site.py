@@ -11,6 +11,7 @@ def main():
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--signup", action="store_true", help="Include signup dialog scenarios")
     parser.add_argument("--lookup", action="store_true", help="Include Harbor image lookup scenarios")
+    parser.add_argument("--image-publications", action="store_true", help="Include multiple publications of one digest")
     parser.add_argument("--platforms", action="store_true", help="Include OS/architecture/chip mapping scenarios")
     parser.add_argument("--releases", action="store_true", help="Include frozen publication history scenarios")
     parser.add_argument("--legacy-history", action="store_true", help="Include entry-only migrated publication history")
@@ -152,6 +153,8 @@ def main():
             from app.integrations import harbor
 
             def lookup_artifact(project, repository, digest):
+                if repository.startswith("published-image"):
+                    raise RuntimeError("Published image queries must not access Harbor")
                 if digest == "sha256:" + "e" * 64:
                     raise ValueError("Harbor 中未找到该镜像，请检查镜像名和 digest")
                 if digest == "sha256:" + "d" * 64:
@@ -169,6 +172,24 @@ def main():
                 return {"digest": digest, "tags": [{"name": tag} for tag in tags], "extra_attrs": {"architecture": architecture}}
 
             harbor.get_artifact = lookup_artifact
+        if args.image_publications:
+            from app.services import cycle_service, qa_service
+
+            seed_app(conn, "image-published", official_name="Published Image", app_info=None, owners=["app_owner"])
+            for index in (1, 2):
+                info = make_dependency_app_info("published-image")
+                info["app_version"] = f"{index}.0"
+                info["app_test"]["sanity"]["test_cmd"] = f"run-original-{index}"
+                info["app_test"]["extra"] = {**info["app_test"]["sanity"], "test_cmd": f"extra-original-{index}"}
+                catalog_service.store_app_info(conn, "image-published", info, commit_id=str(index) * 40, source="test", user="app_rm")
+                release_id = seed_cycle(conn, name=f"image-publication-{index}")
+                entry = seed_signup(conn, release_id, "image-published", target_version=f"{index}.0", excluded_tests=["extra"] if index == 1 else [])
+                images = [{**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].partition(':')[0]}@sha256:{digit * 64}"}
+                          for build, digit in zip(entry["delivery_builds"], "abcdef")]
+                qa_service.set_qa_status_batch(conn, release_id, [{"app_id": "image-published", "status": "has_issues", "issue_note": f"original-QA-{index}",
+                    "delivery_revision": entry["delivery_revision"], "deliverable_images": images}], user="app_qa", role="QA")
+                close_qa(conn, release_id)
+                cycle_service.publish(conn, release_id, user="app_rm", role="RM")
         if args.signup:
             from app.services import cicd_service
 
@@ -205,6 +226,8 @@ def main():
 
         gerrit.head_commit = head_commit
         def fetch_app_info(url, commit, **_kwargs):
+            if args.image_publications and url.endswith("hpc_image-published"):
+                raise RuntimeError("Published image queries must not access Gerrit")
             if args.platforms and url.endswith("hpc_platform-check"):
                 return json.dumps(platform_info)
             if args.lookup and url.endswith("hpc_lookup-image"):

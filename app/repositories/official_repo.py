@@ -76,10 +76,15 @@ def history_for_app(conn: sqlite3.Connection, app_id: str) -> list[dict[str, Any
 
 
 def by_digest(conn: sqlite3.Connection, digest: str) -> list[dict[str, Any]]:
+    digest = digest.strip().lower()
+    bare = digest.removeprefix("sha256:")
     return [_official(row) for row in conn.execute(
         _PUBLICATIONS_CTE + "SELECT p.*,r.name AS release_name FROM publications p JOIN releases r ON r.id=p.release_id "
-        "WHERE p.digest=? OR EXISTS (SELECT 1 FROM json_each(p.images_json) WHERE json_extract(value,'$.digest')=?) "
-        f"ORDER BY {cycle_order_sql('r', newest_first=True)}", (*_PUBLICATION_PARAMS, digest, digest),
+        "WHERE lower(trim(p.digest)) IN (?,?) OR lower(trim(p.image)) LIKE ? "
+        "OR EXISTS (SELECT 1 FROM json_each(p.images_json) WHERE lower(trim(json_extract(value,'$.digest'))) IN (?,?) "
+        "OR lower(trim(json_extract(value,'$.reference'))) LIKE ? OR lower(trim(json_extract(value,'$.image'))) LIKE ?) "
+        f"ORDER BY {cycle_order_sql('r', newest_first=True)},p.app_id",
+        (*_PUBLICATION_PARAMS, digest, bare, f"%@{digest}", digest, bare, f"%@{digest}", f"%@{digest}"),
     )]
 
 

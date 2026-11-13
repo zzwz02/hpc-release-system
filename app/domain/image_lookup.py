@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.domain.container_image import parse_base_image_reference
+from app.domain.container_image import delivered_image_reference, parse_base_image_reference
 from app.domain.test_platforms import build_platforms, chip_summary, release_tests
 from app.domain.test_commands import (
     IMAGE_TARGET_SUFFIX, build_target_matches, command_rows, docker_cmd, image_values_for_build,
@@ -23,6 +23,17 @@ def parse_lookup_image(reference: str) -> dict[str, str]:
         raise ValueError("请使用不含 tag 的完整镜像名：仓库/镜像@sha256:…")
     return {"host": host, "project": project, "repository": repository,
             "digest": image["digest"], "image": f"{image['image']}@{image['digest']}"}
+
+
+def matches_delivery(image: dict[str, str], delivery: dict) -> bool:
+    """Match registry/project/repository and digest; a saved tag does not change identity."""
+    reference = delivered_image_reference(delivery.get("image") or delivery.get("reference", ""), delivery.get("digest", ""))
+    if not reference:
+        return False
+    parsed = parse_base_image_reference(reference)
+    address = parsed["image"].rsplit("/", 1)
+    address[-1] = address[-1].partition(":")[0]
+    return "/".join(address) == f'{image["host"]}/{image["project"]}/{image["repository"]}' and parsed["digest"] == image["digest"]
 
 
 def commit_tags(tags: list[str]) -> tuple[str, list[str]]:

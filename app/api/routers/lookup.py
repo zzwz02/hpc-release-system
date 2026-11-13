@@ -43,10 +43,14 @@ def published_apps(
 def app_info_source(
     image: str = Query(...),
     commit_id: str = Query(...),
+    release_id: str = Query(default=""),
+    app_id: str = Query(default=""),
+    publication_key: str = Query(default=""),
     user: dict = Depends(require_lookup_tab),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> Response:
-    document = lookup_service.app_info_source(conn, image, commit_id)
+    document = lookup_service.app_info_source(conn, image, commit_id, release_id=release_id,
+                                            app_id=app_id, publication_key=publication_key)
     return Response(
         json.dumps(document, ensure_ascii=False, indent=2), media_type="application/json",
         headers={"Content-Disposition": 'inline; filename="app_info.json"', "Cache-Control": "no-store"},

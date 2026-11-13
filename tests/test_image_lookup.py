@@ -70,6 +70,7 @@ def test_reads_the_commit_not_branch_head_and_uses_immutable_digest(temp_db, loo
     raw, app_id, calls = lookup
     before = (len(app_info_repo.list_versions(temp_db, app_id)), temp_db.execute("SELECT COUNT(*) FROM audit").fetchone()[0])
     result = lookup_service.by_image(temp_db, f"docker pull {IMAGE}")
+    assert result["source"] == "historical_config"
     assert result["commit_id"] == "bb46c60"
     assert result["tags"] == sorted(TAGS)
     assert result["app_version"] == "3.9.0.27"

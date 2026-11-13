@@ -17,10 +17,12 @@ test("image digest resolves historical app_info and assembles commands with the 
   expect(response.ok()).toBeTruthy();
   expect(new URL(response.url()).searchParams.get("image")).toBe(image);
   const data = await response.json();
+  expect(data.source).toBe("historical_config");
   expect(data.commit_id).toBe("bb46c60");
   expect(data.app_version).toBe("3.9.0.27");
   expect(data.test_commands).toHaveLength(2);
   const result = page.getByTestId("lookup-image-result");
+  await expect(result.getByTestId("lookup-image-source")).toContainText("根据历史配置生成");
   await expect(result.getByRole("heading")).toHaveText("abacus 3.9.0.27");
   const sourceLink = result.getByTestId("app-info-source-link");
   await expect(sourceLink).toContainText("bb46c60");

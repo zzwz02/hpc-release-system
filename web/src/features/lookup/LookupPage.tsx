@@ -15,6 +15,7 @@ import { stripDockerPullPrefix } from "../../lib/containerImage";
 import type { DeliveryImage, QaStatus, TestPlatform } from "../../types";
 import { DeliveryImages } from "../../components/DeliveryImages";
 import { recordedImages } from "../../lib/deliveryImages";
+import { ImagePublicationPane, type PublicationLookupResult } from "./ImagePublicationPane";
 
 type TestCommand = TestPlatform & { test: string; command: string };
 
@@ -40,7 +41,8 @@ interface PublishedApp {
   images?: DeliveryImage[];
 }
 
-interface ImageResult {
+interface HistoricalImageResult {
+  source: "historical_config";
   image: string;
   digest: string;
   tags: string[];
@@ -53,6 +55,7 @@ interface ImageResult {
   arm_chips: string[];
   test_commands: TestCommand[];
 }
+type ImageResult = HistoricalImageResult | PublicationLookupResult;
 
 function PublishedAppsPane() {
   const { user } = useAuth();
@@ -135,12 +138,19 @@ function PublishedAppsPane() {
 }
 
 export function LookupPage() {
+  const { user } = useAuth();
   const [mode, setMode] = React.useState<"releases" | "digest">("releases");
   const [image, setImage] = React.useState("");
   const [imageResult, setImageResult] = React.useState<ImageResult | null>(null);
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const requestId = React.useRef(0);
+  React.useEffect(() => {
+    requestId.current++;
+    setImageResult(null);
+    setError("");
+    setBusy(false);
+  }, [user?.username, user?.role]);
 
   async function search() {
     if (busy) return;
@@ -163,12 +173,14 @@ export function LookupPage() {
   function changeMode(next: "digest" | "releases") {
     requestId.current++;
     setMode(next);
+    setImageResult(null);
     setError("");
     setBusy(false);
   }
 
-  const sourceUrl = imageResult ? `/api/lookup/app-info?${new URLSearchParams({
-    image: imageResult.image, commit_id: imageResult.commit_id,
+  const historical = imageResult?.source === "historical_config" ? imageResult : null;
+  const sourceUrl = historical ? `/api/lookup/app-info?${new URLSearchParams({
+    image: historical.image, commit_id: historical.commit_id,
   })}` : null;
 
   return (
@@ -194,38 +206,40 @@ export function LookupPage() {
                 {busy ? "查询中…" : "查询"}
               </button>
             </div>
-            <p className="hint mt-8">输入包含 digest 的完整镜像名，查看该镜像对应的历史测试命令。</p>
+            <p className="hint mt-8">优先查询发布测试清单；多次发布可选择记录，未找到发布记录时再根据历史配置生成命令。</p>
             {error && <p className="lerr" role="alert">{error}</p>}
           </div>
         </div>
       )}
 
-      {mode === "digest" && imageResult && (
+      {mode === "digest" && imageResult?.source === "publications" && <ImagePublicationPane result={imageResult} />}
+      {mode === "digest" && historical && (
         <div className="panel" data-testid="lookup-image-result">
           <div className="panel-head">
-            <h2>{imageResult.app_name} {imageResult.app_version}</h2>
-            <span className="pill">Commit {imageResult.commit_id}</span>
-            <span className="count">{imageResult.test_commands.length} 条测试命令</span>
+            <h2>{historical.app_name} {historical.app_version}</h2>
+            <span className="pill">Commit {historical.commit_id}</span>
+            <span className="count">{historical.test_commands.length} 条测试命令</span>
           </div>
           <div className="panel-body">
-            <p className="mono small break">{imageResult.image}</p>
-            <p className="small break">app_info 来源：
+            <p className="hint" data-testid="lookup-image-source">根据历史配置生成（未匹配到发布记录）</p>
+            <p className="mono small cell-wrap">{historical.image}</p>
+            <p className="small cell-wrap">app_info 来源：
               {sourceUrl ? (
                 <a href={sourceUrl} target="_blank" rel="noopener noreferrer"
                   data-testid="app-info-source-link">
-                  {imageResult.git_url} @ {imageResult.commit_id}
+                  {historical.git_url} @ {historical.commit_id}
                 </a>
-              ) : <>{imageResult.git_url} @ {imageResult.commit_id}</>}
+              ) : <>{historical.git_url} @ {historical.commit_id}</>}
             </p>
             <p className="muted small">该镜像构建支持的芯片</p>
             <div className="form form-compact">
-              <ChipSupportFields x86={imageResult.x86_chips} arm={imageResult.arm_chips} />
+              <ChipSupportFields x86={historical.x86_chips} arm={historical.arm_chips} />
             </div>
             <details className="mt-8">
-              <summary>镜像 tags（{imageResult.tags.length}）</summary>
-              {imageResult.tags.map((tag) => <div key={tag} className="mono small break mt-4">{tag}</div>)}
+              <summary>镜像 tags（{historical.tags.length}）</summary>
+              {historical.tags.map((tag) => <div key={tag} className="mono small break mt-4">{tag}</div>)}
             </details>
-            <CommandTable commands={imageResult.test_commands} />
+            <CommandTable commands={historical.test_commands} />
           </div>
         </div>
       )}

@@ -7,7 +7,7 @@ import re
 import sqlite3
 from typing import Any
 
-from app.api.errors import GerritNetworkError
+from app.api.errors import ApiError, GerritNetworkError
 from app.config import settings
 from app.domain import cycles, delivery_images, image_lookup
 from app.domain.container_image import delivered_image_reference
@@ -54,8 +54,31 @@ def _app_info_at(url: str, commit: str) -> dict[str, Any]:
     return document
 
 
-def app_info_source(conn: sqlite3.Connection, reference: str, commit: str) -> dict[str, Any]:
-    """Read the original file at the pinned commit without mutable Harbor tags."""
+def _publication_key(official: dict) -> str:
+    return f'official:{official["id"]}' if official["id"] is not None else f'entry:{official["entry_id"]}'
+
+
+def _publication_images(official: dict) -> list[dict]:
+    return delivery_images.recorded(official["images"], official["image"], official["digest"])
+
+
+def app_info_source(conn: sqlite3.Connection, reference: str, commit: str, *,
+                    release_id: str = "", app_id: str = "", publication_key: str = "") -> dict[str, Any]:
+    """Read the selected publication snapshot or a historical file at its pinned commit."""
+    if release_id or app_id or publication_key:
+        if not (release_id and app_id and publication_key):
+            raise ValueError("发布来源需要完整的周期、App 和发布记录标识")
+        image = image_lookup.parse_lookup_image(reference)
+        official = official_repo.current_for_release(conn, release_id).get(app_id)
+        if not official or _publication_key(official) != publication_key or not any(
+            image_lookup.matches_delivery(image, delivery) for delivery in _publication_images(official)
+        ):
+            raise ApiError(409, "发布记录已变化或不包含该镜像，请重新查询")
+        app = catalog_service.get_app_or_raise(conn, app_id)
+        manifest, _ = publication_service.read_manifest(conn, official, app=app, app_name=catalog_service.app_name(app))
+        if not manifest or manifest["app_info"]["commit_id"] != commit:
+            raise ApiError(409, "发布 app_info 快照缺失或 commit 不符，请重新查询")
+        return manifest["app_info"]["raw"]
     if not re.fullmatch(r"[0-9a-fA-F]{7,40}", commit):
         raise ValueError("app_info 来源需要有效的 commit id")
     image = _lookup_image(reference)
@@ -63,6 +86,28 @@ def app_info_source(conn: sqlite3.Connection, reference: str, commit: str) -> di
 
 
 def by_image(conn: sqlite3.Connection, reference: str) -> dict[str, Any]:
+    image = image_lookup.parse_lookup_image(reference)
+    publications = []
+    for official in official_repo.by_digest(conn, image["digest"]):
+        images = _publication_images(official)
+        if not any(image_lookup.matches_delivery(image, delivery) for delivery in images):
+            continue
+        app = catalog_service.get_app_or_raise(conn, official["app_id"])
+        manifest, source = publication_service.read_manifest(conn, official, app=app, app_name=catalog_service.app_name(app))
+        release = manifest["release"] if manifest else releases_repo.get_release_row(conn, official["release_id"])
+        publications.append({
+            "key": _publication_key(official), "official_version_id": official["id"],
+            "entry_id": official["entry_id"], "app_id": app["id"],
+            "app_name": manifest["app"]["name"] if manifest else catalog_service.app_name(app),
+            "app_version": manifest["entry"]["target_version"] if manifest else official["version"],
+            "release": {key: release[key] for key in ("id", "name", "release_date")},
+            "published_at": official["released_at"], "manifest_source": source,
+            "test_manifest": manifest, "images": manifest["images"] if manifest else images,
+            "note": "根据历史配置生成（未在发布时封存）" if source == "reconstructed" else
+                    "发布 app_info 快照缺失或归属不符，无法还原测试清单" if not manifest else "",
+        })
+    if publications:
+        return {"source": "publications", "image": image["image"], "digest": image["digest"], "publications": publications}
     image = _lookup_image(reference)
     artifact = harbor.get_artifact(image["project"], image["repository"], image["digest"])
     tags = sorted({tag["name"] for tag in artifact.get("tags") or []
@@ -77,7 +122,7 @@ def by_image(conn: sqlite3.Connection, reference: str) -> dict[str, Any]:
         )
     except (TypeError, AttributeError, KeyError) as exc:
         raise ValueError("该 commit 的 app_info.json 格式无效，无法生成测试命令") from exc
-    return {**result, "image": image["image"], "digest": image["digest"], "tags": tags,
+    return {**result, "source": "historical_config", "image": image["image"], "digest": image["digest"], "tags": tags,
             "commit_id": commit, "commit_tags": selected_tags, "git_url": url}
 
 
