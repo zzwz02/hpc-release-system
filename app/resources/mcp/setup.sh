@@ -206,10 +206,8 @@ write_local() {  # write_local TOKEN
   # shellcheck disable=SC2086
   config write "$1" $clients
   local client
-  for client in $clients; do say "✔ $(label "$client") 已配置"; done
+  for client in $clients; do printf '✔ %-11s 已配置\n' "$(label "$client")" >&2; done
   say "请重启 Claude Code / Codex（VS Code 中执行 Developer: Reload Window），在对话里输入 /mcp 确认 $SERVER_NAME 已连接。"
-  say ""
-  other_harnesses "${1:0:12}…（完整 token 可用选项 4 输出）" >&2
   if [[ " $clients " == *" claude "* ]] && pgrep -u "$(id -u)" -x claude >/dev/null 2>&1; then
     say "提示：检测到正在运行的 Claude Code，它退出时可能覆盖 ~/.claude.json；若重启后看不到 $SERVER_NAME，关闭后重新运行本脚本。"
   fi
@@ -249,11 +247,13 @@ do_use_token() {
     *) die "请指定 MCP_CLIENTS=claude 或 MCP_CLIENTS=codex" ;;
   esac
   token_works "$token" || die "MCP token 无效、已吊销或无法连接网站"
+  say "MCP URL：$MCP_URL"
   write_local "$token"
 }
 
 do_configure() {
   server_status
+  say "MCP URL：$MCP_URL"
   local token=""
   if [ -n "$active_prefix" ]; then
     local found; found="$(local_token || true)"
@@ -271,7 +271,7 @@ do_configure() {
   fi
   if [ -z "$token" ]; then
     token="$(api regenerate | head -n 1)"
-    say "已生成 token ${token:0:12}…"
+    say "已生成 token ${token:0:12}…（可运行选项 4 查看完整 token）"
   fi
   write_local "$token"
 }
@@ -295,12 +295,13 @@ do_status() {
 
 do_regenerate() {
   server_status
+  say "MCP URL：$MCP_URL"
   if [ -n "$active_prefix" ]; then
     say "当前有效 token：$active_line"
     yes_no "重新生成后它在所有机器上立即失效，其他机器需重新配置。继续？[y/N] " n || die "已取消"
   fi
   local token; token="$(api regenerate | head -n 1)"
-  say "已生成新 token ${token:0:12}…"
+  say "已生成新 token ${token:0:12}…（可运行选项 4 查看完整 token）"
   if yes_no "写入本机配置？[Y/n] " y; then write_local "$token"; else print_config "$token"; fi
 }
 
@@ -322,7 +323,7 @@ do_uninstall() {
 
 action="${1:-}"
 if [ -z "$action" ]; then
-  say "HPC 发布系统 MCP（$MCP_URL）"
+  say "HPC 发布系统 MCP"
   say "  1) 一键配置本机        2) 查询 token（仅显示前几位）"
   say "  3) 重新生成 token      4) 仅输出配置方法"
   say "  5) 卸载本机配置"

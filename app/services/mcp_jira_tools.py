@@ -29,6 +29,9 @@ from app.services.mcp_tools import Tool, ToolContext, ToolError, ToolLog, ToolRe
 CATEGORY = "jira"
 SEARCH_MAX_RESULTS = 50
 COMMENT_MAX_CHARS = 32_000
+# Keep the elicitation form reachable on clients that render the message above it.
+COMMENT_PREVIEW_MAX_CHARS = 240
+COMMENT_PREVIEW_MAX_LINES = 6
 # Custom field values longer than this are cut in issue.md.
 CUSTOM_FIELD_MAX_CHARS = 500
 _UNSAFE_NAME = re.compile(r"[^\w.\-+()\[\] ]+", re.UNICODE)
@@ -284,6 +287,13 @@ def _prepare_comment(ctx: ToolContext, args: dict) -> dict:
 def _confirm_comment(ctx: ToolContext, args: dict) -> str:
     key = _key(args.get("issue_key"))
     body = str(args.get("body") or "").strip()
+    preview = "".join(body.splitlines(keepends=True)[:COMMENT_PREVIEW_MAX_LINES])[:COMMENT_PREVIEW_MAX_CHARS]
+    if len(preview) < len(body):
+        return (f"即将在 JIRA {key} 发布评论（全文 {len(body)} 字符）。"
+                "请输入你本人的域账号用户名确认发送；发布后无法撤回。\n\n"
+                f"评论摘要：\n{preview.rstrip()}\n"
+                "…（摘要已截断，完整正文请在对话中核对；发送时保留全文。）\n"
+                "请输入本人域账号用户名：")
     return (f"即将在 JIRA {key} 发布下面的评论。"
             "请输入你本人的域账号用户名，匹配发布账号后发送；发布后无法撤回。\n\n"
             f"{body}")
@@ -318,6 +328,8 @@ register(Tool(
         "Append a comment (JIRA wiki markup) to an issue. Only the issue's current assignee or an RM may "
         "comment. Before drafting, load skill_load(skill=\"jira-format\"), including draft-only requests. "
         "The server applies shared JIRA wiki formatting before confirmation and posts that same body. "
+        "Before calling, show the complete proposed comment in the conversation for the user to review. "
+        "The confirmation dialog shows only a bounded excerpt for long comments; the full body is posted. "
         "To cite an attachment, use the [name|url] link that jira_pull_issue or the upload output "
         "gives (it targets the attachment id); [^name] may hit a same-named file. "
         "Before posting, the user must type their own domain username in the MCP elicitation form. "

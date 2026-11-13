@@ -82,7 +82,7 @@ async def mcp_post(request: Request) -> Response:
     # Download links go back to the address this client reached us at, not
     # PUBLIC_BASE_URL: the ticket lives in this process, and the configured
     # public site may be another instance (e.g. a dev copy on another port).
-    base_url = str(request.base_url).rstrip("/")
+    base_url = _request_base(request)
 
     def handle(conn, caller):
         return mcp_protocol.handle_payload(conn, caller, session_id, base_url, payload)
@@ -212,7 +212,13 @@ async def mcp_upload(ticket: str, request: Request) -> Response:
 
 def _request_base(request: Request) -> str:
     """The address the caller reached us at (setup runs on the caller's machine)."""
-    base = str(request.base_url).rstrip("/")
+    url = request.base_url
+    # TLS may terminate at nginx while its upstream connection uses HTTP.
+    # The edge proxy must overwrite this header. Only promote to HTTPS;
+    # never downgrade HTTPS or accept a forwarded host from the request.
+    if request.headers.get("x-forwarded-proto", "").strip().lower() == "https":
+        url = url.replace(scheme="https")
+    base = str(url).rstrip("/")
     if not _SAFE_BASE_URL.match(base):
         raise ApiError(400, "无法识别网站地址")
     return base
@@ -325,7 +331,7 @@ def revoke_token(token_id: int, user: dict = Depends(require_view),
 def info(request: Request, user: dict = Depends(require_view)) -> dict:
     from app.services.mcp_tools import tools_for
     return {
-        "endpoint": f"{str(request.base_url).rstrip('/')}/mcp",
+        "endpoint": f"{_request_base(request)}/mcp",
         "server_name": mcp_protocol.SERVER_NAME,
         "tools": [{"name": t.name, "title": t.title, "category": t.category, "read_only": t.read_only,
                    "description": t.description} for t in tools_for(user["role"])],

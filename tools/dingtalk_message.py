@@ -1,5 +1,20 @@
 #!/usr/bin/env python3
-"""独立钉钉机器人收发工具；用法见 dingtalk_message.md。"""
+"""钉钉机器人消息收发工具。
+
+使用方法（Python 3.11+，在仓库根目录执行）：
+    pip3 install 'dingtalk-stream>=0.24.0,<1' 'requests>=2.31,<3'
+    export DINGTALK_CLIENT_ID='应用 AppKey'
+    export DINGTALK_CLIENT_SECRET='应用 AppSecret'
+
+    # 接收消息；可加 --reply '收到' 自动回复。
+    python3 tools/dingtalk_message.py receive
+    # 发送单聊；--user-id 使用企业 userId，可重复指定。
+    python3 tools/dingtalk_message.py send-user --user-id '企业用户ID' --text '你好'
+    # 发送群消息；使用群 openConversationId。
+    python3 tools/dingtalk_message.py send-group --conversation-id 'cid群会话ID' --text '大家好'
+
+机器人需启用 Stream 消息接收；群聊接收需 @机器人。
+"""
 
 import argparse
 import asyncio
@@ -62,7 +77,7 @@ def receive(client_id, client_secret, reply):
         import dingtalk_stream
     except ImportError:
         raise RuntimeError(
-            "请先安装依赖：pip install -r tools/dingtalk_message.requirements.txt"
+            "请先安装依赖：pip3 install 'dingtalk-stream>=0.24.0,<1' 'requests>=2.31,<3'"
         ) from None
 
     class Handler(dingtalk_stream.ChatbotHandler):
