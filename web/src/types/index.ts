@@ -125,6 +125,7 @@ export interface OfficialVersion {
   version: string;
   image: string;
   digest: string;
+  images?: DeliveryImage[];
   released_at: string;
 }
 
@@ -230,6 +231,24 @@ export interface ScopeRequest {
   decision_note: string;
 }
 
+export interface DeliveryBuild {
+  build_key: string;
+  build: string;
+  os: string;
+  arch: string;
+  python_label: string;
+  pytorch_label: string;
+  image_target: string;
+  image_pattern?: string;
+}
+
+export interface DeliveryImage extends DeliveryBuild {
+  reference: string;
+  image: string;
+  digest: string;
+  commit_id?: string;
+}
+
 export interface Entry {
   id: number;
   release_id: string;
@@ -247,6 +266,9 @@ export interface Entry {
   deliverable_image: string;
   deliverable_digest: string;
   deliverable_commit: string;
+  deliverable_images?: DeliveryImage[];
+  delivery_builds?: DeliveryBuild[];
+  delivery_revision?: string;
   result: EntryResult;
   created_at: string;
   created_by: string;

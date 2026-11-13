@@ -7,6 +7,7 @@ const image = "harbor.sh.mxcr.io/hpc-release/abacus-maca@sha256:" + "8d".repeat(
 test("image digest resolves historical app_info and assembles commands with the exact immutable image", async ({ page }) => {
   await page.request.post(base + "/api/login", { data: { username: "app_owner", password: "test-password" } });
   await page.goto(base + "/lookup");
+  await page.getByRole("button", { name: "按镜像 digest", exact: true }).click();
   const input = page.getByRole("textbox", { name: "完整镜像名", exact: true });
   await input.fill(`docker pull ${image}`);
   await expect(input).toHaveValue(image);
@@ -54,16 +55,16 @@ test("image digest resolves historical app_info and assembles commands with the 
     await expect(page.getByRole("alert")).toContainText(message);
     await expect(result).toHaveCount(0);
   }
-  await page.getByRole("button", { name: "按 App", exact: true }).click();
+  await page.getByRole("button", { name: "发布app列表", exact: true }).click();
   await expect(page.getByRole("alert")).toHaveCount(0);
-  await page.getByRole("combobox", { name: "选择 App", exact: true }).selectOption("info-check");
-  await page.getByTestId("lookup-search").click();
-  await expect(page.getByTestId("lookup-record").first()).toBeVisible();
+  await expect(page.getByTestId("published-apps-pane")).toBeVisible();
+  await expect(page.getByRole("button", { name: "按 App", exact: true })).toHaveCount(0);
 });
 
 test("QA can query images and denied roles cannot call the image endpoint", async ({ page }) => {
   await page.request.post(base + "/api/login", { data: { username: "app_qa", password: "test-password" } });
   await page.goto(base + "/lookup");
+  await page.getByRole("button", { name: "按镜像 digest", exact: true }).click();
   await page.getByRole("textbox", { name: "完整镜像名", exact: true }).fill(image);
   await page.getByTestId("lookup-search").click();
   await expect(page.getByTestId("lookup-image-result")).toBeVisible();

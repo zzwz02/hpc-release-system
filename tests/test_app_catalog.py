@@ -1,6 +1,7 @@
 """App catalog reads: app_info sync, dependencies, digest lookup, robots."""
 from __future__ import annotations
 
+import csv
 import io
 import json
 import subprocess
@@ -13,7 +14,7 @@ from app.config import settings
 from app.deps import get_db, require_login
 from app.integrations import gerrit as gerrit_integration
 from app.main import create_app
-from app.repositories import app_info_repo, apps_repo, entries_repo
+from app.repositories import app_info_repo, apps_repo, entries_repo, official_repo
 from app.services import (
     catalog_service,
     cycle_service,
@@ -29,6 +30,7 @@ from tests.conftest import (
     seed_app,
     seed_cycle,
     seed_signup,
+    store_app_info,
 )
 
 # ---------------------------------------------------------------------------
@@ -275,9 +277,112 @@ def test_the_compatibility_list_only_holds_apps_with_an_official_version(temp_db
     assert catalog_service.compat_list_csv(temp_db, "unknown-component").splitlines()[1:] == []
 
 
+def test_dependency_overview_derives_runtime_pairs_from_existing_latest_app_info(temp_db) -> None:
+    raw = make_app_info(dependencies=["sdk"])
+    raw["app_build"]["ubuntu20.04_amd64"].update(python_label="py312", pytorch_label="torch2.8")
+    raw["app_build"]["ubuntu20.04_arm64"] = {
+        "arch": "arm64", "os": "ubuntu20.04", "python_label": "py312", "pytorch_label": "torch2.8",
+    }
+    seed_app(temp_db, "alpha", official_name="Alpha", app_info=raw)
+    without_declaration = {key: value for key, value in raw.items() if key != "app_dependency"}
+    seed_app(temp_db, "beta", official_name="Beta", app_info=without_declaration)
+    seed_app(temp_db, "stopped", app_info=raw, cicd_status="stopped")
+
+    before = temp_db.total_changes
+    overview = catalog_service.dependency_overview(temp_db)
+    assert temp_db.total_changes == before
+    groups = {group["component"]: [row["app_id"] for row in group["apps"]] for group in overview["components"]}
+    assert groups == {"sdk": ["alpha"], "torch 2.8 + py312": ["alpha", "beta"]}
+    assert [row["app_id"] for row in overview["undeclared"]] == ["beta"]
+    assert app_info_repo.dependencies_by_app(temp_db) == {"alpha": ["sdk"], "stopped": ["sdk"]}
+
+    updated = make_app_info(dependencies=["sdk"])
+    updated["app_build"]["ubuntu20.04_amd64"].update(python_label="py310", pytorch_label="torch2.4")
+    store_app_info(temp_db, "alpha", updated, commit_id="updated-runtime")
+    groups = {group["component"]: [row["app_id"] for row in group["apps"]]
+              for group in catalog_service.dependency_overview(temp_db)["components"]}
+    assert groups["torch 2.8 + py312"] == ["beta"]
+    assert groups["torch 2.4 + py310"] == ["alpha"]
+
+
+def test_runtime_pair_filters_compatibility_csv_using_latest_labels(temp_db) -> None:
+    raw = make_app_info(dependencies=["sdk"])
+    raw["app_build"]["ubuntu20.04_amd64"].update(python_label="py310", pytorch_label="torch2.4")
+    seed_app(temp_db, "alpha", official_name="Alpha", app_info=raw)
+    release_id = seed_cycle(temp_db)
+    seed_signup(temp_db, release_id, "alpha")
+    qa_service.set_qa_status_batch(temp_db, release_id, [{"app_id": "alpha", "status": "qa_passed"}],
+                                   user="qa", role="QA")
+    close_qa(temp_db, release_id)
+    cycle_service.publish(temp_db, release_id, user="rm", role="RM")
+    raw["app_build"]["ubuntu20.04_amd64"].update(python_label="py312", pytorch_label="torch2.8")
+    store_app_info(temp_db, "alpha", raw, commit_id="new-runtime")
+    seed_app(temp_db, "unpublished", app_info=raw)
+
+    rows = list(csv.DictReader(io.StringIO(catalog_service.compat_list_csv(temp_db, "torch 2.8 + py312"))))
+    assert len(rows) == 1
+    assert rows[0]["App"] == "Alpha"
+    assert rows[0]["依赖组件"] == "sdk,torch 2.8 + py312"
+    assert rows[0]["测试项"] == "sanity"
+    assert catalog_service.compat_list(temp_db, "torch 2.4 + py310") == []
+
+
 # ---------------------------------------------------------------------------
-# Digest / App lookup
+# Official history and Digest / App lookup
 # ---------------------------------------------------------------------------
+
+
+def test_official_history_keeps_same_version_across_cycles_and_records_corrections(temp_db) -> None:
+    app_id = seed_app(temp_db)
+    releases = []
+    for name in ("3.9.0", "3.10.0"):
+        release_id = seed_cycle(temp_db, name=name)
+        releases.append(release_id)
+        seed_signup(temp_db, release_id, app_id, target_version="1.0")
+        qa_service.set_qa_status_batch(temp_db, release_id, [
+            {"app_id": app_id, "status": "qa_passed", "deliverable_image": f"hpc/testapp:{name}",
+             "deliverable_digest": f"sha256:{name}"},
+        ], user="qa", role="QA")
+        close_qa(temp_db, release_id)
+        cycle_service.publish(temp_db, release_id, user="rm", role="RM")
+    # Emulate the migrated storage layout: only the most recent official row exists.
+    temp_db.execute("DELETE FROM official_versions WHERE release_id=?", (releases[0],))
+    temp_db.commit()
+    history = catalog_service.app_detail(temp_db, app_id)["official_versions"]
+    assert [row["release_name"] for row in history] == ["3.10.0", "3.9.0"]
+    assert [row["version"] for row in history] == ["1.0", "1.0"]
+    assert history[1]["image"] == "hpc/testapp:3.9.0"
+    assert history[1]["digest"] == "sha256:3.9.0"
+    cycle_service.unlock(temp_db, releases[1], reason="更正版本", user="rm", role="RM")
+    cycle_service.publish(temp_db, releases[1], user="rm", role="RM")
+    history = official_repo.history_for_app(temp_db, app_id)
+    assert [row["withdrawn"] for row in history] == [0, 1, 0]
+    assert [row["release_name"] for row in history] == ["3.10.0", "3.10.0", "3.9.0"]
+    assert len({(row["id"], row["entry_id"]) for row in history}) == 3
+    assert official_repo.current_by_app(temp_db)[app_id]["release_id"] == releases[1]
+
+
+def test_entry_only_history_excludes_failed_withdrawn_and_open_cycles_and_other_apps(temp_db) -> None:
+    app_id = seed_app(temp_db)
+    branch_id = seed_app(temp_db, "other-branch", git_url="hpc_testapp", git_branch="old")
+    for name, status in (("failed", "cannot_release"), ("withdrawn", "withdrawn"), ("open", "qa_passed")):
+        release_id = seed_cycle(temp_db, name=name)
+        entry = seed_signup(temp_db, release_id, app_id)
+        seed_signup(temp_db, release_id, branch_id)
+        if status == "withdrawn":
+            cycle_service.withdraw(temp_db, entry["id"], user="rm", role="RM")
+        else:
+            qa_service.set_qa_status_batch(temp_db, release_id, [
+                {"app_id": app_id, "status": status, "issue_note": "失败说明"},
+            ], user="qa", role="QA")
+        if name != "open":
+            qa_service.set_qa_status_batch(temp_db, release_id, [
+                {"app_id": branch_id, "status": "qa_passed"},
+            ], user="qa", role="QA")
+            close_qa(temp_db, release_id)
+            cycle_service.publish(temp_db, release_id, user="rm", role="RM")
+    assert official_repo.history_for_app(temp_db, app_id) == []
+    assert len(official_repo.history_for_app(temp_db, branch_id)) == 2
 
 
 def test_lookup_by_digest_returns_the_cycle_environment_and_test_commands(temp_db) -> None:

@@ -4,12 +4,16 @@ import { readFile } from "node:fs/promises";
 const base = process.env.TEST_PLATFORMS_E2E_URL ?? "";
 test.skip(!/^http:\/\/127\.0\.0\.1:\d+$/.test(base), "Requires tests.run_app_info_site --lookup --platforms and isolated Vite");
 
-test("App details, QA and both history modes keep OS/CPU/chip relationships", async ({ page }) => {
+test("App details, QA and image history keep OS/CPU/chip relationships", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   expect((await page.request.post(base + "/api/login", { data: { username: "app_rm", password: "test-password" } })).ok()).toBeTruthy();
   await page.goto(base + "/apps");
   await page.getByTestId("app-row-platform-check").click();
+  const latestInfo = page.getByTestId("latest-app-info-section");
+  await expect(latestInfo.getByLabel("OS", { exact: true })).toHaveValue(/^(ubuntu20\.04,kylinv11|kylinv11,ubuntu20\.04)$/);
+  await expect(latestInfo.getByLabel("CPU 架构", { exact: true })).toHaveValue("amd64,arm64");
+  await expect(latestInfo.getByLabel("OS / Arch", { exact: true })).toHaveCount(0);
   const appTable = page.getByTestId("app-info-pane").getByTestId("test-scope-table");
   await expect(appTable.locator("tbody tr")).toHaveCount(3);
   const kylin = appTable.locator("tbody tr").filter({ hasText: "kylinv11" });
@@ -42,7 +46,11 @@ test("App details, QA and both history modes keep OS/CPU/chip relationships", as
   expect(chipColumn).toBeGreaterThan(-1);
   const kylinReport = reportRows.filter({ hasText: "kylinv11" });
   await expect(kylinReport.locator("td").nth(chipColumn)).toHaveText("C600,X201");
-  await expect(kylinReport.locator("td").nth(commitColumn)).toHaveText("commit0");
+  const commitCell = kylinReport.locator("td").nth(commitColumn);
+  await expect(commitCell).toHaveText("b641bd0deac7");
+  await expect(commitCell).toHaveAttribute("title", "b641bd0deac7c59ecb6a53c814ed3c150b7811a4");
+  await report.locator("thead tr.colfilter-row input").nth(commitColumn).fill("c59ecb6a53c814ed3c150b7811a4");
+  await expect(reportRows).toHaveCount(3);
   const exported = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出 CSV", exact: true }).click();
   const csv = await readFile((await (await exported).path())!, "utf8");
@@ -50,17 +58,9 @@ test("App details, QA and both history modes keep OS/CPU/chip relationships", as
   expect(csv).not.toContain("base_image");
   expect(csv).not.toContain("构建平台");
   expect(csv).toContain('"C600,X201"');
+  expect(csv).toContain("b641bd0deac7c59ecb6a53c814ed3c150b7811a4");
 
   await qaTabs.getByRole("link", { name: "历史查询", exact: true }).click();
-  await page.getByRole("button", { name: "按 App", exact: true }).click();
-  await page.getByRole("combobox", { name: "选择 App", exact: true }).selectOption("platform-check");
-  await page.getByTestId("lookup-search").click();
-  const record = page.getByTestId("lookup-record").first();
-  await expect(record.getByLabel("X86 芯片", { exact: true })).toHaveValue(/C500.*C600/);
-  await expect(record.getByLabel("ARM 芯片", { exact: true })).toHaveValue("C500, C600, X302, X201");
-  await expect(record.getByTestId("test-scope-table").locator("tbody tr")).toHaveCount(3);
-  await expect(record.getByTestId("test-scope-table").locator("tbody tr").filter({ hasText: "kylinv11" }).locator("td").nth(3)).toHaveText("C600, X201");
-
   await page.getByRole("button", { name: "按镜像 digest", exact: true }).click();
   const input = page.getByRole("textbox", { name: "完整镜像名", exact: true });
   await input.fill("harbor.sh.mxcr.io/hpc-release/hpcg-maca@sha256:" + "a".repeat(64));

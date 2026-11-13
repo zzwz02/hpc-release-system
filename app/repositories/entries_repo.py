@@ -25,6 +25,7 @@ MUTABLE_COLUMNS = frozenset(
         "deliverable_image",
         "deliverable_digest",
         "deliverable_commit",
+        "deliverable_images",
         "result",
     }
 )
@@ -33,6 +34,7 @@ MUTABLE_COLUMNS = frozenset(
 def _entry(row: sqlite3.Row) -> dict[str, Any]:
     data = row_to_dict(row)
     data["excluded_tests"] = loads_json(data.pop("excluded_tests_json", None), [])
+    data["deliverable_images"] = loads_json(data.pop("deliverable_images_json", None), [])
     return data
 
 
@@ -88,10 +90,21 @@ def open_active_entries_for_app(conn: sqlite3.Connection, app_id: str) -> list[d
     ]
 
 
+def signed_up_app_ids_for_releases(conn: sqlite3.Connection, release_ids: set[str]) -> set[str]:
+    if not release_ids:
+        return set()
+    placeholders = ','.join('?' for _ in release_ids)
+    return {row['app_id'] for row in conn.execute(
+        "SELECT DISTINCT e.app_id FROM entries e JOIN releases r ON r.id=e.release_id "
+        f"WHERE e.status='active' AND r.released_locked=0 AND e.release_id IN ({placeholders})",
+        sorted(release_ids))}
+
+
 def by_digest(conn: sqlite3.Connection, digest: str) -> list[dict[str, Any]]:
     return [
         _entry(row)
-        for row in conn.execute("SELECT * FROM entries WHERE deliverable_digest = ?", (digest,))
+        for row in conn.execute("SELECT * FROM entries WHERE deliverable_digest = ? OR EXISTS "
+                                "(SELECT 1 FROM json_each(deliverable_images_json) WHERE json_extract(value, '$.digest')=?)", (digest, digest))
     ]
 
 
@@ -135,6 +148,8 @@ def update_entry(
     for key, value in fields.items():
         if key == "excluded_tests":
             columns["excluded_tests_json"] = dumps_json(sorted(set(value)))
+        elif key == "deliverable_images":
+            columns["deliverable_images_json"] = dumps_json(value)
         else:
             columns[key] = value
     columns["updated_at"] = updated_at

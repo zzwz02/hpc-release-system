@@ -20,3 +20,22 @@ def parse_base_image_reference(value: str) -> dict[str, str]:
     if separator and not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
         raise ValueError("镜像 digest 格式错误，@ 后应为 sha256: 加 64 位十六进制字符")
     return {"name": address.rsplit("/", 1)[-1], "image": address, "digest": digest.lower()}
+
+
+def delivered_image_reference(image: str, digest: str) -> str:
+    """Combine recorded delivery fields, leaving incomplete legacy data explicit.
+
+    QA's separate digest is authoritative when both fields contain one. Older
+    records may contain the full reference in the image field or a bare hash.
+    """
+    try:
+        parsed = parse_base_image_reference(image)
+        digest = str(digest or parsed["digest"]).strip()
+        if re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+            digest = f"sha256:{digest}"
+        if not digest:
+            return ""
+        reference = parse_base_image_reference(f"{parsed['image']}@{digest}")
+        return f"{reference['image']}@{reference['digest']}"
+    except ValueError:
+        return ""

@@ -53,7 +53,8 @@ test("RM edits metadata, preserves drafts, syncs and sees scope warnings across 
   await page.getByTestId("confirm-cancel").click();
   const releases = page.getByRole("combobox", { name: "选择版本" });
   const currentRelease = await releases.inputValue();
-  const nextRelease = state.releases.find((release: { id: string }) => release.id !== currentRelease).id;
+  const nextRelease = state.releases.find((release: { id: string; name: string }) =>
+    release.id !== currentRelease && release.name.startsWith("browser-cycle-")).id;
   await releases.selectOption(nextRelease);
   await page.getByTestId("confirm-cancel").click();
   await expect(releases).toHaveValue(currentRelease);

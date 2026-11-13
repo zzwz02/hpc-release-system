@@ -16,6 +16,7 @@ from app.db.connection import transaction
 from app.domain import cycles as cycles_domain
 from app.domain import phases as phase_policy
 from app.domain import test_commands
+from app.domain import delivery_images
 from app.domain.test_platforms import build_alias_is_redundant
 from app.domain.permissions import has_capability
 from app.domain.qa import (
@@ -58,6 +59,7 @@ QA_TEST_CMD_COLUMNS = [
 
 _DELIVERABLE_FIELDS = ("deliverable_image", "deliverable_digest", "deliverable_commit")
 _QA_FIELD_LABELS = {
+    "deliverable_images": "按构建交付的镜像",
     "qa_status": "QA 状态",
     "qa_note": "问题说明",
     "deliverable_image": "交付镜像",
@@ -82,6 +84,11 @@ def set_qa_status_batch(
     """
     if not has_capability(role, "qa.edit"):
         raise AuthzError("只有 QA、RM 可以修改 QA 结论")
+    with transaction(conn, immediate=True):
+        return _set_qa_status_batch(conn, release_id, items, user=user, role=role)
+
+
+def _set_qa_status_batch(conn, release_id, items, *, user, role):
     release = cycle_service.get_release(conn, release_id)
     phase_policy.require_can(release, "edit_qa", "版本已发布，不可修改 QA 结论")
     prepared: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -101,8 +108,24 @@ def set_qa_status_batch(
             errors.append(f"{app_id}：标注「{qa_status_label(status)}」时必须填写问题说明")
             continue
         update = {"qa_status": status, "qa_note": note if issue_note_required(status) else ""}
+        if 'deliverable_images' in item:
+            if item.get('delivery_revision') != delivery_images.revision(entry):
+                errors.append(f'{app_id}：QA 结论、交付镜像或报名版本已变化，请刷新后重试')
+                continue
+            version = app_info_repo.get_version(conn, entry['locked_version_id'])
+            try:
+                images = delivery_images.normalize(item['deliverable_images'], (version or {}).get('raw', {}), entry)
+            except ValueError as exc:
+                errors.append(f'{app_id}：{exc}')
+                continue
+            first = images[0] if images else {}
+            update.update(deliverable_images=images, deliverable_image=first.get('image', ''),
+                          deliverable_digest=first.get('digest', ''), deliverable_commit=first.get('commit_id', ''))
         for key in _DELIVERABLE_FIELDS:
-            if key in item:
+            if key in item and 'deliverable_images' not in item:
+                if entry['deliverable_images'] and str(item.get(key) or '').strip() != entry[key]:
+                    errors.append(f'{app_id}：已有多镜像交付记录，请按构建配置保存镜像')
+                    continue
                 update[key] = str(item.get(key) or "").strip()
         prepared.append((entry, update))
     if errors:

@@ -9,7 +9,8 @@ from typing import Any
 
 from app.api.errors import GerritNetworkError
 from app.config import settings
-from app.domain import image_lookup
+from app.domain import cycles, delivery_images, image_lookup
+from app.domain.container_image import delivered_image_reference
 from app.integrations import gerrit, harbor
 from app.repositories import app_info_repo, apps_repo, entries_repo, releases_repo
 from app.services import catalog_service, cycle_service, qa_service
@@ -108,6 +109,8 @@ def _entry_record(conn: sqlite3.Connection, entry: dict[str, Any]) -> dict[str, 
             "deliverable_image": entry["deliverable_image"],
             "deliverable_digest": entry["deliverable_digest"],
             "deliverable_commit": entry["deliverable_commit"],
+            "deliverable_images": delivery_images.recorded(entry.get('deliverable_images') or [],
+                entry['deliverable_image'], entry['deliverable_digest'], entry['deliverable_commit']),
         },
         "app_info": view["locked_app_info"] and {
             key: view["locked_app_info"][key]
@@ -142,4 +145,44 @@ def by_app(conn: sqlite3.Connection, app_id: str) -> dict[str, Any]:
         "app_name": catalog_service.app_name(app),
         "cicd_status": app["cicd_status"],
         "entries": [_entry_record(conn, entry) for entry in reversed(entries_repo.list_for_app(conn, app_id))],
+    }
+
+
+def published_releases(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Published and locked cycles, newest first; no live catalog is needed."""
+    return [
+        {key: release[key] for key in ("id", "name", "release_date")}
+        for release in reversed(releases_repo.list_release_rows(conn))
+        if release["released_locked"]
+    ]
+
+
+def published_apps(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
+    release = releases_repo.get_release_row(conn, release_id)
+    if not release:
+        raise ValueError("版本不存在，请重新选择已冻结版本")
+    if not release["released_locked"]:
+        raise ValueError("该版本尚未发布冻结或已解锁，请重新选择已冻结版本")
+    apps = {app["id"]: app for app in apps_repo.list_apps(conn)}
+    rows = []
+    for entry in entries_repo.list_for_release(conn, release_id):
+        if entry["result"] != cycles.RESULT_RELEASED:
+            continue
+        app = apps.get(entry["app_id"]) or {"id": entry["app_id"]}
+        rows.append({
+            "app_id": entry["app_id"],
+            "app_name": catalog_service.app_name(app),
+            "app_version": entry["target_version"],
+            "image_reference": delivered_image_reference(entry["deliverable_image"], entry["deliverable_digest"]),
+            "images": delivery_images.recorded(entry.get('deliverable_images') or [],
+                entry['deliverable_image'], entry['deliverable_digest'], entry['deliverable_commit']),
+            "deliverable_image": entry["deliverable_image"],
+            "deliverable_digest": entry["deliverable_digest"],
+            "qa_status": entry["qa_status"],
+            "qa_note": entry["qa_note"],
+        })
+    rows.sort(key=lambda row: (row["app_name"].casefold(), row["app_id"]))
+    return {
+        "release": {key: release[key] for key in ("id", "name", "release_date")},
+        "apps": rows,
     }

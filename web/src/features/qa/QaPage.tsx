@@ -4,7 +4,7 @@
  * Roles: RM / Owner / QA / Guest.
  *
  * Six peer tabs:
- *   1. qa log — scope-expansion requests, log upload, AI analyze (1 s poll
+ *   1. QA log — scope-expansion requests, log upload, AI analyze (1 s poll
  *                 while running), verdict + delivered-image digest editor
  *   2. 本期发布app — filterable/sortable/column-pick/CSV-export table
  *   3. 测试命令 — same table machinery, no column picker
@@ -27,6 +27,8 @@ import { QaTabs } from "./QaTabs";
 import { qaPaneFromSearch } from "./qaNavigation";
 import { RefreshBar } from "../../components/RefreshBar";
 import { TestScopeTable } from "../../components/TestScopeTable";
+import { DeliveryImages } from "../../components/DeliveryImages";
+import { recordedImages } from "../../lib/deliveryImages";
 import { apiGet, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
@@ -37,7 +39,7 @@ import { formatGerritUrl } from "../../lib/git";
 import { formatServerTime } from "../../lib/time";
 import { downloadCsv } from "../../lib/csv";
 import { qaStatusLabels, qaStatusOptions } from "../../lib/labels";
-import { versionTag } from "../appWorkbench/helpers";
+import { shortCommit, versionTag } from "../appWorkbench/helpers";
 import { qaStatusRequiresIssueNote } from "../../lib/domainMetadata";
 import { confirmDialog, promptDialog } from "../../lib/confirm";
 import { toast } from "../../lib/toast";
@@ -50,6 +52,7 @@ import type {
   QaReportsResponse,
   QaReportRowMeta,
   ScopeRequest,
+  DeliveryImage,
 } from "../../types";
 import { can } from "../../lib/accessControl";
 import { scopeRequestStatusLabel } from "../../lib/domainMetadata";
@@ -225,24 +228,30 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
   const [formState, setFormState] = useState<
     Record<string, QaForm>
   >({});
+  const editingReleaseRef = useRef<string | null>(null);
 
   // Sync form state when entering edit mode or when AI suggestions arrive
   useEffect(() => {
-    if (!editMode) return;
-    const next: Record<string, QaForm> = {};
-    for (const { app, entry } of rows) {
-      const suggestion = aiSuggestions[app.id];
-      next[app.id] = {
-        status: suggestion?.qa_status ?? (entry.qa_status || "not_checked"),
-        note: suggestion?.qa_issue_note ?? (entry.qa_note || ""),
-        image: entry.deliverable_image,
-        digest: entry.deliverable_digest,
-      };
-    }
-    setFormState(next);
+    if (!editMode) { editingReleaseRef.current = null; return; }
+    const continuing = editingReleaseRef.current === releaseId;
+    editingReleaseRef.current = releaseId;
+    setFormState((previous) => {
+      const next: Record<string, QaForm> = {};
+      for (const { app, entry } of rows) {
+        const suggestion = aiSuggestions[app.id];
+        const draft = continuing ? previous[app.id] : undefined;
+        next[app.id] = {
+          status: suggestion?.qa_status ?? draft?.status ?? (entry.qa_status || "not_checked"),
+          note: suggestion?.qa_issue_note ?? draft?.note ?? (entry.qa_note || ""),
+          images: draft?.images ?? recordedImages(entry.deliverable_images, entry.deliverable_image, entry.deliverable_digest),
+          revision: draft?.revision ?? entry.delivery_revision ?? "",
+        };
+      }
+      return next;
+    });
   // Run only when editMode turns on or suggestions change
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editMode, aiSuggestions]);
+  }, [editMode, aiSuggestions, releaseId]);
 
   // The last AI analysis's suggestions, saved on the server until reviewed.
   const canRunAnalysis = canEditQa(user ?? undefined);
@@ -509,8 +518,8 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
           app_id: app.id,
           status: f?.status ?? (entry.qa_status || "not_checked"),
           issue_note: f?.note ?? (entry.qa_note || ""),
-          deliverable_image: (f?.image ?? entry.deliverable_image).trim(),
-          deliverable_digest: (f?.digest ?? entry.deliverable_digest).trim(),
+          deliverable_images: f?.images ?? recordedImages(entry.deliverable_images, entry.deliverable_image, entry.deliverable_digest),
+          delivery_revision: f?.revision ?? entry.delivery_revision ?? "",
         };
       })
       .filter((item) => {
@@ -518,8 +527,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
         return (
           entry.qa_status !== item.status ||
           entry.qa_note !== item.issue_note ||
-          entry.deliverable_image !== item.deliverable_image ||
-          entry.deliverable_digest !== item.deliverable_digest
+          JSON.stringify(recordedImages(entry.deliverable_images, entry.deliverable_image, entry.deliverable_digest)) !== JSON.stringify(item.deliverable_images)
         );
       });
 
@@ -776,22 +784,12 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
                       }
                     />
                   </label>
-                  <label>
-                    交付镜像
-                    <input className="input" disabled={!qaFieldsWritable}
-                      value={f?.image ?? entry.deliverable_image}
-                      placeholder={qaFieldsWritable ? "QA 测试的交付镜像地址" : ""}
-                      onChange={(e) => setFormState((prev) => ({ ...prev, [app.id]: { ...prev[app.id], image: e.target.value } }))}
-                      data-testid={`qa-image-${app.id}`} />
-                  </label>
-                  <label>
-                    交付镜像 digest
-                    <input className="input mono" disabled={!qaFieldsWritable}
-                      value={f?.digest ?? entry.deliverable_digest}
-                      placeholder={qaFieldsWritable ? "sha256:…" : ""}
-                      onChange={(e) => setFormState((prev) => ({ ...prev, [app.id]: { ...prev[app.id], digest: e.target.value } }))}
-                      data-testid={`qa-digest-${app.id}`} />
-                  </label>
+                  <div className="qa-delivery-images">
+                    <b>交付镜像（按报名 app_info 的 app_build）</b>
+                    <DeliveryImages images={f?.images ?? recordedImages(entry.deliverable_images, entry.deliverable_image, entry.deliverable_digest)}
+                      builds={entry.delivery_builds}
+                      onChange={qaFieldsWritable ? (images) => setFormState((prev) => ({ ...prev, [app.id]: { ...prev[app.id], images } })) : undefined} />
+                  </div>
                   <details className="mt-6">
                     <summary className="small muted">
                       测试范围 {inScope.length} 项{entry.planned_features ? " · 计划 feature" : ""}
@@ -1439,6 +1437,8 @@ function ReportTable({
                       const c = columns[i];
                       if (kind === "test" && c === "docker_cmd")
                         return <td key={i} className="cmd">{v}</td>;
+                      if (kind === "test" && c === "commit_id")
+                        return <td key={i} title={v}>{shortCommit(v)}</td>;
                       if (kind === "test" && c === "cicd_status" && v)
                         return <td key={i}><span className="pill warnp">{v}</span></td>;
                       if (kind === "release") {
@@ -1725,8 +1725,8 @@ function downloadCommunityArtifactsZip(data: CommunityArtifactsResponse) {
 interface QaForm {
   status: string;
   note: string;
-  image: string;
-  digest: string;
+  images: DeliveryImage[];
+  revision: string;
 }
 
 /** Active signups of the selected cycle with their App. */

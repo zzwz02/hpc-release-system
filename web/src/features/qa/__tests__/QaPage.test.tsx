@@ -189,9 +189,9 @@ describe("QaPage structure", () => {
     await waitFor(() => {
       const nav = screen.getByRole("navigation", { name: "QA" });
       expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual([
-        "qa log", "本期发布app", "测试命令", "开发者社区产物", "历史查询", "组件依赖",
+        "QA log", "本期发布app", "测试命令", "开发者社区产物", "历史查询", "组件依赖",
       ]);
-      expect(within(nav).getByRole("link", { name: "qa log" })).toHaveAttribute("aria-current", "page");
+      expect(within(nav).getByRole("link", { name: "QA log" })).toHaveAttribute("aria-current", "page");
     });
   });
 
@@ -262,13 +262,15 @@ describe("QaPage mark pane", () => {
     (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
     renderQaPage(makeQClient());
     fireEvent.change(await screen.findByTestId("qa-status-app1"), { target: { value: "qa_passed" } });
-    fireEvent.change(screen.getByTestId("qa-digest-app1"), { target: { value: "sha256:abc" } });
+    const reference = "harbor.sh.mxcr.io/hpc-release/testapp-maca@sha256:" + "a".repeat(64);
+    fireEvent.change(screen.getByTestId("delivery-reference"), { target: { value: reference } });
     fireEvent.click(screen.getAllByText("保存 QA 状态")[0]);
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/qa/status-batch", {
       release_id: "rel-1",
       items: [{
         app_id: "app1", status: "qa_passed", issue_note: "",
-        deliverable_image: "", deliverable_digest: "sha256:abc",
+        deliverable_images: [expect.objectContaining({ build_key: "ubuntu22.04_amd64", reference })],
+        delivery_revision: "revision-1",
       }],
     }));
   });

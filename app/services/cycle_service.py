@@ -25,6 +25,7 @@ from app.domain import cycles as cycles_domain
 from app.domain import phases
 from app.domain import qa as qa_domain
 from app.domain.container_image import parse_base_image_reference
+from app.domain import delivery_images
 from app.domain.permissions import has_capability
 from app.repositories import (
     app_info_repo,
@@ -318,6 +319,10 @@ def entry_view(
     summary = catalog_service.version_summary(locked)
     excluded = set(entry.get("excluded_tests") or [])
     view["locked_app_info"] = summary
+    view['delivery_builds'] = delivery_images.builds(locked['raw']) if locked else []
+    view['delivery_revision'] = delivery_images.revision(entry)
+    view['deliverable_images'] = delivery_images.recorded(entry.get('deliverable_images') or [],
+        entry.get('deliverable_image', ''), entry.get('deliverable_digest', ''), entry.get('deliverable_commit', ''))
     view["scope_tests"] = [
         {**test, "excluded": test["path"] in excluded} for test in (summary or {}).get("tests", [])
     ]
@@ -477,6 +482,7 @@ def signup(
                     "deliverable_image": "",
                     "deliverable_digest": "",
                     "deliverable_commit": "",
+                    "deliverable_images": [],
                     "result": "",
                 },
                 updated_at=ts,
@@ -579,6 +585,11 @@ def withdraw(
     user: str,
     role: str,
 ) -> dict[str, Any]:
+    with transaction(conn, immediate=True):
+        return _withdraw(conn, entry_id, user=user, role=role)
+
+
+def _withdraw(conn, entry_id, *, user, role):
     entry = _get_entry(conn, entry_id)
     if entry["status"] != cycles_domain.ENTRY_ACTIVE:
         raise RuntimeError("该报名已撤回")
@@ -795,6 +806,8 @@ def publish(
                         "app_info_version_id": entry["locked_version_id"],
                         "image": entry["deliverable_image"],
                         "digest": entry["deliverable_digest"],
+                        "images": delivery_images.recorded(entry.get('deliverable_images') or [],
+                            entry['deliverable_image'], entry['deliverable_digest'], entry['deliverable_commit']),
                         "released_at": ts,
                     },
                 )

@@ -166,6 +166,7 @@ function DetailPanel({ app, entry, release, openRequests, onSaved, onSignup }: D
   const appDetailDirty = useUiStore((s) => s.appDetailDirty);
   const [tab, setTab] = useState<DetailTab>("app_info");
   const [syncing, setSyncing] = useState(false);
+  const [withdrawing, setWithdrawing] = useState(false);
   const [audit, setAudit] = useState<AppAuditEntry[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
 
@@ -219,6 +220,21 @@ function DetailPanel({ app, entry, release, openRequests, onSaved, onSignup }: D
     }
   }
 
+  async function handleWithdraw() {
+    if (!entry || !release || appDetailDirty || withdrawing) return;
+    if (!(await confirmDialog({ title: "撤销报名",
+      body: `确认撤销「${release.name}」的报名？撤销后该 App 不再参与本期发布。${release.phase !== "signup" ? "当前报名已截止，撤销后不能重新报名。" : ""}`,
+      danger: true, confirmText: "撤销报名" }))) return;
+    setWithdrawing(true);
+    try {
+      await apiPost("/api/entries/withdraw", { entry_id: entry.id });
+      toast.success("已撤销本期报名");
+      onSaved();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally { setWithdrawing(false); }
+  }
+
   if (!app) {
     return (
       <div className="detail-panel" data-testid="detail-panel">
@@ -248,6 +264,10 @@ function DetailPanel({ app, entry, release, openRequests, onSaved, onSignup }: D
             <CicdPendingPill count={uniqueCicdRequestCount(appOpen)} />
           </div>
         </div>
+        {editable && active && release && !release.released_locked && (
+          <button className="btn sm danger" onClick={() => void handleWithdraw()} disabled={appDetailDirty || withdrawing}
+            data-testid="app-withdraw-btn">{withdrawing ? "撤销中…" : "撤销报名"}</button>
+        )}
         {editable && (
           <button className="btn sm" onClick={() => onSignup(app.id)} disabled={appDetailDirty || app.cicd_status !== "running"}
             title={appDetailDirty ? "请先保存或取消修改，再报名" : app.cicd_status !== "running" ? "CICD 已停止，不能报名" : "选择版本报名"}
@@ -396,6 +416,7 @@ export function AppWorkbenchPage() {
   async function handleRefresh() {
     if (appDetailDirty && !(await discardChanges())) return;
     void queryClient.invalidateQueries({ queryKey: ["cicd"] });
+    if (selectedApp) void queryClient.invalidateQueries({ queryKey: ["app-detail", selectedApp] });
     void refetch();
   }
 

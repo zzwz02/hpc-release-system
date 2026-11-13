@@ -3,7 +3,7 @@
 * The App row owns the Owner profile (optional, never a release prerequisite)
   and the CICD running status.
 * app_info.json comes only from the App's repository.  A daily background
-  sync runs ``git ls-remote`` for every running App and stores a new
+  sync checks running Apps signed up in the cycle's QA testing window and stores a new
   ``app_info_versions`` row when the content changes; RM can also trigger a
   sync for one App or all Apps.  Every new version is handed to
   ``cycle_service`` so signup entries follow it or ask QA to approve a wider
@@ -39,6 +39,8 @@ from app.domain.cycles import CICD_RUNNING, CICD_STOPPED
 from app.domain.permissions import has_capability
 from app.repositories import app_info_repo, apps_repo, official_repo
 from app.repositories.audit_repo import log_audit
+from app.domain import delivery_images
+from app.domain import phases
 from app.timeutil import beijing_timestamp
 
 logger = logging.getLogger(__name__)
@@ -118,6 +120,7 @@ def list_app_views(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "version": official["version"],
                 "image": official["image"],
                 "digest": official["digest"],
+                "images": delivery_images.recorded(official['images'], official['image'], official['digest']),
                 "released_at": official["released_at"],
             }
             if official
@@ -150,9 +153,12 @@ def require_app_editor(app: dict[str, Any], username: str, role: str) -> None:
 def app_detail(conn: sqlite3.Connection, app_id: str) -> dict[str, Any]:
     """Version history and official-version history of one App."""
     get_app_or_raise(conn, app_id)
+    history = official_repo.history_for_app(conn, app_id)
+    for record in history:
+        record['images'] = delivery_images.recorded(record['images'], record['image'], record['digest'])
     return {
         "app_info_versions": app_info_repo.list_versions(conn, app_id),
-        "official_versions": official_repo.history_for_app(conn, app_id),
+        "official_versions": history,
     }
 
 
@@ -421,12 +427,23 @@ def sync_app(
         return {"app_id": app_id, "status": "error", "error": message}
 
 
-def sync_all(conn: sqlite3.Connection, *, user: str, force: bool = False) -> dict[str, Any]:
-    """Sync every running App; report failures through DingTalk."""
+def _daily_sync_app_ids(conn: sqlite3.Connection) -> set[str]:
+    from app.repositories import entries_repo, releases_repo
+
+    release_ids = {release['id'] for release in releases_repo.list_release_rows(conn)
+                   if phases.current_phase(release) == phases.IN_PROGRESS}
+    return entries_repo.signed_up_app_ids_for_releases(conn, release_ids)
+
+
+def sync_all(conn: sqlite3.Connection, *, user: str, force: bool = False, signed_up_only: bool = False) -> dict[str, Any]:
+    """Sync running Apps; daily mode is limited to active signups in the QA window."""
+    eligible = _daily_sync_app_ids(conn) if signed_up_only else None
     results = [
         sync_app(conn, app["id"], user=user, force=force)
         for app in apps_repo.list_apps(conn)
-        if app["cicd_status"] == CICD_RUNNING
+        if app["cicd_status"] == CICD_RUNNING and (eligible is None or (
+            app['id'] in eligible and app['id'] in _daily_sync_app_ids(conn)
+        ))
     ]
     failed = [result for result in results if result["status"] == "error"]
     if failed:
@@ -503,7 +520,7 @@ class AppInfoSyncLoop:
     def _run_once(self) -> dict[str, Any]:
         conn = connect(settings.db_path)
         try:
-            summary = sync_all(conn, user="system")
+            summary = sync_all(conn, user="system", signed_up_only=True)
         finally:
             conn.close()
         summary.pop("results", None)
@@ -527,24 +544,23 @@ sync_loop = AppInfoSyncLoop()
 # ---------------------------------------------------------------------------
 
 
-def _official_tests(conn: sqlite3.Connection, official: dict[str, Any] | None) -> list[dict[str, Any]]:
+def _official_tests(conn: sqlite3.Connection, official: dict[str, Any] | None, images: list[dict]) -> list[dict[str, Any]]:
     if not official or not official.get("app_info_version_id"):
         return []
-    parsed = parse_version(app_info_repo.get_version(conn, official["app_info_version_id"])) or {}
+    version = app_info_repo.get_version(conn, official["app_info_version_id"])
+    if not version:
+        return []
     excluded: list[str] = []
     if official.get("entry_id"):
         row = conn.execute(
             "SELECT excluded_tests_json FROM entries WHERE id = ?", (official["entry_id"],)
         ).fetchone()
         excluded = json.loads(row[0]) if row else []
-    return [
-        {"path": test["path"], "command": test["command"]}
-        for test in app_info_domain.scope_tests(parsed, excluded)
-    ]
+    return delivery_images.published_commands(version["raw"], images, set(excluded))
 
 
 def dependency_overview(conn: sqlite3.Connection) -> dict[str, Any]:
-    """Apps grouped by declared component, plus running Apps without a declaration."""
+    """Running Apps grouped by declared components and paired Python/PyTorch labels."""
     officials = official_repo.current_by_app(conn)
     deps = app_info_repo.dependencies_by_app(conn)
     latest_ids = app_info_repo.latest_version_ids(conn)
@@ -554,27 +570,34 @@ def dependency_overview(conn: sqlite3.Connection) -> dict[str, Any]:
         if app["cicd_status"] != CICD_RUNNING:
             continue
         official = officials.get(app["id"])
+        images = delivery_images.recorded(official["images"], official["image"], official["digest"]) if official else []
+        latest = app_info_repo.get_version(conn, latest_ids.get(app["id"]))
+        combined_dependencies = list(dict.fromkeys([
+            *deps.get(app["id"], []),
+            *(app_info_domain.python_pytorch_dependencies(latest["raw"]) if latest else []),
+        ]))
         row = {
             "app_id": app["id"],
             "name": app_name(app),
             "owners": app.get("owners") or [],
+            "dependencies": combined_dependencies,
             "official": (
                 {
                     "release_name": official["release_name"],
                     "version": official["version"],
                     "image": official["image"],
                     "digest": official["digest"],
+                    "images": images,
                 }
                 if official
                 else None
             ),
-            "tests": _official_tests(conn, official),
+            "tests": _official_tests(conn, official, images),
         }
-        latest = app_info_repo.get_version(conn, latest_ids.get(app["id"]))
         declared = app_info_domain.declared_dependencies(latest["raw"]) if latest else None
         if declared is None:
             undeclared.append(row)
-        for component in deps.get(app["id"], []):
+        for component in combined_dependencies:
             components.setdefault(component, []).append(row)
     return {
         "components": [
@@ -603,25 +626,41 @@ def compat_list(conn: sqlite3.Connection, component: str = "") -> list[dict[str,
 
 
 def compat_list_csv(conn: sqlite3.Connection, component: str = "") -> str:
-    deps = app_info_repo.dependencies_by_app(conn)
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(["App", "依赖组件", "Owner", "正式版周期", "版本", "镜像", "Digest", "测试项", "测试命令"])
+    writer.writerow(["App", "依赖组件", "Owner", "最新hpc release版本", "OS", "CPU 架构", "镜像类型",
+                     "Python label", "PyTorch label", "支持芯片", "镜像", "Digest", "镜像来源", "测试项", "测试命令"])
     for row in compat_list(conn, component):
         official = row["official"]
-        tests = row["tests"] or [{"path": "", "command": ""}]
+        tests = list(row["tests"])
+        used = {test["delivery_build_key"] for test in tests}
+        for image in official["images"]:
+            if image["build_key"] not in used:
+                tests.append({**image, "image": image.get("reference") or image.get("image", ""),
+                              "delivery_reference": image.get("reference", ""),
+                              "delivery_build_key": image["build_key"]})
+        tests = tests or [{}]
         for test in tests:
+            source = ("交付镜像（未指定构建）" if test.get("delivery_build_key") == "legacy"
+                      else "交付镜像" if test.get("delivery_reference")
+                      else "镜像模板（未填写交付镜像）" if test.get("command") else "")
             writer.writerow(
                 [
                     row["name"],
-                    ",".join(deps.get(row["app_id"], [])),
+                    ",".join(row["dependencies"]),
                     ",".join(row["owners"]),
                     official["release_name"],
-                    official["version"],
-                    official["image"],
-                    official["digest"],
-                    test["path"],
-                    test["command"],
+                    test.get("os", ""),
+                    {"amd64": "x86", "arm64": "ARM"}.get(test.get("arch"), test.get("arch", "")),
+                    test.get("image_target", ""),
+                    test.get("python_label", ""),
+                    test.get("pytorch_label", ""),
+                    ",".join(test.get("chips") or []),
+                    test.get("image", ""),
+                    test.get("digest", ""),
+                    source,
+                    test.get("path", ""),
+                    test.get("command", ""),
                 ]
             )
     return buffer.getvalue()

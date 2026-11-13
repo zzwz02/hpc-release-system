@@ -12,6 +12,9 @@ def main():
     parser.add_argument("--signup", action="store_true", help="Include signup dialog scenarios")
     parser.add_argument("--lookup", action="store_true", help="Include Harbor image lookup scenarios")
     parser.add_argument("--platforms", action="store_true", help="Include OS/architecture/chip mapping scenarios")
+    parser.add_argument("--releases", action="store_true", help="Include frozen publication history scenarios")
+    parser.add_argument("--legacy-history", action="store_true", help="Include entry-only migrated publication history")
+    parser.add_argument("--dependencies", action="store_true", help="Include paired Python/PyTorch dependency scenarios")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="app-info-site-") as temporary:
         folder = Path(temporary)
@@ -30,7 +33,7 @@ def main():
         from app.integrations import gerrit
         from app.main import create_app
         from app.services import catalog_service
-        from tests.conftest import close_signup, make_app_info, make_platform_app_info, seed_app, seed_cycle, seed_signup
+        from tests.conftest import close_qa, close_signup, make_app_info, make_dependency_app_info, make_platform_app_info, seed_app, seed_cycle, seed_signup
         import uvicorn
 
         conn = connect(settings.db_path)
@@ -49,7 +52,52 @@ def main():
         )
         if args.platforms:
             platform_info = make_platform_app_info()
-            seed_app(conn, "platform-check", official_name="HPCG", app_info=platform_info)
+            seed_app(conn, "platform-check", official_name="HPCG", app_info=platform_info,
+                     commit_id="b641bd0deac7c59ecb6a53c814ed3c150b7811a4")
+        if args.dependencies:
+            from app.services import cycle_service, qa_service
+
+            for app_id in ["runtime-published", "runtime-unpublished", "runtime-stopped"]:
+                runtime_info = make_dependency_app_info(app_id)
+                seed_app(conn, app_id, official_name=app_id, owners=["app_owner"], app_info=runtime_info,
+                         cicd_status="stopped" if app_id == "runtime-stopped" else "running")
+            dependency_release = seed_cycle(conn, name="runtime-published-cycle")
+            entry = seed_signup(conn, dependency_release, "runtime-published")
+            images = [
+                {**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].partition(':')[0]}@sha256:{digit * 64}"}
+                for build, digit in zip((build for build in entry["delivery_builds"] if build["os"] != "ubuntu24.04"), "abcde")
+            ]
+            qa_service.set_qa_status_batch(conn, dependency_release, [{"app_id": "runtime-published", "status": "qa_passed",
+                                                                     "deliverable_images": images, "delivery_revision": entry["delivery_revision"]}],
+                                           user="app_qa", role="QA")
+            close_qa(conn, dependency_release)
+            cycle_service.publish(conn, dependency_release, user="app_rm", role="RM")
+        if args.releases or args.legacy_history:
+            from app.services import cycle_service, qa_service
+
+            for app_id in ["release-pass", "release-issues", "release-failed", "release-withdrawn", "release-missing"]:
+                seed_app(conn, app_id, official_name=app_id, owners=["app_owner"])
+            for index, name in enumerate(["history-empty", "history-3.9.0", "history-3.10.0"]):
+                release_id = seed_cycle(conn, name=name)
+                if index:
+                    items = []
+                    for app_id in ["release-pass", "release-issues", "release-failed", "release-withdrawn", "release-missing"]:
+                        entry = seed_signup(conn, release_id, app_id, target_version=f"{index}.0")
+                        if app_id == "release-withdrawn":
+                            cycle_service.withdraw(conn, entry["id"], user="app_rm", role="RM")
+                            continue
+                        status = "has_issues" if app_id == "release-issues" else "cannot_release" if app_id == "release-failed" else "qa_passed"
+                        item = {"app_id": app_id, "status": status, "issue_note": f"版本 {index} 的 QA 说明"}
+                        if app_id != "release-missing":
+                            item.update(deliverable_image=f"harbor.sh.mxcr.io/hpc-release/{app_id}:v{index}",
+                                        deliverable_digest="sha256:" + str(index) * 64)
+                        items.append(item)
+                    qa_service.set_qa_status_batch(conn, release_id, items, user="app_qa", role="QA")
+                close_qa(conn, release_id)
+                cycle_service.publish(conn, release_id, user="app_rm", role="RM")
+                if args.legacy_history and name == "history-3.9.0":
+                    conn.execute("DELETE FROM official_versions WHERE release_id=?", (release_id,))
+                    conn.commit()
         for name in ["browser-cycle-a", "browser-cycle-b"]:
             release_id = seed_cycle(conn, name=name)
             seed_signup(conn, release_id, "info-check")

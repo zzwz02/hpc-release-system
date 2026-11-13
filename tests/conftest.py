@@ -147,6 +147,30 @@ def make_app_info(
     return data
 
 
+def make_dependency_app_info(app_name: str = "runtime-app") -> dict[str, Any]:
+    data = make_app_info(app_name=app_name, dependencies=["sdk"])
+    data["app_build"]["ubuntu20.04_amd64"].update(
+        python_label="py312", pytorch_label="torch2.8", build_target="release,dbg",
+    )
+    data["app_build"].update({
+        "ubuntu20.04_arm64": {"arch": "arm64", "os": "ubuntu20.04", "supported_chip": ["c500"],
+                              "python_label": "py312", "pytorch_label": "torch2.8"},
+        "ubuntu22.04_amd64": {"arch": "amd64", "os": "ubuntu22.04", "supported_chip": ["c600"],
+                               "python_label": "py310", "pytorch_label": "torch2.4"},
+        "ubuntu24.04_amd64": {"arch": "amd64", "os": "ubuntu24.04", "supported_chip": ["c588"],
+                               "python_label": "py312", "pytorch_label": "torch2.8"},
+        "centos9_amd64": {"arch": "amd64", "os": "centos9", "supported_chip": ["c500"],
+                           "python_label": "py312", "pytorch_label": "torch2.8"},
+        "disabled": {"python_label": "py399", "pytorch_label": "torch9", "enabled": False},
+    })
+    data["app_test"]["sanity"].update(
+        supported_chip={"c500": ["ubuntu20.04_amd64", "ubuntu20.04_arm64"],
+                        "c600": ["ubuntu22.04_amd64"], "c588": ["ubuntu24.04_amd64"]},
+        img_target="release,dbg", mount_dataset=True, container_args="--device=/dev/dri",
+    )
+    return data
+
+
 def make_platform_app_info():
     x86 = ["C500", "C588", "C600", "C600U", "X201-A", "X206", "X301", "X302", "X201"]
     return {

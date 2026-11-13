@@ -365,6 +365,15 @@ def declared_dependencies(raw: dict[str, Any]) -> list[str] | None:
     return seen
 
 
+def python_pytorch_dependencies(raw: dict[str, Any]) -> list[str]:
+    """Paired runtime labels from the same enabled build, deduplicated across platforms."""
+    return sorted({
+        f"torch {platform['pytorch_label'].removeprefix('torch').strip()} + {platform['python_label']}"
+        for platform in build_platforms(raw)
+        if platform["pytorch_label"] and platform["python_label"]
+    })
+
+
 def scope_tests(parsed: dict[str, Any], excluded: list[str] | set[str] | None = None) -> list[dict[str, Any]]:
     """Tests in a parsed app_info that remain in scope after Owner exclusions."""
     skip = set(excluded or [])

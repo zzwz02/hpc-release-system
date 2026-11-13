@@ -303,6 +303,26 @@ def test_only_the_newest_locked_release_writes_official_versions(migrated):
     assert officials == [("amber", "rel-2", "23")]
 
 
+def test_app_detail_recovers_older_publications_without_changing_current_officials(migrated):
+    from app.repositories import official_repo
+    from app.services import catalog_service
+
+    before = migrated.total_changes
+    current = official_repo.current_by_app(migrated)
+    history = catalog_service.app_detail(migrated, "amber")["official_versions"]
+    assert [(row["release_id"], row["version"]) for row in history] == [("rel-2", "23"), ("rel-1", "22")]
+    assert history[0]["id"] is not None
+    assert history[1]["id"] is None
+    assert history[1]["entry_id"] is not None
+    assert history[1]["released_at"] == "2026-03-25 10:00:00"
+    assert history[1]["withdrawn"] == 0
+    # This App has an older release but no current official row after migration.
+    older_only = catalog_service.app_detail(migrated, "lammps")["official_versions"]
+    assert [(row["release_id"], row["version"]) for row in older_only] == [("rel-1", "2024")]
+    assert official_repo.current_by_app(migrated) == current
+    assert migrated.total_changes == before
+
+
 def test_cicd_payloads_lose_the_removed_keys_and_use_lowercase_statuses(migrated):
     payload = json.loads(
         migrated.execute("SELECT payload FROM cicd_task_requests").fetchone()[0]

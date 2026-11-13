@@ -14,6 +14,23 @@ router = APIRouter(prefix="/api/lookup", tags=["lookup"])
 require_lookup_tab = require_tab_access("lookup", message="无权查看历史查询")
 
 
+@router.get("/releases")
+def published_releases(
+    user: dict = Depends(require_lookup_tab),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    return {"releases": lookup_service.published_releases(conn)}
+
+
+@router.get("/release")
+def published_apps(
+    release_id: str = Query(...),
+    user: dict = Depends(require_lookup_tab),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    return lookup_service.published_apps(conn, release_id)
+
+
 @router.get("/app-info")
 def app_info_source(
     image: str = Query(...),

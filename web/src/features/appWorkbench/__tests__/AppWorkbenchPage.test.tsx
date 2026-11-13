@@ -81,6 +81,55 @@ describe("App list", () => {
 });
 
 describe("basic information and app_info", () => {
+  it("withdraws an active signup only after confirmation and refreshes its state", async () => {
+    const state = makeState([makeApp("a")], makeRelease([makeEntry("a")]));
+    mockApi(state);
+    renderPage("a");
+    const button = await screen.findByTestId("app-withdraw-btn");
+    vi.mocked(confirmDialog).mockResolvedValueOnce(false);
+    fireEvent.click(button);
+    await waitFor(() => expect(confirmDialog).toHaveBeenCalled());
+    expect(apiPost).not.toHaveBeenCalled();
+    vi.mocked(apiPost).mockImplementation(async () => {
+      state.release!.entries[0] = { ...state.release!.entries[0], status: "withdrawn" };
+      return {};
+    });
+    fireEvent.click(button);
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/entries/withdraw", { entry_id: 1 }));
+    await waitFor(() => expect(screen.queryByTestId("app-withdraw-btn")).toBeNull());
+  });
+
+  it("does not offer withdrawal for a published cycle", async () => {
+    mockApi(makeState([makeApp("a")], makeRelease([makeEntry("a")], { released_locked: true, phase: "released" })));
+    renderPage("a");
+    await screen.findByTestId("app-detail-header");
+    expect(screen.queryByTestId("app-withdraw-btn")).toBeNull();
+  });
+
+  it("lists every official publication including entry-only history and withdrawn records", async () => {
+    mockApi(makeState([makeApp("a")], null));
+    const baseGet = vi.mocked(apiGet).getMockImplementation()!;
+    let records = [
+      { id: 8, entry_id: 3, release_name: "3.10.0", version: "1.0", image: "hpc/a:latest", digest: "sha256:latest", released_at: "2026-11-12 10:00:00", withdrawn: 0 },
+      { id: 7, entry_id: 3, release_name: "3.10.0", version: "1.0", image: "hpc/a:old", digest: "sha256:old", released_at: "2026-11-12 09:00:00", withdrawn: 1 },
+      { id: null, entry_id: 2, release_name: "3.9.0", version: "1.0", image: "hpc/a:3.9", digest: "sha256:39", released_at: "2026-09-24 10:00:00", withdrawn: 0 },
+      { id: null, entry_id: 1, release_name: "3.8.0", version: "0.9", image: "", digest: "", released_at: "2026-08-11 10:00:00", withdrawn: 0 },
+    ];
+    vi.mocked(apiGet).mockImplementation(async (url) => url.startsWith("/api/apps/detail")
+      ? { app_info_versions: [], official_versions: records } : baseGet(url));
+    renderPage("a");
+    const table = await screen.findByTestId("official-version-table");
+    const rows = within(table).getAllByTestId("official-version-row");
+    expect(rows).toHaveLength(4);
+    expect(rows.map((row) => within(row).getByTestId("official-release-name").textContent)).toEqual(["3.10.0", "3.10.0", "3.9.0", "3.8.0"]);
+    expect(rows[1]).toHaveTextContent("已撤销");
+    expect(rows[2]).toHaveTextContent("sha256:39");
+    // Manual refresh updates history even when latest app_info did not change.
+    records = records.slice(2);
+    fireEvent.click(screen.getByTestId("refresh-btn"));
+    await waitFor(() => expect(within(table).getAllByTestId("official-version-row")).toHaveLength(2));
+  });
+
   it("opens basic information first and hides the signup tab", async () => {
     mockApi(makeState([makeApp("a")], null));
     renderPage("a");

@@ -47,7 +47,7 @@ class ManagedConnection(sqlite3.Connection):
 
 
 @contextmanager
-def transaction(conn: sqlite3.Connection) -> Iterator[None]:
+def transaction(conn: sqlite3.Connection, *, immediate: bool = False) -> Iterator[None]:
     """Commit once on success and rollback all pending writes on failure.
 
     Connections returned by connect() suppress nested helper commit() calls
@@ -57,8 +57,11 @@ def transaction(conn: sqlite3.Connection) -> Iterator[None]:
     SAVEPOINT nesting: if a transaction() is already active on a
     ManagedConnection, opens a SAVEPOINT instead of a plain BEGIN so that
     the inner block is atomic relative to the outer one.
+    ``immediate=True`` reserves the write lock before validating mutable state.
     """
     if not isinstance(conn, ManagedConnection):
+        if immediate and not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
         try:
             yield
         except Exception:
@@ -87,7 +90,7 @@ def transaction(conn: sqlite3.Connection) -> Iterator[None]:
     conn._transaction_depth = 1
     try:
         if not conn.in_transaction:
-            conn.execute("BEGIN")
+            conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
         yield
     except Exception:
         conn.rollback()
@@ -283,6 +286,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             deliverable_image TEXT NOT NULL DEFAULT '',
             deliverable_digest TEXT NOT NULL DEFAULT '',
             deliverable_commit TEXT NOT NULL DEFAULT '',
+            deliverable_images_json TEXT NOT NULL DEFAULT '[]',
             result TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             created_by TEXT NOT NULL DEFAULT '',
@@ -322,7 +326,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             image TEXT NOT NULL DEFAULT '',
             digest TEXT NOT NULL DEFAULT '',
             released_at TEXT NOT NULL,
-            withdrawn INTEGER NOT NULL DEFAULT 0
+            withdrawn INTEGER NOT NULL DEFAULT 0,
+            images_json TEXT NOT NULL DEFAULT '[]'
         );
         CREATE INDEX IF NOT EXISTS idx_official_versions_app
             ON official_versions(app_id, withdrawn, id);
@@ -638,6 +643,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             pass  # column already exists
 
     for _tbl, _col, _col_def in [
+        ("entries", "deliverable_images_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("official_versions", "images_json", "TEXT NOT NULL DEFAULT '[]'"),
         ("apps", "cicd_repo_type", "TEXT NOT NULL DEFAULT ''"),
         ("apps", "cicd_community_artifact", "TEXT NOT NULL DEFAULT ''"),
         ("apps", "cicd_build_image", "TEXT NOT NULL DEFAULT ''"),

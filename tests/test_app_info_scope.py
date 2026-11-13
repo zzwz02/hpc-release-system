@@ -150,3 +150,34 @@ def test_content_hash_ignores_key_order_only() -> None:
     changed = deepcopy(BASE_APP_INFO)
     changed["app_version"] = "2.0"
     assert app_info_domain.content_hash(changed) != app_info_domain.content_hash(BASE_APP_INFO)
+
+
+def test_runtime_dependencies_pair_labels_within_each_enabled_build() -> None:
+    raw = {"app_build": {
+        "ubuntu_amd64": {"python_label": " py310 ", "pytorch_label": "torch2.4"},
+        "ubuntu_arm64": {"python_label": "py310", "pytorch_label": "torch2.4"},
+        "kylin_amd64": {"python_label": "py312", "pytorch_label": "torch2.8"},
+        "disabled": {"python_label": "py399", "pytorch_label": "torch9", "enabled": False},
+        "disabled_string": {"python_label": "py399", "pytorch_label": "torch9", "enabled": "false"},
+        "python_only": {"python_label": "py311"},
+        "torch_only": {"pytorch_label": "torch2.5"},
+    }}
+
+    assert app_info_domain.python_pytorch_dependencies(raw) == [
+        "torch 2.4 + py310",
+        "torch 2.8 + py312",
+    ]
+    assert app_info_domain.python_pytorch_dependencies({}) == []
+
+
+def test_runtime_dependencies_use_build_label_options_and_inherited_defaults() -> None:
+    raw = {"pytorch_label": "torch2.8", "app_build": {
+        "options_amd64": {"python_label": ["py310", "py311"], "pytorch_label": "torch2.5,torch2.6"},
+        "inherited_arm64": {"python_label": "py312"},
+    }}
+
+    assert app_info_domain.python_pytorch_dependencies(raw) == [
+        "torch 2.5 + py310", "torch 2.5 + py311",
+        "torch 2.6 + py310", "torch 2.6 + py311",
+        "torch 2.8 + py312",
+    ]

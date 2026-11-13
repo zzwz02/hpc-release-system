@@ -6,7 +6,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../api/http";
 import { formatServerTime } from "../../lib/time";
-import type { App } from "../../types";
+import type { App, DeliveryImage } from "../../types";
+import { DeliveryImages } from "../../components/DeliveryImages";
+import { recordedImages } from "../../lib/deliveryImages";
 import { orderChips, shortCommit } from "./helpers";
 import { BasicInfoSection } from "./BasicInfoSection";
 import { TestScopeTable } from "../../components/TestScopeTable";
@@ -20,11 +22,13 @@ interface AppDetailResponse {
     fetched_by: string;
   }>;
   official_versions: Array<{
-    id: number;
+    id: number | null;
+    entry_id: number | null;
     release_name: string;
     version: string;
     image: string;
     digest: string;
+    images?: DeliveryImage[];
     released_at: string;
     withdrawn: number;
   }>;
@@ -43,10 +47,11 @@ interface AppInfoPaneProps {
 
 export function AppInfoPane({ app, canEdit, canEditRmFields, onSaved, onDirtyChange, onSync, syncing, syncDisabled }: AppInfoPaneProps) {
   const info = app.latest_app_info;
-  const { data: detail } = useQuery({
+  const { data: detail, error, isPending } = useQuery({
     queryKey: ["app-detail", app.id, info?.id ?? 0],
     queryFn: () => apiGet<AppDetailResponse>(`/api/apps/detail?app_id=${encodeURIComponent(app.id)}`),
     staleTime: 0,
+    refetchOnMount: true,
   });
 
   return (
@@ -80,7 +85,8 @@ export function AppInfoPane({ app, canEdit, canEditRmFields, onSaved, onDirtyCha
                 <label>取得时间<input className="input" value={formatServerTime(info.fetched_at)} disabled /></label>
                 <label>X86 芯片<input className="input" value={orderChips(info.x86_chips)} disabled /></label>
                 <label>ARM 芯片<input className="input" value={orderChips(info.arm_chips)} disabled /></label>
-                <label>OS / Arch<input className="input" value={`${info.build_os.join(",")} / ${info.build_arches.join(",")}`} disabled /></label>
+                <label>OS<input className="input" value={info.build_os.join(",")} disabled /></label>
+                <label>CPU 架构<input className="input" value={info.build_arches.join(",")} disabled /></label>
                 <label>Python label<input className="input" value={info.python_labels.join(",")} disabled /></label>
                 <label>PyTorch label<input className="input" value={info.pytorch_labels.join(",")} disabled /></label>
                 <label>依赖组件（app_dependency）
@@ -116,28 +122,27 @@ export function AppInfoPane({ app, canEdit, canEditRmFields, onSaved, onDirtyCha
         </div>
       </details>
 
-      <details className="section" open>
-        <summary><span className="chev">▶</span> 正式版</summary>
+      <details className="section" open data-testid="official-version-history">
+        <summary><span className="chev">▶</span> 正式版发布历史</summary>
         <div className="section-body">
-          {!(detail?.official_versions ?? []).length ? (
+          {isPending ? <p className="muted small" role="status">正在加载发布历史…</p>
+            : error ? <p className="lerr" role="alert">发布历史加载失败：{error.message}</p>
+            : !(detail?.official_versions ?? []).length ? (
             <p className="muted small">尚无正式版。</p>
           ) : (
-            <div className="table">
-              <table>
-                <thead><tr><th>版本周期</th><th>版本</th><th>交付镜像</th><th>Digest</th><th>发布时间</th><th /></tr></thead>
-                <tbody>
-                  {(detail?.official_versions ?? []).map((row) => (
-                    <tr key={row.id} className={row.withdrawn ? "muted dim-55" : ""}>
-                      <td>{row.release_name}</td>
-                      <td>{row.version}</td>
-                      <td className="mono small">{row.image}</td>
-                      <td className="mono small">{row.digest}</td>
-                      <td>{formatServerTime(row.released_at)}</td>
-                      <td>{row.withdrawn ? "已撤销" : ""}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div data-testid="official-version-table">
+              {(detail?.official_versions ?? []).map((row) => (
+                <div key={row.id ?? `entry-${row.entry_id}`} data-testid="official-version-row"
+                  className={`official-history-version${row.withdrawn ? " muted dim-55" : ""}`}>
+                  <div className="row2 mb-8">
+                    <b data-testid="official-release-name">{row.release_name}</b>
+                    <span>版本 <span data-testid="official-app-version">{row.version}</span></span>
+                    <span className="small muted">{formatServerTime(row.released_at)}</span>
+                    <span className="pill" data-testid="official-release-status">{row.withdrawn ? "已撤销" : "已发布"}</span>
+                  </div>
+                  <DeliveryImages images={recordedImages(row.images, row.image, row.digest)} />
+                </div>
+              ))}
             </div>
           )}
         </div>

@@ -9,18 +9,17 @@ for (const username of ["app_owner", "app_qa"]) {
     await page.goto(base + "/qa");
     const tabs = page.locator("nav.tabs");
     const subnav = page.getByRole("navigation", { name: "QA", exact: true });
-    await expect(subnav.getByRole("link")).toHaveText(["qa log", "本期发布app", "测试命令", "开发者社区产物", "历史查询", "组件依赖"]);
+    await expect(subnav.getByRole("link")).toHaveText(["QA log", "本期发布app", "测试命令", "开发者社区产物", "历史查询", "组件依赖"]);
     await expect(page.locator(".tab-subnav")).toHaveCount(0);
-    await expect(subnav.getByRole("link", { name: "qa log", exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(subnav.getByRole("link", { name: "QA log", exact: true })).toHaveAttribute("aria-current", "page");
     await expect(tabs.getByRole("link", { name: "历史查询", exact: true })).toHaveCount(0);
     await expect(tabs.getByRole("link", { name: "组件依赖", exact: true })).toHaveCount(0);
     await subnav.getByRole("link", { name: "历史查询", exact: true }).click();
     await expect(page.getByRole("heading", { name: "历史查询", exact: true })).toBeVisible();
     await expect(tabs.getByRole("link", { name: "QA", exact: true })).toHaveClass(/active/);
-    await page.getByRole("button", { name: "按 App", exact: true }).click();
-    await page.getByRole("combobox", { name: "选择 App", exact: true }).selectOption("info-check");
-    await page.getByTestId("lookup-search").click();
-    await expect(page.getByTestId("lookup-record").first()).toBeVisible();
+    await expect(page.getByTestId("published-apps-pane")).toBeVisible();
+    await expect(page.getByRole("button", { name: "发布app列表", exact: true })).toHaveClass(/active/);
+    await expect(page.getByRole("button", { name: "按 App", exact: true })).toHaveCount(0);
     await subnav.getByRole("link", { name: "组件依赖", exact: true }).click();
     await expect(page.getByRole("heading", { name: "组件依赖", exact: true })).toBeVisible();
     expect((await page.request.get(base + "/api/dependencies/compat.csv")).ok()).toBeTruthy();
@@ -39,7 +38,7 @@ for (const username of ["app_owner", "app_qa"]) {
     await expect(page.getByRole("heading", { name: "开发者社区产物", exact: true })).toBeVisible();
     await page.goBack();
     await expect(subnav.getByRole("link", { name: "测试命令", exact: true })).toHaveAttribute("aria-current", "page");
-    await subnav.getByRole("link", { name: "qa log", exact: true }).click();
+    await subnav.getByRole("link", { name: "QA log", exact: true }).click();
     await expect(page.getByRole("heading", { name: "QA log 文件", exact: true })).toBeVisible();
     await page.screenshot({ path: `/tmp/qa-navigation-${username}.png`, fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
@@ -55,7 +54,7 @@ for (const username of ["app_guest", "app_spd"]) {
     if (username === "app_guest") {
       await page.goto(base + "/qa");
       await expect(page.getByRole("navigation", { name: "QA", exact: true }).getByRole("link")).toHaveText([
-        "qa log", "本期发布app", "测试命令", "开发者社区产物",
+        "QA log", "本期发布app", "测试命令", "开发者社区产物",
       ]);
     }
     for (const path of ["/lookup", "/dependencies"]) {
@@ -64,7 +63,7 @@ for (const username of ["app_guest", "app_spd"]) {
       await expect(page.getByRole("link", { name: "组件依赖", exact: true })).toHaveCount(0);
       await expect(page.getByTestId(path === "/lookup" ? "lookup-page" : "dependencies-page")).toHaveCount(0);
     }
-    for (const path of ["/api/lookup/app?app_id=info-check", "/api/dependencies", "/api/dependencies/compat.csv"]) {
+    for (const path of ["/api/lookup/releases", "/api/lookup/release?release_id=unknown", "/api/dependencies", "/api/dependencies/compat.csv"]) {
       expect((await page.request.get(base + path)).status()).toBe(403);
     }
   });
