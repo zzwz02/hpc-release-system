@@ -49,6 +49,7 @@ HTTP 类型声明不会验证真实 JSON。改接口时对照 router/service、�
 
 ## 交互与显示
 
+- MCP 使用统计的时间范围、用户和 Token 筛选在桌面端横向并排，选择框按内容设置宽度，不各占整行。
 - 周期选择使用共享 `selectedReleaseId`，跳转 App 时保留正确周期；不把不同 release 的编辑草稿或 QA 建议混用。
 - 保留未保存编辑保护，选中 App 后详情应直接可见，长列表与详情按需独立滚动。
 - Markdown 的 `dangerouslySetInnerHTML` 出口集中在 `Markdown.tsx` 的 DOMPurify 流程；业务组件使用该组件。
