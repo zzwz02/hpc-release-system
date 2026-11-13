@@ -565,7 +565,8 @@ def test_deepseek_run_keeps_selected_model_during_capacity_retry(setup):
     assert detail['conversation']['model_provider'] == 'deepseek'
     thread = env.fake.params('thread/start')[0]
     assert thread['modelProvider'] == 'deepseek'
-    assert thread['config']['model_catalog_json'] == path
+    assert thread['config'] == {'web_search': 'disabled'}
+    assert any(p['path'] == path for p in env.fake.params('fs/readFile'))
     assert len(env.fake.params('turn/start')) == 2
     assert all(p['model'] == 'deepseek-v4-pro' and p['effort'] == 'max' for p in env.fake.params('turn/start'))
     assert not env.jira.comments

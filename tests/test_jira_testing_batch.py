@@ -149,8 +149,9 @@ def test_batch_uses_provider_defaults_without_changing_evaluator(grading_setup, 
         assert item['batch']['config']['model_provider'] == 'deepseek'
         assert item['batch']['config']['model'] == 'deepseek-flash'
         assert item['batch']['config']['effort'] == 'high'
-    assert all(p['modelProvider'] == 'deepseek' and p['config']['model_catalog_json'] == path
+    assert all(p['modelProvider'] == 'deepseek' and p['config'] == {'web_search': 'disabled'}
                for p in env.fake.params('thread/start'))
+    assert any(p['path'] == path for p in env.fake.params('fs/readFile'))
     assert all(p['model'] == 'deepseek-flash' and p['effort'] == 'high' for p in env.fake.params('turn/start'))
     assert all(p['model'] == 'judge-model' and p['effort'] == 'high' for p in peer.params('turn/start'))
     assert not calls

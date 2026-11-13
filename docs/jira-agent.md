@@ -221,12 +221,84 @@ RM 在新建对话交单时可选择服务商、模型及该模型支持的 effo
 - 其他 provider 须先在 B 的用户 `~/.codex/config.toml` 配置 URL 与认证。Key 只保留在 B，网站接口不返回或传入 Key。
 - A 的 `release_system.conf` 在对应 `[jira_agent:<组>]` 节增加可选 `MODEL_CATALOGS`，例如 `MODEL_CATALOGS = {"deepseek": "/home/hpc-agent/.codex/deepseek-models.json"}`。路径为 **B 上的绝对路径**，文件使用 Codex 官方模型目录格式（`models` / `slug` / `default_reasoning_level` / `supported_reasoning_levels`）。目录的第一个可见模型是该 provider 的默认模型。
 - A 通过 app-server 的 `fs/readFile` 读取目录，只向网页返回 provider 名称、模型标识和 effort 选项，不返回目录中的提示词或 provider 凭据。额外目录无法读取时，页面显示对应错误，其余可用服务商仍可选择。
-- 新建对话及续办时把对应 `modelProvider` 和 `config.model_catalog_json` 传给 `thread/start` / `thread/resume`。额外目录的 provider 禁用内置 web search，避免默认假设第三方 Responses 端点支持该工具。默认服务商保留 B 上原配置。
+- 新建对话及续办时把对应 `modelProvider` 传给 `thread/start` / `thread/resume`。模型能力目录必须在 B 的 app-server 启动时加载；Codex 0.162.1 忽略对话级 `config.model_catalog_json`，仅让网站读到目录并不代表执行端已使用它。额外目录的 provider 禁用内置 web search，避免默认假设第三方 Responses 端点支持该工具。
 
 provider 保存在 `jira_agent_conversations.model_provider`；模型与 effort 保存在 `jira_agent_turns.model` / `effort`，每轮实际值回填记录。模型和 effort 在同一对话内保留，刷新页面、网站重启不重置，新建对话恢复默认。旧库初始化时补列；旧对话的 provider 从已有 thread 确认，不能用今日默认值覆盖已有 thread 的服务商。
 
 执行端检查 `thread/start` / `thread/resume` 响应顶层的实际 `modelProvider` 是否与对话一致，若不一致则拒绝发送新轮次。不要仅检查 `thread.modelProvider`：它是持久化元数据，未必反映当前运行配置。当前 Codex 对已加载的 thread 可能忽略 resume 的 provider 覆盖；网站不提供解除订阅后换 provider 的操作，以保持对话上下文和执行规则简单。
 
+
+
+### MetaX 自建模型网关
+
+MetaX 按现有 DeepSeek provider 的方式配置认证与模型目录。由于当前网关的原生 JSON Schema 与工具调用存在组合兼容问题，JIRA 正式任务和测试任务选择 `metax` 时，网站通过 Codex 动态工具 `submit_result` 接收结构化结果，执行时不传 `turn/start.outputSchema`；其他 provider 仍沿用原生输出约束。
+
+参数展开、结果还原及新旧对话兼容规则统一见 [结果工具说明与验证记录](metax-provider-diagnostics.md#简化结果工具验证2026-11-15)。
+
+在 B 的执行账号下，将 [metax-models.json](../deploy/jira-agent/codex/metax-models.json) 复制到该账号的 `~/.codex/metax-models.json`，并向现有 `~/.codex/config.toml` 追加：
+
+```toml
+[model_providers.metax]
+name = "MetaX LLM"
+base_url = "https://llm-gw.kai.metax-tech.com/v1"
+wire_api = "responses"
+env_key = "METAX_GATEWAY_API_KEY"
+```
+
+通过 app-server 服务的私有环境配置提供 `METAX_GATEWAY_API_KEY`。已有部署也可沿用其受保护的 provider 凭据配置方式；真实 Key 不进入代码、示例或日志。不修改原有 `model_provider` 和 `model`，因此默认模型保持不变。
+
+如果 B 上的 Codex 进程配置了公司 HTTP/HTTPS 代理，须将 `llm-gw.kai.metax-tech.com` 追加到该进程启动环境的 `NO_PROXY` 和 `no_proxy`，保留原有条目。此网关经本次部署使用的公司代理访问会返回 HTML 403，直连则正常。Docker 部署需更新容器环境并重建容器；仅在 `docker exec` 的临时 shell 中 `export` 不会修改正在运行的 app-server。验证时使用实际 Codex 进程的环境，不能只用强制直连的探针代替。
+
+在 A 的 `release_system.conf` 对应 `[jira_agent:<组>]` 中，将 MetaX 合并到现有目录配置：
+
+```ini
+MODEL_CATALOGS = {"deepseek": "/home/hpc-agent/.codex/deepseek-models.json", "metax": "/home/hpc-agent/.codex/metax-models.json"}
+```
+
+路径须替换为 B 的实际绝对路径；保留已有 provider。目录主文件属于该执行账号的 `.codex`，共享容器的挂载别名不应写成网站部署的通用路径。网站按请求重新读取配置，RM 可在新建对话时选择 MetaX。
+
+还需在 **B** 上生成启动目录，保留默认服务商的全部能力信息，再加入自定义模型：
+
+```bash
+python3 deploy/jira-agent/codex/merge-model-catalogs.py \
+  --base "$HOME/.codex/models_cache.json" \
+  --extra "$HOME/.codex/deepseek-models.json" \
+  --extra "$HOME/.codex/metax-models.json" \
+  --output "$HOME/.codex/combined-models.json"
+```
+
+只传入实际已配置的 `--extra`；`--base` 使用该 app-server 原有的完整模型缓存或启动目录，不要用仅包含 MetaX 的文件替代默认模型列表。脚本拒绝重复模型名，在合并文件中隐藏第三方条目，避免它们出现在默认服务商的列表中；网站继续读取各 provider 的原始目录。
+
+在 `config.toml` **顶层、所有 `[section]` 之前**设置实际绝对路径：
+
+```toml
+model_catalog_json = "/home/hpc-agent/.codex/combined-models.json"
+```
+
+确认没有运行中的 Codex 任务后重启对应 app-server。更改能力目录后也要重新合并并重启；刷新网页只能更新模型选择列表。容器路径须按进程实际挂载填写。合并目录是启动时的快照，默认模型更新时也需重新生成。
+
+2026-11-13 该网关账号可见 `GLM-5.3` 和 `deepseek-v4-flash`。两个模型的思考档位与现有 OpenCode 配置保持一致：`low`、`high`、`max`，默认 `max`；不开放 OpenCode 中禁用的 `medium`。目录只开放文本输入。GLM-5.3 使用 96K 客户端窗口、80,000 tokens 自动压缩阈值：32K 在完整技能和工单材料下实测频繁压缩，历史真实请求已处理约 91K 输入，因此提高客户端阈值。deepseek-v4-flash 仍保留 32K；这些均不代表已确认的服务端最大容量。
+
+OpenCode 的配置需要按协议转换，不能直接复制到 Codex 的 TOML：
+
+| OpenCode 配置 | Codex 配置 / 实际请求 |
+| --- | --- |
+| `options.reasoningEffort = "max"` | 模型目录的 `default_reasoning_level = "max"` |
+| `variants.low / high / max` | 模型目录的 `supported_reasoning_levels` |
+| `reasoning = true`、`thinking.type = "enabled"` | 通过 Responses 的 `reasoning.effort` 请求思考；Codex 0.162.1 实际请求已核对，选择 `max` 会发送 `{"reasoning":{"effort":"max"}}` |
+| `interleaved.field = "reasoning_content"` | OpenCode 的 Chat Completions SDK 用于处理思考内容的字段；Codex 使用 Responses 协议，不配置该字段 |
+
+`supports_reasoning_summaries` 描述摘要能力，与是否发送 `reasoning.effort` 不是同一个开关；当前为 `false` 时仍实测发出了 effort。这里的协议映射不代表服务端对两种协议的内部实现完全相同。修改目录并完成上述重启后刷新网站模型列表，新选 MetaX 时使用默认 `max`；已有对话仍沿用保存的 effort，可在后续轮次手动调整。
+
+**当前验证范围**：8013 已通过 GLM-5.3 实际工单的工具执行、结果校验和文件交付验证；两个模型的隔离工具及续办探针也通过。原生 JSON Schema 和工具调用同时使用仍有问题。绕过网站和 Codex，直接调用 MetaX 的 Responses 与 Chat 接口均可复现：相同请求不带原生格式时能调用工具，加上 Schema 后两个模型均未调用工具；直连 DeepSeek 的对照通过。GLM 的纯 Schema 控制还出现了非法 JSON。尚未取得服务端部署配置，不能进一步确定由网关、推理引擎还是模型实现导致。复现脚本、实测结果和验收边界见 [MetaX 排查记录](metax-provider-diagnostics.md)。
+
+验收必须同时检查工具调用事件、真实文件变化及最终结构化结论，不能仅凭 HTTP 200、合法 JSON 或模型声称成功判断通过。保留标准协议继续定位此兼容问题，不用把 schema 塞入任务提示来绕过。
+
+结果工具使用原有任务 Schema 作为工具参数定义，完整 Schema 不拼进提示词。网站使用 `jsonschema` 和现有业务规则校验参数，拒绝非法或冲突的重复提交，并在确认接收前写入现有事件表。重连及网站重启沿用已接收结果，报告、文件回收和评论草稿仍走原流程。部署时需安装更新后的 `requirements.txt`。此改动不改变知识学习和评测模型的输出协议。
+
+如果远端轮次正常结束但没有成功提交结果，网站在原业务轮次内最多发起一次“仅补交已有结论”，沿用恢复预算和原截止时间，明确禁止重新调查、下载或实验。第二次仍失败则保留真实失败状态，不把普通文本冒充已验证结果。
+
+Codex 动态工具只能在 `thread/start` 注册，因此更新前创建的 MetaX 对话需**新建对话**，旧记录和产物保留；已有旧测试需重新运行。新对话支持同线程续办。动态工具接口为 Codex 实验性能力，本次针对 0.162.1 验证，升级 Codex 时需复测结果提交与恢复。细节与复现命令见上述排查记录。
 
 
 ## 测试用例

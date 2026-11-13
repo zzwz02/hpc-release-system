@@ -537,6 +537,12 @@ def add_event(
     return _event_view(_one(conn, "SELECT * FROM jira_agent_events WHERE id = ?", (event_id,)))  # type: ignore[arg-type]
 
 
+def event_by_item_id(conn: sqlite3.Connection, conversation_id: str, item_id: str) -> dict | None:
+    row = _one(conn, "SELECT * FROM jira_agent_events WHERE conversation_id = ? AND item_id = ?",
+               (conversation_id, item_id))
+    return _event_view(row) if row else None
+
+
 def list_events(conn: sqlite3.Connection, conversation_id: str, *, after_rev: int = 0) -> list[dict]:
     return [
         _event_view(row)

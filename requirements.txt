@@ -7,6 +7,7 @@ uvicorn[standard]
 websockets
 pydantic>=2
 pydantic-settings
+jsonschema>=4.18,<5
 pytest
 pypdf>=5,<7
 Pillow>=10

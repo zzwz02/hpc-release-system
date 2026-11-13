@@ -2154,7 +2154,7 @@ def test_provider_catalog_and_conversation_boundary(env):
     thread_id = detail["conversation"]["thread_id"]
     start = env.fake.params("thread/start")[-1]
     assert start["modelProvider"] == "deepseek" and start["model"] == "deepseek-flash"
-    assert start["config"]["model_catalog_json"] == path
+    assert start["config"] == {"web_search": "disabled"}
     assert "private-test-key" not in json.dumps(start)
 
     for choice, status in [

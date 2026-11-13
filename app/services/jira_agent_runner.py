@@ -122,6 +122,8 @@ class ActiveTurn:
     machine_used: str = ""
     machines_used: tuple[str, ...] = ()
     failure_kind: str = ""
+    result_schema: dict | None = None
+    submitted_result: str = ""
 
 
 # The website runs one worker. This prevents manual retry and recovery from
@@ -443,7 +445,7 @@ class JiraAgentRunner:
     # ── one turn ──────────────────────────────────────────────
 
     async def _reserve_recovery(self, conn, active: ActiveTurn, deadline: float,
-                                reason: str, *, retry_pending: bool = False) -> bool:
+                                reason: str, *, retry_pending: bool = False, result_repair: bool = False) -> bool:
         turn = repo.get_turn(conn, active.turn_id)
         count = turn["recovery_attempts"]
         delay = _RECOVERY_BACKOFF_SECONDS * (count + 1)
@@ -453,7 +455,9 @@ class JiraAgentRunner:
             repo.update_turn(conn, active.turn_id, recovery_attempts=count + 1,
                              **({"retry_pending": 1} if retry_pending else {}))
             repo.add_event(conn, conversation_id=active.conversation_id, turn_id=active.turn_id,
+                           item_id=f'result-repair:{active.turn_id}' if result_repair else '',
                            kind="status", payload={"status": "running", "recovery_attempt": count + 1,
+                           'codex_turn_id': active.codex_turn_id,
                            "text": f"本轮第 {count + 1} 次恢复：{reason}；沿用原时间预算"})
         active.phase = "recovering"
         await asyncio.sleep(delay)
@@ -476,6 +480,7 @@ class JiraAgentRunner:
             try:
                 if active.client is None:
                     active.client = CodexAppServerClient(group.ws_url, group.ws_token,
+                                                       dynamic_tools=True,
                                                        open_timeout=max(.1, min(15, deadline - time.monotonic())))
                     await active.client.connect()
                 if run == self._start:
@@ -484,6 +489,16 @@ class JiraAgentRunner:
                     active.phase = "preparing"
                 result = await run(conn, active, group, conversation, deadline)
                 status, error, _ = result
+                # Codex can finish after rejecting malformed function JSON,
+                # before item/tool/call reaches us. Allow one result-only repair.
+                if (status == 'completed' and active.result_schema is not None and not result[2]
+                        and not active.stop_reason
+                        and not repo.event_by_item_id(conn, active.conversation_id, f'result-repair:{active.turn_id}')
+                        and await self._reserve_recovery(conn, active, deadline,
+                            '未收到有效结果，仅补交已有结论，不重新执行任务', retry_pending=True, result_repair=True)):
+                    conversation = repo.get_conversation(conn, active.conversation_id)
+                    run = self._reattach
+                    continue
                 if status != "failed" or not self._capacity_failure(error) or active.stop_reason:
                     return result
                 # The final failed notification (not an intermediate willRetry)
@@ -518,12 +533,22 @@ class JiraAgentRunner:
         config = (jira_testing_repo.context(conn, conversation["id"])["config"]
                   if conversation["source_kind"] == "test" else {})
         saved = repo.get_turn(conn, active.turn_id)
+        result_only = repo.event_by_item_id(conn, active.conversation_id, f'result-repair:{active.turn_id}')
+        prompt = (
+            '上一轮已经结束，但未成功提交结构化结果。本轮仅补交已有结果：依据已保存的报告和证据，'
+            '不要重新调查、实验、下载或修改报告。submit_result 的参数必须是完整合法的 JSON，'
+            '按工具定义填写全部必填字段。'
+            'artifacts 必须是相对于工作目录的实际文件路径，保留 artifacts/ 等真实目录前缀。'
+            if result_only else
+            '这是同一业务轮次的容量故障恢复，不是用户新增轮次。继续处理本线程已收到的要求和补充；'
+            '先核对已有任务及产物状态，不重复启动实验。原时间预算和机器授权继续有效。'
+        )
         active.phase = "starting"
         turn = await active.client.start_turn(
             active.thread_id,
-            "这是同一业务轮次的容量故障恢复，不是用户新增轮次。继续处理本线程已收到的要求和补充；"
-            "先核对已有任务及产物状态，不重复启动实验。原时间预算和机器授权继续有效。\n" + domain.COMMENT_INSTRUCTIONS,
-            output_schema=config.get("output_schema", domain.RESULT_SCHEMA),
+            prompt + '\n' + domain.COMMENT_INSTRUCTIONS
+            + (domain.RESULT_TOOL_INSTRUCTIONS if active.result_schema is not None else ""),
+            output_schema=None if active.result_schema is not None else config.get("output_schema", domain.RESULT_SCHEMA),
             model=saved["model"] or config.get("model", group.model),
             effort=saved["effort"] or config.get("effort", ""),
         )
@@ -547,6 +572,9 @@ class JiraAgentRunner:
         try:
             conversation = repo.get_conversation(conn, cid)
             group = jira_testing_execution.group_for(conn, conversation, group)
+            if repo.event_by_item_id(conn, cid, f"result-tool:{conversation['thread_id']}"):
+                active.result_schema = (jira_testing_repo.context(conn, cid)['config']['output_schema']
+                                        if conversation['source_kind'] == 'test' else domain.RESULT_SCHEMA)
             if conversation["source_kind"] == "test" and not conversation.get("execution_config_json"):
                 historical = jira_testing_repo.context(conn, cid)["config"]
                 conversation["execution_config_json"] = dumps_json(jira_execution.normalize(machine=historical.get("machine", "")))
@@ -583,6 +611,8 @@ class JiraAgentRunner:
                 final_status, error = "queued", turn_error
             elif status == "completed":
                 try:
+                    if active.result_schema is not None and not final_text:
+                        raise ValueError('本轮未通过 submit_result 提交有效结论，请继续处理')
                     result = domain.parse_result(final_text)
                 except ValueError:
                     active.failure_kind = 'response'
@@ -701,6 +731,10 @@ class JiraAgentRunner:
             test["config"]["effort"] if test else turn["effort"],
         )
         config = jira_agent_models.thread_config(group, provider)
+        if provider == 'metax':
+            if conversation['thread_id'] and active.result_schema is None:
+                raise ValueError('此 MetaX 旧对话未注册结果提交工具，请新建对话后继续处理；原记录和产物保留')
+            active.result_schema = test['config']['output_schema'] if test else domain.RESULT_SCHEMA
         with transaction(conn):
             repo.bind_model_provider(conn, cid, provider)
             repo.update_turn(conn, tid, model=model, effort=effort)
@@ -716,15 +750,22 @@ class JiraAgentRunner:
                 developer_instructions=(test["config"]["instructions"].replace("/TEST_WORKSPACE", conversation["workspace"])
                     if test else domain.developer_instructions(
                         group, conversation["issue_key"], conversation["workspace"]
-                    )),
+                    )) + (domain.RESULT_TOOL_INSTRUCTIONS if active.result_schema is not None else ""),
                 model=model,
                 model_provider=provider,
                 config=config,
                 service_name="release-system-jira-agent",
+                tools=[{'type': 'function', 'name': 'submit_result', 'description': 'Submit the final task result after completing and verifying the work.',
+                        'inputSchema': domain.result_tool_schema(active.result_schema), 'deferLoading': False}] if active.result_schema is not None else None,
             )
             active.thread_id = thread["id"]
             with transaction(conn):
                 repo.set_thread_id(conn, cid, thread["id"])
+                if active.result_schema is not None:
+                    repo.add_event(conn, conversation_id=cid, turn_id=tid, kind='status',
+                                   item_id=f"result-tool:{thread['id']}",
+                                   payload={'status': 'running', 'text': '本对话通过 submit_result 提交结构化结论',
+                                            'arguments_format': 'flat-v1'})
 
         if thread["effective_model_provider"] != provider:
             raise CodexAppServerError("实际 thread 的服务商与本对话不一致，请新建对话，未发送模型请求")
@@ -755,8 +796,9 @@ class JiraAgentRunner:
         heading = "本轮执行机器" if jira_execution.configuration(conversation)["mode"] == "auto" else "出队环境复核"
         codex_turn = await active.client.start_turn(  # type: ignore[union-attr]
             active.thread_id, (test["config"]["prompt"] if test else prompt) + f"\n\n{heading}（以此为准）：\n" +
-                             jira_execution.instructions(jira_execution.configuration(conversation), snapshot),
-            output_schema=test["config"]["output_schema"] if test else domain.RESULT_SCHEMA, model=model,
+                             jira_execution.instructions(jira_execution.configuration(conversation), snapshot)
+                             + (domain.RESULT_TOOL_INSTRUCTIONS if active.result_schema is not None else ""),
+            output_schema=None if active.result_schema is not None else (test["config"]["output_schema"] if test else domain.RESULT_SCHEMA), model=model,
             effort=effort,
         )
         active.codex_turn_id = codex_turn["id"]
@@ -775,6 +817,8 @@ class JiraAgentRunner:
         previous = repo.get_turn(conn, saved['resume_from'])
         if not previous or not conversation['thread_id']:
             raise ValueError('原对话不可恢复，请重新运行测试')
+        if conversation['model_provider'] == 'metax' and active.result_schema is None:
+            raise ValueError('此 MetaX 旧测试未注册结果提交工具，请重新运行测试')
         if saved['codex_turn_id']:
             return await self._reattach(conn, active, group, conversation, deadline)
         active.thread_id = conversation['thread_id']
@@ -801,12 +845,15 @@ class JiraAgentRunner:
         # A lost start reply or a still-running old attempt must be adopted, never replayed.
         adopt = accepted or status == 'inProgress'
         if same and status == 'completed' and previous['failure_kind'] != 'response':
-            messages = [item.get('text', '') for item in target.get('items', []) if item.get('type') == 'agentMessage']
-            try:
-                domain.parse_result(messages[-1] if messages else '')
-                adopt = True
-            except ValueError:
-                pass
+            if active.result_schema is not None:
+                adopt = bool(repo.event_by_item_id(conn, active.conversation_id, f"submitted-result:{target['id']}"))
+            else:
+                messages = [item.get('text', '') for item in target.get('items', []) if item.get('type') == 'agentMessage']
+                try:
+                    domain.parse_result(messages[-1] if messages else '')
+                    adopt = True
+                except ValueError:
+                    pass
         if adopt:
             with transaction(conn):
                 repo.update_turn(conn, active.turn_id, codex_turn_id=target['id'])
@@ -821,8 +868,10 @@ class JiraAgentRunner:
         turn = await active.client.start_turn(
             active.thread_id,
             '本次测试因模型调用或响应处理错误未完成。沿用原任务、输入和机器范围；'
-            '先核对已有实验和产物，接着完成原任务，不重复启动仍在运行的实验。\n' + domain.COMMENT_INSTRUCTIONS,
-            model=saved['model'], effort=saved['effort'], output_schema=config['output_schema'])
+            '先核对已有实验和产物，接着完成原任务，不重复启动仍在运行的实验。\n' + domain.COMMENT_INSTRUCTIONS
+            + (domain.RESULT_TOOL_INSTRUCTIONS if active.result_schema is not None else ""),
+            model=saved['model'], effort=saved['effort'],
+            output_schema=None if active.result_schema is not None else config['output_schema'])
         active.codex_turn_id = turn['id']
         with transaction(conn):
             repo.update_turn(conn, active.turn_id, codex_turn_id=turn['id'])
@@ -860,7 +909,12 @@ class JiraAgentRunner:
             return "failed", "无法核对远端恢复尝试，未启动新实验", ""
         if turn["retry_pending"] and latest:
             if latest[0].get("id") == turn["codex_turn_id"]:
-                if ((thread.get("status") or {}).get("type") == "idle" and self._tool_free_failure(latest[0])):
+                repair = repo.event_by_item_id(conn, cid, f'result-repair:{tid}')
+                result_only = (active.result_schema is not None and repair
+                               and repair['payload']['codex_turn_id'] == turn['codex_turn_id']
+                               and latest[0].get('status') == 'completed')
+                if ((thread.get("status") or {}).get("type") == "idle"
+                        and (self._tool_free_failure(latest[0]) or result_only)):
                     return await self._start_retry(conn, active, group, conversation, deadline)
                 return "failed", "恢复前远端状态与已记录的失败不一致，未启动重复实验", ""
             # A retry was accepted before the website persisted the new id.
@@ -874,6 +928,8 @@ class JiraAgentRunner:
         if target is None:
             return "requeue", "网站重启，本轮尚未在 Codex 上开始，已重新排队", ""
         active.codex_turn_id = target["id"]
+        submission = repo.event_by_item_id(conn, cid, f"submitted-result:{active.codex_turn_id}")
+        active.submitted_result = dumps_json(submission['payload']['result']) if submission else ""
         if turn["codex_turn_id"] != target["id"]:
             with transaction(conn):
                 repo.update_turn(conn, tid, codex_turn_id=target["id"])
@@ -892,7 +948,7 @@ class JiraAgentRunner:
                 status = "interrupted"  # left inProgress by an app-server that restarted
             if status in ('failed', 'interrupted'):
                 active.failure_kind = 'model'
-            return status, ((target.get("error") or {}).get("message") or ""), final_text
+            return status, ((target.get("error") or {}).get("message") or ""), (active.submitted_result if active.result_schema is not None else final_text)
 
         active.phase = "running"
         text = "已重新接管 Codex 上仍在运行的本轮"
@@ -1002,6 +1058,33 @@ class JiraAgentRunner:
         used.add(rel)
         return rel
 
+    async def _submit_result(self, conn, active: ActiveTurn, message: dict) -> None:
+        params = message.get('params') or {}
+        success = False
+        try:
+            if (active.result_schema is None or active.stop_reason or params.get('namespace')
+                    or params.get('tool') != 'submit_result' or not params.get('callId')
+                    or params.get('threadId') != active.thread_id or params.get('turnId') != active.codex_turn_id):
+                raise ValueError('该请求不属于正在执行的结果提交任务')
+            tool = repo.event_by_item_id(conn, active.conversation_id, f'result-tool:{active.thread_id}')
+            flat = bool(tool and tool['payload'].get('arguments_format') == 'flat-v1')
+            result = domain.parse_submitted_result(params.get('arguments'), active.result_schema, flat=flat)
+            if active.submitted_result and json.loads(active.submitted_result) != result:
+                raise ValueError('本轮已经接收结果，请结束本轮，不再修改或重复执行任务')
+            if not active.submitted_result:
+                # Commit before acknowledgement: reconnect can recover this exact
+                # submission even if the reply or completed notification is lost.
+                _event(conn, active.conversation_id, active.turn_id, 'tool',
+                       {'type': 'submit_result', 'result': result, 'detail': '结构化结论已校验并接收'},
+                       f'submitted-result:{active.codex_turn_id}')
+                active.submitted_result = dumps_json(result)
+            success, text = True, '结果已接收，请结束本轮，不再调用工具。'
+        except ValueError as exc:
+            text = f'结果未接收：{exc}。请修正参数后重试。'
+        await active.client.respond_tool(message['id'], {
+            'success': success, 'contentItems': [{'type': 'inputText', 'text': text}],
+        })
+
     async def _consume(
         self, conn, active: ActiveTurn, group: domain.AgentGroup, deadline: float,
         final_text: str = "",
@@ -1025,6 +1108,9 @@ class JiraAgentRunner:
                 continue
             method = message.get("method", "")
             params = message.get("params") or {}
+            if method == 'item/tool/call':
+                await self._submit_result(conn, active, message)
+                continue
             if params.get("threadId") and params["threadId"] != active.thread_id:
                 continue
             if params.get("turnId") and params["turnId"] != active.codex_turn_id:
@@ -1045,7 +1131,7 @@ class JiraAgentRunner:
                     continue
                 if turn.get('status') in ('failed', 'interrupted'):
                     active.failure_kind = 'model'
-                return turn.get("status") or "failed", ((turn.get("error") or {}).get("message") or ""), final_text
+                return turn.get("status") or "failed", ((turn.get("error") or {}).get("message") or ""), (active.submitted_result if active.result_schema is not None else final_text)
             elif method == "error" and not params.get("willRetry"):
                 _event(conn, cid, tid, "error", {"text": (params.get("error") or {}).get("message", "Codex 错误")})
             elif method == "client/serverRequestRejected":

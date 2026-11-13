@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+from jsonschema import Draft202012Validator, ValidationError
+
 from app import runtime_config
 from app.domain.jira_format import (
     _MONOSPACE, _outside_macros, format_jira_comment, jira_monospace_spacing,
@@ -556,6 +558,42 @@ def continuation_result(result: dict) -> dict:
         context["evidence"] = [{"description": item.get("description", "")}
                                for item in result["evidence"] if isinstance(item, dict)]
     return context
+
+
+RESULT_TOOL_INSTRUCTIONS = (
+    "\n本轮最终结构化结论通过 submit_result 工具提交，字段约束见工具定义。"
+    "先完成实际调查和验证并保存产物，再提交结果；校验失败时修正后重试。"
+    "工具确认接收后结束本轮，不再执行其他操作；普通文字回复不能代替结果提交。"
+)
+
+
+def result_tool_schema(schema: dict) -> dict:
+    """Flatten required business objects; retain arrays and their full constraints."""
+    properties = {}
+    for name, spec in schema['properties'].items():
+        fields = ({name + '_' + key: value for key, value in spec['properties'].items()}
+                  if spec.get('type') == 'object' else {name: spec})
+        if properties.keys() & fields.keys():
+            raise ValueError('Result tool field collision')
+        properties.update(fields)
+    return _obj(properties)
+
+
+def parse_submitted_result(arguments: object, schema: dict, *, flat: bool = False) -> dict:
+    """Dynamic tool arguments are untrusted, unlike constrained model output."""
+    try:
+        if flat:
+            Draft202012Validator(result_tool_schema(schema)).validate(arguments)
+            arguments = {
+                name: ({key: arguments[name + '_' + key] for key in spec['properties']}
+                       if spec.get('type') == 'object' else arguments[name])
+                for name, spec in schema['properties'].items()
+            }
+        Draft202012Validator(schema).validate(arguments)
+    except ValidationError as exc:
+        path = '.'.join(str(part) for part in exc.absolute_path) or '$'
+        raise ValueError(f"{path}: {exc.message[:500]}") from exc
+    return parse_result(json.dumps(arguments, ensure_ascii=False))
 
 
 def parse_result(text: str) -> dict:

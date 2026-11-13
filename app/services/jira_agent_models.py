@@ -95,10 +95,10 @@ class ModelCatalog:
 
 def thread_config(group: AgentGroup, provider: str) -> dict:
     path = dict(group.model_catalogs).get(provider)
-    # Third-party catalogs describe tools and context limits, and must also be
-    # supplied when starting/resuming their threads. Built-in web search isn't
-    # assumed to be supported by a Responses-compatible third-party endpoint.
-    return {"model_catalog_json": path, "web_search": "disabled"} if path else {}
+    # Codex loads model_catalog_json at app-server startup; a thread override
+    # is ignored. Server B must load the combined catalog before serving tasks.
+    # Third-party Responses endpoints need not implement built-in web search.
+    return {"web_search": "disabled"} if path else {}
 
 
 async def read_catalog(client: CodexAppServerClient, group: AgentGroup) -> ModelCatalog:
