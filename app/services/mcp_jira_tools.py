@@ -240,6 +240,8 @@ register(Tool(
         "and curl commands that download each attachment into <target_dir>/attachments. "
         "Default target_dir is jira/<ISSUE-KEY> under the current working directory. "
         "Use jira_read_attachment with listed attachment ID to read text without curl. "
+        "Not a prerequisite for jira_add_comment or jira_upload_attachment; use those directly when "
+        "their inputs are already known. Pull only when the task needs issue context or existing attachments. "
         "Recorded correlation fields and explicit JIRA/Jenkins links are returned with provenance."
     ),
     input_schema={
@@ -327,7 +329,10 @@ register(Tool(
     title="评论 JIRA",
     description=(
         "Append a comment (JIRA wiki markup) to an issue. Only the issue's current assignee or an RM may "
-        "comment. Before drafting, load skill_load(skill=\"jira-format\"), including draft-only requests. "
+        "comment. Call directly when the issue key and information needed for the comment are already known; "
+        "no prior jira_pull_issue is required. The server checks issue access and current write permission. "
+        "Pull only when the task needs missing issue context, comment history or existing attachment links. "
+        "Before drafting, load skill_load(skill=\"jira-format\"), including draft-only requests. "
         "The server applies shared JIRA wiki formatting before confirmation and posts that same body. "
         "Before calling, show the complete proposed comment in the conversation for the user to review. "
         "The confirmation dialog shows only a bounded excerpt for long comments; the full body is posted. "
@@ -398,7 +403,9 @@ register(Tool(
     title="上传 JIRA 附件",
     description=(
         "Attach a file from the user's machine to a JIRA issue. Only the issue's current assignee or an RM "
-        "may upload. This tool checks permission and returns a one-time curl command; run it locally to send "
+        "may upload. Call directly with the issue key and local file path; no prior jira_pull_issue is required. "
+        "Do not pull merely to verify the issue exists or permission to upload; the server checks both. "
+        "This tool checks permission and returns a one-time curl command; run it locally to send "
         "the file (the MCP server cannot read local files). No elicitation confirmation is required for "
         "attachments. Permission is checked both when issuing the command and when receiving the upload."
     ),
