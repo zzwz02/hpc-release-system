@@ -34,6 +34,7 @@ INSTRUCTIONS = (
     "HPC 发布协作系统的 MCP。可以搜索 JIRA、把工单（字段、评论、附件）拉取到本地目录、"
     "给工单追加评论、上传附件。评论和附件以发布系统的 JIRA 账号提交并注明你的名字；"
     "发评论时必须通过 elicitation 输入本人域账号用户名，与 token 所属账号匹配才发送；"
+    "用户名不匹配、拒绝、取消或确认超时均表示未获确认，应告知用户具体原因，不要自动重试或代填用户名。"
     "客户端不支持时不能发评论。附件上传不需要确认，但仍检查权限。"
     "起草或发送 JIRA 评论前先调用 skill_load(skill=\"jira-format\") 读取格式规范；评论正文先统一处理格式，再弹窗确认。"
     "调用 jira_add_comment 前，先在对话中向用户展示拟发送的完整评论；长评论在确认弹窗中只展示摘要，发送时保留全文。"
@@ -46,6 +47,8 @@ INSTRUCTIONS = (
 PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS = -32700, -32600, -32601, -32602
 
 CONFIRM_TIMEOUT_SECONDS = 300
+# Stay below the common 60-second reverse-proxy idle timeout while the user reads.
+SSE_HEARTBEAT_SECONDS = 15
 _PENDING: dict[str, dict[str, Any]] = {}
 _PENDING_LOCK = threading.Lock()
 
@@ -58,7 +61,10 @@ class _Stream:
 
     def events(self) -> Iterator[bytes]:
         for message in self.exchange.call_with_confirmation(self.msg_id, self.tool, self.arguments):
-            yield f"event: message\ndata: {json.dumps(message, ensure_ascii=False)}\n\n".encode()
+            if message is None:
+                yield b": keep-alive\n\n"
+            else:
+                yield f"event: message\ndata: {json.dumps(message, ensure_ascii=False)}\n\n".encode()
 
 
 def _settle(message: dict, caller: McpCaller, session: dict) -> bool:
@@ -197,7 +203,7 @@ class Exchange:
             duration_ms=int((time.monotonic() - started) * 1000),
         )
 
-    def call_with_confirmation(self, msg_id: Any, tool, arguments: dict) -> Iterator[dict]:
+    def call_with_confirmation(self, msg_id: Any, tool, arguments: dict) -> Iterator[dict | None]:
         ctx = ToolContext(caller=self.caller, session=self.session, base_url=self.base_url)
         started = time.monotonic()
         try:
@@ -225,7 +231,16 @@ class Exchange:
                 "message": message,
                 "requestedSchema": schema,
             }}
-            answered = waiter["event"].wait(CONFIRM_TIMEOUT_SECONDS)
+            deadline = time.monotonic() + CONFIRM_TIMEOUT_SECONDS
+            answered = False
+            while not answered:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                answered = waiter["event"].wait(min(SSE_HEARTBEAT_SECONDS, remaining))
+                if not answered and time.monotonic() < deadline:
+                    # SSE comments keep proxies alive without creating MCP messages.
+                    yield None
             reply = waiter["reply"] or {}
         finally:
             with _PENDING_LOCK:
@@ -246,10 +261,15 @@ class Exchange:
             yield self._run(msg_id, tool, arguments,
                             confirmed="username_matched")
             return
-        refused = ToolResult.text(text, log=ctx.log)
+        refused = ToolResult.text(
+            text + "请向用户说明原因，不要自动重试或代填用户名；仅在用户明确要求重新确认后再调用。",
+            log=ctx.log,
+        )
         refused.is_error = True
         self._record(tool, arguments, refused, ctx, error=text, confirmed=outcome, started=started)
-        yield _result(msg_id, {"content": refused.content, "isError": True})
+        yield _result(msg_id, {"content": refused.content, "isError": True,
+                              "structuredContent": {"status": "not_executed", "reason": outcome,
+                                                    "retryable": False}})
 
 
 def handle_payload(conn, caller: McpCaller, session_id: str, base_url: str, payload: Any) -> tuple[Any, str]:

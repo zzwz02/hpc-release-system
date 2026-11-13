@@ -100,7 +100,8 @@ async def mcp_post(request: Request) -> Response:
     # first, the tool result once the client answers.
     if isinstance(reply, mcp_protocol._Stream):
         return StreamingResponse(reply.events(), media_type="text/event-stream",
-                                 headers={**headers, "Cache-Control": "no-cache"})
+                                 headers={**headers, "Cache-Control": "no-cache, no-transform",
+                                          "X-Accel-Buffering": "no"})
     return JSONResponse(reply, headers=headers)
 
 

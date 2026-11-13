@@ -11,7 +11,8 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'app/resources/mcp/setup.sh'
 
 @pytest.mark.parametrize('client', ['claude', 'codex'])
 @pytest.mark.parametrize('valid', [True, False])
-def test_use_existing_token_updates_only_selected_client(tmp_path, client, valid):
+@pytest.mark.parametrize('scheme', ['http', 'https'])
+def test_use_existing_token_updates_only_selected_client(tmp_path, client, valid, scheme):
     functions = tmp_path / 'setup-functions.sh'
     functions.write_text(SCRIPT.read_text().split('action="${1:-}"')[0])
     claude = tmp_path / 'claude.json'
@@ -25,7 +26,7 @@ CLAUDE_JSON="$2"
 CODEX_TOML="$3"
 MCP_CLIENTS="$4"
 MCP_TOKEN=rsmcp_test_abcdefghijklmnopqrstuvwxyz0123456789
-MCP_URL=https://example.test/mcp
+MCP_URL="$6://example.test/mcp"
 TOKEN_VALID="$5"
 token_works() { [ "$TOKEN_VALID" = yes ]; }
 api() { exit 77; }
@@ -34,7 +35,7 @@ do_use_token
 do_use_token
 '''
     result = subprocess.run(['bash', '-c', command, 'test', str(functions), str(claude), str(codex),
-                             client, 'yes' if valid else 'no'], capture_output=True, text=True, timeout=10)
+                             client, 'yes' if valid else 'no', scheme], capture_output=True, text=True, timeout=10)
     assert 'rsmcp_test_abcdefghijklmnopqrstuvwxyz0123456789' not in result.stdout + result.stderr
     if not valid:
         assert result.returncode != 0
@@ -45,14 +46,14 @@ do_use_token
         data = json.loads(claude.read_text())['mcpServers']
         assert data['other'] == {'command': 'other'}
         entry = data['release-system']
-        assert entry == {'type': 'http', 'url': 'https://example.test/mcp',
+        assert entry == {'type': 'http', 'url': f'{scheme}://example.test/mcp',
                          'headers': {'Authorization': 'Bearer rsmcp_test_abcdefghijklmnopqrstuvwxyz0123456789'}}
         assert codex.read_bytes() == originals[codex]
     else:
         data = tomllib.loads(codex.read_text())
         assert data['model'] == 'test' and data['mcp_servers']['other'] == {'command': 'other'}
         entry = data['mcp_servers']['release-system']
-        assert entry['url'] == 'https://example.test/mcp'
+        assert entry['url'] == f'{scheme}://example.test/mcp'
         assert entry['http_headers'] == {'Authorization': 'Bearer rsmcp_test_abcdefghijklmnopqrstuvwxyz0123456789'}
         assert 'command' not in entry
         assert 'required' not in entry
