@@ -9,7 +9,7 @@ from tests.conftest import close_qa, make_dependency_app_info, seed_app, seed_cy
 
 
 @pytest.fixture()
-def inventory(temp_db):
+def inventory(temp_db, harbor_artifacts):
     for name in ("amber", "hpl", "skipped", "withdrawn", "stopped", "never"):
         seed_app(temp_db, name, official_name=name.upper(), app_info=make_dependency_app_info(name), commit_id="published-config")
     cycles = []
@@ -25,6 +25,7 @@ def inventory(temp_db):
                 continue
             images = [{**build, "commit_id": "image-build-commit", "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].partition(':')[0]}@sha256:{str(index + 1) * 64}"}
                       for index, build in enumerate(entry["delivery_builds"])]
+            harbor_artifacts(images)
             qa_service.set_qa_status_batch(temp_db, release, [{
                 "app_id": name, "status": "cannot_release" if version == "3.10" and name == "amber" else "has_issues",
                 "issue_note": "QA explanation", "delivery_revision": entry["delivery_revision"], "deliverable_images": images,

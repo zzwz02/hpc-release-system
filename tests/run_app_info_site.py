@@ -32,12 +32,14 @@ def main():
         from app.config import settings
         from app.db.connection import connect
         from app.domain.authn import hash_password
-        from app.integrations import gerrit
+        from app.integrations import gerrit, harbor
         from app.main import create_app
         from app.services import catalog_service
-        from tests.conftest import close_qa, close_signup, make_app_info, make_dependency_app_info, make_platform_app_info, seed_app, seed_cycle, seed_signup
+        from tests.conftest import close_qa, close_signup, make_app_info, make_dependency_app_info, make_platform_app_info, seed_app, seed_cycle, seed_signup, make_harbor_registry, seed_legacy_qa
         import uvicorn
 
+        register_artifacts, saved_artifact = make_harbor_registry()
+        harbor.get_artifact = saved_artifact
         conn = connect(settings.db_path)
         for username, role in [
             ("app_rm", "RM"), ("app_owner", "Owner"), ("app_other", "Owner"),
@@ -56,6 +58,11 @@ def main():
             platform_info = make_platform_app_info()
             seed_app(conn, "platform-check", official_name="HPCG", app_info=platform_info,
                      commit_id="b641bd0deac7c59ecb6a53c814ed3c150b7811a4")
+            from app.domain import delivery_images
+            platform_builds = delivery_images.builds(platform_info)
+            register_artifacts([{**build, "reference": f"harbor.sh.mxcr.io/hpc-release/hpcg-maca@sha256:{digit * 64}"}
+                                for build in platform_builds if build["os"] == "ubuntu20.04"
+                                for digit in (["a"] if build["arch"] == "amd64" else ["b"])])
         if args.dependencies:
             from app.services import cycle_service, qa_service
 
@@ -75,6 +82,7 @@ def main():
                 {**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].partition(':')[0]}@sha256:{digit * 64}"}
                 for build, digit in zip((build for build in entry["delivery_builds"] if build["os"] != "ubuntu24.04"), "abcde")
             ]
+            register_artifacts(images)
             qa_service.set_qa_status_batch(conn, dependency_release, [{"app_id": "runtime-published", "status": "qa_passed",
                                                                      "deliverable_images": images, "delivery_revision": entry["delivery_revision"]}],
                                            user="app_qa", role="QA")
@@ -99,6 +107,7 @@ def main():
                     entry = seed_signup(conn, release_id, name, target_version=f"{name}-{version}")
                     images = [{**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].partition(':')[0]}@sha256:{str(index + 1) * 64}"}
                               for index, build in enumerate(entry["delivery_builds"])]
+                    register_artifacts(images)
                     qa_service.set_qa_status_batch(conn, release_id, [{"app_id": name,
                         "status": "cannot_release" if name == "amber" and version == "3.10" else "qa_passed",
                         "issue_note": "QA 测试未通过" if name == "amber" and version == "3.10" else "",
@@ -127,7 +136,7 @@ def main():
                             item.update(deliverable_image=f"harbor.sh.mxcr.io/hpc-release/{app_id}:v{index}",
                                         deliverable_digest="sha256:" + str(index) * 64)
                         items.append(item)
-                    qa_service.set_qa_status_batch(conn, release_id, items, user="app_qa", role="QA")
+                    seed_legacy_qa(conn, release_id, items, user="app_qa", role="QA")
                 close_qa(conn, release_id)
                 cycle_service.publish(conn, release_id, user="app_rm", role="RM")
                 if args.legacy_history and name == "history-3.9.0":
@@ -150,11 +159,11 @@ def main():
                 cfg["container_args"] = "--device=/dev/dri -u 0"
             seed_app(conn, "lookup-image", app_info=make_app_info(app_name="abacus", app_version="4.0"))
             from app.api.errors import ApiError
-            from app.integrations import harbor
-
             def lookup_artifact(project, repository, digest):
                 if repository.startswith("published-image"):
                     raise RuntimeError("Published image queries must not access Harbor")
+                if repository not in ("abacus-maca", "hpcg-maca"):
+                    return saved_artifact(project, repository, digest)
                 if digest == "sha256:" + "e" * 64:
                     raise ValueError("Harbor 中未找到该镜像，请检查镜像名和 digest")
                 if digest == "sha256:" + "d" * 64:
@@ -171,7 +180,6 @@ def main():
                     tags = [f"0.9.0-bb46c60-{platform_tag}-3012"]
                 return {"digest": digest, "tags": [{"name": tag} for tag in tags], "extra_attrs": {"architecture": architecture}}
 
-            harbor.get_artifact = lookup_artifact
         if args.image_publications:
             from app.services import cycle_service, qa_service
 
@@ -186,6 +194,7 @@ def main():
                 entry = seed_signup(conn, release_id, "image-published", target_version=f"{index}.0", excluded_tests=["extra"] if index == 1 else [])
                 images = [{**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].partition(':')[0]}@sha256:{digit * 64}"}
                           for build, digit in zip(entry["delivery_builds"], "abcdef")]
+                register_artifacts(images)
                 qa_service.set_qa_status_batch(conn, release_id, [{"app_id": "image-published", "status": "has_issues", "issue_note": f"original-QA-{index}",
                     "delivery_revision": entry["delivery_revision"], "deliverable_images": images}], user="app_qa", role="QA")
                 close_qa(conn, release_id)
@@ -217,6 +226,8 @@ def main():
                 cycle_service.save_environment(conn, release_id, catalog, user="app_rm", role="RM")
                 if index == 0:
                     seed_signup(conn, release_id, "own-ready-b")
+        if args.lookup:
+            harbor.get_artifact = lookup_artifact
         conn.close()
 
         def head_commit(url, *_args, **_kwargs):

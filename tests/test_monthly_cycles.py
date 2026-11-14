@@ -19,6 +19,7 @@ from tests.conftest import (
     seed_app,
     seed_cycle,
     seed_signup,
+    seed_legacy_qa,
     store_app_info,
 )
 
@@ -334,7 +335,7 @@ def _release_cycle(conn, verdicts: dict[str, tuple[str, str]]) -> str:
     release_id = seed_cycle(conn)
     for app_id in verdicts:
         seed_signup(conn, release_id, app_id, target_version=f"{app_id}-1.0")
-    qa_service.set_qa_status_batch(
+    seed_legacy_qa(
         conn,
         release_id,
         [

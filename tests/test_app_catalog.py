@@ -30,6 +30,7 @@ from tests.conftest import (
     seed_app,
     seed_cycle,
     seed_signup,
+    seed_legacy_qa,
     store_app_info,
 )
 
@@ -255,7 +256,7 @@ def test_the_compatibility_list_only_holds_apps_with_an_official_version(temp_db
     _published_app(temp_db, "beta", dependencies=["mcpy"])
     release_id = seed_cycle(temp_db)
     seed_signup(temp_db, release_id, "alpha", target_version="1.0")
-    qa_service.set_qa_status_batch(
+    seed_legacy_qa(
         temp_db,
         release_id,
         [{"app_id": "alpha", "status": "qa_passed", "deliverable_image": "hpc/alpha:1",
@@ -349,7 +350,7 @@ def test_official_history_keeps_one_final_version_per_cycle_after_corrections(te
         release_id = seed_cycle(temp_db, name=name)
         releases.append(release_id)
         seed_signup(temp_db, release_id, app_id, target_version="1.0")
-        qa_service.set_qa_status_batch(temp_db, release_id, [
+        seed_legacy_qa(temp_db, release_id, [
             {"app_id": app_id, "status": "qa_passed", "deliverable_image": f"hpc/testapp:{name}",
              "deliverable_digest": f"sha256:{name}"},
         ], user="qa", role="QA")
@@ -405,7 +406,7 @@ def test_lookup_by_digest_returns_the_cycle_environment_and_test_commands(temp_d
         user="rm", role="RM",
     )[0]["id"]
     seed_signup(temp_db, release_id, app_id, base_image_id=image_id)
-    qa_service.set_qa_status_batch(
+    seed_legacy_qa(
         temp_db,
         release_id,
         [{"app_id": app_id, "status": "qa_passed", "deliverable_image": "hpc/testapp:1",

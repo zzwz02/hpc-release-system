@@ -16,7 +16,7 @@ from tests.conftest import close_qa, make_dependency_app_info, seed_app, seed_cy
 
 
 @pytest.fixture()
-def publications(temp_db, monkeypatch):
+def publications(temp_db, monkeypatch, harbor_artifacts):
     app = seed_app(temp_db, "recorded", app_info=None)
     records = []
     for index, name in enumerate(("3.9", "3.10"), 1):
@@ -29,6 +29,7 @@ def publications(temp_db, monkeypatch):
         entry = seed_signup(temp_db, release, app, target_version=f"{index}.0", excluded_tests=["extra"] if index == 1 else [])
         images = [{**build, "reference": f"{harbor.HARBOR_HOST}/hpc-release/{build['image_pattern'].partition(':')[0]}@sha256:{digit * 64}"}
                   for build, digit in zip(entry["delivery_builds"], "abcdef")]
+        harbor_artifacts(images)
         qa_service.set_qa_status_batch(temp_db, release, [{"app_id": app, "status": "has_issues", "issue_note": f"QA-{index}",
             "delivery_revision": entry["delivery_revision"], "deliverable_images": images}], user="qa", role="QA")
         close_qa(temp_db, release)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import itertools
+import re
 from typing import Any
 
 from app.domain.test_platforms import (
@@ -22,6 +23,13 @@ IMAGE_TARGET_SUFFIX = {
     "release": "maca",
     "dbg": "maca-dbg",
 }
+
+
+def image_tag_matches(pattern: str, tag: str, *, hpc_version: str | None = None) -> bool:
+    """Match a generated tag, including the optional Jenkins build number."""
+    version = re.escape(hpc_version) if hpc_version is not None else r"[^\s:/-]+"
+    expected = re.escape(pattern).replace(re.escape("<hpc_version>"), version)
+    return re.fullmatch(expected + r"(?:-\d+)?", tag) is not None
 
 
 def image_field_options(raw: dict[str, Any], build_cfg: dict[str, Any], field: str) -> list[str]:

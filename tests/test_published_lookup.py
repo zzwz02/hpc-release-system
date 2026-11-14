@@ -7,7 +7,7 @@ from app.domain.container_image import delivered_image_reference
 from app.integrations import gerrit, harbor
 from app.main import create_app
 from app.services import catalog_service, cycle_service, lookup_service, qa_service
-from tests.conftest import close_qa, close_signup, make_app_info, seed_app, seed_cycle, seed_signup
+from tests.conftest import close_qa, close_signup, make_app_info, seed_app, seed_cycle, seed_signup, seed_legacy_qa
 
 ADDRESS = "harbor.sh.mxcr.io/hpc-release/hpl-maca"
 DIGEST = "sha256:" + "a" * 64
@@ -24,7 +24,7 @@ def history(temp_db, monkeypatch):
     cycle_service.publish(temp_db, empty, user="rm", role="RM")
     older = seed_cycle(temp_db, name="3.9.0")
     seed_signup(temp_db, older, "passed", target_version="0.9")
-    qa_service.set_qa_status_batch(temp_db, older, [
+    seed_legacy_qa(temp_db, older, [
         {"app_id": "passed", "status": "has_issues", "issue_note": "旧版问题",
          "deliverable_image": ADDRESS + ":old", "deliverable_digest": "b" * 64},
     ], user="qa", role="QA")
@@ -35,7 +35,7 @@ def history(temp_db, monkeypatch):
         entry = seed_signup(temp_db, recent, app_id, target_version="1.0")
         if app_id == "withdrawn":
             cycle_service.withdraw(temp_db, entry["id"], user="rm", role="RM")
-    qa_service.set_qa_status_batch(temp_db, recent, [
+    seed_legacy_qa(temp_db, recent, [
         {"app_id": "passed", "status": "qa_passed", "deliverable_image": ADDRESS, "deliverable_digest": DIGEST},
         {"app_id": "issues", "status": "has_issues", "issue_note": "性能有波动",
          "deliverable_image": f"{ADDRESS}@{DIGEST}"},

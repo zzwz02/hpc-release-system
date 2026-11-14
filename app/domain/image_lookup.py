@@ -8,7 +8,7 @@ from app.domain.container_image import delivered_image_reference, parse_base_ima
 from app.domain.test_platforms import build_platforms, chip_summary, release_tests
 from app.domain.test_commands import (
     IMAGE_TARGET_SUFFIX, build_target_matches, command_rows, docker_cmd, image_values_for_build,
-    normalize_arch,
+    normalize_arch, image_tag_matches,
 )
 
 
@@ -67,8 +67,7 @@ def _matches_tag(variant: str, image_name: str, tags: list[str]) -> bool:
         return False
     for tag in tags:
         commit = tag.split("-", 2)[1]
-        expected = pattern.replace("<hpc_version>", commit)
-        if re.fullmatch(re.escape(expected) + r"(?:-\d+)?", tag):
+        if image_tag_matches(pattern, tag, hpc_version=commit):
             return True
     return False
 

@@ -13,7 +13,7 @@ from tests.conftest import close_qa, make_app_info, make_dependency_app_info, se
 
 
 @pytest.fixture()
-def delivery(temp_db):
+def delivery(temp_db, harbor_artifacts):
     raw = make_app_info()
     raw['app_build'] = {
         'ubuntu22.04_amd64': {'os': 'ubuntu22.04', 'arch': 'amd64', 'build_target': 'release,dbg', 'python_label': 'py312'},
@@ -25,6 +25,9 @@ def delivery(temp_db):
     entry = seed_signup(temp_db, release, app)
     values = [{**row, 'reference': f'harbor.sh.mxcr.io/hpc-release/testapp-maca@sha256:{digit * 64}'}
               for row, digit in zip(sorted([r for r in entry['delivery_builds'] if r['image_target'] == 'release'], key=lambda r: r['arch']), 'ab')]
+    harbor_artifacts(values)
+    harbor_artifacts([{**values[0], 'reference': values[0]['reference'].replace('a' * 64, digit * 64)} for digit in 'cde'])
+    harbor_artifacts([{**values[1], 'reference': values[1]['reference'].replace('b' * 64, 'c' * 64)}])
     return app, release, entry, values
 
 
@@ -127,11 +130,14 @@ def test_scalar_clients_cannot_drop_multiple_images_and_old_records_are_retained
     old = cycle_service.entry_view(temp_db, entries_repo.get_entry(temp_db, entry['id']))
     assert old['deliverable_images'][0]['build_key'] == 'legacy'
     assert old['deliverable_images'][0]['os'] == ''
-    save(temp_db, delivery, values=[*old['deliverable_images'], *delivery[3]], revision=old['delivery_revision'])
+    with pytest.raises(ValueError, match='无法确定 OS/CPU 架构'):
+        save(temp_db, delivery, values=[*old['deliverable_images'], *delivery[3]], revision=old['delivery_revision'])
+    assert entries_repo.get_entry(temp_db, entry['id'])['deliverable_images'] == []
+    save(temp_db, delivery, values=delivery[3], revision=old['delivery_revision'])
     with pytest.raises(ValueError, match='多镜像'):
         qa_service.set_qa_status_batch(temp_db, release, [{'app_id': app, 'status': 'qa_passed',
             'deliverable_digest': 'sha256:' + 'f' * 64}], user='qa', role='QA')
-    assert len(entries_repo.get_entry(temp_db, entry['id'])['deliverable_images']) == 3
+    assert len(entries_repo.get_entry(temp_db, entry['id'])['deliverable_images']) == 2
 
 
 def test_build_variants_expand_frameworks_and_do_not_include_disabled_builds():
@@ -177,7 +183,7 @@ def test_unassigned_legacy_image_is_not_applied_to_every_build():
     assert all(not command['delivery_reference'] and '@sha256:' not in command['command'] for command in commands)
 
 
-def test_dependency_reads_and_csv_preserve_every_frozen_image_and_platform_command(temp_db):
+def test_dependency_reads_and_csv_preserve_every_frozen_image_and_platform_command(temp_db, harbor_artifacts):
     import csv
     import io
 
@@ -187,9 +193,10 @@ def test_dependency_reads_and_csv_preserve_every_frozen_image_and_platform_comma
     release = seed_cycle(temp_db, name='3.10.0')
     entry = seed_signup(temp_db, release, app, excluded_tests=['excluded'])
     images = [
-        {**spec, 'reference': f'harbor.test/hpc-release/{spec["image_pattern"].partition(":")[0]}@sha256:{digit * 64}'}
+        {**spec, 'reference': f'harbor.sh.mxcr.io/hpc-release/{spec["image_pattern"].partition(":")[0]}@sha256:{digit * 64}'}
         for spec, digit in zip((spec for spec in entry['delivery_builds'] if spec['os'] != 'ubuntu24.04'), 'abcde')
     ]
+    harbor_artifacts(images)
     qa_service.set_qa_status_batch(temp_db, release, [{
         'app_id': app, 'status': 'qa_passed', 'deliverable_images': images, 'delivery_revision': entry['delivery_revision'],
     }], user='qa', role='QA')

@@ -98,7 +98,7 @@ def normalize(values: Any, raw: dict, entry: dict) -> list[dict]:
         expected = spec['image_pattern'].partition(':')[0]
         address = parsed['image'].rsplit('/', 1)[-1].partition(':')[0]
         if address != expected:
-            raise ValueError(f'构建 {spec["build"]} 的镜像名称应为 {expected}')
+            raise ValueError(f'构建 {spec["build"]} 的 {spec["image_target"]} 镜像名称应为 {expected}')
         result.append({**spec, 'image': parsed['image'], 'digest': parsed['digest'],
                        'reference': f'{parsed["image"]}@{parsed["digest"]}',
                        'commit_id': str(value.get('commit_id') or '').strip()})

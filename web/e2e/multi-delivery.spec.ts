@@ -36,9 +36,24 @@ test("QA records separate OS/CPU images and publication/history retain both dige
   const x86 = table.getByRole("row").filter({ hasText: "ubuntu20.04" }).filter({ has: page.getByRole("cell", { name: "x86", exact: true }) });
   const arm = table.getByRole("row").filter({ hasText: "ubuntu20.04" }).filter({ has: page.getByRole("cell", { name: "ARM", exact: true }) });
   const image = "harbor.sh.mxcr.io/hpc-release/hpcg-maca@sha256:";
-  await x86.getByTestId("delivery-reference").fill("docker pull " + image + "a".repeat(64));
+  await x86.getByTestId("delivery-reference").fill(image + "b".repeat(64));
   await arm.getByTestId("delivery-reference").fill(image + "b".repeat(64));
   await card.getByTestId("qa-status-platform-check").selectOption("qa_passed");
+  for (const [digit, error] of [["b", "实际 tags 与构建配置不匹配"], ["c", "Harbor 中未找到该镜像"]]) {
+    await x86.getByTestId("delivery-reference").fill(image + digit.repeat(64));
+    const failed = page.waitForResponse(r => r.url().endsWith("/api/qa/status-batch"));
+    await page.getByRole("button", { name: "保存 QA 状态", exact: true }).first().click();
+    const response = await failed;
+    expect(response.status()).toBe(400);
+    expect((await response.json()).error).toContain(error);
+    await expect(page.getByText(error, { exact: false }).first()).toBeVisible();
+    await expect(x86.getByTestId("delivery-reference")).toHaveValue(image + digit.repeat(64));
+    const unchanged = await (await page.request.get(base + `/api/state?release_id=${release.id}`)).json();
+    const entry = unchanged.release.entries.find((e: { app_id: string }) => e.app_id === "platform-check");
+    expect(entry.qa_status).toBe("not_checked");
+    expect(entry.deliverable_images).toHaveLength(0);
+  }
+  await x86.getByTestId("delivery-reference").fill("docker pull " + image + "a".repeat(64));
   const saved = page.waitForResponse(r => r.url().endsWith("/api/qa/status-batch"));
   await page.getByRole("button", { name: "保存 QA 状态", exact: true }).first().click();
   const response = await saved;

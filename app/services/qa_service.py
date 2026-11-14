@@ -11,7 +11,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from app.api.errors import AuthzError
+from app.api.errors import ApiError, AuthzError
 from app.db.connection import transaction
 from app.domain import cycles as cycles_domain
 from app.domain import phases as phase_policy
@@ -34,7 +34,7 @@ from app.repositories import (
     users_repo,
 )
 from app.repositories.audit_repo import log_audit
-from app.services import catalog_service, cycle_service
+from app.services import catalog_service, cycle_service, delivery_validation_service
 from app.timeutil import beijing_timestamp
 
 QA_RELEASE_REPORT_COLUMNS = [
@@ -78,17 +78,33 @@ def set_qa_status_batch(
 ) -> dict:
     """Apply several QA verdicts (and delivered-image digests) atomically.
 
-    Each item: ``{app_id, status, issue_note, deliverable_image?,
-    deliverable_digest?, deliverable_commit?}``.  ``has_issues`` and
+    Each item: ``{app_id, status, issue_note, deliverable_images?,
+    delivery_revision?}``. Validate Harbor artifacts before opening the write
+    transaction, then recheck mutable state. ``has_issues`` and
     ``cannot_release`` require a note.
     """
     if not has_capability(role, "qa.edit"):
         raise AuthzError("只有 QA、RM 可以修改 QA 结论")
+    prepared = _prepare_qa_status_batch(conn, release_id, items)
+    artifacts: dict[tuple[str, str, str], dict] = {}
+    for entry, update in prepared:
+        if "deliverable_images" in update:
+            try:
+                delivery_validation_service.validate(update["deliverable_images"], artifacts=artifacts)
+            except ApiError as exc:
+                raise ApiError(exc.status_code, f'{entry["app_id"]}：{exc}') from exc
+            except ValueError as exc:
+                raise ValueError(f'{entry["app_id"]}：{exc}') from exc
     with transaction(conn, immediate=True):
-        return _set_qa_status_batch(conn, release_id, items, user=user, role=role)
+        current = _prepare_qa_status_batch(conn, release_id, items)
+        before = [(entry["id"], delivery_images.revision(entry), update) for entry, update in prepared]
+        after = [(entry["id"], delivery_images.revision(entry), update) for entry, update in current]
+        if before != after:
+            raise ValueError("QA 结论、交付镜像或报名版本已变化，请刷新后重试")
+        return _apply_qa_status_batch(conn, release_id, current, user=user, role=role)
 
 
-def _set_qa_status_batch(conn, release_id, items, *, user, role):
+def _prepare_qa_status_batch(conn, release_id, items):
     release = cycle_service.get_release(conn, release_id)
     phase_policy.require_can(release, "edit_qa", "版本已发布，不可修改 QA 结论")
     prepared: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -126,10 +142,17 @@ def _set_qa_status_batch(conn, release_id, items, *, user, role):
                 if entry['deliverable_images'] and str(item.get(key) or '').strip() != entry[key]:
                     errors.append(f'{app_id}：已有多镜像交付记录，请按构建配置保存镜像')
                     continue
+                if str(item.get(key) or '').strip() and str(item[key]).strip() != entry[key]:
+                    errors.append(f'{app_id}：交付镜像需校验 OS/CPU 架构，请按构建配置保存镜像')
+                    continue
                 update[key] = str(item.get(key) or "").strip()
         prepared.append((entry, update))
     if errors:
         raise ValueError("；".join(errors))
+    return prepared
+
+
+def _apply_qa_status_batch(conn, release_id, prepared, *, user, role):
     ts = beijing_timestamp()
     with transaction(conn):
         for entry, update in prepared:

@@ -90,6 +90,40 @@ def temp_db_with_path(db_path):
     conn.close()
 
 
+def make_harbor_registry():
+    """Local Harbor responses shared by isolated service and browser fixtures."""
+    from app.domain.container_image import parse_base_image_reference
+
+    artifacts = {}
+
+    def register(images):
+        for image in images:
+            parsed = parse_base_image_reference(image["reference"])
+            _, project, repository = parsed["image"].split("/", 2)
+            repository = repository.rsplit(":", 1)[0]
+            artifacts[project, repository, parsed["digest"]] = {
+                "digest": parsed["digest"], "extra_attrs": {"architecture": image["arch"]},
+                "tags": [{"name": image["image_pattern"].partition(":")[2].replace("<hpc_version>", "abcdef1")}],
+            }
+
+    def get_artifact(*key):
+        if key not in artifacts:
+            raise ValueError("Harbor 中未找到该镜像，请检查镜像名和 digest")
+        return deepcopy(artifacts[key])
+
+    return register, get_artifact
+
+
+@pytest.fixture()
+def harbor_artifacts(monkeypatch):
+    """Register independent Harbor responses for explicitly seeded build images."""
+    from app.integrations import harbor
+
+    register, get_artifact = make_harbor_registry()
+    monkeypatch.setattr(harbor, "get_artifact", get_artifact)
+    return register
+
+
 # ---------------------------------------------------------------------------
 # app_info documents
 # ---------------------------------------------------------------------------
@@ -343,6 +377,28 @@ def seed_signup(
         user=user,
         role=role,
     )
+
+
+def seed_legacy_qa(conn, release_id, items, *, user="qa", role="QA"):
+    """Seed pre-validation scalar deliveries for historical read/migration tests.
+
+    New QA writes must use validated build rows; old databases may still hold
+    incomplete or malformed scalar references that history must retain.
+    """
+    from app.repositories import entries_repo
+    from app.services import qa_service
+
+    fields = ("deliverable_image", "deliverable_digest", "deliverable_commit")
+    with transaction(conn):
+        result = qa_service.set_qa_status_batch(conn, release_id, [
+            {key: value for key, value in item.items() if key not in fields} for item in items
+        ], user=user, role=role)
+        for item in items:
+            update = {key: item[key] for key in fields if key in item}
+            if update:
+                entry = entries_repo.find_entry(conn, release_id, item["app_id"])
+                entries_repo.update_entry(conn, entry["id"], update, updated_at=beijing_timestamp(), updated_by=user)
+    return result
 
 
 def seed_cicd_request(

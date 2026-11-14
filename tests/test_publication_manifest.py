@@ -18,7 +18,7 @@ from tests.conftest import close_qa, make_app_info, make_dependency_app_info, se
 
 
 @pytest.fixture()
-def publication(temp_db):
+def publication(temp_db, harbor_artifacts):
     raw = make_dependency_app_info("archived")
     raw["app_test"]["sanity"]["test_cmd"] = "printf '%s\\n' \"original command\"\n./run-test --flag='a b'"
     raw["app_test"]["excluded"] = {**raw["app_test"]["sanity"], "test_cmd": "must-not-be-published"}
@@ -28,6 +28,7 @@ def publication(temp_db):
     entry = seed_signup(temp_db, release, app, target_version="release-version", excluded_tests=["excluded"])
     images = [{**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].partition(':')[0]}@sha256:{digit * 64}"}
               for build, digit in zip((build for build in entry["delivery_builds"] if build["os"] != "ubuntu24.04"), "abcde")]
+    harbor_artifacts(images)
     qa_service.set_qa_status_batch(temp_db, release, [{"app_id": app, "status": "has_issues", "issue_note": "original QA note",
         "delivery_revision": entry["delivery_revision"], "deliverable_images": images}], user="qa", role="QA")
     close_qa(temp_db, release)
