@@ -39,8 +39,8 @@ def _isolated_runtime_config(tmp_path_factory):
     config.  Tests that need config monkeypatch settings.runtime_conf_path to
     their own file.  ``settings.db_path`` points at a throw-away file so a
     TestClient lifespan never opens (or migrates) the developer's real
-    database, and the daily app_info sync is disabled so no test starts a
-    background Gerrit thread.
+    database, and the initial app_info fetch for newly approved Apps is
+    disabled so no test starts a background Gerrit thread.
     """
     original = settings.runtime_conf_path
     original_cases = settings.jira_testing_cases_dir

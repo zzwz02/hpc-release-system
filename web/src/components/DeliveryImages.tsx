@@ -26,7 +26,7 @@ export function DeliveryImages({ images, builds = [], onChange, compact = false 
   return (
     <div className="table delivery-images" data-testid="delivery-images">
       <table>
-        <thead><tr><th>OS</th><th>CPU 架构</th><th>镜像类型</th><th>Python / PyTorch</th><th>完整镜像名（含 digest）</th></tr></thead>
+        <thead><tr><th>OS</th><th>CPU 架构</th><th>镜像类型</th><th>Python / PyTorch</th><th>完整镜像名（image:tag@digest）</th></tr></thead>
         <tbody>
           {rows.length === 0 && <tr><td colSpan={5} className="muted">尚未填写交付镜像。</td></tr>}
           {rows.map((row) => {
@@ -40,7 +40,7 @@ export function DeliveryImages({ images, builds = [], onChange, compact = false 
                 <td className="mono small cell-wrap">
                   {editable ? <input className="input mono" value={row.reference} data-testid="delivery-reference"
                     aria-label={`交付镜像 ${row.os} ${row.arch} ${row.image_target} ${row.python_label} ${row.pytorch_label}`}
-                    placeholder="仓库/镜像@sha256:…"
+                    placeholder="仓库/镜像:tag@sha256:…"
                     onChange={(event) => {
                       const reference = stripDockerPullPrefix(event.target.value);
                       const remaining = images.filter((image) => image.build_key !== row.build_key);

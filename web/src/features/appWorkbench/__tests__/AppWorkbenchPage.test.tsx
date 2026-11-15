@@ -63,6 +63,29 @@ beforeEach(() => {
 });
 
 describe("App list", () => {
+  it("lets RM confirm a full sync only for the selected signup cycle", async () => {
+    setUser("rm", "RM");
+    mockApi(makeState([makeApp("a")], makeRelease([])));
+    renderPage();
+    const button = await screen.findByTestId("sync-all-app-info-btn");
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/app-info/sync-all", { release_id: "rel-1" }));
+    expect(confirmDialog).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining("报名截止时间后停止保存后续结果") }));
+  });
+
+  it.each(["in_progress", "qa_closed", "released"] as const)("blocks RM full sync during %s", async phase => {
+    setUser("rm", "RM");
+    mockApi(makeState([makeApp("a")], makeRelease([], { phase })));
+    renderPage();
+    const button = await screen.findByTestId("sync-all-app-info-btn");
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", "仅可在所选周期报名截止前全量同步 app_info");
+    fireEvent.click(button);
+    expect(confirmDialog).not.toHaveBeenCalled();
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
   it("shows signup and CICD state and filters to the Owner's Apps", async () => {
     const apps = [
       makeApp("a", { name: "Alpha 1.0" }),

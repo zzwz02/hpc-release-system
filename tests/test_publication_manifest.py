@@ -26,7 +26,7 @@ def publication(temp_db, harbor_artifacts):
     release = seed_cycle(temp_db, name="publication-cycle")
     cycle_service.save_environment(temp_db, release, [{"component": "SDK", "version": "R1", "note": "original environment"}], user="rm", role="RM")
     entry = seed_signup(temp_db, release, app, target_version="release-version", excluded_tests=["excluded"])
-    images = [{**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].partition(':')[0]}@sha256:{digit * 64}"}
+    images = [{**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].replace('<hpc_version>', 'abcdef1')}@sha256:{digit * 64}"}
               for build, digit in zip((build for build in entry["delivery_builds"] if build["os"] != "ubuntu24.04"), "abcde")]
     harbor_artifacts(images)
     qa_service.set_qa_status_batch(temp_db, release, [{"app_id": app, "status": "has_issues", "issue_note": "original QA note",

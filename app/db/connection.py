@@ -359,10 +359,11 @@ def init_db(conn: sqlite3.Connection) -> None:
             uploaded_by TEXT NOT NULL
         );
 
-        -- Original QA workbooks (environment sheets untouched), and the latest
-        -- result for each seven-field test identity.
+        -- One current QA workbook per cycle (environment sheets untouched),
+        -- and its test configurations. Old unassigned files are read until replaced.
         CREATE TABLE IF NOT EXISTS qa_test_reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            release_id TEXT REFERENCES releases(id) ON DELETE CASCADE,
             filename TEXT NOT NULL,
             content BLOB NOT NULL,
             environments_json TEXT NOT NULL,
@@ -661,6 +662,7 @@ def init_db(conn: sqlite3.Connection) -> None:
 
     for _tbl, _col, _col_def in [
         ("entries", "deliverable_images_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("qa_test_reports", "release_id", "TEXT REFERENCES releases(id) ON DELETE CASCADE"),
         ("official_versions", "images_json", "TEXT NOT NULL DEFAULT '[]'"),
         ("official_versions", "test_manifest_json", "TEXT"),
         ("apps", "cicd_repo_type", "TEXT NOT NULL DEFAULT ''"),
@@ -690,6 +692,13 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} {_col_def}")
         except sqlite3.OperationalError:
             pass  # column already exists
+
+    conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_qa_test_reports_release '
+                 'ON qa_test_reports(release_id) WHERE release_id IS NOT NULL')
+    # Also cascade results in older databases whose report FK predates CASCADE.
+    conn.execute('CREATE TRIGGER IF NOT EXISTS qa_test_reports_delete_results '
+                 'BEFORE DELETE ON qa_test_reports BEGIN '
+                 'DELETE FROM qa_test_results WHERE report_id=OLD.id; END')
 
     # Legacy index retained so old DBs remain openable; app-backed CICD runtime
     # does not write cicd_tasks.

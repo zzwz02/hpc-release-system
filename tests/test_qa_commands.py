@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+from copy import deepcopy
 
 import httpx
 import pytest
@@ -17,11 +18,11 @@ from app.domain.test_platforms import release_tests
 from app.integrations import harbor
 from app.main import create_app
 from app.services import qa_commands_service, qa_results_service
-from tests.conftest import seed_cycle, seed_signup
+from tests.conftest import seed_app, seed_cycle, seed_signup, store_app_info
 from tests.test_image_lookup import DIGEST, IMAGE, TAGS
 
 TAGGED_IMAGE = IMAGE.replace("@", ":" + TAGS[2] + "@")
-from tests.test_qa_results import live as live
+from tests.test_qa_results import live as live, report_release
 
 
 @pytest.fixture()
@@ -63,7 +64,7 @@ def upload(conn, rows, *, columns=None):
     book.save(content)
     payload = content.getvalue()
     result = qa_results_service.upload(conn, content_b64=base64.b64encode(payload).decode(),
-                                      filename="report.xlsx", user="qa", role="QA")
+                                      filename="report.xlsx", user="qa", role="QA", release_id=report_release(conn))
     return result, payload
 
 
@@ -94,7 +95,8 @@ def test_version_queries_only_read_maca_and_ignore_newer_hpcc_images(temp_db, sc
         return original(project, repository, version)
     monkeypatch.setattr(harbor, "list_artifacts", listing)
     result = qa_commands_service.query(temp_db, release_id=scope[0], hpc_version=requested)
-    assert result["hpc_version"] == "3.10.1.2"
+    assert result["hpc_version"] == requested
+    assert result["hpc_versions"] == ["3.10.1.2"]
     assert set(visited) == {"abacus-maca", "abacus-maca-dbg"}
     assert not result["errors"]
     assert any(TAGGED_IMAGE in row["website_docker_cmd"] for row in result["rows"])
@@ -154,13 +156,98 @@ def test_latest_uses_numeric_patch_order_and_stays_inside_selected_cycle(temp_db
             "tags": [{"name": tag.replace("3.10.1.2", version)}
                      for version in scope[1]["versions"] for tag in TAGS]})
     result = qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="latest")
-    assert result["hpc_version"] == "3.10.1.10"
+    assert result["hpc_version"] == "latest"
+    assert result["hpc_versions"] == ["3.10.1.10"]
     if changed_tags:
         assert result["errors"] and "tag 已变化" in result["errors"][0]["error"]
     else:
         assert not result["errors"]
         assert any(IMAGE.replace("@", ":" + TAGS[2].replace("3.10.1.2", "3.10.1.10") + "@") in row["website_docker_cmd"] for row in result["rows"])
-        assert all(row["hpc_version"] == "3.10.1.10" for row in result["rows"])
+        assert all(row["hpc_version"] == ("" if row["website_docker_cmd"] == "no_image" else "3.10.1.10")
+                   for row in result["rows"])
+
+
+def test_latest_selects_each_app_independently_instead_of_omitting_older_app_images(temp_db, scope, live, monkeypatch):
+    raw = deepcopy(live[0])
+    raw.update(app_name="equiformerv2", app_version="9841d0e")
+    seed_app(temp_db, "equiformerv2", git_url="hpc_equiformerv2", git_branch="maca", official_name="EquiformerV2",
+             app_info=raw, commit_id="bb46c60")
+    seed_signup(temp_db, scope[0], "equiformerv2")
+
+    def artifact(repository):
+        version = "3.10.1.8" if repository.startswith("equiformerv2") else "3.10.1.12"
+        tags = [tag.replace("3.10.1.2", version).replace("3.9.0.27", "9841d0e" if repository.startswith("equiformerv2") else "3.9.0.27") for tag in TAGS]
+        return {"digest": DIGEST, "tags": [{"name": tag} for tag in tags]}
+
+    monkeypatch.setattr(harbor, "list_artifacts", lambda project, repo, version: [] if repo.endswith("-dbg") else [artifact(repo)])
+    monkeypatch.setattr(harbor, "get_artifact", lambda project, repo, digest: artifact(repo))
+    monkeypatch.setattr("app.integrations.gerrit.fetch_app_info_at", lambda url, *a, **kw: json.dumps(raw if url.endswith("hpc_equiformerv2") else live[0]))
+    result = qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="latest")
+    assert not result["errors"]
+    assert result["hpc_versions"] == ["3.10.1.8", "3.10.1.12"]
+    for app, version in [("EquiformerV2", "3.10.1.8"), ("TestApp", "3.10.1.12")]:
+        rows = [row for row in result["rows"] if row["app_name"] == app and row["website_docker_cmd"] != "no_image"]
+        assert rows and all(row["hpc_version"] == version and version in row["website_docker_cmd"] for row in rows)
+
+
+def test_latest_selects_each_platform_and_debug_build_even_when_one_digest_has_many_tags(temp_db, scope, monkeypatch):
+    tags = [tag.replace("3.10.1.2", version).replace("ubuntu22.04", os_name).replace("amd64", arch)
+            for version, os_name, arch in [("3.10.1.9", "ubuntu22.04", "amd64"), ("3.10.1.10", "ubuntu22.04", "amd64"),
+                                           ("3.10.1.8", "ubuntu24.04", "amd64"), ("3.10.1.7", "ubuntu22.04", "arm64")]
+            for tag in TAGS]
+    debug_tags = [tag.replace("3.10.1.2", "3.10.1.6") for tag in TAGS]
+    def artifact(repo):
+        return {"digest": DIGEST, "tags": [{"name": tag} for tag in (debug_tags if repo.endswith("-dbg") else tags)]}
+    monkeypatch.setattr(harbor, "list_artifacts", lambda project, repo, version: [artifact(repo)])
+    monkeypatch.setattr(harbor, "get_artifact", lambda project, repo, digest: artifact(repo))
+    result = qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="latest")
+    assert not result["errors"]
+    assert result["hpc_versions"] == ["3.10.1.6", "3.10.1.7", "3.10.1.8", "3.10.1.10"]
+    expected = {("ubuntu22.04", "x86", False): "3.10.1.10", ("ubuntu24.04", "x86", False): "3.10.1.8",
+                ("ubuntu22.04", "arm", False): "3.10.1.7", ("ubuntu22.04", "x86", True): "3.10.1.6"}
+    assert result["rows"] and all(row["website_docker_cmd"] != "no_image" for row in result["rows"])
+    assert len({tuple(row[column] for column in qa_results.WORKSHEET_METADATA_COLUMNS) for row in result["rows"]}) == len(result["rows"])
+    for row in result["rows"]:
+        assert row["hpc_version"] == expected[row["OS"], row["arch"], row["test_name"] == "debug"]
+
+
+def test_upload_reports_blank_qa_rows_by_app_and_branch(temp_db, scope):
+    filled = filled_row(temp_db, scope)
+    blank = {**filled, **dict.fromkeys(qa_results.WORKSHEET_QA_COLUMNS, ""), "app_name": "LAMMPS", "git_branch": "master"}
+    other = {**blank, "app_name": "EquiformerV2", "git_branch": "maca"}
+    saved, _ = upload(temp_db, [filled, blank, {**blank, "test_name": "second"}, other])
+    assert (saved["total_rows"], saved["rows"], saved["skipped_rows"]) == (4, 1, 3)
+    assert saved["skipped_apps"] == [{"app_name": "EquiformerV2", "git_branch": "maca", "rows": 1},
+                                      {"app_name": "LAMMPS", "git_branch": "master", "rows": 2}]
+    assert qa_results_service.query(temp_db)["total"] == 1
+
+
+def test_latest_selects_python_and_torch_builds_independently(temp_db, scope, live, monkeypatch):
+    raw = live[0]
+    raw["app_build"]["ubuntu22.04_amd64"].update(python_label="py310,py312", pytorch_label="torch2.4,torch2.8")
+    store_app_info(temp_db, "testapp", raw, commit_id="bb46c60")
+    tags = [tag.replace("3.10.1.2", version).replace("-ubuntu22.04", f"-{torch}-{py}-ubuntu22.04")
+            for py, torch, version in [("py310", "torch2.4", "3.10.1.10"), ("py312", "torch2.8", "3.10.1.8")]
+            for tag in TAGS]
+    artifact = {"digest": DIGEST, "tags": [{"name": tag} for tag in tags]}
+    monkeypatch.setattr(harbor, "list_artifacts", lambda project, repo, version: [] if repo.endswith("-dbg") else [artifact])
+    monkeypatch.setattr(harbor, "get_artifact", lambda *a: artifact)
+    result = qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="latest")
+    assert not result["errors"]
+    real = [row for row in result["rows"] if row["website_docker_cmd"] != "no_image"]
+    assert {(row["py_label"], row["torch_label"], row["hpc_version"]) for row in real} == {
+        ("py310", "torch2.4", "3.10.1.10"), ("py312", "torch2.8", "3.10.1.8")}
+    assert all(row["hpc_version"] == "" for row in result["rows"] if row["website_docker_cmd"] == "no_image")
+
+
+def test_all_blank_qa_upload_reports_skipped_count_and_preserves_existing_report(temp_db, scope):
+    filled = filled_row(temp_db, scope)
+    saved, original = upload(temp_db, [filled])
+    blank = {**filled, **dict.fromkeys(qa_results.WORKSHEET_QA_COLUMNS, "")}
+    with pytest.raises(ValueError, match="QA 列全空跳过 2 行"):
+        upload(temp_db, [blank, {**blank, "test_name": "second"}])
+    assert qa_results_service.query(temp_db)["total"] == 1
+    assert qa_results_service.download(temp_db, saved["report_id"])[0] == original
 
 
 def test_missing_exact_version_keeps_whole_cartesian_scope(temp_db, scope):
@@ -187,7 +274,7 @@ def test_version_export_upload_roundtrip_and_download_keeps_environment_bytes(te
     assert all(all(item[column] == "" for column in qa_results.WORKSHEET_QA_COLUMNS) for item in fresh["rows"])
 
 
-def test_hpc_patches_are_saved_independently_and_exact_reupload_replaces_only_one(temp_db, scope, monkeypatch):
+def test_hpc_patches_coexist_in_one_file_and_reupload_replaces_the_entire_cycle(temp_db, scope, monkeypatch):
     first = filled_row(temp_db, scope)
     monkeypatch.setattr(harbor, "get_artifact", lambda *args: {"tags": [{"name": tag}
         for tag in TAGS + [tag.replace("3.10.1.2", "3.10.1.3") for tag in TAGS]]})
@@ -196,9 +283,9 @@ def test_hpc_patches_are_saved_independently_and_exact_reupload_replaces_only_on
     assert saved["rows"] == 2 and saved["duplicate_rows"] == 0
     assert qa_results_service.query(temp_db)["total"] == 2
     updated, _ = upload(temp_db, [{**first, "qa_result": 42}])
-    assert updated["replaced"] == 1
+    assert updated["replaced"] == 2
     rows = qa_results_service.query(temp_db)["rows"]
-    assert {(row["hpc_version"], row["qa_result"]) for row in rows} == {("3.10.1.2", 42), ("3.10.1.3", "fail")}
+    assert {(row["hpc_version"], row["qa_result"]) for row in rows} == {("3.10.1.2", 42)}
     for row in rows:
         assert f"-{row['hpc_version']}-ubuntu22.04-amd64@{DIGEST}" in row["website_docker_cmd"]
 
@@ -223,7 +310,7 @@ def test_python_and_torch_combinations_are_saved_independently(temp_db, scope, l
     assert all(row["website_docker_cmd"] for row in rows)
 
 
-def test_exact_legacy_record_is_converted_on_upload_without_losing_workbooks(temp_db, scope):
+def test_exact_legacy_record_and_old_workbook_are_replaced_on_upload(temp_db, scope):
     row = filled_row(temp_db, scope)
     first, original = upload(temp_db, [row])
     legacy = {**row, "commit_id": "bb46c60"}
@@ -233,7 +320,8 @@ def test_exact_legacy_record_is_converted_on_upload_without_losing_workbooks(tem
     second, _ = upload(temp_db, [{**row, "qa_result": "fail"}])
     assert second["replaced"] == 1
     assert qa_results_service.query(temp_db)["total"] == 1
-    assert qa_results_service.download(temp_db, first["report_id"])[0] == original
+    with pytest.raises(ApiError, match="测试报告不存在"):
+        qa_results_service.download(temp_db, first["report_id"])
 
 
 @pytest.mark.parametrize("column,value", [

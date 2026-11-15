@@ -23,7 +23,7 @@ def delivery(temp_db, harbor_artifacts):
     app = seed_app(temp_db, app_info=raw)
     release = seed_cycle(temp_db)
     entry = seed_signup(temp_db, release, app)
-    values = [{**row, 'reference': f'harbor.sh.mxcr.io/hpc-release/testapp-maca@sha256:{digit * 64}'}
+    values = [{**row, 'reference': f'harbor.sh.mxcr.io/hpc-release/{row["image_pattern"].replace("<hpc_version>", "abcdef1")}@sha256:{digit * 64}'}
               for row, digit in zip(sorted([r for r in entry['delivery_builds'] if r['image_target'] == 'release'], key=lambda r: r['arch']), 'ab')]
     harbor_artifacts(values)
     harbor_artifacts([{**values[0], 'reference': values[0]['reference'].replace('a' * 64, digit * 64)} for digit in 'cde'])
@@ -151,7 +151,7 @@ def test_build_variants_expand_frameworks_and_do_not_include_disabled_builds():
 def test_published_commands_match_exact_delivery_variants_and_leave_missing_images_as_templates():
     raw = make_dependency_app_info()
     values = [
-        {**spec, 'reference': f'harbor.test/hpc-release/{spec["image_pattern"].partition(":")[0]}@sha256:{digit * 64}'}
+        {**spec, 'reference': f'harbor.test/hpc-release/{spec["image_pattern"].replace("<hpc_version>", "abcdef1")}@sha256:{digit * 64}'}
         for spec, digit in zip((spec for spec in delivery_images.builds(raw) if spec['os'] != 'ubuntu24.04'), 'abcde')
     ]
     images = delivery_images.normalize(values, raw, {})
@@ -193,7 +193,7 @@ def test_dependency_reads_and_csv_preserve_every_frozen_image_and_platform_comma
     release = seed_cycle(temp_db, name='3.10.0')
     entry = seed_signup(temp_db, release, app, excluded_tests=['excluded'])
     images = [
-        {**spec, 'reference': f'harbor.sh.mxcr.io/hpc-release/{spec["image_pattern"].partition(":")[0]}@sha256:{digit * 64}'}
+        {**spec, 'reference': f'harbor.sh.mxcr.io/hpc-release/{spec["image_pattern"].replace("<hpc_version>", "abcdef1")}@sha256:{digit * 64}'}
         for spec, digit in zip((spec for spec in entry['delivery_builds'] if spec['os'] != 'ubuntu24.04'), 'abcde')
     ]
     harbor_artifacts(images)

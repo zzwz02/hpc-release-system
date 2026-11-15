@@ -30,6 +30,11 @@ COMMAND_COLUMNS = [
 RESULT_COLUMNS = ["test_result", "test_digest", "test_env"]
 COLUMNS = COMMAND_COLUMNS + RESULT_COLUMNS
 
+
+def hpc_families(version: str) -> set[str]:
+    return {'.'.join(value.strip().split('.')[:3]) for value in str(version or '').split(',')
+            if re.fullmatch(r'\d+\.\d+\.\d+(?:\.\d+)?', value.strip())}
+
 # One worksheet contract for version queries, CSV downloads and QA uploads.
 WORKSHEET_QA_COLUMNS = ["qa_digest", "qa_docker_cmd", "qa_result", "qa_env", "qa_status", "qa_comment"]
 WORKSHEET_METADATA_COLUMNS = [

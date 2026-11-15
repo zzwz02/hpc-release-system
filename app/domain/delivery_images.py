@@ -3,11 +3,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 from app.domain.container_image import delivered_image_reference, parse_base_image_reference
 from app.domain.test_commands import IMAGE_TARGET_SUFFIX, command_rows, docker_cmd, image_values_for_build
 from app.domain.test_platforms import build_platforms, build_target_matches, public_platform, release_tests
+
+
+def require_tag(reference: str) -> str:
+    """QA supplies the tag explicitly; never infer or replace it."""
+    image = parse_base_image_reference(reference)['image']
+    tag = image.rsplit('/', 1)[-1].partition(':')[2]
+    if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}', tag):
+        raise ValueError('交付镜像请按 image:tag@sha256:… 填写，tag 不能为空且须为合法 Docker tag')
+    return tag
 
 
 def _build_key(platform: dict, target: str, image: str) -> str:
@@ -94,6 +104,7 @@ def normalize(values: Any, raw: dict, entry: dict) -> list[dict]:
         parsed = parse_base_image_reference(reference)
         if not parsed['digest']:
             raise ValueError('交付镜像必须填写包含 sha256 digest 的完整镜像名')
+        require_tag(reference)
         spec = available[key]
         expected = spec['image_pattern'].partition(':')[0]
         address = parsed['image'].rsplit('/', 1)[-1].partition(':')[0]

@@ -2,19 +2,21 @@
 from __future__ import annotations
 
 from app.api.errors import ApiError
+from app.domain.delivery_images import require_tag
 from app.domain.image_lookup import parse_lookup_image
 from app.domain.test_commands import image_tag_matches
 from app.integrations import harbor
 
 
 def validate(images: list[dict], *, artifacts: dict[tuple[str, str, str], dict]) -> None:
-    """Read Harbor once per artifact in this save; never trust an entered tag."""
+    """Check QA's explicit tag against this digest's actual Harbor tags and build."""
     for image in images:
         label = f'{image.get("build") or "未指定构建"} / {image.get("image_target") or "未知类型"}'
         try:
             if image.get("build_key") == "legacy" or not image.get("os") or not image.get("arch"):
                 raise ValueError("无法确定 OS/CPU 架构，请将镜像填写到明确的构建行")
-            # A stored tag may be present, but Harbor must be queried by digest.
+            entered_tag = require_tag(image['image'])
+            # Query by repository + digest; the entered tag is checked below.
             address = image["image"].rsplit("/", 1)
             address[-1] = address[-1].partition(":")[0]
             parsed = parse_lookup_image(f'{"/".join(address)}@{image["digest"]}')
@@ -35,6 +37,10 @@ def validate(images: list[dict], *, artifacts: dict[tuple[str, str, str], dict])
                           f'Python {image.get("python_label") or "未声明"}，'
                           f'PyTorch {image.get("pytorch_label") or "未声明"}')
                 raise ValueError(f'Harbor 实际 tags 与构建配置不匹配（{config}，期望 tag：{pattern}）')
+            if entered_tag not in names:
+                raise ValueError('填写的 tag 不属于该 digest，请核对 image:tag@digest 是否对应同一个 Harbor 镜像')
+            if not image_tag_matches(pattern, entered_tag):
+                raise ValueError(f'填写的 tag 与所选构建配置不匹配（期望 tag：{pattern}）')
         except ApiError as exc:
             raise ApiError(exc.status_code, f'{label}，{image.get("reference", "")}：{exc}') from exc
         except ValueError as exc:

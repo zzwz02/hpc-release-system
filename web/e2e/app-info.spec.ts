@@ -123,23 +123,45 @@ test("Owner saves types and manual content separately; another Owner has read-on
   expect(syncDenied.status()).toBe(403);
 });
 
-test("RM starts full synchronization and sees per-App completion and failure", async ({ page }) => {
+test("RM bulk sync is limited to signup while individual sync remains available", async ({ page }) => {
   await login(page, "app_rm");
+  const closedCycle = await page.getByRole("combobox", { name: "选择版本" }).inputValue();
+  await expect(page.getByTestId("sync-all-app-info-btn")).toBeDisabled();
+  const denied = await page.request.post(base + "/api/app-info/sync-all", { data: { release_id: closedCycle } });
+  expect(denied.status()).toBe(409);
+  const created = await page.request.post(base + "/api/releases/create", { data: {
+    name: "browser-sync-open", signup_deadline: "2099-01-01", qa_deadline: "2099-01-26", release_date: "2099-01-31",
+  } });
+  expect(created.ok(), await created.text()).toBeTruthy();
+  const openCycle = (await created.json()).release_id;
+  await page.getByTestId("refresh-btn").click();
+  await page.getByRole("combobox", { name: "选择版本" }).selectOption(openCycle);
+  await expect(page.getByTestId("sync-all-app-info-btn")).toBeEnabled();
   await page.getByTestId("sync-all-app-info-btn").click();
   await expect(page.getByTestId("confirm-dialog")).toContainText("同步全部 app_info");
   const started = page.waitForResponse(r => r.url().endsWith("/api/app-info/sync-all"));
   await page.getByTestId("confirm-ok").click();
-  expect((await started).ok()).toBeTruthy();
+  const startedResponse = await started;
+  expect(startedResponse.ok(), await startedResponse.text()).toBeTruthy();
+  expect(startedResponse.request().postDataJSON()).toEqual({ release_id: openCycle });
   await expect.poll(async () => {
     const response = await page.request.get(base + "/api/app-info/sync-status");
     expect(response.ok()).toBeTruthy();
     return (await response.json()).job.running;
   }).toBe(false);
   const status = await (await page.request.get(base + "/api/app-info/sync-status")).json();
+  expect(status.daily).toBeUndefined();
   expect(status.job.summary.checked).toBeGreaterThanOrEqual(2);
   expect(status.job.summary.failed).toBe(1);
   expect(status.apps.find((app: { app_id: string }) => app.app_id === "info-check").error).toBe("");
   expect(status.apps.find((app: { app_id: string }) => app.app_id === "info-error").error).toContain("Gerrit 测试连接失败");
   await page.getByTestId("refresh-btn").click();
   await expect(page.getByTestId("latest-app-info-section").getByLabel("版本", { exact: true })).toHaveValue("2.0");
+  await page.goto(base + "/init");
+  await page.getByTestId("subtab-sync").click();
+  await expect(page.getByText(/已取消 app_info 每日自动同步/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "立即同步全部", exact: true })).toBeEnabled();
+  await page.getByRole("combobox", { name: "选择版本" }).selectOption(closedCycle);
+  await expect(page.getByRole("button", { name: "立即同步全部", exact: true })).toBeDisabled();
+  await expect(page.getByText(/不允许全量同步 app_info/)).toBeVisible();
 });

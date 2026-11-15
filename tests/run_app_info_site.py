@@ -83,7 +83,7 @@ def main():
                                            user="app_qa", role="QA")
             entry = seed_signup(conn, dependency_release, "runtime-published")
             images = [
-                {**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].partition(':')[0]}@sha256:{digit * 64}"}
+                {**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].replace('<hpc_version>', 'abcdef1')}@sha256:{digit * 64}"}
                 for build, digit in zip((build for build in entry["delivery_builds"] if build["os"] != "ubuntu24.04"), "abcde")
             ]
             register_artifacts(images)
@@ -109,7 +109,7 @@ def main():
                 release_id = seed_cycle(conn, name=version)
                 for name in ("amber", "hpl", "stopped"):
                     entry = seed_signup(conn, release_id, name, target_version=f"{name}-{version}")
-                    images = [{**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].partition(':')[0]}@sha256:{str(index + 1) * 64}"}
+                    images = [{**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].replace('<hpc_version>', 'abcdef1')}@sha256:{str(index + 1) * 64}"}
                               for index, build in enumerate(entry["delivery_builds"])]
                     register_artifacts(images)
                     qa_service.set_qa_status_batch(conn, release_id, [{"app_id": name,
@@ -206,7 +206,7 @@ def main():
                 catalog_service.store_app_info(conn, "image-published", info, commit_id=str(index) * 40, source="test", user="app_rm")
                 release_id = seed_cycle(conn, name=f"image-publication-{index}")
                 entry = seed_signup(conn, release_id, "image-published", target_version=f"{index}.0", excluded_tests=["extra"] if index == 1 else [])
-                images = [{**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].partition(':')[0]}@sha256:{digit * 64}"}
+                images = [{**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].replace('<hpc_version>', 'abcdef1')}@sha256:{digit * 64}"}
                           for build, digit in zip(entry["delivery_builds"], "abcdef")]
                 register_artifacts(images)
                 published_infos[str(index) * 40] = info
@@ -259,7 +259,9 @@ def main():
                     return [lookup_artifact(project, repository, "sha256:" + "8d" * 32)]
                 return []
             harbor.list_artifacts = lookup_artifacts
-        if args.qa_commands:
+        if args.qa_commands or args.qa_report_pagination:
+            if not conn.execute("SELECT 1 FROM releases WHERE name='3.9.0'").fetchone():
+                seed_cycle(conn, name='3.9.0')
             release_id = seed_cycle(conn, name="3.10.1")
             entry = seed_signup(conn, release_id, "lookup-image")
             historical_id = conn.execute("SELECT id FROM app_info_versions WHERE app_id='lookup-image' AND commit_id='bb46c60'").fetchone()[0]

@@ -44,7 +44,6 @@ function mockApi(state: StatePayload) {
             head_commit: "def", checked_at: "2026-11-12 02:00:00", error: "" },
         ],
         job: { running: false, started_at: "", started_by: "", finished_at: "", summary: null },
-        daily: { time: "02:00", enabled: true, last_run: "" },
       };
     }
     if (url.startsWith("/api/notifications/channels")) return CHANNELS;
@@ -187,6 +186,27 @@ describe("base images", () => {
 });
 
 describe("sub-panes", () => {
+  it("starts a bulk sync with the selected signup cycle and explains that daily sync was removed", async () => {
+    renderPage(makeRelease([]));
+    fireEvent.click(await screen.findByTestId("subtab-sync"));
+    await screen.findByText(/已取消 app_info 每日自动同步/);
+    fireEvent.click(screen.getByRole("button", { name: "立即同步全部" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/app-info/sync-all", { release_id: "rel-1" }));
+  });
+
+  it.each(["in_progress", "qa_closed", "released"] as const)("disables full sync during %s while retaining individual sync", async phase => {
+    renderPage(makeRelease([], { phase }));
+    fireEvent.click(await screen.findByTestId("subtab-sync"));
+    const pane = await screen.findByTestId("sync-status-pane");
+    await waitFor(() => expect(pane).toHaveTextContent("Permission denied"));
+    expect(screen.getByRole("button", { name: "立即同步全部" })).toBeDisabled();
+    expect(screen.getByText(/已过报名截止时间或已发布，不允许全量同步/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "立即同步全部" }));
+    expect(apiPost).not.toHaveBeenCalled();
+    fireEvent.click(within(pane).getByRole("button", { name: /^同步$/ }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/app-info/sync", { app_id: "a", force: true }));
+  });
+
   it("lists failed app_info syncs first and filters to failures by default", async () => {
     renderPage(makeRelease([]));
     fireEvent.click(await screen.findByTestId("subtab-sync"));

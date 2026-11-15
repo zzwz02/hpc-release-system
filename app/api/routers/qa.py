@@ -328,10 +328,13 @@ def upload_test_results(
         content_b64=body.get("content_base64", ""),
         user=user["username"],
         role=user["role"],
+        release_id=body.get('release_id', ''),
+        revision=body.get('revision'),
     )
 
 
 def result_filters(
+    release_id: str = Query(),
     search: str = Query(default=""),
     table_filter: str = Query(default="", alias="filter"),
     column_filters: str = Query(default="{}"),
@@ -344,7 +347,7 @@ def result_filters(
         raise ApiError(400, "列筛选须为 JSON 对象") from exc
     if not isinstance(columns, dict):
         raise ApiError(400, "列筛选须为 JSON 对象")
-    return {"search": search, "table_filter": table_filter, "column_filters": columns,
+    return {'release_id': release_id, "search": search, "table_filter": table_filter, "column_filters": columns,
             "sort_by": sort_by, "sort_direction": sort_direction}
 
 

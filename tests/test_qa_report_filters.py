@@ -15,7 +15,7 @@ from app.main import create_app
 from app.repositories import qa_results_repo
 from app.services import lookup_service, qa_results_service
 from tests.test_image_lookup import IMAGE
-from tests.test_qa_results import live as live
+from tests.test_qa_results import live as live, report_release
 
 
 @pytest.fixture()
@@ -92,7 +92,7 @@ def test_http_filters_export_and_invalid_parameters(temp_db, reports):
     app = create_app()
     app.dependency_overrides[get_db] = lambda: temp_db
     app.dependency_overrides[require_login] = lambda: {"username": "qa", "role": "QA"}
-    params = {"column_filters": json.dumps({"qa_status": "fail"}), "sort_by": "test_name", "sort_direction": "desc"}
+    params = {"release_id": report_release(temp_db), "column_filters": json.dumps({"qa_status": "fail"}), "sort_by": "test_name", "sort_direction": "desc"}
     with TestClient(app) as client:
         response = client.get("/api/qa/test-results", params={**params, "offset": 0, "limit": 2})
         assert response.status_code == 200, response.text
@@ -106,5 +106,5 @@ def test_http_filters_export_and_invalid_parameters(temp_db, reports):
                         {"column_filters": '{"qa_status":123}'}, {"column_filters": '{"unknown":"x"}'},
                         {"sort_by": "unknown"}):
             for path in ("/api/qa/test-results", "/api/qa/test-results/export"):
-                assert client.get(path, params=invalid).status_code == 400
+                assert client.get(path, params={"release_id": params["release_id"], **invalid}).status_code == 400
         assert client.get("/api/qa/test-results", params={"sort_direction": "invalid"}).status_code == 422

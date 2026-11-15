@@ -1,4 +1,4 @@
-"""Keep original workbooks and each version/platform/configuration's latest result."""
+"""One current workbook per release, with its test configurations and legacy readers."""
 
 from __future__ import annotations
 
@@ -32,33 +32,47 @@ def remove_keys(conn, keys):
         conn.execute(f"DELETE FROM qa_test_results WHERE result_key IN ({','.join('?' for _ in batch)})", batch)
 
 
-def save(conn, *, filename, content, environments, uploaded_at, uploaded_by, rows):
+def save(conn, *, filename, content, environments, uploaded_at, uploaded_by, rows, release_id=None):
     cursor = conn.execute(
         "INSERT INTO qa_test_reports"
-        "(filename, content, environments_json, uploaded_at, uploaded_by) "
-        "VALUES(?,?,?,?,?)",
-        (filename, content, json.dumps(environments), uploaded_at, uploaded_by),
+        "(filename, content, environments_json, uploaded_at, uploaded_by, release_id) "
+        "VALUES(?,?,?,?,?,?)",
+        (filename, content, json.dumps(environments), uploaded_at, uploaded_by, release_id),
     )
     report_id = cursor.lastrowid
     for key, row, reference in rows:
+        conflict = (" ON CONFLICT(result_key) DO UPDATE SET report_id=excluded.report_id, "
+                    "data_json=excluded.data_json, image_reference=excluded.image_reference") if release_id is None else ''
         conn.execute(
             "INSERT INTO qa_test_results(result_key, report_id, data_json, image_reference) "
-            "VALUES(?,?,?,?) "
-            "ON CONFLICT(result_key) DO UPDATE SET report_id=excluded.report_id, "
-            "data_json=excluded.data_json, "
-            "image_reference=excluded.image_reference",
+            "VALUES(?,?,?,?)" + conflict,
             (key, report_id, json.dumps(row, ensure_ascii=False), reference),
         )
     return report_id
 
 
-def list_results(conn):
+def list_results(conn, *, release_id=None, legacy_only=False):
+    where = ' WHERE f.release_id IS NULL' if legacy_only else (
+        ' WHERE f.release_id=? OR f.release_id IS NULL' if release_id else '')
+    args = (release_id,) if release_id and not legacy_only else ()
     rows = conn.execute(
-        "SELECT r.*, f.filename, f.uploaded_at, f.uploaded_by, f.environments_json "
+        "SELECT r.*, f.release_id, f.filename, f.uploaded_at, f.uploaded_by, f.environments_json "
         "FROM qa_test_results r JOIN qa_test_reports f ON f.id=r.report_id"
-        " ORDER BY r.report_id DESC, r.rowid",
+        + where + " ORDER BY r.report_id DESC, r.rowid", args,
     )
     return [{**dict(row), "data": json.loads(row["data_json"])} for row in rows]
+
+
+def legacy_workbooks(conn):
+    return [dict(row) for row in conn.execute('SELECT id FROM qa_test_reports WHERE release_id IS NULL')]
+
+
+def clear_release(conn, release_id, *, keys, legacy_report_ids):
+    remove_keys(conn, keys)
+    conn.execute('DELETE FROM qa_test_reports WHERE release_id=?', (release_id,))
+    for report_id in legacy_report_ids:
+        conn.execute('DELETE FROM qa_test_reports WHERE id=? AND release_id IS NULL '
+                     'AND NOT EXISTS (SELECT 1 FROM qa_test_results WHERE report_id=?)', (report_id, report_id))
 
 
 def workbook(conn, report_id):

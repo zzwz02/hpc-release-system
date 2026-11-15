@@ -38,7 +38,7 @@ for (const username of ["app_owner", "app_qa"]) {
     await expect(detail).toContainText("无对应启用测试命令");
     await expect(detail).toContainText("centos9");
     await expect(detail).toContainText("ARM");
-    await expect(detail).toContainText("runtime-published-maca-dbg@sha256:");
+    await expect(detail).toContainText("runtime-published-maca-dbg:1.0-abcdef1-torch2.8-py312-ubuntu20.04-amd64@sha256:");
     await expect(detail).toContainText("-v /pde_hpc/dataset:/hpc_dataset:ro");
     await toggle.click();
     await expect(detail).toHaveCount(0);

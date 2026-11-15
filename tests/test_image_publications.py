@@ -10,7 +10,7 @@ from app.domain import delivery_images
 from app.integrations import gerrit, harbor
 from app.main import create_app
 from app.repositories import official_repo
-from app.services import catalog_service, cycle_service, lookup_service, qa_service
+from app.services import cycle_service, lookup_service, qa_service
 from tests.conftest import close_qa, make_dependency_app_info, seed_app, seed_cycle, seed_signup, store_app_info
 
 
@@ -26,7 +26,7 @@ def publications(temp_db, monkeypatch, harbor_artifacts):
         store_app_info(temp_db, app, raw, commit_id=str(index) * 40)
         release = seed_cycle(temp_db, name=name)
         entry = seed_signup(temp_db, release, app, target_version=f"{index}.0", excluded_tests=["extra"] if index == 1 else [])
-        images = [{**build, "reference": f"{harbor.HARBOR_HOST}/hpc-release/{build['image_pattern'].partition(':')[0]}@sha256:{digit * 64}"}
+        images = [{**build, "reference": f"{harbor.HARBOR_HOST}/hpc-release/{build['image_pattern'].replace('<hpc_version>', 'abcdef1')}@sha256:{digit * 64}"}
                   for build, digit in zip(entry["delivery_builds"], "abcdef")]
         harbor_artifacts(images)
         qa_service.set_qa_status_batch(temp_db, release, [{"app_id": app, "status": "has_issues", "issue_note": f"QA-{index}",
@@ -112,13 +112,14 @@ def test_full_repository_and_digest_are_sent_to_harbor_even_with_local_records(t
 def test_legacy_saved_image_strings_do_not_supply_live_commands(temp_db, publications, embedded):
     _, image, records, _, calls = publications
     address, digest = image.split("@")
+    address = address.rsplit(':', 1)[0]
     old_image = address + ":old-tag@" + digest.upper().replace("SHA256:", "sha256:") if embedded else address + ":old-tag"
     old_digest = "" if embedded else digest.removeprefix("sha256:").upper()
     temp_db.execute("UPDATE official_versions SET test_manifest_json=NULL, images_json='[]', image=?, digest=? WHERE id=?",
                     (old_image, old_digest, records[0]["id"]))
     temp_db.commit()
     result = lookup_service.by_image(temp_db, image)
-    assert result["source"] == "historical_config" and result["image"] == image
+    assert result["source"] == "historical_config" and result["image"] == address + '@' + digest
     assert len(calls) == 2
 
 

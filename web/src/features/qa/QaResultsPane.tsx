@@ -6,12 +6,18 @@ import { can } from "../../lib/accessControl";
 import { FlatCommandTable, type CommandRow, type CommandTableFilters } from "../../components/FlatCommandTable";
 import { formatServerTime } from "../../lib/time";
 import { triggerBlobDownload } from "../../lib/csv";
+import { confirmDialog } from "../../lib/confirm";
 
-interface ResultResponse { total: number; rows: CommandRow[]; columns: string[] }
+interface ResultResponse { total: number; rows: CommandRow[]; columns: string[]; revision?: string }
+interface UploadSummary {
+  total_rows: number;
+  skipped_rows: number;
+  skipped_apps: { app_name: string; git_branch: string; rows: number }[];
+}
 const EMPTY_FILTERS: CommandTableFilters = { filter: "", columnFilters: {}, sort: null };
 
-function resultParams(search: string, filters: CommandTableFilters) {
-  const params = new URLSearchParams({ search });
+function resultParams(releaseId: string, search: string, filters: CommandTableFilters) {
+  const params = new URLSearchParams({ release_id: releaseId, search });
   if (filters.filter) params.set("filter", filters.filter);
   const columns = Object.fromEntries(Object.entries(filters.columnFilters).filter(([, value]) => value.trim()));
   if (Object.keys(columns).length) params.set("column_filters", JSON.stringify(columns));
@@ -31,7 +37,7 @@ async function fileBase64(file: File): Promise<string> {
   });
 }
 
-export function QaResultsPane() {
+export function QaResultsPane({ releaseId, releaseName }: { releaseId: string; releaseName: string }) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [input, setInput] = useState("");
@@ -40,6 +46,7 @@ export function QaResultsPane() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [uploadError, setUploadError] = useState("");
+  const [uploadSummary, setUploadSummary] = useState<UploadSummary | null>(null);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [appliedFilters, setAppliedFilters] = useState(EMPTY_FILTERS);
   const [exporting, setExporting] = useState(false);
@@ -52,39 +59,53 @@ export function QaResultsPane() {
     return () => window.clearTimeout(timer);
   }, [filters]);
   const query = useQuery({
-    queryKey: ["qa-test-results", user?.username, user?.role, search, appliedFilters, offset],
+    queryKey: ["qa-test-results", user?.username, user?.role, releaseId, search, appliedFilters, offset],
     queryFn: () => {
-      const params = resultParams(search, appliedFilters);
+      const params = resultParams(releaseId, search, appliedFilters);
       params.set("offset", String(offset)); params.set("limit", "50");
       return apiGet<ResultResponse>(`/api/qa/test-results?${params}`);
     },
-    enabled: !filterPending,
+    enabled: !!releaseId && !filterPending,
     placeholderData: (previous, previousQuery) =>
-      previousQuery?.queryKey[1] === user?.username && previousQuery?.queryKey[2] === user?.role ? previous : undefined,
+      previousQuery?.queryKey[1] === user?.username && previousQuery?.queryKey[2] === user?.role && previousQuery?.queryKey[3] === releaseId ? previous : undefined,
     refetchOnWindowFocus: false, refetchOnReconnect: false,
+    refetchOnMount: 'always',
   });
   useEffect(() => {
     generation.value++;
-    setInput(""); setSearch(""); setOffset(0); setMessage(""); setUploadError(""); setBusy(false);
+    setInput(""); setSearch(""); setOffset(0); setMessage(""); setUploadError(""); setUploadSummary(null); setBusy(false);
     setFilters(EMPTY_FILTERS); setAppliedFilters(EMPTY_FILTERS); setExporting(false); setExportError(""); setLoadedColumns(null);
     return () => { generation.value++; };
-  }, [user?.username, user?.role, generation]);
+  }, [user?.username, user?.role, releaseId, generation]);
   useEffect(() => {
     if (query.data) setLoadedColumns(query.data.columns);
   }, [query.data]);
 
   async function upload(file: File) {
     const id = ++generation.value;
-    setBusy(true); setMessage(""); setUploadError(""); setExporting(false);
+    setBusy(true); setMessage(""); setUploadError(""); setUploadSummary(null); setExporting(false);
     try {
       if (file.size > 20 * 1024 * 1024) throw new Error("Excel 文件不能超过 20 MB");
+      const confirmed = await confirmDialog({
+        title: `整份替换 ${releaseName} 的 QA report`,
+        body: `将上传「${file.name}」。全部校验通过后，${releaseName} 发布周期下所有旧 QA report 结果（含各补丁版本）和旧 Excel 文件都会被清除，仅保留本次文件中填写了 QA 列的行。未出现在本次文件中的旧测试项也会删除，不与旧报告合并。\n覆盖后无法恢复旧报告；其他发布周期不受影响，校验失败则保留原报告。`,
+        danger: true,
+        confirmText: "确认整份替换",
+        cancelText: "取消上传",
+      });
+      if (!confirmed || id !== generation.value) return;
       const content_base64 = await fileBase64(file);
       if (id !== generation.value) return;
-      const data = await apiPost<{ rows: number; replaced: number; duplicate_rows: number }>("/api/qa/test-results/upload", { filename: file.name, content_base64 });
+      const data = await apiPost<{ rows: number; replaced: number; duplicate_rows: number } & UploadSummary>("/api/qa/test-results/upload", {
+        filename: file.name, content_base64, release_id: releaseId,
+        ...(query.data?.revision ? { revision: query.data.revision } : {}),
+      });
+      void queryClient.invalidateQueries({ queryKey: ["qa-test-results", user?.username, user?.role, releaseId] });
       if (id !== generation.value) return;
-      setMessage(`已保存 ${data.rows} 行，其中覆盖 ${data.replaced} 行。${data.duplicate_rows ? `合并 ${data.duplicate_rows} 个重复测试行。` : ""}`);
+      setMessage(`已保存 ${releaseName} 的 ${data.rows} 行，清除旧结果 ${data.replaced} 行。${data.duplicate_rows ? `合并 ${data.duplicate_rows} 个重复测试行。` : ""}`);
+      setUploadSummary(data);
       setOffset(0);
-      void queryClient.invalidateQueries({ queryKey: ["qa-test-results", user?.username, user?.role] });
+      setInput(''); setSearch(''); setFilters(EMPTY_FILTERS); setAppliedFilters(EMPTY_FILTERS);
     } catch (e) {
       if (id === generation.value) setUploadError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -96,7 +117,7 @@ export function QaResultsPane() {
     const id = generation.value;
     setExporting(true); setExportError("");
     try {
-      const blob = await apiGetBlob(`/api/qa/test-results/export?${resultParams(search, appliedFilters)}`);
+      const blob = await apiGetBlob(`/api/qa/test-results/export?${resultParams(releaseId, search, appliedFilters)}`);
       if (id === generation.value) triggerBlobDownload("qa_test_results.csv", blob);
     } catch (e) {
       if (id === generation.value) setExportError(e instanceof Error ? e.message : String(e));
@@ -115,13 +136,25 @@ export function QaResultsPane() {
   }));
   return <div className="panel" data-testid="qa-results-pane">
     <div className="panel-body">
-      <h2>QA report</h2>
-      <p className="hint">上传测试命令 CSV 另存的 Excel，第一个页签为测试详表，后续环境页原样保留。填写 QA 列后须提供 qa_digest 和与环境页同名的 qa_env；qa_result 支持数字或文字，qa_status 仅允许 pass / fail 或留空。QA 列全空的行跳过；按 App、分支、HPC 版本、App 版本、架构、OS、GPU、py_label、torch_label、测试项分别保存，相同组合再次上传时覆盖。</p>
-      {can(user?.role, "qa.edit") && <label>上传测试结果 Excel <input type="file" accept=".xlsx" aria-label="上传测试结果 Excel" disabled={busy} onChange={e => {
+      <h2>QA report{releaseName && ` · ${releaseName}`}</h2>
+      <p className="hint">每个发布周期只保留一份 QA report。文件中的 hpc_version 必须属于所选周期。</p>
+      <p className="hint">上传测试命令 CSV 另存的 Excel，第一个页签为测试详表，后续环境页原样保留。填写 QA 列后须提供 qa_digest 和与环境页同名的 qa_env；qa_result 支持数字或文字，qa_status 仅允许 pass / fail 或留空。已填写的 QA 行仍严格校验 git_branch。QA 列全空的行跳过，上传后显示数量和 App／分支明细；后续页签内容不参与测试行校验。</p>
+      {!releaseId && <p className="muted">请选择发布周期。</p>}
+      {can(user?.role, "qa.edit") && <p className="lerr"><strong>整份替换/覆盖：</strong>上传成功将清空{releaseName ? ` ${releaseName} ` : "所选"}周期的全部旧结果（含各补丁版本）和旧 Excel，仅保留本次文件的数据。未包含的旧测试项也会删除，覆盖后无法恢复；其他周期不受影响。选择文件后需确认，校验失败保留原报告。</p>}
+      {can(user?.role, "qa.edit") && <label>上传测试结果 Excel <input type="file" accept=".xlsx" aria-label="上传测试结果 Excel" disabled={busy || !releaseId || query.isPending || query.isFetching} onChange={e => {
         const file = e.target.files?.[0]; e.target.value = ""; if (file) void upload(file);
       }} /></label>}
-      {busy && <p role="status">正在校验镜像和测试行，全部通过后保存…</p>}
+      {busy && <p role="status">正在处理上传，全部校验通过后整份替换…</p>}
       {message && <p role="status">{message}</p>}
+      {uploadSummary && <div className={uploadSummary.skipped_rows ? "warnp" : "hint"} data-testid="qa-upload-summary">
+        <p role="status">文件共 {uploadSummary.total_rows} 行；QA 列全空跳过 {uploadSummary.skipped_rows} 行，跳过行未校验、未入库。</p>
+        {!!uploadSummary.skipped_rows && <details>
+          <summary>查看跳过明细（{uploadSummary.skipped_apps.length} 个 App／分支）</summary>
+          <ul>{uploadSummary.skipped_apps.map(item => <li key={JSON.stringify([item.app_name, item.git_branch])}>
+            {item.app_name || "未填写 app_name"} · {item.git_branch || "未填写 git_branch"}：{item.rows} 行
+          </li>)}</ul>
+        </details>}
+      </div>}
       {uploadError && <p className="lerr" role="alert">{uploadError}</p>}
       <form className="row mt-8" onSubmit={e => { e.preventDefault(); setSearch(input); setOffset(0); if (search === input && offset === 0) void query.refetch(); }}>
         <input className="input flex-1" value={input} onChange={e => setInput(e.target.value)} aria-label="查询 QA 结果" placeholder="App、HPC version、GPU、测试项、digest、环境…" />

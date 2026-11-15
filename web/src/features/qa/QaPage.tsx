@@ -1864,7 +1864,7 @@ export function QaPage() {
   const { data, isFetching, dataUpdatedAt, refetch, error } = useQuery({
     queryKey: STATE_QK(selectedReleaseId),
     queryFn: () => fetchState(selectedReleaseId),
-    enabled: !!selectedReleaseId && subtab !== "report",
+    enabled: !!selectedReleaseId,
     staleTime: Infinity,
     refetchInterval: false,
     refetchOnWindowFocus: false,
@@ -1885,6 +1885,9 @@ export function QaPage() {
 
   function handleRefresh() {
     void refetch();
+    if (subtab === 'report') {
+      void queryClient.invalidateQueries({ queryKey: ['qa-test-results', user?.username, user?.role, selectedReleaseId] });
+    }
   }
 
   const canView = canViewQa(user ?? undefined);
@@ -1906,7 +1909,7 @@ export function QaPage() {
     <section className="view active">
       <div className="page-toolbar">
         <h2>QA</h2>
-        {subtab !== "report" && data && (
+        {data && (
           <ReleaseSelector
             releases={data.releases ?? []}
             selectedId={selectedReleaseId || data.release?.id || null}
@@ -1916,17 +1919,19 @@ export function QaPage() {
           />
         )}
         <span className="spacer" />
-        {subtab !== "report" && <RefreshBar
+        <RefreshBar
           dataUpdatedAt={dataUpdatedAt}
           onRefresh={handleRefresh}
           isFetching={isFetching}
-        />}
+        />
       </div>
 
       <QaTabs />
-      {subtab === "report" && <QaResultsPane key={`${user?.username}:${user?.role}`} />}
+      {subtab === "report" && <QaResultsPane key={`${user?.username}:${user?.role}:${selectedReleaseId}`}
+        releaseId={selectedReleaseId || data?.release?.id || ''}
+        releaseName={data?.releases.find(release => release.id === selectedReleaseId)?.name || data?.release?.name || ''} />}
 
-      {subtab !== "report" && error && (
+      {error && (
         <div className="lerr p-12-16">
           加载失败：{error instanceof Error ? error.message : String(error)}
         </div>

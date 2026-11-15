@@ -4,7 +4,7 @@
  * Sub-panes:
  *   发布周期       — new monthly version, dates, environment, base images,
  *                    publish / unlock, cycle list
- *   app_info 同步  — per-App sync state of the daily app_info sync
+ *   app_info 同步  — per-App sync state and signup-period bulk sync
  *   通知设置       — one DingTalk robot per notification kind
  *
  * Data: GET /api/state (shared selectedReleaseId), plus the sync and
@@ -16,9 +16,10 @@ import { stripDockerPullPrefix } from "../../lib/containerImage";
 import { DateInput } from "../../components/DateInput";
 import { RefreshBar } from "../../components/RefreshBar";
 import { apiGet, apiPost } from "../../api/http";
+import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
 import { formatDateValue, formatServerTime } from "../../lib/time";
-import { releasePhaseLabel } from "../../lib/phase";
+import { releasePhaseLabel, signupOpen } from "../../lib/phase";
 import { cicdStatusLabel } from "../../lib/domainMetadata";
 import type { BaseImage, EnvironmentRow, ReleaseDetail, ReleaseSummary, StatePayload } from "../../types";
 import { toast } from "../../lib/toast";
@@ -483,25 +484,30 @@ interface SyncStatusResponse {
     checked_at: string;
     error: string;
   }>;
-  job: { running: boolean; started_at: string; started_by: string; finished_at: string;
+  job: { running: boolean; release_name?: string; started_at: string; started_by: string; finished_at: string;
     summary: { checked?: number; updated?: number; failed?: number; error?: string } | null };
-  daily: { time: string; enabled: boolean; last_run: string };
 }
 
-function SyncStatusPane() {
+function SyncStatusPane({ release }: { release: ReleaseDetail | null }) {
+  const { user } = useAuth();
   const [onlyErrors, setOnlyErrors] = useState(true);
-  const { data, refetch, isFetching } = useQuery({
-    queryKey: ["app-info-sync-status"],
+  const [starting, setStarting] = useState(false);
+  const { data, refetch, isFetching, error } = useQuery({
+    queryKey: ["app-info-sync-status", user?.username, user?.role],
     queryFn: () => apiGet<SyncStatusResponse>("/api/app-info/sync-status"),
     refetchInterval: (query) => (query.state.data?.job.running ? 3000 : false),
   });
 
   async function syncAll() {
+    if (!release || !signupOpen(release)) return;
+    setStarting(true);
     try {
-      await apiPost("/api/app-info/sync-all", {});
+      await apiPost("/api/app-info/sync-all", { release_id: release.id });
       void refetch();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStarting(false);
     }
   }
 
@@ -524,22 +530,23 @@ function SyncStatusPane() {
       <div className="panel-head"><h2>app_info 同步状态</h2></div>
       <div className="panel-body">
         <p className="hint mt-0">
-          每天 {data?.daily.time ?? "02:00"} 自动对 CICD 运行中的 App 检查分支头，变化时取回 app_info.json
-          {data?.daily.last_run ? `（上次：${formatServerTime(data.daily.last_run)}）` : ""}。失败汇总会发到「app_info 同步失败汇总」通知。
+          已取消 app_info 每日自动同步。仅可在所选周期报名截止前全量同步所有 CICD 运行中的 App；达到截止时间后停止保存后续结果。单个 App 可手动同步，失败汇总会发到「app_info 同步失败汇总」通知。
         </p>
+        {!signupOpen(release) && <p className="muted">{release ? `${release.name} 已过报名截止时间或已发布，不允许全量同步 app_info。` : "请先选择发布周期。"}</p>}
+        {error && <p className="lerr" role="alert">{error.message}</p>}
         <div className="row mt-11">
           <label className="check"><input type="checkbox" checked={onlyErrors} onChange={(e) => setOnlyErrors(e.target.checked)} />
             只看失败（{errorCount}）</label>
           <span className="spacer" />
-          {job?.running && <span className="small">同步中（{job.started_by} · {formatServerTime(job.started_at)} 开始）…</span>}
+          {job?.running && <span className="small">同步中（{job.release_name} · {job.started_by} · {formatServerTime(job.started_at)} 开始）…</span>}
           {!job?.running && job?.summary && (
             <span className="small muted">
-              上次手动同步：检查 {job.summary.checked ?? 0}，更新 {job.summary.updated ?? 0}，失败 {job.summary.failed ?? 0}
+              上次手动同步{job.release_name ? `（${job.release_name}）` : ""}：检查 {job.summary.checked ?? 0}，更新 {job.summary.updated ?? 0}，失败 {job.summary.failed ?? 0}
               {job.summary.error ? `，错误：${job.summary.error}` : ""}
             </span>
           )}
           <button className="btn sm" onClick={() => void refetch()} disabled={isFetching}>刷新</button>
-          <button className="btn primary sm" onClick={() => void syncAll()} disabled={job?.running}>立即同步全部</button>
+          <button className="btn primary sm" onClick={() => void syncAll()} disabled={starting || job?.running || !signupOpen(release)} title="仅可在所选周期报名截止前全量同步 app_info">立即同步全部</button>
         </div>
         <div className="table mt-11">
           <table>
@@ -765,7 +772,7 @@ export function ReleaseCyclePage() {
           </div>
         )
       )}
-      {subPane === "sync" && <SyncStatusPane />}
+      {subPane === "sync" && <SyncStatusPane release={release} />}
       {subPane === "notifications" && <NotificationSettingsPane />}
     </section>
   );

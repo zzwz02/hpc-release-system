@@ -39,6 +39,7 @@ PHASE_LABELS: dict[str, str] = {
 # can()/require_can() instead of comparing dates themselves.
 _PHASE_POLICY: dict[str, set[str]] = {
     SIGNUP: {
+        "sync_all_app_info",     # RM bulk sync is only available before signup closes
         "signup",                # new signup or re-signup after withdrawal
         "edit_entry_plan",       # base image, target version, planned features
         "exclude_tests",         # Owner removes tests from scope

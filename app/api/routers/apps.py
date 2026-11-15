@@ -6,7 +6,7 @@
   POST /api/apps/profile               — optional Owner profile
   GET  /api/app-info/version           — one stored app_info version
   POST /api/app-info/sync              — sync one App now
-  POST /api/app-info/sync-all          — start syncing every running App (RM)
+  POST /api/app-info/sync-all          — sync running Apps before cycle signup closes (RM)
   GET  /api/app-info/sync-status       — per-App sync state (RM)
   GET  /api/dependencies               — Apps by declared component
   GET  /api/dependencies/compat.csv    — compatibility list export
@@ -96,8 +96,12 @@ def api_app_info_sync(
 
 
 @router.post("/api/app-info/sync-all")
-def api_app_info_sync_all(user: dict = Depends(require_rm)) -> dict:
-    return catalog_service.start_sync_all(user=user["username"])
+def api_app_info_sync_all(
+    body: dict,
+    user: dict = Depends(require_rm),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    return catalog_service.start_sync_all(conn, release_id=str(body.get("release_id") or ""), user=user["username"])
 
 
 @router.get("/api/app-info/sync-status")
@@ -108,12 +112,6 @@ def api_app_info_sync_status(
     return {
         "apps": catalog_service.sync_status(conn),
         "job": catalog_service.sync_all_state(),
-        "daily": {
-            "time": catalog_service.settings.app_info_sync_time,
-            "enabled": catalog_service.settings.app_info_sync_enabled,
-            "last_run": catalog_service.sync_loop.last_run,
-            "last_summary": catalog_service.sync_loop.last_summary,
-        },
     }
 
 

@@ -5,8 +5,11 @@ from __future__ import annotations
 import base64
 import binascii
 import csv
+import hashlib
 import io
+import json
 import math
+import re
 import sqlite3
 import zipfile
 from pathlib import PurePath
@@ -20,7 +23,7 @@ from app.db.connection import transaction
 from app.domain import qa_results
 from app.domain.permissions import has_capability
 from app.integrations.read_session import read_session
-from app.repositories import qa_results_repo
+from app.repositories import qa_results_repo, releases_repo
 from app.repositories.audit_repo import log_audit
 from app.services import lookup_service
 from app.timeutil import beijing_timestamp
@@ -31,7 +34,66 @@ MAX_EXPANDED_BYTES = 200 * 1024 * 1024
 MAX_RESULT_ROWS = 20000
 
 
-def _read_workbook(content: bytes) -> tuple[list[tuple[int, dict, str]], list[str]]:
+def _release(conn, release_id):
+    release = releases_repo.get_release_row(conn, release_id)
+    if not release:
+        raise ApiError(400, '请选择有效的 QA report 发布周期')
+    if not re.fullmatch(r'\d+\.\d+\.\d+', release['name']):
+        raise ApiError(400, 'QA report 发布周期须为 3.10.0 形式的 HPC 版本')
+    return release
+
+
+def _records(conn, release=None):
+    records = qa_results_repo.list_results(conn, release_id=release['id'] if release else None)
+    if release is None:
+        return records
+    return [record for record in records if record['release_id'] == release['id'] or (
+        record['release_id'] is None and qa_results.hpc_families(record['data'].get('hpc_version', '')) == {release['name']})]
+
+
+def _revision(records):
+    values = sorted((record['result_key'], record['report_id'], record['data_json']) for record in records)
+    return hashlib.sha256(json.dumps(values, ensure_ascii=False).encode()).hexdigest()
+
+
+def _legacy_reports_to_remove(conn, release):
+    """Legacy files can contain several cycles; retain any file still used elsewhere."""
+    families = {}
+    for record in qa_results_repo.list_results(conn, legacy_only=True):
+        families.setdefault(record['report_id'], set()).update(qa_results.hpc_families(record['data'].get('hpc_version', '')))
+    selected = []
+    for report in qa_results_repo.legacy_workbooks(conn):
+        scope = families.get(report['id'])
+        if scope is None:
+            # Superseded old files may have no rows left. Read only their test
+            # sheet's version column; environment sheets stay opaque.
+            book = None
+            scope = set()
+            try:
+                original = qa_results_repo.workbook(conn, report['id'])
+                if original is None:
+                    continue
+                book = load_workbook(io.BytesIO(original['content']), read_only=True, data_only=False)
+                rows = book.worksheets[0].iter_rows(values_only=True)
+                header = list(next(rows, ()))
+                if 'hpc_version' in header:
+                    column = header.index('hpc_version')
+                    for number, row in enumerate(rows):
+                        if number >= MAX_RESULT_ROWS:
+                            break
+                        if column < len(row):
+                            scope.update(qa_results.hpc_families(row[column]))
+            except (OSError, ValueError, KeyError, zipfile.BadZipFile, ParseError, InvalidFileException):
+                pass
+            finally:
+                if book is not None:
+                    book.close()
+        if scope == {release['name']}:
+            selected.append(report['id'])
+    return selected
+
+
+def _read_workbook(content: bytes) -> tuple[list[tuple[int, dict, str]], list[str], dict]:
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             if sum(info.file_size for info in archive.infolist()) > MAX_EXPANDED_BYTES:
@@ -59,11 +121,13 @@ def _read_workbook(content: bytes) -> tuple[list[tuple[int, dict, str]], list[st
         missing = set(required) - set(headers)
         if missing:
             raise ValueError("第一个页签缺少列：" + ", ".join(sorted(missing)))
-        rows = []
+        rows, skipped_apps = [], {}
+        total_rows = 0
         for number, values_row in enumerate(values, 2):
             if not any(value is not None and value != "" for value in values_row):
                 continue
-            if len(rows) >= MAX_RESULT_ROWS:
+            total_rows += 1
+            if total_rows > MAX_RESULT_ROWS:
                 raise ValueError(f"测试结果不能超过 {MAX_RESULT_ROWS} 行")
             row = {
                 key: value if value is not None else ""
@@ -72,6 +136,8 @@ def _read_workbook(content: bytes) -> tuple[list[tuple[int, dict, str]], list[st
             fill_columns = qa_results.WORKSHEET_QA_COLUMNS if new_format else (
                 "qa_result", "qa_digest", "qa_env", "qa_status", "qa_comment")
             if all(row.get(column, "") == "" for column in fill_columns):
+                key = (str(row.get("app_name") or "").strip(), str(row.get("git_branch") or "").strip())
+                skipped_apps[key] = skipped_apps.get(key, 0) + 1
                 continue
             for column in headers:
                 if column == "website_docker_cmd":
@@ -111,17 +177,26 @@ def _read_workbook(content: bytes) -> tuple[list[tuple[int, dict, str]], list[st
                 raise ValueError(f"第 {number} 行：{exc}") from exc
             rows.append((number, row, reference))
         if not rows:
-            raise ValueError("第一个页签没有填写 QA 结果的测试行")
-        return rows, environments
+            raise ValueError(f"第一个页签没有填写 QA 结果的测试行：共 {total_rows} 行，QA 列全空跳过 {total_rows} 行，未保存")
+        summary = {"total_rows": total_rows, "skipped_rows": sum(skipped_apps.values()),
+                   "skipped_apps": [{"app_name": name, "git_branch": branch, "rows": count}
+                                    for (name, branch), count in sorted(skipped_apps.items())]}
+        return rows, environments, summary
     finally:
         book.close()
 
 
 def upload(
-    conn: sqlite3.Connection, *, content_b64: str, filename: str, user: str, role: str
+    conn: sqlite3.Connection, *, content_b64: str, filename: str, user: str, role: str,
+    release_id: str, revision: str | None = None,
 ) -> dict:
     if not has_capability(role, "qa.edit"):
         raise AuthzError("只有 QA 或 RM 可上传测试结果")
+    release = _release(conn, release_id)
+    before = _records(conn, release)
+    expected_revision = _revision(before)
+    if revision is not None and revision != expected_revision:
+        raise ApiError(409, '该版本 QA report 已变化，请刷新后重新上传')
     if not isinstance(filename, str) or not filename.lower().endswith(".xlsx"):
         raise ValueError("请上传 .xlsx 文件")
     if not isinstance(content_b64, str) or len(content_b64) > MAX_FILE_BYTES * 4 // 3 + 4:
@@ -132,7 +207,11 @@ def upload(
         raise ValueError("Excel 文件编码无效") from exc
     if len(content) > MAX_FILE_BYTES:
         raise ValueError("Excel 文件不能超过 20 MB")
-    rows, environments = _read_workbook(content)
+    rows, environments, summary = _read_workbook(content)
+    for number, row, _ in rows:
+        version = str(row.get('hpc_version', '')).strip()
+        if version and qa_results.hpc_families(version) != {release['name']}:
+            raise ValueError(f"第 {number} 行 hpc_version {version} 不属于所选发布周期 {release['name']}")
     references = list(dict.fromkeys(ref for _, _, ref in rows if ref))
     # All remote I/O and validation precede the write transaction. A single bad
     # row rejects the entire upload; existing results and files remain intact.
@@ -191,7 +270,10 @@ def upload(
                 if requested and requested not in versions:
                     raise ValueError("qa_digest 与 hpc_version 不匹配")
                 qa_results.validate_command_images(row, reference, source["tags"])
-                row["hpc_version"] = requested or source.get("hpc_version", "")
+                scoped_versions = [version for version in versions if qa_results.hpc_families(version) == {release['name']}]
+                row["hpc_version"] = requested or ', '.join(scoped_versions)
+                if not row['hpc_version']:
+                    raise ValueError(f"qa_digest 没有所选发布周期 {release['name']} 的 HPC 版本 tag")
                 cache_key = (reference, row["hpc_version"])
                 if cache_key not in version_commands:
                     version_commands[cache_key] = qa_results.worksheet_commands(source, hpc_version=row["hpc_version"])
@@ -213,22 +295,19 @@ def upload(
             "；".join(failures[:30])
             + (f"；另有 {len(failures) - 30} 行错误" if len(failures) > 30 else "")
         )
-    # Keep HPC patches and Python/Torch variants independent. Re-uploading the
-    # exact same test configuration replaces that configuration's latest result.
+    # Distinct configurations coexist inside this file. The file replaces the
+    # complete cycle, including tests absent from this upload.
     latest = {qa_results.worksheet_result_key(row): (row, ref) for _, row, ref in rows}
     prepared = [(key, row, ref) for key, (row, ref) in latest.items()]
     ts = beijing_timestamp()
     filename = PurePath(filename.replace("\\", "/")).name
+    legacy_report_ids = _legacy_reports_to_remove(conn, release)
     with transaction(conn, immediate=True):
-        replaced = len(qa_results_repo.matching(conn, [key for key, _, _ in prepared]))
-        legacy = qa_results_repo.matching(conn, [row["historical_result_key"] for _, row, _ in prepared])
-        obsolete = {row["historical_result_key"] for key, row, _ in prepared
-                    if (old := legacy.get(row["historical_result_key"]))
-                    and qa_results.worksheet_result_key(old) == key}
-        # Convert only an exactly matching old seven-field record; unrelated
-        # patches/configurations and original workbook files remain intact.
-        replaced += len(obsolete)
-        qa_results_repo.remove_keys(conn, obsolete)
+        if _release(conn, release_id)['name'] != release['name'] or _revision(_records(conn, release)) != expected_revision:
+            raise ApiError(409, '该版本 QA report 已变化，请刷新后重新上传')
+        replaced = len(before)
+        qa_results_repo.clear_release(conn, release_id, keys=[record['result_key'] for record in before],
+                                      legacy_report_ids=legacy_report_ids)
         report_id = qa_results_repo.save(
             conn,
             filename=filename,
@@ -237,6 +316,7 @@ def upload(
             uploaded_at=ts,
             uploaded_by=user,
             rows=prepared,
+            release_id=release_id,
         )
         log_audit(
             conn,
@@ -244,8 +324,10 @@ def upload(
             ts=ts,
             user=user,
             role=role,
+            release_id=release_id,
             event="qa_test_results_upload",
-            detail={"report_id": report_id},
+            detail={"report_id": report_id, 'mode': 'replace_release', 'removed_rows': replaced,
+                    "total_rows": summary["total_rows"], "skipped_rows": summary["skipped_rows"]},
         )
     return {
         "ok": True,
@@ -254,6 +336,8 @@ def upload(
         "duplicate_rows": len(rows) - len(prepared),
         "replaced": replaced,
         "uploaded_at": ts,
+        'release_id': release_id,
+        **summary,
     }
 
 
@@ -312,7 +396,8 @@ def _live_rows(conn, records):
 
 def query(conn: sqlite3.Connection, *, search: str = "", table_filter: str = "",
           column_filters: dict | None = None, sort_by: str = "", sort_direction: str = "asc",
-          offset: int = 0, limit: int | None = 50) -> dict:
+          offset: int = 0, limit: int | None = 50, release_id: str = '') -> dict:
+    release = _release(conn, release_id) if release_id else None
     if column_filters is None:
         column_filters = {}
     if (not isinstance(column_filters, dict) or any(
@@ -325,7 +410,8 @@ def query(conn: sqlite3.Connection, *, search: str = "", table_filter: str = "",
         raise ApiError(400, "排序方向须为 asc 或 desc")
     filters = {column: value for column, value in column_filters.items() if value.strip()}
     stored_filters = {column: value for column, value in filters.items() if column != "website_docker_cmd"}
-    records = qa_results_repo.list_results(conn)
+    records = _records(conn, release)
+    revision = _revision(records)
     for record in records:
         record["data"] = {
             **qa_results.canonical_result(record["data"]),
@@ -349,7 +435,8 @@ def query(conn: sqlite3.Connection, *, search: str = "", table_filter: str = "",
     page = records[offset:] if limit is None else records[offset:offset + limit]
     rows = [record["data"] for record in page] if needs_live else _live_rows(conn, page)
     return {"total": total, "rows": rows, "offset": offset, "limit": limit,
-            "columns": qa_results.WORKSHEET_COLUMNS}
+            "columns": qa_results.WORKSHEET_COLUMNS, 'revision': revision,
+            'release_id': release_id, 'release_name': release['name'] if release else ''}
 
 
 def export_csv(conn: sqlite3.Connection, **filters) -> str:

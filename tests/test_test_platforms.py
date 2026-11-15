@@ -117,7 +117,7 @@ def test_qa_expands_pyg_declared_gpus_and_keeps_version_placeholders_with_delive
     app_id = seed_app(temp_db, app_info=raw, commit_id="cca03f0a8413cfb9e087ddfcd20a7f7f4723e33a")
     release_id = seed_cycle(temp_db, name="3.10.0")
     entry = seed_signup(temp_db, release_id, app_id)
-    images = [{**build, "reference": f"harbor.sh.mxcr.io/hpc-release/pyg_lib-maca@sha256:{digit * 64}"}
+    images = [{**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].replace('<hpc_version>', 'abcdef1')}@sha256:{digit * 64}"}
               for build, digit in zip(entry["delivery_builds"], "ab")]
     harbor_artifacts(images)
     qa_service.set_qa_status_batch(temp_db, release_id, [{"app_id": app_id, "status": "not_checked",

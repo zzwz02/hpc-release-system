@@ -5,17 +5,23 @@ import { apiGet } from "../../../api/http";
 
 vi.mock("../../../api/http", () => ({ apiGet: vi.fn() }));
 vi.mock("../../../api/AuthContext", () => ({ useAuth: () => ({ user: { username: "qa", role: "QA" } }) }));
-const data = { hpc_version: "3.10.0.10", columns: ["app_name", "website_docker_cmd", "qa_digest", "qa_result"],
-  rows: [{ app_name: "HPL", website_docker_cmd: "no_image", qa_digest: "", qa_result: "" }], errors: [] };
+const data = { hpc_version: "latest", hpc_versions: ["3.10.0.8", "3.10.0.12"],
+  columns: ["app_name", "hpc_version", "website_docker_cmd", "qa_digest", "qa_result"],
+  rows: [{ app_name: "EquiformerV2", hpc_version: "3.10.0.8", website_docker_cmd: "older app command", qa_digest: "", qa_result: "" },
+    { app_name: "HPL", hpc_version: "3.10.0.12", website_docker_cmd: "newer app command", qa_digest: "", qa_result: "" },
+    { app_name: "Missing", hpc_version: "", website_docker_cmd: "no_image", qa_digest: "", qa_result: "" }], errors: [] };
 beforeEach(() => vi.clearAllMocks());
 
-it("queries latest manually, displays its resolved numeric version and missing-image rows", async () => {
+it("queries latest manually and displays independently selected versions alongside missing builds", async () => {
   vi.mocked(apiGet).mockResolvedValue(data);
   render(<QaTestCommandsPane releaseId="release1" />);
   expect(apiGet).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "查询测试命令" }));
   expect(await screen.findByText("no_image")).toBeVisible();
-  expect(screen.getByText("实际 hpc_version：3.10.0.10")).toBeVisible();
+  expect(screen.getByText("已按 App／构建分别选择最新版本；实际 hpc_version：3.10.0.8、3.10.0.12")).toBeVisible();
+  expect(screen.getByText("EquiformerV2")).toBeVisible();
+  expect(screen.getByText("3.10.0.8")).toBeVisible();
+  expect(screen.getByText("3.10.0.12")).toBeVisible();
   expect(apiGet).toHaveBeenCalledWith("/api/qa/test-commands?release_id=release1&hpc_version=latest");
   fireEvent.change(screen.getByLabelText("hpc_version"), { target: { value: "3.10.0.7" } });
   expect(screen.queryByRole("table")).toBeNull();

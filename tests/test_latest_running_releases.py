@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.deps import get_db, require_login
 from app.main import create_app
-from app.services import catalog_service, cycle_service, lookup_service, qa_service
+from app.services import cycle_service, lookup_service, qa_service
 from tests.conftest import close_qa, make_dependency_app_info, seed_app, seed_cycle, seed_signup, store_app_info
 
 
@@ -23,7 +23,7 @@ def inventory(temp_db, harbor_artifacts):
             if version == "3.10" and name == "withdrawn":
                 cycle_service.withdraw(temp_db, entry["id"], user="rm", role="RM")
                 continue
-            images = [{**build, "commit_id": "image-build-commit", "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].partition(':')[0]}@sha256:{str(index + 1) * 64}"}
+            images = [{**build, "commit_id": "image-build-commit", "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].replace('<hpc_version>', 'abcdef1')}@sha256:{str(index + 1) * 64}"}
                       for index, build in enumerate(entry["delivery_builds"])]
             harbor_artifacts(images)
             qa_service.set_qa_status_batch(temp_db, release, [{

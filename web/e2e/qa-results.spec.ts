@@ -42,7 +42,8 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   const response = await commandsResponse;
   expect(response.ok(), await response.text()).toBeTruthy();
   const commands = await response.json();
-  expect(commands.hpc_version).toBe("3.10.1.2");
+  expect(commands.hpc_version).toBe("latest");
+  expect(commands.hpc_versions).toEqual(["3.10.1.2"]);
   const expectedColumns = ["app_name", "git_branch", "hpc_version", "app_version", "arch", "OS", "GPU", "py_label", "torch_label", "test_name", "perf_golden", "perf_unit", "website_docker_cmd", "qa_digest", "qa_docker_cmd", "qa_result", "qa_env", "qa_status", "qa_comment"];
   expect(commands.columns).toEqual(expectedColumns);
   const qaColumns = expectedColumns.filter(column => column.startsWith("qa_"));
@@ -65,12 +66,33 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   }));
   const content = workbook(expectedColumns, rows);
   await page.getByRole("navigation", { name: "QA", exact: true }).getByRole("link", { name: "QA report", exact: true }).click();
+  async function selectReport(name: string, buffer: Buffer) {
+    await page.getByLabel("上传测试结果 Excel").setInputFiles({ name, mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer });
+    const dialog = page.getByRole("alertdialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("heading", { name: "整份替换 3.10.1 的 QA report", exact: true })).toBeVisible();
+    await expect(dialog).toContainText(name);
+    await expect(dialog).toContainText("含各补丁版本");
+    await expect(dialog).toContainText("未出现在本次文件中的旧测试项也会删除");
+    return dialog;
+  }
+  async function uploadReport(name: string, buffer: Buffer) {
+    const dialog = await selectReport(name, buffer);
+    await dialog.getByRole("button", { name: "确认整份替换", exact: true }).click();
+  }
   const uploaded = page.waitForResponse(r => r.url().endsWith("/api/qa/test-results/upload"));
-  await page.getByLabel("上传测试结果 Excel").setInputFiles({ name: "QA-results.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: content });
+  await uploadReport("QA-results.xlsx", content);
   const uploadResponse = await uploaded;
   expect(uploadResponse.ok(), await uploadResponse.text()).toBeTruthy();
   const saved = await uploadResponse.json();
-  await expect(page.getByText("已保存 2 行，其中覆盖 0 行。", { exact: true })).toBeVisible();
+  expect(saved.total_rows).toBe(commands.rows.length);
+  expect(saved.skipped_rows).toBe(commands.rows.filter((row: Record<string, unknown>) => row.website_docker_cmd === "no_image").length);
+  expect(saved.skipped_apps).toEqual([{ app_name: "ABACUS", git_branch: "maca", rows: saved.skipped_rows }]);
+  await expect(page.getByText("已保存 3.10.1 的 2 行，清除旧结果 0 行。", { exact: true })).toBeVisible();
+  const uploadSummary = page.getByTestId("qa-upload-summary");
+  await expect(uploadSummary).toContainText(`文件共 ${commands.rows.length} 行；QA 列全空跳过 ${saved.skipped_rows} 行`);
+  await uploadSummary.locator("summary").click();
+  await expect(uploadSummary).toContainText(`ABACUS · maca：${saved.skipped_rows} 行`);
   await expect(page.getByText(/不采用上传文件中该列的命令/)).toBeVisible();
   const report = page.getByRole("table", { name: "QA 测试结果", exact: true });
   await expect(report.locator("tbody tr")).toHaveCount(2);
@@ -79,7 +101,7 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   await reportPane.getByLabel("qa_result 列筛选").fill("0");
   await expect(report.locator("tbody tr")).toHaveCount(1);
   await reportPane.getByLabel("qa_result 列筛选").fill("");
-  const results = await (await page.request.get(base + "/api/qa/test-results")).json();
+  const results = await (await page.request.get(base + `/api/qa/test-results?release_id=${new URL(response.url()).searchParams.get("release_id")}`)).json();
   expect(results.rows.map((row: Record<string, unknown>) => row.qa_result)).toEqual([0, "pass"]);
   for (const row of results.rows) {
     expect(row.qa_digest_gerrit_commit_id).toBe("bb46c60");
@@ -98,20 +120,46 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
 
   const filled = rows.filter((row: Record<string, unknown>) => row.qa_digest);
   for (const patch of [
-    { GPU: "C500X" }, { hpc_version: "3.10.1.9" }, { qa_status: "pending" },
+    { GPU: "C500X" }, { git_branch: "wrong-branch" }, { hpc_version: "3.10.1.9" }, { qa_status: "pending" },
     { perf_golden: "incorrect" }, { perf_unit: "incorrect" },
     { qa_env: "missing" }, { qa_docker_cmd: `docker run ${image.split("@")[0]}:not-a-matching-tag sh -c test` },
   ]) {
     const invalid = page.waitForResponse(r => r.url().endsWith("/api/qa/test-results/upload"));
-    await page.getByLabel("上传测试结果 Excel").setInputFiles({ name: "invalid.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: workbook(expectedColumns, [{ ...filled[0], ...patch }]) });
+    await uploadReport("invalid.xlsx", workbook(expectedColumns, [{ ...filled[0], ...patch }]));
     expect((await invalid).status()).toBe(400);
     await expect(page.getByRole("alert")).toContainText("第 2 行");
     await expect(report.locator("tbody tr")).toHaveCount(2);
   }
+  let cancelledUpload = false;
+  const watchUpload = (request: { url(): string }) => { if (request.url().endsWith("/api/qa/test-results/upload")) cancelledUpload = true; };
+  page.on("request", watchUpload);
+  const cancelled = await selectReport("cancelled.xlsx", workbook(expectedColumns, [filled[1]]));
+  await cancelled.getByRole("button", { name: "取消上传", exact: true }).click();
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
+  await expect(page.getByLabel("上传测试结果 Excel")).toBeEnabled();
+  await expect(report.locator("tbody tr")).toHaveCount(2);
+  await expect(report.getByRole("link", { name: "QA-results.xlsx", exact: true })).toHaveCount(2);
+  expect((await page.request.get(base + `/api/qa/test-results/${saved.report_id}/download`)).ok()).toBeTruthy();
+  page.off("request", watchUpload);
+  expect(cancelledUpload).toBe(false);
   const overwrite = page.waitForResponse(r => r.url().endsWith("/api/qa/test-results/upload"));
-  await page.getByLabel("上传测试结果 Excel").setInputFiles({ name: "QA-results-updated.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: workbook(expectedColumns, filled.map((row: Record<string, unknown>) => ({ ...row, qa_result: "fail", qa_status: "fail" }))) });
+  await uploadReport("QA-results-updated.xlsx", workbook(expectedColumns, filled.map((row: Record<string, unknown>) => ({ ...row, qa_result: "fail", qa_status: "fail" }))));
   expect((await overwrite).ok()).toBeTruthy();
-  await expect(page.getByText("已保存 2 行，其中覆盖 2 行。", { exact: true })).toBeVisible();
+  await expect(page.getByText("已保存 3.10.1 的 2 行，清除旧结果 2 行。", { exact: true })).toBeVisible();
+  const replacement = page.waitForResponse(r => r.url().endsWith("/api/qa/test-results/upload"));
+  await expect(page.getByLabel("上传测试结果 Excel")).toBeEnabled();
+  await uploadReport("only-B.xlsx", workbook(expectedColumns, [filled[1]]));
+  expect((await replacement).ok()).toBeTruthy();
+  await expect(page.getByText("已保存 3.10.1 的 1 行，清除旧结果 2 行。", { exact: true })).toBeVisible();
+  await expect(report.locator("tbody tr")).toHaveCount(1);
+  await expect(report.getByRole("link", { name: "only-B.xlsx", exact: true })).toBeVisible();
+  expect((await page.request.get(base + `/api/qa/test-results/${saved.report_id}/download`)).status()).toBe(404);
+  await expect(page.getByLabel("选择 release")).toHaveValue(new URL(response.url()).searchParams.get("release_id")!);
+  await page.getByLabel("选择 release").selectOption({ label: '3.9.0' });
+  await expect(page.getByText('共 0 行，当前 0–0', { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'only-B.xlsx', exact: true })).toHaveCount(0);
+  await page.getByLabel("选择 release").selectOption({ label: '3.10.1' });
+  await expect(report.getByRole('link', { name: 'only-B.xlsx', exact: true })).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: "/tmp/qa-version-report-mobile.png", fullPage: true });

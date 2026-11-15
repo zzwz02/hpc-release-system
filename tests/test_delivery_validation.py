@@ -13,13 +13,60 @@ from app.main import create_app
 from app.repositories import entries_repo
 from app.services import qa_service
 from tests.conftest import make_app_info, seed_app, seed_cycle, seed_signup
-from tests.test_delivery_images import delivery, save  # noqa: F401
+from tests.test_delivery_images import delivery as delivery, save
 
 
 def artifact(image, *, tags=None):
     return {"tags": [{"name": tag} for tag in (tags if tags is not None else [
                 image["image_pattern"].partition(":")[2].replace("<hpc_version>", "abcdef1")
             ])]}
+
+
+@pytest.mark.parametrize('tag', ['', 'bad:tag', 'a' * 129])
+def test_qa_requires_an_explicit_valid_tag_before_querying_harbor(temp_db, delivery, monkeypatch, tag):
+    image = delivery[3][0]
+    repository, digest = image['reference'].split('@')
+    repository = repository.rsplit(':', 1)[0]
+    reference = repository + (':' + tag if tag else '') + '@' + digest
+    monkeypatch.setattr(harbor, 'get_artifact', lambda *args: pytest.fail('Invalid format must fail before Harbor'))
+    before = entries_repo.get_entry(temp_db, delivery[2]['id'])
+    with pytest.raises(ValueError, match='image:tag@sha256'):
+        save(temp_db, delivery, values=[{**image, 'reference': reference}])
+    assert entries_repo.get_entry(temp_db, before['id']) == before
+
+
+def test_entered_tag_must_belong_to_the_exact_digest(temp_db, delivery, monkeypatch):
+    image = delivery[3][0]
+    actual = artifact(image)
+    wrong = image['reference'].replace('-abcdef1-', '-3.10.0.7-')
+    monkeypatch.setattr(harbor, 'get_artifact', lambda *args: actual)
+    before = entries_repo.get_entry(temp_db, delivery[2]['id'])
+    with pytest.raises(ValueError, match='tag 不属于该 digest'):
+        save(temp_db, delivery, values=[{**image, 'reference': wrong}])
+    assert entries_repo.get_entry(temp_db, before['id']) == before
+
+
+@pytest.mark.parametrize('dimension,wrong', [('amd64', 'arm64'), ('ubuntu22.04', 'ubuntu24.04'), ('py312', 'py310')])
+def test_entered_tag_itself_must_match_build_even_if_another_actual_tag_matches(temp_db, delivery, monkeypatch, dimension, wrong):
+    image = delivery[3][0]
+    valid_tag = image['reference'].partition('@')[0].rsplit(':', 1)[-1]
+    wrong_tag = valid_tag.replace(dimension, wrong)
+    monkeypatch.setattr(harbor, 'get_artifact', lambda *args: artifact(image, tags=[valid_tag, wrong_tag]))
+    before = entries_repo.get_entry(temp_db, delivery[2]['id'])
+    with pytest.raises(ValueError, match='填写的 tag 与所选构建配置不匹配'):
+        save(temp_db, delivery, values=[{**image, 'reference': image['reference'].replace(valid_tag, wrong_tag)}])
+    assert entries_repo.get_entry(temp_db, before['id']) == before
+
+
+def test_save_preserves_qas_exact_tag_without_selecting_another_actual_alias(temp_db, delivery, monkeypatch):
+    image = delivery[3][0]
+    tag = image['reference'].partition('@')[0].rsplit(':', 1)[-1]
+    reference = image['reference'].replace(tag + '@', tag + '-7@')
+    monkeypatch.setattr(harbor, 'get_artifact', lambda *args: artifact(image, tags=[tag, tag + '-7', tag + '-99']))
+    save(temp_db, delivery, values=[{**image, 'reference': reference}])
+    saved = entries_repo.get_entry(temp_db, delivery[2]['id'])
+    assert saved['deliverable_images'][0]['reference'] == reference
+    assert saved['deliverable_image'] + '@' + saved['deliverable_digest'] == reference
 
 
 @pytest.mark.parametrize("case,message", [
@@ -54,6 +101,7 @@ def test_bad_artifact_rejects_qa_and_preserves_images_and_audit(temp_db, deliver
     values = deepcopy(delivery[3])
     # Even an explicitly entered correct tag cannot override Harbor's data.
     name, _, digest = values[0]["reference"].partition("@")
+    name = name.rsplit(":", 1)[0]
     values[0]["reference"] = name + ":" + image["image_pattern"].partition(":")[2].replace("<hpc_version>", "abcdef1") + "@" + digest
     with pytest.raises(ValueError, match=message) as error:
         save(temp_db, delivery, values=values)
@@ -71,13 +119,13 @@ def test_matching_tags_determine_platform_even_if_metadata_is_missing_or_wrong(t
     if metadata is not None:
         result["extra_attrs"] = metadata
     monkeypatch.setattr(harbor, "get_artifact", lambda *args: result)
-    values = [{**image, "reference": image["reference"].replace("/testapp-maca", "/nested/testapp-maca")}]
+    values = [{**image, "reference": f'harbor.sh.mxcr.io/hpc-release/nested/testapp-maca:{tag}@{image["reference"].partition("@")[2]}'}]
     save(temp_db, delivery, values=values)
     saved = entries_repo.get_entry(temp_db, delivery[2]["id"])
     assert saved["qa_status"] == "qa_passed"
     assert saved["deliverable_images"][0]["os"] == "ubuntu22.04"
     assert saved["deliverable_images"][0]["arch"] == "amd64"
-    assert "/nested/testapp-maca@" in saved["deliverable_images"][0]["reference"]
+    assert saved["deliverable_images"][0]["reference"] == values[0]["reference"]
 
 
 def test_same_digest_in_wrong_build_is_checked_even_when_artifact_query_is_shared(temp_db, delivery, monkeypatch):
@@ -194,7 +242,7 @@ def test_unknown_build_platform_cannot_be_saved_even_if_image_exists(temp_db, mo
     app = seed_app(temp_db, app_info=raw)
     release = seed_cycle(temp_db)
     entry = seed_signup(temp_db, release, app)
-    image = {**entry["delivery_builds"][0], "reference": "harbor.sh.mxcr.io/hpc-release/testapp-maca@sha256:" + "a" * 64}
+    image = {**entry["delivery_builds"][0], "reference": "harbor.sh.mxcr.io/hpc-release/testapp-maca:" + entry["delivery_builds"][0]["image_pattern"].partition(":")[2].replace("<hpc_version>", "abcdef1") + "@sha256:" + "a" * 64}
     monkeypatch.setattr(harbor, "get_artifact", lambda *args: artifact(image))
     with pytest.raises(ValueError, match="无法确定 OS/CPU 架构"):
         save(temp_db, (app, release, entry, [image]))
@@ -212,8 +260,18 @@ def runtime_delivery(temp_db):
     entry = seed_signup(temp_db, release, app)
     build = next(build for build in entry["delivery_builds"]
                  if build["python_label"] == "py312" and build["pytorch_label"] == "torch2.8")
-    image = {**build, "reference": "harbor.sh.mxcr.io/hpc-release/testapp-maca@sha256:" + "a" * 64}
+    image = {**build, "reference": "harbor.sh.mxcr.io/hpc-release/" + build["image_pattern"].replace("<hpc_version>", "abcdef1") + "@sha256:" + "a" * 64}
     return app, release, entry, [image]
+
+
+def test_entered_torch_tag_cannot_use_another_matching_tag_as_validation(temp_db, runtime_delivery, monkeypatch):
+    image = runtime_delivery[3][0]
+    correct = image['reference'].partition('@')[0].rsplit(':', 1)[-1]
+    wrong = correct.replace('torch2.8', 'torch2.4')
+    monkeypatch.setattr(harbor, 'get_artifact', lambda *args: artifact(image, tags=[correct, wrong]))
+    with pytest.raises(ValueError, match='填写的 tag 与所选构建配置不匹配'):
+        save(temp_db, runtime_delivery, values=[{**image, 'reference': image['reference'].replace(correct, wrong)}])
+    assert entries_repo.get_entry(temp_db, runtime_delivery[2]['id'])['deliverable_images'] == []
 
 
 @pytest.mark.parametrize("tag,valid", [
@@ -255,7 +313,7 @@ def test_opposite_image_type_cannot_be_assigned_to_build(temp_db, delivery, monk
     builds = {build["image_target"]: build for build in delivery[2]["delivery_builds"] if build["arch"] == "amd64"}
     other = "dbg" if target == "release" else "release"
     image = {**builds[target], "image_target": other,
-             "reference": f'harbor.sh.mxcr.io/hpc-release/{builds[other]["image_pattern"].partition(":")[0]}@sha256:{"f" * 64}'}
+             "reference": f'harbor.sh.mxcr.io/hpc-release/{builds[other]["image_pattern"].replace("<hpc_version>", "abcdef1")}@sha256:{"f" * 64}'}
     monkeypatch.setattr(harbor, "get_artifact", lambda *args: pytest.fail("wrong image type must fail before Harbor query"))
     before = entries_repo.get_entry(temp_db, delivery[2]["id"])
     with pytest.raises(ValueError, match=f"{target} 镜像名称应为"):
@@ -268,7 +326,7 @@ def test_matching_image_type_and_tag_save_to_selected_build(temp_db, delivery, m
     build = next(build for build in delivery[2]["delivery_builds"]
                  if build["arch"] == "amd64" and build["image_target"] == target)
     repository = "testapp-maca-dbg" if target == "dbg" else "testapp-maca"
-    image = {**build, "reference": f'harbor.sh.mxcr.io/hpc-release/{repository}@sha256:{"f" * 64}'}
+    image = {**build, "reference": f'harbor.sh.mxcr.io/hpc-release/{repository}:1.0-abcdef1-py312-ubuntu22.04-amd64@sha256:{"f" * 64}'}
 
     def get_artifact(project, actual_repository, digest):
         assert (project, actual_repository, digest) == ("hpc-release", repository, "sha256:" + "f" * 64)
@@ -287,9 +345,9 @@ def test_digest_existing_only_in_other_image_type_is_rejected(temp_db, delivery,
     builds = {build["image_target"]: build for build in delivery[2]["delivery_builds"] if build["arch"] == "amd64"}
     other = "dbg" if target == "release" else "release"
     harbor_artifacts([{**builds[other], "reference":
-        f'harbor.sh.mxcr.io/hpc-release/{builds[other]["image_pattern"].partition(":")[0]}@sha256:{"f" * 64}'}])
+        f'harbor.sh.mxcr.io/hpc-release/{builds[other]["image_pattern"].replace("<hpc_version>", "abcdef1")}@sha256:{"f" * 64}'}])
     image = {**builds[target], "reference":
-        f'harbor.sh.mxcr.io/hpc-release/{builds[target]["image_pattern"].partition(":")[0]}@sha256:{"f" * 64}'}
+        f'harbor.sh.mxcr.io/hpc-release/{builds[target]["image_pattern"].replace("<hpc_version>", "abcdef1")}@sha256:{"f" * 64}'}
     before = entries_repo.get_entry(temp_db, delivery[2]["id"])
     with pytest.raises(ValueError, match="Harbor 中未找到该镜像"):
         save(temp_db, delivery, values=[image])

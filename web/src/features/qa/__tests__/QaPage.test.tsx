@@ -782,13 +782,13 @@ describe("QaPage AI analysis after a refresh", () => {
   });
 });
 
-it("opens QA report without requiring a selected release or a state request", async () => {
-  uiStoreMod.__setState({ selectedReleaseId: "" });
-  vi.mocked(apiGet).mockResolvedValue({ total: 0, rows: [] });
+it("shows the shared release selector for QA report and scopes its result request", async () => {
+  vi.mocked(apiGet).mockImplementation(async path => path.startsWith("/api/state")
+    ? makePayload() : { total: 0, rows: [], columns: [], revision: "empty" });
   render(<QueryClientProvider client={makeQClient()}>
     <MemoryRouter initialEntries={["/qa?tab=report"]}><QaPage /></MemoryRouter>
   </QueryClientProvider>);
   expect(await screen.findByTestId("qa-results-pane")).toBeVisible();
-  expect(screen.queryByRole("button", { name: "刷新当前页" })).toBeNull();
-  expect(vi.mocked(apiGet).mock.calls.some(([url]) => url.startsWith("/api/state"))).toBe(false);
+  expect(await screen.findByLabelText("选择 release")).toHaveValue("rel-1");
+  await waitFor(() => expect(vi.mocked(apiGet).mock.calls.some(([url]) => url.includes("/api/qa/test-results?release_id=rel-1&"))).toBe(true));
 });

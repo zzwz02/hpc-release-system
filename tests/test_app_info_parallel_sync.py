@@ -14,13 +14,13 @@ from tests.conftest import (
     make_app_info,
     seed_app,
     seed_cycle,
-    seed_signup,
     set_cycle_dates,
     store_app_info,
 )
 
 
 def test_parallel_network_reads_apply_sqlite_updates_on_calling_thread(temp_db, monkeypatch):
+    release_id = seed_cycle(temp_db)
     for name in ["a", "b", "broken"]:
         seed_app(temp_db, name, app_info=None)
     rendezvous = threading.Barrier(2)
@@ -41,7 +41,7 @@ def test_parallel_network_reads_apply_sqlite_updates_on_calling_thread(temp_db, 
     monkeypatch.setattr(notification_channels, "notify", lambda *args: notices.append(args[1]))
     temp_db.set_trace_callback(lambda sql: sql_threads.append(threading.get_ident()))
     try:
-        result = catalog_service.sync_all(temp_db, user="rm")
+        result = catalog_service.sync_all(temp_db, release_id=release_id, user="rm")
     finally:
         temp_db.set_trace_callback(None)
     assert (result["checked"], result["updated"], result["failed"]) == (3, 2, 1)
@@ -56,6 +56,7 @@ def test_parallel_network_reads_apply_sqlite_updates_on_calling_thread(temp_db, 
 def test_shared_repository_is_read_once_per_batch_and_changes_are_seen_next_batch(
     temp_db, monkeypatch
 ):
+    release_id = seed_cycle(temp_db)
     for name in ["left", "right"]:
         seed_app(temp_db, name, git_url="hpc_shared", app_info=None)
     state = {"head": "a" * 40, "version": "2.0"}
@@ -71,12 +72,12 @@ def test_shared_repository_is_read_once_per_batch_and_changes_are_seen_next_batc
 
     monkeypatch.setattr(gerrit, "head_commit", head)
     monkeypatch.setattr(gerrit, "fetch_app_info_at", content)
-    assert catalog_service.sync_all(temp_db, user="rm")["updated"] == 2
+    assert catalog_service.sync_all(temp_db, release_id=release_id, user="rm")["updated"] == 2
     assert calls.count("head") == calls.count("file") == 1
-    assert catalog_service.sync_all(temp_db, user="rm")["updated"] == 0
+    assert catalog_service.sync_all(temp_db, release_id=release_id, user="rm")["updated"] == 0
     assert calls.count("head") == 2 and calls.count("file") == 1
     state.update(head="b" * 40, version="3.0")
-    assert catalog_service.sync_all(temp_db, user="rm")["updated"] == 2
+    assert catalog_service.sync_all(temp_db, release_id=release_id, user="rm")["updated"] == 2
     assert calls.count("head") == 3 and calls.count("file") == 2
     assert all(
         app_info_repo.latest_version(temp_db, app)["raw"]["app_version"] == "3.0"
@@ -119,12 +120,10 @@ def test_stale_result_does_not_overwrite_new_configuration_or_sync_state(
         assert latest is None
 
 
-def test_daily_sync_does_not_start_the_next_wave_after_qa_deadline(temp_db, monkeypatch):
+def test_bulk_sync_discards_inflight_results_and_stops_next_wave_at_signup_deadline(temp_db, monkeypatch):
     for name in ["a", "b", "c"]:
         seed_app(temp_db, name)
     cycle = seed_cycle(temp_db)
-    for name in ["a", "b", "c"]:
-        seed_signup(temp_db, cycle, name)
     set_cycle_dates(
         temp_db,
         cycle,
@@ -132,7 +131,7 @@ def test_daily_sync_does_not_start_the_next_wave_after_qa_deadline(temp_db, monk
         qa_deadline="2026-11-26 23:59",
         release_date="2026-11-30",
     )
-    now = [dt.datetime(2026, 11, 26, 23, 58, 59)]
+    now = [dt.datetime(2026, 11, 13, 1, 59, 59)]
     monkeypatch.setattr(timeutil, "beijing_now", lambda: now[0])
     monkeypatch.setattr(catalog_service, "APP_INFO_SYNC_WORKERS", 2)
     rendezvous = threading.Barrier(2)
@@ -141,12 +140,15 @@ def test_daily_sync_does_not_start_the_next_wave_after_qa_deadline(temp_db, monk
     def head(url, branch, **kwargs):
         started.append(url)
         rendezvous.wait(timeout=5)
-        now[0] = dt.datetime(2026, 11, 26, 23, 59)
+        now[0] = dt.datetime(2026, 11, 13, 2, 0)
         return "a" * 40
 
     monkeypatch.setattr(gerrit, "head_commit", head)
-    monkeypatch.setattr(gerrit, "fetch_app_info_at", lambda *a, **kw: json.dumps(make_app_info()))
-    result = catalog_service.sync_all(temp_db, user="system", signed_up_only=True)
-    assert result["checked"] == 2 and len(started) == 2
+    monkeypatch.setattr(gerrit, "fetch_app_info_at", lambda *a, **kw: json.dumps(make_app_info(app_version="2.0")))
+    result = catalog_service.sync_all(temp_db, release_id=cycle, user="rm")
+    assert result["checked"] == result["updated"] == 0 and len(started) == 2
+    assert "报名截止" in result["error"]
     assert not any(url.endswith("hpc_c") for url in started)
-    assert apps_repo.get_app(temp_db, "c")["sync_checked_at"] == ""
+    for name in ["a", "b", "c"]:
+        assert apps_repo.get_app(temp_db, name)["sync_checked_at"] == ""
+        assert app_info_repo.latest_version(temp_db, name)["raw"]["app_version"] == "1.0"

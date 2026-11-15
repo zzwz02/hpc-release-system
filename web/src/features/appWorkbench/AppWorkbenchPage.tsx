@@ -21,6 +21,7 @@ import { docTargetLabels } from "../../lib/labels";
 import { normalizeDocTarget } from "../../lib/domainMetadata";
 import { canCreateApp, canEdit, canEditRmFields, canSyncAppInfo, isOwner, isRM } from "../../lib/roles";
 import { can } from "../../lib/accessControl";
+import { signupOpen } from "../../lib/phase";
 import { toast } from "../../lib/toast";
 import { useUiStore } from "../../store/uiStore";
 import type { App, AppAuditEntry, Entry, ReleaseDetail, StatePayload } from "../../types";
@@ -421,14 +422,15 @@ export function AppWorkbenchPage() {
   }
 
   async function handleSyncAll() {
+    if (!release || !signupOpen(release)) return;
     if (!(await confirmDialog({
       title: "同步全部 app_info",
-      body: "对所有 CICD 运行中的 App 立即检查仓库并同步 app_info.json？同步在后台进行，结果可在「周期管理 → app_info 同步状态」查看。",
+      body: `在 ${release.name} 报名截止前，对所有 CICD 运行中的 App 立即检查仓库并同步 app_info.json？同步在后台进行，达到报名截止时间后停止保存后续结果；结果可在「周期管理 → app_info 同步状态」查看。`,
       confirmText: "开始同步",
     }))) return;
     setSyncingAll(true);
     try {
-      await apiPost("/api/app-info/sync-all", {});
+      await apiPost("/api/app-info/sync-all", { release_id: release.id });
       toast.success("已开始同步全部 app_info，稍后刷新查看结果。");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
@@ -456,8 +458,8 @@ export function AppWorkbenchPage() {
           </select>
         )}
         {isRM(user) && (
-          <button className="btn sm" onClick={() => void handleSyncAll()} disabled={syncingAll}
-            title="立即对所有运行中的 App 同步 app_info" data-testid="sync-all-app-info-btn">
+          <button className="btn sm" onClick={() => void handleSyncAll()} disabled={syncingAll || !signupOpen(release)}
+            title={signupOpen(release) ? "在所选周期报名截止前同步所有运行中的 App" : "仅可在所选周期报名截止前全量同步 app_info"} data-testid="sync-all-app-info-btn">
             同步全部 app_info
           </button>
         )}

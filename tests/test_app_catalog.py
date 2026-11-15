@@ -9,6 +9,7 @@ import tarfile
 
 import pytest
 from fastapi.testclient import TestClient
+from app.api.errors import ApiError
 
 from app.config import settings
 from app.deps import get_db, require_login
@@ -82,6 +83,7 @@ def test_a_sync_failure_is_recorded_on_the_app_and_never_raised(temp_db, monkeyp
 
 
 def test_sync_all_only_visits_running_apps(temp_db, monkeypatch) -> None:
+    release_id = seed_cycle(temp_db)
     seed_app(temp_db, "running_app", app_info=None)
     seed_app(temp_db, "stopped_app", app_info=None, cicd_status="stopped")
     visited: list[str] = []
@@ -93,14 +95,14 @@ def test_sync_all_only_visits_running_apps(temp_db, monkeypatch) -> None:
         or {"app_id": app_id, "status": "unchanged"},
     )
 
-    summary = catalog_service.sync_all(temp_db, user="rm")
+    summary = catalog_service.sync_all(temp_db, release_id=release_id, user="rm")
 
     assert visited == ["running_app"]
     assert summary["checked"] == 1
 
 
-@pytest.mark.parametrize("trigger", ["manual", "rm_all", "daily"])
-def test_scope_expansion_from_any_sync_keeps_latest_and_qa_warning(
+@pytest.mark.parametrize("trigger", ["manual", "rm_all"])
+def test_manual_scope_expansion_still_works_but_bulk_sync_stops_after_signup(
     temp_db_with_path, monkeypatch, trigger,
 ) -> None:
     conn, path = temp_db_with_path
@@ -118,12 +120,12 @@ def test_scope_expansion_from_any_sync_keeps_latest_and_qa_warning(
     if trigger == "manual":
         result = catalog_service.sync_app(conn, app_id, user="owner_test", force=True)
         assert result["status"] == "updated"
-    elif trigger == "rm_all":
-        result = catalog_service.sync_all(conn, user="rm", force=True)
-        assert (result["updated"], result["failed"]) == (1, 0)
     else:
-        result = catalog_service.AppInfoSyncLoop()._run_once()
-        assert (result["updated"], result["failed"]) == (1, 0)
+        with pytest.raises(ApiError, match="不允许全量同步"):
+            catalog_service.sync_all(conn, release_id=release_id, user="rm", force=True)
+        assert app_info_repo.latest_version(conn, app_id)["id"] == entry["locked_version_id"]
+        assert notices == []
+        return
 
     latest = app_info_repo.latest_version(conn, app_id)
     assert catalog_service.version_summary(latest)["app_version"] == "2.0"

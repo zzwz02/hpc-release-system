@@ -2,10 +2,9 @@
 
 * The App row owns the Owner profile (optional, never a release prerequisite)
   and the CICD running status.
-* app_info.json comes only from the App's repository.  A daily background
-  sync checks running Apps signed up in the cycle's QA testing window and stores a new
-  ``app_info_versions`` row when the content changes; RM can also trigger a
-  sync for one App or all Apps.  Every new version is handed to
+* app_info.json comes only from the App's repository. RM can trigger a bulk
+  sync before the selected cycle's signup deadline, or sync individual Apps.
+  Every new version is handed to
   ``cycle_service`` so signup entries follow it or ask QA to approve a wider
   scope.
 * Official versions record what each App last released; stopped Apps keep
@@ -14,9 +13,7 @@
 """
 from __future__ import annotations
 
-import asyncio
 import csv
-import datetime as dt
 import io
 import json
 import logging
@@ -38,7 +35,7 @@ from app.domain.app_profile import (
 from app.domain.audit_diff import field_diff
 from app.domain.cycles import CICD_RUNNING, CICD_STOPPED
 from app.domain.permissions import has_capability
-from app.repositories import app_info_repo, apps_repo, official_repo
+from app.repositories import app_info_repo, apps_repo, official_repo, releases_repo
 from app.repositories.audit_repo import log_audit
 from app.domain import delivery_images, publication_manifest
 from app.domain import phases
@@ -52,7 +49,7 @@ logger = logging.getLogger(__name__)
 PROFILE_TEXT_FIELDS = ("official_name", "type", "official_url", "description", "doc_target")
 PROFILE_JSON_FIELDS = ("doc", "community", "sanity", "test_docs")
 # Network reads run in parallel; the caller alone owns SQLite and applies each
-# result. Bound each submitted wave so daily eligibility is checked at start.
+# result. Bound each submitted wave so the signup deadline is rechecked at start.
 APP_INFO_SYNC_WORKERS = 16
 
 
@@ -433,11 +430,12 @@ def sync_app(
     user: str,
     force: bool = False,
     _prepared: dict | None = None,
+    _release_id: str | None = None,
 ) -> dict[str, Any]:
     """Check one App's branch head and store app_info when it changed.
 
-    Network I/O runs outside any transaction.  Errors are recorded on the App
-    (sync status page) and returned, never raised.
+    Network I/O runs outside any transaction. Source errors are recorded on
+    the App and returned; an expired bulk-sync window aborts the batch.
     """
     app = _prepared["app"] if _prepared is not None else get_app_or_raise(conn, app_id)
     prepared = _read_sync_app(app, force=force) if _prepared is None else _prepared
@@ -447,6 +445,8 @@ def sync_app(
             raise RuntimeError(prepared["error"])
         head, raw, source = prepared["head"], prepared["raw"], prepared["source"]
         with transaction(conn, immediate=True):
+            if _release_id is not None:
+                require_bulk_sync_release(conn, _release_id)
             _check_sync_source(get_app_or_raise(conn, app_id), prepared["app"], head)
             if raw is None:
                 apps_repo.update_sync_state(conn, app_id, checked_at=ts, error="")
@@ -463,8 +463,12 @@ def sync_app(
             "version_id": version_id,
         }
     except Exception as exc:  # noqa: BLE001 - every failure is reported per App
+        if _release_id is not None and isinstance(exc, ApiError):
+            raise  # Stop a bulk job without writing results after signup closes.
         message = str(exc) or exc.__class__.__name__
         with transaction(conn, immediate=True):
+            if _release_id is not None:
+                require_bulk_sync_release(conn, _release_id)
             current = apps_repo.get_app(conn, app_id)
             if current is not None:
                 try:
@@ -478,33 +482,40 @@ def sync_app(
         return {"app_id": app_id, "status": "error", "error": message}
 
 
-def _daily_sync_app_ids(conn: sqlite3.Connection) -> set[str]:
-    from app.repositories import entries_repo, releases_repo
+def require_bulk_sync_release(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
+    if not release_id:
+        raise ApiError(400, "请先选择发布周期，再全量同步 app_info")
+    release = releases_repo.get_release_row(conn, release_id)
+    if not release:
+        raise ApiError(404, "发布周期不存在，请刷新后重试")
+    if not phases.can(release, "sync_all_app_info"):
+        raise ApiError(409, f"{release['name']} 已过报名截止时间或已发布，不允许全量同步 app_info")
+    return release
 
-    release_ids = {release['id'] for release in releases_repo.list_release_rows(conn)
-                   if phases.current_phase(release) == phases.IN_PROGRESS}
-    return entries_repo.signed_up_app_ids_for_releases(conn, release_ids)
 
-
-def sync_all(conn: sqlite3.Connection, *, user: str, force: bool = False, signed_up_only: bool = False) -> dict[str, Any]:
-    """Sync running Apps; daily mode is limited to active signups in the QA window."""
-    eligible = _daily_sync_app_ids(conn) if signed_up_only else None
-    apps = [app for app in apps_repo.list_apps(conn) if app["cicd_status"] == CICD_RUNNING
-            and (eligible is None or app["id"] in eligible)]
+def sync_all(conn: sqlite3.Connection, *, release_id: str, user: str, force: bool = False) -> dict[str, Any]:
+    """Sync running Apps only while the selected cycle is accepting signups."""
+    require_bulk_sync_release(conn, release_id)
+    apps = [app for app in apps_repo.list_apps(conn) if app["cicd_status"] == CICD_RUNNING]
     results = []
+    stopped = ""
     with read_session() as batch, ThreadPoolExecutor(max_workers=APP_INFO_SYNC_WORKERS) as pool:
         prefetch_manifests({app["git_url"] for app in apps})
         for start in range(0, len(apps), APP_INFO_SYNC_WORKERS):
-            pending = []
-            for previous in apps[start:start + APP_INFO_SYNC_WORKERS]:
-                app = get_app_or_raise(conn, previous["id"])
-                if app["cicd_status"] != CICD_RUNNING or (
-                    eligible is not None and app["id"] not in _daily_sync_app_ids(conn)
-                ):
-                    continue
-                pending.append((app["id"], pool.submit(batch.run, _read_sync_app, app, force=force)))
-            for app_id, future in pending:
-                results.append(sync_app(conn, app_id, user=user, force=force, _prepared=future.result()))
+            try:
+                pending = []
+                for previous in apps[start:start + APP_INFO_SYNC_WORKERS]:
+                    require_bulk_sync_release(conn, release_id)
+                    app = get_app_or_raise(conn, previous["id"])
+                    if app["cicd_status"] != CICD_RUNNING:
+                        continue
+                    pending.append((app["id"], pool.submit(batch.run, _read_sync_app, app, force=force)))
+                for app_id, future in pending:
+                    results.append(sync_app(conn, app_id, user=user, force=force,
+                                            _prepared=future.result(), _release_id=release_id))
+            except ApiError as exc:
+                stopped = str(exc)
+                break
     failed = [result for result in results if result["status"] == "error"]
     if failed:
         from app.services import notification_channels
@@ -522,6 +533,7 @@ def sync_all(conn: sqlite3.Connection, *, user: str, force: bool = False, signed
         "updated": sum(1 for r in results if r["status"] == "updated"),
         "failed": len(failed),
         "results": results,
+        **({"error": stopped} if stopped else {}),
     }
 
 
@@ -543,60 +555,6 @@ def sync_status(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         )
     rows.sort(key=lambda row: (not row["error"], row["cicd_status"] != CICD_RUNNING, row["name"].lower()))
     return rows
-
-
-class AppInfoSyncLoop:
-    """Daily background sync at ``APP_INFO_SYNC_TIME`` (Beijing time, HH:MM)."""
-
-    def __init__(self) -> None:
-        self.task: asyncio.Task | None = None
-        self.last_run = ""
-        self.last_summary: dict[str, Any] = {}
-
-    @staticmethod
-    def _seconds_until_next_run() -> float:
-        from app.timeutil import beijing_now
-
-        hour, minute = (int(part) for part in settings.app_info_sync_time.split(":"))
-        now = beijing_now()
-        target = now.replace(hour=hour, minute=minute, second=0)
-        if target <= now:
-            target += dt.timedelta(days=1)
-        return (target - now).total_seconds()
-
-    async def start(self) -> None:
-        if settings.app_info_sync_enabled:
-            self.task = asyncio.create_task(self._run())
-
-    async def stop(self) -> None:
-        if self.task:
-            self.task.cancel()
-            try:
-                await self.task
-            except asyncio.CancelledError:
-                pass
-            self.task = None
-
-    def _run_once(self) -> dict[str, Any]:
-        conn = connect(settings.db_path)
-        try:
-            summary = sync_all(conn, user="system", signed_up_only=True)
-        finally:
-            conn.close()
-        summary.pop("results", None)
-        return summary
-
-    async def _run(self) -> None:
-        while True:
-            await asyncio.sleep(self._seconds_until_next_run())
-            try:
-                self.last_summary = await asyncio.to_thread(self._run_once)
-                self.last_run = beijing_timestamp()
-            except Exception:  # noqa: BLE001 - keep the loop alive
-                logger.exception("app_info 每日同步失败")
-
-
-sync_loop = AppInfoSyncLoop()
 
 
 # ---------------------------------------------------------------------------
@@ -732,7 +690,7 @@ def compat_list_csv(conn: sqlite3.Connection, component: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 _sync_all_lock = threading.Lock()
-_sync_all_state: dict[str, Any] = {"running": False, "started_at": "", "started_by": "",
+_sync_all_state: dict[str, Any] = {"running": False, "release_id": "", "release_name": "", "started_at": "", "started_by": "",
                                    "finished_at": "", "summary": None}
 
 
@@ -741,18 +699,22 @@ def sync_all_state() -> dict[str, Any]:
         return dict(_sync_all_state)
 
 
-def start_sync_all(*, user: str) -> dict[str, Any]:
+def start_sync_all(conn: sqlite3.Connection, *, release_id: str, user: str) -> dict[str, Any]:
+    release = require_bulk_sync_release(conn, release_id)
     with _sync_all_lock:
         if _sync_all_state["running"]:
+            if _sync_all_state["release_id"] != release_id:
+                raise ApiError(409, "另一个发布周期的全量同步正在进行，请稍后重试")
             return dict(_sync_all_state)
-        _sync_all_state.update(running=True, started_at=beijing_timestamp(), started_by=user,
+        _sync_all_state.update(running=True, release_id=release_id, release_name=release["name"],
+                               started_at=beijing_timestamp(), started_by=user,
                                finished_at="", summary=None)
 
     def _run() -> None:
         conn = connect(settings.db_path)
         summary: dict[str, Any] | None = None
         try:
-            summary = sync_all(conn, user=user)
+            summary = sync_all(conn, release_id=release_id, user=user)
             summary.pop("results", None)
         except Exception as exc:  # noqa: BLE001 - reported on the status page
             logger.exception("app_info 全部同步失败")

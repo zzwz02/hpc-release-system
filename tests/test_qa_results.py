@@ -6,11 +6,10 @@ import base64
 import io
 import json
 from copy import deepcopy
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 
 from app.api.errors import ApiError
 from app.deps import get_db, require_login
@@ -18,7 +17,7 @@ from app.domain import qa_results
 from app.integrations import gerrit, harbor
 from app.main import create_app
 from app.services import lookup_service, qa_results_service
-from tests.conftest import seed_app
+from tests.conftest import seed_app, seed_cycle
 from tests.test_image_lookup import DIGEST, IMAGE, TAGS, historical_info
 
 
@@ -75,11 +74,17 @@ def workbook(rows, *, environment="C500_server_1"):
     return buffer.getvalue()
 
 
+def report_release(conn, name="3.10.1"):
+    row = conn.execute("SELECT id FROM releases WHERE name=?", (name,)).fetchone()
+    return row[0] if row else seed_cycle(conn, name=name)
+
+
 def upload(conn, rows, content=None, **kwargs):
     data = content or workbook(rows)
     return qa_results_service.upload(
         conn,
         filename="QA 测试结果.xlsx",
+        release_id=kwargs.pop("release_id", None) or report_release(conn),
         content_b64=base64.b64encode(data).decode(),
         user="qa",
         role="QA",
@@ -210,9 +215,8 @@ def test_history_ignores_commit_digest_and_env_and_new_upload_overwrites(temp_db
     stored = qa_results_service.query(temp_db)["rows"][0]
     assert stored["report_id"] == second["report_id"]
     assert stored["qa_result"] == "fail"
-    assert qa_results_service.download(temp_db, first["report_id"])[
-        0
-    ]  # original environments survive
+    with pytest.raises(ApiError, match="测试报告不存在"):
+        qa_results_service.download(temp_db, first["report_id"])
     assert len([c for c in calls if c[0] == "gerrit"]) >= 5  # each request really fetches
 
 
@@ -243,12 +247,11 @@ def test_results_and_original_file_remain_queryable_when_upstream_is_down(
 
 
 def test_sample_workbook_uploads_with_live_simulated_sources(temp_db, monkeypatch):
-    # Use the example's actual columns/environment sheets, but deterministic
-    # test data: QA may replace the example's rows with a full release report.
-    book = load_workbook(io.BytesIO(Path("docs/qa_report_test_sample.xlsx").read_bytes()))
-    sheet = book.worksheets[0]
-    columns = [cell.value for cell in sheet[1]]
-    sheet.delete_rows(2, sheet.max_row)
+    # Build a stable worksheet fixture independent of user-edited local reports.
+    book = Workbook()
+    sheet = book.active
+    columns = qa_results.WORKSHEET_COLUMNS
+    sheet.append(columns)
     values = {"app_name": "ABACUS", "git_branch": "maca-3.9.0.27", "hpc_version": "3.10.1.2", "app_version": "3.9.0.27",
               "arch": "x86", "OS": "ubuntu22.04", "GPU": "C500", "test_name": "dataset1-pw/000_4GaAs",
               "docker_cmd": f"docker run {IMAGE}", "test_result": 100, "test_digest": IMAGE,
@@ -296,6 +299,7 @@ def test_sample_workbook_uploads_with_live_simulated_sources(temp_db, monkeypatc
 def test_http_upload_query_download_and_batch_permissions(temp_db, live, role, read, write, lookup):
     row = template(temp_db)
     content = workbook([row])
+    release_id = report_release(temp_db)
     app = create_app()
     app.dependency_overrides[get_db] = lambda: temp_db
     app.dependency_overrides[require_login] = lambda: {"username": "reader", "role": role}
@@ -307,12 +311,12 @@ def test_http_upload_query_download_and_batch_permissions(temp_db, live, role, r
             assert batch.json()["columns"] == qa_results.COLUMNS
         result = client.post(
             "/api/qa/test-results/upload",
-            json={"filename": "结果.xlsx", "content_base64": base64.b64encode(content).decode()},
+            json={"filename": "结果.xlsx", "content_base64": base64.b64encode(content).decode(), "release_id": release_id},
         )
         assert result.status_code == write, result.text
-        report = client.get("/api/qa/test-results", params={"search": "abacus"})
+        report = client.get("/api/qa/test-results", params={"search": "abacus", "release_id": release_id})
         assert report.status_code == read, report.text
-        assert client.get("/api/qa/test-results/export").status_code == read
+        assert client.get("/api/qa/test-results/export", params={"release_id": release_id}).status_code == read
         if write == 200:
             assert report.json()["rows"][0]["qa_result"] == 100
             download = client.get(f"/api/qa/test-results/{result.json()['report_id']}/download")
@@ -351,7 +355,7 @@ def test_all_matching_hpc_versions_are_saved_without_cross_platform_aliases(
         harbor, "get_artifact", lambda *args: {"tags": [{"name": tag} for tag in tags]}
     )
     upload(temp_db, [row])
-    assert qa_results_service.query(temp_db)["rows"][0]["hpc_version"] == "3.10.0.7, 3.10.1.2"
+    assert qa_results_service.query(temp_db)["rows"][0]["hpc_version"] == "3.10.1.2"
 
 
 def test_ambiguous_registered_branch_is_rejected_without_guessing(temp_db, live):

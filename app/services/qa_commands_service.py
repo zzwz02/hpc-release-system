@@ -64,7 +64,7 @@ def query(conn, *, release_id, hpc_version):
                 lambda repo: batch.run(harbor.list_artifacts, HARBOR_PROJECT, repo, family), repositories,
             ), strict=True))
         found = {}
-        available = set()
+        selected_versions = {}
         for key in variants:
             _, pattern = key
             name, _, tag_pattern = pattern.partition(":")
@@ -81,35 +81,49 @@ def query(conn, *, release_id, hpc_version):
                     raise ApiError(502, f"Harbor 返回无效镜像 digest：{name}")
                 ref = f"{harbor.HARBOR_HOST}/{HARBOR_PROJECT}/{name}@{digest}"
                 matches.append((ref, versions))
-                available.update(versions)
             found[key] = matches
-        if latest:
-            if not available:
-                raise ValueError(f"Harbor 中没有 {family} 系列可用镜像，请填写具体 hpc_version 查询缺失项")
-            selected = max(available, key=_version)
-        else:
-            selected = requested
-        references = list(dict.fromkeys(ref for matches in found.values() for ref, versions in matches if selected in versions))
+            available = {version for _, versions in matches for version in versions}
+            selected_versions[key] = max(available, key=_version, default="") if latest else requested
+        if latest and not any(selected_versions.values()):
+            raise ValueError(f"Harbor 中没有 {family} 系列可用镜像，请填写具体 hpc_version 查询缺失项")
+        references = list(dict.fromkeys(ref for key, matches in found.items()
+                                        for ref, versions in matches if selected_versions[key] in versions))
         images, errors = [], []
         for start in range(0, len(references), lookup_service.MAX_BATCH_IMAGES):
             resolved = lookup_service.resolve_images(conn, references[start:start + lookup_service.MAX_BATCH_IMAGES])
             images.extend(resolved["images"])
             errors.extend(resolved["errors"])
     rows = []
-    for image in images:
-        if selected not in image.get("hpc_versions", []):
-            errors.append({"image": image["image"], "error": "查询期间镜像的 HPC 版本 tag 已变化，请重新查询"})
-            continue
-        source = (image["app_name"], image["git_branch"])
-        if source not in scope:
-            errors.append({"image": image["image"], "error": "镜像对应的 App/分支与当前发布周期测试范围不匹配"})
-            continue
-        rows.extend(row for row in qa_results.worksheet_commands(image, hpc_version=selected)
-                    if row["test_name"] not in scope[source])
+    resolved_images = {image["image"]: image for image in images}
     for key, variant in variants.items():
+        selected = selected_versions[key]
+        references = [ref for ref, versions in found[key] if selected in versions]
         # An artifact that failed to resolve is reported as an error, never
         # misrepresented as an absent image or replaced with current commands.
-        if any(selected in versions for _, versions in found[key]):
+        if references:
+            for reference in references:
+                image = resolved_images.get(reference)
+                if image is None:
+                    continue
+                if selected not in image.get("hpc_versions", []):
+                    errors.append({"image": reference, "error": "查询期间镜像的 HPC 版本 tag 已变化，请重新查询"})
+                    continue
+                source = (image["app_name"], image["git_branch"])
+                if source != (variant["name"], variant["branch"]):
+                    errors.append({"image": reference, "error": "镜像对应的 App/分支与当前发布周期测试范围不匹配"})
+                    continue
+                # One digest may carry tags for several platforms or patches.
+                # Keep only this build's commands and its independently chosen version.
+                commands = [command for command in image["test_commands"] if command["image_pattern"] == key[1]]
+                if not commands:
+                    errors.append({"image": reference, "error": "镜像历史 app_info 与当前报名构建不匹配"})
+                    continue
+                try:
+                    generated = qa_results.worksheet_commands({**image, "test_commands": commands}, hpc_version=selected)
+                except ValueError as exc:
+                    errors.append({"image": reference, "error": str(exc)})
+                    continue
+                rows.extend(row for row in generated if row["test_name"] not in scope[source])
             continue
         no_image = {"app_name": variant["name"], "git_branch": variant["branch"],
                     "app_version": variant["version"], "commit_id": "", "test_commands": variant["commands"]}
@@ -117,7 +131,9 @@ def query(conn, *, release_id, hpc_version):
             row["website_docker_cmd"] = "no_image"
             rows.append(row)
     rows.sort(key=lambda row: tuple(str(row[column]).casefold() for column in (
-        "app_name", "git_branch", "app_version", "arch", "OS", "GPU", "py_label", "torch_label", "test_name", "website_docker_cmd")))
-    return {"release_name": release["name"], "hpc_version": selected, "requested_version": requested,
+        "app_name", "git_branch", "app_version", "arch", "OS", "GPU", "py_label", "torch_label", "test_name", "hpc_version", "website_docker_cmd")))
+    errors = list({(item["image"], item["error"]): item for item in errors}.values())
+    return {"release_name": release["name"], "hpc_version": "latest" if latest else requested,
+            "hpc_versions": sorted(set(selected_versions.values()) - {""}, key=_version), "requested_version": requested,
             "columns": qa_results.WORKSHEET_COLUMNS, "rows": rows, "errors": errors,
             "generated_at": beijing_timestamp()}

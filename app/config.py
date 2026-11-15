@@ -92,8 +92,7 @@ class Settings(BaseSettings):
     gerrit_ssh_base_url: str = DEFAULT_GERRIT_SSH_BASE_URL
 
     # --- app_info sync ----------------------------------------------------------
-    # Daily ``git ls-remote`` of every running App at this Beijing time (HH:MM).
-    app_info_sync_time: str = "02:00"
+    # Initial app_info fetch when a new App's CICD request takes effect.
     app_info_sync_enabled: bool = True
 
     # --- hpcbox -----------------------------------------------------------------
