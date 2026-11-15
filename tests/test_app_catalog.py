@@ -85,6 +85,7 @@ def test_sync_all_only_visits_running_apps(temp_db, monkeypatch) -> None:
     seed_app(temp_db, "running_app", app_info=None)
     seed_app(temp_db, "stopped_app", app_info=None, cicd_status="stopped")
     visited: list[str] = []
+    monkeypatch.setattr(catalog_service, "_read_sync_app", lambda *args, **kwargs: {})
     monkeypatch.setattr(
         catalog_service,
         "sync_app",

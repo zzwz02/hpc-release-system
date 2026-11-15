@@ -22,6 +22,7 @@ import json
 import logging
 import sqlite3
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from app.api.errors import ApiError, AuthzError
@@ -43,11 +44,16 @@ from app.domain import delivery_images, publication_manifest
 from app.domain import phases
 from app.timeutil import beijing_timestamp
 from app.services import publication_service
+from app.integrations.read_session import read_session
+from app.identity import prefetch_manifests
 
 logger = logging.getLogger(__name__)
 
 PROFILE_TEXT_FIELDS = ("official_name", "type", "official_url", "description", "doc_target")
 PROFILE_JSON_FIELDS = ("doc", "community", "sanity", "test_docs")
+# Network reads run in parallel; the caller alone owns SQLite and applies each
+# result. Bound each submitted wave so daily eligibility is checked at start.
+APP_INFO_SYNC_WORKERS = 16
 
 
 # ---------------------------------------------------------------------------
@@ -383,38 +389,73 @@ def store_app_info(
     return version_id
 
 
+def _read_sync_app(app, *, force=False):
+    """Fetch a consistent branch-head/file pair without touching SQLite."""
+    from app.integrations import gerrit
+
+    result = {"app": app, "checked_at": beijing_timestamp()}
+    try:
+        with read_session() as batch:
+            url, branch, source = batch.memo(
+                ("sync-target", app["git_url"], app["git_branch"], app.get("cicd_repo_type")),
+                lambda: app_info_fetch_target(app),
+            )
+            remote = gerrit.gerrit_remote_url(url)
+            head = batch.memo(("sync-head", remote, branch),
+                              lambda: gerrit.head_commit(url, branch, project_root=settings.db_path.parent))
+            raw = None
+            if head != app.get("sync_head_commit") or force:
+                raw = batch.memo(("sync-file", remote, head),
+                                 lambda: gerrit.fetch_app_info_at(url, head, project_root=settings.db_path.parent))
+                try:
+                    json.loads(raw)
+                except ValueError as exc:
+                    raise RuntimeError(f"app_info.json 不是合法 JSON：{exc}") from exc
+            result.update(head=head, raw=raw, source=source)
+    except Exception as exc:
+        result["error"] = str(exc) or type(exc).__name__
+    return result
+
+
+def _check_sync_source(current, initial, head):
+    if any(current.get(key) != initial.get(key) for key in ("git_url", "git_branch", "cicd_repo_type")):
+        raise RuntimeError("App 的仓库或分支已变化，请重新同步 app_info")
+    if initial["cicd_status"] == CICD_RUNNING and current["cicd_status"] != CICD_RUNNING:
+        raise RuntimeError("App 已停止运行，未保存同步结果")
+    if current.get("sync_head_commit") not in (initial.get("sync_head_commit"), head):
+        raise RuntimeError("另一次同步已更新 app_info，请重新检查，未覆盖新结果")
+
+
 def sync_app(
     conn: sqlite3.Connection,
     app_id: str,
     *,
     user: str,
     force: bool = False,
+    _prepared: dict | None = None,
 ) -> dict[str, Any]:
     """Check one App's branch head and store app_info when it changed.
 
     Network I/O runs outside any transaction.  Errors are recorded on the App
     (sync status page) and returned, never raised.
     """
-    from app.integrations import gerrit
-
-    app = get_app_or_raise(conn, app_id)
-    project_root = settings.db_path.parent
-    ts = beijing_timestamp()
+    app = _prepared["app"] if _prepared is not None else get_app_or_raise(conn, app_id)
+    prepared = _read_sync_app(app, force=force) if _prepared is None else _prepared
+    ts = prepared["checked_at"]
     try:
-        url, branch, source = app_info_fetch_target(app)
-        head = gerrit.head_commit(url, branch, project_root=project_root)
-        if head == app.get("sync_head_commit") and not force:
-            with transaction(conn):
+        if "error" in prepared:
+            raise RuntimeError(prepared["error"])
+        head, raw, source = prepared["head"], prepared["raw"], prepared["source"]
+        with transaction(conn, immediate=True):
+            _check_sync_source(get_app_or_raise(conn, app_id), prepared["app"], head)
+            if raw is None:
                 apps_repo.update_sync_state(conn, app_id, checked_at=ts, error="")
+                version_id = None
+            else:
+                version_id = store_app_info(conn, app_id, raw, commit_id=head, source=source, user=user)
+                apps_repo.update_sync_state(conn, app_id, checked_at=ts, error="", head_commit=head)
+        if raw is None:
             return {"app_id": app_id, "status": "unchanged", "commit_id": head}
-        raw = gerrit.fetch_app_info_at(url, head, project_root=project_root)
-        try:
-            json.loads(raw)
-        except ValueError as exc:
-            raise RuntimeError(f"app_info.json 不是合法 JSON：{exc}") from exc
-        with transaction(conn):
-            version_id = store_app_info(conn, app_id, raw, commit_id=head, source=source, user=user)
-            apps_repo.update_sync_state(conn, app_id, checked_at=ts, error="", head_commit=head)
         return {
             "app_id": app_id,
             "status": "updated" if version_id else "unchanged",
@@ -423,8 +464,17 @@ def sync_app(
         }
     except Exception as exc:  # noqa: BLE001 - every failure is reported per App
         message = str(exc) or exc.__class__.__name__
-        with transaction(conn):
-            apps_repo.update_sync_state(conn, app_id, checked_at=ts, error=message)
+        with transaction(conn, immediate=True):
+            current = apps_repo.get_app(conn, app_id)
+            if current is not None:
+                try:
+                    _check_sync_source(current, prepared["app"], prepared.get("head", app.get("sync_head_commit")))
+                except RuntimeError:
+                    # A stale read must not overwrite a newer sync's success
+                    # state, or attach an old-repository error to a new one.
+                    pass
+                else:
+                    apps_repo.update_sync_state(conn, app_id, checked_at=ts, error=message)
         return {"app_id": app_id, "status": "error", "error": message}
 
 
@@ -439,13 +489,22 @@ def _daily_sync_app_ids(conn: sqlite3.Connection) -> set[str]:
 def sync_all(conn: sqlite3.Connection, *, user: str, force: bool = False, signed_up_only: bool = False) -> dict[str, Any]:
     """Sync running Apps; daily mode is limited to active signups in the QA window."""
     eligible = _daily_sync_app_ids(conn) if signed_up_only else None
-    results = [
-        sync_app(conn, app["id"], user=user, force=force)
-        for app in apps_repo.list_apps(conn)
-        if app["cicd_status"] == CICD_RUNNING and (eligible is None or (
-            app['id'] in eligible and app['id'] in _daily_sync_app_ids(conn)
-        ))
-    ]
+    apps = [app for app in apps_repo.list_apps(conn) if app["cicd_status"] == CICD_RUNNING
+            and (eligible is None or app["id"] in eligible)]
+    results = []
+    with read_session() as batch, ThreadPoolExecutor(max_workers=APP_INFO_SYNC_WORKERS) as pool:
+        prefetch_manifests({app["git_url"] for app in apps})
+        for start in range(0, len(apps), APP_INFO_SYNC_WORKERS):
+            pending = []
+            for previous in apps[start:start + APP_INFO_SYNC_WORKERS]:
+                app = get_app_or_raise(conn, previous["id"])
+                if app["cicd_status"] != CICD_RUNNING or (
+                    eligible is not None and app["id"] not in _daily_sync_app_ids(conn)
+                ):
+                    continue
+                pending.append((app["id"], pool.submit(batch.run, _read_sync_app, app, force=force)))
+            for app_id, future in pending:
+                results.append(sync_app(conn, app_id, user=user, force=force, _prepared=future.result()))
     failed = [result for result in results if result["status"] == "error"]
     if failed:
         from app.services import notification_channels

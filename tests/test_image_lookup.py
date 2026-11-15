@@ -147,6 +147,7 @@ def test_repo_digest_resolves_exact_build_archive_and_pinned_commands(temp_db, m
 
     raw = historical_info()
     seed_app(temp_db, git_url="APP/abacus/default.xml", git_branch="master", app_info=raw)
+    monkeypatch.setattr(lookup_service, "prefetch_manifests", lambda paths: None)
     monkeypatch.setattr(catalog_service, "app_info_fetch_target", lambda app: ("hpc_actual_repo", "maca"))
     tags = [TAGS[0].replace("bb46c60", "repo"), *TAGS[1:]]
     monkeypatch.setattr(harbor, "get_artifact", lambda *args: {"tags": [{"name": t} for t in tags]})

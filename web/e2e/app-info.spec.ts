@@ -122,3 +122,24 @@ test("Owner saves types and manual content separately; another Owner has read-on
   const syncDenied = await page.request.post(base + "/api/app-info/sync", { data: { app_id: "info-error", force: true } });
   expect(syncDenied.status()).toBe(403);
 });
+
+test("RM starts full synchronization and sees per-App completion and failure", async ({ page }) => {
+  await login(page, "app_rm");
+  await page.getByTestId("sync-all-app-info-btn").click();
+  await expect(page.getByTestId("confirm-dialog")).toContainText("同步全部 app_info");
+  const started = page.waitForResponse(r => r.url().endsWith("/api/app-info/sync-all"));
+  await page.getByTestId("confirm-ok").click();
+  expect((await started).ok()).toBeTruthy();
+  await expect.poll(async () => {
+    const response = await page.request.get(base + "/api/app-info/sync-status");
+    expect(response.ok()).toBeTruthy();
+    return (await response.json()).job.running;
+  }).toBe(false);
+  const status = await (await page.request.get(base + "/api/app-info/sync-status")).json();
+  expect(status.job.summary.checked).toBeGreaterThanOrEqual(2);
+  expect(status.job.summary.failed).toBe(1);
+  expect(status.apps.find((app: { app_id: string }) => app.app_id === "info-check").error).toBe("");
+  expect(status.apps.find((app: { app_id: string }) => app.app_id === "info-error").error).toContain("Gerrit 测试连接失败");
+  await page.getByTestId("refresh-btn").click();
+  await expect(page.getByTestId("latest-app-info-section").getByLabel("版本", { exact: true })).toHaveValue("2.0");
+});

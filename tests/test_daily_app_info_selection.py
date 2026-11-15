@@ -8,6 +8,13 @@ from app.services import catalog_service, cycle_service
 from tests.conftest import close_qa, close_signup, seed_app, seed_cycle, seed_signup, set_cycle_dates
 
 
+@pytest.fixture(autouse=True)
+def isolated_sync_reads(monkeypatch):
+    # These tests exercise scheduling and deadlines; source reads have their
+    # own isolated concurrency/integration tests.
+    monkeypatch.setattr(catalog_service, '_read_sync_app', lambda *args, **kwargs: {})
+
+
 def test_daily_sync_only_checks_running_active_signups_in_qa_window_once(temp_db_with_path, monkeypatch):
     conn, path = temp_db_with_path
     for app_id in ['active', 'none', 'withdrawn', 'locked', 'stopped', 'signup', 'qa_closed']:
@@ -71,6 +78,7 @@ def test_daily_sync_obeys_both_deadline_boundaries(temp_db, monkeypatch, now, ex
 
 
 def test_daily_batch_stops_starting_new_syncs_when_qa_deadline_is_reached(temp_db, monkeypatch):
+    monkeypatch.setattr(catalog_service, 'APP_INFO_SYNC_WORKERS', 1)
     for app_id in ['a', 'b']:
         seed_app(temp_db, app_id)
     release_id = seed_cycle(temp_db)

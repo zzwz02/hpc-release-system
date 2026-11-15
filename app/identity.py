@@ -24,6 +24,7 @@ import xml.etree.ElementTree as ET
 
 from app.config import settings
 from app.domain.cicd_config import CICD_REPO_TYPE_DEFAULT
+from app.integrations.read_session import current_session
 
 # ---------------------------------------------------------------------------
 # Compatibility exports — values are derived from the shared Gerrit config.
@@ -60,6 +61,23 @@ def _git_archive_extract(remote: str, branch: str, path: str, dest_dir: str) -> 
 
     Returns True on success, False (with a printed warning) on failure.
     """
+    session = current_session()
+    if session is not None:
+        from app.integrations import gerrit
+
+        try:
+            content = session.memo(
+                ("manifest-file", remote, branch, path),
+                lambda: gerrit.fetch_files_at(remote, branch, [path], project_root=settings.db_path.parent)[path],
+            )
+            destination = os.path.join(dest_dir, path)
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            with open(destination, "wb") as target:
+                target.write(content)
+            return True
+        except Exception as exc:
+            print(f"  [warn] manifest read failed: {type(exc).__name__}")
+            return False
     cmd = (
         f"git archive --remote={shlex.quote(remote)} "
         f"{shlex.quote(branch)} {shlex.quote(path)} | "
@@ -77,6 +95,26 @@ def _git_archive_extract(remote: str, branch: str, path: str, dest_dir: str) -> 
         print(f"    remote={remote!r} branch={branch!r} path={path!r}")
         return False
     return True
+
+
+def prefetch_manifests(git_urls) -> None:
+    """Read this batch's manifest XML paths from one current repository snapshot."""
+    session = current_session()
+    paths = sorted({url.lstrip("/") for url in git_urls if url and url.endswith(".xml")})
+    if session is None or not paths:
+        return
+    from app.integrations import gerrit
+
+    remote, branch = settings.manifest_repo_url, MANIFEST_BRANCH
+    try:
+        files = gerrit.fetch_files_at(remote, branch, paths, project_root=settings.db_path.parent)
+    except Exception:
+        # A deleted/invalid path must not prevent the other Apps from syncing.
+        # Individual reads below identify the affected App; SSH failures are
+        # shared by the request's connection pool instead of reconnecting.
+        return
+    for path, content in files.items():
+        session.prime(("manifest-file", remote, branch, path), content)
 
 
 # ---------------------------------------------------------------------------
@@ -194,10 +232,11 @@ def resolve_manifest_url(
 
     xml_path = git_url.lstrip("/")
     manifest_repo_url = settings.manifest_repo_url
+    cache = {} if current_session() is not None else _manifest_cache
     if refresh:
-        _manifest_cache.pop(xml_path, None)
-    if xml_path in _manifest_cache:
-        return _manifest_cache[xml_path]
+        cache.pop(xml_path, None)
+    if xml_path in cache:
+        return cache[xml_path]
 
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -207,7 +246,7 @@ def resolve_manifest_url(
                 xml_path,
                 tmpdir,
             ):
-                _manifest_cache[xml_path] = (None, None)
+                cache[xml_path] = (None, None)
                 return None, None
 
             xml_full = os.path.join(tmpdir, xml_path)
@@ -216,19 +255,19 @@ def resolve_manifest_url(
                     f"  [warn] manifest xml missing after extract: {xml_path} "
                     f"(not found in {manifest_repo_url}@{MANIFEST_BRANCH})"
                 )
-                _manifest_cache[xml_path] = (None, None)
+                cache[xml_path] = (None, None)
                 return None, None
 
             with open(xml_full, "rb") as source:
                 resolved_url, revision = manifest_app_info_identity(source.read())
             print(f"  [debug] resolved {xml_path} -> url={resolved_url!r} branch={revision!r}")
             result: tuple[str | None, str | None] = (resolved_url, revision)
-            _manifest_cache[xml_path] = result
+            cache[xml_path] = result
             return result
 
     except Exception as exc:
         print(f"  [warn] error resolving manifest {git_url}: {exc}")
-        _manifest_cache[xml_path] = (None, None)
+        cache[xml_path] = (None, None)
         return None, None
 
 

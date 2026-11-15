@@ -10,10 +10,11 @@ from typing import Any
 
 from app.api.errors import ApiError, GerritNetworkError
 from app.config import settings
-from app.identity import repo_storage_path
+from app.identity import prefetch_manifests, repo_storage_path
 from app.domain import cycles, delivery_images, image_lookup, qa_results, test_commands
 from app.domain.container_image import delivered_image_reference
 from app.integrations import gerrit, harbor, manifest_archive
+from app.integrations.read_session import read_session
 from app.repositories import (
     app_info_repo,
     apps_repo,
@@ -85,11 +86,12 @@ def app_info_source(conn: sqlite3.Connection, reference: str, commit: str, *,
     if not re.fullmatch(r"[0-9a-fA-F]{7,40}", commit):
         raise ValueError("app_info 来源需要有效的 commit id")
     image = _lookup_image(reference)
-    return _app_info_at(_image_repository(conn, image), commit)
+    with read_session():
+        return _app_info_at(_image_repository(conn, image), commit)
 
 
 # Bound network fan-out while sharing identical Harbor/Gerrit work in one request.
-LOOKUP_WORKERS = 8
+LOOKUP_WORKERS = 16
 MAX_BATCH_IMAGES = 500
 
 
@@ -97,6 +99,7 @@ def _repository_index(conn, names):
     apps = {app["id"]: app for app in apps_repo.list_apps(conn)}
     index = {}
     urls = {}
+    candidates = []
     for version in app_info_repo.image_lookup_sources(conn):
         app = apps.get(version["app_id"])
         if not app:
@@ -104,6 +107,9 @@ def _repository_index(conn, names):
         repositories = image_lookup.image_repositories(version["raw"]) & names
         if not repositories:
             continue
+        candidates.append((version, app, repositories))
+    prefetch_manifests({app["git_url"] for _, app, _ in candidates})
+    for version, app, repositories in candidates:
         if app["id"] not in urls:
             urls[app["id"]] = gerrit.gerrit_remote_url(
                 catalog_service.app_info_fetch_target(app)[0]
@@ -270,23 +276,24 @@ def resolve_images(conn, references):
             errors.append({"image": str(reference), "error": str(exc)})
     unique = list(dict.fromkeys(canonical))
     names = {_lookup_image(ref)["repository"].rsplit("/", 1)[-1] for ref in unique}
-    index = _repository_index(conn, names)
-    with ThreadPoolExecutor(max_workers=LOOKUP_WORKERS) as pool:
-        artifacts = list(pool.map(lambda ref: _attempt(_resolve_artifact, ref, index), unique))
-        commits = list(
-            dict.fromkeys((a["git_url"], a["commit_id"]) for a in artifacts if isinstance(a, dict))
-        )
-        documents = dict(
-            zip(commits, pool.map(lambda pair: _attempt(_app_info_at, *pair), commits), strict=True)
-        )
-        unresolved_urls = sorted({
-            a["git_url"] for a in artifacts if isinstance(a, dict)
-            if not isinstance(document := documents[(a["git_url"], a["commit_id"])], Exception)
-            and not _source_identity(a, document)[0]
-        })
-        heads = dict(zip(
-            unresolved_urls, pool.map(lambda url: _attempt(_branch_heads, url), unresolved_urls), strict=True
-        ))
+    with read_session() as batch:
+        index = _repository_index(conn, names)
+        with ThreadPoolExecutor(max_workers=LOOKUP_WORKERS) as pool:
+            artifacts = list(pool.map(lambda ref: batch.run(_attempt, _resolve_artifact, ref, index), unique))
+            commits = list(
+                dict.fromkeys((a["git_url"], a["commit_id"]) for a in artifacts if isinstance(a, dict))
+            )
+            documents = dict(
+                zip(commits, pool.map(lambda pair: batch.run(_attempt, _app_info_at, *pair), commits), strict=True)
+            )
+            unresolved_urls = sorted({
+                a["git_url"] for a in artifacts if isinstance(a, dict)
+                if not isinstance(document := documents[(a["git_url"], a["commit_id"])], Exception)
+                and not _source_identity(a, document)[0]
+            })
+            heads = dict(zip(
+                unresolved_urls, pool.map(lambda url: batch.run(_attempt, _branch_heads, url), unresolved_urls), strict=True
+            ))
     prepared = {
         key: _attempt(test_commands.command_rows, document)
         for key, document in documents.items()
@@ -316,9 +323,10 @@ def resolve_images(conn, references):
 def by_image(conn: sqlite3.Connection, reference: str) -> dict[str, Any]:
     image = _lookup_image(reference)
     name = image["repository"].rsplit("/", 1)[-1]
-    artifact = _resolve_artifact(reference, _repository_index(conn, {name}))
-    document = _app_info_at(artifact["git_url"], artifact["commit_id"])
-    heads = _branch_heads(artifact["git_url"]) if not _source_identity(artifact, document)[0] else None
+    with read_session():
+        artifact = _resolve_artifact(reference, _repository_index(conn, {name}))
+        document = _app_info_at(artifact["git_url"], artifact["commit_id"])
+        heads = _branch_heads(artifact["git_url"]) if not _source_identity(artifact, document)[0] else None
     return _commands_for_artifact(artifact, document, heads=heads)
 
 
