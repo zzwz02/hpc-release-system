@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import itertools
 import re
+import shlex
 from typing import Any
 
 from app.domain.test_platforms import (
@@ -39,6 +40,38 @@ def image_tag_version(pattern: str, tag: str) -> str | None:
     )
     match = re.fullmatch(expected + r"(?:-\d+)?", tag)
     return match.groupdict().get("version") if match else None
+
+
+def select_image_tag(pattern: str, tags: list[str], versions: set[str] | None = None) -> str:
+    """Choose an actual build tag, preferring its highest version and unnumbered alias."""
+    matches = [(tag, version) for tag in tags
+               if (version := image_tag_version(pattern, tag)) is not None
+               and (not versions or version in versions)]
+    if not matches:
+        raise ValueError("镜像缺少与 HPC 版本及构建配置匹配的实际 tag")
+    numeric = {version for _, version in matches if re.fullmatch(r"\d+(?:\.\d+)+", version)}
+    version = max(numeric, key=lambda value: tuple(map(int, value.split(".")))) if numeric else matches[0][1]
+    base = pattern.replace("<hpc_version>", version)
+    return min((tag for tag, value in matches if value == version),
+               key=lambda tag: (tag != base, -int(tag[len(base) + 1:]) if tag != base else 0, tag))
+
+
+def replace_command_image(command: str, reference: str, replacement: str) -> str:
+    """Replace the generated Docker image operand, leaving quoted scripts untouched."""
+    lexer = shlex.shlex(command, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    tokens, start = [], 0
+    for token in lexer:
+        end = lexer.instream.tell()
+        tokens.append((token, start, end))
+        start = end
+    for i, (token, start, end) in enumerate(tokens[:-2]):
+        if token == reference and [item[0] for item in tokens[i + 1:i + 3]] == ["sh", "-c"]:
+            offset = command.rfind(reference, start, end)
+            if offset >= 0:
+                return command[:offset] + replacement + command[offset + len(reference):]
+    raise ValueError("无法定位自动命令的 Docker 镜像参数")
 
 
 def image_field_options(raw: dict[str, Any], build_cfg: dict[str, Any], field: str) -> list[str]:

@@ -48,9 +48,9 @@ def test_latest_success_retains_failed_skipped_and_withdrawn_apps_and_all_images
     before = temp_db.total_changes
     result = lookup_service.latest_running_releases(temp_db)
     assert temp_db.total_changes == before
-    assert result["app_count"] == 5
+    assert result["app_count"] == 4
     rows = result["rows"]
-    assert {row["app_id"] for row in rows} == {"amber", "hpl", "skipped", "withdrawn", "never"}
+    assert {row["app_id"] for row in rows} == {"amber", "hpl", "skipped", "withdrawn"}
     for name in ("amber", "skipped", "withdrawn"):
         subset = [row for row in rows if row["app_id"] == name]
         assert {row["hpc_version"] for row in subset} == {"3.9"}
@@ -67,12 +67,40 @@ def test_latest_success_retains_failed_skipped_and_withdrawn_apps_and_all_images
     assert all(row["delivery_reference"] in row["command"] for row in hpl if row.get("command"))
     assert not any("development-only-command" in row.get("command", "") for row in rows)
     assert all(row["dependencies"] == ["sdk", "torch 2.4 + py310", "torch 2.8 + py312"]
-               and not row["scope_pending"] for row in rows if row["app_id"] != "never")
-    never = next(row for row in rows if row["app_id"] == "never")
-    assert never["hpc_version"] == "" and never["note"] == "尚无成功发布记录"
-    assert never["scope_pending"] and never["dependencies"] == []
-    assert never["app_info_commit_id"] == ""
-    assert all(row["app_info_commit_id"] == "published-config" for row in rows if row["app_id"] != "never")
+               and not row["scope_pending"] for row in rows)
+    assert all(row["app_info_commit_id"] == "published-config" for row in rows)
+
+
+@pytest.mark.parametrize("withdrawn", [False, True])
+def test_signup_history_retains_unpublished_apps_including_withdrawn_only(temp_db, inventory, withdrawn):
+    # Two signups still count as one App; neither cycle needs to be published.
+    for name in ("signup-history-a", "signup-history-b"):
+        release = seed_cycle(temp_db, name=name)
+        entry = seed_signup(temp_db, release, "never")
+        if withdrawn:
+            cycle_service.withdraw(temp_db, entry["id"], user="rm", role="RM")
+    before = temp_db.total_changes
+    result = lookup_service.latest_running_releases(temp_db)
+    assert temp_db.total_changes == before
+    assert result["app_count"] == 5
+    rows = [row for row in result["rows"] if row["app_id"] == "never"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["hpc_version"] == "" and row["note"] == "尚无成功发布记录"
+    assert row["scope_pending"] and row["dependencies"] == []
+    assert row["app_info_commit_id"] == ""
+
+
+def test_signup_history_is_matched_by_app_identity_and_running_status(temp_db, inventory):
+    seed_app(temp_db, "hpl-other-branch", official_name="HPL", app_info=make_dependency_app_info("hpl"))
+    result = lookup_service.latest_running_releases(temp_db)
+    assert result["app_count"] == 4
+    assert "hpl-other-branch" not in {row["app_id"] for row in result["rows"]}
+    temp_db.execute("UPDATE apps SET cicd_status='stopped' WHERE id='hpl'")
+    temp_db.commit()
+    result = lookup_service.latest_running_releases(temp_db)
+    assert result["app_count"] == 3
+    assert "hpl" not in {row["app_id"] for row in result["rows"]}
 
 
 def test_handles_migrated_publications_and_unlocked_latest_release(temp_db, inventory):
@@ -105,7 +133,8 @@ def test_inventory_api_permissions(temp_db, inventory, role, status):
         response = client.get("/api/lookup/latest-running")
         assert response.status_code == status
         if status == 200:
-            assert response.json()["app_count"] == 5
+            assert response.json()["app_count"] == 4
+            assert not {"never", "stopped"} & {row["app_id"] for row in response.json()["rows"]}
             amber = next(row for row in response.json()["rows"] if row["app_id"] == "amber")
             assert amber["dependencies"] == ["sdk", "torch 2.4 + py310", "torch 2.8 + py312"]
             assert amber["scope_pending"] is False

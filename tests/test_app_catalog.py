@@ -243,6 +243,14 @@ def test_dependency_overview_groups_by_component_and_lists_undeclared_apps(temp_
     _published_app(temp_db, "beta", dependencies=["mcpy"])
     _published_app(temp_db, "gamma")  # no app_dependency field at all
     seed_app(temp_db, "stopped_app", cicd_status="stopped")
+    seed_app(temp_db, "never", app_info=make_app_info(dependencies=["never-component"]))
+    release = seed_cycle(temp_db)
+    for app_id in ("alpha", "beta", "gamma", "stopped_app"):
+        if app_id == "stopped_app":
+            continue
+        entry = seed_signup(temp_db, release, app_id)
+        if app_id == "gamma":
+            cycle_service.withdraw(temp_db, entry["id"], user="rm", role="RM")
 
     overview = catalog_service.dependency_overview(temp_db, "development")
 
@@ -252,6 +260,7 @@ def test_dependency_overview_groups_by_component_and_lists_undeclared_apps(temp_
     assert [row["app_id"] for row in overview["undeclared"]] == ["gamma"]
     assert "stopped_app" not in {app_id for ids in components.values() for app_id in ids}
     assert "stopped_app" not in {row["app_id"] for row in overview["undeclared"]}
+    assert {row["app_id"] for row in overview["apps"]} == {"alpha", "beta", "gamma"}
 
 
 def test_the_compatibility_list_only_holds_apps_with_an_official_version(temp_db) -> None:
@@ -291,6 +300,9 @@ def test_dependency_overview_derives_runtime_pairs_from_existing_latest_app_info
     without_declaration = {key: value for key, value in raw.items() if key != "app_dependency"}
     seed_app(temp_db, "beta", official_name="Beta", app_info=without_declaration)
     seed_app(temp_db, "stopped", app_info=raw, cicd_status="stopped")
+    release = seed_cycle(temp_db)
+    seed_signup(temp_db, release, "alpha")
+    seed_signup(temp_db, release, "beta")
 
     before = temp_db.total_changes
     overview = catalog_service.dependency_overview(temp_db, "development")

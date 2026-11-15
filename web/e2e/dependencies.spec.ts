@@ -15,6 +15,9 @@ for (const username of ["app_owner", "app_qa"]) {
     await expect(selector.locator("option")).toHaveText([
       "全部组件", "sdk（1）", "torch 2.4 + py310（2）", "torch 2.8 + py312（2）",
     ]);
+    await expect(pane).toContainText("至少报名过一次");
+    await expect(pane.getByTestId("compat-app-runtime-never")).toHaveCount(0);
+    await expect(pane.getByTestId("compat-app-info-error")).toHaveCount(0);
     // The shared layout initializes cycle state; compatibility controls must not reload it.
     await page.waitForLoadState("networkidle");
     const stateRequests: string[] = [];
@@ -26,14 +29,21 @@ for (const username of ["app_owner", "app_qa"]) {
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await expect(published).toContainText("runtime-published-cycle");
     await expect(published).toContainText("5 个镜像");
-    await expect(published).toContainText("1 个测试项 / 5 条命令");
+    await expect(published).toContainText("1 个测试项 / 7 条命令");
     await toggle.click();
     const detail = pane.getByTestId("compat-detail-runtime-published");
     await expect(detail.getByRole("columnheader", { name: "commit id", exact: true })).toBeVisible();
     await expect(detail.getByTestId("compat-app-info-commit").first()).toHaveText("0123456789ab");
     await expect(detail.getByTestId("compat-app-info-commit").first()).toHaveAttribute("title", "0123456789abcdef0123456789abcdef01234567");
-    await expect(detail.getByTestId("compat-command")).toHaveCount(6);
-    await expect(detail.getByTestId("compat-command").filter({ hasText: "@sha256:" })).toHaveCount(4);
+    await expect(detail.getByTestId("compat-command")).toHaveCount(8);
+    await expect(detail.getByTestId("compat-command").filter({ hasText: "@sha256:" })).toHaveCount(6);
+    await expect(detail.getByRole("columnheader", { name: "GPU", exact: true })).toBeVisible();
+    const c500x = detail.locator("tbody tr").filter({ has: page.locator("td:nth-child(3)", { hasText: /^C500X$/ }) });
+    await expect(c500x).toHaveCount(2);
+    await expect(c500x).toContainText(["3.10.0.7 · fail · 原因：性能回退 8%", "无匹配测试结果"]);
+    await expect(detail).toContainText("note: 测试镜像与 QA log 交付镜像不同，仅作历史参考");
+    await expect(detail).not.toContainText("原因：回归通过");
+    await expect(detail).not.toContainText("QA command must not replace delivery command");
     await expect(detail).toContainText("缺少对应交付镜像，命令为模板");
     await expect(detail).toContainText("无对应启用测试命令");
     await expect(detail).toContainText("centos9");
@@ -52,18 +62,22 @@ for (const username of ["app_owner", "app_qa"]) {
     await pane.getByRole("button", { name: "导出当前测试清单 CSV" }).click();
     const csv = await readFile((await (await exported).path())!, "utf8");
     for (const value of ["runtime-published", "runtime-unknown", "范围待确认", selected, "sanity", "centos9", "命令为模板"]) expect(csv).toContain(value);
-    for (const value of ["runtime-stopped", "development-sdk", "py313"]) expect(csv).not.toContain(value);
+    for (const value of ["runtime-stopped", "runtime-never", "never-registered-component", "info-error", "development-sdk", "py313"]) expect(csv).not.toContain(value);
     expect(csv).toContain("app_info commit id");
     expect(csv).toContain("0123456789abcdef0123456789abcdef01234567");
     expect(csv).not.toContain("development-runtime");
     expect(csv).toContain("发布时封存");
     expect(csv).toContain("根据历史配置生成");
+    expect(csv).toContain("3.10.0.7 · fail · 原因：性能回退 8%");
+    expect(csv).toContain("note: 测试镜像与 QA log 交付镜像不同，仅作历史参考");
+    expect(csv).not.toContain("原因：回归通过");
+    expect(csv).not.toContain("QA command must not replace delivery command");
     await pane.getByRole("textbox", { name: "筛选兼容性验证" }).fill("0123456789abcdef0123456789abcdef01234567");
     await expect(published).toBeVisible();
     await pane.getByRole("textbox", { name: "筛选兼容性验证" }).fill("development-runtime");
     await expect(pane).toContainText("没有匹配的记录。");
     await pane.getByRole("textbox", { name: "筛选兼容性验证" }).fill("");
-    // No-publication Apps are retained for scope confirmation, with no development commands.
+    // Previously registered Apps without a publication remain for scope confirmation.
     expect(csv).toContain("runtime-unpublished");
     await selector.selectOption(selected);
     await published.getByRole("button").click();
@@ -84,6 +98,8 @@ for (const username of ["app_owner", "app_qa"]) {
     await expect(pane).toHaveCount(0);
     await expect(page.getByRole("button", { name: "导出当前测试清单 CSV" })).toHaveCount(0);
     selector = page.getByRole("combobox", { name: "按组件筛选" });
+    await expect(selector.locator("option").filter({ hasText: "never-registered-component" })).toHaveCount(0);
+    await expect(page.getByTestId("dependency-app-runtime-never")).toHaveCount(0);
     await expect(selector).toHaveValue("");
     await expect(selector.locator("option")).toContainText(["全部组件", "development-sdk（1）"]);
     await selector.selectOption("torch 2.10 + py313");

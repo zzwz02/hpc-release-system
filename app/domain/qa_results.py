@@ -9,7 +9,7 @@ import shlex
 from decimal import Decimal, InvalidOperation
 
 from app.domain.container_image import parse_base_image_reference
-from app.domain.test_commands import denormalize_arch, image_tag_matches, image_tag_version
+from app.domain.test_commands import denormalize_arch, image_tag_matches, replace_command_image, select_image_tag
 
 KEY_COLUMNS = ("app_name", "git_branch", "app_version", "arch", "OS", "GPU", "test_name")
 COMMAND_COLUMNS = [
@@ -113,37 +113,10 @@ def _website_command(result: dict, command: dict, hpc_version: str | None) -> st
     pattern = command["image_pattern"].partition(":")[2]
     wanted = {value.strip() for value in str(
         result.get("hpc_version", "") if hpc_version is None else hpc_version).split(",") if value.strip()}
-    matches = [(tag, version) for tag in result["tags"]
-               if (version := image_tag_version(pattern, tag)) is not None
-               and (not wanted or version in wanted)]
-    if not matches:
-        raise ValueError("镜像缺少与 HPC 版本及构建配置匹配的实际 tag")
-    # A legacy record can list multiple release aliases. Choose the highest
-    # matching version; an explicit per-row HPC version always takes precedence.
-    numeric = {version for _, version in matches if re.fullmatch(r"\d+(?:\.\d+)+", version)}
-    version = max(numeric, key=lambda value: tuple(map(int, value.split(".")))) if numeric else matches[0][1]
-    base = pattern.replace("<hpc_version>", version)
-    tags = [tag for tag, value in matches if value == version]
-    tag = min(tags, key=lambda value: (value != base, -int(value[len(base) + 1:]) if value != base else 0, value))
+    tag = select_image_tag(pattern, result["tags"], wanted)
     repository, digest = reference.split("@", 1)
     tagged = f"{repository}:{tag}@{digest}"
-    # Replace the generated Docker image operand using token positions, leaving
-    # mount/env arguments and the quoted test script byte-for-byte unchanged.
-    text = command["command"]
-    lexer = shlex.shlex(text, posix=True)
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    tokens, start = [], 0
-    for token in lexer:
-        end = lexer.instream.tell()
-        tokens.append((token, start, end))
-        start = end
-    for i, (token, start, end) in enumerate(tokens[:-2]):
-        if token == reference and [item[0] for item in tokens[i + 1:i + 3]] == ["sh", "-c"]:
-            offset = text.rfind(reference, start, end)
-            if offset >= 0:
-                return text[:offset] + tagged + text[offset + len(reference):]
-    raise ValueError("无法定位自动命令的 Docker 镜像参数")
+    return replace_command_image(command["command"], reference, tagged)
 
 
 def identity_values(row: dict) -> tuple[str, ...]:

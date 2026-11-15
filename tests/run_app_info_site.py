@@ -70,14 +70,20 @@ def main():
         if args.dependencies:
             from app.services import cycle_service, qa_service
 
-            for app_id in ["runtime-published", "runtime-unpublished", "runtime-stopped", "runtime-unknown"]:
+            for app_id in ["runtime-published", "runtime-unpublished", "runtime-stopped", "runtime-unknown", "runtime-never"]:
                 runtime_info = make_dependency_app_info(app_id)
                 if app_id == "runtime-unknown":
                     runtime_info.pop("app_dependency")
+                if app_id == "runtime-never":
+                    runtime_info["app_dependency"] = ["never-registered-component"]
+                if app_id == "runtime-published":
+                    runtime_info["app_build"]["ubuntu20.04_amd64"]["supported_chip"].append("C500X")
+                    runtime_info["app_test"]["sanity"]["supported_chip"]["C500X"] = ["ubuntu20.04_amd64"]
                 seed_app(conn, app_id, official_name=app_id, owners=["app_owner"], app_info=runtime_info,
                          commit_id="0123456789abcdef0123456789abcdef01234567",
                          cicd_status="stopped" if app_id == "runtime-stopped" else "running")
             dependency_release = seed_cycle(conn, name="runtime-published-cycle")
+            seed_signup(conn, dependency_release, "runtime-unpublished")
             seed_signup(conn, dependency_release, "runtime-unknown")
             qa_service.set_qa_status_batch(conn, dependency_release, [{"app_id": "runtime-unknown", "status": "qa_passed"}],
                                            user="app_qa", role="QA")
@@ -92,6 +98,24 @@ def main():
                                            user="app_qa", role="QA")
             close_qa(conn, dependency_release)
             cycle_service.publish(conn, dependency_release, user="app_rm", role="RM")
+            from app.domain import qa_results
+            from app.repositories import official_repo, qa_results_repo
+
+            manifest = official_repo.current_by_app(conn)["runtime-published"]["test_manifest"]
+            report_rows = []
+            for flat in qa_results.flat_commands({
+                "app_name": "runtime-published", "git_branch": manifest["app"]["git_branch"],
+                "app_version": manifest["entry"]["target_version"], "commit_id": manifest["app_info"]["commit_id"],
+                "test_commands": [command for command in manifest["commands"] if command["image_target"] == "release"],
+            }):
+                row = {**qa_results.canonical_result(flat), "hpc_version": "3.10.0.7",
+                       "qa_digest": "harbor.sh.mxcr.io/hpc-release/runtime-published-maca@sha256:" + "f" * 64,
+                       "qa_status": "fail" if flat["GPU"] == "C500X" else "pass",
+                       "qa_comment": "性能回退 8%" if flat["GPU"] == "C500X" else "回归通过",
+                       "qa_docker_cmd": "QA command must not replace delivery command"}
+                report_rows.append((qa_results.worksheet_result_key(row), row, row["qa_digest"]))
+            qa_results_repo.save(conn, release_id=dependency_release, filename="compatibility-QA.xlsx", content=b"fixture",
+                                 environments=[], uploaded_at="2026-11-15 23:00:00", uploaded_by="app_qa", rows=report_rows)
             # An older publication has no publication-time manifest; reads must label reconstruction.
             conn.execute("UPDATE official_versions SET test_manifest_json=NULL WHERE app_id='runtime-unknown'")
             conn.commit()

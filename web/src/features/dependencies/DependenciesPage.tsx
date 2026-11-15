@@ -52,7 +52,7 @@ function DevelopmentDependenciesPane() {
       <span className="spacer" />
       <RefreshBar dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} onRefresh={() => void refetch()} />
     </div>
-    <p className="hint">开发态依赖来自最新 app_info，仅供开发参考，不包含正式版镜像、命令，也不用于兼容验证清单。</p>
+    <p className="hint">仅显示 CICD 仍在运行且曾报名的 App（含已撤回报名）。开发态依赖来自最新 app_info，仅供开发参考，不包含正式版镜像、命令，也不用于兼容验证清单。</p>
     {error && <div className="lerr p-12-16" role="alert">加载失败：{error.message}</div>}
     {isFetching && <p className="muted" role="status">加载中…</p>}
     {!error && !isFetching && data && <>

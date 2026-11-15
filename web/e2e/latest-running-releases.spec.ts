@@ -5,7 +5,7 @@ const base = process.env.LATEST_RUNNING_E2E_URL ?? "";
 test.skip(!/^http:\/\/127\.0\.0\.1:\d+$/.test(base), "Requires isolated tests.run_app_info_site --latest-running and Vite");
 
 for (const username of ["app_rm", "app_qa", "app_owner"]) {
-  test(`${username} uses one compatibility entry for all running Apps and exports filtered platforms`, async ({ page }) => {
+  test(`${username} uses one compatibility entry for running registered Apps and exports filtered platforms`, async ({ page }) => {
     expect((await page.request.post(base + "/api/login", { data: { username, password: "test-password" } })).ok()).toBeTruthy();
     await page.goto(base + "/lookup");
     await expect(page.getByRole("button", { name: "兼容性测试基线", exact: true })).toHaveCount(0);
@@ -15,6 +15,7 @@ for (const username of ["app_rm", "app_qa", "app_owner"]) {
     await expect(pane.getByTestId("compat-app-amber")).not.toContainText("amber-3.10");
     await expect(pane.getByTestId("compat-app-hpl")).toContainText("hpl-3.10");
     await expect(pane.getByTestId("compat-app-stopped")).toHaveCount(0);
+    await expect(pane.getByTestId("compat-app-info-error")).toHaveCount(0);
     const pending = pane.getByTestId("compatibility-pending");
     await pending.getByRole("button", { name: "展开 info-check 的镜像和测试命令", exact: true }).click();
     await expect(pending.getByTestId("compat-detail-info-check")).toContainText("尚无成功发布记录");
@@ -36,7 +37,7 @@ for (const username of ["app_rm", "app_qa", "app_owner"]) {
     const download = page.waitForEvent("download");
     await pane.getByRole("button", { name: "导出当前测试清单 CSV" }).click();
     const csv = await readFile((await (await download).path())!, "utf8");
-    for (const value of ["HPC version", "支持芯片", "C500", "C600", "C588", "amber-3.9", "ARM", "x86", "@sha256:"]) expect(csv).toContain(value);
+    for (const value of ["HPC version", "GPU", "C500", "C600", "C588", "amber-3.9", "ARM", "x86", "@sha256:"]) expect(csv).toContain(value);
     expect(csv).not.toContain("amber-3.10");
     expect(csv).not.toContain("hpl-3.10");
     await pane.getByRole("button", { name: "清除筛选" }).click();

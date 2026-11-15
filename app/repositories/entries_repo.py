@@ -90,6 +90,11 @@ def open_active_entries_for_app(conn: sqlite3.Connection, app_id: str) -> list[d
     ]
 
 
+def ever_signed_up_app_ids(conn: sqlite3.Connection) -> set[str]:
+    """Apps with signup history in any cycle, including withdrawn entries."""
+    return {row["app_id"] for row in conn.execute("SELECT DISTINCT app_id FROM entries")}
+
+
 def signed_up_app_ids_for_releases(conn: sqlite3.Connection, release_ids: set[str]) -> set[str]:
     if not release_ids:
         return set()

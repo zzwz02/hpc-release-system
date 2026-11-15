@@ -23,7 +23,7 @@ from app.repositories import (
     qa_results_repo,
     releases_repo,
 )
-from app.services import catalog_service, cycle_service, publication_service, qa_service
+from app.services import catalog_service, compatibility_service, cycle_service, publication_service, qa_service
 
 
 def _lookup_image(reference: str) -> dict[str, str]:
@@ -488,15 +488,19 @@ def published_apps(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
 
 
 def latest_running_releases(conn: sqlite3.Connection) -> dict[str, Any]:
-    """Latest successful publication for every running App, including migration-only history."""
+    """Latest successful publication for running Apps with signup history."""
     officials = official_repo.current_by_app(conn)
+    signed_up = entries_repo.ever_signed_up_app_ids(conn)
     rows = []
-    apps = sorted((app for app in apps_repo.list_apps(conn) if app["cicd_status"] == cycles.CICD_RUNNING),
+    apps = sorted((app for app in apps_repo.list_apps(conn)
+                   if app["cicd_status"] == cycles.CICD_RUNNING and app["id"] in signed_up),
                   key=lambda app: (catalog_service.app_name(app).casefold(), app["id"]))
     for app in apps:
         official = officials.get(app["id"])
         manifest, source = publication_service.read_manifest(conn, official, app=app, app_name=catalog_service.app_name(app)) if official else (None, "unpublished")
         common = {"app_id": app["id"], "app_name": catalog_service.app_name(app),
+                  "git_branch": manifest["app"]["git_branch"] if manifest else app["git_branch"],
+                  "release_id": official["release_id"] if official else "",
                   "owners": app.get("owners") or [], "dependencies": manifest["dependencies"] if manifest else [],
                   "scope_pending": manifest["scope_pending"] if manifest else True,
                   "hpc_version": manifest["release"]["name"] if manifest else official["release_name"] if official else "",
@@ -512,6 +516,7 @@ def latest_running_releases(conn: sqlite3.Connection) -> dict[str, Any]:
             continue
         images = manifest["images"] if manifest else delivery_images.recorded(official["images"], official["image"], official["digest"])
         commands = manifest["commands"] if manifest else []
+        builds = {build["build_key"]: build for build in manifest["builds"]} if manifest else {}
         used = {command["delivery_build_key"] for command in commands}
         inventory = list(commands)
         inventory.extend({**image, "delivery_reference": image.get("reference", ""),
@@ -529,5 +534,7 @@ def latest_running_releases(conn: sqlite3.Connection) -> dict[str, Any]:
                 notes.append("缺少对应交付镜像，命令为模板")
             if not item.get("command"):
                 notes.append("无对应启用测试命令")
-            rows.append({**item, **common, "note": "；".join(notes)})
-    return {"app_count": len(apps), "rows": rows}
+            rows.append({**item, **common,
+                         "image_pattern": builds.get(item.get("delivery_build_key"), {}).get("image_pattern", item.get("image_pattern", "")),
+                         "note": "；".join(notes)})
+    return {"app_count": len(apps), "rows": compatibility_service.expand_rows(conn, rows)}

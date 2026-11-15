@@ -35,7 +35,7 @@ from app.domain.app_profile import (
 from app.domain.audit_diff import field_diff
 from app.domain.cycles import CICD_RUNNING, CICD_STOPPED
 from app.domain.permissions import has_capability
-from app.repositories import app_info_repo, apps_repo, official_repo, releases_repo
+from app.repositories import app_info_repo, apps_repo, entries_repo, official_repo, releases_repo
 from app.repositories.audit_repo import log_audit
 from app.domain import delivery_images, publication_manifest
 from app.domain import phases
@@ -568,12 +568,13 @@ def dependency_overview(conn: sqlite3.Connection, source: str = "official") -> d
         raise ApiError(400, "未知依赖数据来源")
     officials = official_repo.current_by_app(conn)
     latest_ids = app_info_repo.latest_version_ids(conn) if source == "development" else {}
+    signed_up = entries_repo.ever_signed_up_app_ids(conn)
     snapshot_errors: list[str] = []
     all_rows: list[dict[str, Any]] = []
     components: dict[str, list[dict[str, Any]]] = {}
     undeclared: list[dict[str, Any]] = []
     for app in apps_repo.list_apps(conn):
-        if app["cicd_status"] != CICD_RUNNING:
+        if app["cicd_status"] != CICD_RUNNING or app["id"] not in signed_up:
             continue
         official = officials.get(app["id"]) if source == "official" else None
         if source == "official" and not official:
