@@ -32,6 +32,15 @@ def image_tag_matches(pattern: str, tag: str, *, hpc_version: str | None = None)
     return re.fullmatch(expected + r"(?:-\d+)?", tag) is not None
 
 
+def image_tag_version(pattern: str, tag: str) -> str | None:
+    """Extract the version/commit slot using the complete app_info tag pattern."""
+    expected = re.escape(pattern).replace(
+        re.escape("<hpc_version>"), r"(?P<version>[^\s:/-]+)"
+    )
+    match = re.fullmatch(expected + r"(?:-\d+)?", tag)
+    return match.groupdict().get("version") if match else None
+
+
 def image_field_options(raw: dict[str, Any], build_cfg: dict[str, Any], field: str) -> list[str]:
     if field == "sdk_version":
         return ["<hpc_version>"]

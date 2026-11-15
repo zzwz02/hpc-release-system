@@ -194,7 +194,6 @@ def resolve_manifest_url(
 
     xml_path = git_url.lstrip("/")
     manifest_repo_url = settings.manifest_repo_url
-    resolved_repo_base = settings.gerrit_hpc_base_url
     if refresh:
         _manifest_cache.pop(xml_path, None)
     if xml_path in _manifest_cache:
@@ -220,37 +219,8 @@ def resolve_manifest_url(
                 _manifest_cache[xml_path] = (None, None)
                 return None, None
 
-            root = ET.parse(xml_full).getroot()
-            default_rev = ""
-            default_elem = root.find("default")
-            if default_elem is not None:
-                default_rev = default_elem.get("revision", "")
-
-            target_project = None
-            for proj in root.findall("project"):
-                for link in proj.findall("linkfile"):
-                    if link.get("src") == "app_info.json":
-                        target_project = proj
-                        break
-                if target_project is not None:
-                    break
-
-            if target_project is None:
-                print(f"  [warn] no project with app_info.json linkfile in {xml_path}")
-                _manifest_cache[xml_path] = (None, None)
-                return None, None
-
-            raw_name = target_project.get("name")
-            raw_rev = target_project.get("revision")
-            name = (raw_name or "").strip()
-            revision = (raw_rev or default_rev or "").strip()
-            if raw_name != name or (raw_rev or "") != revision:
-                print(
-                    f"  [debug] manifest {xml_path}: stripped whitespace "
-                    f"name {raw_name!r}->{name!r}, revision {raw_rev!r}->{revision!r}"
-                )
-
-            resolved_url = f"{resolved_repo_base}/{name}"
+            with open(xml_full, "rb") as source:
+                resolved_url, revision = manifest_app_info_identity(source.read())
             print(f"  [debug] resolved {xml_path} -> url={resolved_url!r} branch={revision!r}")
             result: tuple[str | None, str | None] = (resolved_url, revision)
             _manifest_cache[xml_path] = result
@@ -260,6 +230,24 @@ def resolve_manifest_url(
         print(f"  [warn] error resolving manifest {git_url}: {exc}")
         _manifest_cache[xml_path] = (None, None)
         return None, None
+
+
+def manifest_app_info_identity(xml: bytes | str) -> tuple[str, str]:
+    """Resolve the unique app_info link in a current or archived repo manifest."""
+    root = ET.fromstring(xml)
+    projects = [
+        project for project in root.findall("project")
+        if any(link.get("src") == "app_info.json" for link in project.findall("linkfile"))
+    ]
+    if len(projects) != 1:
+        raise ValueError("manifest 必须包含唯一的 app_info.json linkfile 项目")
+    project = projects[0]
+    name = (project.get("name") or "").strip()
+    if not name or any(part in ("", ".", "..") for part in name.split("/")) or ":" in name or "\\" in name:
+        raise ValueError("manifest 的 app_info 项目路径无效")
+    default = root.find("default")
+    revision = (project.get("revision") or (default.get("revision") if default is not None else "") or "").strip()
+    return f"{settings.gerrit_hpc_base_url}/{name}", revision
 
 
 def repo_to_git_identity(

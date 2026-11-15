@@ -11,19 +11,20 @@ test("image digest resolves historical app_info and assembles commands with the 
   const input = page.getByRole("textbox", { name: "完整镜像名", exact: true });
   await input.fill(`docker pull ${image}`);
   await expect(input).toHaveValue(image);
-  const request = page.waitForResponse(r => r.url().includes("/api/lookup/image?"));
+  const request = page.waitForResponse(r => r.url().endsWith("/api/lookup/images"));
   await page.getByTestId("lookup-search").click();
   const response = await request;
   expect(response.ok()).toBeTruthy();
-  expect(new URL(response.url()).searchParams.get("image")).toBe(image);
-  const data = await response.json();
-  expect(data.source).toBe("historical_config");
+  expect(response.request().postDataJSON()).toEqual({ images: [image] });
+  const batch = await response.json();
+  const data = batch.images[0];
   expect(data.commit_id).toBe("bb46c60");
   expect(data.app_version).toBe("3.9.0.27");
-  expect(data.test_commands).toHaveLength(2);
+  expect(batch.rows).toHaveLength(2);
   const result = page.getByTestId("lookup-image-result");
-  await expect(result.getByTestId("lookup-image-source")).toContainText("根据历史配置生成");
-  await expect(result.getByRole("heading")).toHaveText("abacus 3.9.0.27");
+  await expect(result.getByTestId("lookup-image-source")).toContainText("根据镜像历史配置实时生成");
+  await expect(result.locator("summary")).toContainText("ABACUS 3.9.0.27");
+  await result.locator("summary").click();
   const sourceLink = result.getByTestId("app-info-source-link");
   await expect(sourceLink).toContainText("bb46c60");
   await expect(sourceLink).toHaveAttribute("target", "_blank");
@@ -42,18 +43,17 @@ test("image digest resolves historical app_info and assembles commands with the 
   await expect(sourcePage.locator("body")).toContainText("3.9.0.27");
   await sourcePage.close();
   await expect(result.locator("tbody tr")).toHaveCount(2);
-  for (const command of data.test_commands) {
-    expect(command.command).toContain(image);
-    expect(command.command).toContain("-v /pde_hpc/dataset:/hpc_dataset:ro");
-    await expect(result.getByText(command.command, { exact: true })).toBeVisible();
+  for (const command of batch.rows) {
+    expect(command.docker_cmd).toContain(image);
+    expect(command.docker_cmd).toContain("-v /pde_hpc/dataset:/hpc_dataset:ro");
+    await expect(result.getByText(command.docker_cmd, { exact: true })).toBeVisible();
   }
-  await result.locator("summary").click();
   await expect(result.getByText("3.9.0.27-bb46c60-ubuntu22.04-amd64-3012", { exact: true })).toBeVisible();
   await page.screenshot({ path: "/tmp/image-lookup-result.png", fullPage: true });
 
-  for (const [digest, message] of [["f", "没有第二字段为 commit id"], ["e", "未找到该镜像"], ["d", "Harbor 查询失败"]]) {
+  for (const [digest, message] of [["f", "没有有效 commit tag"], ["e", "未找到该镜像"], ["d", "Harbor 查询失败"]]) {
     await input.fill(image.replace("8d".repeat(32), digest.repeat(64)));
-    await input.press("Enter");
+    await page.getByTestId("lookup-search").click();
     await expect(page.getByRole("alert")).toContainText(message);
     await expect(result).toHaveCount(0);
   }
@@ -77,4 +77,29 @@ test("QA can query images and denied roles cannot call the image endpoint", asyn
     await page.goto(base + "/lookup");
     await expect(page.getByTestId("lookup-page")).toHaveCount(0);
   }
+});
+
+test("HPCC and MACA resolve the same App while preserving actual image and release/dbg scope", async ({ page }) => {
+  expect((await page.request.post(base + "/api/login", { data: { username: "app_qa", password: "test-password" } })).ok()).toBeTruthy();
+  const hpcc = image.replace("abacus-maca", "abacus-hpcc");
+  const debug = image.replace("abacus-maca", "abacus-hpcc-dbg");
+  await page.goto(base + "/lookup");
+  await page.getByRole("button", { name: "按镜像 digest", exact: true }).click();
+  await page.getByLabel("完整镜像名", { exact: true }).fill([hpcc, debug, image].join("\n"));
+  const returned = page.waitForResponse(r => r.url().endsWith("/api/lookup/images"));
+  await page.getByTestId("lookup-search").click();
+  const response = await returned;
+  expect(response.ok()).toBeTruthy();
+  const data = await response.json();
+  expect(data.errors).toEqual([]);
+  expect(data.duplicate_count).toBe(0);
+  expect(data.images.map((source: { image: string }) => source.image)).toEqual([hpcc, debug, image]);
+  expect(data.images.every((source: { app_name: string }) => source.app_name === "ABACUS")).toBe(true);
+  expect(data.rows).toHaveLength(5);
+  expect(data.rows.slice(0, 2).every((row: { docker_cmd: string }) => row.docker_cmd.includes(hpcc))).toBe(true);
+  expect(data.rows[2].test_name).toBe("debug-sanity");
+  expect(data.rows[2].docker_cmd).toContain(debug);
+  expect(data.rows.slice(3).every((row: { docker_cmd: string }) => row.docker_cmd.includes(image))).toBe(true);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("table", { name: "测试命令", exact: true }).locator("tbody tr")).toHaveCount(5);
 });

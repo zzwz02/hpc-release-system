@@ -63,6 +63,7 @@ def lookup(temp_db, monkeypatch):
         return json.dumps(raw)
 
     monkeypatch.setattr(gerrit, "fetch_app_info_at", fetch)
+    monkeypatch.setattr(gerrit, "branch_heads", lambda *args, **kwargs: {})
     return raw, app_id, calls
 
 
@@ -95,7 +96,7 @@ def test_historical_names_and_shared_repo_branches_do_not_fetch_twice(temp_db, l
     renamed = make_app_info(app_name="renamed", app_version="4.0")
     catalog_service.store_app_info(temp_db, app_id, renamed, commit_id="new-head", source="new", user="rm")
     temp_db.commit()
-    assert lookup_service.by_image(temp_db, IMAGE)["app_name"] == "abacus"
+    assert lookup_service.by_image(temp_db, IMAGE)["app_name"] == "TestApp"
     assert len(calls) == 1
 
 
@@ -112,6 +113,78 @@ def test_missing_or_conflicting_commits_are_explicit(temp_db, lookup, monkeypatc
 
 def test_commit_prefixes_resolving_to_the_same_commit_are_compatible():
     assert image_lookup.commit_tags([TAGS[0], TAGS[0].replace("bb46c60", "bb46c607321e")])[0] == "bb46c607321e"
+
+
+def test_hyphenated_app_versions_resolve_commit_platform_and_hpc_version(temp_db, monkeypatch):
+    raw = historical_info()
+    raw["app_name"], raw["app_version"] = "gromacs", "2026-1-fep-gpu"
+    seed_app(temp_db, git_url="hpc_gromacs", app_info=raw)
+    tags = [tag.replace("3.9.0.27", raw["app_version"]) for tag in TAGS]
+    monkeypatch.setattr(harbor, "get_artifact", lambda *args: {"tags": [{"name": t} for t in tags]})
+    monkeypatch.setattr(gerrit, "fetch_app_info_at", lambda *args, **kwargs: json.dumps(raw))
+    result = lookup_service.by_image(temp_db, IMAGE.replace("abacus-maca", "gromacs-hpcc"))
+    assert result["commit_id"] == "bb46c60"
+    assert result["hpc_version"] == "3.10.1.2"
+    assert result["commit_source"] == "harbor_tag"
+    assert [r["test"] for r in result["test_commands"]] == ["sanity", "nested.daily"]
+    assert all(r["arch"] == "amd64" and r["os"] == "ubuntu22.04" for r in result["test_commands"])
+
+
+def test_hex_in_app_version_is_not_proof_of_a_commit_tag(temp_db, monkeypatch):
+    raw = historical_info()
+    raw["app_version"] = "2026-deadbeef"
+    seed_app(temp_db, git_url="hpc_actual_repo", app_info=raw)
+    tag = "2026-deadbeef-3.10.1.2-ubuntu22.04-amd64-3012"
+    monkeypatch.setattr(harbor, "get_artifact", lambda *args: {"tags": [{"name": tag}]})
+    monkeypatch.setattr(gerrit, "fetch_app_info_at", lambda *args, **kwargs: json.dumps(raw))
+    with pytest.raises(ValueError, match="不匹配"):
+        lookup_service.by_image(temp_db, IMAGE)
+
+
+@pytest.mark.parametrize("suffix", ["", "-dbg"])
+def test_repo_digest_resolves_exact_build_archive_and_pinned_commands(temp_db, monkeypatch, suffix):
+    from app.integrations import manifest_archive
+
+    raw = historical_info()
+    seed_app(temp_db, git_url="APP/abacus/default.xml", git_branch="master", app_info=raw)
+    monkeypatch.setattr(catalog_service, "app_info_fetch_target", lambda app: ("hpc_actual_repo", "maca"))
+    tags = [TAGS[0].replace("bb46c60", "repo"), *TAGS[1:]]
+    monkeypatch.setattr(harbor, "get_artifact", lambda *args: {"tags": [{"name": t} for t in tags]})
+    commits = []
+    pinned = "ab" * 20
+
+    def archive(path, url):
+        assert path == "hpc_manifest_master/APP/abacus/release/3.10.1.2_3012_default.xml"
+        return {"commit_id": pinned, "git_url": url, "manifest_url": "https://archive.test/" + path}
+
+    def fetch(url, commit, **kwargs):
+        commits.append(commit)
+        return json.dumps(raw)
+
+    monkeypatch.setattr(manifest_archive, "app_info_commit", archive)
+    monkeypatch.setattr(gerrit, "fetch_app_info_at", fetch)
+    reference = IMAGE.replace("abacus-maca", "abacus-hpcc" + suffix)
+    result = lookup_service.batch_images(temp_db, [reference])
+    assert result["errors"] == []
+    source = result["images"][0]
+    assert source["commit_id"] == pinned
+    assert source["hpc_version"] == "3.10.1.2"
+    assert source["commit_source"] == "manifest_archive"
+    assert source["manifest_urls"][0].endswith("3.10.1.2_3012_default.xml")
+    assert commits == [pinned]
+    assert {row["test_name"] for row in result["rows"]} == ({"debug"} if suffix else {"sanity", "nested.daily"})
+    assert all(reference in row["docker_cmd"] and row["OS"] == "ubuntu22.04" for row in result["rows"])
+
+
+def test_repo_tags_require_same_version_platform_and_build_alias():
+    repo = "2026-1-fep-gpu-repo-ubuntu22.04-amd64-3012"
+    valid = "2026-1-fep-gpu-3.10.1.2-ubuntu22.04-amd64-3012"
+    assert image_lookup.repo_build_tags([repo, valid]) == [
+        {"version": "3.10.1.2", "build": "3012", "tags": [repo]}
+    ]
+    for invalid in [valid.replace("3012", "3013"), valid.replace("amd64", "arm64"),
+                    valid.replace("ubuntu22.04", "ubuntu24.04"), valid.replace("2026-1-fep-gpu", "other")]:
+        assert image_lookup.repo_build_tags([repo, invalid]) == []
 
 
 def test_multi_value_build_fields_select_only_the_artifact_platform():
@@ -248,3 +321,75 @@ def test_harbor_timeout_is_a_readable_502(monkeypatch):
     with pytest.raises(ApiError) as error:
         harbor.get_artifact("hpc-release", "abacus-maca", DIGEST)
     assert error.value.status_code == 502
+
+
+@pytest.mark.parametrize(
+    "family,target,tests",
+    [
+        ("hpcc", "release", ["sanity", "nested.daily"]),
+        ("hpcc", "dbg", ["debug"]),
+        ("maca", "release", ["sanity", "nested.daily"]),
+        ("maca", "dbg", ["debug"]),
+    ],
+)
+def test_historical_compiler_flavors_preserve_actual_digest_and_target(
+    temp_db, lookup, family, target, tests
+):
+    suffix = f"{family}-dbg" if target == "dbg" else family
+    reference = IMAGE.replace("abacus-maca", f"abacus-{suffix}")
+    result = lookup_service.by_image(temp_db, reference)
+    assert result["image"] == reference
+    assert result["hpc_version"] == "3.10.1.2"
+    assert result["commit_id"] == "bb46c60"
+    assert [row["test"] for row in result["test_commands"]] == tests
+    assert all(row["image_target"] == target for row in result["test_commands"])
+    assert all(shlex.split(row["command"]).count(reference) == 1 for row in result["test_commands"])
+    assert len(lookup[2]) == 1
+
+
+def test_compiler_aliases_preserve_app_spec_prefix_and_debug_identity():
+    assert image_lookup.repository_aliases("hpcc-app-mpi-maca-dbg") == {
+        "hpcc-app-mpi-maca-dbg",
+        "hpcc-app-mpi-hpcc-dbg",
+    }
+    assert image_lookup.repository_aliases("hpcc-app-mpi-hpcc") == {
+        "hpcc-app-mpi-hpcc",
+        "hpcc-app-mpi-maca",
+    }
+    assert image_lookup.repository_aliases("app-hpcc-prof") == {"app-hpcc-prof"}
+    raw = historical_info()
+    raw["spec"] = "mpi"
+    assert {
+        "abacus-mpi-maca",
+        "abacus-mpi-hpcc",
+        "abacus-mpi-maca-dbg",
+        "abacus-mpi-hpcc-dbg",
+    } <= image_lookup.image_repositories(raw)
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("ubuntu22.04", "ubuntu99.04"),
+        ("amd64", "riscv64"),
+        ("ubuntu22.04", "torch99-py999-ubuntu22.04"),
+    ],
+)
+def test_hpcc_aliases_do_not_relax_actual_tag_validation(
+    temp_db, lookup, monkeypatch, before, after
+):
+    tags = [tag.replace(before, after) for tag in TAGS]
+    monkeypatch.setattr(
+        harbor, "get_artifact", lambda *args: {"tags": [{"name": tag} for tag in tags]}
+    )
+    with pytest.raises(ValueError, match="不匹配"):
+        lookup_service.by_image(temp_db, IMAGE.replace("abacus-maca", "abacus-hpcc"))
+
+
+def test_hpcc_aliases_do_not_guess_unknown_or_ambiguous_gerrit_repositories(temp_db, lookup):
+    with pytest.raises(ValueError, match="未找到"):
+        lookup_service.by_image(temp_db, IMAGE.replace("abacus-maca", "other-abacus-hpcc"))
+    seed_app(temp_db, "other-repo", git_url="hpc_other", app_info=historical_info())
+    with pytest.raises(ValueError, match="多个 Gerrit"):
+        lookup_service.by_image(temp_db, IMAGE.replace("abacus-maca", "abacus-hpcc"))
+    assert lookup[2] == []

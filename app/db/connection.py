@@ -359,6 +359,24 @@ def init_db(conn: sqlite3.Connection) -> None:
             uploaded_by TEXT NOT NULL
         );
 
+        -- Original QA workbooks (environment sheets untouched), and the latest
+        -- result for each seven-field test identity.
+        CREATE TABLE IF NOT EXISTS qa_test_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            content BLOB NOT NULL,
+            environments_json TEXT NOT NULL,
+            uploaded_at TEXT NOT NULL,
+            uploaded_by TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS qa_test_results (
+            result_key TEXT PRIMARY KEY,
+            report_id INTEGER NOT NULL REFERENCES qa_test_reports(id),
+            data_json TEXT NOT NULL,
+            image_reference TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_qa_test_results_report ON qa_test_results(report_id);
+
         -- The latest AI analysis of a release's QA log, kept until it is
         -- reviewed (QA statuses saved), discarded, or the log is replaced.
         CREATE TABLE IF NOT EXISTS qa_ai_suggestions (

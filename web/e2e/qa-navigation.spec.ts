@@ -9,7 +9,7 @@ for (const username of ["app_owner", "app_qa"]) {
     await page.goto(base + "/qa");
     const tabs = page.locator("nav.tabs");
     const subnav = page.getByRole("navigation", { name: "QA", exact: true });
-    await expect(subnav.getByRole("link")).toHaveText(["QA log", "本期发布app", "测试命令", "开发者社区产物", "历史查询", "兼容性验证"]);
+    await expect(subnav.getByRole("link")).toHaveText(["QA log", "本期发布app", "测试命令", "QA report", "开发者社区产物", "历史查询", "兼容性验证"]);
     await expect(page.locator(".tab-subnav")).toHaveCount(0);
     await expect(subnav.getByRole("link", { name: "QA log", exact: true })).toHaveAttribute("aria-current", "page");
     await expect(tabs.getByRole("link", { name: "历史查询", exact: true })).toHaveCount(0);
@@ -54,7 +54,7 @@ for (const username of ["app_guest", "app_spd"]) {
     if (username === "app_guest") {
       await page.goto(base + "/qa");
       await expect(page.getByRole("navigation", { name: "QA", exact: true }).getByRole("link")).toHaveText([
-        "QA log", "本期发布app", "测试命令", "开发者社区产物",
+        "QA log", "本期发布app", "测试命令", "QA report", "开发者社区产物",
       ]);
     }
     for (const path of ["/lookup", "/dependencies"]) {

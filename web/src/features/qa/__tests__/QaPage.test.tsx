@@ -189,7 +189,7 @@ describe("QaPage structure", () => {
     await waitFor(() => {
       const nav = screen.getByRole("navigation", { name: "QA" });
       expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual([
-        "QA log", "本期发布app", "测试命令", "开发者社区产物", "历史查询", "兼容性验证",
+        "QA log", "本期发布app", "测试命令", "QA report", "开发者社区产物", "历史查询", "兼容性验证",
       ]);
       expect(within(nav).getByRole("link", { name: "QA log" })).toHaveAttribute("aria-current", "page");
     });
@@ -785,4 +785,15 @@ describe("QaPage AI analysis after a refresh", () => {
     );
     await waitFor(() => expect(uiStoreMod.useUiStore.getState().qaAiSuggestions).toEqual({}));
   });
+});
+
+it("opens QA report without requiring a selected release or a state request", async () => {
+  uiStoreMod.__setState({ selectedReleaseId: "" });
+  vi.mocked(apiGet).mockResolvedValue({ total: 0, rows: [] });
+  render(<QueryClientProvider client={makeQClient()}>
+    <MemoryRouter initialEntries={["/qa?tab=report"]}><QaPage /></MemoryRouter>
+  </QueryClientProvider>);
+  expect(await screen.findByTestId("qa-results-pane")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "刷新当前页" })).toBeNull();
+  expect(vi.mocked(apiGet).mock.calls.some(([url]) => url.startsWith("/api/state"))).toBe(false);
 });

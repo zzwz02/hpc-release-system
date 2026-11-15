@@ -59,10 +59,12 @@ def app_info_source(
 
 @router.get("/image")
 def lookup_image(
+    response: Response,
     image: str = Query(...),
     user: dict = Depends(require_lookup_tab),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
+    response.headers["Cache-Control"] = "no-store"
     return lookup_service.by_image(conn, image)
 
 
@@ -82,3 +84,10 @@ def lookup_app(
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     return lookup_service.by_app(conn, app_id)
+
+
+@router.post("/images")
+def lookup_images(body: dict, response: Response, user: dict = Depends(require_lookup_tab),
+                  conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    return lookup_service.batch_images(conn, body.get("images"))

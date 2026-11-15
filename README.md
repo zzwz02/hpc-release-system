@@ -43,6 +43,12 @@ app_info 同步成功与报名版本跟随分别显示：仓库新版本会正�
 6. QA 填结论（四个取值沿用）、备注，并在启用 app_build 的各构建行填写包含 digest 的完整交付镜像名，可上传日志并用 AI 分析（建议需 QA 保存才生效）。保存时校验构建归属和 digest 格式，并用完整仓库路径和 digest 实时查询 Harbor：镜像必须存在，OS 和 CPU 架构均以实际 tags 校验，至少一条 tag 匹配锁定 app_info 生成的完整构建 tag（含 OS、CPU 架构、版本及 Python/PyTorch 配置，允许 HPC 版本或 commit 以及末尾构建号）。release/dbg 按镜像名区分（分别为 `*-maca` / `*-maca-dbg`），须与所选构建一致，digest 也必须存在于该类型对应的仓库中。Python/PyTorch 标签须与所选构建完全一致，且必须在同一条实际 tag 中同时匹配，不能跨 tags 拼接。不使用 Harbor 的 architecture/os 元数据，也不信任输入引用中自带的 tag；缺少可用 tags、平台不符或 Harbor 查询失败均报错，整批不保存。单次保存内对相同镜像去重查询，不跨请求缓存；网络查询在写事务之外，写入前重新检查 QA/镜像/锁定版本及发布状态，拒绝并发覆盖。重新提交的未指定构建旧镜像必须先改填到明确构建行；旧标量写接口不能新增或修改非空交付字段以绕过校验。发布冻结整组交付镜像。旧单镜像数据保留为「未指定构建」，可移除并改填到正确构建行，不根据 digest 猜测 OS/架构。
 7. QA 截止后 RM 发布：`qa_passed`、`has_issues`（备注进已知问题）记为已发布并写入正式版；`not_checked`、`cannot_release` 记为本期发布失败，App 保持原正式版。发布同时生成 final 文档并锁定；RM 可填写原因解锁更正，解锁会删除本期正式版记录、封存清单和 final 文档。
 
+QA「测试命令」沿用命令表及 CSV 导出，按锁定 app_info 中声明的构建、测试项和支持 GPU 芯片逐行展开，每行一个芯片；未声明芯片的命令仍保留一行、芯片列留空。命令中的 HPC 版本使用 `<hpc_version>` 占位，即使已经填写交付镜像，也不替换为具体 digest。
+
+历史查询的「按镜像 digest」支持每行一个完整 `镜像@sha256:…`，也可上传 `.txt` / `.csv` 镜像清单，每批最多 500 个。CSV 优先读取 `镜像@digest` 等镜像引用列；可带 tag，但输入 tag 不参与平台判断。每次从 Harbor 实际 tags 定位 commit，再实时读取 Gerrit 对应 commit 的 app_info，匹配镜像配置并按支持的 GPU 展开命令。App 版本含连字符时仍能识别 commit tag；repo 构建的实际 `repo` tag 与同平台、同构建号的发布版本 tag 配对后，按 App 登记的 manifest 路径读取 Jenkins 公开归档中的固定 XML，再读取 app_info linkfile 项目的完整 commit。归档地址由 `[hpc_manifest_archive] BASE_URL` 配置；缺少配对 tags、归档不存在、项目不符、revision 不是完整 SHA 或来源冲突均报错，不使用当前分支配置代替。返回来源中包含 `commit_source` 和 `manifest_urls`。登记来源无法唯一确定分支时，仅在 Gerrit 存在唯一一个 HEAD 精确匹配该 commit 的分支且官方 App 名称唯一时采用该分支，否则不生成可回填的结果行。此链路无需 CI 构建数据库账号。历史 `*-hpcc` / `*-hpcc-dbg` 与相应 MACA 命名关联到同一 App 构建，保留 release/dbg 区分，生成命令仍使用查询的实际镜像 digest；不使用发布封存命令或 Harbor 的 OS/architecture 元数据生成。单批对镜像、仓库/commit 去重，最多 8 个并发网络请求，命令展开按仓库/commit 复用，不跨请求缓存。失败镜像单列原因，成功部分仍可导出 CSV。CSV 的 App 名称沿用现有 QA 命令表的登记显示名，包含 App、分支、版本、平台、GPU、commit、测试项、命令与性能基准，另有 `test_result`、`test_digest`、`test_env`；按 `app_name、git_branch、app_version、arch、OS、GPU、test_name` 七个字段回填最近结果，未命中留空。匹配归一化首尾空白、App 名大小写、架构别名、OS/GPU 大小写；commit、digest、HPC 版本及 Python/Torch 不参与结果键。
+
+QA「QA report」允许 QA/RM 上传 `.xlsx`（最多 20 MB、测试页最多 20000 行）。第一个页签是测试结果详表，列名参照 [示例](docs/qa_report_test_sample.xlsx)；`test_result` 支持数值（包括 0）与 `pass`/`fail` 等文本，`test_digest` 支持完整镜像引用、`sha256:` digest 或裸 hash（后两者从 Excel `docker_cmd` 的镜像操作数确定仓库）。后续环境页随原文件原样存储，只核对 `test_env` 页签名称，不解析内容。未填写结果/digest/环境的行跳过；其余行必须提供 digest。保存前通过同一实时链路校验 digest 存在且七个字段匹配，失败时整份不保存并报告行号；系统覆盖 Excel 中的 `hpc_version`、`commit_id` 为实际解析值，多个匹配 HPC 版本全部保留，缺少版本 tag 时留空。相同七字段的结果由最后一次成功上传覆盖，同一 Excel 的重复键以最后一行为准，保存后显示覆盖数。查询支持关键词和分页，分别展示实时自动命令、Excel 原命令、Excel 提交时间及提交人；原 Excel（含环境页）可下载，外部服务失败仍可查看已保存结果和原文件。逐项结果不自动更改 App 发布结论。
+
 周期管理的基础镜像每行填写「完整镜像引用」和「说明」。历史查询和基础镜像均可直接粘贴 `docker pull 镜像引用`，输入时自动移除命令前缀，后端也会统一清理。支持 `仓库/镜像:tag` 和 `仓库/镜像@sha256:…`（64 位十六进制 digest，也可同时含 tag）。后端保存时拆分地址与 digest，名称取地址末段并保留 tag；已有分栏记录在界面合成为完整引用，存储字段及报名、查询用途保留。RM 可维护到发布前，发布后只读。
 
 ```mermaid
@@ -82,7 +88,7 @@ flowchart LR
 - 「开发态依赖」作为兼容性验证页的次级参考入口，仅列最新 app_info 的依赖、版本与 commit，不提供正式版镜像、命令或测试清单导出。切换入口重置筛选；显式刷新，不新增自动轮询。合并页面共用 `GET /api/lookup/latest-running` 的基线数据，原 `/api/dependencies` 正式版查询及 CSV 接口保留兼容。
 
 - 「QA → 历史查询」默认展示「发布app列表」，下拉菜单仅列已发布并锁定的版本，默认最新版本。选中后自动列出该版本发布成功的 App、当期 App 版本、包含 digest 的完整交付镜像名、QA 结论和备注；可按 App、镜像或 QA 结果筛选。历史记录缺少完整镜像信息时明确标注，已停止维护的 App 仍保留在历史发布列表。解锁的版本不再提供查询，重新发布后按更正结果展示。「按 App」界面已移除，旧接口保留兼容。
-- 历史查询的「按镜像 digest」输入完整镜像引用（`harbor.sh.mxcr.io/项目/镜像@sha256:…`），优先按仓库地址与 digest 匹配本地有效发布记录。同一镜像用于多个周期时列出全部记录，默认最新周期，可切换查看各次发布的完整镜像组、纳入/排除测试项、原发布 App 级 QA、app_info commit 与原始命令；封存清单直接读取，不访问 Harbor/Gerrit 或重新生成命令。本地未封存旧发布明确标注历史配置还原，快照缺失则提示无法读取，不用外部结果替换已有发布记录。仅当没有匹配发布记录时，才从 Harbor tags 定位 commit，再从 Gerrit 还原该镜像的命令，并标为「根据历史配置生成」。app_info 来源链接跟随所选发布读取本地快照；外部还原结果仍按原 commit 从 Gerrit 读取。查询均只读，停止 App 的有效历史发布仍可查；解锁后的发布记录不再列入。
+- 历史查询的「按镜像 digest」始终从 Harbor tags、必要时固定 manifest 归档及 Gerrit 实时还原，规则见前述 QA 流程；本地发布封存仍供兼容性验证和发布详情使用，不覆盖实时 digest 查询结果。
 
 测试范围按 `测试项 → supported_chip 的构建别名 → app_build` 连接，展示 OS、CPU 架构和各平台的芯片；测试声明与构建声明的芯片取交集，禁用构建、未引用的平台及不匹配的芯片不生成命令。App 详情、QA 测试范围、测试命令表/导出和历史镜像查询共用该规则。界面中的 CPU 架构简写为 x86/ARM，不附加构建别名和架构括号；QA 测试命令表/CSV 用 `commit_id` 展示报名锁定 app_info 的原始 commit，构建别名仅在含有 OS/架构以外的信息时保留。历史镜像查询展示该镜像匹配构建的 X86/ARM 芯片总览。报名截止后，即使测试名、芯片名不变，为已有测试新增 OS/架构/构建配置上的芯片组合，也需 QA 同意后才跟进。
 
@@ -237,7 +243,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 
 ## 集成配置
 
-LDAP、JIRA、大模型、CICD Agent、网站对外地址和各组 JIRA 数字员工的配置统一放在根目录 `release_system.conf`（已 gitignore），分为 `[ldap]`、`[jira]`、`[llm]`、`[cicd_agent]`、`[proxy]`、`[site]`、`[jira_agent:<组名>]`、`[jira_learning:<组名>]`、`[jira_evaluation:<组名>]` 几节。大模型一节供 QA AI 分析和周报等所有功能共用，代码里统一经 [llm.py](app/integrations/llm.py) 的 `ask_json()` 调用；原来的 `[qa_llm]` 已改名为 `[llm]`，键名去掉 `QA_` 前缀，仍写旧节名时会提示如何改。复制 `release_system.conf.example` 起步，各键含义与必填规则见其中注释。配置在每次使用时现读，修改后即时生效。旧的 `ldap.conf` / `jira.conf` / `qa_llm.env` / `jira_agent.conf` 已不再读取，升级时把内容搬到对应节。
+LDAP、JIRA、大模型、CICD Agent、网站对外地址和各组 JIRA 数字员工的配置统一放在根目录 `release_system.conf`（已 gitignore），分为 `[ldap]`、`[jira]`、`[llm]`、`[cicd_agent]`、`[hpc_manifest_archive]`、`[proxy]`、`[site]`、`[jira_agent:<组名>]`、`[jira_learning:<组名>]`、`[jira_evaluation:<组名>]` 几节。大模型一节供 QA AI 分析和周报等所有功能共用，代码里统一经 [llm.py](app/integrations/llm.py) 的 `ask_json()` 调用；原来的 `[qa_llm]` 已改名为 `[llm]`，键名去掉 `QA_` 前缀，仍写旧节名时会提示如何改。复制 `release_system.conf.example` 起步，各键含义与必填规则见其中注释。配置在每次使用时现读，修改后即时生效。旧的 `ldap.conf` / `jira.conf` / `qa_llm.env` / `jira_agent.conf` 已不再读取，升级时把内容搬到对应节。
 
 环境变量只放文件位置和少数开发参数（下表），由 `app/config.py` 的 `Settings` 从环境变量和根目录 `.env` 读取，改后需重启。前后端共用的约定在 `shared/*.json`；调优参数和固定业务规则（如派单 JIRA 的项目、Component、issue 类型和 ETA 字段）是代码常量。新增配置放在哪里见 [release-system-dev 技能](.agents/skills/release-system-dev/SKILL.md) 的“配置落点”。
 

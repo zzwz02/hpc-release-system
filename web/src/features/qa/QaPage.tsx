@@ -3,13 +3,14 @@
  *
  * Roles: RM / Owner / QA / Guest.
  *
- * Six peer tabs:
+ * QA tools:
  *   1. QA log — scope-expansion requests, log upload, AI analyze (1 s poll
  *                 while running), verdict + delivered-image digest editor
  *   2. 本期发布app — filterable/sortable/column-pick/CSV-export table
  *   3. 测试命令 — same table machinery, no column picker
  *   4. 开发者社区产物
- *   5–6. 历史查询 / 兼容性验证 — independent routes, shared QA tab row
+ *   5. QA report — upload Excel results and compare live / uploaded commands
+ *   历史查询 / 兼容性验证 — independent routes, shared QA tab row
  *
  * Data:
  *   - QA annotation + log: from GET /api/state (via shared uiStore selectedReleaseId)
@@ -24,6 +25,7 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "react-router-dom";
 import { QaTabs } from "./QaTabs";
+import { QaResultsPane } from "./QaResultsPane";
 import { qaPaneFromSearch } from "./qaNavigation";
 import { RefreshBar } from "../../components/RefreshBar";
 import { TestScopeTable } from "../../components/TestScopeTable";
@@ -1861,7 +1863,7 @@ export function QaPage() {
   const { data, isFetching, dataUpdatedAt, refetch, error } = useQuery({
     queryKey: STATE_QK(selectedReleaseId),
     queryFn: () => fetchState(selectedReleaseId),
-    enabled: !!selectedReleaseId,
+    enabled: !!selectedReleaseId && subtab !== "report",
     staleTime: Infinity,
     refetchInterval: false,
     refetchOnWindowFocus: false,
@@ -1903,7 +1905,7 @@ export function QaPage() {
     <section className="view active">
       <div className="page-toolbar">
         <h2>QA</h2>
-        {data && (
+        {subtab !== "report" && data && (
           <ReleaseSelector
             releases={data.releases ?? []}
             selectedId={selectedReleaseId || data.release?.id || null}
@@ -1913,22 +1915,23 @@ export function QaPage() {
           />
         )}
         <span className="spacer" />
-        <RefreshBar
+        {subtab !== "report" && <RefreshBar
           dataUpdatedAt={dataUpdatedAt}
           onRefresh={handleRefresh}
           isFetching={isFetching}
-        />
+        />}
       </div>
 
       <QaTabs />
+      {subtab === "report" && <QaResultsPane key={`${user?.username}:${user?.role}`} />}
 
-      {error && (
+      {subtab !== "report" && error && (
         <div className="lerr p-12-16">
           加载失败：{error instanceof Error ? error.message : String(error)}
         </div>
       )}
 
-      {!data && isFetching && (
+      {subtab !== "report" && !data && isFetching && (
         <div className="muted p-1r">
           加载中…
         </div>
@@ -1958,7 +1961,7 @@ export function QaPage() {
                 releaseId={selectedReleaseId || data.release?.id || ""}
                 kind="test"
                 title="测试命令"
-                hint="由各报名条目锁定的 app_info（去掉 Owner 删减的测试项）生成的测试命令清单。"
+                hint="由各报名条目锁定的 app_info（去掉 Owner 删减的测试项）生成，每个支持的 GPU 芯片单独一行。镜像版本保留 <hpc_version> 占位。"
                 releases={data.releases ?? []}
               />
             </div>

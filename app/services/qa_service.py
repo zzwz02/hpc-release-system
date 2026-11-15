@@ -273,9 +273,10 @@ def _report_test_cmd_rows(
 ) -> list[list[str]]:
     return [
         [app_name, git_branch, str(raw.get("app_version") or ""), test_commands.denormalize_arch(row["arch"]),
-         row["os"], row["build"], ",".join(row["chips"]), commit_id, row["test"], row["command"],
+         row["os"], row["build"], chip, commit_id, row["test"], row["command"],
          row["perf_golden"], row["perf_unit"], row["python_label"], row["pytorch_label"]]
         for row in test_commands.command_rows(raw, excluded)
+        for chip in (row["chips"] or [""])
     ]
 
 

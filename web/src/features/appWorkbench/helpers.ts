@@ -152,9 +152,7 @@ export function appDescriptionCount(text: string | null | undefined): number {
   return ((text ?? "").trim().match(/[A-Za-z0-9]+|[^\s]/gu) ?? []).length;
 }
 
-export function shortCommit(commit: string | null | undefined): string {
-  return (commit ?? "").slice(0, 12);
-}
+export { shortCommit } from "../../lib/git";
 
 /** "v1.2" for display; versions that already start with v stay as they are. */
 export function versionTag(version: string): string {

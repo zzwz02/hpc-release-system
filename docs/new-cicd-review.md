@@ -92,6 +92,8 @@ A:
 
 ## 四、digest 查询和未来 QA 状态，也应围绕这份记录组织
 
+> 2026-11-15 实施调整：根据后续确认，镜像 digest 查询始终实时经过 Harbor tags → commit → Gerrit app_info 生成命令，并支持批量展开与历史测试结果回填；不再优先返回发布封存命令。以下为原 proposal，发布封存数据仍用于发布追溯及兼容性清单。QA 结果采用 Excel 首表回填、环境页原样保留的方式，详见 [当前流程](../README.md)。
+
 ### digest 查询优先查发布记录
 
 现在页面上的 digest 查询会访问 Harbor，通过 tags 定位 commit，再从 Gerrit 读取历史 app_info 重建命令。这个功能适合查任意历史镜像，但它没有应用某次发布排除的测试项，不能完整代表那次发布采用的清单。[当前 digest 查询](https://github.com/zzwz02/hpc-release-system/blob/5ed6d76a67419438ed00f6f7ff9cdc26e5f6c5cc/app/services/lookup_service.py#L65)

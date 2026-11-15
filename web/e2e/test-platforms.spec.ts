@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { readFile } from "node:fs/promises";
+import { commandTableAppearance } from "./helpers/commandTableAppearance";
 
 const base = process.env.TEST_PLATFORMS_E2E_URL ?? "";
 test.skip(!/^http:\/\/127\.0\.0\.1:\d+$/.test(base), "Requires tests.run_app_info_site --lookup --platforms and isolated Vite");
@@ -37,7 +38,7 @@ test("App details, QA and image history keep OS/CPU/chip relationships", async (
   await page.getByRole("button", { name: "加载报告", exact: true }).click();
   const report = page.locator("#qaTestCmdPane table");
   const reportRows = report.locator("tbody tr").filter({ hasText: "HPCG" });
-  await expect(reportRows).toHaveCount(3);
+  await expect(reportRows).toHaveCount(12);
   const headings = await report.locator("thead tr").first().locator("th").allTextContents();
   const chipColumn = headings.findIndex(heading => heading.includes("支持芯片"));
   const commitColumn = headings.findIndex(heading => heading.includes("commit_id"));
@@ -45,19 +46,26 @@ test("App details, QA and image history keep OS/CPU/chip relationships", async (
   expect(headings.some(heading => heading.includes("base_image") || heading.includes("构建平台"))).toBe(false);
   expect(chipColumn).toBeGreaterThan(-1);
   const kylinReport = reportRows.filter({ hasText: "kylinv11" });
-  await expect(kylinReport.locator("td").nth(chipColumn)).toHaveText("C600,X201");
-  const commitCell = kylinReport.locator("td").nth(commitColumn);
+  await expect(kylinReport).toHaveCount(2);
+  expect(await kylinReport.locator(`td:nth-child(${chipColumn + 1})`).allTextContents()).toEqual(["C600", "X201"]);
+  await expect(reportRows).toContainText(Array(12).fill("<hpc_version>"));
+  await expect(report).not.toContainText("@sha256:");
+  const commitCell = kylinReport.first().locator("td").nth(commitColumn);
   await expect(commitCell).toHaveText("b641bd0deac7");
   await expect(commitCell).toHaveAttribute("title", "b641bd0deac7c59ecb6a53c814ed3c150b7811a4");
   await report.locator("thead tr.colfilter-row input").nth(commitColumn).fill("c59ecb6a53c814ed3c150b7811a4");
-  await expect(reportRows).toHaveCount(3);
+  await expect(reportRows).toHaveCount(12);
+  const referenceAppearance = await commandTableAppearance(page.locator("#qaTestCmdPane"));
   const exported = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出 CSV", exact: true }).click();
   const csv = await readFile((await (await exported).path())!, "utf8");
   expect(csv).toContain("OS,支持芯片,commit_id");
   expect(csv).not.toContain("base_image");
   expect(csv).not.toContain("构建平台");
-  expect(csv).toContain('"C600,X201"');
+  expect(csv).not.toContain('"C600,X201"');
+  expect(csv.split("\n").filter((line) => line.startsWith("HPCG,")).length).toBe(12);
+  expect(csv).toContain("<hpc_version>");
+  expect(csv).not.toContain("@sha256:");
   expect(csv).toContain("b641bd0deac7c59ecb6a53c814ed3c150b7811a4");
 
   await qaTabs.getByRole("link", { name: "历史查询", exact: true }).click();
@@ -66,18 +74,23 @@ test("App details, QA and image history keep OS/CPU/chip relationships", async (
   await input.fill("harbor.sh.mxcr.io/hpc-release/hpcg-maca@sha256:" + "a".repeat(64));
   await page.getByTestId("lookup-search").click();
   const result = page.getByTestId("lookup-image-result");
-  await expect(result.getByLabel("X86 芯片", { exact: true })).toHaveValue("C600, X201");
-  await expect(result.getByLabel("ARM 芯片", { exact: true })).toHaveValue("未声明支持");
+  await expect(result.locator("tbody tr")).toHaveCount(2);
+  await expect(result.locator("tbody tr")).toContainText(["kylinv11", "kylinv11"]);
+  expect(await result.locator("tbody tr td:nth-child(6)").allTextContents()).toEqual(["C600", "X201"]);
+  expect(await commandTableAppearance(result)).toEqual(referenceAppearance);
+  await result.locator(".report-table").screenshot({ path: "/tmp/digest-table-aligned.png" });
+  await result.getByLabel("GPU 列筛选").fill("C600");
   await expect(result.locator("tbody tr")).toHaveCount(1);
-  await expect(result.locator("tbody tr")).toContainText("kylinv11");
-  await expect(result.locator("tbody tr td").nth(3)).toHaveText("C600, X201");
+  await expect(result.locator("tbody tr td:nth-child(6)")).toHaveText("C600");
+  await result.getByLabel("GPU 列筛选").fill("");
+  await expect(result.locator("tbody tr")).toHaveCount(2);
   await page.screenshot({ path: "/tmp/history-test-platforms.png", fullPage: true });
 
   await input.fill("harbor.sh.mxcr.io/hpc-release/hpcg-maca@sha256:" + "b".repeat(64));
-  await input.press("Enter");
-  await expect(result.getByLabel("X86 芯片", { exact: true })).toHaveValue("未声明支持");
-  await expect(result.getByLabel("ARM 芯片", { exact: true })).toHaveValue("C500, C600, X302, X201");
+  await page.getByTestId("lookup-search").click();
   await expect(result.locator("tbody tr")).toHaveCount(1);
   await expect(result.locator("tbody tr")).toContainText("benchmark_arm");
+  await expect(result.locator("tbody tr td:nth-child(4)")).toHaveText("arm");
+  await expect(result.locator("tbody tr td:nth-child(6)")).toHaveText("C500");
   expect(errors).toEqual([]);
 });

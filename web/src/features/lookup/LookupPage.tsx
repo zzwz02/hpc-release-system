@@ -8,20 +8,11 @@ import { apiGet } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { qaStatusLabels } from "../../lib/labels";
 import { QaTabs } from "../qa/QaTabs";
-import { ChipSupportFields } from "../../components/ChipSupportFields";
-import { TestScopeTable } from "../../components/TestScopeTable";
 import { RefreshBar } from "../../components/RefreshBar";
-import { stripDockerPullPrefix } from "../../lib/containerImage";
-import type { DeliveryImage, QaStatus, TestPlatform } from "../../types";
+import type { DeliveryImage, QaStatus } from "../../types";
 import { DeliveryImages } from "../../components/DeliveryImages";
 import { recordedImages } from "../../lib/deliveryImages";
-import { ImagePublicationPane, type PublicationLookupResult } from "./ImagePublicationPane";
-
-type TestCommand = TestPlatform & { test: string; command: string };
-
-function CommandTable({ commands }: { commands: TestCommand[] }) {
-  return <TestScopeTable tests={commands.map((command) => ({ path: command.test, command: command.command, platforms: [command] }))} />;
-}
+import { BatchImageLookupPane } from "./BatchImageLookupPane";
 
 interface FrozenRelease {
   id: string;
@@ -40,22 +31,6 @@ interface PublishedApp {
   qa_note: string;
   images?: DeliveryImage[];
 }
-
-interface HistoricalImageResult {
-  source: "historical_config";
-  image: string;
-  digest: string;
-  tags: string[];
-  commit_id: string;
-  commit_tags: string[];
-  git_url: string;
-  app_name: string;
-  app_version: string;
-  x86_chips: string[];
-  arm_chips: string[];
-  test_commands: TestCommand[];
-}
-type ImageResult = HistoricalImageResult | PublicationLookupResult;
 
 function PublishedAppsPane() {
   const { user } = useAuth();
@@ -140,109 +115,16 @@ function PublishedAppsPane() {
 export function LookupPage() {
   const { user } = useAuth();
   const [mode, setMode] = React.useState<"releases" | "digest">("releases");
-  const [image, setImage] = React.useState("");
-  const [imageResult, setImageResult] = React.useState<ImageResult | null>(null);
-  const [error, setError] = React.useState("");
-  const [busy, setBusy] = React.useState(false);
-  const requestId = React.useRef(0);
-  React.useEffect(() => {
-    requestId.current++;
-    setImageResult(null);
-    setError("");
-    setBusy(false);
-  }, [user?.username, user?.role]);
-
-  async function search() {
-    if (busy) return;
-    const currentRequest = ++requestId.current;
-    setBusy(true);
-    setError("");
-    setImageResult(null);
-    try {
-      const reference = stripDockerPullPrefix(image).trim();
-      setImage(reference);
-      const result = await apiGet<ImageResult>(`/api/lookup/image?image=${encodeURIComponent(reference)}`);
-      if (requestId.current === currentRequest) setImageResult(result);
-    } catch (e) {
-      if (requestId.current === currentRequest) setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (requestId.current === currentRequest) setBusy(false);
-    }
-  }
-
-  function changeMode(next: "digest" | "releases") {
-    requestId.current++;
-    setMode(next);
-    setImageResult(null);
-    setError("");
-    setBusy(false);
-  }
-
-  const historical = imageResult?.source === "historical_config" ? imageResult : null;
-  const sourceUrl = historical ? `/api/lookup/app-info?${new URLSearchParams({
-    image: historical.image, commit_id: historical.commit_id,
-  })}` : null;
-
   return (
     <section className="view active" data-testid="lookup-page">
-      <div className="page-toolbar">
-        <h2>历史查询</h2>
-      </div>
+      <div className="page-toolbar"><h2>历史查询</h2></div>
       <QaTabs />
       <div className="subtabs">
-        <button className={`subtab${mode === "releases" ? " active" : ""}`} onClick={() => changeMode("releases")}>发布app列表</button>
-        <button className={`subtab${mode === "digest" ? " active" : ""}`} onClick={() => changeMode("digest")}>按镜像 digest</button>
+        <button className={`subtab${mode === "releases" ? " active" : ""}`} onClick={() => setMode("releases")}>发布app列表</button>
+        <button className={`subtab${mode === "digest" ? " active" : ""}`} onClick={() => setMode("digest")}>按镜像 digest</button>
       </div>
       {mode === "releases" && <PublishedAppsPane />}
-      {mode === "digest" && (
-        <div className="panel">
-          <div className="panel-body">
-            <div className="row">
-              <input className="input flex-1 mono" value={image} onChange={(e) => setImage(stripDockerPullPrefix(e.target.value))} disabled={busy}
-                onKeyDown={(e) => e.key === "Enter" && image.trim() && void search()}
-                placeholder="harbor.sh.mxcr.io/hpc-release/镜像名@sha256:…" aria-label="完整镜像名" data-testid="lookup-image-input" />
-              <button className="btn primary" onClick={() => void search()} disabled={busy || !image.trim()}
-                data-testid="lookup-search">
-                {busy ? "查询中…" : "查询"}
-              </button>
-            </div>
-            <p className="hint mt-8">优先查询发布测试清单；多次发布可选择记录，未找到发布记录时再根据历史配置生成命令。</p>
-            {error && <p className="lerr" role="alert">{error}</p>}
-          </div>
-        </div>
-      )}
-
-      {mode === "digest" && imageResult?.source === "publications" && <ImagePublicationPane result={imageResult} />}
-      {mode === "digest" && historical && (
-        <div className="panel" data-testid="lookup-image-result">
-          <div className="panel-head">
-            <h2>{historical.app_name} {historical.app_version}</h2>
-            <span className="pill">Commit {historical.commit_id}</span>
-            <span className="count">{historical.test_commands.length} 条测试命令</span>
-          </div>
-          <div className="panel-body">
-            <p className="hint" data-testid="lookup-image-source">根据历史配置生成（未匹配到发布记录）</p>
-            <p className="mono small cell-wrap">{historical.image}</p>
-            <p className="small cell-wrap">app_info 来源：
-              {sourceUrl ? (
-                <a href={sourceUrl} target="_blank" rel="noopener noreferrer"
-                  data-testid="app-info-source-link">
-                  {historical.git_url} @ {historical.commit_id}
-                </a>
-              ) : <>{historical.git_url} @ {historical.commit_id}</>}
-            </p>
-            <p className="muted small">该镜像构建支持的芯片</p>
-            <div className="form form-compact">
-              <ChipSupportFields x86={historical.x86_chips} arm={historical.arm_chips} />
-            </div>
-            <details className="mt-8">
-              <summary>镜像 tags（{historical.tags.length}）</summary>
-              {historical.tags.map((tag) => <div key={tag} className="mono small break mt-4">{tag}</div>)}
-            </details>
-            <CommandTable commands={historical.test_commands} />
-          </div>
-        </div>
-      )}
+      {mode === "digest" && <BatchImageLookupPane key={`${user?.username}:${user?.role}`} />}
     </section>
   );
 }

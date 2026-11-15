@@ -94,9 +94,57 @@ def test_app_history_and_qa_reports_use_the_locked_platforms_and_chips(temp_db):
     assert "base_image" not in report["columns"]
     assert "构建平台" not in report["columns"]
     assert {row["commit_id"] for row in rows} == {"commit0"}
-    assert len(rows) == len(record["test_commands"]) == 3
-    assert next(row for row in rows if row["OS"] == "kylinv11")["支持芯片"] == "C600,X201"
+    assert len(record["test_commands"]) == 3
+    assert len(rows) == 12
+    assert all("," not in row["支持芯片"] for row in rows)
+    assert {row["支持芯片"] for row in rows if row["OS"] == "kylinv11"} == {"C600", "X201"}
     assert next(row for row in record["test_commands"] if row["os"] == "kylinv11")["chips"] == ["C600", "X201"]
+
+
+def test_qa_expands_pyg_declared_gpus_and_keeps_version_placeholders_with_delivered_images(temp_db, harbor_artifacts):
+    builds = ["ubuntu22.04_amd64", "ubuntu24.04_amd64"]
+    chips = ["C500", "C600", "X301"]
+    raw = {
+        "app_name": "pyg_lib", "app_version": "v0.4.0",
+        "app_build": {build: {"os": os, "arch": "amd64", "build_target": "release",
+            "python_label": py, "pytorch_label": torch, "supported_chip": chips}
+            for build, os, py, torch in [
+                (builds[0], "ubuntu22.04", "py310", "torch2.4"),
+                (builds[1], "ubuntu24.04", "py312", "torch2.8")]},
+        "app_test": {"pyg_lib_unit_test": {"test_cmd": "bash /tests/unit_test.sh", "img_target": "release",
+            "supported_chip": {chip: builds for chip in chips}, "perf_golden": "max", "perf_unit": "cases"}},
+    }
+    app_id = seed_app(temp_db, app_info=raw, commit_id="cca03f0a8413cfb9e087ddfcd20a7f7f4723e33a")
+    release_id = seed_cycle(temp_db, name="3.10.0")
+    entry = seed_signup(temp_db, release_id, app_id)
+    images = [{**build, "reference": f"harbor.sh.mxcr.io/hpc-release/pyg_lib-maca@sha256:{digit * 64}"}
+              for build, digit in zip(entry["delivery_builds"], "ab")]
+    harbor_artifacts(images)
+    qa_service.set_qa_status_batch(temp_db, release_id, [{"app_id": app_id, "status": "not_checked",
+        "deliverable_images": images, "delivery_revision": entry["delivery_revision"]}], user="qa", role="QA")
+    report = qa_service.get_qa_reports(temp_db, release_id)["test_cmd"]
+    rows = [dict(zip(report["columns"], row)) for row in report["rows"]]
+    assert len(rows) == 6
+    assert {(row["OS"], row["支持芯片"], row["Python label"], row["PyTorch label"]) for row in rows} == {
+        (os, chip, py, torch) for os, py, torch in [
+            ("ubuntu22.04", "py310", "torch2.4"), ("ubuntu24.04", "py312", "torch2.8")]
+        for chip in chips}
+    assert all("<hpc_version>" in row["docker_cmd"] and "@sha256:" not in row["docker_cmd"] for row in rows)
+    assert all(row["支持芯片"] != "C500X" for row in rows)
+
+
+def test_qa_keeps_commands_when_gpu_is_not_declared(temp_db):
+    raw = hpcg_info()
+    for build in raw["app_build"].values():
+        build.pop("supported_chip", None)
+    raw["app_test"] = {"unspecified": {"test_cmd": "run", "img_target": "release"}}
+    app_id = seed_app(temp_db, app_info=raw)
+    release_id = seed_cycle(temp_db)
+    seed_signup(temp_db, release_id, app_id)
+    report = qa_service.get_qa_reports(temp_db, release_id)["test_cmd"]
+    rows = [dict(zip(report["columns"], row)) for row in report["rows"]]
+    assert len(rows) == 3
+    assert all(row["支持芯片"] == "" and "<hpc_version>" in row["docker_cmd"] for row in rows)
 
 
 def test_image_scope_only_contains_the_platform_of_the_queried_artifact():

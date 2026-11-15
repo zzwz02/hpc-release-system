@@ -2,7 +2,7 @@
 
 Faithful port of server.py GET/POST QA handlers.
 
-Endpoint paths (exact from server.py):
+Endpoint paths (legacy release routes retain their original paths):
   GET  /api/qa/analyze-log/status
   GET  /api/qa-log/download           (note: NOT under /api/qa prefix)
   GET  /api/qa-reports                (note: NOT under /api/qa prefix)
@@ -10,6 +10,9 @@ Endpoint paths (exact from server.py):
   POST /api/qa/upload-log
   POST /api/qa/analyze-log
   POST /api/qa/analyze-log/start
+  GET  /api/qa/test-results
+  POST /api/qa/test-results/upload
+  GET  /api/qa/test-results/{report_id}/download
 
 The router prefix is left empty (tags=["qa"]) so we can host paths both
 under /api/qa/ and at /api/qa-* to match the old server exactly.
@@ -17,6 +20,7 @@ under /api/qa/ and at /api/qa-* to match the old server exactly.
 from __future__ import annotations
 
 import sqlite3
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
@@ -25,7 +29,7 @@ from app.api.errors import ApiError
 from app.config import settings
 from app.deps import get_db, require_capability, require_tab_access
 from app.services import community_artifacts_service
-from app.services import qa_service
+from app.services import qa_service, qa_results_service
 
 router = APIRouter(tags=["qa"])
 require_qa_tab_access = require_tab_access("qa", message="无权访问 QA 页签")
@@ -41,6 +45,9 @@ require_qa_status_edit = require_capability(
 require_qa_log_upload = require_capability(
     "qa.edit",
     message="只有 QA 或 RM 可上传 QA log",
+)
+require_qa_results_upload = require_capability(
+    "qa.edit", message="只有 QA 或 RM 可上传测试结果",
 )
 require_qa_analysis = require_capability(
     "qa.edit",
@@ -289,4 +296,49 @@ def api_qa_analyze_log_start(
         user=user["username"],
         role=user["role"],
         db_path=settings.db_path,
+    )
+
+
+@router.post("/api/qa/test-results/upload")
+def upload_test_results(
+    body: dict,
+    user: dict = Depends(require_qa_results_upload),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    return qa_results_service.upload(
+        conn,
+        filename=body.get("filename", ""),
+        content_b64=body.get("content_base64", ""),
+        user=user["username"],
+        role=user["role"],
+    )
+
+
+@router.get("/api/qa/test-results")
+def test_results(
+    response: Response,
+    search: str = Query(default=""),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    user: dict = Depends(require_qa_tab_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    return qa_results_service.query(conn, search=search, offset=offset, limit=limit)
+
+
+@router.get("/api/qa/test-results/{report_id}/download")
+def download_test_results(
+    report_id: int,
+    user: dict = Depends(require_qa_tab_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    content, filename = qa_results_service.download(conn, report_id)
+    return Response(
+        content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": "attachment; filename*=UTF-8''" + quote(filename),
+            "Cache-Control": "no-store",
+        },
     )

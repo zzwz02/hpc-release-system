@@ -5,14 +5,23 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from app.api.errors import ApiError, GerritNetworkError
 from app.config import settings
-from app.domain import cycles, delivery_images, image_lookup
+from app.identity import repo_storage_path
+from app.domain import cycles, delivery_images, image_lookup, qa_results, test_commands
 from app.domain.container_image import delivered_image_reference
-from app.integrations import gerrit, harbor
-from app.repositories import app_info_repo, apps_repo, entries_repo, official_repo, releases_repo
+from app.integrations import gerrit, harbor, manifest_archive
+from app.repositories import (
+    app_info_repo,
+    apps_repo,
+    entries_repo,
+    official_repo,
+    qa_results_repo,
+    releases_repo,
+)
 from app.services import catalog_service, cycle_service, publication_service, qa_service
 
 
@@ -24,17 +33,11 @@ def _lookup_image(reference: str) -> dict[str, str]:
 
 
 def _image_repository(conn: sqlite3.Connection, image: dict[str, str]) -> str:
-    image_name = image["repository"].rsplit("/", 1)[-1]
-    apps = {app["id"]: app for app in apps_repo.list_apps(conn)}
-    candidate_ids = set()
-    # App identity comes from the catalog, never a guessed hpc_<image> URL.
-    for version in app_info_repo.image_lookup_sources(conn):
-        if image_name in image_lookup.image_repositories(version["raw"]):
-            candidate_ids.add(version["app_id"])
-    if not candidate_ids:
+    name = image["repository"].rsplit("/", 1)[-1]
+    sources = _repository_index(conn, {name}).get(name, [])
+    urls = {source["url"] for source in sources}
+    if not urls:
         raise ValueError("未找到该镜像对应的 App 仓库，请先在 App 工作台登记并同步该 App")
-    urls = {gerrit.gerrit_remote_url(catalog_service.app_info_fetch_target(apps[app_id])[0])
-            for app_id in candidate_ids}
     if len(urls) != 1:
         raise ValueError("多个 Gerrit 仓库声明了相同镜像名，无法唯一定位历史 app_info")
     return urls.pop()
@@ -85,45 +88,275 @@ def app_info_source(conn: sqlite3.Connection, reference: str, commit: str, *,
     return _app_info_at(_image_repository(conn, image), commit)
 
 
-def by_image(conn: sqlite3.Connection, reference: str) -> dict[str, Any]:
-    image = image_lookup.parse_lookup_image(reference)
-    publications = []
-    for official in official_repo.by_digest(conn, image["digest"]):
-        images = _publication_images(official)
-        if not any(image_lookup.matches_delivery(image, delivery) for delivery in images):
+# Bound network fan-out while sharing identical Harbor/Gerrit work in one request.
+LOOKUP_WORKERS = 8
+MAX_BATCH_IMAGES = 500
+
+
+def _repository_index(conn, names):
+    apps = {app["id"]: app for app in apps_repo.list_apps(conn)}
+    index = {}
+    urls = {}
+    for version in app_info_repo.image_lookup_sources(conn):
+        app = apps.get(version["app_id"])
+        if not app:
             continue
-        app = catalog_service.get_app_or_raise(conn, official["app_id"])
-        manifest, source = publication_service.read_manifest(conn, official, app=app, app_name=catalog_service.app_name(app))
-        release = manifest["release"] if manifest else releases_repo.get_release_row(conn, official["release_id"])
-        publications.append({
-            "key": _publication_key(official), "official_version_id": official["id"],
-            "entry_id": official["entry_id"], "app_id": app["id"],
-            "app_name": manifest["app"]["name"] if manifest else catalog_service.app_name(app),
-            "app_version": manifest["entry"]["target_version"] if manifest else official["version"],
-            "release": {key: release[key] for key in ("id", "name", "release_date")},
-            "published_at": official["released_at"], "manifest_source": source,
-            "test_manifest": manifest, "images": manifest["images"] if manifest else images,
-            "note": "根据历史配置生成（未在发布时封存）" if source == "reconstructed" else
-                    "发布 app_info 快照缺失或归属不符，无法还原测试清单" if not manifest else "",
-        })
-    if publications:
-        return {"source": "publications", "image": image["image"], "digest": image["digest"], "publications": publications}
+        repositories = image_lookup.image_repositories(version["raw"]) & names
+        if not repositories:
+            continue
+        if app["id"] not in urls:
+            urls[app["id"]] = gerrit.gerrit_remote_url(
+                catalog_service.app_info_fetch_target(app)[0]
+            )
+        url = urls[app["id"]]
+        source = {
+            "url": url,
+            "branch": app["git_branch"],
+            "commit": version["commit_id"],
+            "version": str(version["raw"].get("app_version") or ""),
+            "app_name": catalog_service.app_name(app),
+            "manifest_path": repo_storage_path("repo", app["git_url"]) if app["git_url"].endswith(".xml") else "",
+        }
+        for repository in repositories:
+            index.setdefault(repository, []).append(source)
+    return index
+
+
+def _repo_artifact_source(tags, sources, url):
+    builds = image_lookup.repo_build_tags(tags)
+    paths = {
+        f'hpc_manifest_{source["branch"]}/{directory}/release/'
+        f'{build["version"]}_{build["build"]}_{filename}': build["tags"]
+        for source in sources if source["manifest_path"]
+        for directory, _, filename in [source["manifest_path"].rpartition("/")]
+        for build in builds
+    }
+    if not paths:
+        raise ValueError("该镜像没有有效 commit tag，也没有可定位固定 manifest 的 repo/版本/构建号 tags")
+    resolved, missing = [], []
+    for path, selected_tags in sorted(paths.items()):
+        try:
+            resolved.append({**manifest_archive.app_info_commit(path, url), "tags": selected_tags})
+        except manifest_archive.ArchiveNotFound as exc:
+            missing.append(str(exc))
+    if not resolved:
+        raise ValueError("；".join(missing))
+    commits = {source["commit_id"] for source in resolved}
+    if len(commits) != 1:
+        raise ValueError("该镜像的固定 manifest 包含多个 app_info commit，无法唯一确定")
+    return {
+        "commit_id": commits.pop(),
+        "commit_tags": sorted({tag for source in resolved for tag in source["tags"]}),
+        "commit_source": "manifest_archive",
+        "manifest_urls": sorted({source["manifest_url"] for source in resolved}),
+    }
+
+
+def _resolve_artifact(reference, index):
     image = _lookup_image(reference)
     artifact = harbor.get_artifact(image["project"], image["repository"], image["digest"])
-    tags = sorted({tag["name"] for tag in artifact.get("tags") or []
-                   if isinstance(tag, dict) and isinstance(tag.get("name"), str)})
-    commit, selected_tags = image_lookup.commit_tags(tags)
-    url = _image_repository(conn, image)
-    document = _app_info_at(url, commit)
+    tags = sorted(
+        {
+            tag["name"]
+            for tag in artifact.get("tags") or []
+            if isinstance(tag, dict) and isinstance(tag.get("name"), str)
+        }
+    )
+    sources = index.get(image["repository"].rsplit("/", 1)[-1], [])
+    urls = {source["url"] for source in sources}
+    if not urls:
+        raise ValueError("未找到该镜像对应的 App 仓库，请先在 App 工作台登记并同步该 App")
+    if len(urls) != 1:
+        raise ValueError("多个 Gerrit 仓库声明了相同镜像名，无法唯一定位历史 app_info")
+    url = urls.pop()
     try:
-        result = image_lookup.historical_image_commands(
-            document, image=image["image"], repository=image["repository"], tags=selected_tags,
-            architecture=str((artifact.get("extra_attrs") or {}).get("architecture") or ""),
+        commit, selected_tags = image_lookup.commit_tags(tags)
+        provenance = {"commit_id": commit, "commit_tags": selected_tags,
+                      "commit_source": "harbor_tag", "manifest_urls": []}
+    except image_lookup.CommitTagMissing:
+        if not any(source["manifest_path"] for source in sources):
+            raise
+        provenance = _repo_artifact_source(tags, sources, url)
+    return {
+        **image,
+        "tags": tags,
+        **provenance,
+        "git_url": url,
+        "sources": sources,
+    }
+
+
+def _source_identity(artifact, document):
+    sources = artifact["sources"]
+    commit = artifact["commit_id"]
+    exact = [
+        source
+        for source in sources
+        if source["commit"]
+        and (source["commit"].startswith(commit) or commit.startswith(source["commit"]))
+    ]
+    version = [source for source in sources if source["version"] == str(document.get("app_version") or "")]
+    selected_sources = exact or version or sources
+    branches = {source["branch"] for source in selected_sources}
+    branch = branches.pop() if len(branches) == 1 else ""
+    names = {source["app_name"] for source in selected_sources
+             if not branch or source["branch"] == branch}
+    report_name = names.pop() if len(names) == 1 else ""
+    return branch, report_name
+
+
+def _branch_heads(url):
+    return gerrit.branch_heads(url, project_root=settings.db_path.parent)
+
+
+def _commands_for_artifact(artifact, document, rows=None, heads=None):
+    # Tags determine all build dimensions. Harbor's architecture/OS metadata is
+    # deliberately not used to select or validate a build.
+    rows = test_commands.command_rows(document) if rows is None else rows
+    result = image_lookup.historical_image_commands(
+        document,
+        image=artifact["image"],
+        repository=artifact["repository"],
+        tags=artifact["commit_tags"],
+        architecture="",
+        rows=rows,
+        tag_version=artifact["commit_id"] if artifact["commit_source"] == "harbor_tag" else "repo",
+    )
+    branch, report_name = _source_identity(artifact, document)
+    if not branch and report_name and heads is not None:
+        if isinstance(heads, Exception):
+            raise heads
+        matching = [name for name, commit in heads.items() if commit.startswith(artifact["commit_id"])]
+        if len(matching) == 1:
+            branch = matching[0]
+    versions = image_lookup.hpc_versions(
+        document, artifact["repository"], artifact["tags"], selected_tags=artifact["commit_tags"]
+    )
+    return {
+        **result,
+        "source": "historical_config",
+        "git_branch": branch,
+        "app_name": report_name,
+        "image_app_name": result["app_name"],
+        "hpc_version": ", ".join(versions),
+        "hpc_versions": versions,
+        **{
+            key: artifact[key]
+            for key in ("image", "digest", "tags", "commit_id", "commit_tags", "git_url", "commit_source", "manifest_urls")
+        },
+    }
+
+
+def _attempt(function, *args):
+    try:
+        return function(*args)
+    except (ValueError, RuntimeError, ApiError, TypeError, AttributeError, KeyError) as exc:
+        return exc
+
+
+def resolve_images(conn, references):
+    """No cross-request cache: DB routes repositories, live sources generate commands.
+
+    SQLite stays in the calling thread. Independent network requests run in a
+    bounded pool; Gerrit is fetched only once for each repository/commit pair.
+    """
+    if not isinstance(references, list) or not references or len(references) > MAX_BATCH_IMAGES:
+        raise ValueError(f"请提供 1 到 {MAX_BATCH_IMAGES} 个镜像")
+    canonical, errors = [], []
+    for reference in references:
+        try:
+            canonical.append(_lookup_image(reference)["image"])
+        except (ValueError, TypeError) as exc:
+            errors.append({"image": str(reference), "error": str(exc)})
+    unique = list(dict.fromkeys(canonical))
+    names = {_lookup_image(ref)["repository"].rsplit("/", 1)[-1] for ref in unique}
+    index = _repository_index(conn, names)
+    with ThreadPoolExecutor(max_workers=LOOKUP_WORKERS) as pool:
+        artifacts = list(pool.map(lambda ref: _attempt(_resolve_artifact, ref, index), unique))
+        commits = list(
+            dict.fromkeys((a["git_url"], a["commit_id"]) for a in artifacts if isinstance(a, dict))
         )
-    except (TypeError, AttributeError, KeyError) as exc:
-        raise ValueError("该 commit 的 app_info.json 格式无效，无法生成测试命令") from exc
-    return {**result, "source": "historical_config", "image": image["image"], "digest": image["digest"], "tags": tags,
-            "commit_id": commit, "commit_tags": selected_tags, "git_url": url}
+        documents = dict(
+            zip(commits, pool.map(lambda pair: _attempt(_app_info_at, *pair), commits), strict=True)
+        )
+        unresolved_urls = sorted({
+            a["git_url"] for a in artifacts if isinstance(a, dict)
+            if not isinstance(document := documents[(a["git_url"], a["commit_id"])], Exception)
+            and not _source_identity(a, document)[0]
+        })
+        heads = dict(zip(
+            unresolved_urls, pool.map(lambda url: _attempt(_branch_heads, url), unresolved_urls), strict=True
+        ))
+    prepared = {
+        key: _attempt(test_commands.command_rows, document)
+        for key, document in documents.items()
+        if not isinstance(document, Exception)
+    }
+    images = []
+    for reference, artifact in zip(unique, artifacts, strict=True):
+        if isinstance(artifact, Exception):
+            errors.append({"image": reference, "error": str(artifact)})
+            continue
+        document = documents[(artifact["git_url"], artifact["commit_id"])]
+        rows = prepared.get((artifact["git_url"], artifact["commit_id"]))
+        result = (
+            document
+            if isinstance(document, Exception)
+            else rows
+            if isinstance(rows, Exception)
+            else _attempt(_commands_for_artifact, artifact, document, rows, heads.get(artifact["git_url"]))
+        )
+        if isinstance(result, Exception):
+            errors.append({"image": reference, "error": str(result)})
+        else:
+            images.append(result)
+    return {"images": images, "errors": errors, "duplicate_count": len(canonical) - len(unique)}
+
+
+def by_image(conn: sqlite3.Connection, reference: str) -> dict[str, Any]:
+    image = _lookup_image(reference)
+    name = image["repository"].rsplit("/", 1)[-1]
+    artifact = _resolve_artifact(reference, _repository_index(conn, {name}))
+    document = _app_info_at(artifact["git_url"], artifact["commit_id"])
+    heads = _branch_heads(artifact["git_url"]) if not _source_identity(artifact, document)[0] else None
+    return _commands_for_artifact(artifact, document, heads=heads)
+
+
+def batch_images(conn, references):
+    result = resolve_images(conn, references)
+    rows = []
+    for image in result["images"]:
+        if not image["git_branch"]:
+            result["errors"].append(
+                {"image": image["image"], "error": "无法唯一确定 git_branch，不能匹配历史结果"}
+            )
+            continue
+        rows.extend(qa_results.flat_commands(image))
+    history = qa_results_repo.matching(conn, [qa_results.result_key(row) for row in rows])
+    for row in rows:
+        previous = history.get(qa_results.result_key(row), {})
+        row.update({column: previous.get(column, "") for column in qa_results.RESULT_COLUMNS})
+    sources = [
+        {
+            key: image[key]
+            for key in (
+                "image",
+                "digest",
+                "tags",
+                "commit_id",
+                "hpc_version",
+                "hpc_versions",
+                "git_url",
+                "git_branch",
+                "app_name",
+                "app_version",
+                "commit_source",
+                "manifest_urls",
+            )
+        }
+        for image in result["images"]
+    ]
+    return {**result, "images": sources, "columns": qa_results.COLUMNS, "rows": rows}
 
 
 def _entry_record(conn: sqlite3.Connection, entry: dict[str, Any]) -> dict[str, Any]:

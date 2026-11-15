@@ -39,6 +39,8 @@ def main():
         import uvicorn
 
         register_artifacts, saved_artifact = make_harbor_registry()
+        published_infos = {}
+        published_artifacts = {}
         harbor.get_artifact = saved_artifact
         conn = connect(settings.db_path)
         for username, role in [
@@ -152,17 +154,23 @@ def main():
             historical = make_app_info(app_name="abacus", app_version="3.9.0.27", tests={"sanity": ["C500"], "dataset": ["C500"]})
             historical["app_build"]["ubuntu22.04_amd64"] = historical["app_build"].pop("ubuntu20.04_amd64")
             historical["app_build"]["ubuntu22.04_amd64"]["os"] = "ubuntu22.04"
+            historical["app_build"]["ubuntu22.04_amd64"]["build_target"] = "release, dbg"
             for cfg in historical["app_test"].values():
                 cfg["supported_chip"] = {"C500": ["ubuntu22.04_amd64"]}
                 cfg["img_target"] = "release"
                 cfg["mount_dataset"] = True
                 cfg["container_args"] = "--device=/dev/dri -u 0"
-            seed_app(conn, "lookup-image", app_info=make_app_info(app_name="abacus", app_version="4.0"))
+            historical["app_test"]["debug-sanity"] = {
+                **historical["app_test"]["sanity"], "img_target": "dbg", "test_cmd": "run-debug-sanity",
+            }
+            seed_app(conn, "lookup-image", official_name="ABACUS", app_info=historical, commit_id="bb46c60")
+            catalog_service.store_app_info(conn, "lookup-image", make_app_info(app_name="abacus", app_version="4.0"),
+                                           commit_id="new-head", source="test", user="app_rm")
             from app.api.errors import ApiError
             def lookup_artifact(project, repository, digest):
                 if repository.startswith("published-image"):
-                    raise RuntimeError("Published image queries must not access Harbor")
-                if repository not in ("abacus-maca", "hpcg-maca"):
+                    return published_artifacts[(project, repository, digest)]
+                if repository not in ("abacus-maca", "abacus-maca-dbg", "abacus-hpcc", "abacus-hpcc-dbg", "hpcg-maca"):
                     return saved_artifact(project, repository, digest)
                 if digest == "sha256:" + "e" * 64:
                     raise ValueError("Harbor 中未找到该镜像，请检查镜像名和 digest")
@@ -195,6 +203,18 @@ def main():
                 images = [{**build, "reference": f"harbor.sh.mxcr.io/hpc-release/{build['image_pattern'].partition(':')[0]}@sha256:{digit * 64}"}
                           for build, digit in zip(entry["delivery_builds"], "abcdef")]
                 register_artifacts(images)
+                published_infos[str(index) * 40] = info
+                for image in images:
+                    from app.domain.container_image import parse_base_image_reference
+                    parsed = parse_base_image_reference(image["reference"])
+                    _, project, repository = parsed["image"].split("/", 2)
+                    pattern = image["image_pattern"].partition(":")[2]
+                    published_artifacts[(project, repository, parsed["digest"])] = {
+                        "digest": parsed["digest"], "tags": [
+                            {"name": pattern.replace("<hpc_version>", str(index) * 40)},
+                            {"name": pattern.replace("<hpc_version>", f"3.10.0.{index}")},
+                        ],
+                    }
                 qa_service.set_qa_status_batch(conn, release_id, [{"app_id": "image-published", "status": "has_issues", "issue_note": f"original-QA-{index}",
                     "delivery_revision": entry["delivery_revision"], "deliverable_images": images}], user="app_qa", role="QA")
                 close_qa(conn, release_id)
@@ -238,7 +258,7 @@ def main():
         gerrit.head_commit = head_commit
         def fetch_app_info(url, commit, **_kwargs):
             if args.image_publications and url.endswith("hpc_image-published"):
-                raise RuntimeError("Published image queries must not access Gerrit")
+                return json.dumps(published_infos[commit])
             if args.platforms and url.endswith("hpc_platform-check"):
                 return json.dumps(platform_info)
             if args.lookup and url.endswith("hpc_lookup-image"):

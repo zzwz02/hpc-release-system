@@ -1,4 +1,4 @@
-Q:还有个问题，这是QA目前的报告，你会怎么建议QA改报告格式，来配合这次发布方式调整？
+Q:还有个问题，这是QA目前的报告 (docs/QA report_HPC_Summary_3.10.0.x__.xlsx)，你会怎么建议QA改报告格式，来配合这次发布方式调整？
 还有一个hpc version，一个app可能有多个镜像，包括不同cpu arch，不同os，不同gpu，甚至不同torch/py，QA不可能每一个都测试一遍。
 考虑以上实际情况，怎么调整QA report格式（方便自动化），以及怎么存档供后面兼容性问题查询？
 
@@ -9,11 +9,11 @@ A:
 
 我整理了一份具体的 Excel 提案，包含示例、固定字段、下拉枚举和关联统计。**里面全部是 DEMO 数据，用于讨论格式，尚未接入现有网站。**
 
-[HPC_QA_Report_Proposal.xlsx](https://chatgpt.com/library?file_id=libfile_fde3_f-d8e1719717088191b6af2f37566819e4_f530cb5ad9cc8191b3ae74b5602d2c76&account_id=personal)
+[HPC_QA_Report_Proposal.xlsx](docs/HPC_QA_Report_Proposal.xlsx)
 
 ## 一、现有报告可以保留什么，需要改什么
 
-这份报告有 **8 张按 GPU 划分的工作表、691 条性能记录和 138 条功能记录**。现有的用例名称、分支、指标、单位、主机环境和问题备注都有价值，按 GPU 阅读的方式也可以保留为自动生成的视图。
+这份报告 (docs/QA report_HPC_Summary_3.10.0.x__.xlsx)有 **8 张按 GPU 划分的工作表、691 条性能记录和 138 条功能记录**。现有的用例名称、分支、指标、单位、主机环境和问题备注都有价值，按 GPU 阅读的方式也可以保留为自动生成的视图。
 
 
 

@@ -109,6 +109,21 @@ def fetch_app_info_at(git_url: str, commit_id: str, *, project_root: str | Path)
         )
 
 
+def branch_heads(git_url: str, *, project_root: str | Path) -> dict[str, str]:
+    """Read exact branch HEADs; this does not infer which branches contain a commit."""
+    try:
+        result = _run_git(["git", "ls-remote", "--heads", gerrit_remote_url(git_url)], cwd=project_root)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("无法读取 Gerrit 分支引用，不能确定历史镜像的 git_branch") from exc
+    return {
+        ref.removeprefix("refs/heads/"): commit
+        for line in result.stdout.decode("utf-8").splitlines()
+        if len(fields := line.split()) == 2
+        for commit, ref in [fields]
+        if ref.startswith("refs/heads/")
+    }
+
+
 def fetch_app_info(
     git_url: str,
     branch: str,

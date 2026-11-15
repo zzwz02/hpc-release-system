@@ -78,6 +78,14 @@ JENKINS_API_TOKEN =
 JENKINS_TIMEOUT_SECONDS = 30
 
 
+# ── HPC repo 构建固定 manifest 公开归档 ──────────────────────────
+# digest 的实际 tags 为 repo 时，按发布版本和 Jenkins 构建号读取固定 XML，
+# 从 app_info.json linkfile 项目的完整 commit 实时读取 Gerrit。无需归档账号或 CI 数据库账号。
+# 整节省略时，缺少 commit tag 的 repo 镜像会明确提示缺少配置。
+[hpc_manifest_archive]
+BASE_URL = https://s3api.sh.metax-internal.com/pde-hpc
+
+
 # ── 网站 ──────────────────────────────────────────────────────
 [site]
 # 可选：浏览器访问网站的对外地址；填写后 JIRA agent 的评论会附对话链接
