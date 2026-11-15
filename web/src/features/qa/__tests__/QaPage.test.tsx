@@ -617,29 +617,24 @@ describe("QaPage subtab navigation", () => {
     await waitFor(() => expect(screen.getByText("测试命令")).toBeDefined());
     fireEvent.click(screen.getByText("测试命令"));
     await waitFor(() => {
-      expect(screen.getByText(/加载报告/)).toBeDefined();
+      expect(screen.getByText(/查询测试命令/)).toBeDefined();
     });
   });
 
   it("shows perf_golden and perf_unit from each 测试命令 row", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
       if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
-      if (path.includes("/api/qa-reports")) {
+      if (path.includes("/api/qa/test-commands")) {
         return Promise.resolve({
-          release_name: "3.0",
-          compare_release_id: "",
-          compare_release_name: "",
-          release_report: { columns: [], rows: [], rows_meta: [] },
-          test_cmd: {
+          hpc_version: "3.10.0.7", errors: [],
             columns: [
               "app_name",
               "test_name",
-              "docker_cmd",
+              "website_docker_cmd",
               "perf_golden",
               "perf_unit",
             ],
-            rows: [["HPL", "sanity", "docker run hpl", "max", "GFlops"]],
-          },
+            rows: [{ app_name: "HPL", test_name: "sanity", website_docker_cmd: "docker run hpl", perf_golden: "max", perf_unit: "GFlops" }],
           generated_at: "2026-01-01 00:00:00",
         });
       }
@@ -649,7 +644,7 @@ describe("QaPage subtab navigation", () => {
     renderQaPage(qc);
     await waitFor(() => expect(screen.getByText("测试命令")).toBeDefined());
     fireEvent.click(screen.getByText("测试命令"));
-    fireEvent.click(await screen.findByText("加载报告"));
+    fireEvent.click(await screen.findByText("查询测试命令"));
 
     expect(await screen.findByText("perf_golden")).toBeDefined();
     expect(screen.getByText("perf_unit")).toBeDefined();

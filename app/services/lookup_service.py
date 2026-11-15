@@ -340,10 +340,11 @@ def batch_images(conn, references):
             )
             continue
         rows.extend(qa_results.flat_commands(image))
-    history = qa_results_repo.matching(conn, [qa_results.result_key(row) for row in rows])
+    history = qa_results_repo.matching(conn, [qa_results.result_key(row) for row in rows], include_history=True)
     for row in rows:
         previous = history.get(qa_results.result_key(row), {})
-        row.update({column: previous.get(column, "") for column in qa_results.RESULT_COLUMNS})
+        row.update({column: previous.get(qa_results.WORKSHEET_ALIASES.get(column, column), previous.get(column, ""))
+                    for column in qa_results.RESULT_COLUMNS})
     sources = [
         {
             key: image[key]

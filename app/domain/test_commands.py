@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from app.domain.test_platforms import (
-    build_platforms, build_target_matches, normalize_arch, release_tests, split_values as split_image_values, test_platforms,
+    build_platforms, build_target_matches as build_target_matches, normalize_arch, release_tests, split_values as split_image_values, test_platforms,
 )
 
 
@@ -123,7 +123,7 @@ def command_rows(raw: dict[str, Any], excluded: set[str] | None = None) -> list[
                         **{key: value for key, value in platform.items() if key not in ("config", "image_targets")},
                         "test": path, "image_target": target, "image": image,
                         "command": docker_cmd(cfg, image),
-                        "perf_golden": str(cfg.get("perf_golden") or ""),
-                        "perf_unit": str(cfg.get("perf_unit") or ""),
+                        **{field: "" if cfg.get(field) is None else str(cfg[field])
+                           for field in ("perf_golden", "perf_unit")},
                     })
     return rows

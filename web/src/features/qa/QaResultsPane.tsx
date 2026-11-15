@@ -1,13 +1,26 @@
 import { useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { apiGet, apiPost } from "../../api/http";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiGet, apiGetBlob, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { can } from "../../lib/accessControl";
-import { FlatCommandTable, type CommandRow } from "../../components/FlatCommandTable";
+import { FlatCommandTable, type CommandRow, type CommandTableFilters } from "../../components/FlatCommandTable";
 import { formatServerTime } from "../../lib/time";
+import { triggerBlobDownload } from "../../lib/csv";
 
-interface ResultResponse { total: number; rows: CommandRow[] }
-const columns = ["app_name", "git_branch", "app_version", "hpc_version", "arch", "OS", "GPU", "commit_id", "test_name", "Python label", "PyTorch label", "perf_golden", "perf_unit", "test_result", "test_digest", "test_env", "自动生成的命令", "QA Excel 测试命令", "Excel 提交时间", "提交人", "原始 Excel"];
+interface ResultResponse { total: number; rows: CommandRow[]; columns: string[] }
+const EMPTY_FILTERS: CommandTableFilters = { filter: "", columnFilters: {}, sort: null };
+
+function resultParams(search: string, filters: CommandTableFilters) {
+  const params = new URLSearchParams({ search });
+  if (filters.filter) params.set("filter", filters.filter);
+  const columns = Object.fromEntries(Object.entries(filters.columnFilters).filter(([, value]) => value.trim()));
+  if (Object.keys(columns).length) params.set("column_filters", JSON.stringify(columns));
+  if (filters.sort) {
+    params.set("sort_by", filters.sort.column);
+    params.set("sort_direction", filters.sort.direction === 1 ? "asc" : "desc");
+  }
+  return params;
+}
 
 async function fileBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -20,27 +33,49 @@ async function fileBase64(file: File): Promise<string> {
 
 export function QaResultsPane() {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const [input, setInput] = useState("");
   const [search, setSearch] = useState("");
   const [offset, setOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [uploadError, setUploadError] = useState("");
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [appliedFilters, setAppliedFilters] = useState(EMPTY_FILTERS);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
+  const [loadedColumns, setLoadedColumns] = useState<string[] | null>(null);
+  const filterPending = filters !== appliedFilters;
   const generation = useRef({ value: 0 }).current;
+  useEffect(() => {
+    const timer = window.setTimeout(() => setAppliedFilters(filters), 350);
+    return () => window.clearTimeout(timer);
+  }, [filters]);
   const query = useQuery({
-    queryKey: ["qa-test-results", user?.username, user?.role, search, offset],
-    queryFn: () => apiGet<ResultResponse>(`/api/qa/test-results?${new URLSearchParams({ search, offset: String(offset), limit: "50" })}`),
+    queryKey: ["qa-test-results", user?.username, user?.role, search, appliedFilters, offset],
+    queryFn: () => {
+      const params = resultParams(search, appliedFilters);
+      params.set("offset", String(offset)); params.set("limit", "50");
+      return apiGet<ResultResponse>(`/api/qa/test-results?${params}`);
+    },
+    enabled: !filterPending,
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[1] === user?.username && previousQuery?.queryKey[2] === user?.role ? previous : undefined,
     refetchOnWindowFocus: false, refetchOnReconnect: false,
   });
   useEffect(() => {
     generation.value++;
     setInput(""); setSearch(""); setOffset(0); setMessage(""); setUploadError(""); setBusy(false);
+    setFilters(EMPTY_FILTERS); setAppliedFilters(EMPTY_FILTERS); setExporting(false); setExportError(""); setLoadedColumns(null);
     return () => { generation.value++; };
   }, [user?.username, user?.role, generation]);
+  useEffect(() => {
+    if (query.data) setLoadedColumns(query.data.columns);
+  }, [query.data]);
 
   async function upload(file: File) {
     const id = ++generation.value;
-    setBusy(true); setMessage(""); setUploadError("");
+    setBusy(true); setMessage(""); setUploadError(""); setExporting(false);
     try {
       if (file.size > 20 * 1024 * 1024) throw new Error("Excel 文件不能超过 20 MB");
       const content_base64 = await fileBase64(file);
@@ -49,7 +84,7 @@ export function QaResultsPane() {
       if (id !== generation.value) return;
       setMessage(`已保存 ${data.rows} 行，其中覆盖 ${data.replaced} 行。${data.duplicate_rows ? `合并 ${data.duplicate_rows} 个重复测试行。` : ""}`);
       setOffset(0);
-      void query.refetch();
+      void queryClient.invalidateQueries({ queryKey: ["qa-test-results", user?.username, user?.role] });
     } catch (e) {
       if (id === generation.value) setUploadError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -57,15 +92,31 @@ export function QaResultsPane() {
     }
   }
 
+  async function exportResults() {
+    const id = generation.value;
+    setExporting(true); setExportError("");
+    try {
+      const blob = await apiGetBlob(`/api/qa/test-results/export?${resultParams(search, appliedFilters)}`);
+      if (id === generation.value) triggerBlobDownload("qa_test_results.csv", blob);
+    } catch (e) {
+      if (id === generation.value) setExportError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (id === generation.value) setExporting(false);
+    }
+  }
+
+  const tableBusy = filterPending || query.isFetching || query.isPlaceholderData;
+  const tableColumns = query.data?.columns ?? loadedColumns;
+  const total = query.data?.total ?? 0;
+
   const rows = (query.data?.rows ?? []).map(row => ({
-    ...row, "自动生成的命令": row.auto_command || row.command_error,
-    "QA Excel 测试命令": row.docker_cmd, "Excel 提交时间": row.uploaded_at,
+    ...row, "Excel 提交时间": row.uploaded_at,
     "提交人": row.uploaded_by, "原始 Excel": row.filename,
   }));
   return <div className="panel" data-testid="qa-results-pane">
     <div className="panel-body">
       <h2>QA report</h2>
-      <p className="hint">上传 Excel 的第一个页签作为测试结果，后续环境页原样保留。相同 app_name、git_branch、app_version、arch、OS、GPU、test_name 的结果由本次上传覆盖；同一文件的重复行以最后一行为准。未填写结果、digest 和环境的行跳过。保存前实时校验 digest 与测试行，hpc_version、commit_id 由系统解析。</p>
+      <p className="hint">上传测试命令 CSV 另存的 Excel，第一个页签为测试详表，后续环境页原样保留。填写 QA 列后须提供 qa_digest 和与环境页同名的 qa_env；qa_result 支持数字或文字，qa_status 仅允许 pass / fail 或留空。QA 列全空的行跳过；按 App、分支、HPC 版本、App 版本、架构、OS、GPU、py_label、torch_label、测试项分别保存，相同组合再次上传时覆盖。</p>
       {can(user?.role, "qa.edit") && <label>上传测试结果 Excel <input type="file" accept=".xlsx" aria-label="上传测试结果 Excel" disabled={busy} onChange={e => {
         const file = e.target.files?.[0]; e.target.value = ""; if (file) void upload(file);
       }} /></label>}
@@ -74,25 +125,30 @@ export function QaResultsPane() {
       {uploadError && <p className="lerr" role="alert">{uploadError}</p>}
       <form className="row mt-8" onSubmit={e => { e.preventDefault(); setSearch(input); setOffset(0); if (search === input && offset === 0) void query.refetch(); }}>
         <input className="input flex-1" value={input} onChange={e => setInput(e.target.value)} aria-label="查询 QA 结果" placeholder="App、HPC version、GPU、测试项、digest、环境…" />
-        <button className="btn" type="submit" disabled={query.isFetching}>查询结果</button>
-        <button className="btn" type="button" disabled={query.isFetching} onClick={() => void query.refetch()}>刷新结果</button>
+        <button className="btn" type="submit" disabled={tableBusy}>查询结果</button>
+        <button className="btn" type="button" disabled={tableBusy} onClick={() => void query.refetch()}>刷新结果</button>
       </form>
       {query.isFetching && <p className="muted" role="status">正在查询结果并实时生成命令…</p>}
       {query.error && <p className="lerr" role="alert">{query.error.message}</p>}
-      <p className="hint">自动命令始终通过 digest → Harbor tags → commit → Gerrit app_info 生成。Excel 命令保留上传内容；环境页可从原始 Excel 下载查看。</p>
+      {exportError && <p className="lerr" role="alert">{exportError}</p>}
+      <p className="hint">全表关键词、逐列筛选和排序均作用于全部结果，再按每页 50 行显示；导出 CSV 包含全部筛选命中的记录。</p>
+      <p className="hint">website_docker_cmd 始终通过 qa_digest → Harbor tags → commit → Gerrit app_info 实时生成，不采用上传文件中该列的命令。qa_docker_cmd 保留 QA 上传原文；环境页从原始 Excel 下载查看。</p>
+      <p className="hint">上传时逐项校验前 12 列：app_name、git_branch、hpc_version、app_version、arch、OS、GPU、py_label、torch_label、test_name、perf_golden、perf_unit，并核对 qa_docker_cmd 的镜像 tag/digest。与镜像实际来源不符时，整份文件不入库，并提示行号和字段。</p>
     </div>
-    {!query.isFetching && !query.error && query.data && <>
-      <FlatCommandTable columns={columns} rows={rows} filename="qa_test_results.csv" label="QA 测试结果" onRefresh={() => void query.refetch()} renderCell={(column, row) => {
+    {tableColumns && <>
+      <FlatCommandTable columns={[...tableColumns, "Excel 提交时间", "提交人", "原始 Excel"]} rows={query.error ? [] : rows} filename="qa_test_results.csv" label="QA 测试结果" onRefresh={() => void query.refetch()} remote={{
+        filters, onChange: next => { setFilters(next); setOffset(0); setExportError(""); },
+        total: query.error ? 0 : total, busy: tableBusy, exporting, onExport: () => void exportResults(),
+      }} renderCell={(column, row) => {
         if (column === "原始 Excel") return <a href={`/api/qa/test-results/${row.report_id}/download`}>{String(row.filename)}</a>;
         if (column === "Excel 提交时间") return formatServerTime(String(row.uploaded_at));
-        if (column === "自动生成的命令") return row.command_error ? <span className="lerr">{String(row.command_error)}</span> : String(row.auto_command);
-        if (column === "QA Excel 测试命令") return String(row.docker_cmd);
+        if (column === "website_docker_cmd") return row.command_error ? <span className="lerr">{String(row.command_error)}</span> : String(row.website_docker_cmd);
         return String(row[column] ?? "");
       }} />
       <div className="panel-body row">
-        <span>共 {query.data.total} 行，当前 {query.data.total ? offset + 1 : 0}–{Math.min(offset + 50, query.data.total)}</span>
-        <button className="btn" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>上一页</button>
-        <button className="btn" disabled={offset + 50 >= query.data.total} onClick={() => setOffset(offset + 50)}>下一页</button>
+        <span>共 {total} 行，当前 {total ? offset + 1 : 0}–{Math.min(offset + 50, total)}</span>
+        <button className="btn" disabled={tableBusy || !!query.error || offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>上一页</button>
+        <button className="btn" disabled={tableBusy || !!query.error || offset + 50 >= total} onClick={() => setOffset(offset + 50)}>下一页</button>
       </div>
     </>}
   </div>;

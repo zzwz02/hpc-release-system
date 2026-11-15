@@ -1,22 +1,35 @@
-"""Uploaded workbooks are immutable; each seven-field result keeps its latest upload."""
+"""Keep original workbooks and each version/platform/configuration's latest result."""
 
 from __future__ import annotations
 
 import json
 
 
-def matching(conn, keys):
+def matching(conn, keys, *, include_history=False):
     result = {}
     unique = list(dict.fromkeys(keys))
     for start in range(0, len(unique), 400):
         batch = unique[start : start + 400]
+        batch_keys = set(batch)
         marks = ",".join("?" for _ in batch)
+        history = f" OR json_extract(data_json, '$.historical_result_key') IN ({marks})" if include_history else ""
         for row in conn.execute(
-            f"SELECT result_key, data_json FROM qa_test_results WHERE result_key IN ({marks})",
-            batch,
+            f"SELECT result_key, data_json FROM qa_test_results WHERE result_key IN ({marks})"
+            + history + " ORDER BY report_id DESC, rowid DESC",
+            batch + batch if include_history else batch,
         ):
-            result[row["result_key"]] = json.loads(row["data_json"])
+            data = json.loads(row["data_json"])
+            for key in (row["result_key"], data.get("historical_result_key")):
+                if key in batch_keys:
+                    result.setdefault(key, data)
     return result
+
+
+def remove_keys(conn, keys):
+    keys = list(keys)
+    for start in range(0, len(keys), 400):
+        batch = keys[start:start + 400]
+        conn.execute(f"DELETE FROM qa_test_results WHERE result_key IN ({','.join('?' for _ in batch)})", batch)
 
 
 def save(conn, *, filename, content, environments, uploaded_at, uploaded_by, rows):
@@ -39,19 +52,13 @@ def save(conn, *, filename, content, environments, uploaded_at, uploaded_by, row
     return report_id
 
 
-def search(conn, query, offset, limit):
-    # instr treats %, _ and backslashes literally, unlike LIKE.
-    where = " WHERE instr(lower(r.data_json), lower(?)) > 0" if query else ""
-    args = [query] if query else []
-    total = conn.execute("SELECT COUNT(*) FROM qa_test_results r" + where, args).fetchone()[0]
+def list_results(conn):
     rows = conn.execute(
         "SELECT r.*, f.filename, f.uploaded_at, f.uploaded_by, f.environments_json "
         "FROM qa_test_results r JOIN qa_test_reports f ON f.id=r.report_id"
-        + where
-        + " ORDER BY r.report_id DESC, r.rowid LIMIT ? OFFSET ?",
-        [*args, limit, offset],
+        " ORDER BY r.report_id DESC, r.rowid",
     )
-    return total, [{**dict(row), "data": json.loads(row["data_json"])} for row in rows]
+    return [{**dict(row), "data": json.loads(row["data_json"])} for row in rows]
 
 
 def workbook(conn, report_id):

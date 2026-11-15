@@ -151,7 +151,7 @@ def historical_image_commands(
         raise ValueError("历史 app_info 的镜像名称、版本或构建平台与 Harbor tag 不匹配")
     configs = dict(release_tests(raw))
     commands = [
-        {**row, "image": image, "command": docker_cmd(configs[row["test"]], image)}
+        {**row, "image_pattern": row["image"], "image": image, "command": docker_cmd(configs[row["test"]], image)}
         for row in (command_rows(raw) if rows is None else rows)
         if (not architecture or row["arch"] == normalize_arch(architecture))
         and _matches_tag(row["image"], image_name, tags, tag_version)

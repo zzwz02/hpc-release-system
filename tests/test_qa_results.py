@@ -118,7 +118,7 @@ def test_import_preserves_result_type_env_workbook_and_resolves_provenance(temp_
     row.update(
         test_result=value,
         commit_id="forged-commit",
-        hpc_version="forged-version",
+        hpc_version="3.10.1.2",
         docker_cmd=row["docker_cmd"] + " # QA edited",
     )
     content = workbook([row])
@@ -129,17 +129,17 @@ def test_import_preserves_result_type_env_workbook_and_resolves_provenance(temp_
         "QA 测试结果.xlsx",
     )
     stored = qa_results_service.query(temp_db)["rows"][0]
-    assert stored["test_result"] == value and type(stored["test_result"]) is type(value)
-    assert stored["commit_id"] == "bb46c60"
+    assert stored["qa_result"] == value and type(stored["qa_result"]) is type(value)
+    assert stored["qa_digest_gerrit_commit_id"] == "bb46c60"
     assert stored["hpc_version"] == "3.10.1.2"
-    assert stored["test_env"] == "C500_server_1"
-    assert stored["docker_cmd"].endswith("# QA edited")
-    assert not stored["auto_command"].endswith("# QA edited")
+    assert stored["qa_env"] == "C500_server_1"
+    assert stored["qa_docker_cmd"].endswith("# QA edited")
+    assert not stored["website_docker_cmd"].endswith("# QA edited")
     assert stored["uploaded_at"] == result["uploaded_at"]
     assert stored["uploaded_by"] == "qa"
     history = lookup_service.batch_images(temp_db, [IMAGE])["rows"]
     assert history[0]["test_result"] == value
-    assert history[0]["test_digest"] == DIGEST
+    assert history[0]["test_digest"] == IMAGE
     assert history[0]["test_env"] == "C500_server_1"
     assert history[1]["test_result"] == ""  # other chip remains untested
 
@@ -188,7 +188,7 @@ def test_bad_digest_and_unknown_environment_are_readable_row_errors(temp_db, liv
     for bad, message in [
         ({"test_digest": "123"}, "第 2 行.*digest"),
         ({"test_env": "missing"}, "第 2 行.*环境页签"),
-        ({"test_digest": ""}, "第 2 行.*test_digest"),
+        ({"test_digest": ""}, "第 2 行.*qa_digest"),
     ]:
         with pytest.raises(ValueError, match=message):
             upload(temp_db, [{**row, **bad}])
@@ -201,7 +201,7 @@ def test_history_ignores_commit_digest_and_env_and_new_upload_overwrites(temp_db
     raw["app_test"]["sanity"]["test_cmd"] = "new live command"
     other = IMAGE.replace("8d" * 32, "9d" * 32)
     current = lookup_service.batch_images(temp_db, [other])["rows"][0]
-    assert current["test_result"] == 100 and current["test_digest"] == DIGEST
+    assert current["test_result"] == 100 and current["test_digest"] == IMAGE
     assert other in current["docker_cmd"] and "new live command" in current["docker_cmd"]
     row.update(test_result="fail", test_digest=other, docker_cmd=current["docker_cmd"])
     second = upload(temp_db, [row])
@@ -209,7 +209,7 @@ def test_history_ignores_commit_digest_and_env_and_new_upload_overwrites(temp_db
     assert temp_db.execute("SELECT COUNT(*) FROM qa_test_results").fetchone()[0] == 1
     stored = qa_results_service.query(temp_db)["rows"][0]
     assert stored["report_id"] == second["report_id"]
-    assert stored["test_result"] == "fail"
+    assert stored["qa_result"] == "fail"
     assert qa_results_service.download(temp_db, first["report_id"])[
         0
     ]  # original environments survive
@@ -221,7 +221,7 @@ def test_last_duplicate_row_wins_and_empty_pending_rows_are_skipped(temp_db, liv
     pending = {**row, "test_name": "not-yet-tested", **dict.fromkeys(qa_results.RESULT_COLUMNS, "")}
     result = upload(temp_db, [row, {**row, "test_result": "pass"}, pending])
     assert result["rows"] == 1 and result["duplicate_rows"] == 1
-    assert qa_results_service.query(temp_db)["rows"][0]["test_result"] == "pass"
+    assert qa_results_service.query(temp_db)["rows"][0]["qa_result"] == "pass"
 
 
 def test_results_and_original_file_remain_queryable_when_upstream_is_down(
@@ -235,9 +235,9 @@ def test_results_and_original_file_remain_queryable_when_upstream_is_down(
 
     monkeypatch.setattr(harbor, "get_artifact", failed)
     report = qa_results_service.query(temp_db)
-    assert report["rows"][0]["test_result"] == 100
-    assert report["rows"][0]["docker_cmd"] == row["docker_cmd"]
-    assert report["rows"][0]["auto_command"] == ""
+    assert report["rows"][0]["qa_result"] == 100
+    assert report["rows"][0]["qa_docker_cmd"] == row["docker_cmd"]
+    assert report["rows"][0]["website_docker_cmd"] == ""
     assert "Harbor" in report["rows"][0]["command_error"]
     assert qa_results_service.download(temp_db, result["report_id"])[0]
 
@@ -249,10 +249,11 @@ def test_sample_workbook_uploads_with_live_simulated_sources(temp_db, monkeypatc
     sheet = book.worksheets[0]
     columns = [cell.value for cell in sheet[1]]
     sheet.delete_rows(2, sheet.max_row)
-    values = {"app_name": "ABACUS", "git_branch": "maca-3.9.0.27", "app_version": "3.9.0.27",
+    values = {"app_name": "ABACUS", "git_branch": "maca-3.9.0.27", "hpc_version": "3.10.1.2", "app_version": "3.9.0.27",
               "arch": "x86", "OS": "ubuntu22.04", "GPU": "C500", "test_name": "dataset1-pw/000_4GaAs",
               "docker_cmd": f"docker run {IMAGE}", "test_result": 100, "test_digest": IMAGE,
               "test_env": "c500_server_1"}
+    values.update(qa_results.canonical_result(values))
     if "c500_server_1" not in book.sheetnames:
         book.create_sheet("c500_server_1")
     sheet.append([values.get(column, "") for column in columns])
@@ -276,9 +277,9 @@ def test_sample_workbook_uploads_with_live_simulated_sources(temp_db, monkeypatc
     saved = upload(temp_db, [], content=sample)
     row = qa_results_service.query(temp_db)["rows"][0]
     assert saved["rows"] == 1
-    assert row["app_name"] == "ABACUS" and row["test_result"] == 100
-    assert row["test_env"] == "c500_server_1"
-    assert row["commit_id"] == "bb46c60" and row["hpc_version"] == "3.10.1.2"
+    assert row["app_name"] == "ABACUS" and row["qa_result"] == 100
+    assert row["qa_env"] == "c500_server_1"
+    assert row["qa_digest_gerrit_commit_id"] == "bb46c60" and row["hpc_version"] == "3.10.1.2"
     assert qa_results_service.download(temp_db, saved["report_id"])[0] == sample
 
 
@@ -311,8 +312,9 @@ def test_http_upload_query_download_and_batch_permissions(temp_db, live, role, r
         assert result.status_code == write, result.text
         report = client.get("/api/qa/test-results", params={"search": "abacus"})
         assert report.status_code == read, report.text
+        assert client.get("/api/qa/test-results/export").status_code == read
         if write == 200:
-            assert report.json()["rows"][0]["test_result"] == 100
+            assert report.json()["rows"][0]["qa_result"] == 100
             download = client.get(f"/api/qa/test-results/{result.json()['report_id']}/download")
             assert download.content == content
             assert "filename*=UTF-8''" in download.headers["content-disposition"]
@@ -334,7 +336,7 @@ def test_new_commit_reuses_result_but_saves_newly_parsed_provenance(temp_db, liv
     assert current["commit_id"] == new_commit
     assert current["test_result"] == 100
     upload(temp_db, [{**current, "test_result": "fail"}])
-    assert qa_results_service.query(temp_db)["rows"][0]["commit_id"] == new_commit
+    assert qa_results_service.query(temp_db)["rows"][0]["qa_digest_gerrit_commit_id"] == new_commit
 
 
 def test_all_matching_hpc_versions_are_saved_without_cross_platform_aliases(
@@ -402,7 +404,7 @@ def test_bare_digest_uses_docker_image_operand_not_environment_or_shell_text(tem
     )
     row["test_digest"] = "8d" * 32
     upload(temp_db, [row])
-    assert IMAGE in qa_results_service.query(temp_db)["rows"][0]["auto_command"]
+    assert IMAGE.replace("@", ":" + TAGS[2] + "@") in qa_results_service.query(temp_db)["rows"][0]["website_docker_cmd"]
 
 
 def test_different_build_variants_share_only_the_prescribed_seven_field_key(temp_db, live):
@@ -415,13 +417,14 @@ def test_different_build_variants_share_only_the_prescribed_seven_field_key(temp
         "commit_id": "other",
         "test_digest": IMAGE.replace("8d" * 32, "9d" * 32),
         "test_env": "C500_server_2",
+        "docker_cmd": row["docker_cmd"].replace("8d" * 32, "9d" * 32),
     }
     assert qa_results.result_key(altered) == qa_results.result_key(row)
     altered["Python label"] = row.get("Python label", "")
     altered["PyTorch label"] = row.get("PyTorch label", "")
     result = upload(temp_db, [altered], content=workbook([altered], environment="C500_server_2"))
     assert result["replaced"] == 1
-    assert qa_results_service.query(temp_db)["rows"][0]["test_env"] == "C500_server_2"
+    assert qa_results_service.query(temp_db)["rows"][0]["qa_env"] == "C500_server_2"
 
 
 def test_storage_failure_rolls_back_original_workbook_and_results(temp_db, live):
@@ -484,6 +487,6 @@ def test_maca_and_hpcc_repositories_share_app_info_fetch_but_keep_image_identity
     }
     upload(temp_db, [row])
     stored = qa_results_service.query(temp_db)["rows"][0]
-    assert hpcc in stored["auto_command"]
-    assert stored["test_digest"] == hpcc
+    assert hpcc.replace("@", ":" + TAGS[2] + "@") in stored["website_docker_cmd"]
+    assert stored["qa_digest"] == hpcc
     assert stored["hpc_version"] == "3.10.1.2"

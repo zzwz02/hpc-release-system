@@ -376,6 +376,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             image_reference TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_qa_test_results_report ON qa_test_results(report_id);
+        CREATE INDEX IF NOT EXISTS idx_qa_test_results_history_key
+        ON qa_test_results(json_extract(data_json, '$.historical_result_key'));
 
         -- The latest AI analysis of a release's QA log, kept until it is
         -- reviewed (QA statuses saved), discarded, or the log is replaced.

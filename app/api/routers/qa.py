@@ -11,6 +11,7 @@ Endpoint paths (legacy release routes retain their original paths):
   POST /api/qa/analyze-log
   POST /api/qa/analyze-log/start
   GET  /api/qa/test-results
+  GET  /api/qa/test-results/export
   POST /api/qa/test-results/upload
   GET  /api/qa/test-results/{report_id}/download
 
@@ -19,7 +20,9 @@ under /api/qa/ and at /api/qa-* to match the old server exactly.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
+from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query
@@ -127,6 +130,20 @@ def api_qa_reports(
     Mirrors server.py:435-443.
     """
     return qa_service.get_qa_reports(conn, release_id, compare_release_id)
+
+
+@router.get("/api/qa/test-commands")
+def version_test_commands(
+    response: Response,
+    release_id: str = Query(),
+    hpc_version: str = Query(default="latest"),
+    _user: dict = Depends(require_qa_tab_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    from app.services import qa_commands_service
+
+    response.headers["Cache-Control"] = "no-store"
+    return qa_commands_service.query(conn, release_id=release_id, hpc_version=hpc_version)
 
 
 # ---------------------------------------------------------------------------
@@ -314,17 +331,48 @@ def upload_test_results(
     )
 
 
+def result_filters(
+    search: str = Query(default=""),
+    table_filter: str = Query(default="", alias="filter"),
+    column_filters: str = Query(default="{}"),
+    sort_by: str = Query(default=""),
+    sort_direction: Literal["asc", "desc"] = Query(default="asc"),
+) -> dict:
+    try:
+        columns = json.loads(column_filters)
+    except ValueError as exc:
+        raise ApiError(400, "列筛选须为 JSON 对象") from exc
+    if not isinstance(columns, dict):
+        raise ApiError(400, "列筛选须为 JSON 对象")
+    return {"search": search, "table_filter": table_filter, "column_filters": columns,
+            "sort_by": sort_by, "sort_direction": sort_direction}
+
+
 @router.get("/api/qa/test-results")
 def test_results(
     response: Response,
-    search: str = Query(default=""),
+    filters: dict = Depends(result_filters),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     user: dict = Depends(require_qa_tab_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     response.headers["Cache-Control"] = "no-store"
-    return qa_results_service.query(conn, search=search, offset=offset, limit=limit)
+    return qa_results_service.query(conn, **filters, offset=offset, limit=limit)
+
+
+@router.get("/api/qa/test-results/export")
+def export_test_results(
+    filters: dict = Depends(result_filters),
+    user: dict = Depends(require_qa_tab_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    return Response(
+        qa_results_service.export_csv(conn, **filters),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="qa_test_results.csv"',
+                 "Cache-Control": "no-store"},
+    )
 
 
 @router.get("/api/qa/test-results/{report_id}/download")

@@ -11,6 +11,8 @@ def main():
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--signup", action="store_true", help="Include signup dialog scenarios")
     parser.add_argument("--lookup", action="store_true", help="Include Harbor image lookup scenarios")
+    parser.add_argument("--qa-commands", action="store_true", help="Include version-scoped QA worksheet scenarios (use with --lookup)")
+    parser.add_argument("--qa-report-pagination", action="store_true", help="Seed 65 QA results for all-result filtering (use with --lookup)")
     parser.add_argument("--image-publications", action="store_true", help="Include multiple publications of one digest")
     parser.add_argument("--platforms", action="store_true", help="Include OS/architecture/chip mapping scenarios")
     parser.add_argument("--releases", action="store_true", help="Include frozen publication history scenarios")
@@ -163,6 +165,10 @@ def main():
             historical["app_test"]["debug-sanity"] = {
                 **historical["app_test"]["sanity"], "img_target": "dbg", "test_cmd": "run-debug-sanity",
             }
+            if args.qa_report_pagination:
+                historical["app_test"].update({f"pagination{index}": {
+                    **historical["app_test"]["sanity"], "test_cmd": f"run-pagination-{index}",
+                } for index in range(65)})
             seed_app(conn, "lookup-image", official_name="ABACUS", app_info=historical, commit_id="bb46c60")
             catalog_service.store_app_info(conn, "lookup-image", make_app_info(app_name="abacus", app_version="4.0"),
                                            commit_id="new-head", source="test", user="app_rm")
@@ -248,6 +254,31 @@ def main():
                     seed_signup(conn, release_id, "own-ready-b")
         if args.lookup:
             harbor.get_artifact = lookup_artifact
+            def lookup_artifacts(project, repository, version):
+                if repository == "abacus-maca":
+                    return [lookup_artifact(project, repository, "sha256:" + "8d" * 32)]
+                return []
+            harbor.list_artifacts = lookup_artifacts
+        if args.qa_commands:
+            release_id = seed_cycle(conn, name="3.10.1")
+            entry = seed_signup(conn, release_id, "lookup-image")
+            historical_id = conn.execute("SELECT id FROM app_info_versions WHERE app_id='lookup-image' AND commit_id='bb46c60'").fetchone()[0]
+            conn.execute("UPDATE entries SET locked_version_id=? WHERE id=?", (historical_id, entry["id"]))
+            conn.commit()
+        if args.qa_report_pagination:
+            from app.domain import qa_results
+            from app.repositories import qa_results_repo
+            reference = "harbor.sh.mxcr.io/hpc-release/abacus-maca@sha256:" + "8d" * 32
+            report_rows = [{**dict.fromkeys(qa_results.WORKSHEET_COLUMNS, ""),
+                            "app_name": "ABACUS", "git_branch": "maca", "hpc_version": "3.10.1.2",
+                            "app_version": "3.9.0.27", "arch": "x86", "OS": "ubuntu22.04", "GPU": "C500",
+                            "test_name": f"pagination{index}", "qa_digest": reference, "qa_result": index,
+                            "qa_env": "C500_server_1", "qa_status": "pass" if index < 60 else "fail"}
+                           for index in range(65)]
+            qa_results_repo.save(conn, filename="pagination.xlsx", content=b"test-only", environments=["C500_server_1"],
+                                 uploaded_at="2026-11-15 12:30:00", uploaded_by="app_qa",
+                                 rows=[(qa_results.worksheet_result_key(row), row, reference) for row in report_rows])
+            conn.commit()
         conn.close()
 
         def head_commit(url, *_args, **_kwargs):

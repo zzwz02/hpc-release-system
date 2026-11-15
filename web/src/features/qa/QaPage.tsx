@@ -26,6 +26,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "react-router-dom";
 import { QaTabs } from "./QaTabs";
 import { QaResultsPane } from "./QaResultsPane";
+import { QaTestCommandsPane } from "./QaTestCommandsPane";
 import { qaPaneFromSearch } from "./qaNavigation";
 import { RefreshBar } from "../../components/RefreshBar";
 import { TestScopeTable } from "../../components/TestScopeTable";
@@ -1957,13 +1958,7 @@ export function QaPage() {
           )}
           {subtab === "test" && (
             <div id="qaTestCmdPane" className="qa-pane active">
-              <ReportPane
-                releaseId={selectedReleaseId || data.release?.id || ""}
-                kind="test"
-                title="测试命令"
-                hint="由各报名条目锁定的 app_info（去掉 Owner 删减的测试项）生成，每个支持的 GPU 芯片单独一行。镜像版本保留 <hpc_version> 占位。"
-                releases={data.releases ?? []}
-              />
+              <QaTestCommandsPane releaseId={selectedReleaseId || data.release?.id || ""} />
             </div>
           )}
           {subtab === "community" && (
