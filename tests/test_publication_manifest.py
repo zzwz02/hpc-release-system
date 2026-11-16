@@ -12,16 +12,18 @@ from app.db.connection import connect, init_db
 from app.deps import get_db, require_login
 from app.domain import delivery_images, publication_manifest
 from app.main import create_app
+from app.integrations import gerrit
 from app.repositories import app_info_repo, entries_repo, official_repo
 from app.services import catalog_service, cycle_service, lookup_service, qa_service
 from tests.conftest import close_qa, make_app_info, make_dependency_app_info, seed_app, seed_cycle, seed_signup, store_app_info
 
 
 @pytest.fixture()
-def publication(temp_db, harbor_artifacts):
+def publication(temp_db, harbor_artifacts, monkeypatch):
     raw = make_dependency_app_info("archived")
     raw["app_test"]["sanity"]["test_cmd"] = "printf '%s\\n' \"original command\"\n./run-test --flag='a b'"
     raw["app_test"]["excluded"] = {**raw["app_test"]["sanity"], "test_cmd": "must-not-be-published"}
+    monkeypatch.setattr(gerrit, "fetch_app_info_at", lambda *_a, **_k: json.dumps(raw))
     app = seed_app(temp_db, "archived", app_info=raw, commit_id="published-commit")
     release = seed_cycle(temp_db, name="publication-cycle")
     cycle_service.save_environment(temp_db, release, [{"component": "SDK", "version": "R1", "note": "original environment"}], user="rm", role="RM")
@@ -78,13 +80,18 @@ def test_reads_and_csv_keep_exact_commands_when_generators_and_live_records_chan
     assert "发布时封存" in exported
     changed = make_app_info(app_name="archived", dependencies=["development-sdk"])
     store_app_info(temp_db, publication[0], changed, commit_id="development-commit")
+    assert lookup_service.latest_running_releases(temp_db) == baseline
     # Even mutable entry data and a missing source pointer cannot rewrite sealed evidence.
     temp_db.execute("UPDATE entries SET excluded_tests_json='[]', qa_note='changed QA' WHERE id=?", (publication[2]["id"],))
     temp_db.execute("UPDATE official_versions SET app_info_version_id=NULL WHERE id=?", (official["id"],))
     temp_db.execute("UPDATE app_info_versions SET raw_json='{}', commit_id='mutated-source' WHERE id=?", (frozen["app_info"]["id"],))
     temp_db.commit()
     monkeypatch.setattr(delivery_images, "published_commands", lambda *_args: pytest.fail("sealed reads must not regenerate commands"))
-    assert lookup_service.latest_running_releases(temp_db) == baseline
+    live = lookup_service.latest_running_releases(temp_db)
+    assert any("交付镜像解析失败" in row["note"] for row in live["rows"])
+    assert all(not row.get("command") and row["app_info_commit_id"] == ""
+               for row in live["rows"] if "交付镜像解析失败" in row["note"])
+    assert all(row["app_info_commit_id"] == "abcdef1" for row in live["rows"] if row.get("delivery_reference") and row.get("command"))
     assert catalog_service.compat_list_csv(temp_db) == exported
     assert catalog_service.app_detail(temp_db, publication[0])["official_versions"][0]["test_manifest"] == frozen
     history = lookup_service.by_app(temp_db, publication[0])["entries"][0]
@@ -98,7 +105,7 @@ def test_reads_and_csv_keep_exact_commands_when_generators_and_live_records_chan
     with TestClient(app) as client:
         response = client.get("/api/lookup/latest-running")
         assert response.status_code == 200
-        assert response.json() == baseline
+        assert response.json() == live
         archived_detail = client.get("/api/apps/detail", params={"app_id": publication[0]})
         assert archived_detail.status_code == 200
         assert archived_detail.json()["official_versions"][0]["test_manifest"] == frozen

@@ -1,4 +1,4 @@
-"""One validated workbook replaces the complete QA report for one HPC cycle."""
+"""One validated workbook replaces the complete QA log for one HPC cycle."""
 import base64
 import io
 import sqlite3

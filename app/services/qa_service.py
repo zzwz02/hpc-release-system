@@ -20,11 +20,7 @@ from app.domain import delivery_images
 from app.domain.container_image import delivered_image_reference
 from app.domain.test_platforms import build_alias_is_redundant
 from app.domain.permissions import has_capability
-from app.domain.qa import (
-    QA_STATUSES,
-    issue_note_required,
-    qa_status_label,
-)
+from app.domain.qa import QA_STATUSES
 from app.domain.textutil import order_chips
 from app.repositories import (
     app_info_repo,
@@ -102,8 +98,8 @@ def set_qa_status_batch(
 
     Each item: ``{app_id, status, issue_note, deliverable_images?,
     delivery_revision?}``. Validate Harbor artifacts before opening the write
-    transaction, then recheck mutable state. ``has_issues`` and
-    ``cannot_release`` require a note.
+    transaction, then recheck mutable state. The App comment is optional for
+    every verdict.
     """
     if not has_capability(role, "qa.edit"):
         raise AuthzError("只有 QA、RM 可以修改 QA 结论")
@@ -141,9 +137,6 @@ def _prepare_qa_status_batch(conn, release_id, items):
         entry = entries_repo.find_entry(conn, release_id, app_id)
         if not entry or entry["status"] != cycles_domain.ENTRY_ACTIVE:
             errors.append(f"{app_id}：未报名本版本")
-            continue
-        if issue_note_required(status) and not note:
-            errors.append(f"{app_id}：标注「{qa_status_label(status)}」时必须填写问题说明")
             continue
         update = {"qa_status": status, "qa_note": note}
         if 'deliverable_images' in item or 'delivery_revision' in item:

@@ -108,8 +108,9 @@ describe("QA and documentation metadata", () => {
 
   it("provides shared QA defaults and issue-note rules", () => {
     expect(QA_STATUS_DEFAULT).toBe("not_checked");
-    expect(qaStatusRequiresIssueNote("has_issues")).toBe(true);
-    expect(qaStatusRequiresIssueNote("cannot_release")).toBe(true);
+    expect(qaStatusRequiresIssueNote("has_issues")).toBe(false);
+    expect(qaStatusRequiresIssueNote("cannot_release")).toBe(false);
     expect(qaStatusRequiresIssueNote("qa_passed")).toBe(false);
+    expect(qaStatusRequiresIssueNote("not_checked")).toBe(false);
   });
 });

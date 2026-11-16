@@ -97,7 +97,7 @@
       "label": "存在问题",
       "order": 2,
       "default": false,
-      "issue_note_required": true,
+      "issue_note_required": false,
       "releasable": true,
       "issue_note_prefix": "QA 备注"
     },
@@ -105,7 +105,7 @@
       "label": "不可发布",
       "order": 3,
       "default": false,
-      "issue_note_required": true,
+      "issue_note_required": false,
       "releasable": false,
       "issue_note_prefix": "QA 不可发布"
     }

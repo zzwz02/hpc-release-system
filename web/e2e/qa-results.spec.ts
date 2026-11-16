@@ -23,6 +23,12 @@ for row in payload['rows']:
 env = book.create_sheet('C500_server_1')
 env.merge_cells('A1:D3')
 env['A1'] = '环境内容原样保留'
+env['A4'] = 'OS'
+env['B4'] = 'ubuntu22.04'
+env['A5'] = 'Driver'
+env['B5'] = '3.100.0'
+env['A7'] = 'Zero'
+env['B7'] = 0
 env['B8'] = '=1+2'
 output = io.BytesIO()
 book.save(output)
@@ -71,12 +77,12 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
     website_docker_cmd: "=1+2",
   }));
   const content = workbook(expectedColumns, rows);
-  await page.getByRole("navigation", { name: "QA", exact: true }).getByRole("link", { name: "QA report", exact: true }).click();
+  await page.getByRole("navigation", { name: "QA", exact: true }).getByRole("link", { name: "QA log", exact: true }).click();
   async function selectReport(name: string, buffer: Buffer) {
     await page.getByLabel("上传测试结果 Excel").setInputFiles({ name, mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer });
     const dialog = page.getByRole("alertdialog");
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole("heading", { name: "整份替换 3.10.1 的 QA report", exact: true })).toBeVisible();
+    await expect(dialog.getByRole("heading", { name: "整份替换 3.10.1 的 QA log", exact: true })).toBeVisible();
     await expect(dialog).toContainText(name);
     await expect(dialog).toContainText("含各补丁版本");
     await expect(dialog).toContainText("未出现在本次文件中的旧测试项也会删除");
@@ -107,6 +113,28 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   await expect(report.locator("tbody tr")).toHaveCount(2);
   const reportPane = page.getByTestId("qa-results-pane");
   expect(await commandTableAppearance(reportPane)).toEqual(referenceAppearance);
+  const environmentRequests: string[] = [];
+  page.on("request", request => { if (request.url().includes("/environment?")) environmentRequests.push(request.url()); });
+  const environment = report.getByRole("button", { name: "C500_server_1", exact: true }).first();
+  await environment.hover();
+  let preview = page.getByRole("tooltip");
+  await expect(preview).toContainText("环境内容原样保留");
+  await expect(preview).toContainText("ubuntu22.04");
+  await expect(preview).toContainText("3.100.0");
+  await expect(preview.getByRole("cell", { name: "0", exact: true })).toBeVisible();
+  await expect(preview).toContainText("=1+2");
+  const bounds = await preview.boundingBox();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+  await page.screenshot({ path: "/tmp/qa-environment-preview.png", fullPage: true });
+  await page.mouse.move(5, 5);
+  await expect(preview).toHaveCount(0);
+  await environment.focus();
+  preview = page.getByRole("tooltip");
+  await expect(preview).toContainText("ubuntu22.04");
+  await environment.press("Escape");
+  await expect(preview).toHaveCount(0);
+  expect(environmentRequests).toHaveLength(1);
   await reportPane.getByLabel("qa_result 列筛选").fill("0");
   await expect(report.locator("tbody tr")).toHaveCount(1);
   await reportPane.getByLabel("qa_result 列筛选").fill("");
@@ -156,12 +184,32 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   expect((await overwrite).ok()).toBeTruthy();
   await expect(page.getByText("已保存 3.10.1 的 2 行，清除旧结果 2 行。", { exact: true })).toBeVisible();
   const qaTabs = page.getByRole("navigation", { name: "QA", exact: true });
-  await qaTabs.getByRole("link", { name: "QA log", exact: true }).click();
+  await qaTabs.getByRole("link", { name: "QA report", exact: true }).click();
   await expect(page.getByTestId("qa-failure-summary")).toContainText("2 条失败 / 2 条结果");
   await expect(page.locator('input[type="file"]')).toHaveCount(0);
   const qaCard = page.locator('[data-qa-app="lookup-image"]');
+  const appFailures = qaCard.getByTestId("qa-app-failures-lookup-image");
+  await expect(qaCard.locator(".qa-card-b > :first-child")).toContainText("QA 状态");
+  await expect(appFailures).toHaveJSProperty("open", false);
+  await appFailures.locator("summary").click();
+  await expect(appFailures).toHaveJSProperty("open", true);
   await expect(qaCard.getByTestId("qa-app-failures-lookup-image")).toContainText("中文备注");
   await expect(qaCard.getByTestId("qa-app-failures-lookup-image")).toContainText("HPC 3.10.1.2");
+  for (const status of ["has_issues", "cannot_release"]) {
+    await page.getByRole("button", { name: /修改（填写 QA 结论/ }).first().click();
+    await qaCard.getByTestId("qa-status-lookup-image").selectOption(status);
+    await expect(qaCard.getByRole("textbox", { name: "ABACUS QA comment", exact: true })).toHaveValue("");
+    await expect(qaCard.getByText("QA comment (可选)", { exact: true })).toBeVisible();
+    const emptyCommentSave = page.waitForResponse(r => r.url().endsWith("/api/qa/status-batch"));
+    await page.getByRole("button", { name: "保存 QA 状态", exact: true }).first().click();
+    expect((await emptyCommentSave).ok()).toBeTruthy();
+    await expect(qaCard.getByTestId("qa-status-lookup-image")).toHaveValue(status);
+    const currentRelease = await page.getByLabel("选择 release").inputValue();
+    const persisted = await (await page.request.get(base + `/api/state?release_id=${currentRelease}`)).json();
+    const entry = persisted.release.entries.find((row: { app_id: string }) => row.app_id === "lookup-image");
+    expect(entry.qa_status).toBe(status);
+    expect(entry.qa_note).toBe("");
+  }
   await page.getByRole("button", { name: /修改（填写 QA 结论/ }).first().click();
   await qaCard.getByTestId("qa-status-lookup-image").selectOption("qa_passed");
   await qaCard.getByRole("textbox", { name: "ABACUS QA comment", exact: true }).fill("QA 手工确认：保留此 App comment");
@@ -173,7 +221,7 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   expect(savedState.release.entries.find((entry: { app_id: string }) => entry.app_id === "lookup-image").qa_note).toBe("QA 手工确认：保留此 App comment");
   await expect(qaCard.getByRole("textbox", { name: "ABACUS QA comment", exact: true })).toBeDisabled();
   await page.screenshot({ path: "/tmp/qa-log-failures-desktop.png", fullPage: true });
-  await qaTabs.getByRole("link", { name: "QA report", exact: true }).click();
+  await qaTabs.getByRole("link", { name: "QA log", exact: true }).click();
   const replacement = page.waitForResponse(r => r.url().endsWith("/api/qa/test-results/upload"));
   await expect(page.getByLabel("上传测试结果 Excel")).toBeEnabled();
   await uploadReport("only-B.xlsx", workbook(expectedColumns, [filled[1]]));
@@ -198,7 +246,7 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   const freshData = await (await fresh).json();
   expect(freshData.rows.every((row: Record<string, unknown>) => qaColumns.every(column => row[column] === ""))).toBe(true);
   await page.screenshot({ path: "/tmp/qa-version-commands-desktop.png", fullPage: true });
-  await qaTabs.getByRole("link", { name: "QA log", exact: true }).click();
+  await qaTabs.getByRole("link", { name: "QA report", exact: true }).click();
   await expect(page.getByTestId("qa-failure-summary")).toContainText("0 条失败 / 1 条结果");
   await expect(qaCard.getByRole("textbox", { name: "ABACUS QA comment", exact: true })).toHaveValue("QA 手工确认：保留此 App comment");
   expect(errors).toEqual([]);

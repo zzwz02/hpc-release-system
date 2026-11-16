@@ -1,8 +1,8 @@
 export const QA_PANES = [
-  { key: "mark", label: "QA log" },
+  { key: "mark", label: "QA report" },
   { key: "release", label: "本期发布app" },
   { key: "test", label: "测试命令" },
-  { key: "report", label: "QA report" },
+  { key: "report", label: "QA log" },
   { key: "community", label: "开发者社区产物" },
 ] as const;
 

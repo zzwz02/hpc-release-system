@@ -19,10 +19,10 @@ export function DeliveryImages({ images, builds = [], onChange, compact = false 
       </div>)}
     </div>
   );
-  const rows = onChange ? [
+  const rows = [
     ...builds.map((build) => images.find((image) => image.build_key === build.build_key) ?? { ...build, reference: "", image: "", digest: "" }),
     ...images.filter((image) => !builds.some((build) => build.build_key === image.build_key)),
-  ] : images;
+  ];
   return (
     <div className="table delivery-images" data-testid="delivery-images">
       <table>
@@ -50,7 +50,7 @@ export function DeliveryImages({ images, builds = [], onChange, compact = false 
                         const remaining = images.filter((image) => image.build_key !== row.build_key);
                         onChange(reference.trim() ? [...remaining, { ...row, reference }] : remaining);
                       }} /> : <>
-                      <span>{row.reference || [row.image, row.digest].filter(Boolean).join(" · ") || "—"}</span>
+                      <span>{row.reference || [row.image, row.digest].filter(Boolean).join(" · ") || <span className="muted">未填写交付镜像</span>}</span>
                       {onChange && <button type="button" className="btn sm" onClick={() => onChange(images.filter((image) => image.build_key !== row.build_key))}>移除此镜像</button>}
                     </>}
                   </div>

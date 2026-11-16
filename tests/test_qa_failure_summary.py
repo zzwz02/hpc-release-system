@@ -1,9 +1,10 @@
-"""QA log reads stored report failures; each App keeps a manual QA comment."""
+"""QA report reads stored report failures; each App keeps a manual QA comment."""
 import pytest
 from fastapi.testclient import TestClient
 
 from app.deps import get_db, require_login
 from app.domain import qa_results
+from app.domain.qa import issue_note_required
 from app.integrations import harbor
 from app.main import create_app
 from app.repositories import entries_repo, qa_results_repo
@@ -105,6 +106,28 @@ def test_each_app_comment_is_saved_for_every_verdict_without_revalidating_unchan
     assert saved["qa_status"] == status and saved["qa_note"] == "QA 手填 comment\n第二行"
     assert entries_repo.find_entry(temp_db, reports, "genome")["qa_note"] == ""
     assert qa_results_service.failure_summary(temp_db, reports)["failed_rows"] == 5
+
+
+@pytest.mark.parametrize("status", ["not_checked", "qa_passed", "has_issues", "cannot_release"])
+def test_every_verdict_allows_an_empty_comment_and_can_clear_a_previous_comment(temp_db, reports, status):
+    assert not issue_note_required(status)
+    qa_service.set_qa_status_batch(temp_db, reports, [{"app_id": "fold", "status": "qa_passed",
+                                                     "issue_note": "原有备注"}], user="qa", role="QA")
+    entry = entries_repo.find_entry(temp_db, reports, "fold")
+    revision = cycle_service.entry_view(temp_db, entry)["delivery_revision"]
+    qa_service.set_qa_status_batch(temp_db, reports, [{"app_id": "fold", "status": status,
+        "issue_note": " \n ", "delivery_revision": revision}], user="qa", role="QA")
+    saved = entries_repo.find_entry(temp_db, reports, "fold")
+    assert saved["qa_status"] == status and saved["qa_note"] == ""
+    assert qa_results_service.failure_summary(temp_db, reports)["failed_rows"] == 5
+
+
+def test_a_release_with_issues_can_publish_without_a_manual_comment(temp_db, reports):
+    qa_service.set_qa_status_batch(temp_db, reports, [{"app_id": "fold", "status": "has_issues"}], user="qa", role="QA")
+    close_qa(temp_db, reports)
+    cycle_service.publish(temp_db, reports, user="rm", role="RM")
+    entry = entries_repo.find_entry(temp_db, reports, "fold")
+    assert entry["result"] == "released" and entry["qa_note"] == ""
 
 
 def test_comment_conflicts_and_published_cycles_reject_changes_without_losing_the_saved_comment(temp_db, reports):

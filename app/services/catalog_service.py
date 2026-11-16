@@ -567,7 +567,7 @@ def dependency_overview(conn: sqlite3.Connection, source: str = "official") -> d
     if source not in {"official", "development"}:
         raise ApiError(400, "未知依赖数据来源")
     officials = official_repo.current_by_app(conn)
-    latest_ids = app_info_repo.latest_version_ids(conn) if source == "development" else {}
+    latest_ids = app_info_repo.latest_version_ids(conn)
     signed_up = entries_repo.ever_signed_up_app_ids(conn)
     snapshot_errors: list[str] = []
     all_rows: list[dict[str, Any]] = []
@@ -580,6 +580,9 @@ def dependency_overview(conn: sqlite3.Connection, source: str = "official") -> d
         if source == "official" and not official:
             continue
         manifest, manifest_source = publication_service.read_manifest(conn, official, app=app, app_name=app_name(app)) if official else (None, "development")
+        if manifest:
+            latest = app_info_repo.get_version(conn, latest_ids.get(app["id"]))
+            manifest = publication_manifest.compatibility_view(manifest, latest["raw"] if latest else {})
         snapshot = manifest["app_info"] if manifest else app_info_repo.get_version(conn, latest_ids.get(app["id"])) if source == "development" else None
         if source == "development" and snapshot and snapshot["app_id"] != app["id"]:
             snapshot = None

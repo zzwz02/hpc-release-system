@@ -29,7 +29,7 @@ interface ReleaseRow {
   note: string;
 }
 
-const columns = ["App", "app_id", "Owner", "依赖组件", "范围状态", "HPC version", "App version", "清单来源", "OS", "CPU 架构", "GPU", "镜像类型", "Python label", "PyTorch label", "完整镜像名", "app_info commit id", "测试项", "测试命令", "说明"];
+const columns = ["App", "app_id", "Owner", "依赖组件", "范围状态", "HPC version", "App version", "发布记录来源", "OS", "CPU 架构", "GPU", "镜像类型", "Python label", "PyTorch label", "完整镜像名", "镜像 app_info commit id", "测试项", "测试命令", "说明"];
 const archName = (arch?: string) => arch === "amd64" ? "x86" : arch === "arm64" ? "ARM" : arch || "";
 function cells(row: ReleaseRow): string[] {
   return [row.app_name, row.app_id, row.owners.join(", "), row.dependencies.join(", "), row.scope_pending ? "范围待确认" : "已声明",
@@ -44,6 +44,8 @@ function AppRows({ rows }: { rows: ReleaseRow[] }) {
   const imageCount = new Set(rows.map((row) => row.delivery_reference).filter(Boolean)).size;
   const testCount = new Set(rows.filter((row) => row.command).map((row) => row.path)).size;
   const commandCount = rows.filter((row) => row.command).length;
+  const versions = [...new Set(rows.map((row) => row.app_version).filter(Boolean))];
+  const dependencies = [...new Set(rows.flatMap((row) => row.dependencies))];
   return <>
     <tr data-testid={`compat-app-${app.app_id}`}>
       <td><button type="button" className="dependency-app-toggle" aria-expanded={expanded} aria-controls={detailId}
@@ -53,13 +55,14 @@ function AppRows({ rows }: { rows: ReleaseRow[] }) {
       </button></td>
       <td>{app.app_id}</td>
       <td>{app.owners.join(", ") || "—"}</td>
-      <td>{app.app_version || "—"}</td><td>{app.hpc_version || "—"}</td>
-      <td className="small">{app.dependencies.join(", ") || "未声明"}</td>
+      <td>{versions.join(", ") || "—"}</td><td>{app.hpc_version || "—"}</td>
+      <td className="small">{dependencies.join(", ") || "未声明"}
+        {rows.some((row) => row.scope_pending) && <div className="muted">范围待确认</div>}</td>
       <td>{imageCount} 个镜像</td><td>{testCount} 个测试项 / {commandCount} 条命令</td>
     </tr>
     {expanded && <tr id={detailId} data-testid={`compat-detail-${app.app_id}`}><td colSpan={8}>
       <div className="table"><table className="compatibility-detail-table">
-        <thead><tr><th>OS</th><th>CPU 架构</th><th>GPU</th><th>镜像配置</th><th>交付镜像:tag@digest</th><th title="该次发布的 app_info commit id">commit id</th><th>测试项</th><th>测试命令</th><th>说明</th></tr></thead>
+        <thead><tr><th>OS</th><th>CPU 架构</th><th>GPU</th><th>镜像配置</th><th>交付镜像:tag@digest</th><th title="该交付镜像对应的 app_info commit id">commit id</th><th>测试项</th><th>测试命令</th><th>说明</th></tr></thead>
         <tbody>{rows.map((row, index) => <tr key={index}>
           <td>{row.os || "—"}</td><td>{archName(row.arch) || "—"}</td><td>{row.GPU || "—"}</td>
           <td>{[row.image_target, row.python_label, row.pytorch_label].filter(Boolean).join(" · ") || "—"}</td>
@@ -113,8 +116,12 @@ export function CompatibilityPane() {
     (!component || row.dependencies.includes(component) || row.scope_pending)
     && platformFilters.every(([key]) => !platform[key] || (key === "chip" ? row.chips?.includes(platform[key]) : row[key] === platform[key]))
     && (!needle || [row.app_id, ...cells(row)].join(" ").toLocaleLowerCase().includes(needle)));
-  const confirmed = rows.filter((row) => !row.scope_pending);
-  const pending = rows.filter((row) => row.scope_pending);
+  const groups = [...components.keys()].sort((a, b) => a.localeCompare(b))
+    .filter((name) => !component || name === component)
+    .map((name) => ({ name, rows: rows.filter((row) => row.dependencies.includes(name)) }))
+    .filter((group) => group.rows.length > 0);
+  const pending = rows.filter((row) => row.scope_pending
+    && (!row.dependencies.length || (!!component && !row.dependencies.includes(component))));
   return <div className="panel" data-testid="compatibility-pane">
     <div className="panel-head">
       <h2>测试 App 清单</h2>
@@ -123,8 +130,8 @@ export function CompatibilityPane() {
       <RefreshBar dataUpdatedAt={result.dataUpdatedAt} isFetching={result.isFetching} onRefresh={() => void result.refetch()} />
     </div>
     <div className="panel-body">
-      <p className="hint">仅显示 CICD 仍在运行且至少报名过一次的 App（含已撤回报名）；每个 App 选最近一次有效成功发布，尚未成功发布的列入范围待确认。后续失败、未报名或撤回不替换此前成功版本。新发布读取发布时封存的清单；未封存的历史记录按原配置生成，并在明细标注。展开 App 查看平台与完整命令。</p>
-      <p className="hint">每个合法的构建／GPU／测试项组合单独一行。命令使用该次发布的 QA log 交付镜像（image:tag@digest）；说明引用同周期、同 app_id／分支／App 版本／平台／GPU／Python／PyTorch／测试项的 QA report，列出具体 HPC 版本、pass/fail；pass 不显示原因，其余状态显示 qa_comment。测试镜像不同时用 note: 标注历史参考，不替换交付镜像；历史交付缺 tag 时仅查询 Harbor 实际 tags 补全，无法补全则在说明中提示。</p>
+      <p className="hint">仅显示 CICD 仍在运行且至少报名过一次的 App（含已撤回报名），按依赖组件及 Python/PyTorch 组合分类；同一 App 可属于多个分类。每个 App 选最近一次有效成功发布，并排除最新 app_info 中明确设为 enabled=false 的构建。每个交付镜像分别通过 digest → Harbor tags → commit → Gerrit app_info 实时确定依赖、平台和测试命令；不同镜像允许来自不同 commit。来源冲突或查询失败明确提示，不回退到其他 commit 的命令。尚未成功发布的列入范围待确认，后续失败、未报名或撤回不替换此前成功版本。展开组件和 App 查看明细。</p>
+      <p className="hint">每个合法的构建／GPU／测试项组合单独一行。命令使用该次发布的 QA report 交付镜像（image:tag@digest）；说明引用同周期、同 app_id／分支／App 版本／平台／GPU／Python／PyTorch／测试项的 QA log，列出具体 HPC 版本、pass/fail；pass 不显示原因，其余状态显示 qa_comment。测试镜像不同时用 note: 标注历史参考，不替换交付镜像；历史交付缺 tag 时仅查询 Harbor 实际 tags 补全，无法补全则在说明中提示。</p>
       <div className="row compatibility-filters">
         <label>组件<select className="select select-inline" value={component} onChange={(event) => setComponent(event.target.value)} aria-label="按组件筛选">
           <option value="">全部组件</option>
@@ -152,10 +159,15 @@ export function CompatibilityPane() {
     </div>
     {!result.error && !result.isFetching && result.data && <>
       {rows.length === 0 && <p className="muted p-12-16">{result.data.app_count ? "没有匹配的记录。" : "暂无 CICD 仍在运行且曾报名的 App。"}</p>}
-      {confirmed.length > 0 && <AppsTable rows={confirmed} />}
+      {groups.map((group) => <details key={group.name} className="panel section dependency-group"
+        data-testid={`compatibility-group-${group.name}`}>
+        <summary className="panel-head"><span className="chev" aria-hidden="true">▶</span><h3>{group.name}</h3>
+          <span className="count">{new Set(group.rows.map((row) => row.app_id)).size} 个 App</span></summary>
+        <div className="panel-body p-0"><AppsTable rows={group.rows} /></div>
+      </details>)}
       {pending.length > 0 && <section data-testid="compatibility-pending">
         <div className="panel-body"><h3>范围待确认（{new Set(pending.map((row) => row.app_id)).size} 个 App）</h3>
-          <p className="hint">未声明组件依赖、依赖为空或尚无有效发布快照的 App。选择组件时仍保留供 QA 确认；平台和关键词筛选照常生效，导出包含此部分并标注范围状态。</p>
+          <p className="hint">未识别到依赖分类或尚无有效发布快照的 App；选择组件时，也保留依赖声明待确认且未归入该组件的 App。已识别 Python/PyTorch 组合的 App 列在对应分类，缺少组件声明时标注范围待确认。平台和关键词筛选照常生效，导出包含此部分并标注范围状态。</p>
         </div>
         <AppsTable rows={pending} />
       </section>}

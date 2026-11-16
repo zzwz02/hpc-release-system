@@ -32,14 +32,18 @@ from app.timeutil import beijing_timestamp
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_EXPANDED_BYTES = 200 * 1024 * 1024
 MAX_RESULT_ROWS = 20000
+# Environment pages remain opaque documents; bound their read-only hover preview.
+MAX_ENV_PREVIEW_ROWS = 50
+MAX_ENV_PREVIEW_COLUMNS = 16
+MAX_ENV_PREVIEW_CELL_CHARS = 2000
 
 
 def _release(conn, release_id):
     release = releases_repo.get_release_row(conn, release_id)
     if not release:
-        raise ApiError(400, '请选择有效的 QA report 发布周期')
+        raise ApiError(400, '请选择有效的 QA log 发布周期')
     if not re.fullmatch(r'\d+\.\d+\.\d+', release['name']):
-        raise ApiError(400, 'QA report 发布周期须为 3.10.0 形式的 HPC 版本')
+        raise ApiError(400, 'QA log 发布周期须为 3.10.0 形式的 HPC 版本')
     return release
 
 
@@ -125,14 +129,18 @@ def _legacy_reports_to_remove(conn, release):
     return selected
 
 
-def _read_workbook(content: bytes) -> tuple[list[tuple[int, dict, str]], list[str], dict]:
+def _open_workbook(content: bytes):
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             if sum(info.file_size for info in archive.infolist()) > MAX_EXPANDED_BYTES:
                 raise ValueError("Excel 解压后过大")
-        book = load_workbook(io.BytesIO(content), read_only=True, data_only=False)
+        return load_workbook(io.BytesIO(content), read_only=True, data_only=False)
     except (zipfile.BadZipFile, OSError, KeyError, ParseError, InvalidFileException) as exc:
         raise ValueError("无法读取 Excel，请上传有效的 .xlsx 文件") from exc
+
+
+def _read_workbook(content: bytes) -> tuple[list[tuple[int, dict, str]], list[str], dict]:
+    book = _open_workbook(content)
     try:
         environments = book.sheetnames[1:]  # Keep pages untouched in the original BLOB.
         sheet = book.worksheets[0]
@@ -228,7 +236,7 @@ def upload(
     before = _records(conn, release)
     expected_revision = _revision(before)
     if revision is not None and revision != expected_revision:
-        raise ApiError(409, '该版本 QA report 已变化，请刷新后重新上传')
+        raise ApiError(409, '该版本 QA log 已变化，请刷新后重新上传')
     if not isinstance(filename, str) or not filename.lower().endswith(".xlsx"):
         raise ValueError("请上传 .xlsx 文件")
     if not isinstance(content_b64, str) or len(content_b64) > MAX_FILE_BYTES * 4 // 3 + 4:
@@ -344,7 +352,7 @@ def upload(
     legacy_report_ids = _legacy_reports_to_remove(conn, release)
     with transaction(conn, immediate=True):
         if _release(conn, release_id)['name'] != release['name'] or _revision(_records(conn, release)) != expected_revision:
-            raise ApiError(409, '该版本 QA report 已变化，请刷新后重新上传')
+            raise ApiError(409, '该版本 QA log 已变化，请刷新后重新上传')
         release_test_count = qa_commands_service.count_scope_tests(conn, release_id)
         replaced = len(before)
         qa_results_repo.clear_release(conn, release_id, keys=[record['result_key'] for record in before],
@@ -499,3 +507,32 @@ def download(conn: sqlite3.Connection, report_id: int) -> tuple[bytes, str]:
     if not row:
         raise ApiError(404, "测试报告不存在")
     return row["content"], row["filename"]
+
+
+def environment_preview(conn: sqlite3.Connection, report_id: int, environment: str) -> dict:
+    """Read cell text from this report's exact environment sheet, without evaluating formulas."""
+    content, _ = download(conn, report_id)
+    book = _open_workbook(content)
+    try:
+        if environment not in book.sheetnames[1:]:
+            raise ApiError(404, "该报告中不存在对应的环境页")
+        sheet = book[environment]
+        truncated = (sheet.max_row or 0) > MAX_ENV_PREVIEW_ROWS or (sheet.max_column or 0) > MAX_ENV_PREVIEW_COLUMNS
+        rows = []
+        for values in sheet.iter_rows(max_row=min(sheet.max_row or MAX_ENV_PREVIEW_ROWS, MAX_ENV_PREVIEW_ROWS),
+                                     max_col=min(sheet.max_column or MAX_ENV_PREVIEW_COLUMNS, MAX_ENV_PREVIEW_COLUMNS),
+                                     values_only=True):
+            row = []
+            for value in values:
+                text = "" if value is None else str(value)
+                if len(text) > MAX_ENV_PREVIEW_CELL_CHARS:
+                    truncated = True
+                    text = text[:MAX_ENV_PREVIEW_CELL_CHARS] + "…"
+                row.append(text)
+            rows.append(row)
+        while rows and not any(rows[-1]):
+            rows.pop()
+        width = max((i + 1 for row in rows for i, text in enumerate(row) if text), default=0)
+        return {"environment": environment, "rows": [row[:width] for row in rows], "truncated": truncated}
+    finally:
+        book.close()

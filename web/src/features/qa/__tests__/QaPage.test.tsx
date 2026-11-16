@@ -7,7 +7,7 @@
  *  - QA mark pane: shows app cards for release-decision=release apps
  *  - QA mark pane: edit button only for writable roles
  *  - QA mark pane: save calls /api/qa/status-batch with changed items only
- *  - QA report failures grouped per App/GPU, isolated across cycles and identities
+ *  - QA log failures grouped per App/GPU, isolated across cycles and identities
  *  - Manual App comments save without resubmitting unchanged delivery images
  *  - RefreshBar rendered with dataUpdatedAt
  *  - Loading state shown while fetching
@@ -189,9 +189,9 @@ describe("QaPage structure", () => {
     await waitFor(() => {
       const nav = screen.getByRole("navigation", { name: "QA" });
       expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual([
-        "QA log", "本期发布app", "测试命令", "QA report", "开发者社区产物", "历史查询", "兼容性验证",
+        "QA report", "本期发布app", "测试命令", "QA log", "开发者社区产物", "历史查询", "兼容性验证",
       ]);
-      expect(within(nav).getByRole("link", { name: "QA log" })).toHaveAttribute("aria-current", "page");
+      expect(within(nav).getByRole("link", { name: "QA report" })).toHaveAttribute("aria-current", "page");
     });
   });
 
@@ -325,7 +325,7 @@ describe("QaPage mark pane", () => {
     expect(screen.queryByRole("button", { name: /修改/ })).toBeNull();
   });
 
-  it("shows the missing-report message when there is no QA report", async () => {
+  it("shows the missing-report message when there is no QA log", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
       if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
       return Promise.resolve(makePayload({ qa_log: null }));
@@ -333,7 +333,7 @@ describe("QaPage mark pane", () => {
     const qc = makeQClient();
     renderQaPage(qc);
     await waitFor(() => {
-      expect(screen.getByText(/本版本尚无 QA report 测试结果/)).toBeDefined();
+      expect(screen.getByText(/本版本尚无 QA log 测试结果/)).toBeDefined();
     });
   });
 
@@ -356,7 +356,7 @@ describe("QaPage mark pane", () => {
     const qc = makeQClient();
     renderQaPage(qc);
     await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "QA report 失败汇总" })).toBeVisible();
+      expect(screen.getByRole("heading", { name: "QA log 失败汇总" })).toBeVisible();
       expect(screen.queryByText(/test\.log/)).toBeNull();
       expect(document.querySelector('input[type="file"]')).toBeNull();
       expect(screen.queryByTestId("qa-analyze-btn")).toBeNull();
@@ -375,8 +375,9 @@ describe("QaPage mark pane", () => {
     const qc = makeQClient();
     renderQaPage(qc);
     await waitFor(() => {
-      expect(screen.getByText("必填")).toBeDefined();
-      expect(screen.queryByPlaceholderText(/存在问题.*不可发布/)).toBeNull();
+      expect(screen.getByText("QA comment (可选)")).toBeDefined();
+      expect(screen.queryByText("必填")).toBeNull();
+      expect(screen.queryByPlaceholderText(/可填写测试结论或其他说明/)).toBeNull();
     });
   });
 
@@ -398,7 +399,7 @@ describe("QaPage mark pane", () => {
     const qc = makeQClient();
     renderQaPage(qc);
     await waitFor(() => {
-      expect(screen.getByPlaceholderText(/存在问题.*不可发布/)).toBeDefined();
+      expect(screen.getByPlaceholderText(/可填写测试结论或其他说明/)).toBeDefined();
     });
   });
 });
@@ -424,6 +425,12 @@ describe("QaPage report failure summary", () => {
     renderQaPage(makeQClient());
     const failures = await screen.findByTestId("qa-app-failures-app1");
     await waitFor(() => expect(failures).toHaveTextContent("af3_cp1x1_unitest、af3_cp2x2_unitest"));
+    expect(failures).not.toHaveAttribute("open");
+    expect(screen.getByTestId("qa-status-app1").compareDocumentPosition(failures) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const tests = within(failures).getByText("af3_cp1x1_unitest、af3_cp2x2_unitest");
+    expect(tests).not.toBeVisible();
+    fireEvent.click(within(failures).getByText("QA log 失败项（2）"));
+    expect(tests).toBeVisible();
     expect(failures).toHaveTextContent("C600");
     expect(failures).toHaveTextContent("测试失败");
     expect(failures).toHaveTextContent("HPC 3.10.0.7 · App v3.0.1");
@@ -441,6 +448,22 @@ describe("QaPage report failure summary", () => {
     fireEvent.click(screen.getAllByRole("button", { name: /^保存 QA 状态$/ })[0]);
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/qa/status-batch", {
       release_id: "rel-1", items: [{ app_id: "app1", status: "qa_passed", issue_note: "QA 手工确认：保留此备注", delivery_revision: "revision-1" }],
+    }));
+  });
+
+  it.each(["not_checked", "qa_passed", "has_issues", "cannot_release"])("saves %s with an empty optional comment", async status => {
+    uiStoreMod.__setState({ qaEditMode: true, qaEditReleaseId: "rel-1" });
+    routeSummary(() => summary, makePayload({ release: makeRelease([makeEntry("app1", {
+      qa_status: status === "not_checked" ? "qa_passed" : "not_checked",
+    })]) }));
+    vi.mocked(apiPost).mockResolvedValue({ ok: true });
+    renderQaPage(makeQClient());
+    fireEvent.change(await screen.findByTestId("qa-status-app1"), { target: { value: status } });
+    expect(screen.getByRole("textbox", { name: /QA comment/ })).toHaveValue("");
+    expect(screen.getByText("QA comment (可选)")).toBeVisible();
+    fireEvent.click(screen.getAllByRole("button", { name: /^保存 QA 状态$/ })[0]);
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/qa/status-batch", {
+      release_id: "rel-1", items: [{ app_id: "app1", status, issue_note: "", delivery_revision: "revision-1" }],
     }));
   });
 
@@ -478,8 +501,8 @@ describe("QaPage delivery image display", () => {
   const bare = `${repository}@${digest}`;
   const tagged = `${repository}:1.0-3.10.0.7-ubuntu22.04-amd64@${digest}`;
   const image = { ...makeEntry("app1").delivery_builds![0], image: repository, digest, reference: bare };
-  function routeImages(response: () => unknown) {
-    const payload = makePayload({ release: makeRelease([makeEntry("app1", { deliverable_images: [image] })]) });
+  function routeImages(response: () => unknown, builds = makeEntry("app1").delivery_builds) {
+    const payload = makePayload({ release: makeRelease([makeEntry("app1", { deliverable_images: [image], delivery_builds: builds })]) });
     vi.mocked(apiGet).mockImplementation(async path => {
       if (path.startsWith("/api/qa/delivery-images")) return response();
       if (path.startsWith("/api/qa/failure-summary")) return { total_rows: 0, failed_rows: 0, groups: [] };
@@ -487,6 +510,22 @@ describe("QaPage delivery image display", () => {
       return payload;
     });
   }
+
+  it("keeps unfilled locked builds visible outside edit mode", async () => {
+    const build = makeEntry("app1").delivery_builds![0];
+    routeImages(() => ({ entries: { app1: { revision: "revision-1", images: [{ ...image, reference: tagged }] } } }), [
+      build,
+      { ...build, build_key: "ubuntu22.04_amd64_dbg", image_target: "dbg" },
+      { ...build, build_key: "ubuntu22.04_amd64_py312", python_label: "py312" },
+    ]);
+    renderQaPage(makeQClient());
+    expect(await screen.findByText(tagged)).toBeVisible();
+    const table = screen.getByTestId("delivery-images");
+    expect(within(table).getAllByText("未填写交付镜像")).toHaveLength(2);
+    expect(within(table).getByRole("cell", { name: "dbg" })).toBeVisible();
+    expect(within(table).getByRole("cell", { name: "py312" })).toBeVisible();
+    expect(within(table).queryByRole("textbox")).not.toBeInTheDocument();
+  });
 
   it("shows actual tagged references without using display values in a comment-only save", async () => {
     routeImages(() => ({ entries: { app1: { revision: "revision-1", images: [{ ...image, reference: tagged }] } } }));
@@ -616,7 +655,7 @@ describe("QaPage subtab navigation", () => {
 });
 
 
-it("shows the shared release selector for QA report and scopes its result request", async () => {
+it("shows the shared release selector for QA log and scopes its result request", async () => {
   vi.mocked(apiGet).mockImplementation(async path => path.startsWith("/api/state")
     ? makePayload() : { total: 0, rows: [], columns: [], revision: "empty" });
   render(<QueryClientProvider client={makeQClient()}>

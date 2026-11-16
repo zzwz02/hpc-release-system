@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 const base = process.env.QA_DELIVERY_DISPLAY_E2E_URL ?? "";
 test.skip(!/^http:\/\/127\.0\.0\.1:\d+$/.test(base), "Requires isolated --platforms --qa-delivery-display backend and Vite");
 
-test("QA log displays a real tag while comment saves preserve the original delivery reference", async ({ page }) => {
+test("QA report displays a real tag while comment saves preserve the original delivery reference", async ({ page }) => {
   expect((await page.request.post(base + "/api/login", { data: { username: "app_qa", password: "test-password" } })).ok()).toBeTruthy();
   const state = await (await page.request.get(base + "/api/state")).json();
   const release = state.releases.find((row: { name: string }) => row.name === "browser-cycle-a");
@@ -15,11 +15,17 @@ test("QA log displays a real tag while comment saves preserve the original deliv
   await page.goto(base + "/qa");
   await page.getByLabel("选择 release").selectOption(release.id);
   const card = page.locator('[data-qa-app="platform-check"]');
+  await expect(card.locator(".qa-card-b > :first-child")).toContainText("QA 状态");
+  await expect(card.getByTestId("qa-app-failures-platform-check")).toHaveJSProperty("open", false);
   await expect(card.getByText(tagged, { exact: true })).toBeVisible();
   const delivery = card.getByTestId("delivery-images");
+  await expect(delivery.locator("tbody")).toHaveCount(3);
+  await expect(delivery.getByText("未填写交付镜像", { exact: true })).toHaveCount(2);
+  await expect(delivery.getByRole("cell", { name: "kylinv11", exact: true })).toBeVisible();
+  await expect(delivery.getByRole("cell", { name: "ARM", exact: true })).toBeVisible();
   await expect(delivery.getByRole("columnheader")).toHaveCount(4);
   await expect(delivery.locator("tbody").first().locator("tr")).toHaveCount(2);
-  await expect(delivery.locator(".delivery-reference-row td[colspan='4']").first()).toContainText(tagged);
+  await expect(delivery.locator(".delivery-reference-row td[colspan='4']").filter({ hasText: tagged })).toHaveCount(1);
   for (const width of [650, 390]) {
     await page.setViewportSize({ width, height: 900 });
     await expect.poll(() => delivery.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
@@ -52,4 +58,5 @@ test("QA log displays a real tag while comment saves preserve the original deliv
   await page.getByLabel("选择 release").selectOption({ label: "browser-cycle-b" });
   await expect(card.getByText(bare, { exact: true })).toHaveCount(0);
   await expect(card.getByText(tagged, { exact: true })).toHaveCount(0);
+  await expect(delivery.getByText("未填写交付镜像", { exact: true })).toHaveCount(3);
 });

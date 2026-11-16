@@ -31,7 +31,7 @@ test("QA records separate OS/CPU images and publication/history retain both dige
   await page.getByLabel("选择 release").selectOption(release.id);
   await expect(page.locator('[data-qa-app="platform-check"]')).toBeVisible();
   await page.getByRole("button", { name: /修改（填写 QA 结论/ }).first().click();
-  await expect(page.getByRole("heading", { name: "QA report 失败汇总", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "QA log 失败汇总", exact: true })).toBeVisible();
   await expect(page.locator("#qaLogFile")).toHaveCount(0);
   const card = page.locator('[data-qa-app="platform-check"]');
   const table = card.getByTestId("delivery-images");

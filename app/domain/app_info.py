@@ -7,10 +7,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.domain.textutil import join_list, order_chips
+from app.domain.textutil import join_list
 from app.domain.test_platforms import (
     build_platforms, chip_summary, is_enabled_value, public_platform, release_tests,
-    test_platforms, walk_objects,
+    test_platforms,
 )
 from app.repositories.base import new_id
 
@@ -365,12 +365,12 @@ def declared_dependencies(raw: dict[str, Any]) -> list[str] | None:
     return seen
 
 
-def python_pytorch_dependencies(raw: dict[str, Any]) -> list[str]:
+def python_pytorch_dependencies(raw: dict[str, Any], *, platforms: list[dict] | None = None) -> list[str]:
     """Paired runtime labels from the same enabled build, deduplicated across platforms."""
     return sorted({
         f"torch {platform['pytorch_label'].removeprefix('torch').strip()} + {platform['python_label']}"
-        for platform in build_platforms(raw)
-        if platform["pytorch_label"] and platform["python_label"]
+        for platform in (build_platforms(raw) if platforms is None else platforms)
+        if platform.get("pytorch_label") and platform.get("python_label")
     })
 
 

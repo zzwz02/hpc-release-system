@@ -481,6 +481,13 @@ tbody tr:hover td { background: var(--surface-2); }
 .delivery-images .delivery-reference-row td { padding-top: 4px; }
 .delivery-images input { min-width: 0; }
 .qa-delivery-images { grid-column: 1 / -1; min-width: 0; }
+.qa-env-trigger { font: inherit; color: inherit; background: none; border: 0; border-bottom: 1px dotted var(--muted); padding: 0; cursor: help; text-align: left; }
+.qa-env-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.qa-env-preview { position: fixed; z-index: 2000; width: min(560px, calc(100vw - 24px)); max-height: calc(100vh - 24px); padding: 12px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); color: var(--text); box-shadow: 0 8px 28px #0003; pointer-events: none; font-size: 13px; }
+.qa-env-preview-content { max-height: min(60vh, 440px); overflow: hidden; margin-top: 8px; }
+.qa-env-preview table { width: 100%; border-collapse: collapse; table-layout: auto; }
+.qa-env-preview td { padding: 4px 8px; border: 1px solid var(--border); white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: top; }
+.qa-env-preview p { margin: 8px 0 0; }
 .official-history-version + .official-history-version { margin-top: 16px; }
 .delivery-image-item + .delivery-image-item { margin-top: 10px; }
 .compatibility-filters { flex-wrap: wrap; align-items: end; gap: 12px; }

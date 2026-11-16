@@ -29,6 +29,62 @@ beforeEach(() => {
   vi.mocked(confirmDialog).mockResolvedValue(true);
 });
 
+it("loads environment previews on hover from each row's own workbook and shares repeated reads", async () => {
+  vi.mocked(apiGet).mockImplementation(async path => {
+    if (path.includes("/environment?")) return { environment: row.qa_env, rows: [["OS", path.includes("/5/") ? "ubuntu22.04" : "ubuntu24.04"], ["Zero", "0"], ["Formula", "=1+2"], ["HTML", "<script>alert(1)</script>"]], truncated: false };
+    return { total: 2, columns: ["app_id", "qa_env"], rows: [row, { ...row, report_id: 6 }] };
+  });
+  renderPane();
+  const environments = await screen.findAllByRole("button", { name: row.qa_env });
+  expect(vi.mocked(apiGet).mock.calls.some(([path]) => path.includes("/environment?"))).toBe(false);
+  fireEvent.mouseEnter(environments[0]);
+  let tooltip = await screen.findByRole("tooltip");
+  expect(await within(tooltip).findByText("ubuntu22.04")).toBeVisible();
+  expect(within(tooltip).getByText("0")).toBeVisible();
+  expect(within(tooltip).getByText("=1+2")).toBeVisible();
+  expect(tooltip.querySelector("script")).toBeNull();
+  fireEvent.mouseLeave(environments[0]);
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  fireEvent.mouseEnter(environments[1]);
+  tooltip = await screen.findByRole("tooltip");
+  expect(await within(tooltip).findByText("ubuntu24.04")).toBeVisible();
+  expect(within(tooltip).queryByText("ubuntu22.04")).toBeNull();
+  fireEvent.mouseLeave(environments[1]);
+  fireEvent.mouseEnter(environments[0]);
+  expect(await within(screen.getByRole("tooltip")).findByText("ubuntu22.04")).toBeVisible();
+  expect(vi.mocked(apiGet).mock.calls.filter(([path]) => path.includes("/environment?"))).toHaveLength(2);
+});
+
+it("supports keyboard preview and hides an old user's pending environment response", async () => {
+  let complete!: (value: unknown) => void;
+  vi.mocked(apiGet).mockImplementation(async path => {
+    if (path.includes("/environment?")) return new Promise(resolve => { complete = resolve; });
+    return { total: 1, columns: ["app_id", "qa_env"], rows: [row] };
+  });
+  const view = renderPane();
+  fireEvent.focus(await screen.findByRole("button", { name: row.qa_env }));
+  expect(await screen.findByRole("tooltip")).toHaveTextContent("正在读取环境页");
+  identity = { username: "owner", role: "Owner" };
+  view.rerenderPane();
+  complete({ environment: row.qa_env, rows: [["OS", "old account data"]], truncated: false });
+  await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+  expect(screen.queryByText("old account data")).toBeNull();
+});
+
+it("shows an environment lookup error without changing the report rows", async () => {
+  vi.mocked(apiGet).mockImplementation(async path => {
+    if (path.includes("/environment?")) throw new Error("该报告中不存在对应的环境页");
+    return { total: 1, columns: ["app_id", "qa_env"], rows: [row] };
+  });
+  renderPane();
+  const environment = await screen.findByRole("button", { name: row.qa_env });
+  fireEvent.focus(environment);
+  expect(await within(await screen.findByRole("tooltip")).findByText("该报告中不存在对应的环境页")).toBeVisible();
+  fireEvent.keyDown(environment, { key: "Escape" });
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  expect(screen.getByText("HPL")).toBeVisible();
+});
+
 it("shows automatic and Excel commands separately with the Excel submission time and original download", async () => {
   vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [row], columns: ["app_id", "hpc_version", "qa_result", "qa_digest", "qa_env", "website_docker_cmd", "qa_docker_cmd"] });
   renderPane();
@@ -144,7 +200,7 @@ it("warns about replacing the entire selected cycle and preserves its report whe
   fireEvent.change(screen.getByLabelText("上传测试结果 Excel"), { target: { files: [new File(["bytes"], "only-B.xlsx")] } });
   await waitFor(() => expect(screen.getByLabelText("上传测试结果 Excel")).toBeEnabled());
   expect(confirmDialog).toHaveBeenCalledWith(expect.objectContaining({
-    title: "整份替换 3.10.0 的 QA report", danger: true, confirmText: "确认整份替换", cancelText: "取消上传",
+    title: "整份替换 3.10.0 的 QA log", danger: true, confirmText: "确认整份替换", cancelText: "取消上传",
   }));
   const body = vi.mocked(confirmDialog).mock.lastCall![0].body;
   expect(body).toContain("only-B.xlsx");

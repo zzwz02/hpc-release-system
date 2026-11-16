@@ -4,16 +4,16 @@
  * Roles: RM / Owner / QA / Guest.
  *
  * QA tools:
- *   1. QA log — report failure summary, scope requests, verdicts, delivery images and App comments
+ *   1. QA report — report failure summary, scope requests, verdicts, delivery images and App comments
  *   2. 本期发布app — filterable/sortable/column-pick/CSV-export table
  *   3. 测试命令 — same table machinery, no column picker
- *   4. 开发者社区产物
- *   5. QA report — upload Excel results and compare live / uploaded commands
+ *   4. QA log — upload Excel results and compare live / uploaded commands
+ *   5. 开发者社区产物
  *   历史查询 / 兼容性验证 — independent routes, shared QA tab row
  *
  * Data:
  *   - QA annotation: GET /api/state; report failures: GET /api/qa/failure-summary
- *   - QA reports: GET /api/qa-reports (fetched on demand, not from state)
+ *   - Release report / command tables: GET /api/qa-reports (fetched on demand, not from state)
  *   - All data refreshes on entry, explicit refresh or a successful write; no polling.
  */
 
@@ -39,7 +39,6 @@ import { formatServerTime } from "../../lib/time";
 import { downloadCsv } from "../../lib/csv";
 import { qaStatusLabels, qaStatusOptions } from "../../lib/labels";
 import { shortCommit, versionTag } from "../appWorkbench/helpers";
-import { qaStatusRequiresIssueNote } from "../../lib/domainMetadata";
 import { confirmDialog, promptDialog } from "../../lib/confirm";
 import { toast } from "../../lib/toast";
 import type {
@@ -185,11 +184,6 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
       }];
     });
     if (!items.length) { handleCancel(); return; }
-    const missingNote = items.find(item => qaStatusRequiresIssueNote(item.status) && !item.issue_note.trim());
-    if (missingNote) {
-      toast.info(`标注「${qaStatusLabels[missingNote.status as QaStatus] ?? missingNote.status}」时必须填写问题说明（QA comment）`);
-      return;
-    }
     const generation = ++saveGeneration.value;
     setSaving(true);
     try {
@@ -224,17 +218,17 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
     {deliveryView.error && <p className="lerr" role="alert">交付镜像 tag 读取失败：{deliveryView.error.message}</p>}
     <div className="panel" data-testid="qa-failure-summary">
       <div className="panel-head">
-        <h2>QA report 失败汇总</h2>
+        <h2>QA log 失败汇总</h2>
         {summaryAvailable && <span className="count">{summary.data?.failed_rows ?? 0} 条失败 / {summary.data?.total_rows ?? 0} 条结果</span>}
         <span className="spacer" />
         <RefreshBar dataUpdatedAt={summary.dataUpdatedAt} isFetching={summary.isFetching} onRefresh={() => void summary.refetch()} />
       </div>
       <div className="panel-body">
-        <p className="hint">来自本版本当前 QA report，按 App、分支、GPU 和测试项汇总 fail 结果，保留具体 HPC/App 版本与 QA report 的 QA comment。汇总不自动修改 App 的 QA 结论；每个 App 的手填 QA comment 位于卡片末尾。</p>
+        <p className="hint">来自本版本当前 QA log，按 App、分支、GPU 和测试项汇总 fail 结果，保留具体 HPC/App 版本与 QA log 的 QA comment。汇总不自动修改 App 的 QA 结论；每个 App 的手填 QA comment 位于卡片末尾。</p>
         {summary.error && <p className="lerr" role="alert">失败汇总加载失败：{summary.error.message}</p>}
-        {summary.isFetching && <p className="muted" role="status">正在读取 QA report 失败项…</p>}
-        {summaryAvailable && !(summary.data?.total_rows) && <p className="muted">本版本尚无 QA report 测试结果，请在 QA report 上传 Excel。</p>}
-        {summaryAvailable && !!summary.data?.total_rows && !summary.data.failed_rows && <p className="muted">当前 QA report 没有标为 fail 的测试结果。</p>}
+        {summary.isFetching && <p className="muted" role="status">正在读取 QA log 失败项…</p>}
+        {summaryAvailable && !(summary.data?.total_rows) && <p className="muted">本版本尚无 QA log 测试结果，请在 QA log 上传 Excel。</p>}
+        {summaryAvailable && !!summary.data?.total_rows && !summary.data.failed_rows && <p className="muted">当前 QA log 没有标为 fail 的测试结果。</p>}
         {unmatched.length > 0 && <details open>
           <summary>未关联本期有效报名的失败记录</summary>
           {unmatched.map(group => <section key={JSON.stringify([group.reported_app_id, group.app_name, group.git_branch])}>
@@ -264,15 +258,15 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
             <span className="qa-cur"><span className={`pill ${pillClass}`}>{qaStatusLabels[status] ?? status}</span></span>
           </div>
           <div className="qa-card-b">
-            {summaryAvailable && <section data-testid={`qa-app-failures-${app.id}`}>
-              <b>QA report 失败项（{failed.length}）</b>
-              {failed.length ? <QaFailureDetails failures={failed} /> : <p className="muted small">QA report 未记录本 App 的失败项。</p>}
-            </section>}
             <label>QA 状态<select className="select" disabled={!qaFieldsWritable} value={status}
               onChange={event => setFormState(previous => ({ ...previous, [app.id]: { ...previous[app.id], status: event.target.value } }))}
               data-testid={`qa-status-${app.id}`}>
               {qaStatusOptions.map(value => <option key={value} value={value}>{qaStatusLabels[value]}</option>)}
             </select></label>
+            {summaryAvailable && <details className="mt-6 mb-6" data-testid={`qa-app-failures-${app.id}`}>
+              <summary><b>QA log 失败项（{failed.length}）</b></summary>
+              {failed.length ? <QaFailureDetails failures={failed} /> : <p className="muted small">QA log 未记录本 App 的失败项。</p>}
+            </details>}
             <div className="qa-delivery-images"><b>交付镜像（按报名 app_info 的 app_build）</b>
               <DeliveryImages images={!editMode && matchingImages ? matchingImages : draft?.images ?? recordedImages(entry.deliverable_images, entry.deliverable_image, entry.deliverable_digest)}
                 builds={entry.delivery_builds} onChange={qaFieldsWritable ? images => setFormState(previous => ({ ...previous, [app.id]: { ...previous[app.id], images } })) : undefined} />
@@ -286,9 +280,9 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
               <TestScopeTable tests={inScope} />
             </details>
             <p className="small muted">Gerrit: {formatGerritUrl(app.git_url)} {app.git_branch || ""}</p>
-            <label>QA comment{" "}{qaStatusRequiresIssueNote(status) ? <span className="req">必填</span> : "(可选)"}
+            <label>QA comment (可选)
               <textarea aria-label={`${app.official_name?.trim() || displayName(app)} QA comment`} disabled={!qaFieldsWritable}
-                placeholder={qaFieldsWritable ? "标注「存在问题」或「不可发布」时必填；其他状态可选，保存后保留本 App 的 QA comment" : ""}
+                placeholder={qaFieldsWritable ? "可填写测试结论或其他说明" : ""}
                 value={draft?.note ?? entry.qa_note ?? ""}
                 onChange={event => setFormState(previous => ({ ...previous, [app.id]: { ...previous[app.id], note: event.target.value } }))} />
             </label>

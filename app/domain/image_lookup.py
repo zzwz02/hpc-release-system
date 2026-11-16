@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.domain import app_info, delivery_images
 from app.domain.container_image import delivered_image_reference, parse_base_image_reference
 from app.domain.test_commands import (
     IMAGE_TARGET_SUFFIX,
@@ -158,6 +159,10 @@ def historical_image_commands(
     ]
     return {
         "app_name": raw.get("app_name", ""), "app_version": raw.get("app_version", ""),
+        "declared_dependencies": app_info.declared_dependencies(raw),
+        "builds": [build for build in delivery_images.builds(raw)
+                   if (not architecture or build["arch"] == normalize_arch(architecture))
+                   and _matches_tag(build["image_pattern"], image_name, tags, tag_version)],
         **chip_summary(builds), "test_commands": commands,
     }
 

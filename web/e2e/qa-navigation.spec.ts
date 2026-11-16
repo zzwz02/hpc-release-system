@@ -9,9 +9,11 @@ for (const username of ["app_owner", "app_qa"]) {
     await page.goto(base + "/qa");
     const tabs = page.locator("nav.tabs");
     const subnav = page.getByRole("navigation", { name: "QA", exact: true });
-    await expect(subnav.getByRole("link")).toHaveText(["QA log", "本期发布app", "测试命令", "QA report", "开发者社区产物", "历史查询", "兼容性验证"]);
+    await expect(subnav.getByRole("link")).toHaveText(["QA report", "本期发布app", "测试命令", "QA log", "开发者社区产物", "历史查询", "兼容性验证"]);
     await expect(page.locator(".tab-subnav")).toHaveCount(0);
-    await expect(subnav.getByRole("link", { name: "QA log", exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(subnav.getByRole("link", { name: "QA report", exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(subnav.getByRole("link", { name: "QA report", exact: true })).toHaveAttribute("href", "/qa?tab=mark");
+    await expect(subnav.getByRole("link", { name: "QA log", exact: true })).toHaveAttribute("href", "/qa?tab=report");
     await expect(tabs.getByRole("link", { name: "历史查询", exact: true })).toHaveCount(0);
     await expect(tabs.getByRole("link", { name: "兼容性验证", exact: true })).toHaveCount(0);
     await subnav.getByRole("link", { name: "历史查询", exact: true }).click();
@@ -38,8 +40,8 @@ for (const username of ["app_owner", "app_qa"]) {
     await expect(page.getByRole("heading", { name: "开发者社区产物", exact: true })).toBeVisible();
     await page.goBack();
     await expect(subnav.getByRole("link", { name: "测试命令", exact: true })).toHaveAttribute("aria-current", "page");
-    await subnav.getByRole("link", { name: "QA log", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "QA report 失败汇总", exact: true })).toBeVisible();
+    await subnav.getByRole("link", { name: "QA report", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "QA log 失败汇总", exact: true })).toBeVisible();
     await page.screenshot({ path: `/tmp/qa-navigation-${username}.png`, fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
     const navBounds = await subnav.locator(".subtabs").boundingBox();
@@ -54,7 +56,7 @@ for (const username of ["app_guest", "app_spd"]) {
     if (username === "app_guest") {
       await page.goto(base + "/qa");
       await expect(page.getByRole("navigation", { name: "QA", exact: true }).getByRole("link")).toHaveText([
-        "QA log", "本期发布app", "测试命令", "QA report", "开发者社区产物",
+        "QA report", "本期发布app", "测试命令", "QA log", "开发者社区产物",
       ]);
     }
     for (const path of ["/lookup", "/dependencies"]) {

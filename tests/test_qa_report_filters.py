@@ -1,4 +1,4 @@
-"""QA report filtering, sorting and export cover records beyond the first page."""
+"""QA log filtering, sorting and export cover records beyond the first page."""
 from __future__ import annotations
 
 import csv

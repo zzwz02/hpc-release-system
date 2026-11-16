@@ -92,7 +92,7 @@ def test_http_upload_is_retired_but_legacy_state_and_download_remain_readable(te
             },
         )
         assert uploaded.status_code == 410
-        assert "QA report" in uploaded.json()["error"]
+        assert "QA log" in uploaded.json()["error"]
 
         state = client.get("/api/state", params={"release_id": release_id})
         assert state.status_code == 200

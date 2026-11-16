@@ -200,7 +200,7 @@ def api_qa_upload_log(
     _user: dict = Depends(require_qa_log_upload),
 ) -> dict:
     """Old upload clients must use the validated QA-report workflow."""
-    raise ApiError(410, "QA log 已取消上传，请在 QA report 上传测试结果 Excel；QA log 自动汇总失败项")
+    raise ApiError(410, "旧日志上传接口已停用，请在 QA log 上传测试结果 Excel；QA report 自动汇总失败项")
 
 
 @router.get("/api/qa/failure-summary")
@@ -405,3 +405,15 @@ def download_test_results(
             "Cache-Control": "no-store",
         },
     )
+
+
+@router.get("/api/qa/test-results/{report_id}/environment")
+def preview_test_environment(
+    report_id: int,
+    response: Response,
+    name: str = Query(min_length=1),
+    user: dict = Depends(require_qa_tab_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    return qa_results_service.environment_preview(conn, report_id, name)

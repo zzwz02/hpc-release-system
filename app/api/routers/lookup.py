@@ -16,9 +16,11 @@ require_lookup_tab = require_tab_access("lookup", message="无权查看历史查
 
 @router.get("/latest-running")
 def latest_running_releases(
+    response: Response,
     user: dict = Depends(require_lookup_tab),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
+    response.headers["Cache-Control"] = "no-store"
     return lookup_service.latest_running_releases(conn)
 
 

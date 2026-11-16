@@ -6,10 +6,38 @@ from typing import Any
 
 from app.domain import app_info, delivery_images
 from app.domain.shared_metadata import mapping_section
+from app.domain.test_platforms import is_enabled_value
 
 # Increase only when the persisted document shape changes; readers dispatch by this version.
 SCHEMA_VERSION = 1
 _SOURCE_METADATA = mapping_section("publication_manifest_sources")
+
+
+def compatibility_view(manifest: dict, current_raw: dict) -> dict:
+    """Omit explicitly disabled builds without changing archived publication evidence.
+
+    Current app_info can retire a build alias, but its new commands, labels or
+    dependencies must never replace those of the successful publication.
+    """
+    raw = manifest["app_info"]["raw"]
+    disabled = {
+        alias for document in (raw, current_raw)
+        for alias, cfg in (document.get("app_build") or {}).items()
+        if isinstance(cfg, dict) and not is_enabled_value(cfg.get("enabled"))
+    }
+    scoped_raw = {**raw, "app_build": {alias: cfg for alias, cfg in (raw.get("app_build") or {}).items()
+                                      if alias not in disabled}}
+    declared = app_info.declared_dependencies(raw)
+    dependencies = list(dict.fromkeys([*(declared or []), *app_info.python_pytorch_dependencies(scoped_raw)]))
+    build_aliases = {build["build_key"]: build.get("build", "") for build in manifest["builds"]}
+
+    def included(row: dict) -> bool:
+        alias = row.get("build") or build_aliases.get(row.get("delivery_build_key") or row.get("build_key"), "")
+        return alias not in disabled
+
+    return {**manifest, "dependencies": dependencies, "declared_dependencies": declared,
+            "scope_pending": declared is None or not dependencies,
+            **{key: [row for row in manifest[key] if included(row)] for key in ("builds", "images", "commands")}}
 
 
 def source_label(source: str) -> str:

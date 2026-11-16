@@ -45,6 +45,7 @@ def main():
 
         register_artifacts, saved_artifact = make_harbor_registry()
         published_infos = {}
+        dependency_infos = {}
         published_artifacts = {}
         harbor.get_artifact = saved_artifact
         conn = connect(settings.db_path)
@@ -82,6 +83,7 @@ def main():
                 if app_id == "runtime-published":
                     runtime_info["app_build"]["ubuntu20.04_amd64"]["supported_chip"].append("C500X")
                     runtime_info["app_test"]["sanity"]["supported_chip"]["C500X"] = ["ubuntu20.04_amd64"]
+                dependency_infos[app_id] = json.dumps(runtime_info)
                 seed_app(conn, app_id, official_name=app_id, owners=["app_owner"], app_info=runtime_info,
                          commit_id="0123456789abcdef0123456789abcdef01234567",
                          cicd_status="stopped" if app_id == "runtime-stopped" else "running")
@@ -131,6 +133,7 @@ def main():
             from app.services import cycle_service, qa_service
 
             for name in ("amber", "hpl", "stopped"):
+                dependency_infos[name] = json.dumps(make_dependency_app_info(name))
                 seed_app(conn, name, official_name=name.upper(), app_info=make_dependency_app_info(name))
             for version in ("3.9", "3.10"):
                 release_id = seed_cycle(conn, name=version)
@@ -331,6 +334,8 @@ def main():
 
         gerrit.head_commit = head_commit
         def fetch_app_info(url, commit, **_kwargs):
+            if url.rsplit("/hpc_", 1)[-1] in dependency_infos:
+                return dependency_infos[url.rsplit("/hpc_", 1)[-1]]
             if args.image_publications and url.endswith("hpc_image-published"):
                 return json.dumps(published_infos[commit])
             if args.platforms and url.endswith("hpc_platform-check"):
