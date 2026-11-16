@@ -28,6 +28,7 @@ export interface ReproTask {
   stale: boolean;
   cancel_requested: boolean;
   resolved_by: string | null;
+  adoptable?: boolean;
   history: { status: string; at: string; detail: string }[];
   report: null | {
     outcome: string;
@@ -74,7 +75,7 @@ export interface ReproTask {
 const LABELS: Record<string, string> = {
   queued: "排队中", analyzing_history: "历史日志分析中", preparing: "准备源码与证据", selecting_node: "选择复现节点",
   reproducing: "复现构建中", diagnosing: "Codex 诊断中", verifying: "验证补丁中",
-  completed: "诊断完成，待 RM 审定", blocked: "环境阻塞", failed: "执行失败",
+  completed: "诊断完成，待发起人更新", blocked: "环境阻塞", failed: "执行失败",
   cancelled: "已取消", interrupted: "执行中断",
 };
 const OUTCOMES: Record<string, string> = {
@@ -88,9 +89,10 @@ const LOG_DECISIONS: Record<string, string> = {
 };
 const FINISHED = new Set(["completed", "blocked", "failed", "cancelled", "interrupted"]);
 
-export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
+export function FailureReproPanel({ recordId, canResolve, canRequest, onUseReport }: {
   recordId: number;
   canResolve: boolean;
+  canRequest: boolean;
   onUseReport: (task: ReproTask) => void;
 }) {
   const { user } = useAuth();
@@ -103,7 +105,7 @@ export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
   const [logName, setLogName] = useState("");
   const logsRef = useRef<HTMLDetailsElement>(null);
   const query = useQuery({
-    queryKey: ["cicd-agent", "repro-tasks", recordId],
+    queryKey: ["cicd-agent", "repro-tasks", recordId, user?.username, user?.role],
     queryFn: () => apiGet<{ tasks: ReproTask[]; enabled: boolean; worker_online?: boolean;
       evidence_archive?: { status: string; captured_at?: string; expired_at?: string } }>(`/api/cicd-agent/failures/${recordId}/repro-tasks`),
     refetchOnMount: "always",
@@ -145,7 +147,8 @@ export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
     : verification?.builds ?? report?.builds.flatMap((b) => b.results.map((r) => ({ ...r, attempt: b.attempt }))) ?? [];
   const scope = verification?.scope || (historicalOnly ? "仅依据历史日志认定，未执行构建或基础镜像核对。"
     : "仅验证已列出的构建 target，不代表完整功能测试通过。");
-  const canUseReport = canResolve && task?.status === "completed" && !task.stale && !task.resolved_by
+  const canUseReport = canResolve && task?.adoptable === true && task.id === latest?.id
+    && !active && task?.status === "completed" && !task.stale && !task.resolved_by
     && ["Code Owner", "DevOps"].includes(diagnosis?.suggested_role ?? "")
     && !["evidence_insufficient", "history_validation_failed"].includes(report?.outcome ?? "")
     && logReview?.validation?.status !== "failed" && logReview?.decision !== "insufficient_evidence";
@@ -196,9 +199,9 @@ export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
     {active ? <div className="cicd-repro-active" role="status">
       <b>{active.cancel_requested ? "正在取消" : LABELS[active.status] || active.status}</b>
       <span>{active.status === "analyzing_history" ? "正在分析 Jenkins 原始日志" : active.node_name || "等待节点分配"}</span>
-      {(canResolve || user?.username === active.requested_by) && <button type="button" className="btn sm"
+      {(user?.role === "RM" || user?.username === active.requested_by) && <button type="button" className="btn sm"
         disabled={busy || active.cancel_requested} onClick={() => void cancel()}>取消复议</button>}
-    </div> : <details className="cicd-repro-new" open={tasks.length === 0 ? true : undefined}>
+    </div> : canRequest && <details className="cicd-repro-new" open={tasks.length === 0 ? true : undefined}>
       <summary>{tasks.length ? "发起新的复议" : "发起复议"}</summary>
       <form className="cicd-repro-form" onSubmit={(e) => void submit(e)}>
       <label htmlFor="repro-reason">复议原因</label>
@@ -210,7 +213,7 @@ export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
     </form></details>}
     {tasks.length > 0 && <label className="cicd-repro-history">复议记录
       <select value={task?.id} onChange={(e) => { setSelected(e.target.value); setLogName(""); setLogsOpen(false); }}>
-        {tasks.map((t) => <option key={t.id} value={t.id}>{t.created_at.replace("T", " ")} / {t.requested_by} / {t.resolved_by ? "RM 已审定" : t.stale ? "历史报告" : LABELS[t.status] || t.status}</option>)}
+        {tasks.map((t) => <option key={t.id} value={t.id}>{t.created_at.replace("T", " ")} / {t.requested_by} / {t.resolved_by ? `已由 ${t.resolved_by} 处理` : t.stale ? "历史报告" : t.status === "completed" && !t.adoptable ? "需人工复核" : LABELS[t.status] || t.status}</option>)}
       </select>
     </label>}
     {task && <div className="cicd-repro-result">
@@ -228,14 +231,14 @@ export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
       {task.resolved_by && <p className="muted">已由 {task.resolved_by} 处理</p>}
       {report?.environment_error && <p className="cicd-repro-warning">{report.environment_error}</p>}
       {logReview?.validation?.status === "failed" && <div className="cicd-repro-warning" role="alert">
-        <p>Agent 原始建议已保留，但证据校验未通过，请 RM 核对。这不代表归档缺失。</p>
+        <p>Agent 原始建议已保留，但证据校验未通过，需人工复核。这不代表归档缺失。</p>
         <ul>{logReview.validation.errors.map((error, i) => <li key={i}>{error}</li>)}</ul>
       </div>}
       {diagnosis && <>
         <p>{diagnosis.summary}</p>
         <dl className="cicd-repro-facts">
           <dt>Agent 建议</dt><dd><strong>{diagnosis.suggested_role} / {report?.suggested_owner_account || "待人工判断"}</strong>
-            <span className="muted small"> · {task.resolved_by ? "已审定" : "待 RM 审定"}</span></dd>
+            <span className="muted small"> · {task.resolved_by ? "已处理" : task.stale ? "历史报告" : task.adoptable ? "待发起人确认并更新责任认定" : "需人工复核"}</span></dd>
           <dt>认定依据</dt><dd>{diagnosis.responsibility_reason}</dd>
           <dt>处理建议</dt><dd>{diagnosis.action_suggestion}</dd>
         </dl>

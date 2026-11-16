@@ -11,7 +11,7 @@ vi.mock("../../../api/AuthContext", () => ({ useAuth: () => ({ user: { username:
 const task: ReproTask = {
   id: "abc", failure_id: 2188, status: "completed", reason: "验证依赖", requested_by: "owner1",
   node_name: "local", created_at: "2026-10-16T09:00:00", error: null, stale: false, resolved_by: null,
-  cancel_requested: false, history: [], report: {
+  cancel_requested: false, history: [], adoptable: false, report: {
     outcome: "environment_blocked", source_commit: "a".repeat(40), arch: "amd64", verified: false,
     base_digests_match: false, environment_error: "镜像不存在", suggested_owner_account: "owner1", builds: [], patches: [],
     diagnosis: { summary: "原始日志显示依赖版本冲突", suggested_role: "Code Owner", responsibility_reason: "pip 冲突",
@@ -20,7 +20,7 @@ const task: ReproTask = {
 };
 
 const historicalTask: ReproTask = {
-  ...task, node_name: null, report: {
+  ...task, adoptable: true, node_name: null, report: {
     ...task.report!, outcome: "historical_log_confirmed", source_commit: "", environment_error: "",
     build_skipped_reason: "历史日志已明确显示依赖版本冲突",
     log_review: {
@@ -35,10 +35,10 @@ const historicalTask: ReproTask = {
   },
 };
 
-function panel(canResolve = true) {
+function panel(canResolve = true, canRequest = canResolve) {
   const onUseReport = vi.fn();
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-    <FailureReproPanel recordId={2188} canResolve={canResolve} onUseReport={onUseReport} />
+    <FailureReproPanel recordId={2188} canResolve={canResolve} canRequest={canRequest} onUseReport={onUseReport} />
   </QueryClientProvider>);
   return onUseReport;
 }
@@ -57,12 +57,12 @@ describe("FailureReproPanel", () => {
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/cicd-agent/failures/2188/repro-tasks", { reason: "检查依赖冲突" }));
   });
 
-  it("distinguishes environment blocking and only prefills RM resolution", async () => {
+  it("does not allow environment blocking to become an original-failure verdict", async () => {
     vi.mocked(apiGet).mockResolvedValue({ tasks: [task], enabled: true });
     const useReport = panel();
     expect(await screen.findByText("复现环境阻塞")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "带入责任处理" }));
-    expect(useReport).toHaveBeenCalledWith(task);
+    expect(screen.queryByRole("button", { name: "带入责任处理" })).not.toBeInTheDocument();
+    expect(useReport).not.toHaveBeenCalled();
     expect(apiPost).not.toHaveBeenCalled();
   });
 
@@ -70,6 +70,31 @@ describe("FailureReproPanel", () => {
     vi.mocked(apiGet).mockResolvedValue({ tasks: [{ ...task, stale: true }], enabled: true });
     panel();
     expect(await screen.findByText("责任认定已变化，此报告不能覆盖新的认定。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "带入责任处理" })).not.toBeInTheDocument();
+  });
+
+  it("does not allow viewers to start tasks but keeps existing evidence readable", async () => {
+    vi.mocked(apiGet).mockResolvedValue({ tasks: [historicalTask], enabled: true });
+    panel(false, false);
+    await screen.findByText("历史日志诊断完成 · 未执行构建");
+    expect(screen.queryByText("发起新的复议")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("复议原因")).not.toBeInTheDocument();
+    expect(screen.getByText("历史日志与认定证据")).toBeInTheDocument();
+  });
+
+  it("cannot adopt an older report while a newer review is running", async () => {
+    vi.mocked(apiGet).mockResolvedValue({ tasks: [
+      { ...task, id: "new", status: "queued", report: null }, historicalTask,
+    ], enabled: true });
+    panel();
+    await userEvent.selectOptions(await screen.findByLabelText("复议记录"), historicalTask.id);
+    expect(screen.queryByRole("button", { name: "带入责任处理" })).not.toBeInTheDocument();
+  });
+
+  it("fails closed when an older backend omits adoption eligibility", async () => {
+    vi.mocked(apiGet).mockResolvedValue({ tasks: [{ ...historicalTask, adoptable: undefined }], enabled: true });
+    panel();
+    await screen.findByText("历史日志诊断完成 · 未执行构建");
     expect(screen.queryByRole("button", { name: "带入责任处理" })).not.toBeInTheDocument();
   });
 

@@ -46,6 +46,7 @@ export interface FailureRecordFilters {
   need_human_review?: boolean;
   responsibility_status?: string;
   pending_rm_review?: boolean;
+  has_repro?: boolean;
   notification_status?: string;
   keyword?: string;
 }
@@ -166,6 +167,7 @@ export interface FailureRecordListResponse {
   total: number;
   total_pages: number;
   pending_rm_review_count?: number;
+  pending_repro_update_count?: number;
   records: FailureRecordListItem[];
 }
 

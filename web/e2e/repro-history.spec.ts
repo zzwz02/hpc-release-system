@@ -6,7 +6,7 @@ test.use({ baseURL: process.env.REPRO_UI_URL || "http://127.0.0.1:8033" });
 const historicalTask: ReproTask = {
   id: "history-review", failure_id: 2188, status: "completed", requested_by: "hajiang",
   reason: "复核历史日志中的依赖冲突", node_name: null, created_at: "2026-10-23T09:00:00",
-  error: null, stale: false, resolved_by: null, cancel_requested: false,
+  error: null, stale: false, resolved_by: null, cancel_requested: false, adoptable: true,
   history: [{ status: "analyzing_history", at: "2026-10-23T09:01:00", detail: "分析已归档的 Jenkins 日志" }],
   report: {
     outcome: "historical_log_confirmed", source_commit: "", arch: "amd64", verified: false,
@@ -64,17 +64,25 @@ async function mockReport(page: Page, task = historicalTask, role = "RM", record
         : path.endsWith("/evidence-preparation.log") ? "已读取归档 Jenkins 日志；未检查、未下载源码。"
           : `Archived Jenkins output\n${currentTask.report?.diagnosis?.original_evidence || "ERROR: ResolutionImpossible"}`;
       data = { content, start_line: 301, end_line: 600, total_lines: 600, previous_before: 300 };
+    } else if (path.endsWith("/responsibility-resolution")) {
+      const payload = route.request().postDataJSON();
+      currentTask = { ...currentTask, resolved_by: "hajiang", adoptable: false };
+      Object.assign(record, { final_owner_account: payload.final_owner_account, final_owner_role: payload.final_owner_role,
+        responsibility_status: "corrected", repro_review_state: "reviewed", responsibility_updated_by: "hajiang" });
+      data = { record };
     } else if (path === "/api/me") data = { user: { username: "hajiang", display_name: "Haiyang", role } };
     else if (path === "/api/state") data = { user_display_names: { m00859: "Jiazhen Gong" }, releases: [], apps: [] };
     else if (path.endsWith("/summary")) data = { total_records: 1, groups: [] };
     else if (path.endsWith("/repro-tasks")) data = { tasks: [currentTask], enabled: true, worker_online: true, evidence_archive: { status: "complete" } };
     else if (path.endsWith(`/failures/${record.id}`)) data = record;
-    else if (path.endsWith("/failures")) data = { records: [record], total: 1, page: 1, page_size: 20, total_pages: 1 };
+    else if (path.endsWith("/failures")) data = { records: [record], total: 1, page: 1, page_size: 20,
+      total_pages: 1, pending_repro_update_count: currentTask.resolved_by ? 0 : 1 };
     await route.fulfill({ json: data });
   });
   await page.goto("/jenkins-failures?date_from=2026-10-23&date_to=2026-10-23");
-  await page.getByRole("button", { name: "复议诊断", exact: true }).click();
+  await page.getByRole("button", { name: "查看详情", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "记录详情" });
+  await dialog.getByRole("button", { name: "复议诊断", exact: true }).click();
   const panel = dialog.getByRole("region", { name: "复议诊断", exact: true });
   await expect(panel.getByLabel("复议记录")).toBeVisible();
   return { dialog, panel, writes, logReads, errors, setTask: (next: ReproTask) => { currentTask = next; } };
@@ -113,6 +121,63 @@ async function expectDesktopLayout(panel: Locator) {
     return problems;
   });
   expect(issues).toEqual([]);
+}
+
+for (const width of [390, 1366]) {
+  test(`repro history filter and inline pending count at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    const { errors, writes } = await mockReport(page, historicalTask, "Owner", { code_owner: "hajiang" });
+    await page.keyboard.press("Escape");
+    const toggle = page.getByRole("checkbox", { name: "只看复议（待更新 1）" });
+    await expect(toggle).not.toBeChecked();
+    await expect(page.getByRole("checkbox", { name: "只看我的", exact: true })).toBeChecked();
+    const queryRequest = page.waitForRequest(request => {
+      const url = new URL(request.url());
+      return url.pathname === "/api/cicd-agent/failures" && url.searchParams.get("has_repro") === "true";
+    });
+    await toggle.check();
+    const query = new URL((await queryRequest).url()).searchParams;
+    expect(query.get("code_owner")).toBe("hajiang");
+    expect(query.get("date_from")).toBe("2026-10-23");
+    expect(query.has("pending_rm_review")).toBe(false);
+    await expect(page.getByRole("button", { name: /待更新 1/ })).toHaveCount(0);
+    const toolbar = page.locator(".cicd-agent-view > .page-toolbar");
+    const issues = await toolbar.evaluate(element => {
+      const rects = Array.from(element.children).filter(child => !child.classList.contains("spacer"))
+        .map(child => child.getBoundingClientRect());
+      return rects.flatMap((a, i) => rects.slice(i + 1).filter(b =>
+        Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1
+        && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1));
+    });
+    expect(issues).toEqual([]);
+    await toolbar.screenshot({ path: testInfo.outputPath(`repro-filter-${width}.png`) });
+    await toggle.uncheck();
+    await expect(page.getByRole("checkbox", { name: "只看我的", exact: true })).toBeChecked();
+    expect(errors).toEqual([]);
+    expect(writes).toEqual([]);
+  });
+
+  test(`Code Owner adopts a clear DevOps result without RM at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    const task: ReproTask = { ...historicalTask, id: "a".repeat(32), report: { ...historicalTask.report!,
+      suggested_owner_account: "m00930", build_skipped_reason: "代理超时证据充分",
+      diagnosis: { ...historicalTask.report!.diagnosis!, suggested_role: "DevOps", summary: "下载依赖时代理超时",
+        responsibility_reason: "失败步骤明确指出代理未响应", action_suggestion: "恢复代理连通性" },
+    } };
+    const { dialog, panel, writes, errors } = await mockReport(page, task, "Owner", { code_owner: "hajiang" });
+    await expect(panel.getByText("待发起人确认并更新责任认定", { exact: false })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "处理责任", exact: true })).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath(`participant-review-${width}.png`), fullPage: true });
+    await panel.getByRole("button", { name: "带入责任处理" }).click();
+    await expect(dialog.getByRole("combobox", { name: "最终责任归属", exact: true })).toBeDisabled();
+    await expect(dialog.getByLabel("最终原因摘要")).toHaveAttribute("readonly");
+    await dialog.getByLabel("处理备注").fill("核对历史日志后采纳代理超时结论");
+    await page.screenshot({ path: testInfo.outputPath(`participant-confirm-${width}.png`), fullPage: true });
+    await dialog.getByRole("button", { name: "保存处理" }).click();
+    await expect(dialog.getByRole("button", { name: "保存处理" })).toHaveCount(0);
+    expect(writes).toEqual([`/api/cicd-agent/failures/${task.failure_id}/responsibility-resolution`]);
+    expect(errors).toEqual([]);
+  });
 }
 
 for (const width of [390, 1366]) {
@@ -301,7 +366,7 @@ test("stale historical reports cannot prefill responsibility", async ({ page }) 
   expect(writes).toEqual([]);
 });
 
-test("historical report prefill remains RM only", async ({ page }) => {
+test("unrelated viewers cannot prefill a historical report", async ({ page }) => {
   const { panel, writes } = await mockReport(page, historicalTask, "SPD");
   await expect(panel.getByText("历史日志诊断完成 · 未执行构建", { exact: true })).toBeVisible();
   await expect(panel.getByRole("button", { name: "带入责任处理" })).toHaveCount(0);

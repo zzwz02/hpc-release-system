@@ -173,6 +173,7 @@ describe("JenkinsFailuresPage", () => {
           total: 1,
           total_pages: 1,
           pending_rm_review_count: 3,
+          pending_repro_update_count: 2,
           records: [currentRecord],
         };
       }
@@ -318,7 +319,8 @@ describe("JenkinsFailuresPage", () => {
     expect(screen.getByLabelText("开始时间")).toHaveValue("2026-10-20");
     expect(screen.getByLabelText("结束时间")).toHaveValue("2026-10-26");
     expect(screen.getByRole("checkbox", { name: "只看我的" })).not.toBeChecked();
-    expect(screen.getByRole("checkbox", { name: /仅看待 RM 裁定/ })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /只看复议/ })).not.toBeChecked();
+    expect(screen.queryByRole("button", { name: "取消待更新筛选" })).not.toBeInTheDocument();
     await waitFor(() => {
       expect(latestQuery().has("code_owner")).toBe(false);
       expect(latestQuery().has("pending_rm_review")).toBe(false);
@@ -336,42 +338,74 @@ describe("JenkinsFailuresPage", () => {
     });
   });
 
-  it("filters pending RM records with the current date range and summary", async () => {
+  it("filters all repro records while preserving my owner, dates and summary scope", async () => {
     renderPage("/jenkins-failures?date_from=2026-10-01&date_to=2026-10-23");
-    const toggle = await screen.findByRole("checkbox", { name: /仅看待 RM 裁定/ });
+    const toggle = await screen.findByRole("checkbox", { name: /只看复议/ });
     await userEvent.click(screen.getByRole("checkbox", { name: "只看我的" }));
     expect(screen.getByRole("checkbox", { name: "只看我的" })).toBeChecked();
-    await waitFor(() => expect(toggle.closest("label")).toHaveTextContent("3"));
+    await waitFor(() => expect(toggle.closest("label")).toHaveTextContent("只看复议（待更新 2）"));
+    expect(screen.queryByRole("button", { name: /待更新 2/ })).not.toBeInTheDocument();
     await userEvent.click(toggle);
-    expect(screen.getByRole("checkbox", { name: "只看我的" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "只看我的" })).toBeChecked();
     await waitFor(() => {
-      expect(apiGet).toHaveBeenCalledWith(expect.stringMatching(/failures\?date_from=2026-10-01&date_to=2026-10-23&pending_rm_review=true&page=1/));
-      expect(apiGet).toHaveBeenCalledWith(expect.stringMatching(/summary\?.*pending_rm_review=true/));
+      for (const endpoint of ["/api/cicd-agent/failures", "/api/cicd-agent/failures/summary"]) {
+        const query = latestQuery(endpoint);
+        expect(query.get("has_repro")).toBe("true");
+        expect(query.get("code_owner")).toBe("alice");
+        expect(query.get("date_from")).toBe("2026-10-01");
+        expect(query.get("date_to")).toBe("2026-10-23");
+        expect(query.has("pending_rm_review")).toBe(false);
+      }
     });
     await userEvent.click(toggle);
     expect(toggle).not.toBeChecked();
+    await userEvent.click(screen.getByRole("button", { name: "刷新" }));
+    await waitFor(() => expect(latestQuery().has("has_repro")).toBe(false));
     expect(apiPost).not.toHaveBeenCalled();
   });
 
-  it("restores the RM pending filter from a link", async () => {
-    renderPage("/jenkins-failures?pending_rm_review=true");
-    expect(screen.getByRole("checkbox", { name: /仅看待 RM 裁定/ })).toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "只看我的" })).not.toBeChecked();
-    await waitFor(() => expect(apiGet).toHaveBeenCalledWith(expect.stringMatching(/failures\?.*pending_rm_review=true/)));
+  it.each(["Owner", "SPD", "RM"])("restores all repro history from a link for %s", async role => {
+    renderPage("/jenkins-failures?has_repro=true", role);
+    expect(screen.getByRole("checkbox", { name: /只看复议/ })).toBeChecked();
+    await waitFor(() => {
+      expect(latestQuery().get("has_repro")).toBe("true");
+      expect(latestQuery().get("code_owner")).toBe(role === "Owner" ? "alice" : null);
+    });
+    await userEvent.click(screen.getByRole("button", { name: "重置" }));
+    expect(screen.getByRole("checkbox", { name: /只看复议/ })).not.toBeChecked();
   });
 
-  it("does not apply an RM-only toggle for SPD from a copied URL", async () => {
+  it("preserves old pending links with a removable filter, without pretending they show all repros", async () => {
+    renderPage("/jenkins-failures?pending_rm_review=true");
+    expect(screen.getByRole("checkbox", { name: /只看复议/ })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "只看我的" })).not.toBeChecked();
+    await waitFor(() => expect(apiGet).toHaveBeenCalledWith(expect.stringMatching(/failures\?.*pending_rm_review=true/)));
+    await userEvent.click(screen.getByRole("button", { name: "取消待更新筛选" }));
+    await waitFor(() => expect(latestQuery().has("pending_rm_review")).toBe(false));
+  });
+
+  it("allows SPD to query its backend-scoped pending work from a copied URL", async () => {
     renderPage("/jenkins-failures?pending_rm_review=true", "SPD");
     await screen.findByRole("table");
-    expect(screen.queryByRole("checkbox", { name: /仅看待 RM 裁定/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "取消待更新筛选" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "只看我的" })).not.toBeChecked();
     expect(latestQuery().has("code_owner")).toBe(false);
-    expect(vi.mocked(apiGet).mock.calls.every(([path]) => !path.includes("pending_rm_review"))).toBe(true);
+    expect(latestQuery().get("pending_rm_review")).toBe("true");
+  });
+
+  it("keeps feedback-only disputes accessible through responsibility status", async () => {
+    renderPage();
+    await screen.findByRole("option", { name: "有争议" });
+    await userEvent.selectOptions(screen.getByLabelText("认定状态"), "disputed");
+    await waitFor(() => {
+      expect(latestQuery().get("responsibility_status")).toBe("disputed");
+      expect(latestQuery().has("has_repro")).toBe(false);
+    });
   });
 
   it.each([
-    ["none", "复议诊断"], ["running", "复议中"], ["pending_review", "复议待审"],
-    ["reviewed", "复议已审定"], ["exception", "复议异常"], ["stale", "历史复议"], ["cancelled", "复议已取消"],
+    ["none", "复议诊断"], ["running", "复议中"], ["pending_review", "复议待更新"],
+    ["reviewed", "复议已处理"], ["exception", "复议异常"], ["stale", "历史复议"], ["cancelled", "复议已取消"],
   ] as const)("uses the latest %s state on the existing action button", async (state, label) => {
     currentRecord = { ...failureRecord, repro_review_state: state };
     renderPage();
@@ -426,6 +460,44 @@ describe("JenkinsFailuresPage", () => {
     expect(apiPost).toHaveBeenCalledTimes(1);
     expect(within(dialog).queryByRole("button", { name: "处理责任" })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: "带入责任处理" })).not.toBeInTheDocument();
+  });
+
+  it.each(["Owner", "SPD"])("does not grant unrelated %s users reconsideration permission", async (role) => {
+    currentRecord = { ...failureRecord, code_owner: "other", owner_account: "bob", effective_owner_account: "bob" };
+    renderPage("/jenkins-failures", role);
+    const table = await screen.findByRole("table");
+    const details = await within(table).findByRole("button", { name: "查看详情" });
+    expect(within(table).queryByRole("button", { name: "复议诊断" })).not.toBeInTheDocument();
+    await userEvent.click(details);
+    const dialog = await screen.findByRole("dialog", { name: "记录详情" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "复议诊断" }));
+    await waitFor(() => expect(apiGet).toHaveBeenCalledWith("/api/cicd-agent/failures/101/repro-tasks"));
+    expect(within(dialog).queryByLabelText("复议原因")).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "带入责任处理" })).not.toBeInTheDocument();
+  });
+
+  it.each(["Owner", "SPD"])("lets a related %s user adopt the report without unrestricted manual resolution", async (role) => {
+    if (role === "SPD") currentRecord = { ...failureRecord, code_owner: "other", owner_account: "alice", effective_owner_account: "alice" };
+    const original = vi.mocked(apiGet).getMockImplementation()!;
+    vi.mocked(apiGet).mockImplementation(async (path) => path.endsWith("/repro-tasks") ? {
+      enabled: true, tasks: [{ id: "a".repeat(32), failure_id: 101, requested_by: "alice", reason: "复核",
+        created_at: "2026-11-16T10:00:00", status: "completed", stale: false, resolved_by: null, adoptable: true,
+        history: [], report: { outcome: "historical_log_confirmed", builds: [], patches: [],
+          suggested_owner_account: "m00930", diagnosis: { suggested_role: "DevOps", summary: "代理超时",
+            responsibility_reason: "失败步骤的代理无响应", action_suggestion: "恢复代理连通性", limitations: [] } } }],
+    } : original(path));
+    renderPage("/jenkins-failures", role);
+    await userEvent.click(await screen.findByRole("button", { name: "复议诊断" }));
+    const dialog = await screen.findByRole("dialog", { name: "记录详情" });
+    expect(within(dialog).queryByRole("button", { name: "处理责任" })).not.toBeInTheDocument();
+    await userEvent.click(await within(dialog).findByRole("button", { name: "带入责任处理" }));
+    expect(within(dialog).getByLabelText("处理方式")).toBeDisabled();
+    expect(within(dialog).getByLabelText("最终责任归属")).toBeDisabled();
+    expect(within(dialog).getByLabelText("最终原因摘要")).toHaveAttribute("readonly");
+    await userEvent.click(within(dialog).getByRole("button", { name: "保存处理" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/cicd-agent/failures/101/responsibility-resolution",
+      expect.objectContaining({ action: "correct", source_repro_task_id: "a".repeat(32),
+        final_owner_role: "DevOps", final_owner_account: "m00930", final_reason_summary: "代理超时" })));
   });
 
   it("does not offer reconsideration for other stages", async () => {

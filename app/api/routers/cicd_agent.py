@@ -40,10 +40,6 @@ require_assistant_access = require_tab_access(
     "cicd-assistant",
     message="无权访问 CICD 助手",
 )
-require_responsibility_resolution = require_roles(
-    "RM",
-    message="无权处理 Jenkins 失败责任争议",
-)
 require_failure_lifecycle = require_roles("RM", message="只有 RM 可以管理 Jenkins 失败回收站")
 
 
@@ -635,9 +631,7 @@ def _read_failures(
     if record_state == "trashed":
         if user.get("role") != "RM":
             raise HTTPException(status_code=403, detail="只有 RM 可以查看 Jenkins 失败回收站")
-        response = _request_agent("GET", path, query=request.url.query, actor=user)
-    else:
-        response = _request_agent("GET", path, query=request.url.query)
+    response = _request_agent("GET", path, query=request.url.query, actor=user)
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -750,8 +744,10 @@ def submit_failure_responsibility_feedback(
 def resolve_failure_responsibility(
     record_id: int,
     payload: FailureResponsibilityResolutionCreate,
-    user: dict = Depends(require_responsibility_resolution),
+    user: dict = Depends(require_jenkins_access),
 ) -> JSONResponse:
+    if user.get("role") != "RM" and not payload.source_repro_task_id:
+        raise HTTPException(status_code=403, detail="只有 RM 可以直接人工改判；相关人员可采纳复议报告")
     body = payload.model_dump()
     body["actor_user"] = _assistant_user_id(user)
     body["actor_role"] = str(user.get("role") or "")

@@ -108,17 +108,18 @@ describe("failure recycle bin", () => {
   });
 
   it("starts trash across all dates and owners, sorts by deletion time, and preserves normal filters", async () => {
-    renderPage("RM", "/jenkins-failures?date_from=2026-10-01&date_to=2026-10-31&pending_rm_review=true");
+    renderPage("RM", "/jenkins-failures?date_from=2026-10-01&date_to=2026-10-31&pending_rm_review=true&has_repro=true");
     await userEvent.click(screen.getByRole("checkbox", { name: "只看我的" }));
     await userEvent.click(screen.getByRole("tab", { name: "回收站" }));
     await screen.findByText("#202");
     expect(screen.getByRole("checkbox", { name: "只看我的" })).not.toBeChecked();
     expect(screen.getByLabelText("开始时间")).toHaveValue("");
     expect(screen.getByLabelText("结束时间")).toHaveValue("");
+    expect(screen.queryByRole("checkbox", { name: /只看复议/ })).not.toBeInTheDocument();
     for (const suffix of ["", "/summary", "/filter-options"]) {
       const query = latestQuery(suffix);
       expect(query.get("record_state")).toBe("trashed");
-      for (const field of ["date_from", "date_to", "code_owner", "pending_rm_review"]) expect(query.has(field)).toBe(false);
+      for (const field of ["date_from", "date_to", "code_owner", "pending_rm_review", "has_repro"]) expect(query.has(field)).toBe(false);
     }
     expect(latestQuery().get("sort_by")).toBe("record_state_updated_at");
     expect(latestQuery().get("sort_order")).toBe("desc");
@@ -127,7 +128,8 @@ describe("failure recycle bin", () => {
     expect(screen.getByLabelText("开始时间")).toHaveValue("2026-10-01");
     expect(screen.getByLabelText("结束时间")).toHaveValue("2026-10-31");
     expect(screen.getByRole("checkbox", { name: "只看我的" })).toBeChecked();
-    expect(screen.getByRole("checkbox", { name: /仅看待 RM 裁定/ })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /只看复议/ })).toBeChecked();
+    expect(screen.getByRole("button", { name: "取消待更新筛选" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("tab", { name: "回收站" }));
     expect(screen.getByLabelText("开始时间")).toHaveValue("2025-01-01");
     await userEvent.click(screen.getByRole("button", { name: "重置" }));

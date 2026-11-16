@@ -116,10 +116,11 @@ function filtersFromSearch(search: string, username: string, role: string | unde
     }
     filters[key] = value;
   }
-  if (role === "RM" && params.get("pending_rm_review") === "true") {
+  if (params.get("pending_rm_review") === "true") {
     filters.pending_rm_review = true;
     if (!params.has("code_owner")) filters.code_owner = "";
   }
+  if (params.get("has_repro") === "true") filters.has_repro = true;
   return filters;
 }
 
@@ -301,14 +302,28 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function supportsRepro(record: FailureRecordListItem): boolean {
+  return record.record_source !== "test_case_result" && (record.record_state || "active") === "active"
+    && (record.normalized_stage || record.failed_stage)?.replace(/_/g, " ") === "build image";
+}
+
+function canParticipate(record: FailureRecordListItem, username: string, role?: string): boolean {
+  const account = username.trim().toLowerCase();
+  if (!account) return false;
+  if (role === "RM") return true;
+  const owner = record.responsibility_status === "unresolved" ? ""
+    : record.effective_owner_account || record.final_owner_account || record.owner_account;
+  return [record.code_owner, owner].some((value) => value?.trim().toLowerCase() === account);
+}
+
 function ReproEntry({ record, onClick }: { record: FailureRecordDetail; onClick: () => void }) {
   const state = record.repro_review_state || "none";
   const choices = {
     none: { label: "复议诊断", icon: FileSearch, title: "发起复议诊断" },
     running: { label: "复议中", icon: Clock3, title: "查看最新复议进度" },
-    pending_review: { label: "复议待审", icon: CircleAlert,
-      title: record.repro_manual_review ? "证据不足，需要 RM 人工判断" : "查看待 RM 裁定的复议报告" },
-    reviewed: { label: "复议已审定", icon: Check, title: "RM 已处理本轮复议，查看报告与责任处理记录；不代表完全采纳建议或补丁构建通过" },
+    pending_review: { label: record.repro_manual_review ? "需人工复核" : "复议待更新", icon: CircleAlert,
+      title: record.repro_manual_review ? "需要人工复核诊断证据" : "待发起人确认并更新责任认定" },
+    reviewed: { label: "复议已处理", icon: Check, title: "查看报告与实际处理人；不代表补丁构建通过" },
     exception: { label: "复议异常", icon: CircleAlert, title: "查看执行失败或环境阻塞原因" },
     stale: { label: "历史复议", icon: History, title: "责任认定已变化，旧报告仅供参考" },
     cancelled: { label: "复议已取消", icon: History, title: "查看已取消的复议，可重新发起" },
@@ -365,7 +380,7 @@ export function JenkinsFailuresPage() {
 
   const activeFilters = useMemo<FailureRecordFilters>(
     () => ({
-      ...Object.fromEntries(Object.entries(filters).filter(([key, value]) => value && (key !== "pending_rm_review" || (isRm && !isTrashed)))),
+      ...Object.fromEntries(Object.entries(filters).filter(([key, value]) => value && (!isTrashed || !["pending_rm_review", "has_repro"].includes(key)))),
       ...(isTrashed ? { record_state: "trashed" as const } : {}),
     }),
     [filters, isRm, isTrashed],
@@ -451,16 +466,6 @@ export function JenkinsFailuresPage() {
   function toggleOnlyMine(checked: boolean) {
     if (!currentUsername) return;
     updateFilter("code_owner", checked ? currentUsername : "");
-  }
-
-  function togglePendingReview(checked: boolean) {
-    setPage(1);
-    setSelectedId(null);
-    setFilters((current) => ({
-      ...current,
-      pending_rm_review: checked,
-      code_owner: checked && current.code_owner === currentUsername ? "" : current.code_owner,
-    }));
   }
 
   function applySummaryFilter(groupValue: string) {
@@ -597,11 +602,15 @@ export function JenkinsFailuresPage() {
           />
           只看我的
         </label>
-        {isRm && !isTrashed && <label className="check cicd-agent-review-toggle">
-          <input type="checkbox" checked={Boolean(filters.pending_rm_review)}
-            onChange={(event) => togglePendingReview(event.target.checked)} />
-          仅看待 RM 裁定 <span className="cicd-agent-review-count">{pageInfo?.pending_rm_review_count ?? 0}</span>
+        {!isTrashed && <label className="check cicd-agent-review-toggle">
+          <input type="checkbox" checked={Boolean(filters.has_repro)}
+            onChange={(event) => updateFilter("has_repro", event.target.checked)} />
+          只看复议（待更新 {pageInfo?.pending_repro_update_count ?? 0}）
         </label>}
+        {!isTrashed && filters.pending_rm_review && <button className="btn ghost sm" type="button"
+          onClick={() => updateFilter("pending_rm_review", false)} title="取消旧链接带入的待更新筛选">
+          取消待更新筛选
+        </button>}
         <div className="spacer" />
         {!isTrashed && <FailureNotificationToggle key={currentUsername} username={currentUsername} />}
         <button className="btn sm" type="button" onClick={refresh}>刷新</button>
@@ -867,7 +876,8 @@ export function JenkinsFailuresPage() {
                         <span>查看详情</span>
                         <span aria-hidden="true">›</span>
                       </button>
-                      {!isTrashed && (record.normalized_stage || record.failed_stage)?.replace(/_/g, " ") === "build image" && (
+                      {!isTrashed && supportsRepro(record) && (canParticipate(record, currentUsername, currentRole)
+                        || (record.repro_review_state && record.repro_review_state !== "none")) && (
                         <ReproEntry record={record} onClick={() => openDetail(record.id, "repro")} />
                       )}
                       {isRm && isTrashed && <>
@@ -1002,6 +1012,8 @@ function FailureDetail({
   onTrash?: (record: FailureRecordListItem) => void;
   onClose: () => void;
 }) {
+  const { user } = useAuth();
+  const canAdopt = Boolean(record && supportsRepro(record) && canParticipate(record, user?.username || "", user?.role));
   const [actionMode, setActionMode] = useState<"feedback" | "resolution" | null>(null);
   const [responsibilityExpanded, setResponsibilityExpanded] = useState(initialResponsibility);
   const [reproExpanded, setReproExpanded] = useState(initialRepro);
@@ -1195,7 +1207,7 @@ function FailureDetail({
               处理责任
             </button>
           )}
-          {!readOnly && (record.normalized_stage || record.failed_stage)?.replace(/_/g, " ") === "build image" && (
+          {!readOnly && supportsRepro(record) && (
             <button type="button" className="btn sm cicd-agent-detail-trigger" aria-expanded={reproExpanded}
               onClick={() => { setReproExpanded((value) => !value); setResponsibilityExpanded(false); setActionMode(null); }}>
               复议诊断
@@ -1232,7 +1244,8 @@ function FailureDetail({
           {record.record_source === "test_case_result" && record.responsibility_status === "ai_suggested" ? "测试结果规则分配" : responsibilityStatusLabel(record.responsibility_status)}
         </small>
       </div>
-      {!readOnly && reproExpanded && <FailureReproPanel key={record.id} recordId={record.id} canResolve={canResolve} onUseReport={useReproReport} />}
+      {!readOnly && supportsRepro(record) && reproExpanded && <FailureReproPanel key={record.id} recordId={record.id}
+        canResolve={canAdopt} canRequest={canAdopt} onUseReport={useReproReport} />}
       {responsibilityExpanded && (
         <section className="cicd-agent-responsibility-panel">
         <div className="cicd-agent-responsibility-head">
@@ -1336,13 +1349,14 @@ function FailureDetail({
           </form>
         )}
 
-        {!readOnly && actionMode === "resolution" && canResolve && (
+        {!readOnly && actionMode === "resolution" && (canResolve || (canAdopt && resolutionForm.source_repro_task_id)) && (
           <form className="cicd-agent-responsibility-form" onSubmit={(event) => void submitResolution(event)}>
             <div className="cicd-agent-form-grid">
               <label>
                 处理方式
                 <select
                   value={resolutionForm.action}
+                  disabled={!canResolve}
                   onChange={(event) => setResolutionForm((current) => ({
                     ...current,
                     action: event.target.value as FailureResponsibilityResolutionPayload["action"],
@@ -1354,7 +1368,7 @@ function FailureDetail({
                   }))}
                 >
                   <option value="confirm">确认 AI 判断正确</option>
-                  <option value="correct">修正最终责任人</option>
+                  <option value="correct">{!canResolve ? "采纳复议责任结论" : "修正最终责任人"}</option>
                   <option value="unresolved">暂无法判定</option>
                 </select>
               </label>
@@ -1362,7 +1376,7 @@ function FailureDetail({
                 最终责任归属
                 <select
                   value={normalizeResponsibilityRole(resolutionForm.final_owner_role)}
-                  disabled={resolutionForm.action !== "correct"}
+                  disabled={!canResolve || resolutionForm.action !== "correct"}
                   onChange={(event) => setResolutionForm((current) => ({
                     ...current,
                     ...rolePayload(record, event.target.value as ResponsibilityOwnerRole),
@@ -1380,6 +1394,7 @@ function FailureDetail({
               最终原因摘要
               <textarea
                 value={resolutionForm.final_reason_summary ?? ""}
+                readOnly={!canResolve}
                 onChange={(event) => setResolutionForm((current) => ({
                   ...current,
                   final_reason_summary: event.target.value,
@@ -1392,6 +1407,7 @@ function FailureDetail({
               最终处理建议
               <textarea
                 value={resolutionForm.final_action_suggestion ?? ""}
+                readOnly={!canResolve}
                 onChange={(event) => setResolutionForm((current) => ({
                   ...current,
                   final_action_suggestion: event.target.value,

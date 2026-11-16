@@ -105,6 +105,23 @@ def test_jenkins_failure_api_role_gate(
             assert client.get(path).status_code == expected_status
 
 
+@pytest.mark.parametrize("suffix", ["", "/summary", "/filter-options"])
+def test_repro_filter_passes_through_gateway_without_changing_query(monkeypatch, suffix):
+    captured = {}
+
+    def responder(*args, **kwargs):
+        captured.update(kwargs)
+        return JSONResponse({"pending_repro_update_count": 2})
+
+    query = "has_repro=true&code_owner=owner&date_from=2026-11-10&date_to=2026-11-16"
+    with _client_for_role(monkeypatch, "RM", responder) as client:
+        response = client.get(f"/api/cicd-agent/failures{suffix}?{query}")
+    assert response.status_code == 200
+    assert captured["query"] == query
+    assert captured["actor"]["username"] == "rm"
+    assert response.json()["pending_repro_update_count"] == 2
+
+
 @pytest.mark.parametrize("role", ALL_ROLES)
 def test_jenkins_failure_feedback_role_gate_and_actor_injection(
     monkeypatch: pytest.MonkeyPatch,
@@ -195,6 +212,40 @@ def test_jenkins_failure_resolution_is_limited_to_rm(
                 "actor_role": role,
             }
         }
+
+
+@pytest.mark.parametrize("role", ALL_ROLES)
+def test_report_adoption_delegates_record_authorization_with_trusted_actor(monkeypatch, role):
+    captured = []
+
+    def responder(*args, **kwargs):
+        captured.append(kwargs["body"])
+        return JSONResponse({"record": {"id": 1}})
+
+    with _client_for_role(monkeypatch, role, responder) as client:
+        response = client.post("/api/cicd-agent/failures/1/responsibility-resolution", json={
+            "source_repro_task_id": "a" * 32, "action": "correct", "final_owner_role": "DevOps",
+            "actor_user": "fake", "actor_role": "RM",
+        })
+    allowed = role in roles_for_tab("jenkins-failures")
+    assert response.status_code == (200 if allowed else 403)
+    if allowed:
+        assert captured[0]["actor_user"] == role.lower()
+        assert captured[0]["actor_role"] == role
+
+
+@pytest.mark.parametrize("role", ["RM", "Owner", "SPD"])
+def test_pending_queries_forward_logged_in_identity_not_query_actor(monkeypatch, role):
+    captured = []
+
+    def responder(*args, **kwargs):
+        captured.append(kwargs["actor"])
+        return JSONResponse({"total": 0})
+
+    with _client_for_role(monkeypatch, role, responder) as client:
+        for path in ["", "/summary", "/filter-options"]:
+            assert client.get(f"/api/cicd-agent/failures{path}?pending_rm_review=true&actor_user=rm").status_code == 200
+    assert all(actor["username"] == role.lower() and actor["role"] == role for actor in captured)
 
 
 @pytest.mark.parametrize("role", ALL_ROLES)
