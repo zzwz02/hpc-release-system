@@ -275,7 +275,8 @@ def check_can_write(user: dict, key: str, action: str = "评论") -> dict:
 
 
 def _prepare_comment(ctx: ToolContext, args: dict) -> dict:
-    _key(args.get("issue_key"))
+    key = _key(args.get("issue_key"))
+    ctx.log.target_type, ctx.log.target = "jira_issue", key
     body = format_jira_comment(str(args.get("body") or "").strip())
     if not body:
         raise ToolError("评论内容不能为空")
@@ -335,6 +336,8 @@ register(Tool(
         "Before posting, the user must type their own domain username in the MCP elicitation form. "
         "The server compares it with the token owner (trimmed, case-insensitive). Missing or mismatched "
         "usernames, cancellation and timeout do not post. Clients without form elicitation cannot post. "
+        "When confirmation fails, explain the returned reason to the user. Do not automatically retry "
+        "or fill in the username; wait for the user to explicitly request another confirmation. "
         "The comment is posted by the release-system JIRA account with a footer naming the token owner."
     ),
     input_schema={

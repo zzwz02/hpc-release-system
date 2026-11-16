@@ -101,7 +101,10 @@ function SetupPane({ viewer, tools }: {
   const [name, setName] = useState("");
   const [created, setCreated] = useState<McpToken | null>(null);
   const tokenText = created?.token ?? "<你的 token>";
-  const url = `${window.location.origin}/mcp`;
+  const origin = new URL(window.location.origin);
+  origin.protocol = "http:";
+  const base = origin.origin;
+  const url = `${base}/mcp`;
 
   const createMutation = useMutation({
     mutationFn: () => createToken(name),
@@ -123,7 +126,6 @@ function SetupPane({ viewer, tools }: {
 
   const active = tokensQuery.data?.active ?? null;
   const history = (tokensQuery.data?.tokens ?? []).filter((token) => token.revoked_at);
-  const base = url.replace(/\/mcp$/, "");
   const setupCommand = `bash <(curl -fsSL ${shellQuote(`${base}/api/mcp/setup.sh`)})`;
   const clientCommand = (client: "claude" | "codex") =>
     `${created?.token ? `MCP_TOKEN=${shellQuote(created.token)} ` : ""}MCP_CLIENTS=${client} ${setupCommand} use-token`;

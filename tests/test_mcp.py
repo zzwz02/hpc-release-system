@@ -594,7 +594,8 @@ def confirmable_call(site_client, token, session, name, arguments, payload):
 
     def watched(self):
         for chunk in original(self):
-            box.setdefault("seen", []).append(json.loads(chunk.decode().split("data: ", 1)[1]))
+            if chunk.startswith(b"event: message\n"):
+                box.setdefault("seen", []).append(json.loads(chunk.decode().split("data: ", 1)[1]))
             yield chunk
 
     mcp_protocol._Stream.events = watched
@@ -647,8 +648,11 @@ def test_comment_is_not_posted_when_the_user_does_not_confirm(site, payload, out
                                  {"issue_key": "MC3-1", "body": "x"}, payload)
     assert result["result"]["isError"] is True
     assert "未" in result["result"]["content"][0]["text"]
+    assert result["result"]["structuredContent"] == {"status": "not_executed", "reason": outcome, "retryable": False}
     assert calls["comments"] == []
-    assert json.loads(logs(client, tool="jira_add_comment")[0]["extra_json"])["confirm"] == outcome
+    entry = logs(client, tool="jira_add_comment")[0]
+    assert json.loads(entry["extra_json"])["confirm"] == outcome
+    assert (entry["target_type"], entry["target"]) == ("jira_issue", "MC3-1")
 
 
 @pytest.mark.parametrize("confirming", [True, False])
