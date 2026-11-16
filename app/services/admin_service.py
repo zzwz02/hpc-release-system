@@ -144,6 +144,8 @@ def clear_business_data(
     try:
         with transaction(fresh_conn):
             fresh_conn.execute("DELETE FROM artifacts")
+            fresh_conn.execute("DELETE FROM component_compatibility_apps")
+            fresh_conn.execute("DELETE FROM component_compatibility_reports")
             fresh_conn.execute("DELETE FROM qa_test_results")
             fresh_conn.execute("DELETE FROM qa_test_reports")
             fresh_conn.execute("DELETE FROM qa_logs")

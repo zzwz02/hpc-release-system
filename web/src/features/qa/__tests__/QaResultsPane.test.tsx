@@ -89,8 +89,8 @@ it("shows automatic and Excel commands separately with the Excel submission time
   vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [row], columns: ["app_id", "hpc_version", "qa_result", "qa_digest", "qa_env", "website_docker_cmd", "qa_docker_cmd"] });
   renderPane();
   const table = await screen.findByRole("table", { name: "QA 测试结果" });
-  expect(screen.getByText(/不采用上传文件中该列的命令/)).toBeVisible();
   expect(screen.getByText(/逐项校验前 12 列.*perf_golden.*perf_unit/)).toBeVisible();
+  expect(screen.queryByRole("heading", { name: "QA 测试结果" })).toBeNull();
   expect(within(table).getByText(row.website_docker_cmd)).toBeVisible();
   expect(within(table).getByText(row.qa_docker_cmd)).toBeVisible();
   expect(within(table).getByText("2026-11-15 12:30:00")).toBeVisible();
@@ -98,31 +98,36 @@ it("shows automatic and Excel commands separately with the Excel submission time
   expect(within(table).getByRole("link", { name: "report.xlsx" })).toHaveAttribute("href", "/api/qa/test-results/5/download");
 });
 
-it("filters all results, keeps inputs mounted, resets pagination, and exports the entire match", async () => {
+it("displays all results without pagination, keeps filters mounted, and exports the entire match", async () => {
   const columns = ["app_id", "GPU", "test_name", "qa_status"];
   const later = { ...row, app_id: "Later App", GPU: "X301", test_name: "case64", qa_status: "fail" };
   vi.mocked(apiGet).mockImplementation(async path => {
     const params = new URL(String(path), "http://test").searchParams;
     const filtered = JSON.parse(params.get("column_filters") ?? "{}");
     return { total: filtered.GPU ? 25 : 75, columns,
-      rows: filtered.GPU || params.get("offset") === "50" ? [later] : Array.from({ length: 50 }, (_, i) => ({ ...row, test_name: `case${i}` })) };
+      rows: filtered.GPU ? [later, ...Array.from({ length: 24 }, (_, i) => ({ ...later, app_id: "Selected App", test_name: `selected${i}` }))]
+        : Array.from({ length: 75 }, (_, i) => i === 64 ? later : ({ ...row, test_name: `case${i}` })) };
   });
   const blob = new Blob(["all 25 matching rows"], { type: "text/csv" });
   vi.mocked(apiGetBlob).mockResolvedValue(blob);
   renderPane();
   await screen.findByText("case0");
-  expect(screen.queryByText("Later App")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "下一页" }));
-  await screen.findByText("Later App");
+  expect(screen.getByText("Later App")).toBeVisible();
+  expect(screen.getByText("case74")).toBeVisible();
+  const table = screen.getByRole("table", { name: "QA 测试结果" });
+  expect(table.querySelectorAll("tbody tr")).toHaveLength(75);
+  expect(screen.queryByRole("button", { name: "下一页" })).toBeNull();
   const input = screen.getByLabelText("GPU 列筛选");
   input.focus();
   fireEvent.change(input, { target: { value: "X301" } });
-  await waitFor(() => expect(screen.getByText("共 25 行，当前 1–25")).toBeVisible());
+  await waitFor(() => expect(screen.getByText("25 行")).toBeVisible());
+  expect(table.querySelectorAll("tbody tr")).toHaveLength(25);
   expect(screen.getByLabelText("GPU 列筛选")).toBe(input);
   expect(input).toHaveFocus();
   const params = new URL(vi.mocked(apiGet).mock.lastCall![0], "http://test").searchParams;
   expect(JSON.parse(params.get("column_filters")!)).toEqual({ GPU: "X301" });
-  expect(params.get("offset")).toBe("0");
+  expect(params.get("all_rows")).toBe("true");
+  expect(params.has("offset") || params.has("limit")).toBe(false);
   fireEvent.click(screen.getByRole("columnheader", { name: "test_name" }));
   await waitFor(() => {
     const current = new URL(vi.mocked(apiGet).mock.lastCall![0], "http://test").searchParams;
@@ -139,17 +144,19 @@ it("filters all results, keeps inputs mounted, resets pagination, and exports th
   expect(url.searchParams.has("offset") || url.searchParams.has("limit")).toBe(false);
 });
 
-it("sends table keywords to the server and lets users correct filters after a request fails", async () => {
+it("sends query keywords to the server and lets users correct them after a request fails", async () => {
   vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [row], columns: ["app_id", "qa_result"] });
   renderPane();
   await screen.findByText("HPL");
   vi.mocked(apiGet).mockRejectedValueOnce(new Error("查询失败"));
-  fireEvent.change(screen.getByLabelText("筛选QA 测试结果"), { target: { value: "outside first page" } });
+  const input = screen.getByLabelText("查询 QA 结果");
+  fireEvent.change(input, { target: { value: "outside first page" } });
+  fireEvent.click(screen.getByRole("button", { name: "查询结果" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("查询失败");
-  const input = screen.getByLabelText("筛选QA 测试结果");
   expect(input).toHaveValue("outside first page");
-  expect(new URL(vi.mocked(apiGet).mock.lastCall![0], "http://test").searchParams.get("filter")).toBe("outside first page");
+  expect(new URL(vi.mocked(apiGet).mock.lastCall![0], "http://test").searchParams.get("search")).toBe("outside first page");
   fireEvent.change(input, { target: { value: "HPL" } });
+  fireEvent.click(screen.getByRole("button", { name: "查询结果" }));
   expect(await screen.findByText("HPL")).toBeVisible();
 });
 
@@ -233,7 +240,7 @@ it("allows Owners to query stored results without uploading and keeps upstream f
   expect(screen.queryByLabelText("上传测试结果 Excel")).toBeNull();
   fireEvent.change(screen.getByLabelText("查询 QA 结果"), { target: { value: "C500" } });
   fireEvent.click(screen.getByRole("button", { name: "查询结果" }));
-  await waitFor(() => expect(apiGet).toHaveBeenLastCalledWith("/api/qa/test-results?release_id=rel-3100&search=C500&offset=0&limit=50"));
+  await waitFor(() => expect(apiGet).toHaveBeenLastCalledWith("/api/qa/test-results?release_id=rel-3100&search=C500&all_rows=true"));
 });
 
 

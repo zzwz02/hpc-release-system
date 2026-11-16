@@ -380,6 +380,27 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_qa_test_results_history_key
         ON qa_test_results(json_extract(data_json, '$.historical_result_key'));
 
+        -- Component validations are independent of monthly release QA results.
+        CREATE TABLE IF NOT EXISTS component_compatibility_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            component TEXT NOT NULL,
+            component_version TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            UNIQUE(component, component_version)
+        );
+        CREATE TABLE IF NOT EXISTS component_compatibility_apps (
+            report_id INTEGER NOT NULL REFERENCES component_compatibility_reports(id) ON DELETE CASCADE,
+            app_id TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            qa_status TEXT NOT NULL DEFAULT '' CHECK(qa_status IN ('', 'pass', 'fail')),
+            qa_comment TEXT NOT NULL DEFAULT '',
+            revision INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT '',
+            updated_by TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(report_id, app_id)
+        );
+
         -- The latest AI analysis of a release's QA log, kept until it is
         -- reviewed (QA statuses saved), discarded, or the log is replaced.
         CREATE TABLE IF NOT EXISTS qa_ai_suggestions (

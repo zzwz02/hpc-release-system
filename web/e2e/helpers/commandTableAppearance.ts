@@ -12,7 +12,5 @@ export async function commandTableAppearance(root: Locator) {
     header: await read("thead tr:first-child th", text),
     command: await read("td.cmd", text),
     columnFilter: await read(".colfilter-row input", input),
-    globalFilter: await read(".qa-report-search", input),
-    exportButton: await read(".qa-report-bar .btn.primary", input),
   };
 }

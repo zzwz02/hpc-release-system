@@ -19,12 +19,12 @@ from tests.test_qa_results import live as live, report_release
 
 
 @pytest.fixture()
-def reports(temp_db, live):
+def reports(temp_db, live, request):
     raw, calls = live
     config = deepcopy(raw["app_test"]["sanity"])
     config["supported_chip"] = {"C500": ["ubuntu22.04_amd64"]}
     raw["app_test"] = {f"case{index}": {**deepcopy(config), "test_cmd": f"run-case-{index}"}
-                       for index in range(65)}
+                       for index in range(getattr(request, "param", 65))}
     source = lookup_service.resolve_images(temp_db, [IMAGE])["images"][0]
     rows = qa_results.worksheet_commands(source, hpc_version="3.10.1.2")
     rows.sort(key=lambda row: qa_results.report_sort_key(row, "test_name"))
@@ -108,3 +108,27 @@ def test_http_filters_export_and_invalid_parameters(temp_db, reports):
             for path in ("/api/qa/test-results", "/api/qa/test-results/export"):
                 assert client.get(path, params={"release_id": params["release_id"], **invalid}).status_code == 400
         assert client.get("/api/qa/test-results", params={"sort_direction": "invalid"}).status_code == 422
+
+
+@pytest.mark.parametrize("reports", [235], indirect=True)
+def test_http_all_rows_returns_more_than_the_page_limit_with_live_commands(temp_db, reports):
+    app = create_app()
+    app.dependency_overrides[get_db] = lambda: temp_db
+    app.dependency_overrides[require_login] = lambda: {"username": "qa", "role": "QA"}
+    params = {"release_id": report_release(temp_db), "sort_by": "test_name", "sort_direction": "desc"}
+    with TestClient(app) as client:
+        page = client.get("/api/qa/test-results", params=params).json()
+        assert page["total"] == 235 and len(page["rows"]) == 50
+        response = client.get("/api/qa/test-results", params={**params, "all_rows": True})
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["total"] == len(result["rows"]) == 235
+        assert result["limit"] is None and result["offset"] == 0
+        assert result["rows"][0]["test_name"] == "case234"
+        assert result["rows"][-1]["test_name"] == "case0"
+        assert "run-case-234" in result["rows"][0]["website_docker_cmd"]
+        assert all(row["website_docker_cmd"] and not row["command_error"] for row in result["rows"])
+        filtered = client.get("/api/qa/test-results", params={**params, "all_rows": True,
+                             "column_filters": json.dumps({"qa_status": "fail"})}).json()
+        assert filtered["total"] == len(filtered["rows"]) == 175
+        assert all(row["qa_status"] == "fail" for row in filtered["rows"])

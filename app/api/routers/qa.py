@@ -369,11 +369,13 @@ def test_results(
     filters: dict = Depends(result_filters),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
+    all_rows: bool = Query(default=False),
     user: dict = Depends(require_qa_tab_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     response.headers["Cache-Control"] = "no-store"
-    return qa_results_service.query(conn, **filters, offset=offset, limit=limit)
+    return qa_results_service.query(conn, **filters, offset=0 if all_rows else offset,
+                                    limit=None if all_rows else limit)
 
 
 @router.get("/api/qa/test-results/export")

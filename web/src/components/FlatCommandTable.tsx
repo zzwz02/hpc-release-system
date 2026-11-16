@@ -19,7 +19,8 @@ interface RemoteTable {
 }
 
 /** Share the QA command table's typography, controls, and column filtering. */
-export function FlatCommandTable({ columns, rows, filename, label, renderCell, onRefresh, remote }: {
+export function FlatCommandTable({ columns, rows, filename, label, renderCell, onRefresh, remote,
+  showHeading = true, showSearch = true, showExport = true }: {
   columns: string[];
   rows: CommandRow[];
   filename: string;
@@ -27,6 +28,9 @@ export function FlatCommandTable({ columns, rows, filename, label, renderCell, o
   renderCell?: (column: string, row: CommandRow) => React.ReactNode;
   onRefresh?: () => void;
   remote?: RemoteTable;
+  showHeading?: boolean;
+  showSearch?: boolean;
+  showExport?: boolean;
 }) {
   const [localFilters, setLocalFilters] = useState<CommandTableFilters>({ filter: "", columnFilters: {}, sort: null });
   const { filter, columnFilters, sort } = remote?.filters ?? localFilters;
@@ -50,12 +54,12 @@ export function FlatCommandTable({ columns, rows, filename, label, renderCell, o
   }
 
   return <>
-    <div className="panel-head"><h2>{label}</h2></div>
+    {showHeading && <div className="panel-head"><h2>{label}</h2></div>}
     <div className="panel-body">
       <div className="qa-report-bar">
         {onRefresh && <button className="btn ghost sm" disabled={remote?.busy} onClick={onRefresh}>↻ 刷新</button>}
-        <button className="btn primary sm" disabled={remote ? remote.busy || remote.exporting || !remote.total : !visible.length} onClick={() => remote ? remote.onExport() : downloadCsv(filename, columns, visible.map(row => columns.map(column => String(row[column] ?? ""))))}>{remote?.exporting ? "正在导出…" : "导出 CSV"}</button>
-        <input className="input qa-report-search" aria-label={`筛选${label}`} placeholder="全表关键词筛选…" value={filter} onChange={e => setFilters({ filter: e.target.value, columnFilters, sort })} />
+        {showExport && <button className="btn primary sm qa-report-export" disabled={remote ? remote.busy || remote.exporting || !remote.total : !visible.length} onClick={() => remote ? remote.onExport() : downloadCsv(filename, columns, visible.map(row => columns.map(column => String(row[column] ?? ""))))}>{remote?.exporting ? "正在导出…" : "导出 CSV"}</button>}
+        {showSearch && <input className="input qa-report-search" aria-label={`筛选${label}`} placeholder="全表关键词筛选…" value={filter} onChange={e => setFilters({ filter: e.target.value, columnFilters, sort })} />}
         <span className="muted small count">{remote ? remote.busy ? "正在筛选…" : `${remote.total} 行` : visible.length === rows.length ? `${rows.length} 行` : `${visible.length} / ${rows.length} 行`}</span>
       </div>
       <div className="table report-table sticky-first-col">

@@ -39,6 +39,9 @@ def test_clear_business_data_clears_cycles_apps_and_cicd_tables(admin_db):
     release_id = seed_cycle(conn)
     seed_signup(conn, release_id, app_id)
     seed_cicd_request(conn, app_id)
+    conn.execute("INSERT INTO component_compatibility_reports(component,component_version,created_at,created_by) VALUES ('sdk','3.10.0','now','qa')")
+    conn.execute("INSERT INTO component_compatibility_apps(report_id,app_id,snapshot_json) VALUES (1,?, '{}')", (app_id,))
+    conn.commit()
 
     backup_name = admin_service.clear_business_data(conn, password="admin-pass", actor="admin")
 
@@ -54,6 +57,8 @@ def test_clear_business_data_clears_cycles_apps_and_cicd_tables(admin_db):
             "app_dependencies",
             "cicd_task_requests",
             "cicd_notifications",
+            "component_compatibility_reports",
+            "component_compatibility_apps",
         ):
             assert check.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0, table
     finally:

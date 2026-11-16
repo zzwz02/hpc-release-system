@@ -6,6 +6,10 @@ import { apiGet } from "../../api/http";
 import { RefreshBar } from "../../components/RefreshBar";
 import { CompatibilityPane } from "./CompatibilityPane";
 import { QaTabs } from "../qa/QaTabs";
+import { ComponentConclusionsPane } from "./ComponentConclusionsPane";
+import { useSearchParams } from "react-router-dom";
+import { useUiStore } from "../../store/uiStore";
+import { confirmDialog } from "../../lib/confirm";
 
 interface DependencyApp {
   app_id: string;
@@ -70,16 +74,24 @@ function DevelopmentDependenciesPane() {
 }
 
 export function DependenciesPage() {
-  const [source, setSource] = React.useState<"official" | "development">("official");
+  const [params, setParams] = useSearchParams();
+  const source = params.get("tab") === "components" ? "components" : params.get("tab") === "development" ? "development" : "official";
+  async function setSource(next: string) {
+    if (source === next) return;
+    if (useUiStore.getState().componentCompatibilityDirty && !(await confirmDialog({ title: "未保存的修改", body: "有未保存的组件兼容性结论，确认放弃？", danger: true, confirmText: "放弃修改" }))) return;
+    setParams(next === "official" ? {} : { tab: next });
+  }
   return <section className="view active" data-testid="dependencies-page">
     <div className="page-toolbar"><h2>兼容性验证</h2></div>
     <QaTabs />
     <div className="subtabs" role="group" aria-label="验证与参考">
       <button type="button" className={`subtab${source === "official" ? " active" : ""}`} aria-pressed={source === "official"}
-        onClick={() => setSource("official")}>兼容性验证</button>
+        onClick={() => void setSource("official")}>兼容性验证</button>
       <button type="button" className={`subtab${source === "development" ? " active" : ""}`} aria-pressed={source === "development"}
-        onClick={() => setSource("development")}>开发态依赖</button>
+        onClick={() => void setSource("development")}>开发态依赖</button>
+      <button type="button" className={`subtab${source === "components" ? " active" : ""}`} aria-pressed={source === "components"}
+        onClick={() => void setSource("components")}>组件兼容性结论</button>
     </div>
-    {source === "official" ? <CompatibilityPane /> : <DevelopmentDependenciesPane />}
+    {source === "official" ? <CompatibilityPane /> : source === "development" ? <DevelopmentDependenciesPane /> : <ComponentConclusionsPane />}
   </section>;
 }

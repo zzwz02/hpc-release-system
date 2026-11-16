@@ -37,6 +37,7 @@ sys.stdout.buffer.write(output.getvalue())
 }
 
 test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank QA cells", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   expect((await page.request.post(base + "/api/login", { data: { username: "app_qa", password: "test-password" } })).ok()).toBeTruthy();
@@ -62,6 +63,14 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   expect(commands.rows.every((row: Record<string, unknown>) => qaColumns.every(column => row[column] === ""))).toBe(true);
   expect(commands.rows.some((row: Record<string, unknown>) => row.website_docker_cmd === "no_image")).toBe(true);
   expect(commands.rows.filter((row: Record<string, unknown>) => row.website_docker_cmd !== "no_image").every((row: Record<string, unknown>) => String(row.website_docker_cmd).includes(taggedImage))).toBe(true);
+  const commandsPane = page.locator("#qaTestCmdPane");
+  await expect(commandsPane.getByRole("heading", { name: "测试命令", exact: true })).toHaveCount(1);
+  await expect(commandsPane.getByPlaceholder("全表关键词筛选…")).toHaveCount(0);
+  await expect(commandsPane.locator("form").getByRole("status")).toContainText("3.10.1.2");
+  const commandBar = await commandsPane.locator(".qa-report-bar").boundingBox();
+  const exportButton = await commandsPane.getByRole("button", { name: "导出 CSV", exact: true }).boundingBox();
+  expect(Math.abs(commandBar!.x + commandBar!.width - exportButton!.x - exportButton!.width)).toBeLessThan(2);
+  await page.screenshot({ path: "/tmp/qa-test-commands-layout-desktop.png", fullPage: true });
   const referenceAppearance = await commandTableAppearance(page.locator("#qaTestCmdPane"));
   const exported = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出 CSV", exact: true }).click();
@@ -108,10 +117,13 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   await expect(uploadSummary).toContainText(`3.10.1 版本共 ${saved.release_test_count} 条测试；文件含 ${saved.total_rows} 条；保存 ${saved.rows} 条；跳过 ${saved.skipped_rows + saved.duplicate_rows} 条。`);
   await uploadSummary.locator("summary").click();
   await expect(uploadSummary).toContainText(`lookup-image · maca：${saved.skipped_rows} 行`);
-  await expect(page.getByText(/不采用上传文件中该列的命令/)).toBeVisible();
   const report = page.getByRole("table", { name: "QA 测试结果", exact: true });
   await expect(report.locator("tbody tr")).toHaveCount(2);
   const reportPane = page.getByTestId("qa-results-pane");
+  await expect(reportPane.getByPlaceholder("全表关键词筛选…")).toHaveCount(0);
+  await expect(reportPane.getByRole("button", { name: "↻ 刷新", exact: true })).toHaveCount(0);
+  await expect(reportPane.locator("form").getByRole("button")).toHaveText(["查询结果", "刷新结果", "导出 CSV"]);
+  await page.screenshot({ path: "/tmp/qa-log-layout-desktop.png", fullPage: true });
   expect(await commandTableAppearance(reportPane)).toEqual(referenceAppearance);
   const environmentRequests: string[] = [];
   page.on("request", request => { if (request.url().includes("/environment?")) environmentRequests.push(request.url()); });
@@ -232,7 +244,7 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   expect((await page.request.get(base + `/api/qa/test-results/${saved.report_id}/download`)).status()).toBe(404);
   await expect(page.getByLabel("选择 release")).toHaveValue(new URL(response.url()).searchParams.get("release_id")!);
   await page.getByLabel("选择 release").selectOption({ label: '3.9.0' });
-  await expect(page.getByText('共 0 行，当前 0–0', { exact: true })).toBeVisible();
+  await expect(page.getByText('0 行', { exact: true })).toBeVisible();
   await expect(page.getByRole('link', { name: 'only-B.xlsx', exact: true })).toHaveCount(0);
   await page.getByLabel("选择 release").selectOption({ label: '3.10.1' });
   await expect(report.getByRole('link', { name: 'only-B.xlsx', exact: true })).toBeVisible();

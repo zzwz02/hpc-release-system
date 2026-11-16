@@ -1,13 +1,16 @@
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../api/AuthContext";
 import { canAccessTab } from "../../lib/accessControl";
 import { pathMatches, routeForView } from "../../routes/routeConfig";
 import { QA_PANES, qaPaneFromSearch } from "./qaNavigation";
+import { useUiStore } from "../../store/uiStore";
+import { confirmDialog } from "../../lib/confirm";
 
 /** One row for all QA tools, including the historical lookup routes. */
 export function QaTabs() {
   const { user } = useAuth();
   const { pathname, search } = useLocation();
+  const navigate = useNavigate();
   if (!user) return null;
 
   const qaRoute = routeForView("qa");
@@ -34,6 +37,13 @@ export function QaTabs() {
       <div className="subtabs">
         {items.map((item) => (
           <Link key={item.key} to={item.path} className={`subtab${item.active ? " active" : ""}`}
+            onClick={event => {
+              if (!useUiStore.getState().componentCompatibilityDirty) return;
+              event.preventDefault();
+              void confirmDialog({ title: "未保存的修改", body: "有未保存的组件兼容性结论，确认放弃并离开？", danger: true, confirmText: "放弃修改" }).then(ok => {
+                if (ok) { useUiStore.getState().setComponentCompatibilityDirty(false); navigate(item.path); }
+              });
+            }}
             aria-current={item.active ? "page" : undefined}>
             {item.label}
           </Link>

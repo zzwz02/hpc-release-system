@@ -481,6 +481,14 @@ tbody tr:hover td { background: var(--surface-2); }
 .delivery-images .delivery-reference-row td { padding-top: 4px; }
 .delivery-images input { min-width: 0; }
 .qa-delivery-images { grid-column: 1 / -1; min-width: 0; }
+.qa-test-command-query { align-items: flex-end; margin-top: 12px; }
+.qa-test-command-query > label { display: flex; flex-direction: column; gap: 4px; max-width: 100%; }
+.qa-test-command-query .input { width: 260px; max-width: 100%; }
+.qa-test-command-version { flex: 1 1 240px; min-width: 0; padding: 7px 0; overflow-wrap: anywhere; }
+.qa-test-commands .qa-report-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.qa-test-commands .qa-report-bar .count { order: -1; }
+.qa-test-commands .qa-report-export { margin-left: auto; }
+.qa-results-query > .input { flex: 1 1 260px; min-width: 0; }
 .qa-env-trigger { font: inherit; color: inherit; background: none; border: 0; border-bottom: 1px dotted var(--muted); padding: 0; cursor: help; text-align: left; }
 .qa-env-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .qa-env-preview { position: fixed; z-index: 2000; width: min(560px, calc(100vw - 24px)); max-height: calc(100vh - 24px); padding: 12px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); color: var(--text); box-shadow: 0 8px 28px #0003; pointer-events: none; font-size: 13px; }
@@ -494,6 +502,33 @@ tbody tr:hover td { background: var(--surface-2); }
 .compatibility-filters label { display: flex; flex-direction: column; gap: 4px; }
 .compatibility-search .input { min-width: min(260px, 100%); }
 .compatibility-apps-table { min-width: 1100px; }
+.component-conclusion-picker { display: grid; gap: 6px; max-width: 600px; }
+.component-conclusion-head { flex-wrap: wrap; }
+.component-conclusion-summary { flex-wrap: wrap; }
+.component-conclusion-create { border-bottom: 1px solid var(--border); }
+.component-conclusion-create h3 { margin-bottom: 14px; }
+.component-conclusion-table > table { table-layout: fixed; min-width: 0; }
+.component-conclusion-table > table > tbody > tr > td { vertical-align: top; overflow-wrap: anywhere; }
+.component-conclusion-table .select, .component-conclusion-table .textarea { width: 100%; min-width: 0; font: inherit; }
+.component-conclusion-table select[data-verdict="pass"] { color: var(--ok-fg); background: var(--ok-bg); }
+.component-conclusion-table select[data-verdict="fail"] { color: var(--bad-fg); background: var(--bad-bg); }
+.component-conclusion-table > table > tbody > .component-conclusion-scope > td { border-top: 0; padding-top: 0; }
+.component-conclusion-scope summary { cursor: pointer; width: fit-content; }
+.component-conclusion-scope table { table-layout: fixed; min-width: 0; }
+.component-conclusion-scope th, .component-conclusion-scope td { white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 900px) {
+  .component-conclusion-head h2 { flex-basis: 100%; }
+  .component-conclusion-head .spacer { display: none; }
+  .component-conclusion-head .page-refresh-meta { flex: 1; min-width: 0; font-weight: 400; }
+  .component-conclusion-table > table > colgroup, .component-conclusion-table > table > thead { display: none; }
+  .component-conclusion-table > table, .component-conclusion-table > table > tbody { display: block; }
+  .component-conclusion-table > table > tbody > tr:not(.component-conclusion-scope) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; padding: 14px; }
+  .component-conclusion-table > table > tbody > tr:not(.component-conclusion-scope) > td { padding: 0; border: 0; background: transparent; }
+  .component-conclusion-table > table > tbody > tr:not(.component-conclusion-scope) > td::before { content: attr(data-label); display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+  .component-conclusion-table > table > tbody > tr:not(.component-conclusion-scope) > td:nth-child(n+5) { grid-column: 1 / -1; }
+  .component-conclusion-table > table > tbody > .component-conclusion-scope { display: block; }
+  .component-conclusion-table > table > tbody > .component-conclusion-scope > td { display: block; padding: 0 14px 14px; }
+}
 .compatibility-apps-table td { vertical-align: top; }
 .compatibility-apps-table > tbody > tr > td:nth-child(1) { min-width: 150px; }
 .compatibility-apps-table > tbody > tr > td:nth-child(2),
