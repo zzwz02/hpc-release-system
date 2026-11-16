@@ -72,7 +72,7 @@ class ModelCatalog:
     def provider(self, name: str) -> dict:
         provider = next((p for p in self.providers if p["id"] == name), None)
         if provider is None:
-            raise ValueError("服务商不可用，请刷新模型列表或检查该组 MODEL_CATALOGS 配置")
+            raise ValueError("服务商不可用，请刷新模型列表或检查该组 MODEL_PROVIDER / MODEL_CATALOGS 配置")
         return provider
 
     def select(self, provider: str, model: str = "", effort: str = "") -> tuple[str, str]:
@@ -108,7 +108,9 @@ async def read_catalog(client: CodexAppServerClient, group: AgentGroup) -> Model
     models = [_model_view(m, default_provider) for m in default_models if not m.get("hidden")]
     if not models:
         raise ValueError("app-server 未返回可用模型")
-    default_model = group.model or settings["model"] or next(
+    # A site override belongs only to its selected provider, not the shared backend's picker.
+    backend_model_override = group.model if group.model_provider in ("", default_provider) else ""
+    default_model = backend_model_override or settings["model"] or next(
         (m["model"] for m in default_models if m.get("isDefault")), models[0]["model"]
     )
     selected = next((m for m in models if m["model"] == default_model), None)
@@ -133,4 +135,10 @@ async def read_catalog(client: CodexAppServerClient, group: AgentGroup) -> Model
         models.extend(extra)
         providers.append({"id": provider, "name": settings["providers"][provider]["name"],
                           "default_model": extra[0]["model"], "default_effort": extra[0]["defaultReasoningEffort"]})
-    return ModelCatalog(models, providers, default_provider, errors)
+    catalog = ModelCatalog(models, providers, group.model_provider or default_provider, errors)
+    selected_provider = catalog.provider(catalog.default_provider)
+    if catalog.default_provider != default_provider and group.model:
+        selected_provider["default_model"], selected_provider["default_effort"] = catalog.select(
+            catalog.default_provider, group.model,
+        )
+    return catalog

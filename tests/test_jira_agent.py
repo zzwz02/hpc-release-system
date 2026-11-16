@@ -2208,6 +2208,53 @@ def test_broken_custom_catalog_reports_error_without_hiding_default_models(env):
     _wait(env, cid, _done)
 
 
+@pytest.mark.parametrize("provider,model,expected", [
+    ("", "other-model", ("openai", "other-model", "xhigh")),
+    ("openai", "other-model", ("openai", "other-model", "xhigh")),
+    ("deepseek", "", ("deepseek", "deepseek-flash", "high")),
+    ("deepseek", "deepseek-v4-pro", ("deepseek", "deepseek-v4-pro", "high")),
+])
+def test_site_default_model_is_used_without_user_override(env, provider, model, expected):
+    _enable_deepseek(env)
+    env.fake.config.update(model="default-model", model_reasoning_effort="xhigh")
+    env.conf.write_text(env.conf.read_text().replace(
+        "[jira_agent:HPC]\n", f"[jira_agent:HPC]\nMODEL_PROVIDER = {provider}\nMODEL = {model}\n"))
+    env.as_user("carol")
+    response = env.client.get("/api/jira-agent/models?group=HPC")
+    assert response.status_code == 200, response.text
+    catalog = response.json()
+    assert tuple(catalog[k] for k in ("default_provider", "default_model", "default_effort")) == expected
+    assert {p["id"] for p in catalog["providers"]} == {"openai", "deepseek"}
+    env.as_user("alice")
+    cid = _handover(env, post_comment=False)["conversation"]["id"]
+    detail = _wait(env, cid, _done)
+    assert _latest(detail)["status"] == "completed"
+    assert (detail["conversation"]["model_provider"], _latest(detail)["model"], _latest(detail)["effort"]) == expected
+    assert env.fake.params("thread/start")[-1]["modelProvider"] == expected[0]
+    assert not env.jira.comments
+
+
+@pytest.mark.parametrize("failure", ["unknown_provider", "wrong_model", "unconfigured_provider", "broken_catalog"])
+def test_invalid_site_default_rejects_new_tasks_without_fallback(env, failure):
+    path = _enable_deepseek(env)
+    provider = "missing" if failure == "unknown_provider" else "deepseek"
+    model = "default-model" if failure == "wrong_model" else "deepseek-flash"
+    env.conf.write_text(env.conf.read_text().replace(
+        "[jira_agent:HPC]\n", f"[jira_agent:HPC]\nMODEL_PROVIDER = {provider}\nMODEL = {model}\n"))
+    if failure == "unconfigured_provider":
+        env.fake.config["model_providers"].clear()
+    if failure == "broken_catalog":
+        env.fake.files[path] = b'{}'
+    env.as_user("carol")
+    for response in [
+        env.client.get("/api/jira-agent/models?group=HPC"),
+        env.client.post("/api/jira-agent/conversations", json={"issue_key": "MC3-7672"}),
+    ]:
+        assert response.status_code == 400, response.text
+        assert "模型" in response.text or "服务商" in response.text
+    assert not env.fake.params("thread/start")
+
+
 def test_existing_thread_provider_mismatch_never_sends_a_turn(env):
     cid = _handover(env, post_comment=False)["conversation"]["id"]
     detail = _wait(env, cid, _done)

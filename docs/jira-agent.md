@@ -213,15 +213,25 @@ WantedBy=multi-user.target
 
 ### 对话服务商、模型与 effort
 
-RM 在新建对话交单时可选择服务商、模型及该模型支持的 effort。默认仍沿用 B 上的默认服务商（本地配置为 OpenAI / GPT plan）。**同一对话固定 provider，切换 OpenAI / DeepSeek 必须新建对话**，对应新的 Codex thread。续办可调整同一 provider 下的模型和 effort；排队或运行中不能调整。普通用户没有选择入口，后端也校验 RM 权限及 provider、模型、effort 的组合。
+RM 在新建对话交单时可选择服务商、模型及该模型支持的 effort。未配置组 `MODEL_PROVIDER` 时沿用 B 的默认服务商；填写后仅覆盖本站该组新对话的默认选择。**同一对话固定 provider，切换服务商必须新建对话**，对应新的 Codex thread。续办可调整同一 provider 下的模型和 effort；排队或运行中不能调整。普通用户没有选择入口，后端也校验 RM 权限及 provider、模型、effort 的组合。
 
 模型来源：
 
-- 默认服务商使用 B 的 `model/list` 和 `config/read`，组 `MODEL` 可覆盖默认模型。
+- B 的默认服务商使用 `model/list` 和 `config/read`；组 `MODEL` 只覆盖本站默认服务商的默认模型。
 - 其他 provider 须先在 B 的用户 `~/.codex/config.toml` 配置 URL 与认证。Key 只保留在 B，网站接口不返回或传入 Key。
 - A 的 `release_system.conf` 在对应 `[jira_agent:<组>]` 节增加可选 `MODEL_CATALOGS`，例如 `MODEL_CATALOGS = {"deepseek": "/home/hpc-agent/.codex/deepseek-models.json"}`。路径为 **B 上的绝对路径**，文件使用 Codex 官方模型目录格式（`models` / `slug` / `default_reasoning_level` / `supported_reasoning_levels`）。目录的第一个可见模型是该 provider 的默认模型。
 - A 通过 app-server 的 `fs/readFile` 读取目录，只向网页返回 provider 名称、模型标识和 effort 选项，不返回目录中的提示词或 provider 凭据。额外目录无法读取时，页面显示对应错误，其余可用服务商仍可选择。
 - 新建对话及续办时把对应 `modelProvider` 传给 `thread/start` / `thread/resume`。模型能力目录必须在 B 的 app-server 启动时加载；Codex 0.162.1 忽略对话级 `config.model_catalog_json`，仅让网站读到目录并不代表执行端已使用它。额外目录的 provider 禁用内置 web search，避免默认假设第三方 Responses 端点支持该工具。
+
+例如，在已完成 MetaX 接入的站点，仅修改 A 的 `release_system.conf`：
+
+```ini
+[jira_agent:HPC]
+MODEL_PROVIDER = metax
+MODEL = GLM-5.3
+```
+
+保留该节已有连接和 `MODEL_CATALOGS` 配置。默认 effort 使用该模型目录中的值（当前 GLM-5.3 为 `max`），不会继承 B 的 OpenAI effort。默认 provider 不可用或模型不属于它时会报错，不静默切换其他模型。配置按请求读取，仅影响本站该组的新对话，无需修改或重启共享 Codex 后端。
 
 provider 保存在 `jira_agent_conversations.model_provider`；模型与 effort 保存在 `jira_agent_turns.model` / `effort`，每轮实际值回填记录。模型和 effort 在同一对话内保留，刷新页面、网站重启不重置，新建对话恢复默认。旧库初始化时补列；旧对话的 provider 从已有 thread 确认，不能用今日默认值覆盖已有 thread 的服务商。
 

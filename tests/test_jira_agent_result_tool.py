@@ -8,7 +8,7 @@ import pytest
 from app.db.connection import transaction
 from app.domain import jira_agent as domain
 from app.repositories import jira_testing_repo
-from app.services.jira_agent_runner import open_db
+from app.services.jira_agent_runner import load_groups, open_db
 from tests.test_jira_agent import env, _handover, _wait, _done, _latest, _enable_deepseek, RESULT, PATCH
 from tests.test_jira_testing import setup, start as start_test
 
@@ -99,6 +99,40 @@ def metax(env, monkeypatch):
 
 def start(env):
     return _handover(env, model_provider='metax', model='GLM-5.3', effort='max', post_comment=False)['conversation']['id']
+
+
+def test_metax_site_default_preserves_existing_conversation(metax):
+    metax.fake.plans = ['complete']
+    old = _handover(metax, post_comment=False)['conversation']['id']
+    original = _wait(metax, old, _done)
+    path = dict(load_groups()['HPC'].model_catalogs)['metax']
+    catalog = json.loads(metax.fake.files[path])
+    catalog['models'][0]['default_reasoning_level'] = 'max'
+    metax.fake.files[path] = json.dumps(catalog).encode()
+    metax.fake.config.update(model='default-model', model_reasoning_effort='xhigh')
+    metax.conf.write_text(metax.conf.read_text().replace(
+        '[jira_agent:HPC]\n', '[jira_agent:HPC]\nMODEL_PROVIDER = metax\nMODEL = GLM-5.3\n'))
+    response = metax.client.get('/api/jira-agent/models?group=HPC')
+    assert response.status_code == 200, response.text
+    defaults = response.json()
+    assert tuple(defaults[k] for k in ('default_provider', 'default_model', 'default_effort')) == ('metax', 'GLM-5.3', 'max')
+    metax.as_user('alice')
+    response = metax.client.post(f'/api/jira-agent/conversations/{old}/messages', json={'text': '沿用原模型'})
+    assert response.status_code == 200, response.text
+    detail = _wait(metax, old, _done)
+    assert detail['conversation']['thread_id'] == original['conversation']['thread_id']
+    assert detail['conversation']['model_provider'] == 'openai'
+    assert (_latest(detail)['model'], _latest(detail)['effort']) == ('default-model', 'medium')
+    metax.fake.plans = ['result_tool']
+    new = _handover(metax, new_conversation=True, post_comment=False)['conversation']['id']
+    detail = _wait(metax, new, _done)
+    assert detail['conversation']['model_provider'] == 'metax'
+    assert (_latest(detail)['model'], _latest(detail)['effort']) == ('GLM-5.3', 'max')
+    assert _latest(detail)['status'] == 'completed' and _latest(detail)['delivery_status'] == 'complete'
+    assert metax.fake.params('thread/start')[-1]['modelProvider'] == 'metax'
+    assert metax.replies[-1]['success'] is True
+    assert 'outputSchema' not in metax.fake.params('turn/start')[-1]
+    assert not metax.jira.comments
 
 
 @pytest.mark.parametrize('legacy', [False, True], ids=['flat', 'legacy_nested'])

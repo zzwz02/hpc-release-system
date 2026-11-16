@@ -168,12 +168,13 @@ class AgentGroup:
     # Provider -> absolute Codex model catalog path on server B.
     model_catalogs: tuple[tuple[str, str], ...] = ()
     dataset_policy: dict = field(default_factory=dict)
+    model_provider: str = ""
 
 
 def groups_from_sections(sections: dict[str, dict[str, str]]) -> dict[str, AgentGroup]:
     """Build groups from the [jira_agent:<group>] sections, one per digital employee.
 
-    MODEL, COMPONENTS, JIRA_MEMBERS_GROUP and SSH_KEY_PATH are optional (empty
+    MODEL_PROVIDER, MODEL, COMPONENTS, JIRA_MEMBERS_GROUP and SSH_KEY_PATH are optional (empty
     switches that feature off); every other key is required.
     """
     from app.domain.jira_execution import dataset_policy
@@ -224,6 +225,7 @@ def groups_from_sections(sections: dict[str, dict[str, str]]) -> dict[str, Agent
             ssh_key_path=ssh_key_path,
             model_catalogs=tuple(catalogs.items()),
             dataset_policy=dataset_policy(values),
+            model_provider=values.get("MODEL_PROVIDER", ""),
         )
     return groups
 
