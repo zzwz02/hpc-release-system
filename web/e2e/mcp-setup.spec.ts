@@ -43,10 +43,17 @@ test("MCP client setup: collapsed sections and copyable single-line commands", a
     await expect(section(name).locator(":scope > .mcp-code pre")).toContainText(`MCP_TOKEN='${token}'`);
   }
   for (const name of ["Claude Code", "Codex"]) {
-    const config = section(name).locator("details");
+    const config = section(name).locator("details").first();
     await config.locator("summary").click();
     await expect(config.locator("pre")).toContainText(`${mcpBase}/mcp`);
   }
+  const permissions = section("Codex").locator(".mcp-codex-permissions");
+  await permissions.locator("summary").click();
+  await expect(permissions.locator("pre")).toContainText('sandbox_mode = "danger-full-access"');
+  await expect(permissions.locator("pre")).toContainText('mcp_elicitations = true');
+  await expect(permissions).toContainText("文件顶层");
+  await permissions.getByRole("button", { name: "复制", exact: true }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(await permissions.locator("pre").innerText());
   await expect(section("其他 harness").locator("pre")).toContainText(`URL: ${mcpBase}/mcp`);
   await expect(page.getByLabel("MCP 连接协议")).toHaveCount(0);
   await expect(page).toHaveURL(base + "/mcp-console");

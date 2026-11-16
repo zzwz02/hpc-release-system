@@ -207,6 +207,9 @@ write_local() {  # write_local TOKEN
   config write "$1" $clients
   local client
   for client in $clients; do printf '✔ %-11s 已配置\n' "$(label "$client")" >&2; done
+  if [[ " $clients " == *" codex "* ]]; then
+    say 'Codex：若发评论时没有用户名弹窗，检查 approval_policy；never 可能自动拒绝表单。可单独设置 granular.mcp_elicitations=true，保留原沙箱设置。配置示例见网站 MCP 接入页，本脚本不修改审批或沙箱策略。'
+  fi
   say "请重启 Claude Code / Codex（VS Code 中执行 Developer: Reload Window），在对话里输入 /mcp 确认 $SERVER_NAME 已连接。"
   if [[ " $clients " == *" claude "* ]] && pgrep -u "$(id -u)" -x claude >/dev/null 2>&1; then
     say "提示：检测到正在运行的 Claude Code，它退出时可能覆盖 ~/.claude.json；若重启后看不到 $SERVER_NAME，关闭后重新运行本脚本。"
@@ -227,6 +230,10 @@ print_config() {  # print_config TOKEN
 claude mcp remove $SERVER_NAME -s user >/dev/null 2>&1; claude mcp add --transport http --scope user $SERVER_NAME $MCP_URL --header "Authorization: Bearer $token"
 
 # ── Codex（CLI 与 VS Code 扩展通用）：~/.codex/config.toml 中加入（先删除旧的同名段落）：
+# 若完全访问下没有用户名弹窗，将下面审批键放在文件顶层、所有表头之前，替换已有同名键：
+# approval_policy = { granular = { sandbox_approval = false, rules = false, mcp_elicitations = true } }
+# 保留原 sandbox_mode；需要完全访问时可设为 "danger-full-access"。
+# 重启后开启新会话，核对实际策略；--yolo 或客户端“完全访问”预设可能再次覆盖为 never。
 [mcp_servers.$SERVER_NAME]
 url = "$MCP_URL"
 http_headers = { "Authorization" = "Bearer $token" }

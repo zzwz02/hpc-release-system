@@ -260,6 +260,10 @@ function SetupPane({ viewer, tools }: {
             <summary>Codex</summary>
             <p className="hint">自动备份并更新 <code>~/.codex/config.toml</code>（设置了 CODEX_HOME 时使用该目录），保留其他配置。</p>
             <CodeBlock text={clientCommand("codex")} />
+            <p className="hint">
+              Codex 的 <code>approval_policy = "never"</code> 可能自动拒绝用户名输入表单，导致没有弹窗。
+              完全访问下也可通过细粒度审批单独允许 MCP 表单；接入脚本保留原审批和沙箱设置。
+            </p>
             <details>
               <summary className="small muted">查看配置文件内容</summary>
               <CodeBlock text={[
@@ -268,6 +272,25 @@ function SetupPane({ viewer, tools }: {
                 `http_headers = { "Authorization" = "Bearer ${tokenText}" }`,
                 "enabled = true", "startup_timeout_sec = 30",
               ].join("\n")} />
+            </details>
+            <details className="mcp-codex-permissions">
+              <summary className="small muted">完全访问下保留用户名弹窗</summary>
+              <p className="hint">
+                在实际运行 Codex 的机器上修改 <code>~/.codex/config.toml</code>（设置了 CODEX_HOME 时使用该目录），
+                以下键放在文件顶层、所有表头之前，替换已有同名键：
+              </p>
+              <CodeBlock text={[
+                'sandbox_mode = "danger-full-access"',
+                'approval_policy = { granular = { sandbox_approval = false, rules = false, mcp_elicitations = true } }',
+              ].join("\n")} />
+              <p className="hint">
+                仅需恢复弹窗时保留原 <code>sandbox_mode</code>，只调整审批策略。
+                重启 Codex 或重载 VS Code 后开启新会话；命令行参数、profile、项目配置及客户端权限预设可能覆盖该设置，
+                请核对会话实际生效的策略，避免 <code>--yolo</code> 或“完全访问”预设再次将其改回 <code>never</code>。
+                若客户端不支持细粒度策略，可使用 <code>approval_policy = "on-request"</code>。
+                已有 MCP 连接和 token 可继续使用。
+                <a href="https://developers.openai.com/codex/config-reference/" target="_blank" rel="noreferrer">Codex 官方配置说明</a>
+              </p>
             </details>
           </details>
           <details className="mt-12">
@@ -301,8 +324,9 @@ function SetupPane({ viewer, tools }: {
         <div className="panel-head"><h3>可用工具</h3></div>
         <div className="panel-body">
           <p className="hint mt-0">
-            用自然语言即可，例如「把 MC3-7672 拉到本地」「搜索我名下未关闭的 JIRA」「把这个结论评论到 MC3-7672」「把 build.log 上传到 MC3-7672」。
-            拉取默认保存到当前目录的 <code>jira/&lt;KEY&gt;/</code>；评论和上传附件只限该单 assignee 或 RM，以发布系统 JIRA 账号发出（评论注明你的名字）。
+            用自然语言即可，例如「MC3-7672 当前是什么状态」「把 MC3-7672 下载到本地」「搜索我名下未关闭的 JIRA」「把这个结论评论到 MC3-7672」「把 build.log 上传到 MC3-7672」。
+            查询只返回工单信息，不保存本地文件或下载附件；明确要求下载或保存时才落盘，优先使用指定目录，未指定时使用 <code>jira/&lt;KEY&gt;/</code>。
+            评论和上传附件只限该单 assignee 或 RM，以发布系统 JIRA 账号发出（评论注明你的名字）。
             问到 cu-bridge、CUDA 迁移 MACA 的问题时，客户端会自动调用 <code>skill_load</code> 取内部方法再作答，不必自己提。
           </p>
           <div className="table">

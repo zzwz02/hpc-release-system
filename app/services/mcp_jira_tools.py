@@ -1,14 +1,14 @@
 """MCP tools — JIRA (category ``jira``).
 
 The MCP server runs on the website, so it cannot write to the caller's
-disk.  ``jira_pull_issue`` therefore returns the issue as Markdown plus a
-download command per attachment (short-lived ticket links served by
-/api/mcp/downloads/...), and tells the agent where to save them.
+disk. ``jira_pull_issue`` returns issue information for answering questions.
+Only an explicit save_to_local request adds local save instructions and
+attachment download commands (short-lived /api/mcp/downloads/... tickets).
 
 Reads use the [jira] service account's visibility, like the JIRA agent page.
 Comments are posted by that account too, so the body gets a footer naming
-the website user; only the current assignee or RM may comment (the JIRA
-agent rule, including its cybersecurity risk lock).
+the website user; only the current assignee or RM may comment. The JIRA
+agent cybersecurity risk lock does not restrict user-confirmed MCP comments.
 """
 from __future__ import annotations
 
@@ -189,13 +189,16 @@ def _safe_filename(name: str, attachment_id: str, seen: set[str]) -> str:
 def _pull(ctx: ToolContext, args: dict) -> ToolResult:
     key = _key(args.get("issue_key"))
     ctx.log.target_type, ctx.log.target = "jira_issue", key
+    save_to_local = args.get("save_to_local", False)
+    if not isinstance(save_to_local, bool):
+        raise ToolError("save_to_local 必须是布尔值；仅在用户明确要求下载或保存到本地时设为 true")
     target_dir = str(args.get("target_dir") or "").strip() or f"jira/{key}"
     with_attachments = args.get("include_attachments", True) is not False
     issue = _jira_call(jira.get_issue_snapshot, key, issue_key=key)
     markdown = render_issue_markdown(issue)
 
     commands, seen = [], set()
-    if with_attachments and issue["attachments"]:
+    if save_to_local and with_attachments and issue["attachments"]:
         attach_dir = f"{target_dir.rstrip('/')}/attachments"
         commands.append(f"mkdir -p {shlex.quote(attach_dir)}")
         for attachment in issue["attachments"]:
@@ -207,24 +210,29 @@ def _pull(ctx: ToolContext, args: dict) -> ToolResult:
             url = f"{ctx.base_url}/api/mcp/downloads/{ticket}"
             commands.append(f"curl -fsSL -o {shlex.quote(local)} {shlex.quote(url)}")
 
-    guide = [
-        f"已拉取 {key}（{len(issue['comments'])} 条评论，{len(issue['attachments'])} 个附件）。",
-        f"请在用户的本地工作目录保存到 `{target_dir}/`（用户另有指定时按用户的目录）：",
-        f"1. 把下一段内容原样写入 `{target_dir}/issue.md`。",
-    ]
+    guide = [f"已查询 {key}（{len(issue['comments'])} 条评论，{len(issue['attachments'])} 个附件）。"]
+    if save_to_local:
+        guide += [
+            f"请按用户的下载/保存要求，在本地保存到 `{target_dir}/`（用户另有指定时按用户的目录）：",
+            f"1. 把下一段内容原样写入 `{target_dir}/issue.md`。",
+        ]
+    else:
+        guide.append("请直接根据下方内容回答用户的问题，不要创建本地文件或下载附件。"
+                     "仅在用户明确要求下载或保存到本地时，才设置 save_to_local=true 重新调用。")
     if commands:
         guide += [
             "2. 运行下面的命令下载附件（链接 "
             f"{mcp_service.DOWNLOAD_TICKET_SECONDS // 60} 分钟内有效，无需额外认证）：",
             "```bash", *commands, "```",
         ]
-    elif issue["attachments"]:
+    elif save_to_local and issue["attachments"]:
         guide.append("附件未下载（include_attachments=false）。")
     return ToolResult.text("\n".join(guide), markdown,
                            json.dumps({"correlations": correlations(issue, issue["url"])}, ensure_ascii=False), log=ToolLog(
         target_type="jira_issue", target=key,
         summary=f"{len(issue['comments'])} 评论 / {len(issue['attachments'])} 附件",
         extra={"comments": len(issue["comments"]), "attachments": len(issue["attachments"]),
+               "save_to_local": save_to_local,
                "attachment_links": max(0, len(commands) - 1),
                "acquisition": (issue.get("acquisition") or {}).get("status", "")},
     ))
@@ -233,12 +241,15 @@ def _pull(ctx: ToolContext, args: dict) -> ToolResult:
 register(Tool(
     name="jira_pull_issue",
     category=CATEGORY,
-    title="拉取 JIRA 到本地",
+    title="查询或下载 JIRA",
     description=(
-        "Fetch one JIRA issue (fields, description, custom fields, all comments, attachment list) so it "
-        "can be saved locally. The result says which files to write: issue.md with the returned Markdown, "
-        "and curl commands that download each attachment into <target_dir>/attachments. "
-        "Default target_dir is jira/<ISSUE-KEY> under the current working directory. "
+        "Query one JIRA issue (fields, status, description, custom fields, all comments, attachment list). "
+        "By default, answer the user's question directly from the returned content; do not write local files "
+        "or download attachments. Set save_to_local=true ONLY when the user explicitly asks to download "
+        "or save the issue locally. Only then does the result include issue.md save instructions and curl "
+        "commands for attachments. In save mode, target_dir defaults to jira/<ISSUE-KEY> under the current "
+        "working directory; honor the user's chosen directory. Asking about issue status or details is "
+        "a query, not a download request. "
         "Use jira_read_attachment with listed attachment ID to read text without curl. "
         "Recorded correlation fields and explicit JIRA/Jenkins links are returned with provenance."
     ),
@@ -246,8 +257,11 @@ register(Tool(
         "type": "object",
         "properties": {
             "issue_key": {"type": "string", "description": "e.g. MC3-7672"},
-            "target_dir": {"type": "string", "description": "Local directory to save into; default jira/<KEY>."},
-            "include_attachments": {"type": "boolean", "default": True},
+            "save_to_local": {"type": "boolean", "default": False,
+                              "description": "Set true only for an explicit user request to download/save locally. Queries default to false."},
+            "target_dir": {"type": "string", "description": "Only used with save_to_local=true; default jira/<KEY>."},
+            "include_attachments": {"type": "boolean", "default": True,
+                                    "description": "In local save mode, include attachment download commands. Has no effect on query-only mode."},
         },
         "required": ["issue_key"],
     },
@@ -259,14 +273,15 @@ register(Tool(
 # jira_add_comment
 # ─────────────────────────────────────────────────────────────
 
-def check_can_write(user: dict, key: str, action: str = "评论") -> dict:
-    """Live JIRA read + the JIRA agent rule: current assignee or RM, risk lock respected."""
+def check_can_write(user: dict, key: str, action: str = "评论", *, check_agent_risk: bool = True) -> dict:
+    """Check live issue authority; confirmed MCP comments do not execute the agent."""
     issue = _jira_call(jira.get_issue, key, issue_key=key)
-    try:
-        jira_agent_service.check_risk_lock(user, key)
-    except AuthzError as exc:
-        raise ToolError(str(exc)) from exc
-    if not jira_agent_service.can_act(user, issue):
+    if check_agent_risk:
+        try:
+            jira_agent_service.check_risk_lock(user, key)
+        except AuthzError as exc:
+            raise ToolError(str(exc)) from exc
+    if not jira_agent_service.is_assignee_or_rm(user, issue):
         raise ToolError(
             f"只有当前 JIRA assignee 或 RM 可以{action}；{key} 的 assignee 是 "
             f"{jira_agent_service.assignee_name(issue) or '无'}"
@@ -312,7 +327,7 @@ def _comment(ctx: ToolContext, args: dict) -> ToolResult:
         raise ToolError("评论内容不能为空")
     if len(body) > COMMENT_MAX_CHARS:
         raise ToolError(f"评论超过 {COMMENT_MAX_CHARS} 字符")
-    issue = check_can_write(ctx.user, key)
+    issue = check_can_write(ctx.user, key, check_agent_risk=False)
     comment_id = _jira_call(jira.add_comment, key, body + comment_footer(ctx), issue_key=key)
     url = f"{issue['url']}?focusedCommentId={comment_id}"
     return ToolResult.text(f"已在 {key} 发布评论（ID {comment_id}）：{url}", log=ToolLog(
@@ -327,7 +342,9 @@ register(Tool(
     title="评论 JIRA",
     description=(
         "Append a comment (JIRA wiki markup) to an issue. Only the issue's current assignee or an RM may "
-        "comment. Before drafting, load skill_load(skill=\"jira-format\"), including draft-only requests. "
+        "comment. "
+        "The JIRA agent cybersecurity risk lock does not block this user-confirmed comment. "
+        "Before drafting, load skill_load(skill=\"jira-format\"), including draft-only requests. "
         "The server applies shared JIRA wiki formatting before confirmation and posts that same body. "
         "Before calling, show the complete proposed comment in the conversation for the user to review. "
         "The confirmation dialog shows only a bounded excerpt for long comments; the full body is posted. "

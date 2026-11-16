@@ -18,7 +18,8 @@ def test_use_existing_token_updates_only_selected_client(tmp_path, client, valid
     claude = tmp_path / 'claude.json'
     codex = tmp_path / 'codex.toml'
     claude.write_text(json.dumps({'mcpServers': {'other': {'command': 'other'}}}))
-    codex.write_text('model = "test"\n[mcp_servers.other]\ncommand = "other"\n')
+    codex.write_text('model = "test"\nsandbox_mode = "workspace-write"\n'
+                     'approval_policy = "never"\n[mcp_servers.other]\ncommand = "other"\n')
     originals = {p: p.read_bytes() for p in (claude, codex)}
     # Override only paths inside the test shell; no real HOME/config is changed.
     command = '''source "$1"
@@ -52,12 +53,14 @@ do_use_token
     else:
         data = tomllib.loads(codex.read_text())
         assert data['model'] == 'test' and data['mcp_servers']['other'] == {'command': 'other'}
+        assert data['approval_policy'] == 'never' and data['sandbox_mode'] == 'workspace-write'
         entry = data['mcp_servers']['release-system']
         assert entry['url'] == f'{scheme}://example.test/mcp'
         assert entry['http_headers'] == {'Authorization': 'Bearer rsmcp_test_abcdefghijklmnopqrstuvwxyz0123456789'}
         assert 'command' not in entry
         assert 'required' not in entry
         assert claude.read_bytes() == originals[claude]
+        assert 'granular.mcp_elicitations=true' in result.stderr
     selected = claude if client == 'claude' else codex
     assert selected.stat().st_mode & 0o777 == 0o600
     assert Path(str(selected) + '.bak-release-mcp').exists()

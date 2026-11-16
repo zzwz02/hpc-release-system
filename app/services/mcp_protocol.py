@@ -31,10 +31,15 @@ SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 SERVER_NAME = "release-system"
 SERVER_VERSION = "1.0.0"
 INSTRUCTIONS = (
-    "HPC 发布协作系统的 MCP。可以搜索 JIRA、把工单（字段、评论、附件）拉取到本地目录、"
+    "HPC 发布协作系统的 MCP。可以搜索或查询 JIRA、按用户要求把工单（字段、评论、附件）下载到本地目录、"
     "给工单追加评论、上传附件。评论和附件以发布系统的 JIRA 账号提交并注明你的名字；"
+    "用户只问 JIRA 的信息、状态、进展或要求查询时，调用 jira_search 或 jira_pull_issue 查询后直接回答，"
+    "不要创建本地目录、写 issue.md 或下载附件。jira_pull_issue 默认 save_to_local=false；"
+    "仅在用户明确要求下载或保存到本地时设为 true，保存目录遵循用户指定。"
     "发评论时必须通过 elicitation 输入本人域账号用户名，与 token 所属账号匹配才发送；"
     "用户名不匹配、拒绝、取消或确认超时均表示未获确认，应告知用户具体原因，不要自动重试或代填用户名。"
+    "客户端返回拒绝或取消不能证明用户看到了弹窗；也可能是客户端审批策略自动拒绝。"
+    "拒绝或取消时，向用户原样展示工具返回的失败提示，不另行建议修改配置文件。"
     "客户端不支持时不能发评论。附件上传不需要确认，但仍检查权限。"
     "起草或发送 JIRA 评论前先调用 skill_load(skill=\"jira-format\") 读取格式规范；评论正文先统一处理格式，再弹窗确认。"
     "调用 jira_add_comment 前，先在对话中向用户展示拟发送的完整评论；长评论在确认弹窗中只展示摘要，发送时保留全文。"
@@ -251,7 +256,14 @@ class Exchange:
         if not answered:
             outcome, text = "timeout", "等待用户确认超时，未执行。"
         elif action != "accept":
-            outcome, text = action or "no_answer", "用户未确认，未执行。"
+            outcome = action or "no_answer"
+            text = ("客户端未返回有效的确认，未执行。" if not action else
+                    "客户端返回拒绝或取消，未执行。")
+            if action in ("decline", "cancel") and "codex" in str(self.session.get("client_name", "")).casefold():
+                text = ("客户端拒绝或取消，未执行。可能是用户拒绝，也可能是codex设置了Full Access模式。"
+                        "如果是后者，请改为Approve for me，或手动评论。")
+            else:
+                text += "服务端无法判断确认弹窗是否显示，不能据此认定用户主动拒绝；客户端审批策略也可能自动拒绝表单。"
         elif (
             not isinstance(content.get("username"), str)
             or content["username"].strip().casefold() != self.caller.user["username"].casefold()

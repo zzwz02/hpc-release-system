@@ -104,8 +104,13 @@ def check_risk_lock(user: dict, issue_key: str, conn=None) -> None:
         raise AuthzError(RISK_LOCK_MESSAGE)
 
 
+def is_assignee_or_rm(user: dict, issue: dict) -> bool:
+    """Issue authority, independent of whether the agent may execute on it."""
+    return _is_rm(user) or _same_user(jira.agent_username(user), assignee_name(issue))
+
+
 def can_act(user: dict, issue: dict) -> bool:
-    return _is_rm(user) or (not risk_locked(issue["key"]) and _same_user(jira.agent_username(user), assignee_name(issue)))
+    return is_assignee_or_rm(user, issue) and (_is_rm(user) or not risk_locked(issue["key"]))
 
 
 def check_actor(user: dict, issue: dict) -> None:

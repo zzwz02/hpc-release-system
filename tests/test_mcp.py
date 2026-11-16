@@ -140,11 +140,34 @@ def test_initialize_session_and_tool_list(site):
     assert (entry["kind"], entry["tool"], entry["client_name"]) == ("connection", "initialize", "claude-code")
 
 
+@pytest.mark.parametrize("options", [{}, {"save_to_local": False},
+                                    {"target_dir": "exports/MC3-1", "include_attachments": True}])
+def test_query_issue_returns_status_and_context_without_local_downloads(site, monkeypatch, options):
+    from app.services import mcp_service
+
+    client, _, token_for, _ = site
+    token = token_for("alice", "Owner")
+    session, initialized = connect_client(client, token, "codex-mcp-client")
+    monkeypatch.setattr(mcp_service, "issue_ticket", lambda *a, **kw: pytest.fail("query must not issue download tickets"))
+    monkeypatch.setattr(jira, "download_attachment", lambda *a, **kw: pytest.fail("query must not download attachments"))
+    result = call(client, token, session, "jira_pull_issue", {"issue_key": "mc3-1", **options})
+    assert not result["isError"]
+    guide, markdown = [item["text"] for item in result["content"][:2]]
+    assert "不要创建本地文件或下载附件" in guide
+    assert "curl " not in guide and "mkdir " not in guide and "issue.md" not in guide
+    assert "/api/mcp/downloads/" not in json.dumps(result)
+    assert "状态：Open" in markdown and "Assignee：Alice (alice)" in markdown
+    assert "log attached" in markdown and "## 附件" in markdown and "Chip：C500" in markdown
+    assert "save_to_local=false" in initialized["instructions"]
+    entry = logs(client, tool="jira_pull_issue")[0]
+    assert json.loads(entry["extra_json"])["attachment_links"] == 0
+
+
 def test_pull_issue_returns_markdown_and_working_download_links(site):
     client, _, token_for, _ = site
     token = token_for("alice", "Owner")
     session, _ = connect_client(client, token, "codex-mcp-client")
-    result = call(client, token, session, "jira_pull_issue", {"issue_key": "mc3-1"})
+    result = call(client, token, session, "jira_pull_issue", {"issue_key": "mc3-1", "save_to_local": True})
     assert result["isError"] is False
     guide, markdown = (block["text"] for block in result["content"][:2])
     assert "jira/MC3-1/issue.md" in guide
@@ -161,6 +184,32 @@ def test_pull_issue_returns_markdown_and_working_download_links(site):
     assert (pull["category"], pull["target_type"], pull["target"], pull["status"]) == ("jira", "jira_issue", "MC3-1", "ok")
     assert json.loads(pull["extra_json"])["attachments"] == 1
     assert (fetched["target"], fetched["client_name"]) == ("MC3-1", "codex-mcp-client")
+
+
+def test_explicit_local_save_honors_directory_and_can_omit_attachment_downloads(site, monkeypatch):
+    from app.services import mcp_service
+
+    client, _, token_for, _ = site
+    token = token_for("alice", "Owner")
+    session, _ = connect_client(client, token)
+    monkeypatch.setattr(mcp_service, "issue_ticket", lambda *a, **kw: pytest.fail("attachments excluded"))
+    result = call(client, token, session, "jira_pull_issue", {
+        "issue_key": "MC3-1", "save_to_local": True,
+        "target_dir": "exports/issue notes", "include_attachments": False,
+    })
+    assert not result["isError"]
+    guide = result["content"][0]["text"]
+    assert "exports/issue notes/issue.md" in guide and "include_attachments=false" in guide
+    assert "jira/MC3-1" not in guide and "curl " not in guide
+
+
+@pytest.mark.parametrize("value", ["true", "false", 1, None])
+def test_local_save_requires_a_boolean_option(site, value):
+    client, _, token_for, _ = site
+    token = token_for("alice", "Owner")
+    session, _ = connect_client(client, token)
+    result = call(client, token, session, "jira_pull_issue", {"issue_key": "MC3-1", "save_to_local": value})
+    assert result["isError"] and "save_to_local 必须是布尔值" in result["content"][0]["text"]
 
 
 def test_comment_limited_to_assignee_or_rm_and_attributed(site):
@@ -184,6 +233,75 @@ def test_comment_limited_to_assignee_or_rm_and_attributed(site):
     session = connect_confirming(client, rm)
     assert not confirmable_call(client, rm, session, "jira_add_comment", {"issue_key": "MC3-1", "body": "rm"},
                               {"result": {"action": "accept", "content": {"username": "rm"}}})[-1]["result"]["isError"]
+
+
+@pytest.fixture()
+def locked_issue(site, tmp_path, monkeypatch):
+    from app.db.jira_agent_connection import connect_jira_agent
+
+    monkeypatch.setattr(settings, "jira_agent_database_url", f"sqlite:///{tmp_path / 'agent.db'}")
+    conn = connect_jira_agent(settings.jira_agent_database_url)
+    conn.execute("INSERT INTO jira_agent_issue_locks VALUES (?, ?, ?, ?, ?)",
+                 ("MC3-1", "cybersecurity_risk", "old-conversation", "old-turn", "2026-11-16 10:00:00"))
+    conn.commit()
+    conn.close()
+    return site
+
+
+@pytest.mark.parametrize(("username", "role", "action", "typed", "posted"), [
+    ("alice", "Owner", "accept", "alice", True),
+    ("alice", "Owner", "decline", "alice", False),
+    ("alice", "Owner", "accept", "carol", False),
+    ("carol", "Owner", "accept", "carol", False),
+    ("rm", "RM", "accept", "rm", True),
+])
+def test_confirmed_mcp_comment_is_independent_of_agent_risk_lock(locked_issue, username, role, action, typed, posted):
+    from app.services import jira_agent_service
+
+    client, _, token_for, calls = locked_issue
+    token = token_for(username, role)
+    session = connect_confirming(client, token, "codex-mcp-client")
+    result = confirmable_call(client, token, session, "jira_add_comment",
+                              {"issue_key": "MC3-1", "body": "UMD 和编译器同事正在跟进该问题。"},
+                              {"result": {"action": action, "content": {"username": typed}}})[-1]["result"]
+    assert result["isError"] is not posted
+    assert len(calls["comments"]) == int(posted)
+    if posted:
+        assert calls["comments"][0][0] == "MC3-1"
+        assert f"（{username}）" in calls["comments"][0][1]
+    elif username == "carol":
+        assert "assignee" in result["content"][0]["text"]
+    # Commenting never clears the lock or grants permission to execute the agent.
+    assert jira_agent_service.risk_locked("MC3-1")
+    assert not jira_agent_service.can_act({"username": "alice", "role": "Owner"}, ISSUE)
+    assert jira_agent_service.can_act({"username": "rm", "role": "RM"}, ISSUE)
+
+
+def test_mcp_upload_still_checks_agent_risk_at_ticket_and_upload(locked_issue, monkeypatch):
+    from app.db.jira_agent_connection import connect_jira_agent
+
+    client, _, token_for, _ = locked_issue
+    uploads = []
+    monkeypatch.setattr(jira, "upload_agent_attachment", lambda *args: uploads.append(args) or "5001")
+    token = token_for("alice", "Owner")
+    session, _ = connect_client(client, token)
+    args = {"issue_key": "MC3-1", "file_path": "/tmp/log.txt"}
+    denied = call(client, token, session, "jira_upload_attachment", args)
+    assert denied["isError"] and "cybersecurity risk" in denied["content"][0]["text"]
+
+    # A ticket issued before the warning must also be rejected at upload time.
+    conn = connect_jira_agent(settings.jira_agent_database_url)
+    lock = tuple(conn.execute("SELECT * FROM jira_agent_issue_locks").fetchone())
+    conn.execute("DELETE FROM jira_agent_issue_locks")
+    conn.commit()
+    ticket = call(client, token, session, "jira_upload_attachment", args)
+    assert not ticket["isError"]
+    conn.execute("INSERT INTO jira_agent_issue_locks VALUES (?, ?, ?, ?, ?)", lock)
+    conn.commit()
+    conn.close()
+    response = client.put(_upload_url(ticket["content"][0]["text"]), content=b"test log")
+    assert response.status_code == 403 and "cybersecurity risk" in response.text
+    assert uploads == []
 
 
 def test_tool_error_is_logged_with_target(site):
@@ -273,7 +391,7 @@ def test_download_links_use_the_address_the_client_connected_to(site, tmp_path, 
     monkeypatch.setattr(settings, "runtime_conf_path", conf)
     token = token_for("alice", "Owner")
     session, _ = connect_client(client, token)
-    guide = call(client, token, session, "jira_pull_issue", {"issue_key": "MC3-1"})["content"][0]["text"]
+    guide = call(client, token, session, "jira_pull_issue", {"issue_key": "MC3-1", "save_to_local": True})["content"][0]["text"]
     assert "http://testserver/api/mcp/downloads/" in guide and "public.example" not in guide
 
 
@@ -490,7 +608,7 @@ def test_attachment_tickets_recheck_current_identity(site, monkeypatch, change, 
     upload = call(client, token, session, 'jira_upload_attachment',
                   {'issue_key': 'MC3-1', 'file_path': 'a.log'})
     upload_url = _upload_url(upload['content'][0]['text'])
-    pull = call(client, token, session, 'jira_pull_issue', {'issue_key': 'MC3-1'})
+    pull = call(client, token, session, 'jira_pull_issue', {'issue_key': 'MC3-1', 'save_to_local': True})
     import re
     download_url = re.search(r'http://testserver(/api/mcp/downloads/[^\s\x27]+)',
                              pull['content'][0]['text']).group(1)
@@ -653,6 +771,25 @@ def test_comment_is_not_posted_when_the_user_does_not_confirm(site, payload, out
     entry = logs(client, tool="jira_add_comment")[0]
     assert json.loads(entry["extra_json"])["confirm"] == outcome
     assert (entry["target_type"], entry["target"]) == ("jira_issue", "MC3-1")
+    if outcome in ("decline", "cancel"):
+        assert "Full Access" not in result["result"]["content"][0]["text"]
+
+
+@pytest.mark.parametrize("action", ["decline", "cancel"])
+def test_codex_rejected_confirmation_suggests_approve_for_me_or_manual_comment(site, action):
+    client, _, token_for, calls = site
+    token = token_for("alice", "Owner")
+    session = connect_confirming(client, token, "codex-mcp-client")
+    result = confirmable_call(client, token, session, "jira_add_comment",
+                              {"issue_key": "MC3-1", "body": "test comment"},
+                              {"result": {"action": action}})[-1]["result"]
+    text = result["content"][0]["text"]
+    assert result["isError"] and calls["comments"] == []
+    assert text.startswith("客户端拒绝或取消，未执行。可能是用户拒绝，也可能是codex设置了Full Access模式。"
+                           "如果是后者，请改为Approve for me，或手动评论。")
+    assert "mcp_elicitations" not in text and "sandbox_mode" not in text
+    assert "不要自动重试或代填用户名" in text
+    assert result["structuredContent"] == {"status": "not_executed", "reason": action, "retryable": False}
 
 
 @pytest.mark.parametrize("confirming", [True, False])
@@ -880,7 +1017,7 @@ def test_proxy_https_used_for_account_config_and_attachment_commands(site, monke
     assert f'url = "{origin}/mcp"' in created['config']['codex_toml']
     session, _ = connect_client(client, created['token'])
     for name, args, path in (
-        ('jira_pull_issue', {'issue_key': 'MC3-1'}, 'downloads'),
+        ('jira_pull_issue', {'issue_key': 'MC3-1', 'save_to_local': True}, 'downloads'),
         ('jira_upload_attachment', {'issue_key': 'MC3-1', 'file_path': 'test.log'}, 'uploads'),
     ):
         result = call(client, created['token'], session, name, args)
