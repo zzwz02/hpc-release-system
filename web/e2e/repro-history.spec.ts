@@ -115,6 +115,32 @@ async function expectDesktopLayout(panel: Locator) {
   expect(issues).toEqual([]);
 }
 
+for (const width of [390, 1366]) {
+  test(`AI suggestion survives failed citation validation at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    const failed: ReproTask = { ...historicalTask, failure_id: 3157, report: { ...historicalTask.report!,
+      outcome: "history_validation_failed", suggested_owner_account: "m00930",
+      build_skipped_reason: "引用与原始日志行不一致",
+      log_review: { ...historicalTask.report!.log_review!, decision: "insufficient_evidence", evidence: [],
+        validation: { status: "failed", errors: ["引用与原始日志行不一致"] } },
+      diagnosis: { ...historicalTask.report!.diagnosis!, summary: "下载 onnxruntime-gpu 时代理无响应",
+        suggested_role: "DevOps", responsibility_reason: "安装依赖时发生连接超时",
+        action_suggestion: "检查代理与依赖源访问链路" },
+    } };
+    const { panel, writes, errors } = await mockReport(page, failed, "RM", { official_name: "ai-models" });
+    await expect(panel.getByText("历史日志已读取，诊断证据待复核")).toBeVisible();
+    await expect(panel.getByText("DevOps / m00930")).toBeVisible();
+    await expect(panel.getByRole("alert")).toContainText("不代表归档缺失");
+    await expect(panel.getByRole("button", { name: "带入责任处理" })).toHaveCount(0);
+    await expect(panel.getByText("历史证据不足", { exact: true })).toHaveCount(0);
+    if (width > 1000) await expectDesktopLayout(panel);
+    expect(await panel.evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`validation-${width}.png`), fullPage: true });
+    expect(writes).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+}
+
 for (const width of [1366, 1920]) {
   test(`AIModels historical DevOps result and public logs at ${width}px`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 });

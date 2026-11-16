@@ -45,6 +45,7 @@ export interface ReproTask {
       matched_rule_id: string;
       policy_version: string;
       evidence: { start_line: number; end_line: number; quote: string }[];
+      validation?: { status: "passed" | "failed"; errors: string[] };
     };
     build_skipped_reason?: string;
     verification?: {
@@ -80,6 +81,7 @@ const OUTCOMES: Record<string, string> = {
   log_only: "仅日志分析", environment_blocked: "复现环境阻塞", not_reproduced: "未复现原错误",
   reproduced: "已复现原错误", different_failure: "出现不同错误，尚未复现", fix_verified: "补丁构建验证通过",
   historical_log_confirmed: "历史日志诊断完成 · 未执行构建", evidence_insufficient: "历史证据不足，待人工复核",
+  history_validation_failed: "历史日志已读取，诊断证据待复核",
 };
 const LOG_DECISIONS: Record<string, string> = {
   log_sufficient: "历史日志证据充分", reproduce: "需要复现构建", insufficient_evidence: "历史证据不足",
@@ -124,7 +126,7 @@ export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
   const verification = report?.verification;
   const logReview = report?.log_review;
   const historicalOnly = verification?.execution_mode === "historical_logs"
-    || ["historical_log_confirmed", "evidence_insufficient"].includes(report?.outcome ?? "");
+    || ["historical_log_confirmed", "evidence_insufficient", "history_validation_failed"].includes(report?.outcome ?? "");
   const logOnly = historicalOnly || report?.outcome === "log_only";
   const verified = report?.verified && !logOnly;
   const historyDisplay = logOnly || task?.status === "analyzing_history";
@@ -136,6 +138,7 @@ export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
   const compactSkippedReason = skippedReason.length > 80 || skippedReason === diagnosis?.summary
     || skippedReason === diagnosis?.responsibility_reason
     ? outcome === "historical_log_confirmed" ? "历史日志证据充分"
+      : outcome === "history_validation_failed" ? "诊断证据校验未通过，需人工复核"
       : outcome === "evidence_insufficient" ? "历史证据不足，需人工复核" : "本次仅分析历史日志"
     : skippedReason;
   const builds: BuildFact[] = historicalOnly ? []
@@ -144,7 +147,8 @@ export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
     : "仅验证已列出的构建 target，不代表完整功能测试通过。");
   const canUseReport = canResolve && task?.status === "completed" && !task.stale && !task.resolved_by
     && ["Code Owner", "DevOps"].includes(diagnosis?.suggested_role ?? "")
-    && report?.outcome !== "evidence_insufficient" && logReview?.decision !== "insufficient_evidence";
+    && !["evidence_insufficient", "history_validation_failed"].includes(report?.outcome ?? "")
+    && logReview?.validation?.status !== "failed" && logReview?.decision !== "insufficient_evidence";
 
   function showLog(name: string) {
     setLogName(name);
@@ -223,6 +227,10 @@ export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
       {task.stale && !task.resolved_by && <p className="cicd-repro-warning">责任认定已变化，此报告不能覆盖新的认定。</p>}
       {task.resolved_by && <p className="muted">已由 {task.resolved_by} 处理</p>}
       {report?.environment_error && <p className="cicd-repro-warning">{report.environment_error}</p>}
+      {logReview?.validation?.status === "failed" && <div className="cicd-repro-warning" role="alert">
+        <p>Agent 原始建议已保留，但证据校验未通过，请 RM 核对。这不代表归档缺失。</p>
+        <ul>{logReview.validation.errors.map((error, i) => <li key={i}>{error}</li>)}</ul>
+      </div>}
       {diagnosis && <>
         <p>{diagnosis.summary}</p>
         <dl className="cicd-repro-facts">
@@ -275,7 +283,7 @@ export function FailureReproPanel({ recordId, canResolve, onUseReport }: {
           {!logReview?.evidence.length && <pre>{diagnosis?.original_evidence || "暂无"}</pre>}
           {logReview && <>
             <dl className="cicd-repro-facts">
-              <dt>日志判定</dt><dd>{LOG_DECISIONS[logReview.decision]}</dd>
+              <dt>日志判定</dt><dd>{logReview.validation?.status === "failed" ? "诊断证据校验未通过" : LOG_DECISIONS[logReview.decision]}</dd>
               <dt>判定依据</dt><dd>{logReview.reason}</dd>
               <dt>命中规则</dt><dd>{logReview.matched_rule_id || "无"}</dd>
               <dt>策略版本</dt><dd>{logReview.policy_version || "未知"}</dd>

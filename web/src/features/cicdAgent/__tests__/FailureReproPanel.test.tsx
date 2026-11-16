@@ -211,6 +211,25 @@ describe("FailureReproPanel", () => {
     expect(screen.getByRole("button", { name: "查看 Jenkins 原始日志" })).toBeVisible();
   });
 
+  it("preserves the AI suggestion and explains failed validation without claiming the archive is missing", async () => {
+    vi.mocked(apiGet).mockResolvedValue({ tasks: [{ ...historicalTask, report: { ...historicalTask.report!,
+      outcome: "history_validation_failed", suggested_owner_account: "devops1",
+      build_skipped_reason: "引用与原始日志行不一致",
+      log_review: { ...historicalTask.report!.log_review!, decision: "insufficient_evidence", evidence: [],
+        validation: { status: "failed", errors: ["引用与原始日志行不一致"] } },
+      diagnosis: { ...historicalTask.report!.diagnosis!, suggested_role: "DevOps", summary: "下载依赖时代理超时" },
+    } }], enabled: true });
+    panel();
+    expect(await screen.findByText("历史日志已读取，诊断证据待复核")).toBeVisible();
+    expect(screen.getByText("DevOps / devops1")).toBeVisible();
+    expect(screen.getByText("下载依赖时代理超时")).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("不代表归档缺失");
+    expect(screen.getByRole("alert")).toHaveTextContent("引用与原始日志行不一致");
+    expect(screen.queryByText("历史证据不足")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "带入责任处理" })).not.toBeInTheDocument();
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
   it.each(["Code Owner", "Unresolved"])("does not prefill insufficient evidence for %s", async (suggested_role) => {
     vi.mocked(apiGet).mockResolvedValue({ tasks: [{ ...historicalTask, report: { ...historicalTask.report!,
       outcome: "evidence_insufficient", build_skipped_reason: "原始日志缺少失败上下文",
