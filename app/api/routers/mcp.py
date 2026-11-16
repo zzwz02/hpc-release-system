@@ -5,7 +5,7 @@
   DELETE /mcp                         — end the Mcp-Session-Id session
   GET    /api/mcp/downloads/{ticket}  — attachment link handed out by jira_pull_issue
   PUT    /api/mcp/uploads/{ticket}    — raw file body for jira_upload_attachment (one use)
-  GET    /api/mcp/setup.sh            — setup script (configure / status / regenerate / print / uninstall)
+  GET    /api/mcp/setup.sh            — setup script (configure / status / regenerate / uninstall)
   POST   /api/mcp/account             — username + password + action=status|regenerate
                                         (JSON or form; Accept: text/plain → tab-separated for shell)
 

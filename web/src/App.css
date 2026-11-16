@@ -3194,16 +3194,26 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .mcp-code { position: relative; margin: 6px 0; }
 .mcp-code pre { margin: 0; padding: 10px 70px 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r); font-size: 12.5px; white-space: pre-wrap; word-break: break-all; }
 .mcp-code .btn { position: absolute; top: 6px; right: 6px; }
+.mcp-token-notice { margin-top: 16px; }
+.mcp-token-notice p { margin: 0 0 8px; }
+.mcp-token-notice ul { margin: 0; padding-left: 20px; }
+.mcp-token-notice li + li { margin-top: 6px; }
 .mcp-new-token { margin-top: 12px; padding: 10px 12px; background: var(--warn-bg); border: 1px solid var(--warn-bd); border-radius: var(--r); color: var(--warn-fg); }
 .mcp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; align-items: start; }
+.mcp-grid > .panel, .mcp-logs { min-width: 0; }
 .mcp-grid .table { border: 0; border-radius: 0; }
-.mcp-days { display: flex; flex-direction: column; gap: 3px; max-height: 360px; overflow: auto; }
+.mcp-stats-scroll { max-height: 440px; overflow: auto; scrollbar-gutter: stable; }
+.mcp-days { display: flex; flex-direction: column; gap: 3px; }
+.mcp-days > * { flex-shrink: 0; }
 .mcp-day { display: grid; grid-template-columns: 48px minmax(0, 1fr) 110px; align-items: center; gap: 8px; font-size: 12px; }
 .mcp-day-label { color: var(--muted); font-variant-numeric: tabular-nums; }
 .mcp-day-bar { height: 10px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
 .mcp-day-bar span { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
 .mcp-day-num { font-variant-numeric: tabular-nums; }
 .mcp-err { color: var(--bad-fg); }
+.mcp-log-filters h3 { flex: 0 0 auto; margin: 0; white-space: nowrap; }
+.mcp-log-filters .select { width: auto; min-width: 140px; max-width: min(320px, 100%); }
+.mcp-log-filters .input { flex: 1 1 200px; width: auto; min-width: 160px; max-width: 360px; }
 .mcp-log-row { cursor: pointer; }
 .mcp-log-row:hover { background: var(--surface-2); }
 .mcp-log-detail pre { margin: 4px 0 8px; padding: 8px; background: var(--surface-2); border-radius: var(--r-sm); font-size: 12px; white-space: pre-wrap; word-break: break-all; }

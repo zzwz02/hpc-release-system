@@ -2,11 +2,11 @@
  * MCP — AI助手 sub-tab for the website's MCP server.
  *
  * 接入配置: personal tokens (shown once), Claude Code / Codex setup and the
- * tool list.  使用统计: totals, per tool / category / user / client / day,
- * most-used targets and the call log.  RM sees everyone; others see only
+ * tool list.  使用统计: totals, daily / tool / user counts and the call log.
+ * Lists show up to ten rows with internal scrolling. RM sees everyone; others see only
  * their own usage (the backend enforces this).
  */
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../../api/AuthContext";
 import mcpHarnesses from "../../../../shared/mcp_harnesses.json" with { type: "json" };
@@ -158,18 +158,21 @@ function SetupPane({ viewer, tools }: {
       <div className="panel">
         <div className="panel-head"><h3>一键配置（推荐，无需登录网站）</h3></div>
         <div className="panel-body">
-          <p className="hint mt-0">
-            在要使用的机器上运行，输入域账号用户名和密码，按菜单选择：
-            1 一键配置本机、2 查询 token、3 重新生成 token、4 仅输出配置方法、5 卸载本机配置。
-            脚本直接修改 <code>~/.claude.json</code> 和 <code>~/.codex/config.toml</code>（先备份），
-            只装了 VS Code 扩展、没有 claude / codex 命令也能用。
+          <p className="mt-0">
+            在目标机器终端运行以下命令，输入<strong>域账号用户名和密码</strong>即可自动完成配置：
           </p>
           <CodeBlock text={setupCommand} />
-          <p className="hint">
-            每人只有一个有效 token。在第二台机器上配置时，粘贴已有 token 即可复用，不影响其他机器；
-            选择重新生成，则其他机器上的旧 token 立即失效。
-            也可以直接带参数运行，例如 <code>{`${setupCommand} status`}</code>。
-          </p>
+          <div className="mcp-token-notice">
+            <p><strong>⚠️ 重要提醒（多机共用规则）：</strong></p>
+            <ul>
+              <li>
+                每人仅保留 <strong>1 个有效 Token</strong>，支持多台机器共用；配置新机器时<strong>粘贴已有 Token 即可复用</strong>。
+              </li>
+              <li>
+                若<strong>重新生成 Token</strong>，其他机器上正在使用的旧 Token 将<strong>立即失效</strong>。
+              </li>
+            </ul>
+          </div>
         </div>
       </div>
 
@@ -354,6 +357,33 @@ function SetupPane({ viewer, tools }: {
 // 使用统计
 // ─────────────────────────────────────────────────────────────
 
+/** Cap each viewport at ten data rows, including rows that wrap onto several lines. */
+function StatsRows({ children, className = "table" }: { children: ReactNode; className?: string }) {
+  const container = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = container.current;
+    if (!element) return;
+    function measure() {
+      if (!element) return;
+      const rows = [...element.querySelectorAll<HTMLElement>("tbody > tr:not(.mcp-log-detail), .mcp-day")].slice(0, 10);
+      if (!rows.length) return;
+      const rowHeight = rows.reduce((height, row) => height + row.getBoundingClientRect().height, 0);
+      if (!rowHeight) return;
+      const style = getComputedStyle(element);
+      const value = (name: string) => parseFloat(style.getPropertyValue(name)) || 0;
+      const header = element.querySelector("thead")?.getBoundingClientRect().height ?? 0;
+      const frame = ["padding-top", "padding-bottom", "border-top-width", "border-bottom-width"].reduce((sum, name) => sum + value(name), 0);
+      const scrollbar = element.offsetHeight - element.clientHeight - value("border-top-width") - value("border-bottom-width");
+      element.style.maxHeight = `${Math.ceil(header + rowHeight * 10 / rows.length + value("row-gap") * 9 + frame + scrollbar)}px`;
+    }
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element.firstElementChild ?? element);
+    return () => observer.disconnect();
+  }, [children]);
+  return <div ref={container} className={`${className} mcp-stats-scroll`}>{children}</div>;
+}
+
 /** The token's first characters identify it; the name is only a hint. */
 function tokenPrefix(prefix: string, tokenId: number | null) {
   return prefix ? `${prefix}…` : tokenId === null ? "-" : `#${tokenId}`;
@@ -421,7 +451,7 @@ function StatsPane({ viewer, canViewAll }: { viewer: string; canViewAll: boolean
             <div className="stat accent"><div className="num">{stats.totals.calls}</div><div className="lbl">总调用</div><div className="sub">含连接、工具与附件下载</div></div>
             <div className="stat"><div className="num">{stats.totals.tool_calls}</div><div className="lbl">工具调用</div></div>
             <div className="stat"><div className="num">{stats.totals.users}</div><div className="lbl">使用人数</div></div>
-            <div className="stat"><div className="num">{stats.totals.sessions}</div><div className="lbl">会话数</div><div className="sub">每次 Claude Code / Codex 连接一个</div></div>
+
             <div className={`stat ${stats.totals.errors ? "warn" : "ok"}`}>
               <div className="num">{stats.totals.errors}</div>
               <div className="lbl">失败</div>
@@ -432,7 +462,7 @@ function StatsPane({ viewer, canViewAll }: { viewer: string; canViewAll: boolean
           <div className="mcp-grid">
             <div className="panel">
               <div className="panel-head"><h3>每日调用</h3></div>
-              <div className="panel-body mcp-days">
+              <StatsRows className="panel-body mcp-days">
                 {stats.by_day.length === 0 && <div className="muted">暂无记录</div>}
                 {stats.by_day.map((day) => (
                   <div key={day.day} className="mcp-day" title={`${day.day}：${day.calls} 次，失败 ${day.errors}，${day.users} 人`}>
@@ -443,12 +473,12 @@ function StatsPane({ viewer, canViewAll }: { viewer: string; canViewAll: boolean
                     <span className="mcp-day-num">{day.calls}{day.errors ? <span className="mcp-err"> / {day.errors} 失败</span> : null}</span>
                   </div>
                 ))}
-              </div>
+              </StatsRows>
             </div>
 
             <div className="panel">
               <div className="panel-head"><h3>按工具</h3></div>
-              <div className="table">
+              <StatsRows>
                 <table>
                   <thead><tr><th>分类</th><th>工具</th><th>调用</th><th>失败</th><th>人数</th><th>平均耗时</th></tr></thead>
                   <tbody>
@@ -464,13 +494,13 @@ function StatsPane({ viewer, canViewAll }: { viewer: string; canViewAll: boolean
                     ))}
                   </tbody>
                 </table>
-              </div>
+              </StatsRows>
             </div>
 
             {canViewAll && (
               <div className="panel">
                 <div className="panel-head"><h3>按用户</h3></div>
-                <div className="table">
+                <StatsRows>
                   <table>
                     <thead><tr><th>用户</th><th>调用</th><th>工具调用</th><th>失败</th><th>最近使用</th></tr></thead>
                     <tbody>
@@ -490,87 +520,11 @@ function StatsPane({ viewer, canViewAll }: { viewer: string; canViewAll: boolean
                       ))}
                     </tbody>
                   </table>
-                </div>
+                </StatsRows>
               </div>
             )}
 
-            <div className="panel">
-              <div className="panel-head"><h3>按 token</h3></div>
-              <div className="table">
-                <table>
-                  <thead><tr><th>Token</th>{canViewAll && <th>用户</th>}<th>调用</th><th>会话</th><th>失败</th><th>客户端</th><th>最近使用</th></tr></thead>
-                  <tbody>
-                    {stats.by_token.map((row) => (
-                      <tr key={row.token_id ?? "none"}>
-                        <td className="nowrap">
-                          <button className="link-btn" onClick={() => setTokenId(row.token_id === null ? "" : String(row.token_id))}>
-                            <code>{tokenPrefix(row.token_prefix, row.token_id)}</code>
-                          </button>
-                          <div className="muted small">
-                            {row.token_name || "-"}
-                            {row.revoked_at && <span className="pill bad ml-4">已吊销</span>}
-                          </div>
-                        </td>
-                        {canViewAll && <td className="nowrap">{row.display_name || row.username}</td>}
-                        <td>{row.calls}</td>
-                        <td>{row.sessions}</td>
-                        <td className={row.errors ? "mcp-err" : ""}>{row.errors}</td>
-                        <td className="small">{row.clients || <span className="muted">未知</span>}</td>
-                        <td className="nowrap">{row.last_at}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
 
-            <div className="panel">
-              <div className="panel-head"><h3>客户端与分类</h3></div>
-              <div className="table">
-                <table>
-                  <thead><tr><th>客户端</th><th>调用</th><th>人数</th></tr></thead>
-                  <tbody>
-                    {stats.by_client.map((row) => (
-                      <tr key={row.client}><td>{row.client}</td><td>{row.calls}</td><td>{row.users}</td></tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div className="table mt-12">
-                <table>
-                  <thead><tr><th>分类</th><th>调用</th><th>失败</th><th>人数</th></tr></thead>
-                  <tbody>
-                    {stats.by_category.map((row) => (
-                      <tr key={row.category}>
-                        <td>{KIND_LABELS[row.category] ?? row.category}</td>
-                        <td>{row.calls}</td>
-                        <td className={row.errors ? "mcp-err" : ""}>{row.errors}</td>
-                        <td>{row.users}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <div className="panel">
-              <div className="panel-head"><h3>最常操作的对象</h3></div>
-              <div className="table">
-                <table>
-                  <thead><tr><th>对象</th><th>调用</th><th>人数</th><th>最近</th></tr></thead>
-                  <tbody>
-                    {stats.top_targets.map((row) => (
-                      <tr key={`${row.target_type}:${row.target}`}>
-                        <td><span className="muted small">{row.target_type} </span>{row.target}</td>
-                        <td>{row.calls}</td>
-                        <td>{row.users}</td>
-                        <td className="nowrap">{row.last_at}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
           </div>
         </>
       )}
@@ -597,15 +551,15 @@ function LogsPanel({ viewer, days, username, tokenId, tools }: {
   const resetting = <T,>(setter: (value: T) => void) => (value: T) => { setter(value); setOffset(0); };
 
   return (
-    <div className="panel mt-12">
-      <div className="panel-head">
+    <div className="panel mt-12 mcp-logs">
+      <div className="panel-head mcp-log-filters">
         <h3>调用日志</h3>
         <span className="spacer" />
-        <select className="select sm" value={tool} onChange={(event) => resetting(setTool)(event.target.value)}>
+        <select className="select sm" aria-label="按工具筛选调用日志" value={tool} onChange={(event) => resetting(setTool)(event.target.value)}>
           <option value="">全部工具</option>
           {[...new Set(tools)].map((name) => <option key={name} value={name}>{name}</option>)}
         </select>
-        <select className="select sm" value={status} onChange={(event) => resetting(setStatus)(event.target.value)}>
+        <select className="select sm" aria-label="按状态筛选调用日志" value={status} onChange={(event) => resetting(setStatus)(event.target.value)}>
           <option value="">全部状态</option>
           <option value="ok">成功</option>
           <option value="error">失败</option>
@@ -618,7 +572,7 @@ function LogsPanel({ viewer, days, username, tokenId, tools }: {
         />
       </div>
       {logsQuery.error && <div className="pane-error">{errorMessage(logsQuery.error)}</div>}
-      <div className="table">
+      <StatsRows>
         <table>
           <thead>
             <tr><th>时间</th><th>用户</th><th>Token</th><th>客户端</th><th>工具</th><th>对象</th><th>结果</th><th>耗时</th></tr>
@@ -632,7 +586,7 @@ function LogsPanel({ viewer, days, username, tokenId, tools }: {
             )}
           </tbody>
         </table>
-      </div>
+      </StatsRows>
       <div className="flex-row gap-8 mcp-pager">
         <span className="muted small">共 {total} 条</span>
         <span className="spacer" />

@@ -2,12 +2,12 @@
 # MCP setup for the HPC release system (served by GET /api/mcp/setup.sh).
 #
 #   bash <(curl -fsSL __BASE_URL__/api/mcp/setup.sh)            # menu
-#   bash <(curl -fsSL __BASE_URL__/api/mcp/setup.sh) configure  # or status / regenerate / print / uninstall
+#   bash <(curl -fsSL __BASE_URL__/api/mcp/setup.sh) configure  # or status / regenerate / uninstall
 #
 #   MCP_CLIENTS=claude bash <(curl -fsSL __BASE_URL__/api/mcp/setup.sh) use-token
 #   use-token prompts for an existing token, or accepts MCP_TOKEN.
 #
-# Each user has ONE active token.  Configuring another machine reuses it
+# Each user has ONE active token. Configuring another machine reuses it
 # (found in this machine's config, or pasted); regenerating it makes every
 # machine that still has the old one stop working.
 #
@@ -26,15 +26,46 @@ CODEX_TOML="${CODEX_HOME:-$HOME/.codex}/config.toml"
 TOKEN_NAME="${MCP_TOKEN_NAME:-$(hostname -s 2>/dev/null || hostname) 一键配置}"
 
 if { : </dev/tty; } 2>/dev/null; then tty_in=/dev/tty; else tty_in=/dev/stdin; fi
-say() { printf '%s\n' "$*" >&2; }
-die() { say "✘ $*"; exit 1; }
-ask() { printf '%s' "$1" >&2; local reply=""; read -r reply <"$tty_in" || true; printf '%s' "$reply"; }
-ask_secret() { printf '%s' "$1" >&2; local reply=""; read -rs reply <"$tty_in" || true; printf '\n' >&2; printf '%s' "$reply"; }
+# Keep prompts on stderr and API/config output on stdout, without ANSI bytes.
+COLOR_RESET="" COLOR_INFO="" COLOR_SUCCESS="" COLOR_WARNING="" COLOR_ERROR="" COLOR_BOLD="" COLOR_DIM=""
+if [ -z "${NO_COLOR+x}" ] && { [ -t 2 ] || [ "${FORCE_COLOR:-0}" != 0 ]; }; then
+  COLOR_RESET=$'\033[0m' COLOR_INFO=$'\033[36m' COLOR_SUCCESS=$'\033[1;32m'
+  COLOR_WARNING=$'\033[1;33m' COLOR_ERROR=$'\033[1;31m' COLOR_BOLD=$'\033[1;97m'
+  COLOR_DIM=$'\033[2m'
+fi
+colored() { local color="$1"; shift; printf '%s%s%s\n' "$color" "$*" "$COLOR_RESET" >&2; }
+say() { colored "$COLOR_INFO" "$*"; }
+dim() { colored "$COLOR_DIM" "$*"; }
+success() { colored "$COLOR_SUCCESS" "$*"; }
+warn() { colored "$COLOR_WARNING" "$*"; }
+die() { colored "$COLOR_ERROR" "✘ 错误：$*"; exit 1; }
+ask() { printf '%s%s%s' "$COLOR_BOLD" "$1" "$COLOR_RESET" >&2; local reply=""; read -r reply <"$tty_in" || true; printf '%s' "$reply"; }
+ask_secret() { printf '%s%s%s' "$COLOR_BOLD" "$1" "$COLOR_RESET" >&2; local reply=""; read -rs reply <"$tty_in" || true; printf '\n' >&2; printf '%s' "$reply"; }
+
+reuse_notice() {
+  printf '\n' >&2
+  warn '━━━━━━━━━━━━━━━━━━━━━━ ⚠️  重要提示 ━━━━━━━━━━━━━━━━━━━━━━'
+  if [ -n "${1:-}" ]; then
+    colored "$COLOR_BOLD" '🔑 完整 MCP Token（请妥善保存，服务端仅保存摘要）：'
+    colored "$COLOR_SUCCESS" "   $1"
+    printf '\n' >&2
+  fi
+  warn '┃ 1. 每个账号仅保留【一个】有效 Token，支持多台机器共用。'
+  warn '┃ 2. 配置其他机器时，直接粘贴此 Token 即可复用。'
+  warn '┃ 3. 若选择 [重新生成]，其他机器上的旧 Token 将立即失效！'
+  warn '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+}
+
+show_token() {
+  reuse_notice "$1"
+}
+
 yes_no() {  # yes_no "question" default(y|n)
   local reply; reply="$(ask "$1")"; reply="${reply:-$2}"
   case "$reply" in [Yy]*) return 0 ;; *) return 1 ;; esac
 }
-command -v python3 >/dev/null 2>&1 || die "需要 python3 来修改配置文件；可改用选项 4 输出配置后手动修改"
+
+command -v python3 >/dev/null 2>&1 || die "未检测到 python3，无法读取和修改配置文件。"
 
 # ── server API (username + password) ─────────────────────────
 username=""
@@ -42,9 +73,10 @@ password=""
 credentials() {
   [ -n "$username" ] && return 0
   local default_user="${MCP_USER:-${USER:-}}"
-  username="$(ask "网站 / 域账号用户名 [$default_user]: ")"
+  say "请输入 HPC 发布系统账号进行验证："
+  username="$(ask "  网站 / 域账号用户名 [$default_user]: ")"
   username="${username:-$default_user}"
-  password="$(ask_secret '密码: ')"
+  password="$(ask_secret '  密码（输入时不显示）: ')"
   [ -n "$username" ] && [ -n "$password" ] || die "用户名和密码不能为空"
 }
 
@@ -55,10 +87,10 @@ api() {  # api ACTION → plain-text body on stdout (call credentials first, out
   status="$(printf '%s' "$password" | curl -sS -o "$body" -w '%{http_code}' -H 'Accept: text/plain' \
     --data-urlencode "action=$1" --data-urlencode "username=$username" \
     --data-urlencode "name=$TOKEN_NAME" --data-urlencode "password@-" \
-    "$BASE_URL/api/mcp/account")" || { rm -f "$body"; die "无法连接 $BASE_URL"; }
+    "$BASE_URL/api/mcp/account")" || { rm -f "$body"; die "无法连接服务器：$BASE_URL"; }
   if [ "$status" != "200" ]; then
     local message; message="$(cat "$body")"; rm -f "$body"
-    die "失败（HTTP $status）：$message"
+    die "请求失败（HTTP $status）：$message"
   fi
   cat "$body"; rm -f "$body"
 }
@@ -69,7 +101,7 @@ server_status() {  # sets active_prefix / active_line
   active_prefix=""; active_line=""
   if [ "${line%%$'\t'*}" = "active" ]; then
     IFS=$'\t' read -r _ active_prefix name created last_used last_client <<<"$line"
-    active_line="$active_prefix…（$name，创建于 $created，最近使用 $last_used，客户端 $last_client）"
+    active_line="$active_prefix…（名称：$name｜创建于：$created｜最近使用：$last_used｜客户端：$last_client）"
   fi
 }
 
@@ -183,9 +215,10 @@ local_token() {  # first token found in this machine's config files
 
 other_harnesses() {  # other_harnesses TOKEN → doc links for clients this script does not configure
   cat <<EOF
-# 其他 harness 请按各自文档添加 HTTP MCP 服务器，
-# 地址 $MCP_URL，请求头 Authorization: Bearer ${1:-<你的 token>}
-# 发评论必须在 elicitation 表单中输入与 token 账号匹配的用户名；不支持的客户端无法发评论。附件上传不弹确认框，仍检查上传权限。
+# 其他客户端（如 Cursor / Windsurf 等）请按各自文档添加 HTTP MCP 服务器：
+#   地址：$MCP_URL
+#   请求头：Authorization: Bearer ${1:-<你的 token>}
+# 注意：发评论必须在 elicitation 表单中输入与 Token 账号匹配的用户名（不支持的客户端无法发评论）；附件上传不弹确认框，但仍校验权限。
 EOF
   cat <<'LINKS'
 __HARNESS_LINKS__
@@ -197,39 +230,48 @@ label() { case "$1" in claude) echo "Claude Code" ;; codex) echo "Codex" ;; esac
 write_local() {  # write_local TOKEN
   local clients; clients="$(detect_clients | tr '\n' ' ')"
   if [ -z "${clients// /}" ]; then
-    say "未检测到 Claude Code 或 Codex（CLI 或 VS Code 扩展）。"
-    if yes_no "仍为两者写入配置？[y/N] " n; then clients="claude codex"; else print_config "$1"; return; fi
+    warn "未在本机检测到 Claude Code 或 Codex（CLI 或 VS Code 扩展）。"
+    if yes_no "是否仍为两者预先写入配置文件？[y/N] " n; then clients="claude codex"; else print_config "$1"; return; fi
   fi
   if [ "$username" != "${USER:-}" ] && [ -n "$username" ]; then
-    say "注意：配置写入 $HOME，此系统账号（${USER:-?}）下运行的 Claude/Codex 都将以 $username 的身份调用。"
+    printf '\n' >&2
+    warn "⚠️  账号不一致提醒："
+    warn "   配置将写入当前系统用户（${USER:-?}）的目录 $HOME 下，"
+    warn "   后续该用户运行的 Claude / Codex 都将以【$username】的身份调用发布系统！"
   fi
   # shellcheck disable=SC2086
   config write "$1" $clients
   local client
-  for client in $clients; do printf '✔ %-11s 已配置\n' "$(label "$client")" >&2; done
+  printf '\n' >&2
+  for client in $clients; do success "✔ $(label "$client") 配置已写入"; done
   if [[ " $clients " == *" codex "* ]]; then
     say 'Codex：若发评论时没有用户名弹窗，检查 approval_policy；never 可能自动拒绝表单。可单独设置 granular.mcp_elicitations=true，保留原沙箱设置。配置示例见网站 MCP 接入页，本脚本不修改审批或沙箱策略。'
   fi
-  say "请重启 Claude Code / Codex（VS Code 中执行 Developer: Reload Window），在对话里输入 /mcp 确认 $SERVER_NAME 已连接。"
   if [[ " $clients " == *" claude "* ]] && pgrep -u "$(id -u)" -x claude >/dev/null 2>&1; then
-    say "提示：检测到正在运行的 Claude Code，它退出时可能覆盖 ~/.claude.json；若重启后看不到 $SERVER_NAME，关闭后重新运行本脚本。"
+    printf '\n' >&2
+    warn "⚠️  进程冲突提醒：检测到 Claude Code 正在运行！"
+    warn "   它退出时可能会覆盖 ~/.claude.json。若重启后未看到 $SERVER_NAME，"
+    warn "   请先彻底关闭 Claude Code，再重新运行本脚本。"
   fi
+  show_token "$1"
 }
 
 print_config() {  # print_config TOKEN
   local token="${1:-<你的 token>}"
   cat <<EOF
 
-# ── Claude Code（CLI 与 VS Code 扩展通用）：~/.claude.json 顶层 "mcpServers" 中加入：
+# ── 1. Claude Code（CLI 与 VS Code 扩展通用）──────────────────────────
+# 在 ~/.claude.json 顶层 "mcpServers" 中加入：
 "$SERVER_NAME": {
   "type": "http",
   "url": "$MCP_URL",
   "headers": { "Authorization": "Bearer $token" }
 }
-# 或使用 CLI：
+# 或直接执行 CLI 命令：
 claude mcp remove $SERVER_NAME -s user >/dev/null 2>&1; claude mcp add --transport http --scope user $SERVER_NAME $MCP_URL --header "Authorization: Bearer $token"
 
-# ── Codex（CLI 与 VS Code 扩展通用）：~/.codex/config.toml 中加入（先删除旧的同名段落）：
+# ── 2. Codex（CLI 与 VS Code 扩展通用）────────────────────────────────
+# 在 ~/.codex/config.toml 中加入（如已存在同名段落请先删除）：
 # 若完全访问下没有用户名弹窗，将下面审批键放在文件顶层、所有表头之前，替换已有同名键：
 # approval_policy = { granular = { sandbox_approval = false, rules = false, mcp_elicitations = true } }
 # 保留原 sandbox_mode；需要完全访问时可设为 "danger-full-access"。
@@ -242,107 +284,131 @@ startup_timeout_sec = 30
 
 EOF
   other_harnesses "$token"
+  if [[ "$token" =~ ^rsmcp_[A-Za-z0-9_-]+$ ]]; then show_token "$token"; fi
 }
 
 # ── actions ──────────────────────────────────────────────────
+confirm_regenerate() {
+  yes_no '其他机器上的旧 Token 将立即失效，是否继续？[y/N]: ' n || die "已取消操作"
+}
+
 do_use_token() {
   local token="${MCP_TOKEN:-}"
-  if [ -z "$token" ]; then token="$(ask_secret '粘贴你的 MCP token: ')"; fi
-  [[ "$token" =~ ^rsmcp_[A-Za-z0-9_-]+$ ]] || die "MCP token 格式不正确"
+  if [ -z "$token" ]; then token="$(ask_secret '请粘贴你的 MCP Token（输入时不显示）: ')"; fi
+  [[ "$token" =~ ^rsmcp_[A-Za-z0-9_-]+$ ]] || die "Token 格式不正确（应以 rsmcp_ 开头）"
   case "${MCP_CLIENTS:-}" in
     claude|codex|claude,codex) ;;
-    *) die "请指定 MCP_CLIENTS=claude 或 MCP_CLIENTS=codex" ;;
+    *) die "请通过环境变量指定目标客户端，例如：MCP_CLIENTS=claude 或 MCP_CLIENTS=codex" ;;
   esac
-  token_works "$token" || die "MCP token 无效、已吊销或无法连接网站"
-  say "MCP URL：$MCP_URL"
+  token_works "$token" || die "Token 无效、已吊销，或无法连接到服务"
+  say "服务地址：$MCP_URL"
   write_local "$token"
 }
 
 do_configure() {
   server_status
-  say "MCP URL：$MCP_URL"
+  say "服务地址：$MCP_URL"
   local token=""
   if [ -n "$active_prefix" ]; then
     local found; found="$(local_token || true)"
     if [ -n "$found" ] && [ "${found:0:${#active_prefix}}" = "$active_prefix" ] && token_works "$found"; then
-      token="$found"; say "复用本机已有的 token $active_prefix…"
+      token="$found"
+      success "✔ 检测到本机已有有效 Token，将直接复用"
     else
-      say "你已有有效 token：$active_line"
-      local pasted; pasted="$(ask_secret '粘贴该 token 复用（不影响其他机器）；直接回车则重新生成（其他机器上的旧 token 会失效）: ')"
+      printf '\n' >&2
+      warn "⚠️  检测到服务端已存在有效 Token："
+      warn "   $active_line"
+      warn "   • 若你在其他机器配置过，请粘贴该 Token 以实现多机共用；"
+      warn "   • 若直接回车重新生成，其他机器上的旧 Token 将立即失效！"
+      local pasted; pasted="$(ask_secret '请粘贴已有 Token 复用（或直接回车重新生成）: ')"
       if [ -n "$pasted" ]; then
         [ "${pasted:0:${#active_prefix}}" = "$active_prefix" ] && token_works "$pasted" \
-          || die "粘贴的 token 不是当前有效的 $active_prefix…"
+          || die "粘贴的 Token 与当前服务端有效前缀（$active_prefix…）不匹配或已失效"
         token="$pasted"
       fi
     fi
   fi
   if [ -z "$token" ]; then
+    if [ -n "$active_prefix" ]; then confirm_regenerate; fi
     token="$(api regenerate | head -n 1)"
-    say "已生成 token ${token:0:12}…（可运行选项 4 查看完整 token）"
+    success "✔ 已生成新 Token"
   fi
   write_local "$token"
 }
 
 do_status() {
   server_status
-  if [ -n "$active_prefix" ]; then say "服务器上的有效 token：$active_line"; else say "服务器上没有有效 token"; fi
-  local found=0 client token
+  printf '\n' >&2
+  if [ -n "$active_prefix" ]; then
+    say "☁️  服务端有效 Token：$active_line"
+  else
+    warn "☁️  服务端状态：当前没有任何有效 Token"
+  fi
+  local found=0 client token current_token=""
   while read -r client token; do
     [ -n "$client" ] || continue
     found=1
     case "$client" in
-      claude-unreadable) say "本机 Claude Code：~/.claude.json 无法解析" ;;
+      claude-unreadable) warn "💻 本机 Claude Code：~/.claude.json 格式错误，无法解析" ;;
       *) local state="已失效"
          [ -n "$active_prefix" ] && [ "${token:0:${#active_prefix}}" = "$active_prefix" ] && state="有效"
-         say "本机 $(label "$client")：${token:0:12}…（$state）" ;;
+         if [ "$state" = "有效" ]; then
+           success "💻 本机 $(label "$client")：（$state）"
+           current_token="$token"
+         else
+           warn "💻 本机 $(label "$client")：$token（$state）"
+         fi ;;
     esac
   done < <(config find)
-  [ "$found" = 1 ] || say "本机未配置 $SERVER_NAME"
+  if [ "$found" != 1 ]; then
+    say "💻 本机状态：尚未配置 $SERVER_NAME"
+    dim "   提示：服务端仅保存摘要，无法反查完整 Token；如需复用请从其他已配置机器复制。"
+  elif [ -n "$current_token" ]; then
+    show_token "$current_token"
+  fi
 }
 
 do_regenerate() {
   server_status
-  say "MCP URL：$MCP_URL"
+  say "服务地址：$MCP_URL"
   if [ -n "$active_prefix" ]; then
-    say "当前有效 token：$active_line"
-    yes_no "重新生成后它在所有机器上立即失效，其他机器需重新配置。继续？[y/N] " n || die "已取消"
+    printf '\n' >&2
+    warn "🚨 高危操作提醒：重新生成 Token"
+    warn "   当前有效 Token：$active_line"
+    warn "   一旦重新生成，上述旧 Token 将在【所有已配置机器】上立即失效！"
+    confirm_regenerate
   fi
   local token; token="$(api regenerate | head -n 1)"
-  say "已生成新 token ${token:0:12}…（可运行选项 4 查看完整 token）"
-  if yes_no "写入本机配置？[Y/n] " y; then write_local "$token"; else print_config "$token"; fi
-}
-
-do_print() {
-  local token; token="$(local_token || true)"
-  if [ -n "$token" ] && token_works "$token"; then
-    say "使用本机配置中的 token ${token:0:12}…"
-  else
-    token="$(ask_secret '粘贴你的 token（直接回车则输出占位符）: ')"
-  fi
-  print_config "$token"
+  success "✔ 已生成新 Token"
+  if yes_no "是否立即写入本机配置？[Y/n] " y; then write_local "$token"; else print_config "$token"; fi
 }
 
 do_uninstall() {
   config remove "" claude codex
-  say "✔ 已从 ~/.claude.json 和 Codex config.toml 移除 $SERVER_NAME（原文件备份为 *.bak-release-mcp）"
-  say "token 本身仍然有效；要作废请选 3 重新生成，或在网站「AI助手 → MCP」吊销。"
+  success "✔ 已从 ~/.claude.json 和 Codex config.toml 移除 $SERVER_NAME"
+  dim "  （原配置文件已自动备份为 *.bak-release-mcp）"
+  printf '\n' >&2
+  warn "ℹ️  说明：此操作仅移除本机配置，Token 本身依然有效。"
+  warn "   如需彻底作废 Token，请重新运行脚本选择「3) 重新生成 token」，或在网站「AI助手 → MCP」页面手动吊销。"
 }
 
 action="${1:-}"
 if [ -z "$action" ]; then
-  say "HPC 发布系统 MCP"
-  say "  1) 一键配置本机        2) 查询 token（仅显示前几位）"
-  say "  3) 重新生成 token      4) 仅输出配置方法"
-  say "  5) 卸载本机配置"
-  action="$(ask '请选择 [1]: ')"
+  printf '\n' >&2
+  colored "$COLOR_BOLD" "══════════════ HPC 发布系统 MCP 配置工具 ══════════════"
+  say "  1) 一键配置本机      （自动检测客户端并写入配置）"
+  say "  2) 查询 Token 状态   （对比服务端与本机配置，显示本机完整 Token）"
+  say "  3) 重新生成 Token    （⚠️ 会使其他机器的旧 Token 失效）"
+  say "  4) 卸载本机配置      （移除本机配置文件中的 MCP 项）"
+  colored "$COLOR_BOLD" "═══════════════════════════════════════════════════════"
+  action="$(ask '请选择操作编号 [默认 1]: ')"
   action="${action:-1}"
 fi
 case "$action" in
-  use-token)   do_use_token ;;
+  use-token)    do_use_token ;;
   1|configure)  do_configure ;;
   2|status)     do_status ;;
   3|regenerate) do_regenerate ;;
-  4|print)      do_print ;;
-  5|uninstall)  do_uninstall ;;
-  *) die "未知操作：$action（可用：configure use-token status regenerate print uninstall）" ;;
+  4|uninstall)  do_uninstall ;;
+  *) die "未知操作：$action（可用参数：configure / use-token / status / regenerate / uninstall）" ;;
 esac
