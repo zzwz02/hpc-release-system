@@ -277,19 +277,44 @@ def test_confirmed_mcp_comment_is_independent_of_agent_risk_lock(locked_issue, u
     assert jira_agent_service.can_act({"username": "rm", "role": "RM"}, ISSUE)
 
 
-def test_mcp_upload_still_checks_agent_risk_at_ticket_and_upload(locked_issue, monkeypatch):
+@pytest.mark.parametrize(("username", "role", "allowed"), [
+    ("alice", "Owner", True), ("rm", "RM", True), ("carol", "Owner", False),
+])
+def test_mcp_upload_is_independent_of_agent_risk_lock(locked_issue, monkeypatch, username, role, allowed):
+    from app.services import jira_agent_service
+
+    client, _, token_for, _ = locked_issue
+    uploads = []
+    monkeypatch.setattr(jira, "upload_agent_attachment", lambda *args: uploads.append(args) or "5001")
+    monkeypatch.setattr(jira, "browse_url", lambda: "https://jira.example/browse/")
+    token = token_for(username, role)
+    session, _ = connect_client(client, token)
+    ticket = call(client, token, session, "jira_upload_attachment", {
+        "issue_key": "MC3-1", "file_path": "/tmp/log.txt",
+    })
+    assert ticket["isError"] is not allowed
+    if allowed:
+        response = client.put(_upload_url(ticket["content"][0]["text"]), content=b"test log")
+        assert response.status_code == 200
+        assert uploads == [("MC3-1", "log.txt", b"test log")]
+    else:
+        assert "assignee" in ticket["content"][0]["text"]
+        assert uploads == []
+    assert jira_agent_service.risk_locked("MC3-1")
+    assert not jira_agent_service.can_act({"username": "alice", "role": "Owner"}, ISSUE)
+
+
+def test_mcp_upload_allows_warning_recorded_after_ticket(locked_issue, monkeypatch):
     from app.db.jira_agent_connection import connect_jira_agent
 
     client, _, token_for, _ = locked_issue
     uploads = []
     monkeypatch.setattr(jira, "upload_agent_attachment", lambda *args: uploads.append(args) or "5001")
+    monkeypatch.setattr(jira, "browse_url", lambda: "https://jira.example/browse/")
     token = token_for("alice", "Owner")
     session, _ = connect_client(client, token)
     args = {"issue_key": "MC3-1", "file_path": "/tmp/log.txt"}
-    denied = call(client, token, session, "jira_upload_attachment", args)
-    assert denied["isError"] and "cybersecurity risk" in denied["content"][0]["text"]
-
-    # A ticket issued before the warning must also be rejected at upload time.
+    # A new warning after the ticket was issued must not block the upload either.
     conn = connect_jira_agent(settings.jira_agent_database_url)
     lock = tuple(conn.execute("SELECT * FROM jira_agent_issue_locks").fetchone())
     conn.execute("DELETE FROM jira_agent_issue_locks")
@@ -300,8 +325,8 @@ def test_mcp_upload_still_checks_agent_risk_at_ticket_and_upload(locked_issue, m
     conn.commit()
     conn.close()
     response = client.put(_upload_url(ticket["content"][0]["text"]), content=b"test log")
-    assert response.status_code == 403 and "cybersecurity risk" in response.text
-    assert uploads == []
+    assert response.status_code == 200
+    assert uploads == [("MC3-1", "log.txt", b"test log")]
 
 
 def test_tool_error_is_logged_with_target(site):

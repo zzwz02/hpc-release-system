@@ -8,7 +8,7 @@ attachment download commands (short-lived /api/mcp/downloads/... tickets).
 Reads use the [jira] service account's visibility, like the JIRA agent page.
 Comments are posted by that account too, so the body gets a footer naming
 the website user; only the current assignee or RM may comment. The JIRA
-agent cybersecurity risk lock does not restrict user-confirmed MCP comments.
+agent cybersecurity risk lock does not restrict MCP comments or attachment uploads.
 """
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ import urllib.error
 from typing import Any
 from urllib.parse import quote
 
-from app.api.errors import AuthzError
 from app.domain.jira_format import format_jira_comment
 from app.services.mcp_evidence import correlations
 from app.integrations import jira
@@ -273,14 +272,9 @@ register(Tool(
 # jira_add_comment
 # ─────────────────────────────────────────────────────────────
 
-def check_can_write(user: dict, key: str, action: str = "评论", *, check_agent_risk: bool = True) -> dict:
-    """Check live issue authority; confirmed MCP comments do not execute the agent."""
+def check_can_write(user: dict, key: str, action: str = "评论") -> dict:
+    """Check live issue authority for MCP writes, independently of agent execution locks."""
     issue = _jira_call(jira.get_issue, key, issue_key=key)
-    if check_agent_risk:
-        try:
-            jira_agent_service.check_risk_lock(user, key)
-        except AuthzError as exc:
-            raise ToolError(str(exc)) from exc
     if not jira_agent_service.is_assignee_or_rm(user, issue):
         raise ToolError(
             f"只有当前 JIRA assignee 或 RM 可以{action}；{key} 的 assignee 是 "
@@ -327,7 +321,7 @@ def _comment(ctx: ToolContext, args: dict) -> ToolResult:
         raise ToolError("评论内容不能为空")
     if len(body) > COMMENT_MAX_CHARS:
         raise ToolError(f"评论超过 {COMMENT_MAX_CHARS} 字符")
-    issue = check_can_write(ctx.user, key, check_agent_risk=False)
+    issue = check_can_write(ctx.user, key)
     comment_id = _jira_call(jira.add_comment, key, body + comment_footer(ctx), issue_key=key)
     url = f"{issue['url']}?focusedCommentId={comment_id}"
     return ToolResult.text(f"已在 {key} 发布评论（ID {comment_id}）：{url}", log=ToolLog(
@@ -417,7 +411,8 @@ register(Tool(
         "Attach a file from the user's machine to a JIRA issue. Only the issue's current assignee or an RM "
         "may upload. This tool checks permission and returns a one-time curl command; run it locally to send "
         "the file (the MCP server cannot read local files). No elicitation confirmation is required for "
-        "attachments. Permission is checked both when issuing the command and when receiving the upload."
+        "attachments. The JIRA agent cybersecurity risk lock does not block attachment uploads. "
+        "Permission is checked both when issuing the command and when receiving the upload."
     ),
     input_schema={
         "type": "object",
