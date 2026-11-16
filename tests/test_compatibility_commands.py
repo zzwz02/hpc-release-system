@@ -38,7 +38,7 @@ def published(temp_db, harbor_artifacts, monkeypatch):
 
 
 def report_row(row, **changes):
-    return {"app_name": row["app_name"], "git_branch": row["git_branch"], "app_version": row["app_version"],
+    return {"app_id": row["app_id"], "git_branch": row["git_branch"], "app_version": row["app_version"],
             "hpc_version": "3.10.0.7", "arch": row["arch"], "OS": row["os"], "GPU": row["GPU"],
             "py_label": row["python_label"], "torch_label": row["pytorch_label"], "test_name": row["path"],
             "qa_digest": "harbor.sh.mxcr.io/hpc-release/matrix-maca@sha256:" + "f" * 64,
@@ -90,7 +90,7 @@ def test_report_versions_verdicts_and_reasons_never_replace_qa_log_images(temp_d
     assert "无匹配测试结果" in other_gpu["note"]
 
 
-@pytest.mark.parametrize("change", [{"app_name": "Other"}, {"git_branch": "other"}, {"app_version": "2"},
+@pytest.mark.parametrize("change", [{"app_id": "Other"}, {"git_branch": "other"}, {"app_version": "2"},
     {"arch": "arm64"}, {"OS": "ubuntu24.04"}, {"GPU": "X301"}, {"py_label": "py310"},
     {"torch_label": "torch2.4"}, {"test_name": "other"},
     {"qa_digest": "harbor.sh.mxcr.io/hpc-release/matrix-maca-dbg@sha256:" + "f" * 64}])

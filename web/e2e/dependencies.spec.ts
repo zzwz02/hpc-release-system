@@ -25,6 +25,8 @@ for (const username of ["app_owner", "app_qa"]) {
     const selected = "torch 2.8 + py312";
     await selector.selectOption(selected);
     const published = pane.getByTestId("compat-app-runtime-published");
+    await expect(pane.getByRole("columnheader", { name: "app_id", exact: true }).first()).toBeVisible();
+    await expect(published.locator("td").nth(1)).toHaveText("runtime-published");
     const toggle = published.getByRole("button");
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await expect(published).toContainText("runtime-published-cycle");
@@ -64,6 +66,7 @@ for (const username of ["app_owner", "app_qa"]) {
     for (const value of ["runtime-published", "runtime-unknown", "范围待确认", selected, "sanity", "centos9", "命令为模板"]) expect(csv).toContain(value);
     for (const value of ["runtime-stopped", "runtime-never", "never-registered-component", "info-error", "development-sdk", "py313"]) expect(csv).not.toContain(value);
     expect(csv).toContain("app_info commit id");
+    expect(csv.split("\n")[0]).toContain("App,app_id,Owner");
     expect(csv).toContain("0123456789abcdef0123456789abcdef01234567");
     expect(csv).not.toContain("development-runtime");
     expect(csv).toContain("发布时封存");

@@ -39,7 +39,7 @@ for (const username of ["app_owner", "app_qa"]) {
     await page.goBack();
     await expect(subnav.getByRole("link", { name: "测试命令", exact: true })).toHaveAttribute("aria-current", "page");
     await subnav.getByRole("link", { name: "QA log", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "QA log 文件", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "QA report 失败汇总", exact: true })).toBeVisible();
     await page.screenshot({ path: `/tmp/qa-navigation-${username}.png`, fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
     const navBounds = await subnav.locator(".subtabs").boundingBox();

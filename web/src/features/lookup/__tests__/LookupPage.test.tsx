@@ -33,6 +33,9 @@ it("defaults to frozen release publications and filters by image or QA result", 
   });
   renderPage();
   const table = await screen.findByTestId("published-apps-table");
+  expect(within(table).getByRole("columnheader", { name: "app_id" })).toBeVisible();
+  expect(within(table).getByRole("cell", { name: "hpl" })).toBeVisible();
+  expect(within(table).getByRole("cell", { name: "HPL" })).toBeVisible();
   expect(screen.queryByRole("button", { name: "按 App" })).toBeNull();
   expect(screen.queryByRole("textbox", { name: "完整镜像名" })).toBeNull();
   expect(within(table).getByText(image)).toBeVisible();

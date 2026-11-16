@@ -23,9 +23,9 @@ from app.db.connection import transaction
 from app.domain import qa_results
 from app.domain.permissions import has_capability
 from app.integrations.read_session import read_session
-from app.repositories import qa_results_repo, releases_repo
+from app.repositories import apps_repo, entries_repo, qa_results_repo, releases_repo
 from app.repositories.audit_repo import log_audit
-from app.services import lookup_service
+from app.services import catalog_service, lookup_service, qa_commands_service, qa_result_identity_service
 from app.timeutil import beijing_timestamp
 
 # Bound workbook expansion and validation work for a single interactive upload.
@@ -44,7 +44,7 @@ def _release(conn, release_id):
 
 
 def _records(conn, release=None):
-    records = qa_results_repo.list_results(conn, release_id=release['id'] if release else None)
+    records = qa_result_identity_service.list_records(conn, release_id=release['id'] if release else None)
     if release is None:
         return records
     return [record for record in records if record['release_id'] == release['id'] or (
@@ -54,6 +54,38 @@ def _records(conn, release=None):
 def _revision(records):
     values = sorted((record['result_key'], record['report_id'], record['data_json']) for record in records)
     return hashlib.sha256(json.dumps(values, ensure_ascii=False).encode()).hexdigest()
+
+
+def failure_summary(conn, release_id):
+    """Summarize saved report failures without regenerating commands or inferring performance."""
+    release = releases_repo.get_release_row(conn, release_id)
+    if not release:
+        raise ApiError(404, "发布周期不存在")
+    records = _records(conn, release)
+    apps = {app["id"]: app for app in apps_repo.list_apps(conn)}
+    signed_up = {entry["app_id"] for entry in entries_repo.list_for_release(conn, release_id)}
+    groups = {}
+    for record in records:
+        data = qa_results.canonical_result(record["data"])
+        if qa_results.result_status(data) != "fail":
+            continue
+        app_id, branch = str(data["app_id"]).strip(), str(data["git_branch"]).strip()
+        app = apps.get(app_id)
+        key = (bool(app_id), app_id or data.get("app_name", ""), branch)
+        matched = app_id in signed_up and app and app["git_branch"].strip() == branch
+        group = groups.setdefault(key, {"app_id": app_id if matched else None,
+                                       "reported_app_id": app_id,
+                                       "app_name": catalog_service.app_name(app) if app else data.get("app_name") or app_id or "未知 App",
+                                       "git_branch": branch, "failures": []})
+        group["failures"].append({column: data[column] for column in (
+            "app_version", "hpc_version", "arch", "OS", "GPU", "py_label", "torch_label",
+            "test_name", "qa_result", "qa_comment", "qa_env")})
+    for group in groups.values():
+        group["failures"].sort(key=lambda row: tuple(str(row[key]).casefold()
+            for key in ("GPU", "test_name", "hpc_version", "app_version", "OS", "arch", "py_label", "torch_label")))
+    return {"release_id": release_id, "release_name": release["name"], "total_rows": len(records),
+            "failed_rows": sum(len(group["failures"]) for group in groups.values()),
+            "groups": sorted(groups.values(), key=lambda group: (str(group["app_name"]).casefold(), group["git_branch"]))}
 
 
 def _legacy_reports_to_remove(conn, release):
@@ -120,6 +152,8 @@ def _read_workbook(content: bytes) -> tuple[list[tuple[int, dict, str]], list[st
         required = (*metadata, "qa_docker_cmd", "qa_result", "qa_digest", "qa_env")
         missing = set(required) - set(headers)
         if missing:
+            if "app_id" in missing and "app_name" in headers:
+                raise ValueError("第一个页签缺少 app_id；app_name 已改为系统唯一 app_id，请重新下载测试命令填写后上传")
             raise ValueError("第一个页签缺少列：" + ", ".join(sorted(missing)))
         rows, skipped_apps = [], {}
         total_rows = 0
@@ -136,7 +170,7 @@ def _read_workbook(content: bytes) -> tuple[list[tuple[int, dict, str]], list[st
             fill_columns = qa_results.WORKSHEET_QA_COLUMNS if new_format else (
                 "qa_result", "qa_digest", "qa_env", "qa_status", "qa_comment")
             if all(row.get(column, "") == "" for column in fill_columns):
-                key = (str(row.get("app_name") or "").strip(), str(row.get("git_branch") or "").strip())
+                key = (str(row.get("app_id") or "").strip(), str(row.get("git_branch") or "").strip())
                 skipped_apps[key] = skipped_apps.get(key, 0) + 1
                 continue
             for column in headers:
@@ -176,10 +210,8 @@ def _read_workbook(content: bytes) -> tuple[list[tuple[int, dict, str]], list[st
             except ValueError as exc:
                 raise ValueError(f"第 {number} 行：{exc}") from exc
             rows.append((number, row, reference))
-        if not rows:
-            raise ValueError(f"第一个页签没有填写 QA 结果的测试行：共 {total_rows} 行，QA 列全空跳过 {total_rows} 行，未保存")
         summary = {"total_rows": total_rows, "skipped_rows": sum(skipped_apps.values()),
-                   "skipped_apps": [{"app_name": name, "git_branch": branch, "rows": count}
+                   "skipped_apps": [{"app_id": name, "git_branch": branch, "rows": count}
                                     for (name, branch), count in sorted(skipped_apps.items())]}
         return rows, environments, summary
     finally:
@@ -208,6 +240,13 @@ def upload(
     if len(content) > MAX_FILE_BYTES:
         raise ValueError("Excel 文件不能超过 20 MB")
     rows, environments, summary = _read_workbook(content)
+    if not rows:
+        total_tests = qa_commands_service.count_scope_tests(conn, release_id)
+        raise ValueError(
+            f"第一个页签没有填写 QA 结果的测试行：{release['name']} 版本共 {total_tests} 条测试；"
+            f"文件含 {summary['total_rows']} 条；保存 0 条；跳过 {summary['skipped_rows']} 条"
+            f"（QA 列全空跳过 {summary['skipped_rows']} 行）。未保存，原报告保留。"
+        )
     for number, row, _ in rows:
         version = str(row.get('hpc_version', '')).strip()
         if version and qa_results.hpc_families(version) != {release['name']}:
@@ -220,7 +259,7 @@ def upload(
     candidates = {
         image["image"]: qa_results.worksheet_commands(image)
         for image in resolved["images"]
-        if image["git_branch"]
+        if image.get("app_id") and image["git_branch"]
     }
     provenance = {image["image"]: image for image in resolved["images"]}
     version_commands = {}
@@ -251,7 +290,7 @@ def upload(
                 ]
                 reason = "/".join(fields) + " 不匹配"
             else:
-                reason = "test_name 不匹配或 git_branch 无法唯一确定"
+                reason = "test_name 不匹配或 app_id / git_branch 无法唯一确定"
             failures.append(f"第 {number} 行：digest 与 {reason}")
         else:
             try:
@@ -286,6 +325,7 @@ def upload(
                 row.update({column: candidate[column] for column in qa_results.WORKSHEET_METADATA_COLUMNS
                             if column != "hpc_version"})
                 row["qa_digest_gerrit_commit_id"] = source["commit_id"]
+                row["app_name"] = source["app_name"]  # Display metadata only; never an identity key.
                 row["historical_result_key"] = qa_results.result_key(row)
                 row.pop("commit_id", None)
             except ValueError as exc:
@@ -305,6 +345,7 @@ def upload(
     with transaction(conn, immediate=True):
         if _release(conn, release_id)['name'] != release['name'] or _revision(_records(conn, release)) != expected_revision:
             raise ApiError(409, '该版本 QA report 已变化，请刷新后重新上传')
+        release_test_count = qa_commands_service.count_scope_tests(conn, release_id)
         replaced = len(before)
         qa_results_repo.clear_release(conn, release_id, keys=[record['result_key'] for record in before],
                                       legacy_report_ids=legacy_report_ids)
@@ -327,6 +368,8 @@ def upload(
             release_id=release_id,
             event="qa_test_results_upload",
             detail={"report_id": report_id, 'mode': 'replace_release', 'removed_rows': replaced,
+                    "release_test_count": release_test_count, "saved_rows": len(prepared),
+                    "duplicate_rows": len(rows) - len(prepared),
                     "total_rows": summary["total_rows"], "skipped_rows": summary["skipped_rows"]},
         )
     return {
@@ -337,6 +380,8 @@ def upload(
         "replaced": replaced,
         "uploaded_at": ts,
         'release_id': release_id,
+        'release_name': release['name'],
+        'release_test_count': release_test_count,
         **summary,
     }
 
@@ -356,7 +401,7 @@ def _live_rows(conn, records):
         dict.fromkeys(row["image_reference"] for row in records if row["image_reference"])
     )
     resolved = _resolve_images(conn, references)
-    sources = {image["image"]: image for image in resolved["images"] if image["git_branch"]}
+    sources = {image["image"]: image for image in resolved["images"] if image.get("app_id") and image["git_branch"]}
     commands = {}
     command_errors = {}
     errors = {item["image"]: item["error"] for item in resolved["errors"]}
@@ -377,7 +422,7 @@ def _live_rows(conn, records):
             {
                 **data,
                 "website_docker_cmd": command,
-                "command_error": command_errors.get(cache_key) or errors.get(
+                "command_error": data.get("app_id_error") or command_errors.get(cache_key) or errors.get(
                     reference,
                     ""
                     if command

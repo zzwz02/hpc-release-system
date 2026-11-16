@@ -57,7 +57,7 @@ def test_global_search_and_live_command_filters_combine_and_never_use_saved_comm
     raw, _ = reports
     # Live app_info changes while the stored upload command remains untouched.
     raw["app_test"]["case64"]["test_cmd"] = "new-live-command"
-    result = qa_results_service.query(temp_db, table_filter="new-live-command", search="TestApp",
+    result = qa_results_service.query(temp_db, table_filter="new-live-command", search="testapp",
                                      column_filters={"qa_status": "fail"})
     assert result["total"] == 1 and result["rows"][0]["test_name"] == "case64"
     assert qa_results_service.query(temp_db, column_filters={"website_docker_cmd": "new-live-command"})["total"] == 1

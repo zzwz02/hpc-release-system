@@ -32,13 +32,20 @@ def _scope(conn, release_id):
             continue
         name, branch = catalog_service.app_name(app), app.get("git_branch", "")
         excluded = set(entry.get("excluded_tests") or [])
-        scope[(name, branch)] = excluded
+        scope[(app["id"], branch)] = excluded
         for command in test_commands.command_rows(version["raw"], excluded):
             key = (app["id"], command["image"])
-            variant = variants.setdefault(key, {"name": name, "branch": branch,
+            variant = variants.setdefault(key, {"app_id": app["id"], "name": name, "branch": branch,
                 "version": version["raw"].get("app_version", ""), "commands": []})
             variant["commands"].append(command)
     return variants, scope
+
+
+def count_scope_tests(conn, release_id):
+    """Count the cycle's expanded test scope, including combinations without images."""
+    variants, _ = _scope(conn, release_id)
+    return sum(len(command["chips"]) or 1
+               for variant in variants.values() for command in variant["commands"])
 
 
 def query(conn, *, release_id, hpc_version):
@@ -108,8 +115,8 @@ def query(conn, *, release_id, hpc_version):
                 if selected not in image.get("hpc_versions", []):
                     errors.append({"image": reference, "error": "查询期间镜像的 HPC 版本 tag 已变化，请重新查询"})
                     continue
-                source = (image["app_name"], image["git_branch"])
-                if source != (variant["name"], variant["branch"]):
+                source = (image["app_id"], image["git_branch"])
+                if source != (variant["app_id"], variant["branch"]):
                     errors.append({"image": reference, "error": "镜像对应的 App/分支与当前发布周期测试范围不匹配"})
                     continue
                 # One digest may carry tags for several platforms or patches.
@@ -125,13 +132,13 @@ def query(conn, *, release_id, hpc_version):
                     continue
                 rows.extend(row for row in generated if row["test_name"] not in scope[source])
             continue
-        no_image = {"app_name": variant["name"], "git_branch": variant["branch"],
+        no_image = {"app_id": variant["app_id"], "git_branch": variant["branch"],
                     "app_version": variant["version"], "commit_id": "", "test_commands": variant["commands"]}
         for row in qa_results.worksheet_commands(no_image, hpc_version=selected):
             row["website_docker_cmd"] = "no_image"
             rows.append(row)
     rows.sort(key=lambda row: tuple(str(row[column]).casefold() for column in (
-        "app_name", "git_branch", "app_version", "arch", "OS", "GPU", "py_label", "torch_label", "test_name", "hpc_version", "website_docker_cmd")))
+        "app_id", "git_branch", "app_version", "arch", "OS", "GPU", "py_label", "torch_label", "test_name", "hpc_version", "website_docker_cmd")))
     errors = list({(item["image"], item["error"]): item for item in errors}.values())
     return {"release_name": release["name"], "hpc_version": "latest" if latest else requested,
             "hpc_versions": sorted(set(selected_versions.values()) - {""}, key=_version), "requested_version": requested,

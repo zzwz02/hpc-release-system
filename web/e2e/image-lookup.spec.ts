@@ -4,6 +4,21 @@ const base = process.env.IMAGE_LOOKUP_E2E_URL ?? "";
 test.skip(!/^http:\/\/127\.0\.0\.1:\d+$/.test(base), "Requires tests.run_app_info_site --lookup and isolated Vite");
 const image = "harbor.sh.mxcr.io/hpc-release/abacus-maca@sha256:" + "8d".repeat(32);
 
+test("published Apps show official names and App IDs in separate columns", async ({ page }) => {
+  expect((await page.request.post(base + "/api/login", { data: { username: "app_qa", password: "test-password" } })).ok()).toBeTruthy();
+  const { releases } = await (await page.request.get(base + "/api/lookup/releases")).json();
+  test.skip(!releases.length, "Requires the optional --releases fixture");
+  await page.goto(base + "/lookup");
+  const pane = page.getByTestId("published-apps-pane");
+  await expect(pane.getByRole("columnheader", { name: "app_id", exact: true })).toBeVisible();
+  const first = pane.getByTestId("published-app-row").first();
+  await expect(first.locator("td").nth(1)).not.toHaveText("");
+  const releaseId = await pane.getByRole("combobox", { name: "发布版本" }).inputValue();
+  const data = await (await page.request.get(base + `/api/lookup/release?release_id=${releaseId}`)).json();
+  await expect(first.locator("td").nth(0)).toHaveText(data.apps[0].app_name);
+  await expect(first.locator("td").nth(1)).toHaveText(data.apps[0].app_id);
+});
+
 test("image digest resolves historical app_info and assembles commands with the exact immutable image", async ({ page }) => {
   await page.request.post(base + "/api/login", { data: { username: "app_owner", password: "test-password" } });
   await page.goto(base + "/lookup");
@@ -20,10 +35,12 @@ test("image digest resolves historical app_info and assembles commands with the 
   const data = batch.images[0];
   expect(data.commit_id).toBe("bb46c60");
   expect(data.app_version).toBe("3.9.0.27");
+  expect(data.app_id).toBe("lookup-image");
+  expect(batch.columns[0]).toBe("app_id");
   expect(batch.rows).toHaveLength(2);
   const result = page.getByTestId("lookup-image-result");
   await expect(result.getByTestId("lookup-image-source")).toContainText("根据镜像历史配置实时生成");
-  await expect(result.locator("summary")).toContainText("ABACUS 3.9.0.27");
+  await expect(result.locator("summary")).toContainText("lookup-image 3.9.0.27");
   await result.locator("summary").click();
   const sourceLink = result.getByTestId("app-info-source-link");
   await expect(sourceLink).toContainText("bb46c60");
@@ -94,7 +111,7 @@ test("HPCC and MACA resolve the same App while preserving actual image and relea
   expect(data.errors).toEqual([]);
   expect(data.duplicate_count).toBe(0);
   expect(data.images.map((source: { image: string }) => source.image)).toEqual([hpcc, debug, image]);
-  expect(data.images.every((source: { app_name: string }) => source.app_name === "ABACUS")).toBe(true);
+  expect(data.images.every((source: { app_id: string }) => source.app_id === "lookup-image")).toBe(true);
   expect(data.rows).toHaveLength(5);
   expect(data.rows.slice(0, 2).every((row: { docker_cmd: string }) => row.docker_cmd.includes(hpcc))).toBe(true);
   expect(data.rows[2].test_name).toBe("debug-sanity");

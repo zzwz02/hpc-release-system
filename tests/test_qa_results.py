@@ -152,7 +152,7 @@ def test_import_preserves_result_type_env_workbook_and_resolves_provenance(temp_
 @pytest.mark.parametrize(
     "column,value",
     [
-        ("app_name", "different-app"),
+        ("app_id", "different-app"),
         ("git_branch", "other-branch"),
         ("app_version", "9.0"),
         ("arch", "arm"),
@@ -225,6 +225,7 @@ def test_last_duplicate_row_wins_and_empty_pending_rows_are_skipped(temp_db, liv
     pending = {**row, "test_name": "not-yet-tested", **dict.fromkeys(qa_results.RESULT_COLUMNS, "")}
     result = upload(temp_db, [row, {**row, "test_result": "pass"}, pending])
     assert result["rows"] == 1 and result["duplicate_rows"] == 1
+    assert result["total_rows"] == result["rows"] + result["skipped_rows"] + result["duplicate_rows"] == 3
     assert qa_results_service.query(temp_db)["rows"][0]["qa_result"] == "pass"
 
 
@@ -252,7 +253,7 @@ def test_sample_workbook_uploads_with_live_simulated_sources(temp_db, monkeypatc
     sheet = book.active
     columns = qa_results.WORKSHEET_COLUMNS
     sheet.append(columns)
-    values = {"app_name": "ABACUS", "git_branch": "maca-3.9.0.27", "hpc_version": "3.10.1.2", "app_version": "3.9.0.27",
+    values = {"app_id": "testapp", "git_branch": "maca-3.9.0.27", "hpc_version": "3.10.1.2", "app_version": "3.9.0.27",
               "arch": "x86", "OS": "ubuntu22.04", "GPU": "C500", "test_name": "dataset1-pw/000_4GaAs",
               "docker_cmd": f"docker run {IMAGE}", "test_result": 100, "test_digest": IMAGE,
               "test_env": "c500_server_1"}
@@ -375,12 +376,13 @@ def test_ambiguous_registered_branch_is_rejected_without_guessing(temp_db, live)
 
 
 @pytest.mark.parametrize("heads,expected", [
-    ({"actual-history": "bb46c60" + "a" * 33}, "actual-history"),
+    ({"maca": "bb46c60" + "a" * 33}, "maca"),
+    ({"actual-history": "bb46c60" + "a" * 33}, ""),
     ({"first": "bb46c60" + "a" * 33, "second": "bb46c60" + "a" * 33}, ""),
     ({"first": "different-head"}, ""),
 ])
 def test_ambiguous_catalog_branch_can_only_use_unique_exact_gerrit_head(temp_db, live, monkeypatch, heads, expected):
-    seed_app(temp_db, "other", git_url="hpc_actual_repo", git_branch="other", app_info=live[0], commit_id="bb46c60")
+    seed_app(temp_db, "other", official_name="Other official name", git_url="hpc_actual_repo", git_branch="other", app_info=live[0], commit_id="bb46c60")
     calls = []
 
     def branches(url, **kwargs):
@@ -462,15 +464,15 @@ def test_input_tag_is_ignored_and_canonical_digest_identity_is_deduplicated(temp
     assert len([call for call in live[1] if call[0] == "harbor"]) == 1
 
 
-def test_flat_app_name_matches_existing_qa_display_name(temp_db, live):
+def test_app_id_stays_stable_when_official_display_name_changes(temp_db, live):
+    row = template(temp_db)
     temp_db.execute("UPDATE apps SET official_name='ABACUS 科学计算'")
     temp_db.commit()
-    row = template(temp_db)
-    assert row["app_name"] == "ABACUS 科学计算"
+    assert row["app_id"] == "testapp" and "app_name" not in row
     assert lookup_service.by_image(temp_db, IMAGE)["app_name"] == "ABACUS 科学计算"
     assert lookup_service.by_image(temp_db, IMAGE)["image_app_name"] == "abacus"
     upload(temp_db, [row])
-    assert qa_results_service.query(temp_db)["rows"][0]["app_name"] == "ABACUS 科学计算"
+    assert qa_results_service.query(temp_db)["rows"][0]["app_id"] == "testapp"
 
 
 def test_maca_and_hpcc_repositories_share_app_info_fetch_but_keep_image_identity(temp_db, live):

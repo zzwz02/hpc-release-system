@@ -17,7 +17,7 @@ from app.domain import qa_results
 from app.domain.test_platforms import release_tests
 from app.integrations import harbor
 from app.main import create_app
-from app.services import qa_commands_service, qa_results_service
+from app.services import cycle_service, qa_commands_service, qa_results_service
 from tests.conftest import seed_app, seed_cycle, seed_signup, store_app_info
 from tests.test_image_lookup import DIGEST, IMAGE, TAGS
 
@@ -185,8 +185,8 @@ def test_latest_selects_each_app_independently_instead_of_omitting_older_app_ima
     result = qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="latest")
     assert not result["errors"]
     assert result["hpc_versions"] == ["3.10.1.8", "3.10.1.12"]
-    for app, version in [("EquiformerV2", "3.10.1.8"), ("TestApp", "3.10.1.12")]:
-        rows = [row for row in result["rows"] if row["app_name"] == app and row["website_docker_cmd"] != "no_image"]
+    for app, version in [("equiformerv2", "3.10.1.8"), ("testapp", "3.10.1.12")]:
+        rows = [row for row in result["rows"] if row["app_id"] == app and row["website_docker_cmd"] != "no_image"]
         assert rows and all(row["hpc_version"] == version and version in row["website_docker_cmd"] for row in rows)
 
 
@@ -213,13 +213,34 @@ def test_latest_selects_each_platform_and_debug_build_even_when_one_digest_has_m
 
 def test_upload_reports_blank_qa_rows_by_app_and_branch(temp_db, scope):
     filled = filled_row(temp_db, scope)
-    blank = {**filled, **dict.fromkeys(qa_results.WORKSHEET_QA_COLUMNS, ""), "app_name": "LAMMPS", "git_branch": "master"}
-    other = {**blank, "app_name": "EquiformerV2", "git_branch": "maca"}
+    expected = len(qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="3.10.1.2")["rows"])
+    blank = {**filled, **dict.fromkeys(qa_results.WORKSHEET_QA_COLUMNS, ""), "app_id": "LAMMPS", "git_branch": "master"}
+    other = {**blank, "app_id": "EquiformerV2", "git_branch": "maca"}
     saved, _ = upload(temp_db, [filled, blank, {**blank, "test_name": "second"}, other])
     assert (saved["total_rows"], saved["rows"], saved["skipped_rows"]) == (4, 1, 3)
-    assert saved["skipped_apps"] == [{"app_name": "EquiformerV2", "git_branch": "maca", "rows": 1},
-                                      {"app_name": "LAMMPS", "git_branch": "master", "rows": 2}]
+    assert saved["release_name"] == "3.10.1"
+    assert saved["release_test_count"] == expected > saved["total_rows"]
+    assert saved["skipped_apps"] == [{"app_id": "EquiformerV2", "git_branch": "maca", "rows": 1},
+                                      {"app_id": "LAMMPS", "git_branch": "master", "rows": 2}]
     assert qa_results_service.query(temp_db)["total"] == 1
+
+
+def test_scope_count_tracks_locked_tests_and_signups_without_reading_harbor(temp_db, scope, monkeypatch):
+    expected = len(qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="3.10.1.2")["rows"])
+    seed_app(temp_db, "withdrawn")
+    entry = seed_signup(temp_db, scope[0], "withdrawn")
+    cycle_service.withdraw(temp_db, entry["id"], user="rm", role="RM")
+    seed_app(temp_db, "other-cycle")
+    other = seed_cycle(temp_db, name="3.9.0")
+    seed_signup(temp_db, other, "other-cycle")
+    entry = cycle_service.list_entry_views(temp_db, scope[0], include_withdrawn=False)[0]
+    cycle_service.update_entry(temp_db, entry["id"], {"excluded_tests": ["sanity"]}, user="rm", role="RM")
+    monkeypatch.setattr(harbor, "list_artifacts", lambda *_: pytest.fail("count must use the local locked scope"))
+    monkeypatch.setattr(harbor, "get_artifact", lambda *_: pytest.fail("count must not look up digests"))
+    before = temp_db.total_changes
+    # sanity declares C500/X201 on x86; both combinations leave scope.
+    assert qa_commands_service.count_scope_tests(temp_db, scope[0]) == expected - 2
+    assert temp_db.total_changes == before
 
 
 def test_latest_selects_python_and_torch_builds_independently(temp_db, scope, live, monkeypatch):
@@ -244,8 +265,10 @@ def test_all_blank_qa_upload_reports_skipped_count_and_preserves_existing_report
     filled = filled_row(temp_db, scope)
     saved, original = upload(temp_db, [filled])
     blank = {**filled, **dict.fromkeys(qa_results.WORKSHEET_QA_COLUMNS, "")}
-    with pytest.raises(ValueError, match="QA 列全空跳过 2 行"):
+    with pytest.raises(ValueError, match="QA 列全空跳过 2 行") as error:
         upload(temp_db, [blank, {**blank, "test_name": "second"}])
+    assert "3.10.1 版本共" in str(error.value)
+    assert "文件含 2 条；保存 0 条；跳过 2 条" in str(error.value)
     assert qa_results_service.query(temp_db)["total"] == 1
     assert qa_results_service.download(temp_db, saved["report_id"])[0] == original
 
@@ -326,7 +349,7 @@ def test_exact_legacy_record_and_old_workbook_are_replaced_on_upload(temp_db, sc
 
 @pytest.mark.parametrize("column,value", [
     ("hpc_version", "3.10.1.9"), ("GPU", "C500X"), ("OS", "ubuntu24.04"),
-    ("arch", "arm"), ("test_name", "not-a-test"), ("app_name", "wrong"),
+    ("arch", "arm"), ("test_name", "not-a-test"), ("app_id", "wrong"),
     ("git_branch", "wrong"), ("app_version", "99"), ("py_label", "py999"),
     ("torch_label", "torch99"), ("perf_golden", "incorrect"), ("perf_unit", "incorrect"),
     ("qa_env", "missing"), ("qa_status", "pending"),

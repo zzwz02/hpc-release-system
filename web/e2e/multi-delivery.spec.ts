@@ -28,13 +28,15 @@ test("QA records separate OS/CPU images and publication/history retain both dige
   const state = await (await page.request.get(base + "/api/state")).json();
   const release = state.releases.find((r: { name: string }) => r.name === "browser-cycle-b");
   await page.goto(base + `/qa?release_id=${release.id}`);
-  await page.getByRole("button", { name: /修改（上传 log/ }).first().click();
-  await page.locator("#qaLogFile").setInputFiles({ name: "platform-log.txt", mimeType: "text/plain", buffer: Buffer.from("HPCG amd64 PASS\nHPCG arm64 PASS") });
-  await page.getByRole("button", { name: "上传 log（覆盖）", exact: true }).click();
+  await page.getByLabel("选择 release").selectOption(release.id);
+  await expect(page.locator('[data-qa-app="platform-check"]')).toBeVisible();
+  await page.getByRole("button", { name: /修改（填写 QA 结论/ }).first().click();
+  await expect(page.getByRole("heading", { name: "QA report 失败汇总", exact: true })).toBeVisible();
+  await expect(page.locator("#qaLogFile")).toHaveCount(0);
   const card = page.locator('[data-qa-app="platform-check"]');
   const table = card.getByTestId("delivery-images");
-  const x86 = table.getByRole("row").filter({ hasText: "ubuntu20.04" }).filter({ has: page.getByRole("cell", { name: "x86", exact: true }) });
-  const arm = table.getByRole("row").filter({ hasText: "ubuntu20.04" }).filter({ has: page.getByRole("cell", { name: "ARM", exact: true }) });
+  const x86 = table.locator("tbody").filter({ hasText: "ubuntu20.04" }).filter({ has: page.getByRole("cell", { name: "x86", exact: true }) });
+  const arm = table.locator("tbody").filter({ hasText: "ubuntu20.04" }).filter({ has: page.getByRole("cell", { name: "ARM", exact: true }) });
   const repository = "harbor.sh.mxcr.io/hpc-release/hpcg-maca";
   const image = repository + ":0.9.0-abcdef1-ubuntu20.04-amd64@sha256:";
   const armImage = repository + ":0.9.0-abcdef1-ubuntu20.04-arm64@sha256:";
@@ -71,7 +73,7 @@ test("QA records separate OS/CPU images and publication/history retain both dige
   expect(item.deliverable_images).toHaveLength(2);
   expect(item.delivery_revision).toHaveLength(64);
   await page.reload();
-  await expect(table.locator("tbody tr")).toHaveCount(2);
+  await expect(table.locator("tbody")).toHaveCount(2);
   await expect(x86).toContainText(image + "a".repeat(64));
   await expect(arm).toContainText(armImage + "b".repeat(64));
   await page.screenshot({ path: "/tmp/qa-multi-delivery.png", fullPage: true });
@@ -84,7 +86,7 @@ test("QA records separate OS/CPU images and publication/history retain both dige
   await page.goto(base + "/apps");
   await page.getByTestId("app-row-platform-check").click();
   const history = page.getByTestId("official-version-row").first().getByTestId("delivery-images");
-  await expect(history.locator("tbody tr")).toHaveCount(2);
+  await expect(history.locator("tbody")).toHaveCount(2);
   await expect(history).toContainText(image + "a".repeat(64));
   await expect(history).toContainText(armImage + "b".repeat(64));
   await history.scrollIntoViewIfNeeded();

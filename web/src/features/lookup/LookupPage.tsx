@@ -89,12 +89,13 @@ function PublishedAppsPane() {
           </div>
           <div className="table" data-testid="published-apps-table">
             <table className="published-apps-table">
-              <thead><tr><th>App</th><th>App 版本</th><th>完整镜像名（含 digest）</th><th>QA 测试结果</th><th>QA 备注</th></tr></thead>
+              <thead><tr><th>App</th><th>app_id</th><th>App 版本</th><th>完整镜像名（含 digest）</th><th>QA 测试结果</th><th>QA 备注</th></tr></thead>
               <tbody>
-                {rows.length === 0 && <tr><td colSpan={5} className="muted">{result.data.apps.length ? "没有匹配的 App。" : "该版本没有发布成功的 App。"}</td></tr>}
+                {rows.length === 0 && <tr><td colSpan={6} className="muted">{result.data.apps.length ? "没有匹配的 App。" : "该版本没有发布成功的 App。"}</td></tr>}
                 {rows.map((app) => (
                   <tr key={app.app_id} data-testid="published-app-row">
-                    <td>{app.app_name}<div className="small muted">{app.app_id}</div></td>
+                    <td>{app.app_name}</td>
+                    <td>{app.app_id}</td>
                     <td>{app.app_version || "—"}</td>
                     <td className="mono small break">
                       <DeliveryImages compact images={recordedImages(app.images, app.deliverable_image, app.deliverable_digest)} />

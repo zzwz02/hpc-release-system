@@ -7,7 +7,7 @@ import { stripDockerPullPrefix } from "../../lib/containerImage";
 
 interface ImageSource {
   image: string; commit_id: string; hpc_version: string; git_url: string;
-  app_name: string; app_version: string; tags: string[];
+  app_id: string; app_version: string; tags: string[];
 }
 interface BatchResult {
   images: ImageSource[]; errors: { image: string; error: string }[];
@@ -78,7 +78,7 @@ export function BatchImageLookupPane() {
         }} /></label>
         <button className="btn primary" disabled={busy || !input.trim()} data-testid="lookup-search" onClick={() => void search()}>{busy ? "查询中…" : "查询"}</button>
       </div>
-      <p className="hint mt-8">每次实时读取 Harbor tags → commit → Gerrit app_info，按 OS、CPU 架构、GPU 和测试项展开命令。历史结果按 app_name、git_branch、app_version、arch、OS、GPU、test_name 匹配；没有结果时三列留空。</p>
+      <p className="hint mt-8">每次实时读取 Harbor tags → commit → Gerrit app_info，按 OS、CPU 架构、GPU 和测试项展开命令。历史结果按 app_id、git_branch、app_version、arch、OS、GPU、test_name 匹配；没有结果时三列留空。</p>
       {busy && <p role="status">正在批量读取镜像和历史配置…</p>}
       {error && <p className="lerr" role="alert">{error}</p>}
       {result && result.errors.length > 0 && <div role="alert" className="lerr">以下镜像未生成命令：{result.errors.map((item, i) => <p key={i} className="small break">{item.image}：{item.error}</p>)}</div>}
@@ -89,7 +89,7 @@ export function BatchImageLookupPane() {
       <div className="panel-body">
         <p className="hint" data-testid="lookup-image-source">根据镜像历史配置实时生成</p>
         {result.images.map(source => <details key={source.image} className="mt-8">
-          <summary>{source.app_name} {source.app_version} · HPC {source.hpc_version || "未找到版本 tag"} · Commit {source.commit_id}</summary>
+          <summary>{source.app_id || "未能唯一确定 app_id"} {source.app_version} · HPC {source.hpc_version || "未找到版本 tag"} · Commit {source.commit_id}</summary>
           <p className="mono small break">{source.image}</p>
           <a href={`/api/lookup/app-info?${new URLSearchParams({ image: source.image, commit_id: source.commit_id })}`} target="_blank" rel="noopener noreferrer" data-testid="app-info-source-link">{source.git_url} @ {source.commit_id}</a>
           {source.tags.map(tag => <div className="mono small break mt-4" key={tag}>{tag}</div>)}

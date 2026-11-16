@@ -1,4 +1,4 @@
-"""QA router — QA status, log upload/download, LLM analysis.
+"""QA router — App verdicts, report failures, workbooks and legacy log analysis.
 
 Faithful port of server.py GET/POST QA handlers.
 
@@ -7,7 +7,9 @@ Endpoint paths (legacy release routes retain their original paths):
   GET  /api/qa-log/download           (note: NOT under /api/qa prefix)
   GET  /api/qa-reports                (note: NOT under /api/qa prefix)
   POST /api/qa/status-batch
-  POST /api/qa/upload-log
+  POST /api/qa/upload-log            (retired, returns 410)
+  GET  /api/qa/failure-summary
+  GET  /api/qa/delivery-images
   POST /api/qa/analyze-log
   POST /api/qa/analyze-log/start
   GET  /api/qa/test-results
@@ -195,22 +197,32 @@ def api_qa_status_batch(
 
 @router.post("/api/qa/upload-log")
 def api_qa_upload_log(
-    body: dict,
-    user: dict = Depends(require_qa_log_upload),
+    _user: dict = Depends(require_qa_log_upload),
+) -> dict:
+    """Old upload clients must use the validated QA-report workflow."""
+    raise ApiError(410, "QA log 已取消上传，请在 QA report 上传测试结果 Excel；QA log 自动汇总失败项")
+
+
+@router.get("/api/qa/failure-summary")
+def qa_failure_summary(
+    response: Response,
+    release_id: str = Query(),
+    _user: dict = Depends(require_qa_tab_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """Accept a base64-encoded QA log file and persist it.
+    response.headers["Cache-Control"] = "no-store"
+    return qa_results_service.failure_summary(conn, release_id)
 
-    Mirrors server.py:954-971.
-    """
-    return qa_service.upload_qa_log(
-        conn,
-        body["release_id"],
-        content_b64=body.get("content_base64", ""),
-        filename=body.get("filename", "qa_log"),
-        user=user["username"],
-        role=user["role"],
-    )
+
+@router.get("/api/qa/delivery-images")
+def qa_delivery_images(
+    response: Response,
+    release_id: str = Query(),
+    _user: dict = Depends(require_qa_tab_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    return qa_service.delivery_images_view(conn, release_id)
 
 
 # ---------------------------------------------------------------------------

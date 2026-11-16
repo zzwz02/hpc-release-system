@@ -20,10 +20,9 @@ from app.repositories import (
     apps_repo,
     entries_repo,
     official_repo,
-    qa_results_repo,
     releases_repo,
 )
-from app.services import catalog_service, compatibility_service, cycle_service, publication_service, qa_service
+from app.services import catalog_service, compatibility_service, cycle_service, publication_service, qa_result_identity_service, qa_service
 
 
 def _lookup_image(reference: str) -> dict[str, str]:
@@ -116,6 +115,7 @@ def _repository_index(conn, names):
             )
         url = urls[app["id"]]
         source = {
+            "app_id": app["id"],
             "url": url,
             "branch": app["git_branch"],
             "commit": version["commit_id"],
@@ -208,7 +208,8 @@ def _source_identity(artifact, document):
     names = {source["app_name"] for source in selected_sources
              if not branch or source["branch"] == branch}
     report_name = names.pop() if len(names) == 1 else ""
-    return branch, report_name
+    app_ids = {source["app_id"] for source in selected_sources}
+    return branch, report_name, app_ids.pop() if len(app_ids) == 1 else ""
 
 
 def _branch_heads(url):
@@ -228,13 +229,16 @@ def _commands_for_artifact(artifact, document, rows=None, heads=None):
         rows=rows,
         tag_version=artifact["commit_id"] if artifact["commit_source"] == "harbor_tag" else "repo",
     )
-    branch, report_name = _source_identity(artifact, document)
-    if not branch and report_name and heads is not None:
+    branch, report_name, app_id = _source_identity(artifact, document)
+    if not branch and heads is not None:
         if isinstance(heads, Exception):
             raise heads
         matching = [name for name, commit in heads.items() if commit.startswith(artifact["commit_id"])]
         if len(matching) == 1:
             branch = matching[0]
+            selected = [source for source in artifact["sources"] if source["branch"] == branch]
+            if selected:
+                _, report_name, app_id = _source_identity({**artifact, "sources": selected}, document)
     versions = image_lookup.hpc_versions(
         document, artifact["repository"], artifact["tags"], selected_tags=artifact["commit_tags"]
     )
@@ -242,6 +246,7 @@ def _commands_for_artifact(artifact, document, rows=None, heads=None):
         **result,
         "source": "historical_config",
         "git_branch": branch,
+        "app_id": app_id,
         "app_name": report_name,
         "image_app_name": result["app_name"],
         "hpc_version": ", ".join(versions),
@@ -334,13 +339,19 @@ def batch_images(conn, references):
     result = resolve_images(conn, references)
     rows = []
     for image in result["images"]:
-        if not image["git_branch"]:
+        if not image["app_id"] or not image["git_branch"]:
             result["errors"].append(
-                {"image": image["image"], "error": "无法唯一确定 git_branch，不能匹配历史结果"}
+                {"image": image["image"], "error": "无法唯一确定 app_id / git_branch，不能匹配历史结果"}
             )
             continue
         rows.extend(qa_results.flat_commands(image))
-    history = qa_results_repo.matching(conn, [qa_results.result_key(row) for row in rows], include_history=True)
+    history = {}
+    keys = {qa_results.result_key(row) for row in rows}
+    for record in qa_result_identity_service.list_records(conn):
+        data = record["data"]
+        key = qa_results.result_key(data)
+        if data["app_id"] and key in keys:
+            history.setdefault(key, data)
     for row in rows:
         previous = history.get(qa_results.result_key(row), {})
         row.update({column: previous.get(qa_results.WORKSHEET_ALIASES.get(column, column), previous.get(column, ""))
@@ -358,6 +369,7 @@ def batch_images(conn, references):
                 "git_url",
                 "git_branch",
                 "app_name",
+                "app_id",
                 "app_version",
                 "commit_source",
                 "manifest_urls",

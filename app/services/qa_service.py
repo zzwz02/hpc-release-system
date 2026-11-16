@@ -17,6 +17,7 @@ from app.domain import cycles as cycles_domain
 from app.domain import phases as phase_policy
 from app.domain import test_commands
 from app.domain import delivery_images
+from app.domain.container_image import delivered_image_reference
 from app.domain.test_platforms import build_alias_is_redundant
 from app.domain.permissions import has_capability
 from app.domain.qa import (
@@ -34,11 +35,11 @@ from app.repositories import (
     users_repo,
 )
 from app.repositories.audit_repo import log_audit
-from app.services import catalog_service, cycle_service, delivery_validation_service
+from app.services import catalog_service, cycle_service, delivery_reference_service, delivery_validation_service
 from app.timeutil import beijing_timestamp
 
 QA_RELEASE_REPORT_COLUMNS = [
-    "类别", "名称", "Owner", "类型", "描述", "官方URL", "git_url", "git_branch",
+    "类别", "名称", "app_id", "Owner", "类型", "描述", "官方URL", "git_url", "git_branch",
     "对应官方版本", "OS", "Python version", "PyTorch version",
     "X86支持芯片系列", "ARM支持芯片类型", "对比",
     "开发者社区发布情况", "开发者社区一级菜单", "开发者社区说明文档链接",
@@ -48,7 +49,7 @@ QA_RELEASE_REPORT_COLUMNS = [
 ]
 
 QA_TEST_CMD_COLUMNS = [
-    "app_name", "git_branch", "app_version", "arch",
+    "app_id", "git_branch", "app_version", "arch",
     "OS", "构建平台", "支持芯片", "commit_id", "test_name", "docker_cmd",
     "perf_golden", "perf_unit", "Python label", "PyTorch label",
 ]
@@ -61,11 +62,32 @@ _DELIVERABLE_FIELDS = ("deliverable_image", "deliverable_digest", "deliverable_c
 _QA_FIELD_LABELS = {
     "deliverable_images": "按构建交付的镜像",
     "qa_status": "QA 状态",
-    "qa_note": "问题说明",
+    "qa_note": "QA comment",
     "deliverable_image": "交付镜像",
     "deliverable_digest": "交付镜像 digest",
     "deliverable_commit": "源码 commit",
 }
+
+
+def delivery_images_view(conn: sqlite3.Connection, release_id: str) -> dict:
+    """Project historical QA-log images with actual tags; edit/save data stays untouched."""
+    release = releases_repo.get_release_row(conn, release_id)
+    if not release:
+        raise ApiError(404, "发布周期不存在")
+    views, images = {}, []
+    for entry in cycle_service.list_entry_views(conn, release_id, include_withdrawn=False):
+        views[entry["app_id"]] = {"revision": entry["delivery_revision"], "images": []}
+        builds = {build["build_key"]: build for build in entry["delivery_builds"]}
+        for image in entry["deliverable_images"]:
+            images.append({**image, "app_id": entry["app_id"], "hpc_version": release["name"],
+                           "image_pattern": builds.get(image["build_key"], {}).get("image_pattern", ""),
+                           "delivery_reference": delivered_image_reference(image.get("image") or image.get("reference", ""), image.get("digest", ""))})
+    for image in delivery_reference_service.resolve_references(images):
+        app_id = image.pop("app_id")
+        image.pop("hpc_version")
+        image["reference"] = image.pop("delivery_reference")
+        views[app_id]["images"].append(image)
+    return {"release_id": release_id, "entries": views}
 
 
 def set_qa_status_batch(
@@ -123,11 +145,12 @@ def _prepare_qa_status_batch(conn, release_id, items):
         if issue_note_required(status) and not note:
             errors.append(f"{app_id}：标注「{qa_status_label(status)}」时必须填写问题说明")
             continue
-        update = {"qa_status": status, "qa_note": note if issue_note_required(status) else ""}
-        if 'deliverable_images' in item:
+        update = {"qa_status": status, "qa_note": note}
+        if 'deliverable_images' in item or 'delivery_revision' in item:
             if item.get('delivery_revision') != delivery_images.revision(entry):
                 errors.append(f'{app_id}：QA 结论、交付镜像或报名版本已变化，请刷新后重试')
                 continue
+        if 'deliverable_images' in item:
             version = app_info_repo.get_version(conn, entry['locked_version_id'])
             try:
                 images = delivery_images.normalize(item['deliverable_images'], (version or {}).get('raw', {}), entry)
@@ -266,13 +289,13 @@ def _owner_display_text(
 
 def _report_test_cmd_rows(
     raw: dict[str, Any],
-    app_name: str,
+    app_id: str,
     git_branch: str,
     commit_id: str,
     excluded: set[str],
 ) -> list[list[str]]:
     return [
-        [app_name, git_branch, str(raw.get("app_version") or ""), test_commands.denormalize_arch(row["arch"]),
+        [app_id, git_branch, str(raw.get("app_version") or ""), test_commands.denormalize_arch(row["arch"]),
          row["os"], row["build"], chip, commit_id, row["test"], row["command"],
          row["perf_golden"], row["perf_unit"], row["python_label"], row["pytorch_label"]]
         for row in test_commands.command_rows(raw, excluded)
@@ -384,6 +407,7 @@ def get_qa_reports(
         release_rows.append([
             "AI4Sci" if app.get("doc_target") == "ai4sci" else "HPC",
             catalog_service.app_name(app),
+            app_id,
             ",".join(display_names.get(o, o) for o in app.get("owners") or []),
             app.get("type", ""),
             app.get("description", ""),
@@ -407,7 +431,7 @@ def get_qa_reports(
             version = app_info_repo.get_version(conn, entry["locked_version_id"])
             if version:
                 test_rows.extend(_report_test_cmd_rows(
-                    version["raw"], catalog_service.app_name(app), app.get("git_branch", ""),
+                    version["raw"], app_id, app.get("git_branch", ""),
                     str(version.get("commit_id") or ""), set(entry["excluded_tests"]),
                 ))
     test_rows.sort(key=lambda row: (row[0].lower(), row[1].lower(), row[2].lower(), row[3].lower()))

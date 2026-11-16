@@ -13,7 +13,7 @@ let identity = { username: "qa", role: "QA" };
 let selectedRelease = { id: "rel-3100", name: "3.10.0" };
 vi.mock("../../../api/AuthContext", () => ({ useAuth: () => ({ user: identity }) }));
 const row = {
-  app_name: "HPL", git_branch: "maca", app_version: "1", hpc_version: "3.10.0", arch: "x86", OS: "ubuntu22.04", GPU: "C500",
+  app_id: "HPL", git_branch: "maca", app_version: "1", hpc_version: "3.10.0", arch: "x86", OS: "ubuntu22.04", GPU: "C500",
   commit_id: "abcdef1", test_name: "benchmark", qa_result: "pass", qa_digest: "sha256:digest", qa_env: "C500_server_1",
   website_docker_cmd: "automatically generated docker command", qa_docker_cmd: "QA uploaded docker command", command_error: "",
   report_id: 5, uploaded_at: "2026-11-15 12:30:00", uploaded_by: "qa", filename: "report.xlsx",
@@ -30,7 +30,7 @@ beforeEach(() => {
 });
 
 it("shows automatic and Excel commands separately with the Excel submission time and original download", async () => {
-  vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [row], columns: ["app_name", "hpc_version", "qa_result", "qa_digest", "qa_env", "website_docker_cmd", "qa_docker_cmd"] });
+  vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [row], columns: ["app_id", "hpc_version", "qa_result", "qa_digest", "qa_env", "website_docker_cmd", "qa_docker_cmd"] });
   renderPane();
   const table = await screen.findByRole("table", { name: "QA 测试结果" });
   expect(screen.getByText(/不采用上传文件中该列的命令/)).toBeVisible();
@@ -43,8 +43,8 @@ it("shows automatic and Excel commands separately with the Excel submission time
 });
 
 it("filters all results, keeps inputs mounted, resets pagination, and exports the entire match", async () => {
-  const columns = ["app_name", "GPU", "test_name", "qa_status"];
-  const later = { ...row, app_name: "Later App", GPU: "X301", test_name: "case64", qa_status: "fail" };
+  const columns = ["app_id", "GPU", "test_name", "qa_status"];
+  const later = { ...row, app_id: "Later App", GPU: "X301", test_name: "case64", qa_status: "fail" };
   vi.mocked(apiGet).mockImplementation(async path => {
     const params = new URL(String(path), "http://test").searchParams;
     const filtered = JSON.parse(params.get("column_filters") ?? "{}");
@@ -84,7 +84,7 @@ it("filters all results, keeps inputs mounted, resets pagination, and exports th
 });
 
 it("sends table keywords to the server and lets users correct filters after a request fails", async () => {
-  vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [row], columns: ["app_name", "qa_result"] });
+  vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [row], columns: ["app_id", "qa_result"] });
   renderPane();
   await screen.findByText("HPL");
   vi.mocked(apiGet).mockRejectedValueOnce(new Error("查询失败"));
@@ -98,7 +98,7 @@ it("sends table keywords to the server and lets users correct filters after a re
 });
 
 it("does not retain a previous user's rows while the new user's results load", async () => {
-  vi.mocked(apiGet).mockResolvedValueOnce({ total: 1, rows: [row], columns: ["app_name"] })
+  vi.mocked(apiGet).mockResolvedValueOnce({ total: 1, rows: [row], columns: ["app_id"] })
     .mockImplementation(() => new Promise(() => {}));
   const view = renderPane();
   await screen.findByText("HPL");
@@ -108,16 +108,17 @@ it("does not retain a previous user's rows while the new user's results load", a
 });
 
 it("uploads the actual Excel bytes, reports overwrite counts, and reloads the results", async () => {
-  vi.mocked(apiGet).mockResolvedValueOnce({ total: 0, rows: [], columns: [] }).mockResolvedValue({ total: 1, rows: [row], columns: ["app_name", "hpc_version", "qa_result", "qa_digest", "qa_env", "website_docker_cmd", "qa_docker_cmd"] });
-  vi.mocked(apiPost).mockResolvedValue({ rows: 1, replaced: 1, duplicate_rows: 0, total_rows: 33, skipped_rows: 32,
-    skipped_apps: [{ app_name: "LAMMPS", git_branch: "master", rows: 32 }] });
+  vi.mocked(apiGet).mockResolvedValueOnce({ total: 0, rows: [], columns: [] }).mockResolvedValue({ total: 1, rows: [row], columns: ["app_id", "hpc_version", "qa_result", "qa_digest", "qa_env", "website_docker_cmd", "qa_docker_cmd"] });
+  vi.mocked(apiPost).mockResolvedValue({ release_name: "3.10.0", release_test_count: 936, rows: 1, replaced: 1, duplicate_rows: 0, total_rows: 33, skipped_rows: 32,
+    skipped_apps: [{ app_id: "LAMMPS", git_branch: "master", rows: 32 }] });
   renderPane();
   await screen.findByRole("table", { name: "QA 测试结果" });
   const file = new File(["workbook-bytes"], "report.xlsx");
   fireEvent.change(screen.getByLabelText("上传测试结果 Excel"), { target: { files: [file] } });
   await screen.findByText("已保存 3.10.0 的 1 行，清除旧结果 1 行。");
   const summary = screen.getByTestId("qa-upload-summary");
-  expect(summary).toHaveTextContent("文件共 33 行；QA 列全空跳过 32 行，跳过行未校验、未入库。");
+  expect(summary).toHaveTextContent("3.10.0 版本共 936 条测试；文件含 33 条；保存 1 条；跳过 32 条。");
+  expect(summary).toHaveTextContent("QA 列全空 32 条，重复组合 0 条。QA 列全空行未校验、未入库。");
   fireEvent.click(within(summary).getByText("查看跳过明细（1 个 App／分支）"));
   expect(within(summary).getByText("LAMMPS · master：32 行")).toBeVisible();
   expect(apiPost).toHaveBeenCalledWith("/api/qa/test-results/upload", { filename: "report.xlsx", content_base64: btoa("workbook-bytes"), release_id: "rel-3100" });
@@ -125,7 +126,7 @@ it("uploads the actual Excel bytes, reports overwrite counts, and reloads the re
 });
 
 it("keeps existing results visible when the upload fails validation", async () => {
-  vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [row], columns: ["app_name", "hpc_version", "qa_result", "qa_digest", "qa_env", "website_docker_cmd", "qa_docker_cmd"] });
+  vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [row], columns: ["app_id", "hpc_version", "qa_result", "qa_digest", "qa_env", "website_docker_cmd", "qa_docker_cmd"] });
   vi.mocked(apiPost).mockRejectedValue(new Error("第 2 行：digest 与 GPU 不匹配"));
   renderPane();
   await screen.findByText(row.qa_docker_cmd);
@@ -135,7 +136,7 @@ it("keeps existing results visible when the upload fails validation", async () =
 });
 
 it("warns about replacing the entire selected cycle and preserves its report when cancelled", async () => {
-  vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [row], columns: ["app_name"] });
+  vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [row], columns: ["app_id"] });
   vi.mocked(confirmDialog).mockResolvedValueOnce(false);
   renderPane();
   await screen.findByText("HPL");
@@ -155,7 +156,7 @@ it("warns about replacing the entire selected cycle and preserves its report whe
 });
 
 it("does not upload after the selected cycle changes while confirmation is open", async () => {
-  vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [row], columns: ["app_name"] });
+  vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [row], columns: ["app_id"] });
   let confirm!: (value: boolean) => void;
   vi.mocked(confirmDialog).mockImplementationOnce(() => new Promise(resolve => { confirm = resolve; }));
   const view = renderPane();
@@ -170,7 +171,7 @@ it("does not upload after the selected cycle changes while confirmation is open"
 
 it("allows Owners to query stored results without uploading and keeps upstream failures visible", async () => {
   identity = { username: "owner", role: "Owner" };
-  vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [{ ...row, website_docker_cmd: "", command_error: "Harbor 查询失败" }], columns: ["app_name", "website_docker_cmd", "qa_docker_cmd"] });
+  vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [{ ...row, website_docker_cmd: "", command_error: "Harbor 查询失败" }], columns: ["app_id", "website_docker_cmd", "qa_docker_cmd"] });
   renderPane();
   expect(await screen.findByText("Harbor 查询失败")).toBeVisible();
   expect(screen.queryByLabelText("上传测试结果 Excel")).toBeNull();
@@ -183,31 +184,44 @@ it("allows Owners to query stored results without uploading and keeps upstream f
 it("queries the selected cycle and clears rows and filters when that cycle changes", async () => {
   vi.mocked(apiGet).mockImplementation(async path => {
     const id = new URL(String(path), "http://test").searchParams.get("release_id");
-    return { total: 1, rows: [{ ...row, app_name: id === "rel-3100" ? "Cycle 3.10.0" : "Cycle 3.9.0" }], columns: ["app_name"] };
+    return { total: 1, rows: [{ ...row, app_id: id === "rel-3100" ? "Cycle 3.10.0" : "Cycle 3.9.0" }], columns: ["app_id"] };
   });
   const view = renderPane();
   await screen.findByText("Cycle 3.10.0");
-  fireEvent.change(screen.getByLabelText("app_name 列筛选"), { target: { value: "old filter" } });
+  fireEvent.change(screen.getByLabelText("app_id 列筛选"), { target: { value: "old filter" } });
   selectedRelease = { id: "rel-390", name: "3.9.0" };
   view.rerenderPane();
   await screen.findByText("Cycle 3.9.0");
   expect(screen.queryByText("Cycle 3.10.0")).toBeNull();
-  expect(screen.getByLabelText("app_name 列筛选")).toHaveValue("");
+  expect(screen.getByLabelText("app_id 列筛选")).toHaveValue("");
   const params = new URL(vi.mocked(apiGet).mock.lastCall![0], "http://test").searchParams;
   expect(params.get("release_id")).toBe("rel-390");
   expect(params.has("column_filters")).toBe(false);
 });
 
 it("uploads with the selected cycle and the revision of the displayed report", async () => {
-  vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [row], columns: ["app_name"], revision: "current-report-revision" });
-  vi.mocked(apiPost).mockResolvedValue({ rows: 1, replaced: 4, duplicate_rows: 0, total_rows: 1, skipped_rows: 0, skipped_apps: [] });
+  vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [row], columns: ["app_id"], revision: "current-report-revision" });
+  vi.mocked(apiPost).mockResolvedValue({ release_name: "3.10.0", release_test_count: 936, rows: 1, replaced: 4, duplicate_rows: 0, total_rows: 1, skipped_rows: 0, skipped_apps: [] });
   renderPane();
   await screen.findByText("HPL");
   fireEvent.change(screen.getByLabelText("上传测试结果 Excel"), { target: { files: [new File(["bytes"], "B.xlsx")] } });
   await screen.findByText("已保存 3.10.0 的 1 行，清除旧结果 4 行。");
-  expect(screen.getByTestId("qa-upload-summary")).toHaveTextContent("QA 列全空跳过 0 行");
+  expect(screen.getByTestId("qa-upload-summary")).toHaveTextContent("3.10.0 版本共 936 条测试；文件含 1 条；保存 1 条；跳过 0 条。");
   expect(screen.queryByText(/查看跳过明细/)).toBeNull();
   expect(apiPost).toHaveBeenCalledWith("/api/qa/test-results/upload", {
     filename: "B.xlsx", content_base64: btoa("bytes"), release_id: "rel-3100", revision: "current-report-revision",
   });
+});
+
+it("includes both blank QA rows and overwritten duplicates in the skipped total", async () => {
+  vi.mocked(apiGet).mockResolvedValue({ total: 1, rows: [row], columns: ["app_id"] });
+  vi.mocked(apiPost).mockResolvedValue({ release_name: "3.10.0", release_test_count: 936,
+    rows: 1, replaced: 0, duplicate_rows: 1, total_rows: 4, skipped_rows: 2,
+    skipped_apps: [{ app_id: "LAMMPS", git_branch: "master", rows: 2 }] });
+  renderPane();
+  await screen.findByText("HPL");
+  fireEvent.change(screen.getByLabelText("上传测试结果 Excel"), { target: { files: [new File(["bytes"], "duplicates.xlsx")] } });
+  await waitFor(() => expect(screen.getByTestId("qa-upload-summary")).toHaveTextContent(
+    "3.10.0 版本共 936 条测试；文件含 4 条；保存 1 条；跳过 3 条。"));
+  expect(screen.getByTestId("qa-upload-summary")).toHaveTextContent("QA 列全空 2 条，重复组合 1 条");
 });

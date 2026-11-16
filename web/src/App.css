@@ -465,16 +465,21 @@ tbody tr:hover td { background: var(--surface-2); }
 .cell-wrap { white-space: normal; word-break: break-word; }
 .table { overflow: auto; border: 1px solid var(--border); border-radius: var(--r); }
 .table table { border: 0; }
-.published-apps-table { table-layout: fixed; min-width: 760px; }
-.published-apps-table th:nth-child(1) { width: 17%; }
-.published-apps-table th:nth-child(2) { width: 9%; }
-.published-apps-table th:nth-child(3) { width: 43%; }
-.published-apps-table th:nth-child(4) { width: 13%; }
-.published-apps-table th:nth-child(5) { width: 18%; }
+.published-apps-table { table-layout: fixed; min-width: 960px; }
+.published-apps-table th:nth-child(1) { width: 13%; }
+.published-apps-table th:nth-child(2) { width: 16%; }
+.published-apps-table th:nth-child(3) { width: 9%; }
+.published-apps-table th:nth-child(4) { width: 35%; }
+.published-apps-table th:nth-child(5) { width: 11%; }
+.published-apps-table th:nth-child(6) { width: 16%; }
 .published-apps-table td { overflow-wrap: anywhere; }
-.delivery-images table { min-width: 650px; }
-.delivery-images td { vertical-align: top; }
-.delivery-images input { min-width: 280px; }
+.delivery-images table { width: 100%; min-width: 0; table-layout: fixed; }
+.delivery-images th, .delivery-images td { vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
+.delivery-images th { padding: 8px; }
+.delivery-images tbody + tbody { border-top: 1px solid var(--border); }
+.delivery-images .delivery-platform-row td { border-bottom: 0; padding-bottom: 4px; }
+.delivery-images .delivery-reference-row td { padding-top: 4px; }
+.delivery-images input { min-width: 0; }
 .qa-delivery-images { grid-column: 1 / -1; min-width: 0; }
 .official-history-version + .official-history-version { margin-top: 16px; }
 .delivery-image-item + .delivery-image-item { margin-top: 10px; }
@@ -484,7 +489,8 @@ tbody tr:hover td { background: var(--surface-2); }
 .compatibility-apps-table { min-width: 1100px; }
 .compatibility-apps-table td { vertical-align: top; }
 .compatibility-apps-table > tbody > tr > td:nth-child(1) { min-width: 150px; }
-.compatibility-apps-table > tbody > tr > td:nth-child(5) { max-width: 240px; overflow-wrap: anywhere; }
+.compatibility-apps-table > tbody > tr > td:nth-child(2),
+.compatibility-apps-table > tbody > tr > td:nth-child(6) { max-width: 240px; overflow-wrap: anywhere; }
 .compatibility-detail-table { table-layout: fixed; min-width: 1940px; }
 .compatibility-detail-table th:nth-child(1) { width: 120px; }
 .compatibility-detail-table th:nth-child(2) { width: 80px; }

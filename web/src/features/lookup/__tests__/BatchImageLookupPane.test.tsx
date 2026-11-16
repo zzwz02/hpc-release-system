@@ -10,12 +10,12 @@ let identity = { username: "qa", role: "QA" };
 vi.mock("../../../api/AuthContext", () => ({ useAuth: () => ({ user: identity }) }));
 const image = "harbor.sh.mxcr.io/hpc-release/pyg-maca@sha256:" + "a".repeat(64);
 const data = {
-  columns: ["app_name", "GPU", "docker_cmd", "test_result", "test_digest", "test_env"],
+  columns: ["app_id", "GPU", "docker_cmd", "test_result", "test_digest", "test_env"],
   rows: [
-    { app_name: "PyG", GPU: "C500", docker_cmd: "docker run " + image, test_result: 0, test_digest: image, test_env: "C500_server_1" },
-    { app_name: "PyG", GPU: "X301", docker_cmd: "docker run " + image, test_result: "", test_digest: "", test_env: "" },
+    { app_id: "PyG", GPU: "C500", docker_cmd: "docker run " + image, test_result: 0, test_digest: image, test_env: "C500_server_1" },
+    { app_id: "PyG", GPU: "X301", docker_cmd: "docker run " + image, test_result: "", test_digest: "", test_env: "" },
   ],
-  images: [{ image, app_name: "pyg", app_version: "2.0", hpc_version: "3.10.0", commit_id: "abcdef1", git_url: "repo", tags: ["2.0-abcdef1-ubuntu22.04-amd64"] }],
+  images: [{ image, app_id: "pyg", app_version: "2.0", hpc_version: "3.10.0", commit_id: "abcdef1", git_url: "repo", tags: ["2.0-abcdef1-ubuntu22.04-amd64"] }],
   duplicate_count: 1, errors: [{ image: "bad", error: "不存在" }],
 };
 
@@ -95,10 +95,10 @@ it("combines QA-style column filters and sorting while exporting full commits an
   const prefix = "0123456789ab";
   const first = prefix + "a".repeat(28);
   const second = prefix + "b".repeat(28);
-  vi.mocked(apiPost).mockResolvedValue({ ...data, errors: [], columns: ["app_name", "GPU", "commit_id", "test_result"], rows: [
-    { app_name: "PyG", GPU: "C500", commit_id: second, test_result: 10 },
-    { app_name: "PyG", GPU: "C500", commit_id: first, test_result: 2 },
-    { app_name: "HPL", GPU: "X301", commit_id: second, test_result: 0 },
+  vi.mocked(apiPost).mockResolvedValue({ ...data, errors: [], columns: ["app_id", "GPU", "commit_id", "test_result"], rows: [
+    { app_id: "PyG", GPU: "C500", commit_id: second, test_result: 10 },
+    { app_id: "PyG", GPU: "C500", commit_id: first, test_result: 2 },
+    { app_id: "HPL", GPU: "X301", commit_id: second, test_result: 0 },
   ] });
   render(<BatchImageLookupPane />);
   fireEvent.change(screen.getByLabelText("完整镜像名"), { target: { value: image } });
@@ -108,7 +108,7 @@ it("combines QA-style column filters and sorting while exporting full commits an
   fireEvent.change(screen.getByLabelText("GPU 列筛选"), { target: { value: "C500" } });
   fireEvent.click(within(table).getByRole("columnheader", { name: /^test_result$/ }));
   fireEvent.click(screen.getByRole("button", { name: "导出 CSV" }));
-  expect(downloadCsv).toHaveBeenLastCalledWith("digest_test_commands.csv", ["app_name", "GPU", "commit_id", "test_result"], [
+  expect(downloadCsv).toHaveBeenLastCalledWith("digest_test_commands.csv", ["app_id", "GPU", "commit_id", "test_result"], [
     ["PyG", "C500", first, "2"], ["PyG", "C500", second, "10"],
   ]);
   fireEvent.change(screen.getByLabelText("commit_id 列筛选"), { target: { value: "aaaaaa" } });

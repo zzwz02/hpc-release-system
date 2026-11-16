@@ -58,7 +58,7 @@ def test_upload_download_and_replace_use_database_blob(temp_db_with_path):
     )
 
 
-def test_http_upload_state_and_download_round_trip(temp_db_with_path, monkeypatch):
+def test_http_upload_is_retired_but_legacy_state_and_download_remain_readable(temp_db_with_path, monkeypatch):
     conn, db_path = temp_db_with_path
     release_id = seed_cycle(conn)
     monkeypatch.setattr(settings, "db_path", db_path)
@@ -78,6 +78,9 @@ def test_http_upload_state_and_download_round_trip(temp_db_with_path, monkeypatc
         "display_name": "QA",
     }
     content = b"api round trip"
+    qa_repo.upsert_qa_log(conn, release_id, filename="api.log", content=content,
+                         uploaded_at="2026-11-16 10:00:00", uploaded_by="qa")
+    conn.commit()
     client = TestClient(app, raise_server_exceptions=False)
     try:
         uploaded = client.post(
@@ -88,9 +91,8 @@ def test_http_upload_state_and_download_round_trip(temp_db_with_path, monkeypatc
                 "content_base64": base64.b64encode(content).decode("ascii"),
             },
         )
-        assert uploaded.status_code == 200
-        assert uploaded.json()["size_bytes"] == len(content)
-        assert "storage_path" not in uploaded.json()
+        assert uploaded.status_code == 410
+        assert "QA report" in uploaded.json()["error"]
 
         state = client.get("/api/state", params={"release_id": release_id})
         assert state.status_code == 200

@@ -34,6 +34,11 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   expect((await page.request.post(base + "/api/login", { data: { username: "app_qa", password: "test-password" } })).ok()).toBeTruthy();
+  await page.goto(base + "/qa?tab=release");
+  await page.getByLabel("选择 release").selectOption({ label: "3.10.1" });
+  await page.getByRole("button", { name: "加载报告", exact: true }).click();
+  await expect(page.getByRole("columnheader", { name: "app_id", exact: true })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "lookup-image", exact: true })).toBeVisible();
   await page.goto(base + "/qa?tab=test");
   await page.getByLabel("选择 release").selectOption({ label: "3.10.1" });
   await page.getByLabel("hpc_version", { exact: true }).fill("latest");
@@ -44,8 +49,9 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   const commands = await response.json();
   expect(commands.hpc_version).toBe("latest");
   expect(commands.hpc_versions).toEqual(["3.10.1.2"]);
-  const expectedColumns = ["app_name", "git_branch", "hpc_version", "app_version", "arch", "OS", "GPU", "py_label", "torch_label", "test_name", "perf_golden", "perf_unit", "website_docker_cmd", "qa_digest", "qa_docker_cmd", "qa_result", "qa_env", "qa_status", "qa_comment"];
+  const expectedColumns = ["app_id", "git_branch", "hpc_version", "app_version", "arch", "OS", "GPU", "py_label", "torch_label", "test_name", "perf_golden", "perf_unit", "website_docker_cmd", "qa_digest", "qa_docker_cmd", "qa_result", "qa_env", "qa_status", "qa_comment"];
   expect(commands.columns).toEqual(expectedColumns);
+  expect(commands.rows.every((row: Record<string, unknown>) => row.app_id === "lookup-image" && !("app_name" in row))).toBe(true);
   const qaColumns = expectedColumns.filter(column => column.startsWith("qa_"));
   expect(commands.rows.every((row: Record<string, unknown>) => qaColumns.every(column => row[column] === ""))).toBe(true);
   expect(commands.rows.some((row: Record<string, unknown>) => row.website_docker_cmd === "no_image")).toBe(true);
@@ -86,13 +92,16 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   expect(uploadResponse.ok(), await uploadResponse.text()).toBeTruthy();
   const saved = await uploadResponse.json();
   expect(saved.total_rows).toBe(commands.rows.length);
+  expect(saved.release_name).toBe("3.10.1");
+  expect(saved.release_test_count).toBe(commands.rows.length);
+  expect(saved.total_rows).toBe(saved.rows + saved.skipped_rows + saved.duplicate_rows);
   expect(saved.skipped_rows).toBe(commands.rows.filter((row: Record<string, unknown>) => row.website_docker_cmd === "no_image").length);
-  expect(saved.skipped_apps).toEqual([{ app_name: "ABACUS", git_branch: "maca", rows: saved.skipped_rows }]);
+  expect(saved.skipped_apps).toEqual([{ app_id: "lookup-image", git_branch: "maca", rows: saved.skipped_rows }]);
   await expect(page.getByText("已保存 3.10.1 的 2 行，清除旧结果 0 行。", { exact: true })).toBeVisible();
   const uploadSummary = page.getByTestId("qa-upload-summary");
-  await expect(uploadSummary).toContainText(`文件共 ${commands.rows.length} 行；QA 列全空跳过 ${saved.skipped_rows} 行`);
+  await expect(uploadSummary).toContainText(`3.10.1 版本共 ${saved.release_test_count} 条测试；文件含 ${saved.total_rows} 条；保存 ${saved.rows} 条；跳过 ${saved.skipped_rows + saved.duplicate_rows} 条。`);
   await uploadSummary.locator("summary").click();
-  await expect(uploadSummary).toContainText(`ABACUS · maca：${saved.skipped_rows} 行`);
+  await expect(uploadSummary).toContainText(`lookup-image · maca：${saved.skipped_rows} 行`);
   await expect(page.getByText(/不采用上传文件中该列的命令/)).toBeVisible();
   const report = page.getByRole("table", { name: "QA 测试结果", exact: true });
   await expect(report.locator("tbody tr")).toHaveCount(2);
@@ -120,7 +129,7 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
 
   const filled = rows.filter((row: Record<string, unknown>) => row.qa_digest);
   for (const patch of [
-    { GPU: "C500X" }, { git_branch: "wrong-branch" }, { hpc_version: "3.10.1.9" }, { qa_status: "pending" },
+    { app_id: "ABACUS" }, { GPU: "C500X" }, { git_branch: "wrong-branch" }, { hpc_version: "3.10.1.9" }, { qa_status: "pending" },
     { perf_golden: "incorrect" }, { perf_unit: "incorrect" },
     { qa_env: "missing" }, { qa_docker_cmd: `docker run ${image.split("@")[0]}:not-a-matching-tag sh -c test` },
   ]) {
@@ -146,6 +155,25 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   await uploadReport("QA-results-updated.xlsx", workbook(expectedColumns, filled.map((row: Record<string, unknown>) => ({ ...row, qa_result: "fail", qa_status: "fail" }))));
   expect((await overwrite).ok()).toBeTruthy();
   await expect(page.getByText("已保存 3.10.1 的 2 行，清除旧结果 2 行。", { exact: true })).toBeVisible();
+  const qaTabs = page.getByRole("navigation", { name: "QA", exact: true });
+  await qaTabs.getByRole("link", { name: "QA log", exact: true }).click();
+  await expect(page.getByTestId("qa-failure-summary")).toContainText("2 条失败 / 2 条结果");
+  await expect(page.locator('input[type="file"]')).toHaveCount(0);
+  const qaCard = page.locator('[data-qa-app="lookup-image"]');
+  await expect(qaCard.getByTestId("qa-app-failures-lookup-image")).toContainText("中文备注");
+  await expect(qaCard.getByTestId("qa-app-failures-lookup-image")).toContainText("HPC 3.10.1.2");
+  await page.getByRole("button", { name: /修改（填写 QA 结论/ }).first().click();
+  await qaCard.getByTestId("qa-status-lookup-image").selectOption("qa_passed");
+  await qaCard.getByRole("textbox", { name: "ABACUS QA comment", exact: true }).fill("QA 手工确认：保留此 App comment");
+  const commentSave = page.waitForResponse(r => r.url().endsWith("/api/qa/status-batch"));
+  await page.getByRole("button", { name: "保存 QA 状态", exact: true }).first().click();
+  const savedComment = await commentSave;
+  expect(savedComment.ok(), await savedComment.text()).toBeTruthy();
+  const savedState = await (await page.request.get(base + `/api/state?release_id=${saved.release_id}`)).json();
+  expect(savedState.release.entries.find((entry: { app_id: string }) => entry.app_id === "lookup-image").qa_note).toBe("QA 手工确认：保留此 App comment");
+  await expect(qaCard.getByRole("textbox", { name: "ABACUS QA comment", exact: true })).toBeDisabled();
+  await page.screenshot({ path: "/tmp/qa-log-failures-desktop.png", fullPage: true });
+  await qaTabs.getByRole("link", { name: "QA report", exact: true }).click();
   const replacement = page.waitForResponse(r => r.url().endsWith("/api/qa/test-results/upload"));
   await expect(page.getByLabel("上传测试结果 Excel")).toBeEnabled();
   await uploadReport("only-B.xlsx", workbook(expectedColumns, [filled[1]]));
@@ -170,5 +198,8 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   const freshData = await (await fresh).json();
   expect(freshData.rows.every((row: Record<string, unknown>) => qaColumns.every(column => row[column] === ""))).toBe(true);
   await page.screenshot({ path: "/tmp/qa-version-commands-desktop.png", fullPage: true });
+  await qaTabs.getByRole("link", { name: "QA log", exact: true }).click();
+  await expect(page.getByTestId("qa-failure-summary")).toContainText("0 条失败 / 1 条结果");
+  await expect(qaCard.getByRole("textbox", { name: "ABACUS QA comment", exact: true })).toHaveValue("QA 手工确认：保留此 App comment");
   expect(errors).toEqual([]);
 });

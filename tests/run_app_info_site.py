@@ -15,11 +15,14 @@ def main():
     parser.add_argument("--qa-report-pagination", action="store_true", help="Seed 65 QA results for all-result filtering (use with --lookup)")
     parser.add_argument("--image-publications", action="store_true", help="Include multiple publications of one digest")
     parser.add_argument("--platforms", action="store_true", help="Include OS/architecture/chip mapping scenarios")
+    parser.add_argument("--qa-delivery-display", action="store_true", help="Seed an untagged historical QA delivery (use with --platforms)")
     parser.add_argument("--releases", action="store_true", help="Include frozen publication history scenarios")
     parser.add_argument("--legacy-history", action="store_true", help="Include entry-only migrated publication history")
     parser.add_argument("--dependencies", action="store_true", help="Include paired Python/PyTorch dependency scenarios")
     parser.add_argument("--latest-running", action="store_true", help="Include latest successful running App publications")
     args = parser.parse_args()
+    if args.qa_delivery_display and not args.platforms:
+        parser.error("--qa-delivery-display requires --platforms")
     with tempfile.TemporaryDirectory(prefix="app-info-site-") as temporary:
         folder = Path(temporary)
         os.environ.update(
@@ -104,7 +107,7 @@ def main():
             manifest = official_repo.current_by_app(conn)["runtime-published"]["test_manifest"]
             report_rows = []
             for flat in qa_results.flat_commands({
-                "app_name": "runtime-published", "git_branch": manifest["app"]["git_branch"],
+                "app_id": "runtime-published", "git_branch": manifest["app"]["git_branch"],
                 "app_version": manifest["entry"]["target_version"], "commit_id": manifest["app_info"]["commit_id"],
                 "test_commands": [command for command in manifest["commands"] if command["image_target"] == "release"],
             }):
@@ -176,6 +179,20 @@ def main():
             if args.platforms:
                 seed_signup(conn, release_id, "platform-check")
             close_signup(conn, release_id)
+        if args.qa_delivery_display:
+            from app.repositories import entries_repo
+
+            release_id = conn.execute("SELECT id FROM releases WHERE name='browser-cycle-a'").fetchone()["id"]
+            entry = entries_repo.find_entry(conn, release_id, "platform-check")
+            build = next(build for build in delivery_images.builds(platform_info)
+                         if build["os"] == "ubuntu20.04" and build["arch"] == "amd64")
+            image = "harbor.sh.mxcr.io/hpc-release/hpcg-maca"
+            digest = "sha256:" + "a" * 64
+            entries_repo.update_entry(conn, entry["id"], {
+                "deliverable_images": [{**build, "image": image, "digest": digest, "reference": image + "@" + digest}],
+                "deliverable_image": image, "deliverable_digest": digest,
+            }, updated_at="2026-11-16 10:00:00", updated_by="test")
+            conn.commit()
         if args.lookup:
             historical = make_app_info(app_name="abacus", app_version="3.9.0.27", tests={"sanity": ["C500"], "dataset": ["C500"]})
             historical["app_build"]["ubuntu22.04_amd64"] = historical["app_build"].pop("ubuntu20.04_amd64")
@@ -296,7 +313,7 @@ def main():
             from app.repositories import qa_results_repo
             reference = "harbor.sh.mxcr.io/hpc-release/abacus-maca@sha256:" + "8d" * 32
             report_rows = [{**dict.fromkeys(qa_results.WORKSHEET_COLUMNS, ""),
-                            "app_name": "ABACUS", "git_branch": "maca", "hpc_version": "3.10.1.2",
+                            "app_id": "lookup-image", "git_branch": "maca", "hpc_version": "3.10.1.2",
                             "app_version": "3.9.0.27", "arch": "x86", "OS": "ubuntu22.04", "GPU": "C500",
                             "test_name": f"pagination{index}", "qa_digest": reference, "qa_result": index,
                             "qa_env": "C500_server_1", "qa_status": "pass" if index < 60 else "fail"}

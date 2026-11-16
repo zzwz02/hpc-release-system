@@ -11,9 +11,9 @@ from decimal import Decimal, InvalidOperation
 from app.domain.container_image import parse_base_image_reference
 from app.domain.test_commands import denormalize_arch, image_tag_matches, replace_command_image, select_image_tag
 
-KEY_COLUMNS = ("app_name", "git_branch", "app_version", "arch", "OS", "GPU", "test_name")
+KEY_COLUMNS = ("app_id", "git_branch", "app_version", "arch", "OS", "GPU", "test_name")
 COMMAND_COLUMNS = [
-    "app_name",
+    "app_id",
     "git_branch",
     "app_version",
     "arch",
@@ -38,7 +38,7 @@ def hpc_families(version: str) -> set[str]:
 # One worksheet contract for version queries, CSV downloads and QA uploads.
 WORKSHEET_QA_COLUMNS = ["qa_digest", "qa_docker_cmd", "qa_result", "qa_env", "qa_status", "qa_comment"]
 WORKSHEET_METADATA_COLUMNS = [
-    "app_name", "git_branch", "hpc_version", "app_version", "arch", "OS", "GPU",
+    "app_id", "git_branch", "hpc_version", "app_version", "arch", "OS", "GPU",
     "py_label", "torch_label", "test_name", "perf_golden", "perf_unit",
 ]
 WORKSHEET_COLUMNS = [*WORKSHEET_METADATA_COLUMNS, "website_docker_cmd", *WORKSHEET_QA_COLUMNS]
@@ -58,6 +58,16 @@ def canonical_result(row: dict) -> dict:
             data.setdefault(new, data.pop(old))
     data.setdefault("qa_digest_gerrit_commit_id", data.pop("commit_id", ""))
     return {**dict.fromkeys(WORKSHEET_COLUMNS, ""), **data}
+
+
+def result_status(row: dict) -> str:
+    """The explicit verdict wins; legacy pass/fail text supplies a missing verdict."""
+    data = canonical_result(row)
+    status = str(data["qa_status"] or "").strip().lower()
+    if status:
+        return status
+    result = str(data["qa_result"]).strip().lower()
+    return result if result in {"pass", "fail"} else ""
 
 
 def report_matches(row: dict, *, searches=(), column_filters=None) -> bool:
@@ -121,8 +131,7 @@ def _website_command(result: dict, command: dict, hpc_version: str | None) -> st
 
 def identity_values(row: dict) -> tuple[str, ...]:
     values = [str(row.get(column, "") or "").strip() for column in KEY_COLUMNS]
-    # Normalize App/platform spelling; preserve repository branch and test-path case.
-    values[0] = values[0].casefold()
+    # App IDs, repository branches and test paths are case-sensitive identities.
     values[3] = denormalize_arch(values[3])
     values[4] = values[4].lower()
     values[5] = values[5].upper()
@@ -136,7 +145,7 @@ def result_key(row: dict) -> str:
 
 def worksheet_result_key(row: dict) -> str:
     data = canonical_result(row)
-    values = ("qa-worksheet-v1", *identity_values(data),
+    values = ("qa-worksheet-v2", *identity_values(data),
               *(str(data.get(column, "") or "").strip()
                 for column in ("hpc_version", "py_label", "torch_label")))
     return hashlib.sha256(json.dumps(values, ensure_ascii=False).encode()).hexdigest()
@@ -148,7 +157,7 @@ def flat_commands(result: dict) -> list[dict]:
         for chip in command["chips"] or [""]:
             rows.append(
                 {
-                    "app_name": result["app_name"],
+                    "app_id": result["app_id"],
                     "git_branch": result["git_branch"],
                     "app_version": result["app_version"],
                     "arch": denormalize_arch(command["arch"]),

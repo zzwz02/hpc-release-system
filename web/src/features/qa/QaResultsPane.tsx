@@ -10,9 +10,13 @@ import { confirmDialog } from "../../lib/confirm";
 
 interface ResultResponse { total: number; rows: CommandRow[]; columns: string[]; revision?: string }
 interface UploadSummary {
+  release_name: string;
+  release_test_count: number;
   total_rows: number;
+  rows: number;
   skipped_rows: number;
-  skipped_apps: { app_name: string; git_branch: string; rows: number }[];
+  duplicate_rows: number;
+  skipped_apps: { app_id: string; git_branch: string; rows: number }[];
 }
 const EMPTY_FILTERS: CommandTableFilters = { filter: "", columnFilters: {}, sort: null };
 
@@ -96,11 +100,12 @@ export function QaResultsPane({ releaseId, releaseName }: { releaseId: string; r
       if (!confirmed || id !== generation.value) return;
       const content_base64 = await fileBase64(file);
       if (id !== generation.value) return;
-      const data = await apiPost<{ rows: number; replaced: number; duplicate_rows: number } & UploadSummary>("/api/qa/test-results/upload", {
+      const data = await apiPost<{ replaced: number } & UploadSummary>("/api/qa/test-results/upload", {
         filename: file.name, content_base64, release_id: releaseId,
         ...(query.data?.revision ? { revision: query.data.revision } : {}),
       });
       void queryClient.invalidateQueries({ queryKey: ["qa-test-results", user?.username, user?.role, releaseId] });
+      void queryClient.invalidateQueries({ queryKey: ["qa-failure-summary", user?.username, user?.role, releaseId] });
       if (id !== generation.value) return;
       setMessage(`已保存 ${releaseName} 的 ${data.rows} 行，清除旧结果 ${data.replaced} 行。${data.duplicate_rows ? `合并 ${data.duplicate_rows} 个重复测试行。` : ""}`);
       setUploadSummary(data);
@@ -139,6 +144,7 @@ export function QaResultsPane({ releaseId, releaseName }: { releaseId: string; r
       <h2>QA report{releaseName && ` · ${releaseName}`}</h2>
       <p className="hint">每个发布周期只保留一份 QA report。文件中的 hpc_version 必须属于所选周期。</p>
       <p className="hint">上传测试命令 CSV 另存的 Excel，第一个页签为测试详表，后续环境页原样保留。填写 QA 列后须提供 qa_digest 和与环境页同名的 qa_env；qa_result 支持数字或文字，qa_status 仅允许 pass / fail 或留空。已填写的 QA 行仍严格校验 git_branch。QA 列全空的行跳过，上传后显示数量和 App／分支明细；后续页签内容不参与测试行校验。</p>
+      <p className="hint">版本测试总数按有效报名的锁定范围展开（含 GPU 组合和缺镜像项）；文件条数为第一个页签的非空测试行，不含表头和环境页。重复组合仅保存最后一行，被覆盖的重复行计入跳过数。</p>
       {!releaseId && <p className="muted">请选择发布周期。</p>}
       {can(user?.role, "qa.edit") && <p className="lerr"><strong>整份替换/覆盖：</strong>上传成功将清空{releaseName ? ` ${releaseName} ` : "所选"}周期的全部旧结果（含各补丁版本）和旧 Excel，仅保留本次文件的数据。未包含的旧测试项也会删除，覆盖后无法恢复；其他周期不受影响。选择文件后需确认，校验失败保留原报告。</p>}
       {can(user?.role, "qa.edit") && <label>上传测试结果 Excel <input type="file" accept=".xlsx" aria-label="上传测试结果 Excel" disabled={busy || !releaseId || query.isPending || query.isFetching} onChange={e => {
@@ -146,12 +152,13 @@ export function QaResultsPane({ releaseId, releaseName }: { releaseId: string; r
       }} /></label>}
       {busy && <p role="status">正在处理上传，全部校验通过后整份替换…</p>}
       {message && <p role="status">{message}</p>}
-      {uploadSummary && <div className={uploadSummary.skipped_rows ? "warnp" : "hint"} data-testid="qa-upload-summary">
-        <p role="status">文件共 {uploadSummary.total_rows} 行；QA 列全空跳过 {uploadSummary.skipped_rows} 行，跳过行未校验、未入库。</p>
+      {uploadSummary && <div className={uploadSummary.skipped_rows + uploadSummary.duplicate_rows ? "warnp" : "hint"} data-testid="qa-upload-summary">
+        <p role="status">{uploadSummary.release_name} 版本共 {uploadSummary.release_test_count} 条测试；文件含 {uploadSummary.total_rows} 条；保存 {uploadSummary.rows} 条；跳过 {uploadSummary.skipped_rows + uploadSummary.duplicate_rows} 条。</p>
+        <p>跳过明细：QA 列全空 {uploadSummary.skipped_rows} 条，重复组合 {uploadSummary.duplicate_rows} 条。QA 列全空行未校验、未入库。</p>
         {!!uploadSummary.skipped_rows && <details>
           <summary>查看跳过明细（{uploadSummary.skipped_apps.length} 个 App／分支）</summary>
-          <ul>{uploadSummary.skipped_apps.map(item => <li key={JSON.stringify([item.app_name, item.git_branch])}>
-            {item.app_name || "未填写 app_name"} · {item.git_branch || "未填写 git_branch"}：{item.rows} 行
+          <ul>{uploadSummary.skipped_apps.map(item => <li key={JSON.stringify([item.app_id, item.git_branch])}>
+            {item.app_id || "未填写 app_id"} · {item.git_branch || "未填写 git_branch"}：{item.rows} 行
           </li>)}</ul>
         </details>}
       </div>}
@@ -166,7 +173,7 @@ export function QaResultsPane({ releaseId, releaseName }: { releaseId: string; r
       {exportError && <p className="lerr" role="alert">{exportError}</p>}
       <p className="hint">全表关键词、逐列筛选和排序均作用于全部结果，再按每页 50 行显示；导出 CSV 包含全部筛选命中的记录。</p>
       <p className="hint">website_docker_cmd 始终通过 qa_digest → Harbor tags → commit → Gerrit app_info 实时生成，不采用上传文件中该列的命令。qa_docker_cmd 保留 QA 上传原文；环境页从原始 Excel 下载查看。</p>
-      <p className="hint">上传时逐项校验前 12 列：app_name、git_branch、hpc_version、app_version、arch、OS、GPU、py_label、torch_label、test_name、perf_golden、perf_unit，并核对 qa_docker_cmd 的镜像 tag/digest。与镜像实际来源不符时，整份文件不入库，并提示行号和字段。</p>
+      <p className="hint">上传时逐项校验前 12 列：app_id、git_branch、hpc_version、app_version、arch、OS、GPU、py_label、torch_label、test_name、perf_golden、perf_unit，并核对 qa_docker_cmd 的镜像 tag/digest。app_id 使用系统生成的唯一标识，不能填写官方名称。与镜像实际来源不符时，整份文件不入库，并提示行号和字段。</p>
     </div>
     {tableColumns && <>
       <FlatCommandTable columns={[...tableColumns, "Excel 提交时间", "提交人", "原始 Excel"]} rows={query.error ? [] : rows} filename="qa_test_results.csv" label="QA 测试结果" onRefresh={() => void query.refetch()} remote={{
