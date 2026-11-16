@@ -130,8 +130,7 @@ export function CompatibilityPane() {
       <RefreshBar dataUpdatedAt={result.dataUpdatedAt} isFetching={result.isFetching} onRefresh={() => void result.refetch()} />
     </div>
     <div className="panel-body">
-      <p className="hint">仅显示 CICD 仍在运行且至少报名过一次的 App（含已撤回报名），按依赖组件及 Python/PyTorch 组合分类；同一 App 可属于多个分类。每个 App 选最近一次有效成功发布，并排除最新 app_info 中明确设为 enabled=false 的构建。每个交付镜像分别通过 digest → Harbor tags → commit → Gerrit app_info 实时确定依赖、平台和测试命令；不同镜像允许来自不同 commit。来源冲突或查询失败明确提示，不回退到其他 commit 的命令。尚未成功发布的列入范围待确认，后续失败、未报名或撤回不替换此前成功版本。展开组件和 App 查看明细。</p>
-      <p className="hint">每个合法的构建／GPU／测试项组合单独一行。命令使用该次发布的 QA report 交付镜像（image:tag@digest）；说明引用同周期、同 app_id／分支／App 版本／平台／GPU／Python／PyTorch／测试项的 QA log，列出具体 HPC 版本、pass/fail；pass 不显示原因，其余状态显示 qa_comment。测试镜像不同时用 note: 标注历史参考，不替换交付镜像；历史交付缺 tag 时仅查询 Harbor 实际 tags 补全，无法补全则在说明中提示。</p>
+      <p className="hint">仅显示 CICD 仍在运行，且成功发布过一次的app。每个 App 选最近一次有效成功发布，并排除最新 app_info 中 enabled=false 的构建。命令使用最新发布版本的 QA report 交付镜像</p>
       <div className="row compatibility-filters">
         <label>组件<select className="select select-inline" value={component} onChange={(event) => setComponent(event.target.value)} aria-label="按组件筛选">
           <option value="">全部组件</option>
@@ -158,7 +157,7 @@ export function CompatibilityPane() {
       {result.isFetching && <p className="muted" role="status">加载中…</p>}
     </div>
     {!result.error && !result.isFetching && result.data && <>
-      {rows.length === 0 && <p className="muted p-12-16">{result.data.app_count ? "没有匹配的记录。" : "暂无 CICD 仍在运行且曾报名的 App。"}</p>}
+      {rows.length === 0 && <p className="muted p-12-16">{result.data.app_count ? "没有匹配的记录。" : "暂无 CICD 仍在运行且成功发布过的 App。"}</p>}
       {groups.map((group) => <details key={group.name} className="panel section dependency-group"
         data-testid={`compatibility-group-${group.name}`}>
         <summary className="panel-head"><span className="chev" aria-hidden="true">▶</span><h3>{group.name}</h3>
@@ -167,7 +166,7 @@ export function CompatibilityPane() {
       </details>)}
       {pending.length > 0 && <section data-testid="compatibility-pending">
         <div className="panel-body"><h3>范围待确认（{new Set(pending.map((row) => row.app_id)).size} 个 App）</h3>
-          <p className="hint">未识别到依赖分类或尚无有效发布快照的 App；选择组件时，也保留依赖声明待确认且未归入该组件的 App。已识别 Python/PyTorch 组合的 App 列在对应分类，缺少组件声明时标注范围待确认。平台和关键词筛选照常生效，导出包含此部分并标注范围状态。</p>
+          <p className="hint">这些 App 已成功发布，但依赖声明或依赖分类仍需确认。平台和关键词筛选照常生效，导出包含此部分并标注范围状态。</p>
         </div>
         <AppsTable rows={pending} />
       </section>}

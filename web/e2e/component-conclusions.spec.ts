@@ -30,8 +30,7 @@ test("driver and sdk cover every eligible App and a failed scope query can be re
     const report = await response.json();
     expect(report.apps.map((app: { app_id: string }) => app.app_id).sort()).toEqual(ids);
     const unpublished = pane.getByTestId("component-result-runtime-unpublished");
-    await expect(unpublished).toContainText("尚无成功发布记录");
-    await expect(unpublished.locator("xpath=following-sibling::tr[1]")).toContainText("测试范围 0 项");
+    await expect(unpublished).toHaveCount(0);
     await expect(pane.getByTestId("component-result-runtime-unknown")).toBeVisible();
   }
 });

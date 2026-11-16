@@ -12,7 +12,7 @@
  *   历史查询 / 兼容性验证 — independent routes, shared QA tab row
  *
  * Data:
- *   - QA annotation: GET /api/state; report failures: GET /api/qa/failure-summary
+ *   - QA report: GET /api/qa/report (state, failures, delivery tags and audit)
  *   - Release report / command tables: GET /api/qa-reports (fetched on demand, not from state)
  *   - All data refreshes on entry, explicit refresh or a successful write; no polling.
  */
@@ -71,6 +71,8 @@ const CHIP_LEGEND =
 // ---------------------------------------------------------------------------
 
 const STATE_QK = (releaseId: string) => ["state", releaseId];
+const QA_REPORT_QK = (username: string | undefined, role: string | undefined, releaseId: string) =>
+  ["qa-report", username, role, releaseId];
 
 async function fetchState(releaseId: string): Promise<StatePayload> {
   return apiGet<StatePayload>(`/api/state?release_id=${encodeURIComponent(releaseId)}`);
@@ -95,13 +97,23 @@ async function fetchQaReports(
 interface QaMarkPaneProps {
   payload: StatePayload;
   onStateRefresh: () => void;
+  report?: QaReportData;
+  isFetching: boolean;
+  dataUpdatedAt: number;
 }
 
 interface QaDeliveryImages {
   entries: Record<string, { revision: string; images: Array<DeliveryImage & { reference_error?: string }> }>;
 }
 
-function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
+interface QaReportData {
+  failure_summary: QaFailureSummary | null;
+  delivery_images: QaDeliveryImages | null;
+  errors: { failure_summary?: string; delivery_images?: string };
+}
+type QaReportPayload = StatePayload & { qa_report?: QaReportData };
+
+function QaMarkPane({ payload, onStateRefresh, report, isFetching, dataUpdatedAt }: QaMarkPaneProps) {
   const { user } = useAuth();
   const uiStore = useUiStore();
   const release = payload.release;
@@ -145,23 +157,15 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editMode, releaseId]);
 
-  const summary = useQuery({
-    queryKey: ["qa-failure-summary", user?.username, user?.role, releaseId],
-    queryFn: () => apiGet<QaFailureSummary>(`/api/qa/failure-summary?release_id=${encodeURIComponent(releaseId)}`),
-    enabled: !!releaseId,
-    staleTime: Infinity, refetchOnMount: "always", refetchOnWindowFocus: false, refetchOnReconnect: false,
-  });
+  const summary = { data: report?.failure_summary, isFetching, dataUpdatedAt,
+    error: report?.errors.failure_summary ? new Error(report.errors.failure_summary) : null };
   const summaryAvailable = !summary.isFetching && !summary.error && !!summary.data;
   const groups = summaryAvailable ? summary.data?.groups ?? [] : [];
   const failures = new Map(groups.filter(group => group.app_id).map(group => [group.app_id!, group.failures]));
   const signedUp = new Set(rows.map(({ app }) => app.id));
   const unmatched = groups.filter(group => !group.app_id || !signedUp.has(group.app_id));
-  const deliveryView = useQuery({
-    queryKey: ["qa-delivery-images", user?.username, user?.role, releaseId],
-    queryFn: () => apiGet<QaDeliveryImages>(`/api/qa/delivery-images?release_id=${encodeURIComponent(releaseId)}`),
-    enabled: !!releaseId && rows.some(({ entry }) => recordedImages(entry.deliverable_images, entry.deliverable_image, entry.deliverable_digest).length > 0),
-    staleTime: Infinity, refetchOnMount: "always", refetchOnWindowFocus: false, refetchOnReconnect: false,
-  });
+  const deliveryView = { data: report?.delivery_images, isFetching,
+    error: report?.errors.delivery_images ? new Error(report.errors.delivery_images) : null };
   const displayedImages = !deliveryView.isFetching && !deliveryView.error ? deliveryView.data?.entries ?? {} : {};
 
   function handleCancel() {
@@ -221,7 +225,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
         <h2>QA log 失败汇总</h2>
         {summaryAvailable && <span className="count">{summary.data?.failed_rows ?? 0} 条失败 / {summary.data?.total_rows ?? 0} 条结果</span>}
         <span className="spacer" />
-        <RefreshBar dataUpdatedAt={summary.dataUpdatedAt} isFetching={summary.isFetching} onRefresh={() => void summary.refetch()} />
+        <RefreshBar dataUpdatedAt={summary.dataUpdatedAt} isFetching={summary.isFetching} onRefresh={onStateRefresh} />
       </div>
       <div className="panel-body">
         <p className="hint">来自本版本当前 QA log，按 App、分支、GPU 和测试项汇总 fail 结果，保留具体 HPC/App 版本与 QA log 的 QA comment。汇总不自动修改 App 的 QA 结论；每个 App 的手填 QA comment 位于卡片末尾。</p>
@@ -291,7 +295,7 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
       })}
     </div>}
     {actionBar}
-    <QaChangeLogPanel payload={payload} rows={rows} releaseId={releaseId} />
+    <QaChangeLogPanel payload={payload} rows={rows} />
   </div>;
 }
 
@@ -302,58 +306,10 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
 interface QaChangeLogPanelProps {
   payload: StatePayload;
   rows: Array<{ app: App; entry: Entry }>;
-  releaseId: string;
 }
 
-function QaChangeLogPanel({ payload, rows, releaseId }: QaChangeLogPanelProps) {
-  // Lazy-load audit entries per app (mirrors loadMissingQaChangeLogs)
-  const [auditLogs, setAuditLogs] = useState<
-    Record<string, Array<{ ts: string; app_id: string; user: string; role: string; message: string; detail: Array<{ field: string; label: string; old: unknown; new: unknown }> }>>
-  >({});
-  const [loading, setLoading] = useState<Set<string>>(new Set());
-  const [errors, setErrors] = useState<Record<string, string>>({});
-
-  // Seed from state payload's qa_audit_logs if present
-  useEffect(() => {
-    const stateAudit = payload.qa_audit_logs ?? {};
-    setAuditLogs((prev) => ({ ...stateAudit, ...prev }));
-  }, [payload.qa_audit_logs]);
-
-  // Fetch missing logs
-  useEffect(() => {
-    for (const { app } of rows) {
-      const appId = app.id;
-      if (appId in auditLogs || loading.has(appId)) continue;
-      setLoading((prev) => new Set(prev).add(appId));
-      apiGet<{ entries: Array<{ ts: string; app_id?: string; user: string; role: string; event: string; message: string; detail: unknown[] }> }>(
-        `/api/app-audit?app_id=${encodeURIComponent(appId)}&release_id=${encodeURIComponent(releaseId)}`,
-      )
-        .then((data) => {
-          const entries = (data.entries || [])
-            .filter((e) => e.event === "qa_set_status")
-            .map((e) => ({
-              ...e,
-              app_id: appId,
-              detail: (e.detail as Array<{ field: string; label: string; old: unknown; new: unknown }>) || [],
-            }));
-          setAuditLogs((prev) => ({ ...prev, [appId]: entries }));
-        })
-        .catch((err) => {
-          setErrors((prev) => ({
-            ...prev,
-            [appId]: err instanceof Error ? err.message : String(err),
-          }));
-        })
-        .finally(() => {
-          setLoading((prev) => {
-            const s = new Set(prev);
-            s.delete(appId);
-            return s;
-          });
-        });
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows.map((r) => r.app.id).join(","), releaseId]);
+function QaChangeLogPanel({ payload, rows }: QaChangeLogPanelProps) {
+  const auditLogs = payload.qa_audit_logs ?? {};
 
   // Flatten + sort all entries by timestamp descending
   const allEntries = rows.flatMap(({ app }) =>
@@ -367,12 +323,7 @@ function QaChangeLogPanel({ payload, rows, releaseId }: QaChangeLogPanelProps) {
     return bt - at;
   });
 
-  const loadingCount = loading.size;
-  const countText = loadingCount
-    ? `加载中 · 已有 ${allEntries.length} 条`
-    : `${allEntries.length} 条`;
-
-  const errorApps = rows.filter(({ app }) => errors[app.id]);
+  const countText = `${allEntries.length} 条`;
 
   return (
     <details className="section qa-change-log-panel" id="qaChangeLogPanel">
@@ -381,14 +332,6 @@ function QaChangeLogPanel({ payload, rows, releaseId }: QaChangeLogPanelProps) {
         <span className="badge">{countText}</span>
       </summary>
       <div className="section-body">
-        {errorApps.length > 0 && (
-          <div className="banner bad mb-12">
-            部分变更记录加载失败：
-            {errorApps
-              .map(({ app }) => `${displayName(app)}: ${errors[app.id]}`)
-              .join("；")}
-          </div>
-        )}
         <div className="table">
           <table>
             <thead>
@@ -1305,32 +1248,38 @@ export function QaPage() {
   const { search } = useLocation();
   const subtab = qaPaneFromSearch(search);
 
-  const { data, isFetching, dataUpdatedAt, refetch, error } = useQuery({
-    queryKey: STATE_QK(selectedReleaseId),
-    queryFn: () => fetchState(selectedReleaseId),
-    enabled: !!selectedReleaseId,
+  const { data, isFetching, dataUpdatedAt, refetch, error } = useQuery<QaReportPayload>({
+    queryKey: subtab === "mark" ? QA_REPORT_QK(user?.username, user?.role, selectedReleaseId) : STATE_QK(selectedReleaseId),
+    queryFn: () => subtab === "mark"
+      ? apiGet<QaReportPayload>(`/api/qa/report?release_id=${encodeURIComponent(selectedReleaseId)}`)
+      : fetchState(selectedReleaseId),
+    enabled: !!user && (subtab === "mark" || !!selectedReleaseId),
     staleTime: Infinity,
     refetchInterval: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
-    refetchOnMount: true,
+    refetchOnMount: "always",
   });
 
   // Seed selectedReleaseId from first data load if not set
   useEffect(() => {
     if (data?.release?.id && !selectedReleaseId) {
+      if (subtab === "mark") {
+        queryClient.setQueryData(QA_REPORT_QK(user?.username, user?.role, data.release.id), data);
+      }
       setSelectedReleaseId(data.release.id);
     }
-    if (data?.release?.id) {
+    if (data?.release?.id && subtab !== "mark") {
       // Populate cache for other tabs too
       queryClient.setQueryData(STATE_QK(data.release.id), data);
     }
-  }, [data, selectedReleaseId, setSelectedReleaseId, queryClient]);
+  }, [data, selectedReleaseId, setSelectedReleaseId, queryClient, subtab, user?.username, user?.role]);
 
   function handleRefresh() {
     void refetch();
-    void queryClient.invalidateQueries({ queryKey: ["qa-failure-summary", user?.username, user?.role, selectedReleaseId] });
-    void queryClient.invalidateQueries({ queryKey: ["qa-delivery-images", user?.username, user?.role, selectedReleaseId] });
+    if (subtab === "mark") {
+      void queryClient.invalidateQueries({ queryKey: STATE_QK(selectedReleaseId), refetchType: "none" });
+    }
     if (subtab === 'report') {
       void queryClient.invalidateQueries({ queryKey: ['qa-test-results', user?.username, user?.role, selectedReleaseId] });
     }
@@ -1393,7 +1342,8 @@ export function QaPage() {
         <>
           {subtab === "mark" && (
             <div id="qaMarkPane" className="qa-pane active">
-              <QaMarkPane payload={data} onStateRefresh={handleRefresh} />
+              <QaMarkPane payload={data} report={error ? undefined : data.qa_report} onStateRefresh={handleRefresh}
+                isFetching={isFetching} dataUpdatedAt={dataUpdatedAt} />
             </div>
           )}
           {subtab === "release" && (

@@ -23,8 +23,7 @@ def source(temp_db, monkeypatch):
         "app_info_commit_id": "image-commit", "official_version_id": 5, "note": "",
     }
     rows = [base, {**base, "chips": ["C600"], "GPU": "C600"}, {**base, "path": "other"},
-            {**base, "app_id": "hpl", "app_name": "HPL", "hpc_version": "3.10.0", "dependencies": ["sdk"]},
-            {**base, "app_id": "pending", "release_id": "", "manifest_source": "unpublished", "path": "", "app_version": "", "hpc_version": ""}]
+            {**base, "app_id": "hpl", "app_name": "HPL", "hpc_version": "3.10.0", "dependencies": ["sdk"]}]
     monkeypatch.setattr(service.lookup_service, "latest_running_releases", lambda conn: {"rows": deepcopy(rows)})
     return rows
 
@@ -34,23 +33,20 @@ def create(conn, component="sdk", version="3.10.0"):
 
 
 @pytest.mark.parametrize("component", ["driver", "sdk"])
-def test_universal_components_include_undeclared_and_unpublished_apps(temp_db, source, component):
+def test_universal_components_include_published_apps_without_dependency_declarations(temp_db, source, component):
     source.append({**source[0], "app_id": "undeclared", "dependencies": []})
     report = create(temp_db, component=component)
-    assert {app["app_id"] for app in report["apps"]} == {"pyg", "hpl", "pending", "undeclared"}
-    pending = next(app for app in report["apps"] if app["app_id"] == "pending")
-    assert pending["scope_note"] == "尚无成功发布记录" and pending["tests"] == []
-    assert pending["app_version"] == pending["hpc_version"] == ""
+    assert {app["app_id"] for app in report["apps"]} == {"pyg", "hpl", "undeclared"}
     assert service.components(temp_db)["components"][:2] == [
-        {"component": "driver", "app_count": 4, "all_apps": True},
-        {"component": "sdk", "app_count": 4, "all_apps": True}]
+        {"component": "driver", "app_count": 3, "all_apps": True},
+        {"component": "sdk", "app_count": 3, "all_apps": True}]
 
 
 def test_universal_choices_exist_without_dependency_declarations(temp_db, source):
     for row in source:
         row["dependencies"] = []
     assert [item["component"] for item in service.components(temp_db)["components"]] == ["driver", "sdk"]
-    assert len(create(temp_db, component="SDK")["apps"]) == 3
+    assert len(create(temp_db, component="SDK")["apps"]) == 2
 
 
 def test_prepared_scope_saves_without_repeating_remote_reads(temp_db, source, monkeypatch):
@@ -59,7 +55,7 @@ def test_prepared_scope_saves_without_repeating_remote_reads(temp_db, source, mo
         raise AssertionError("a prepared form must not query Harbor/Gerrit again")
     monkeypatch.setattr(service.lookup_service, "latest_running_releases", no_remote_reads)
     report = service.create(temp_db, {"component": "sdk", "component_version": "3.10.0", "preview_id": prepared["preview_id"]}, user="qa", role="QA")
-    assert {app["app_id"] for app in report["apps"]} == {"pyg", "hpl", "pending"}
+    assert {app["app_id"] for app in report["apps"]} == {"pyg", "hpl"}
 
 
 def test_prepared_scope_rejects_changed_sources_and_other_users(temp_db, source):
@@ -97,8 +93,8 @@ def test_records_the_actual_hpc_patch_version_from_the_delivery_tag(temp_db, sou
 
 def test_freezes_published_scope_and_deduplicates_supported_gpu_rows(temp_db, source):
     assert service.components(temp_db)["components"] == [
-        {"component": "driver", "app_count": 3, "all_apps": True},
-        {"component": "sdk", "app_count": 3, "all_apps": True},
+        {"component": "driver", "app_count": 2, "all_apps": True},
+        {"component": "sdk", "app_count": 2, "all_apps": True},
         {"component": "torch 2.8 + py312", "app_count": 1, "all_apps": False}]
     report = create(temp_db, component="torch 2.8 + py312")
     assert [app["app_id"] for app in report["apps"]] == ["pyg"]
@@ -229,7 +225,7 @@ def test_http_permissions_payload_and_readback(temp_db, source, role, read, writ
         assert response.status_code == write
         if write == 200:
             report = response.json()
-            assert len(report["apps"]) == 3
+            assert len(report["apps"]) == 2
             response = client.post(f"/api/component-compatibility/{report['id']}/apps/pyg", json={"qa_status": "pass", "qa_comment": "<script>literal</script>", "revision": 0})
             assert response.status_code == 200
             saved_apps = client.get(f"/api/component-compatibility/{report['id']}").json()["apps"]

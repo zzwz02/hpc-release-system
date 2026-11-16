@@ -15,7 +15,8 @@ for (const username of ["app_owner", "app_qa"]) {
     await expect(selector.locator("option")).toHaveText([
       "全部组件", "sdk（1）", "torch 2.4 + py310（2）", "torch 2.8 + py312（2）",
     ]);
-    await expect(pane).toContainText("至少报名过一次");
+    await expect(pane).toContainText("成功发布过一次");
+    await expect(pane.getByTestId("compat-app-runtime-unpublished")).toHaveCount(0);
     await expect(pane.getByTestId("compat-app-runtime-never")).toHaveCount(0);
     await expect(pane.getByTestId("compat-app-info-error")).toHaveCount(0);
     // The shared layout initializes cycle state; compatibility controls must not reload it.
@@ -85,8 +86,8 @@ for (const username of ["app_owner", "app_qa"]) {
     await pane.getByRole("textbox", { name: "筛选兼容性验证" }).fill("development-runtime");
     await expect(pane).toContainText("没有匹配的记录。");
     await pane.getByRole("textbox", { name: "筛选兼容性验证" }).fill("");
-    // Previously registered Apps without a publication remain for scope confirmation.
-    expect(csv).toContain("runtime-unpublished");
+    // Only Apps with a successful publication belong to the compatibility export.
+    expect(csv).not.toContain("runtime-unpublished");
     await selector.selectOption(selected);
     await category.locator("summary").click();
     await published.getByRole("button").click();

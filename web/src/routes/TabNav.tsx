@@ -58,11 +58,13 @@ export function TabNav() {
   // never interferes with navigation when the form is clean.
   function refreshRoute(view: string) {
     if (view === "artifacts") return;
-    if (["dashboard", "init", "apps", "qa", "admin"].includes(view)) {
+    if (["dashboard", "init", "apps", "admin"].includes(view)) {
       void queryClient.invalidateQueries({ queryKey: ["state"] });
     }
     if (view === "qa") {
-      void queryClient.invalidateQueries({ queryKey: ["qa-reports"] });
+      void queryClient.invalidateQueries({ queryKey: ["state"], refetchType: "none" });
+      void queryClient.invalidateQueries({ queryKey: ["qa-report"], refetchType: "none" });
+      void queryClient.invalidateQueries({ queryKey: ["qa-reports"], refetchType: "none" });
     }
     if (view === "cicd") {
       void queryClient.invalidateQueries({ queryKey: ["cicd"] });

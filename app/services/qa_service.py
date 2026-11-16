@@ -65,13 +65,17 @@ _QA_FIELD_LABELS = {
 }
 
 
-def delivery_images_view(conn: sqlite3.Connection, release_id: str) -> dict:
+def delivery_images_view(conn: sqlite3.Connection, release_id: str, *, entries=None) -> dict:
     """Project historical QA-log images with actual tags; edit/save data stays untouched."""
     release = releases_repo.get_release_row(conn, release_id)
     if not release:
         raise ApiError(404, "发布周期不存在")
     views, images = {}, []
-    for entry in cycle_service.list_entry_views(conn, release_id, include_withdrawn=False):
+    if entries is None:
+        entries = cycle_service.list_entry_views(conn, release_id, include_withdrawn=False)
+    for entry in entries:
+        if entry["status"] != cycles_domain.ENTRY_ACTIVE:
+            continue
         views[entry["app_id"]] = {"revision": entry["delivery_revision"], "images": []}
         builds = {build["build_key"]: build for build in entry["delivery_builds"]}
         for image in entry["deliverable_images"]:

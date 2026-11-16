@@ -9,6 +9,7 @@ Endpoint paths (legacy release routes retain their original paths):
   POST /api/qa/status-batch
   POST /api/qa/upload-log            (retired, returns 410)
   GET  /api/qa/failure-summary
+  GET  /api/qa/report
   GET  /api/qa/delivery-images
   POST /api/qa/analyze-log
   POST /api/qa/analyze-log/start
@@ -34,7 +35,7 @@ from app.api.errors import ApiError
 from app.config import settings
 from app.deps import get_db, require_capability, require_tab_access
 from app.services import community_artifacts_service
-from app.services import qa_service, qa_results_service
+from app.services import qa_service, qa_results_service, qa_report_service
 
 router = APIRouter(tags=["qa"])
 require_qa_tab_access = require_tab_access("qa", message="无权访问 QA 页签")
@@ -201,6 +202,17 @@ def api_qa_upload_log(
 ) -> dict:
     """Old upload clients must use the validated QA-report workflow."""
     raise ApiError(410, "旧日志上传接口已停用，请在 QA log 上传测试结果 Excel；QA report 自动汇总失败项")
+
+
+@router.get("/api/qa/report")
+def qa_report(
+    response: Response,
+    release_id: str = Query(default=""),
+    user: dict = Depends(require_qa_tab_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    return qa_report_service.get_report(conn, user=user, release_id=release_id)
 
 
 @router.get("/api/qa/failure-summary")

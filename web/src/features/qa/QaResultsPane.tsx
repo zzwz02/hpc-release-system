@@ -105,7 +105,7 @@ export function QaResultsPane({ releaseId, releaseName }: { releaseId: string; r
         ...(query.data?.revision ? { revision: query.data.revision } : {}),
       });
       void queryClient.invalidateQueries({ queryKey: ["qa-test-results", user?.username, user?.role, releaseId] });
-      void queryClient.invalidateQueries({ queryKey: ["qa-failure-summary", user?.username, user?.role, releaseId] });
+      void queryClient.invalidateQueries({ queryKey: ["qa-report", user?.username, user?.role, releaseId] });
       if (id !== generation.value) return;
       setMessage(`已保存 ${releaseName} 的 ${data.rows} 行，清除旧结果 ${data.replaced} 行。${data.duplicate_rows ? `合并 ${data.duplicate_rows} 个重复测试行。` : ""}`);
       setUploadSummary(data);
@@ -142,7 +142,7 @@ export function QaResultsPane({ releaseId, releaseName }: { releaseId: string; r
     <div className="panel-body">
       <h2>QA log{releaseName && ` · ${releaseName}`}</h2>
       {!releaseId && <p className="muted">请选择发布周期。</p>}
-      {can(user?.role, "qa.edit") && <p className="lerr"><strong>整份替换/覆盖：</strong>上传成功将清空{releaseName ? ` ${releaseName} ` : "所选"}周期的全部旧结果（含各补丁版本）和旧 Excel，仅保留本次文件的数据。未包含的旧测试项也会删除，覆盖后无法恢复；其他周期不受影响。选择文件后需确认，校验失败保留原报告。</p>}
+      {can(user?.role, "qa.edit") && <p className="lerr"><strong>整份替换/覆盖：</strong>上传成功将清空{releaseName ? ` ${releaseName} ` : "所选"}周期的全部旧结果和旧 Excel，仅保留本次文件的数据。覆盖后无法恢复</p>}
       {can(user?.role, "qa.edit") && <label>上传测试结果 Excel <input type="file" accept=".xlsx" aria-label="上传测试结果 Excel" disabled={busy || !releaseId || query.isPending || query.isFetching} onChange={e => {
         const file = e.target.files?.[0]; e.target.value = ""; if (file) void upload(file);
       }} /></label>}

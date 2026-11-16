@@ -14,7 +14,7 @@ from app.api.errors import ApiError, AuthzError
 from app.db.connection import transaction
 from app.domain.permissions import has_capability
 from app.domain.test_commands import image_tag_version
-from app.repositories import app_info_repo, apps_repo, entries_repo, official_repo
+from app.repositories import app_info_repo, apps_repo, official_repo
 from app.repositories import component_compatibility_repo as repo
 from app.repositories.audit_repo import log_audit
 from app.services import lookup_service
@@ -48,8 +48,7 @@ def _label(value, name):
 def _source_revision(conn):
     apps = [{key: app[key] for key in ("id", "git_url", "git_branch", "cicd_status", "official_name")}
             for app in apps_repo.list_apps(conn)]
-    value = [apps, official_repo.current_by_app(conn), app_info_repo.latest_version_ids(conn),
-             sorted(entries_repo.ever_signed_up_app_ids(conn))]
+    value = [apps, official_repo.current_by_app(conn), app_info_repo.latest_version_ids(conn)]
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 

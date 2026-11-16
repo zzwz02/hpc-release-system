@@ -80,7 +80,7 @@ def test_latest_success_retains_failed_skipped_and_withdrawn_apps_and_all_images
 
 
 @pytest.mark.parametrize("withdrawn", [False, True])
-def test_signup_history_retains_unpublished_apps_including_withdrawn_only(temp_db, inventory, withdrawn):
+def test_signup_history_without_a_successful_publication_is_excluded(temp_db, inventory, withdrawn):
     # Two signups still count as one App; neither cycle needs to be published.
     for name in ("signup-history-a", "signup-history-b"):
         release = seed_cycle(temp_db, name=name)
@@ -90,13 +90,9 @@ def test_signup_history_retains_unpublished_apps_including_withdrawn_only(temp_d
     before = temp_db.total_changes
     result = lookup_service.latest_running_releases(temp_db)
     assert temp_db.total_changes == before
-    assert result["app_count"] == 5
+    assert result["app_count"] == 4
     rows = [row for row in result["rows"] if row["app_id"] == "never"]
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["hpc_version"] == "" and row["note"] == "尚无成功发布记录"
-    assert row["scope_pending"] and row["dependencies"] == []
-    assert row["app_info_commit_id"] == ""
+    assert rows == []
 
 
 def test_signup_history_is_matched_by_app_identity_and_running_status(temp_db, inventory):

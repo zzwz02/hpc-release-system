@@ -18,9 +18,7 @@ for (const username of ["app_rm", "app_qa", "app_owner"]) {
     await expect(group.getByTestId("compat-app-hpl").locator("td").nth(4)).toHaveText("3.10");
     await expect(pane.getByTestId("compat-app-stopped")).toHaveCount(0);
     await expect(pane.getByTestId("compat-app-info-error")).toHaveCount(0);
-    const pending = pane.getByTestId("compatibility-pending");
-    await pending.getByRole("button", { name: "展开 info-check 的镜像和测试命令", exact: true }).click();
-    await expect(pending.getByTestId("compat-detail-info-check")).toContainText("尚无成功发布记录");
+    await expect(pane.getByTestId("compat-app-info-check")).toHaveCount(0);
     await expect(group.getByTestId("compat-detail-amber")).toHaveCount(0);
     await group.getByRole("button", { name: "展开 HPL 的镜像和测试命令", exact: true }).click();
     const detail = group.getByTestId("compat-detail-hpl");

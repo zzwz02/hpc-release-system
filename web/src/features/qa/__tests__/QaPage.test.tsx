@@ -108,11 +108,15 @@ function makeRelease(entries: Entry[]) {
   return baseRelease(entries, { phase: "in_progress" });
 }
 
-function makePayload(overrides: Partial<StatePayload> = {}): StatePayload {
-  return makeState([makeApp("app1")], makeRelease([makeEntry("app1")]), {
+function makePayload(overrides: Partial<StatePayload> = {}) {
+  const state = makeState([makeApp("app1")], makeRelease([makeEntry("app1")]), {
     user: { username: "qa_user", role: "QA", display_name: "QA User" },
     ...overrides,
   });
+  return { ...state, qa_report: {
+    failure_summary: { total_rows: 0, failed_rows: 0, groups: [] },
+    delivery_images: { entries: {} }, errors: {},
+  } };
 }
 
 function makeQClient() {
@@ -175,6 +179,17 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("QaPage structure", () => {
+  it("loads and refreshes report state, failures, images and audit through one request", async () => {
+    vi.mocked(apiGet).mockResolvedValue(makePayload());
+    const view = renderQaPage(makeQClient());
+    await screen.findByTestId("qa-status-app1");
+    expect(apiGet).toHaveBeenCalledTimes(1);
+    expect(apiGet).toHaveBeenLastCalledWith("/api/qa/report?release_id=rel-1");
+    fireEvent.click(within(view.container.querySelector(".page-toolbar")!).getByRole("button", { name: "刷新当前页" }));
+    await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(2));
+    expect(apiGet).toHaveBeenLastCalledWith("/api/qa/report?release_id=rel-1");
+  });
+
   it("renders page heading", async () => {
     (apiGet as ReturnType<typeof vi.fn>).mockResolvedValue(makePayload());
     const qc = makeQClient();
@@ -256,7 +271,6 @@ describe("QaPage mark pane", () => {
     });
     (apiGet as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
       if (path.includes("/api/app-audit")) return Promise.resolve({ entries: [] });
-      if (path.includes("/api/qa/")) return Promise.resolve({ suggestions: null, job: null });
       return Promise.resolve(makePayload());
     });
     (apiPost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
@@ -414,8 +428,14 @@ describe("QaPage report failure summary", () => {
 
   function routeSummary(summaryValue: () => unknown, payload = makePayload()) {
     vi.mocked(apiGet).mockImplementation(async path => {
-      if (path.startsWith("/api/qa/failure-summary")) return summaryValue();
-      if (path.startsWith("/api/app-audit")) return { entries: [] };
+      if (path.startsWith("/api/qa/report?")) {
+        try {
+          return { ...payload, qa_report: { ...payload.qa_report, failure_summary: await summaryValue() } };
+        } catch (error) {
+          return { ...payload, qa_report: { ...payload.qa_report, failure_summary: null,
+            errors: { failure_summary: (error as Error).message } } };
+        }
+      }
       return payload;
     });
   }
@@ -491,7 +511,7 @@ describe("QaPage report failure summary", () => {
     vi.mocked(useAuth).mockReturnValue({ user: { username: "owner", role: "Owner" } } as ReturnType<typeof useAuth>);
     view.rerender(<QueryClientProvider client={qc}><MemoryRouter initialEntries={["/qa"]}><QaPage /></MemoryRouter></QueryClientProvider>);
     await waitFor(() => expect(screen.queryByText("af3_cp1x1_unitest、af3_cp2x2_unitest")).toBeNull());
-    expect(screen.getByRole("textbox", { name: /QA comment/ })).toBeDisabled();
+    expect(screen.queryByRole("textbox", { name: /QA comment/ })).toBeNull();
   });
 });
 
@@ -504,9 +524,14 @@ describe("QaPage delivery image display", () => {
   function routeImages(response: () => unknown, builds = makeEntry("app1").delivery_builds) {
     const payload = makePayload({ release: makeRelease([makeEntry("app1", { deliverable_images: [image], delivery_builds: builds })]) });
     vi.mocked(apiGet).mockImplementation(async path => {
-      if (path.startsWith("/api/qa/delivery-images")) return response();
-      if (path.startsWith("/api/qa/failure-summary")) return { total_rows: 0, failed_rows: 0, groups: [] };
-      if (path.startsWith("/api/app-audit")) return { entries: [] };
+      if (path.startsWith("/api/qa/report?")) {
+        try {
+          return { ...payload, qa_report: { ...payload.qa_report, delivery_images: await response() } };
+        } catch (error) {
+          return { ...payload, qa_report: { ...payload.qa_report, delivery_images: null,
+            errors: { delivery_images: (error as Error).message } } };
+        }
+      }
       return payload;
     });
   }

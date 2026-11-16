@@ -12,7 +12,14 @@ test("QA report displays a real tag while comment saves preserve the original de
   const bare = repository + "@" + digest;
   const tagged = repository + ":0.9.0-abcdef1-ubuntu20.04-amd64@" + digest;
   const comment = `只修改 QA comment ${Date.now()}`;
+  const reads: string[] = [];
+  page.on("request", request => {
+    const path = new URL(request.url()).pathname;
+    if (["/api/state", "/api/qa/report", "/api/qa/failure-summary", "/api/qa/delivery-images", "/api/app-audit"].includes(path)) reads.push(path);
+  });
   await page.goto(base + "/qa");
+  await expect(page.getByTestId("qa-failure-summary")).toBeVisible();
+  expect(reads).toEqual(["/api/qa/report"]);
   await page.getByLabel("选择 release").selectOption(release.id);
   const card = page.locator('[data-qa-app="platform-check"]');
   await expect(card.locator(".qa-card-b > :first-child")).toContainText("QA 状态");
@@ -50,7 +57,12 @@ test("QA report displays a real tag while comment saves preserve the original de
   await page.reload();
   await page.getByLabel("选择 release").selectOption(release.id);
   await expect(card.getByText(tagged, { exact: true })).toBeVisible();
-  await page.route("**/api/qa/delivery-images?*", route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Harbor 读取失败" }) }));
+  await page.route("**/api/qa/report?*", async route => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    await route.fulfill({ response, json: { ...payload, qa_report: { ...payload.qa_report,
+      delivery_images: null, errors: { delivery_images: "Harbor 读取失败" } } } });
+  });
   await page.getByRole("button", { name: "刷新当前页" }).first().click();
   await expect(page.getByRole("alert")).toContainText("交付镜像 tag 读取失败");
   await expect(card.getByText(bare, { exact: true })).toBeVisible();

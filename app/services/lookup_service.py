@@ -501,18 +501,17 @@ def published_apps(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
 
 
 def latest_running_releases(conn: sqlite3.Connection) -> dict[str, Any]:
-    """Latest successful publication for running Apps with signup history."""
+    """Latest valid successful publication for running Apps."""
     officials = official_repo.current_by_app(conn)
     latest_ids = app_info_repo.latest_version_ids(conn)
-    signed_up = entries_repo.ever_signed_up_app_ids(conn)
     rows = []
     apps = sorted((app for app in apps_repo.list_apps(conn)
-                   if app["cicd_status"] == cycles.CICD_RUNNING and app["id"] in signed_up),
+                   if app["cicd_status"] == cycles.CICD_RUNNING and app["id"] in officials),
                   key=lambda app: (catalog_service.app_name(app).casefold(), app["id"]))
     for app in apps:
-        official = officials.get(app["id"])
+        official = officials[app["id"]]
         latest = app_info_repo.get_version(conn, latest_ids.get(app["id"]))
-        manifest, source = publication_service.read_manifest(conn, official, app=app, app_name=catalog_service.app_name(app)) if official else (None, "unpublished")
+        manifest, source = publication_service.read_manifest(conn, official, app=app, app_name=catalog_service.app_name(app))
         if manifest:
             manifest = publication_manifest.compatibility_view(manifest, latest["raw"] if latest else {})
         common = {"app_id": app["id"], "app_name": catalog_service.app_name(app),
@@ -532,9 +531,6 @@ def latest_running_releases(conn: sqlite3.Connection) -> dict[str, Any]:
                   "_excluded_tests": manifest["scope"]["excluded_tests"] if manifest else [],
                   "_disabled_builds": [alias for alias, cfg in ((latest["raw"].get("app_build") or {}).items() if latest else [])
                                        if isinstance(cfg, dict) and not is_enabled_value(cfg.get("enabled"))]}
-        if not official:
-            rows.append({**common, "note": "尚无成功发布记录"})
-            continue
         images = manifest["images"] if manifest else delivery_images.recorded(official["images"], official["image"], official["digest"])
         commands = manifest["commands"] if manifest else []
         builds = {build["build_key"]: build for build in manifest["builds"]} if manifest else {}
