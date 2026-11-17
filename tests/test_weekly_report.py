@@ -215,11 +215,11 @@ def test_missing_and_forbidden_issues_are_told_apart() -> None:
     assert decide(item, issues) == ([(wr.T_NOT_FOUND, "PHS-1"), (wr.T_FORBIDDEN, "SPD-2")], [])
 
 
-def test_only_own_issues_are_checked_and_closed_ones_still_count() -> None:
+def test_only_own_issues_are_checked_and_resolved_ones_still_count() -> None:
     old = SINCE - dt.timedelta(days=3)
     issues = {
         "PHS-1": activity("PHS-1", assignee="bob", events=[("bob", old)]),
-        "PHS-2": activity("PHS-2", status="Closed", events=[("bob", NOW), ("alice", old)]),
+        "PHS-2": activity("PHS-2", status="Resolved", events=[("bob", NOW), ("alice", old)]),
     }
 
     problems, updated = wr.item_problems(
@@ -229,8 +229,25 @@ def test_only_own_issues_are_checked_and_closed_ones_still_count() -> None:
     assert updated == []
     assert problems == [wr.problem(
         wr.T_NOT_UPDATED, "修 bug", "PHS-2",
-        jira_status="Closed", assignee="Alice", last_updated="2026-10-10 18:00", last_updater="Bob",
+        jira_status="Resolved", assignee="Alice", last_updated="2026-10-10 18:00", last_updater="Bob",
     )]
+
+
+@pytest.mark.parametrize("status", ["Closed", " closed "])
+@pytest.mark.parametrize("moment", [SINCE - dt.timedelta(days=3), NOW])
+def test_closed_issues_are_excluded_from_update_checks(status: str, moment: dt.datetime) -> None:
+    issues = {"PHS-1": activity("PHS-1", status=status, events=[("alice", moment)])}
+    assert decide({"title": "修 bug", "jira_ids": ["PHS-1"]}, issues) == ([], [])
+
+
+def test_closed_issue_does_not_clear_stale_open_issue_of_the_same_item() -> None:
+    issues = {
+        "PHS-1": activity("PHS-1", events=[("alice", SINCE - dt.timedelta(days=3))]),
+        "PHS-2": activity("PHS-2", status="Closed", events=[("alice", NOW)]),
+    }
+    assert decide({"title": "修 bug", "jira_ids": ["PHS-1", "PHS-2"]}, issues) == (
+        [(wr.T_NOT_UPDATED, "PHS-1")], [],
+    )
 
 
 def test_one_updated_own_issue_clears_the_others_of_the_item() -> None:
@@ -414,6 +431,33 @@ def test_run_check_reports_each_person_in_name_order(conn) -> None:
     # The consistency prompt carries the title, the summary and the person's JIRA text.
     assert "周报工作项：调优\n周报内容：完成调优" in llm.consistency_calls[0]
     assert "10-10 comment：调优完成" in llm.consistency_calls[0]
+
+
+def test_run_check_removes_closed_issue_update_findings_on_reanalysis(conn) -> None:
+    def store(result: dict) -> None:
+        weekly_report_service.store_week(
+            conn, result, xlsx_name="plan.xlsx", xlsx_size=1,
+            uploaded_by="rm", uploaded_at="2026-10-10 17:00:00", analyzed_by="rm", role="RM",
+        )
+
+    set_members(conn, [{"sheet": "Alice", "jira_username": "alice"}, {"sheet": "Boss", "skip": True}])
+    issues = {"PHS-1": activity("PHS-1", events=[("alice", SINCE - dt.timedelta(days=3))])}
+    before = run(conn, FakeLlm(ITEMS), issues)
+    assert any(row["problem"] == wr.T_NOT_UPDATED and row["jira_key"] == "PHS-1" for row in before["findings"])
+    store(before)
+
+    issues["PHS-1"] = activity("PHS-1", status="Closed", comments=[("alice", NOW, "已完成关闭")])
+    llm = FakeLlm({}, verdict={"verdict": "不一致", "reason": "不应检查关闭工单"})
+    after = run(conn, llm, issues)
+
+    assert [(row["problem"], row["jira_key"]) for row in after["findings"]] == [
+        (wr.T_NO_JIRA, ""), (wr.T_BAD_ID, "11372"),
+    ]
+    assert llm.split_calls == [] and llm.consistency_calls == []
+    store(after)
+    assert [(row["problem"], row["jira_key"]) for row in weekly_report_service.list_findings(conn, "2026-W41")] == [
+        (row["problem"], row["jira_key"]) for row in after["findings"]
+    ]
 
 
 def test_run_check_reuses_the_cached_split_and_honours_options(conn) -> None:

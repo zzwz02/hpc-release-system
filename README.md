@@ -132,7 +132,7 @@ RM 每周上传 PDE HPC Project Plan 周报（.xlsx，每人一页，A 列日期
 | 周报未更新 | 最上面日期比报告日期早 3 天以上，或本周更新为空 | 代码 |
 | 未写JIRA / JIRA ID不完整 | 工作项没有 JIRA ID；只写了数字、缺项目前缀 | LLM 拆工作项 |
 | JIRA不存在 / JIRA无权限 | 接口返回 404 / 403（`[jira]` 的 token 无权浏览该项目） | 代码 |
-| JIRA未更新 | 单子 assignee 是本人，窗口内本人没改字段、没写 comment / worklog、也不是新建；Closed / Resolved 照查；一个工作项挂多个本人的单，更新其一即可 | 代码 |
+| JIRA未更新 | 单子 assignee 是本人，窗口内本人没改字段、没写 comment / worklog、也不是新建；Closed 跳过更新及一致性检查，Resolved 仍检查；一个工作项挂多个本人未关闭的单，更新其一即可 | 代码 |
 | 更新与周报不符 / 部分相符 | 本人在 JIRA 上的更新与周报描述对不上；拿不准按一致 | LLM |
 
 要点：

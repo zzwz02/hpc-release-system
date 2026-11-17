@@ -255,8 +255,9 @@ def item_problems(
     window (the ones a consistency check compares with the report).
 
     Only issues assigned to the person are checked: one assigned to somebody
-    else may have been filed for them.  Closed / Resolved issues are checked
-    too.  An item with several own issues counts as updated when any one is.
+    else may have been filed for them.  Closed issues are excluded from update
+    and consistency checks; Resolved issues are still checked.  An item with
+    several eligible own issues counts as updated when any one is.
     """
     title = str(item.get("title") or "")
     keys = item_keys(item)
@@ -278,6 +279,8 @@ def item_problems(
             continue
         assignee = activity["assignee"] or {}
         if assignee.get("name") != username:
+            continue
+        if activity["status"].strip().casefold() == "closed":
             continue
         if updated_by(activity, username, since):
             updated.append(activity)
