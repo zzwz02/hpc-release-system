@@ -945,6 +945,14 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
   margin-left: 4px;
 }
 .cicd-agent-notification-setting { display: flex; flex-direction: column; gap: 4px; }
+.dialog-card.cicd-dingtalk-dialog { width: min(540px, 100%); max-height: 90vh; overflow-y: auto; border-radius: 8px; }
+.cicd-dingtalk-dialog > .cicd-dingtalk-heading { padding: 15px 18px 0; }
+.cicd-dingtalk-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.cicd-dingtalk-heading h3 { margin: 0; font-size: 18px; }
+.cicd-dingtalk-code { margin: 16px 0; }
+.cicd-dingtalk-code textarea { box-sizing: border-box; width: 100%; resize: none; font-family: monospace; font-size: 14px; overflow-wrap: anywhere; }
+.cicd-dingtalk-dialog dd { min-width: 0; overflow-wrap: anywhere; }
+.cicd-dingtalk-dialog .dialog-actions { flex-wrap: wrap; }
 .cicd-agent-notification-setting .check { white-space: nowrap; }
 .cicd-agent-notification-setting [role="alert"] { display: flex; align-items: center; gap: 4px; color: var(--danger, #b42318); }
 .cicd-agent-filters {

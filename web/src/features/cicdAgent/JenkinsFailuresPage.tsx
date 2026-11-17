@@ -7,6 +7,7 @@ import { apiGet } from "../../api/http";
 import type { StatePayload } from "../../types";
 import { FailureReproPanel, type ReproTask } from "./FailureReproPanel";
 import { FailureNotificationToggle } from "./FailureNotificationToggle";
+import { DingTalkNotificationSetting } from "./DingTalkNotificationSetting";
 import { FailureLifecycleDialog } from "./FailureLifecycleDialog";
 import {
   CICD_AGENT_FAILURES_KEY,
@@ -613,6 +614,7 @@ export function JenkinsFailuresPage() {
         </button>}
         <div className="spacer" />
         {!isTrashed && <FailureNotificationToggle key={currentUsername} username={currentUsername} />}
+        {!isTrashed && <DingTalkNotificationSetting key={`dingtalk:${currentUsername}`} username={currentUsername} />}
         <button className="btn sm" type="button" onClick={refresh}>刷新</button>
         <button className="btn ghost sm" type="button" onClick={resetFilters}>重置</button>
       </div>
