@@ -37,3 +37,4 @@ web/e2e/screenshots/
 test-results/
 test_data/*_perf_report.pdf
 release_system.conf
+jira-weekly-report/*

@@ -609,6 +609,36 @@ def init_db(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (sheet, text_sha256)
         );
 
+        CREATE TABLE IF NOT EXISTS auto_weekly_reports (
+            id TEXT PRIMARY KEY,
+            jira_group TEXT NOT NULL,
+            since TEXT NOT NULL,
+            until TEXT NOT NULL,
+            report_date TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            markdown TEXT NOT NULL,
+            notes TEXT NOT NULL,
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            llm_json TEXT NOT NULL DEFAULT '{}',
+            revision INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_auto_weekly_reports_date
+            ON auto_weekly_reports(jira_group, report_date);
+
+        -- report_date is always Friday, so it identifies one ISO week across
+        -- groups. Upgrade earlier per-run records, retaining the newest result
+        -- of each week before enforcing the one-report-per-week invariant.
+        DELETE FROM auto_weekly_reports AS older
+        WHERE EXISTS (
+            SELECT 1 FROM auto_weekly_reports AS newer
+            WHERE newer.report_date = older.report_date
+              AND (newer.created_at > older.created_at
+                   OR (newer.created_at = older.created_at AND newer.rowid > older.rowid))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_auto_weekly_reports_week
+            ON auto_weekly_reports(report_date);
+
         -- MCP server (AI助手 → MCP): personal access tokens, client sessions
         -- and one log row per connection / tool call / attachment download.
         CREATE TABLE IF NOT EXISTS mcp_tokens (

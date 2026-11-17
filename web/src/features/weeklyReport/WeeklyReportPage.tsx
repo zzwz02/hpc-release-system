@@ -1,6 +1,5 @@
 /**
- * 周报 — the weekly reports' JIRA update check (AI助手 sub-tab); generating
- * the reports from JIRA is meant to join it later.
+ * 周报 — Excel/JIRA checks and automatic reports, under AI助手.
  *
  * Left: analysed weeks, newest first.  Right: one week's record, summary and
  * findings with export.  RM uploads the weekly .xlsx, starts the analysis
@@ -15,6 +14,9 @@ import { formatDuration, formatLlmProgress } from "../../lib/llmProgress";
 import { toast } from "../../lib/toast";
 import { MembersDialog } from "./MembersDialog";
 import { MappingTable, UploadDialog } from "./UploadDialog";
+import { AutoWeeklyReportPane } from "./AutoWeeklyReportPane";
+import { useUiStore } from "../../store/uiStore";
+import { confirmDialog } from "../../lib/confirm";
 import {
   downloadExport,
   formatFileSize,
@@ -36,6 +38,24 @@ function errorMessage(error: unknown): string {
 }
 
 export function WeeklyReportPage() {
+  const { user } = useAuth();
+  const [params, setParams] = useSearchParams();
+  const tab = params.get("tab") === "auto" ? "auto" : "check";
+  async function selectTab(next: string) {
+    if (next === tab) return;
+    if (useUiStore.getState().autoWeeklyReportDirty && !(await confirmDialog({ body: "有未保存的周报修改，确认放弃？", confirmText: "放弃修改", danger: true }))) return;
+    setParams({ tab: next });
+  }
+  return <>
+    <nav className="subtabs" aria-label="周报功能">
+      <button className={`subtab${tab === "check" ? " active" : ""}`} aria-current={tab === "check" ? "page" : undefined} onClick={() => void selectTab("check")}>周报检查</button>
+      <button className={`subtab${tab === "auto" ? " active" : ""}`} aria-current={tab === "auto" ? "page" : undefined} onClick={() => void selectTab("auto")}>自动周报</button>
+    </nav>
+    {tab === "auto" ? <AutoWeeklyReportPane key={`${user?.username}:${user?.role}`} /> : <WeeklyCheckPage key={`${user?.username}:${user?.role}`} />}
+  </>;
+}
+
+function WeeklyCheckPage() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const viewer = `${user?.username ?? ""}:${user?.role ?? ""}`;
@@ -71,9 +91,9 @@ export function WeeklyReportPage() {
 
   // The analysis runs in the background; its progress is polled while it runs.
   const jobQuery = useQuery({
-    queryKey: ["weekly-report", "job", jobId],
+    queryKey: ["weekly-report", "job", viewer, jobId],
     queryFn: () => getJob(jobId),
-    enabled: Boolean(jobId),
+    enabled: canRun && Boolean(jobId),
     refetchInterval: (query) => (!query.state.data || query.state.data.status === "running" ? 1000 : false),
   });
   const job = jobId ? jobQuery.data : undefined;
@@ -96,7 +116,7 @@ export function WeeklyReportPage() {
     <section className="view active weekly-report" data-testid="weekly-report-page">
       <div className="page-toolbar">
         <div>
-          <h2 className="weekly-report-title">周报</h2>
+          <h2 className="weekly-report-title">周报检查</h2>
           <p className="hint">
             检查每人的周报是否写了 JIRA ID、对应的 JIRA 本周有没有更新。网站对 JIRA 只读，不自动通知任何人。
           </p>

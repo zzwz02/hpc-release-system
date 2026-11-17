@@ -137,7 +137,17 @@ RM 可在新建对话时选择服务商（例如 OpenAI / DeepSeek / MetaX）、
 
 ## 周报
 
-现阶段是周报的 JIRA 更新检查；以后由 JIRA 数字员工按约定格式的 JIRA 更新自动生成周报，也放在这个页签。
+「AI助手 → 周报」包含「周报检查」和「自动周报」，可通过 `/weekly-report?tab=check`、`/weekly-report?tab=auto` 直达。旧的 `/weekly-report?week=…` 链接仍进入周报检查。
+
+自动周报由 RM 选择 JIRA 组（默认 `pde_hpc`）、统计起止时间和周五的报告日期后发起。默认窗口为上周五 12:00 至本周六 00:00，周六前终点取当前时间，均按北京时间；单次最多 31 天。服务端使用 `[jira]` 查询本组相关工单、分页补齐评论和变更、沿 parent 补 Epic、读取 PHS Epic 与关联单，跳过只有排序等非实质变化的工单。窗口终点不含；终点之后编辑过的评论无法还原历史正文，跳过并在交付说明提示。没有实质更新时不生成空周报。
+
+自动周报的模型调用全部经过统一 `llm.ask_json()`，每次现读 `release_system.conf` 的 `[llm]`，不依赖 Codex app-server 或本地令牌文件。流程为逐单提炼事实 → 按客户/PHS Epic 编写结构化初稿 → 代码校验真实工单号、来源覆盖、重复归属与字数 → 独立模型请求对照原始材料评审 → 修改并重验。逐来源提炼和独立复核各最多 4 路并发，合并时保持来源顺序；任一来源失败会停止同批剩余请求，不保存未完成周报。写作规则和姓名参考从 `jira-weekly-report` 移植至 `app/resources/weekly_report/`，随服务部署。上期使用同组、报告日期早于本期的最近一份已保存周报，沿用分类和顺序。
+
+窗口内的附件在内存中读取：PDF、docx/pptx/xlsx、文本和图片，每件最多 10 MB，每任务最多下载 100 MB；PDF 最多 80 页、Excel 最多 2000 行/60 列，Office 解压内容受预算限制。图片每单最多最近 6 张，使用同一 `[llm]` 模型读取，需要该模型支持图片输入。单张识别最多 30 秒、仅尝试一次；首次超时、拒绝或格式错误后，本次任务停用后续图片识别，继续处理文本，逐件记录未识别附件。超预算、不支持、扫描 PDF 没有文本、图片识别失败等情况会写进交付说明，不猜测附件内容。资料过长会分段提炼；提炼总量超过预算时明确失败，要求缩小统计范围。
+
+生成前先进行一次最多 15 秒的文本模型连接检查，失败即停止，不先拉取全部 JIRA。统一 LLM 层关闭 SDK 隐式重试，连接等待最多 10 秒，外部模型地址（包括 DeepSeek）按 `[proxy]` 配置连接，有配置则走代理，留空或省略则直连；单次调用另有总时限（流式心跳不能无限延长），确定的 400/401/403/404/422 不自动重试。任务在后台运行，通过 NDJSON 流显示阶段、工单号、附件文件名和 LLM 用量；刷新或离开后可重新接续，可中止。按报告日期所在的 ISO 周每周只保留一份（报告日期固定为该周周五，不按 JIRA 组另建副本），同周不允许同时生成。重复生成全部成功后，在同一事务中覆盖该周正文、交付说明、来源与用量，保留记录 ID 并递增 revision。失败或中止不保存任何未完成周报，也不改动该周已有结果；其他周历史记录保留。RM 可编辑正文/交付说明，保存有 revision 冲突校验；下一期参考保存后的正文。RM、Owner 可看历史与下载 `周报_<周五>_简洁版.md`（含交付说明），生成、编辑、中止需要现有 `weekly-report.run` 能力。JIRA 全程只读，不定时运行或自动发送。
+
+自动周报入口为 `app/api/routers/auto_weekly_report.py`、`app/services/auto_weekly_report_service.py` 和 `web/src/features/weeklyReport/AutoWeeklyReportPane.tsx`；结果、来源摘要、独立评审及用量存于 `auto_weekly_reports`，运行中任务仍在单进程内。
 
 RM 每周上传 PDE HPC Project Plan 周报（.xlsx，每人一页，A 列日期、B 列周报），网站给出每人的周报与 JIRA 问题清单，按 ISO 周留档，可导出 Markdown / CSV。规则沿用原本地脚本 `weekly_report_jira_check.py`：
 
@@ -207,7 +217,7 @@ RM 每周上传 PDE HPC Project Plan 周报（.xlsx，每人一页，A 列日期
 | 发布产物 | `artifacts` 以 `(release_id, kind)` 为键；同类草稿重新生成会覆盖，不是历史版本库 |
 | 用户、会话、审计 | `users`、`sessions`、`audit`；这些数据不应整体导出到文档或测试夹具 |
 | WIKI | `wiki_articles`、`wiki_images`，图片存于数据库 |
-| 周报 | `weekly_report_weeks`（每个 ISO 周一行，重新分析覆盖）、`weekly_report_findings`、`weekly_report_members`、`weekly_report_items`（LLM 拆分结果缓存）；周报 xlsx 不保存 |
+| 周报 | 检查：`weekly_report_weeks`（每个 ISO 周一行，重新分析覆盖）、`weekly_report_findings`、`weekly_report_members`、`weekly_report_items`（LLM 拆分缓存），xlsx 不保存；自动周报：`auto_weekly_reports`（每周一份，成功重复生成覆盖；正文编辑带 revision 校验） |
 | CICD 助手会话 | 独立 SQLite 库，由 `ASSISTANT_DATABASE_URL` 指定；不写入主业务库 |
 | JIRA agent | 独立 SQLite 库 `JIRA_AGENT_DATABASE_URL`（对话、轮次、时间线、文件索引）；上传文件与拉回的产物在 `JIRA_AGENT_DATA_DIR`；Codex thread 与工作目录在服务器 B |
 

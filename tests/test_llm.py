@@ -283,6 +283,10 @@ def test_cancel_token_runs_late_closers_at_once_and_forgets_released_ones() -> N
     ("https://llm-gw.kai.metax-tech.com/v1", False),
     ("http://metax-tech.com/v1", False),
     ("https://llm.METAX-INTERNAL.com./v1", False),
+    ("https://api.deepseek.com", True),
+    ("https://API.DEEPSEEK.COM./v1", True),
+    ("https://api.deepseek.com.evil.example/v1", True),
+    ("https://other.deepseek.com/v1", True),
     ("http://10.1.2.3:8000/v1", True),
     ("https://api.example.com/v1", True),
     ("https://notmetax-tech.com/v1", True),
@@ -305,6 +309,83 @@ def test_llm_uses_shared_proxy_except_company_domains(conf: Path, monkeypatch, b
     assert clients[-1]["trust_env"] is False
 
 
-def test_llm_connects_directly_without_a_proxy_section(conf: Path) -> None:
-    conf.write_text("[llm]\nLLM_BASE_URL = https://api.example.com/v1\nLLM_MODEL = m\n", encoding="utf-8")
-    assert llm.proxy_for("https://api.example.com/v1") is None
+@pytest.mark.parametrize("base_url", ["https://api.example.com/v1", "https://api.deepseek.com"])
+def test_llm_connects_directly_without_a_proxy_section(conf: Path, base_url: str) -> None:
+    conf.write_text(f"[llm]\nLLM_BASE_URL = {base_url}\nLLM_MODEL = m\n", encoding="utf-8")
+    assert llm.proxy_for(base_url) is None
+
+
+def test_deepseek_follows_runtime_proxy_changes(conf: Path) -> None:
+    prefix = "[llm]\nLLM_BASE_URL = https://api.deepseek.com\nLLM_MODEL = m\n\n[proxy]\n"
+    conf.write_text(prefix + "URL =\n", encoding="utf-8")
+    assert llm.proxy_for("https://api.deepseek.com") is None
+    conf.write_text(prefix + "URL = http://business-proxy.test:1080\n", encoding="utf-8")
+    assert llm.proxy_for("https://api.deepseek.com") == "http://business-proxy.test:1080"
+
+
+def test_attachment_images_use_the_same_configured_model_and_meter(monkeypatch):
+    calls = []
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            assert kwargs["base_url"] == "http://local-llm/v1"
+            assert kwargs["api_key"] == "k"
+            def create(**request):
+                calls.append(request)
+                return iter([_chunk(content='{"text":"18/18"}')])
+            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=create))
+    meter = llm.LlmMeter()
+    with mock.patch.dict(sys.modules, {"openai": _openai_module(FakeOpenAI)}):
+        result = llm.ask_json("read image", "JIRA evidence", images=["data:image/jpeg;base64,AA=="], meter=meter)
+    assert result == {"text": "18/18"}
+    assert calls[0]["model"] == "m"
+    assert calls[0]["messages"][1]["content"] == [
+        {"type": "text", "text": "JIRA evidence"},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AA=="}},
+    ]
+    assert meter.snapshot()["calls"] == 1
+
+
+def test_wall_clock_timeout_cuts_heartbeat_stream_without_cancelling_parent(monkeypatch):
+    import threading
+    closed = threading.Event()
+    requests = []
+    class Heartbeats:
+        def __iter__(self):
+            while not closed.wait(0.005):
+                yield _chunk(choices=False)
+            raise OSError("socket closed")
+        def close(self):
+            closed.set()
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            assert kwargs["max_retries"] == 0
+            assert kwargs["timeout"].connect <= 10
+            def create(**request):
+                requests.append(request)
+                return Heartbeats()
+            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=create))
+        def close(self):
+            pass
+    parent = llm.CancelToken()
+    with mock.patch.dict(sys.modules, {"openai": _openai_module(FakeOpenAI)}):
+        with pytest.raises(llm.LLMTimeoutError, match="已断开连接"):
+            llm.chat_json("s", "u", timeout=0.05, cancel=parent)
+    assert closed.is_set() and not parent.cancelled
+    assert len(requests) == 1
+
+
+def test_unsupported_image_error_is_not_retried_or_mistaken_for_stream_options(monkeypatch):
+    calls = []
+    class Rejected(Exception):
+        status_code = 400
+    def create(**request):
+        calls.append(request)
+        raise Rejected("model does not support image input")
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            assert kwargs["max_retries"] == 0
+            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=create))
+    with mock.patch.dict(sys.modules, {"openai": _openai_module(FakeOpenAI)}):
+        with pytest.raises(llm.LLMCallError, match="HTTP 400") as error:
+            llm.ask_json("s", "u", images=["data:image/png;base64,AA=="], attempts=3)
+    assert error.value.status_code == 400 and len(calls) == 1

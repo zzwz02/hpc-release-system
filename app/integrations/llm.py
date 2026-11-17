@@ -46,6 +46,14 @@ class LLMConfigError(RuntimeError):
 class LLMCallError(RuntimeError):
     """Endpoint returned an error or unparseable body."""
 
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class LLMTimeoutError(LLMCallError):
+    """The entire call exceeded its deadline, including streamed heartbeats."""
+
 
 class LLMCancelled(RuntimeError):
     """The call was stopped on request (CancelToken); never retried."""
@@ -170,6 +178,7 @@ def chat_json(
     timeout: int = 180,
     progress: Callable[[dict[str, Any]], None] | None = None,
     cancel: CancelToken | None = None,
+    images: list[str] | None = None,
 ) -> str:
     """Stream one reply in JSON mode and return its raw text (see ask_json).
 
@@ -191,14 +200,40 @@ def chat_json(
         raise LLMConfigError("服务器未安装 OpenAI Python SDK：请运行 python -m pip install openai") from exc
 
     # Route explicitly like DingTalk: the [proxy] URL or direct, never environment proxies.
-    http_client = DefaultHttpxClient(proxy=proxy, trust_env=False, timeout=httpx.Timeout(timeout))
-    client = OpenAI(base_url=base, api_key=key or "not-needed", timeout=timeout, http_client=http_client)
+    network_timeout = httpx.Timeout(timeout, connect=min(10, timeout))
+    http_client = DefaultHttpxClient(proxy=proxy, trust_env=False, timeout=network_timeout)
+    # ask_json owns retries. SDK retries would multiply each visible attempt,
+    # leaving optional attachment calls blocked for many minutes.
+    client = OpenAI(base_url=base, api_key=key or "not-needed", timeout=network_timeout, http_client=http_client, max_retries=0)
+    active_cancel = CancelToken()
+    timed_out = threading.Event()
     releases: list[Callable[[], None]] = []
     if cancel is not None:
-        releases.append(cancel.on_cancel(lambda: client.close()))
+        releases.append(cancel.on_cancel(active_cancel.cancel))
+    releases.append(active_cancel.on_cancel(lambda: client.close()))
+
+    def expire() -> None:
+        timed_out.set()
+        active_cancel.cancel()
+
+    # A read timeout restarts with every heartbeat; enforce the wall-clock
+    # deadline as well and cut the actual stream socket on expiry.
+    timer = threading.Timer(timeout, expire)
+    timer.daemon = True
+    timer.start()
     try:
-        return _stream_reply(client, model, system, user, progress, cancel, releases)
+        reply = _stream_reply(client, model, system, user, progress, active_cancel, releases, images)
+        if active_cancel.cancelled:
+            raise LLMCancelled("LLM 调用已中止")
+        return reply
+    except LLMCancelled as exc:
+        if cancel is not None and cancel.cancelled:
+            raise
+        if timed_out.is_set():
+            raise LLMTimeoutError(f"LLM 调用超过 {timeout:g} 秒，已断开连接") from exc
+        raise
     finally:
+        timer.cancel()
         for release in releases:
             release()
         _quietly(lambda: client.close())
@@ -212,6 +247,7 @@ def _stream_reply(
     progress: Callable[[dict[str, Any]], None] | None,
     cancel: CancelToken | None,
     releases: list[Callable[[], None]],
+    images: list[str] | None = None,
 ) -> str:
     def stopped(exc: Exception) -> bool:
         return cancel is not None and cancel.cancelled
@@ -220,7 +256,9 @@ def _stream_reply(
         "model": model,
         "messages": [
             {"role": "system", "content": system},
-            {"role": "user", "content": user},
+            {"role": "user", "content": ([{"type": "text", "text": user}] + [
+                {"type": "image_url", "image_url": {"url": url}} for url in images
+            ]) if images else user},
         ],
         "temperature": 0,
         "response_format": {"type": "json_object"},
@@ -231,7 +269,7 @@ def _stream_reply(
             stream = client.chat.completions.create(**request, stream_options={"include_usage": True})
         except Exception as exc:
             # Servers that reject stream_options answer 400/422; retry without it.
-            if getattr(exc, "status_code", None) not in (400, 422):
+            if getattr(exc, "status_code", None) not in (400, 422) or "stream_options" not in str(exc):
                 raise
             stream = client.chat.completions.create(**request)
     except Exception as exc:
@@ -239,7 +277,7 @@ def _stream_reply(
             raise LLMCancelled("LLM 调用已中止") from exc
         status = getattr(exc, "status_code", None)
         if status:
-            raise LLMCallError(f"LLM HTTP {status}: {str(exc)[:400]}") from exc
+            raise LLMCallError(f"LLM HTTP {status}: {str(exc)[:400]}", status_code=status) from exc
         raise LLMCallError(f"LLM 调用失败：{str(exc)[:400]}") from exc
     if cancel is not None:
         releases.append(cancel.on_cancel(lambda: _cut_stream(stream)))
@@ -374,6 +412,7 @@ def ask_json(
     on_retry: Callable[[Exception], None] | None = None,
     call: Callable[[str, str], str] | None = None,
     cancel: CancelToken | None = None,
+    images: list[str] | None = None,
 ) -> dict[str, Any]:
     """Ask the LLM and return the JSON object it answers with.
 
@@ -391,6 +430,7 @@ def ask_json(
         call = meter.wrap(
             lambda system_text, user_text, progress: chat_json(
                 system_text, user_text, timeout=timeout, progress=progress, cancel=cancel,
+                **({"images": images} if images else {}),
             ),
             streaming=True,
             listener=progress,
@@ -413,6 +453,8 @@ def ask_json(
         except Exception as exc:
             if cancel is not None and cancel.cancelled:
                 raise LLMCancelled("LLM 调用已中止") from exc
+            if isinstance(exc, LLMCallError) and exc.status_code in (400, 401, 403, 404, 422):
+                raise
             if attempt >= attempts:
                 raise
             if on_retry:

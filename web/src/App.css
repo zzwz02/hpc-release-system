@@ -3350,3 +3350,10 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .mcp-active-token { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .mcp-active-prefix { font-size: 15px; font-weight: 700; padding: 3px 8px; background: var(--surface-2); border-radius: var(--r-sm); }
 .mcp-harnesses { margin: 4px 0 0; padding-left: 20px; } .mcp-harnesses li { margin: 3px 0; overflow-wrap: anywhere; }
+
+/* Automatic weekly reports reuse the weekly-check master/detail layout. */
+.auto-weekly-form { display: flex; flex-wrap: wrap; align-items: end; gap: 14px; margin-bottom: 16px; }
+.auto-weekly-form label, .auto-weekly-form > div { display: flex; flex-direction: column; gap: 6px; min-width: 170px; flex: 1; }
+.auto-weekly-form .input { width: 100%; min-width: 0; }
+.auto-weekly-wide { flex-basis: 100%; margin: 0; }
+.auto-weekly-editor { display: block; width: 100%; min-height: 320px; margin: 8px 0 16px; font-family: monospace; resize: vertical; }

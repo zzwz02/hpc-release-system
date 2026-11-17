@@ -18,6 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from app.api.errors import register_error_handlers
 from app.api.routers import (
     admin,
+    auto_weekly_report,
     apps,
     artifacts,
     auth,
@@ -107,6 +108,7 @@ def create_app() -> FastAPI:
     app.include_router(qa.router)
     app.include_router(releases.router)
     app.include_router(weekly_report.router)
+    app.include_router(auto_weekly_report.router)
     app.include_router(wiki.router)
     app.include_router(artifacts.router)
     app.include_router(admin.router)

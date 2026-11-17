@@ -105,6 +105,8 @@ export interface UiStore {
   setAppDetailDirty: (v: boolean) => void;
   componentCompatibilityDirty: boolean;
   setComponentCompatibilityDirty: (v: boolean) => void;
+  autoWeeklyReportDirty: boolean;
+  setAutoWeeklyReportDirty: (v: boolean) => void;
 
   /** True when the detail panel is in edit mode (index.html:1231) */
   appDetailEditMode: boolean;
@@ -201,6 +203,8 @@ export const useUiStore = create<UiStore>((set) => ({
   setAppDetailDirty: (v) => set({ appDetailDirty: v }),
   componentCompatibilityDirty: false,
   setComponentCompatibilityDirty: (v) => set({ componentCompatibilityDirty: v }),
+  autoWeeklyReportDirty: false,
+  setAutoWeeklyReportDirty: (v) => set({ autoWeeklyReportDirty: v }),
 
   appDetailEditMode: false,
   setAppDetailEditMode: (v) => set({ appDetailEditMode: v }),

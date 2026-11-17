@@ -91,7 +91,7 @@ export function TabNav() {
     view: string,
     path: string,
   ) {
-    if (useUiStore.getState().appDetailDirty || useUiStore.getState().componentCompatibilityDirty) {
+    if (useUiStore.getState().appDetailDirty || useUiStore.getState().componentCompatibilityDirty || useUiStore.getState().autoWeeklyReportDirty) {
       // Block navigation now; resume it programmatically if confirmed.
       e.preventDefault();
       void confirmDialog({
@@ -103,6 +103,7 @@ export function TabNav() {
         if (!ok) return;
         useUiStore.getState().setAppDetailDirty(false);
         useUiStore.getState().setComponentCompatibilityDirty(false);
+        useUiStore.getState().setAutoWeeklyReportDirty(false);
         navigate(path);
         refreshRoute(view);
       });
