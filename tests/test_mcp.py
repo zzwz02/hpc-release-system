@@ -88,6 +88,17 @@ def logs(client, **params):
     return client.get("/api/mcp/logs", params=params).json()["items"]
 
 
+def initialization_log(session):
+    conn = connect(settings.db_path)
+    try:
+        return dict(conn.execute(
+            "SELECT kind, tool, client_name, extra_json FROM mcp_call_logs WHERE session_id = ? AND tool = 'initialize'",
+            (session,),
+        ).fetchone())
+    finally:
+        conn.close()
+
+
 def test_requires_valid_token_and_role(site):
     client, current, token_for, _ = site
     assert client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "ping"}).status_code == 401
@@ -136,7 +147,9 @@ def test_initialize_session_and_tool_list(site):
                                                 "jenkins_search_failures", "jenkins_get_failure", "jenkins_get_build_errors", "jenkins_list_jobs", "jenkins_list_builds", "jira_read_attachment"}
     assert rpc(client, token, "nope", session=session).json()["error"]["code"] == -32601
 
-    [entry] = logs(client)
+    assert client.get("/api/mcp/logs").json() == {"total": 0, "items": []}
+    assert client.get("/api/mcp/stats").json()["totals"]["calls"] == 0
+    entry = initialization_log(session)
     assert (entry["kind"], entry["tool"], entry["client_name"]) == ("connection", "initialize", "claude-code")
 
 
@@ -227,7 +240,8 @@ def test_comment_limited_to_assignee_or_rm_and_attributed(site):
                               {"result": {"action": "accept", "content": {"username": "alice"}}})[-1]["result"]
     assert not posted["isError"] and "focusedCommentId=1001" in posted["content"][0]["text"]
     [(key, body)] = calls["comments"]
-    assert key == "MC3-1" and body.startswith("root cause: X") and "Alice（alice）" in body and "claude-code" in body
+    assert key == "MC3-1"
+    assert body == "root cause: X\n\n----\n_由 Alice（alice） 通过发布系统 MCP 发布_"
 
     rm = token_for("rm", "RM")
     session = connect_confirming(client, rm)
@@ -268,7 +282,7 @@ def test_confirmed_mcp_comment_is_independent_of_agent_risk_lock(locked_issue, u
     assert len(calls["comments"]) == int(posted)
     if posted:
         assert calls["comments"][0][0] == "MC3-1"
-        assert f"（{username}）" in calls["comments"][0][1]
+        assert calls["comments"][0][1].endswith(f"_由 {username.title()}（{username}） 通过发布系统 MCP 发布_")
     elif username == "carol":
         assert "assignee" in result["content"][0]["text"]
     # Commenting never clears the lock or grants permission to execute the agent.
@@ -381,6 +395,42 @@ def test_stats_scope_mine_vs_rm(site):
     assert client.get("/api/mcp/stats", params={"username": "carol"}).json()["totals"]["users"] == 1
 
 
+def test_initialize_is_excluded_from_all_stats_and_log_pagination(site, monkeypatch):
+    client, current, token_for, _ = site
+    monkeypatch.setattr(jira, "search_issues", lambda *a, **kw: {"total": 1, "issues": [ISSUE]})
+    idle_token = token_for("carol", "Owner")
+    connect_client(client, idle_token, "idle-client")
+    token = token_for("alice", "Owner")
+    session, _ = connect_client(client, token, "active-client")
+    assert not call(client, token, session, "jira_search", {"query": "MC3-1"})["isError"]
+    assert call(client, token, session, "jira_pull_issue", {"issue_key": "not a key"})["isError"]
+    result = call(client, token, session, "jira_pull_issue", {"issue_key": "MC3-1", "save_to_local": True})
+    url = result["content"][0]["text"].split("http://testserver", 1)[1].split()[0].strip("'")
+    assert client.get(url).status_code == 200
+    # A newer handshake must not occupy the first page or add an active user.
+    connect_client(client, idle_token, "idle-client")
+    current.update(username="rm", role="RM")
+
+    stats = client.get("/api/mcp/stats").json()
+    assert stats["totals"] == {"calls": 4, "errors": 1, "users": 1, "sessions": 1, "tool_calls": 3}
+    assert {row["tool"] for row in stats["by_tool"]} == {"jira_search", "jira_pull_issue", "jira_attachment"}
+    assert [row["username"] for row in stats["by_user"]] == ["alice"]
+    assert [row["username"] for row in stats["by_token"]] == ["alice"]
+    assert [row["category"] for row in stats["by_category"]] == ["jira"]
+    assert [row["client"] for row in stats["by_client"]] == ["active-client"]
+    for group in ("by_tool", "by_user", "by_token", "by_category", "by_client", "by_day"):
+        assert sum(row["calls"] for row in stats[group]) == 4
+    assert sum(row["errors"] for row in stats["by_day"]) == 1
+
+    first = client.get("/api/mcp/logs", params={"limit": 1}).json()
+    assert first["total"] == 4 and len(first["items"]) == 1
+    assert first["items"][0]["kind"] == "download"
+    last = client.get("/api/mcp/logs", params={"limit": 1, "offset": 3}).json()
+    assert last["total"] == 4 and last["items"][0]["tool"] == "jira_search"
+    assert client.get("/api/mcp/logs", params={"tool": "initialize"}).json() == {"total": 0, "items": []}
+    assert client.get("/api/mcp/logs", params={"kind": "connection"}).json() == {"total": 0, "items": []}
+
+
 def test_new_tool_gets_logging_without_schema_change(site, monkeypatch):
     """The extension point: a registered tool is listed, called and logged generically."""
     client, _, token_for, _ = site
@@ -433,15 +483,15 @@ def test_stats_and_logs_break_down_by_token(site):
 
     stats = client.get("/api/mcp/stats").json()
     by_name = {row["token_name"]: row for row in stats["by_token"]}
-    assert by_name["t"]["calls"] == 2 and by_name["t"]["revoked_at"]
-    assert by_name["server"]["calls"] == 4 and not by_name["server"]["revoked_at"]
+    assert by_name["t"]["calls"] == 1 and by_name["t"]["revoked_at"]
+    assert by_name["server"]["calls"] == 2 and not by_name["server"]["revoked_at"]
     assert by_name["server"]["sessions"] == 2 and by_name["server"]["clients"] == "codex-mcp-client"
     assert by_name["server"]["token_prefix"].startswith("rsmcp_") and "token" not in by_name["server"]
     server_id = by_name["server"]["token_id"]
 
-    assert client.get("/api/mcp/stats", params={"token_id": server_id}).json()["totals"]["calls"] == 4
+    assert client.get("/api/mcp/stats", params={"token_id": server_id}).json()["totals"]["calls"] == 2
     entries = logs(client, token_id=server_id)
-    assert len(entries) == 4 and {entry["token_name"] for entry in entries} == {"server"}
+    assert len(entries) == 2 and {entry["token_name"] for entry in entries} == {"server"}
 
     # Another user's token id filters to nothing for a non-RM viewer.
     current.update(username="carol", role="Owner")
@@ -848,15 +898,15 @@ def test_client_without_elicitation_cannot_publish_comment(site):
     assert "不支持" in result["content"][0]["text"]
     entry = logs(client, tool="jira_add_comment")[0]
     assert json.loads(entry["extra_json"])["confirm"] == "client_cannot_confirm"
-    connection = logs(client, kind="connection")[0]
+    connection = initialization_log(session)
     assert json.loads(connection["extra_json"])["can_confirm"] is False
 
 
 def test_initialize_records_that_the_client_can_confirm(site):
     client, _, token_for, _ = site
     token = token_for("alice", "Owner")
-    connect_confirming(client, token, "codex-mcp-client")
-    extra = json.loads(logs(client, kind="connection")[0]["extra_json"])
+    session = connect_confirming(client, token, "codex-mcp-client")
+    extra = json.loads(initialization_log(session)["extra_json"])
     assert extra["can_confirm"] is True and extra["capabilities"] == ["elicitation"]
 
 

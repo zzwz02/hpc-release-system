@@ -126,7 +126,8 @@ def insert_log(conn: sqlite3.Connection, entry: dict[str, Any]) -> None:
 
 
 def _where(filters: dict[str, str]) -> tuple[str, list[Any]]:
-    clauses, params = ["created_at >= ?"], [filters["since"]]
+    # Keep handshake diagnostics stored, but exclude them from all usage views.
+    clauses, params = ["created_at >= ?", "tool != 'initialize'"], [filters["since"]]
     for column in ("username", "category", "tool", "status", "kind", "target"):
         if filters.get(column):
             clauses.append(f"{column} = ?")

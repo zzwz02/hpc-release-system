@@ -312,7 +312,7 @@ def _confirm_comment(ctx: ToolContext, args: dict) -> str:
 
 
 def comment_footer(ctx: ToolContext) -> str:
-    return f"\n\n----\n_由 {ctx.actor} 通过 {ctx.client_name}（发布系统 MCP）发布_"
+    return f"\n\n----\n_由 {ctx.actor} 通过发布系统 MCP 发布_"
 
 
 def _comment(ctx: ToolContext, args: dict) -> ToolResult:

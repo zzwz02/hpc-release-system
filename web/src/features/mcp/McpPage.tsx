@@ -448,7 +448,7 @@ function StatsPane({ viewer, canViewAll }: { viewer: string; canViewAll: boolean
       {stats && (
         <>
           <div className="stats">
-            <div className="stat accent"><div className="num">{stats.totals.calls}</div><div className="lbl">总调用</div><div className="sub">含连接、工具与附件下载</div></div>
+            <div className="stat accent"><div className="num">{stats.totals.calls}</div><div className="lbl">总调用</div><div className="sub">含工具调用与附件下载</div></div>
             <div className="stat"><div className="num">{stats.totals.tool_calls}</div><div className="lbl">工具调用</div></div>
             <div className="stat"><div className="num">{stats.totals.users}</div><div className="lbl">使用人数</div></div>
 
