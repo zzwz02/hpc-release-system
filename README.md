@@ -286,6 +286,22 @@ with sqlite3.connect(uri, uri=True) as conn:
 
 在线备份用 SQLite backup API 或 `sqlite3 ... .backup`，不要直接复制活跃 WAL 数据库的主文件；主库、助手库、JIRA agent 库分别备份，备份不提交 Git。恢复、迁移和清理先在副本验证。
 
+旧业务库切换演练使用 [tools/cutover_release.py](tools/cutover_release.py)，在项目根目录、当前 Python 依赖环境执行：
+
+```bash
+python -m tools.cutover_release --source release_system.db --output release_system_cutover.db
+```
+
+脚本以只读连接做一致性备份，在临时副本完成月度模型迁移、原 QA summary 转换和网站上传校验、交付镜像补齐，最后输出新库。要求旧库仍含 `snapshots`、无未完成 CICD 申请；拒绝覆盖源库或已有输出。原 App ID、QA 发布结论/备注、用户、MCP、WIKI、原始 summary 和旧文档保留；发布日取锁定时间对应的北京时间日期。各成功发布周期补齐正式版历史及交付镜像，历史清单仍标为重建，不伪装为当时封存。组件兼容性结论为空，不读取其他演练库。
+
+默认处理 `3.9.0` 和 `3.10.1`，交付上限分别为 `3.9.0.29` 和 `3.10.1.11`；可重复传入 `--cap 周期=上限` 指定处理范围。仅查询当前周期的 MACA release/dbg 仓库，每个启用构建按数字选择不超过上限的最新版本及构建号，无镜像留空。QA 测试镜像另按原表环境区的 **HPC Version** 上限追溯（不使用 Host SDK Version）；原表缺少 digest，匹配补齐的来源在 `migration_note` 中说明，不视作原始 digest 证据。历史测试涉及本期未报名或已停止 CICD 的 App 时仍追溯它自己的镜像，仅用于 QA log，不补造报名或交付记录。LAMMPS 原表 Branch 中的 `patch_*` / `stable_*` 是 App 版本：先按该版本区分 app_id，再匹配 `master`，不能把两个版本合并。
+
+主机 OS 不冒充容器 OS。出现多个合法构建时，x86 排除 Kylin，有 Ubuntu 22 时优先选择 Ubuntu 22；仍不唯一、单位不符等行保留在问题清单，不将成绩复制到多个配置。GPU 不匹配的行跳过并单独记账，不列入待确认。唯一匹配但原表结果为空、`/` 等未测占位符的行写入 `qa_result=failed`、`qa_status=fail`，原结果和备注保留。其他行只转换明确的通过、失败及性能回退文字，数字结果不自动推断为 pass。已有正式版发布状态不因导入结果自动改变。
+
+除新库外，在同名目录输出 `images.csv`（交付和 QA 候选镜像、实际版本、完整 `image:tag@digest`、commit）及 `qa_log.xlsx`（两个周期的结果页、原始环境页、迁移汇总、待确认问题、已跳过记录）。合并 Excel 用于核对；新库的 QA log 为每周期独立的标准工作簿，可从网站分别下载。原始 summary BLOB 仍在 `qa_logs` 中保留。脚本不启动网站、后台任务或通知，不访问 CI 数据库。
+
+退出码 `0` 表示完成且无待确认匹配问题，`2` 表示输出已生成但仍有待确认数据，`1` 表示执行失败且未发布输出库。缺少交付镜像及旧列标题单独列明。不要在未检查问题清单时直接把演练库切为业务库。确认某行的构建后，可通过 `--overrides mapping.json` 重跑到新输出路径，例如 `{"3.9.0/C500/42": {"OS": "ubuntu22.04", "reason": "QA 核对原始记录确认"}}`；映射只缩小已有合法候选，不能绕过分支/GPU/测试项校验。正式切换时停止旧站写入，以最新业务库重新运行并验证，再切换数据库路径；助手/JIRA 独立库和运行配置需随部署另行保留。
+
 测试入口：后端 `python -m pytest -q`；前端 `npm run build`、`npm run lint`、`npm test`、`npm run test:e2e`。隔离参数与 E2E 端口见 [验证说明](.agents/skills/release-system-dev/references/verification.md)。
 
 ## 文档维护

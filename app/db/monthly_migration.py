@@ -234,7 +234,7 @@ def convert_snapshots(conn: sqlite3.Connection) -> None:
     """Convert snapshot rows into App profiles, versions and entries."""
     releases = [
         dict(row)
-        for row in conn.execute("SELECT * FROM releases ORDER BY created_at, rowid")
+        for row in conn.execute("SELECT * FROM releases ORDER BY release_date, created_at, rowid")
     ]
     maca = {
         row[0]: str(row[1] or "").strip()
