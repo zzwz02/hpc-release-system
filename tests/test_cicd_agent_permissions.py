@@ -29,6 +29,28 @@ def _client_for_role(monkeypatch: pytest.MonkeyPatch, role: str, responder=None)
 
 
 @pytest.mark.parametrize("role", ALL_ROLES)
+def test_dingtalk_binding_uses_session_identity_only(monkeypatch, role):
+    captured = []
+    def responder(*args, **kwargs):
+        captured.append(kwargs)
+        return JSONResponse({"bound": False})
+    allowed = role in roles_for_tab("jenkins-failures")
+    with _client_for_role(monkeypatch, role, responder) as client:
+        path = "/api/cicd-agent/failure-notifications/dingtalk"
+        assert client.get(path + "?actor_user=other").status_code == (200 if allowed else 403)
+        assert client.post(path + "/code", json={}).status_code == (200 if allowed else 403)
+        response = client.post(path, json={"action": "unbind"})
+        assert response.status_code == (200 if allowed else 403)
+        if allowed:
+            assert response.headers["cache-control"] == "no-store"
+            assert captured == [{"query": f"actor_user={role.lower()}"},
+                                {"body": {"actor_user": role.lower()}},
+                                {"body": {"actor_user": role.lower(), "action": "unbind"}}]
+            assert client.post(path + "/code", json={"actor_user": "other"}).status_code == 422
+            assert client.post(path, json={"action": "enable", "user_id": "other"}).status_code == 422
+
+
+@pytest.mark.parametrize("role", ALL_ROLES)
 def test_notification_preference_uses_logged_in_identity_and_page_permission(monkeypatch, role):
     captured = []
 

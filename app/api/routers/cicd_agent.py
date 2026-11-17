@@ -605,6 +605,39 @@ class FailureNotificationPreferenceUpdate(BaseModel):
     enabled: bool = Field(strict=True)
 
 
+class DingTalkBindingAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["enable", "disable", "unbind"]
+
+
+class DingTalkBindingCodeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+@router.get("/failure-notifications/dingtalk")
+def dingtalk_binding(user: dict = Depends(require_jenkins_access)):
+    response = _request_agent("GET", "/api/v1/failure-notifications/dingtalk",
+                              query=urllib.parse.urlencode({"actor_user": user["username"]}))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/failure-notifications/dingtalk/code")
+def dingtalk_binding_code(payload: DingTalkBindingCodeRequest, user: dict = Depends(require_jenkins_access)):
+    response = _request_agent("POST", "/api/v1/failure-notifications/dingtalk/code",
+                              body={"actor_user": user["username"]})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/failure-notifications/dingtalk")
+def change_dingtalk_binding(payload: DingTalkBindingAction, user: dict = Depends(require_jenkins_access)):
+    response = _request_agent("POST", "/api/v1/failure-notifications/dingtalk",
+                              body={"actor_user": user["username"], "action": payload.action})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @router.get("/failure-notifications/preferences")
 def failure_notification_preference(user: dict = Depends(require_jenkins_access)):
     response = _request_agent("GET", "/api/v1/failure-notifications/preferences",
