@@ -481,9 +481,9 @@ tbody tr:hover td { background: var(--surface-2); }
 .delivery-images .delivery-reference-row td { padding-top: 4px; }
 .delivery-images input { min-width: 0; }
 .qa-delivery-images { grid-column: 1 / -1; min-width: 0; }
-.qa-test-command-query { align-items: flex-end; margin-top: 12px; }
-.qa-test-command-query > label { display: flex; flex-direction: column; gap: 4px; max-width: 100%; }
-.qa-test-command-query .input { width: 260px; max-width: 100%; }
+.qa-test-command-query { align-items: center; margin-top: 12px; }
+.qa-test-command-query > label { display: flex; align-items: center; gap: 9px; max-width: 100%; }
+.qa-test-command-query .input { width: 220px; min-width: 0; flex: 1; }
 .qa-test-command-version { flex: 1 1 240px; min-width: 0; padding: 7px 0; overflow-wrap: anywhere; }
 .qa-test-commands .qa-report-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 .qa-test-commands .qa-report-bar .count { order: -1; }
@@ -833,11 +833,13 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
 .qa-tabs .subtab, .qa-tabs .subtab:hover { text-decoration: none; }
 
 .community-artifact-toolbar {
-  display: flex; align-items: flex-end; gap: 9px; flex-wrap: wrap;
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
 }
 .community-version-field {
-  display: grid; gap: 4px; min-width: 220px;
+  display: flex; align-items: center; gap: 9px; max-width: 100%;
 }
+.community-version-field > span { white-space: nowrap; }
+.community-version-field .input { width: 220px; min-width: 0; flex: 1; }
 .community-artifact-list {
   display: grid; gap: 10px; margin-top: 13px;
 }

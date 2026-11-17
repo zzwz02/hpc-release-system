@@ -1,0 +1,51 @@
+import { test, expect, type Locator } from "@playwright/test";
+
+const base = process.env.QA_COMPACT_E2E_URL ?? "";
+test.skip(!/^http:\/\/127\.0\.0\.1:\d+$/.test(base), "Requires tests.run_app_info_site --lookup --qa-commands and isolated Vite");
+
+async function sameLine(items: Locator[]) {
+  const bounds = await Promise.all(items.map(item => item.boundingBox()));
+  expect(bounds.every(Boolean)).toBe(true);
+  const centers = bounds.map(box => box!.y + box!.height / 2);
+  expect(Math.max(...centers) - Math.min(...centers)).toBeLessThan(3);
+}
+
+test("QA version toolbars stay on one line and submit the entered versions", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  expect((await page.request.post(base + "/api/login", { data: { username: "app_qa", password: "test-password" } })).ok()).toBeTruthy();
+  await page.goto(base + "/qa?tab=test");
+  await page.getByLabel("选择 release").selectOption({ label: "3.10.1" });
+  const query = page.locator(".qa-test-command-query");
+  const version = query.getByLabel("hpc_version", { exact: true });
+  const submit = query.getByRole("button", { name: "查询测试命令", exact: true });
+  await sameLine([query.locator("label"), version, submit]);
+  await version.fill("3.10.1.2");
+  const response = page.waitForResponse(r => r.url().includes("/api/qa/test-commands?"));
+  await submit.click();
+  const resolved = await response;
+  expect(resolved.ok(), await resolved.text()).toBeTruthy();
+  expect(new URL(resolved.url()).searchParams.get("hpc_version")).toBe("3.10.1.2");
+  await expect(query.getByRole("status")).toContainText("3.10.1.2");
+  await page.screenshot({ path: "/tmp/qa-compact-test-commands.png", fullPage: true });
+
+  await page.goto(base + "/qa?tab=community");
+  const toolbar = page.locator(".community-artifact-toolbar");
+  const sdk = toolbar.getByLabel("SDK 版本");
+  const fetch = toolbar.getByRole("button", { name: "获取最新产物" });
+  const download = toolbar.getByRole("button", { name: "下载全部" });
+  await sameLine([toolbar.getByText("SDK 版本"), sdk, fetch, download]);
+  // Keep the external artifact service out of this isolated browser check.
+  await page.route("**/api/qa/community-artifacts", route => route.fulfill({
+    contentType: "application/json", body: JSON.stringify({ sdkversion: "3.10.1.2", category: "ai4s", files: [] }),
+  }));
+  await sdk.fill("3.10.1.2");
+  const request = page.waitForRequest(r => r.url().endsWith("/api/qa/community-artifacts") && r.method() === "POST");
+  await fetch.click();
+  expect((await request).postDataJSON()).toEqual({ sdkversion: "3.10.1.2", category: "ai4s" });
+  await expect(fetch).toBeEnabled();
+  await page.screenshot({ path: "/tmp/qa-compact-community.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(sdk).toBeVisible();
+  await expect(fetch).toBeVisible();
+  expect(await toolbar.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+});

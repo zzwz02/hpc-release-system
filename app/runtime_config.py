@@ -13,6 +13,7 @@ naming it.  Optional keys left empty only switch their feature off.
 from __future__ import annotations
 
 import configparser
+import re
 from urllib.parse import urlsplit
 
 from app.config import settings
@@ -39,12 +40,20 @@ def _read() -> configparser.ConfigParser:
     return parser
 
 
+def _value(raw: str) -> str:
+    value = raw.strip()
+    if len(value) >= 2 and value[0] in ("'", '"') and value[-1] == value[0]:
+        value = value[1:-1]
+    # Accept an escaped URL scheme colon without decoding paths or secrets.
+    return re.sub(r"^([A-Za-z][A-Za-z0-9+.-]*)\\:(?=//)", r"\1:", value)
+
+
 def _values(parser: configparser.ConfigParser, name: str) -> dict[str, str]:
-    return {key: value.strip() for key, value in parser[name].items()}
+    return {key: _value(value) for key, value in parser[name].items()}
 
 
 def section(name: str) -> dict[str, str]:
-    """Return one section's raw string values; {} when the section is absent."""
+    """Return one section's unquoted string values; {} when absent."""
     parser = _read()
     return _values(parser, name) if parser.has_section(name) else {}
 

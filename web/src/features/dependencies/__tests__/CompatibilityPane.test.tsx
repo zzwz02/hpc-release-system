@@ -40,9 +40,16 @@ it("groups known runtime dependencies even without app_dependency and counts uni
   expect(within(group).getByTestId("compat-app-pyg")).toHaveTextContent("2 条命令");
   expect(screen.getByTestId("compatibility-group-torch 2.8 + py312")).toHaveTextContent("1 条命令");
   expect(screen.getByTestId("compatibility-group-sdk")).toHaveTextContent("HPL");
-  const pending = screen.getByTestId("compatibility-pending");
-  expect(within(pending).getByTestId("compat-app-unknown")).toBeInTheDocument();
-  expect(within(pending).queryByTestId("compat-app-pyg")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("compatibility-pending")).not.toBeInTheDocument();
+  expect(screen.queryByText("范围待确认")).not.toBeInTheDocument();
+  for (const component of ["sdk", "driver"]) {
+    const group = screen.getByTestId(`compatibility-group-${component}`);
+    expect(group.querySelector("summary")).toHaveTextContent("3 个 App");
+    expect(within(group).getByTestId("compat-app-unknown")).toBeInTheDocument();
+    expect(within(group).getByTestId("compat-app-pyg")).toBeInTheDocument();
+  }
+  expect(screen.queryByLabelText("按Python 配置筛选")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("按PyTorch 配置筛选")).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "导出当前测试清单 CSV" }));
   expect(vi.mocked(downloadCsv).mock.calls[0][2]).toHaveLength(rows.length);
 });
@@ -53,13 +60,32 @@ it("combines component and platform filters and exports only those rows", async 
   fireEvent.change(screen.getByLabelText("按组件筛选"), { target: { value: "torch 2.4 + py310" } });
   expect(screen.queryByTestId("compatibility-group-sdk")).not.toBeInTheDocument();
   expect(screen.queryByTestId("compatibility-group-torch 2.8 + py312")).not.toBeInTheDocument();
-  expect(screen.getByTestId("compat-app-unknown")).toBeInTheDocument();
+  expect(screen.queryByTestId("compat-app-unknown")).not.toBeInTheDocument();
+  expect(screen.getByTestId("compatibility-group-torch 2.4 + py310")).toHaveAttribute("open");
+  fireEvent.click(screen.getByRole("button", { name: "导出当前测试清单 CSV" }));
+  expect(vi.mocked(downloadCsv).mock.calls[0][2]).toHaveLength(2);
   fireEvent.change(screen.getByLabelText("按GPU 芯片筛选"), { target: { value: "C600" } });
   fireEvent.click(screen.getByRole("button", { name: "导出当前测试清单 CSV" }));
-  const exported = vi.mocked(downloadCsv).mock.calls[0][2];
+  const exported = vi.mocked(downloadCsv).mock.calls[1][2];
   expect(exported).toHaveLength(1);
   expect(exported[0]).toContain("C600");
   expect(exported[0]).toContain("a".repeat(40));
+});
+
+it.each(["sdk", "driver"])("%s includes every App regardless of dependency declaration and respects remaining filters", async (component) => {
+  show();
+  await screen.findByTestId("compatibility-group-sdk");
+  fireEvent.change(screen.getByLabelText("按组件筛选"), { target: { value: component } });
+  expect(screen.getAllByTestId(/^compatibility-group-/)).toHaveLength(1);
+  expect(screen.getByTestId("compat-app-unknown")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "导出当前测试清单 CSV" }));
+  expect(vi.mocked(downloadCsv).mock.calls[0][2]).toHaveLength(rows.length);
+  fireEvent.change(screen.getByLabelText("按GPU 芯片筛选"), { target: { value: "C600" } });
+  expect(screen.queryByTestId("compat-app-unknown")).not.toBeInTheDocument();
+  expect(screen.getByTestId("compat-app-pyg")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "清除筛选" }));
+  expect(screen.getByLabelText("按组件筛选")).toHaveValue("");
+  expect(screen.getByLabelText("按GPU 芯片筛选")).toHaveValue("");
 });
 
 it("shows each image's commit separately within an App", async () => {

@@ -4,7 +4,7 @@ import { useAuth } from "../../api/AuthContext";
 import { apiGet } from "../../api/http";
 import { RefreshBar } from "../../components/RefreshBar";
 import { downloadCsv } from "../../lib/csv";
-import { publicationManifestSourceLabel, type PublicationManifestSource } from "../../lib/domainMetadata";
+import { publicationManifestSourceLabel, universalComponentMetadata, type PublicationManifestSource } from "../../lib/domainMetadata";
 
 interface ReleaseRow {
   app_id: string;
@@ -29,10 +29,11 @@ interface ReleaseRow {
   note: string;
 }
 
-const columns = ["App", "app_id", "Owner", "依赖组件", "范围状态", "HPC version", "App version", "发布记录来源", "OS", "CPU 架构", "GPU", "镜像类型", "Python label", "PyTorch label", "完整镜像名", "镜像 app_info commit id", "测试项", "测试命令", "说明"];
+const columns = ["App", "app_id", "Owner", "依赖组件", "HPC version", "App version", "发布记录来源", "OS", "CPU 架构", "GPU", "镜像类型", "Python label", "PyTorch label", "完整镜像名", "镜像 app_info commit id", "测试项", "测试命令", "说明"];
 const archName = (arch?: string) => arch === "amd64" ? "x86" : arch === "arm64" ? "ARM" : arch || "";
+const universalComponents = new Set(Object.keys(universalComponentMetadata));
 function cells(row: ReleaseRow): string[] {
-  return [row.app_name, row.app_id, row.owners.join(", "), row.dependencies.join(", "), row.scope_pending ? "范围待确认" : "已声明",
+  return [row.app_name, row.app_id, row.owners.join(", "), row.dependencies.join(", "),
     row.hpc_version, row.app_version, publicationManifestSourceLabel(row.manifest_source), row.os || "", archName(row.arch), row.GPU || "", row.image_target || "",
     row.python_label || "", row.pytorch_label || "", row.delivery_reference || "", row.app_info_commit_id, row.path || "", row.command || "", row.note];
 }
@@ -56,8 +57,7 @@ function AppRows({ rows }: { rows: ReleaseRow[] }) {
       <td>{app.app_id}</td>
       <td>{app.owners.join(", ") || "—"}</td>
       <td>{versions.join(", ") || "—"}</td><td>{app.hpc_version || "—"}</td>
-      <td className="small">{dependencies.join(", ") || "未声明"}
-        {rows.some((row) => row.scope_pending) && <div className="muted">范围待确认</div>}</td>
+      <td className="small">{dependencies.join(", ") || "未声明"}</td>
       <td>{imageCount} 个镜像</td><td>{testCount} 个测试项 / {commandCount} 条命令</td>
     </tr>
     {expanded && <tr id={detailId} data-testid={`compat-detail-${app.app_id}`}><td colSpan={8}>
@@ -90,7 +90,7 @@ function AppsTable({ rows }: { rows: ReleaseRow[] }) {
 }
 
 const platformFilters = [
-  ["arch", "CPU 架构"], ["os", "OS"], ["chip", "GPU 芯片"], ["python_label", "Python 配置"], ["pytorch_label", "PyTorch 配置"],
+  ["arch", "CPU 架构"], ["os", "OS"], ["chip", "GPU 芯片"],
 ] as const;
 type FilterKey = typeof platformFilters[number][0];
 
@@ -98,7 +98,7 @@ export function CompatibilityPane() {
   const { user } = useAuth();
   const [filter, setFilter] = React.useState("");
   const [component, setComponent] = React.useState("");
-  const [platform, setPlatform] = React.useState<Record<FilterKey, string>>({ arch: "", os: "", chip: "", python_label: "", pytorch_label: "" });
+  const [platform, setPlatform] = React.useState<Record<FilterKey, string>>({ arch: "", os: "", chip: "" });
   const result = useQuery({
     queryKey: ["lookup", user?.username, user?.role, "latest-running"],
     queryFn: () => apiGet<{ app_count: number; rows: ReleaseRow[] }>("/api/lookup/latest-running"),
@@ -107,21 +107,23 @@ export function CompatibilityPane() {
   });
   const inventory = result.data?.rows ?? [];
   const components = new Map<string, Set<string>>();
+  for (const name of Object.keys(universalComponentMetadata)) {
+    components.set(name, new Set(inventory.map((row) => row.app_id)));
+  }
   for (const row of inventory) for (const name of row.dependencies) {
+    if (universalComponents.has(name.toLowerCase())) continue;
     if (!components.has(name)) components.set(name, new Set());
     components.get(name)!.add(row.app_id);
   }
   const needle = filter.trim().toLocaleLowerCase();
   const rows = inventory.filter((row) =>
-    (!component || row.dependencies.includes(component) || row.scope_pending)
+    (!component || universalComponents.has(component) || row.dependencies.includes(component))
     && platformFilters.every(([key]) => !platform[key] || (key === "chip" ? row.chips?.includes(platform[key]) : row[key] === platform[key]))
     && (!needle || [row.app_id, ...cells(row)].join(" ").toLocaleLowerCase().includes(needle)));
   const groups = [...components.keys()].sort((a, b) => a.localeCompare(b))
     .filter((name) => !component || name === component)
-    .map((name) => ({ name, rows: rows.filter((row) => row.dependencies.includes(name)) }))
+    .map((name) => ({ name, rows: universalComponents.has(name) ? rows : rows.filter((row) => row.dependencies.includes(name)) }))
     .filter((group) => group.rows.length > 0);
-  const pending = rows.filter((row) => row.scope_pending
-    && (!row.dependencies.length || (!!component && !row.dependencies.includes(component))));
   return <div className="panel" data-testid="compatibility-pane">
     <div className="panel-head">
       <h2>测试 App 清单</h2>
@@ -134,7 +136,7 @@ export function CompatibilityPane() {
       <div className="row compatibility-filters">
         <label>组件<select className="select select-inline" value={component} onChange={(event) => setComponent(event.target.value)} aria-label="按组件筛选">
           <option value="">全部组件</option>
-          {[...components].sort(([a], [b]) => a.localeCompare(b)).map(([name, apps]) => <option key={name} value={name}>{name}（{apps.size}）</option>)}
+          {[...components].sort(([a], [b]) => a.localeCompare(b)).map(([name, apps]) => <option key={name} value={name}>{universalComponentMetadata[name]?.label ?? name}（{apps.size}）</option>)}
         </select></label>
         {platformFilters.map(([key, label]) => {
           const values = [...new Set(inventory.flatMap((row) => key === "chip" ? row.chips ?? [] : [row[key] ?? ""]).filter(Boolean))].sort();
@@ -150,7 +152,7 @@ export function CompatibilityPane() {
         <button type="button" className="btn sm" disabled={!result.data || result.isFetching || !!result.error}
           onClick={() => downloadCsv("compatibility.csv", columns, rows.map(cells))}>导出当前测试清单 CSV</button>
         <button type="button" className="btn sm" onClick={() => {
-          setFilter(""); setComponent(""); setPlatform({ arch: "", os: "", chip: "", python_label: "", pytorch_label: "" });
+          setFilter(""); setComponent(""); setPlatform({ arch: "", os: "", chip: "" });
         }}>清除筛选</button>
       </div>
       {result.error && <p className="lerr" role="alert">{result.error.message}</p>}
@@ -159,17 +161,11 @@ export function CompatibilityPane() {
     {!result.error && !result.isFetching && result.data && <>
       {rows.length === 0 && <p className="muted p-12-16">{result.data.app_count ? "没有匹配的记录。" : "暂无 CICD 仍在运行且成功发布过的 App。"}</p>}
       {groups.map((group) => <details key={group.name} className="panel section dependency-group"
-        data-testid={`compatibility-group-${group.name}`}>
-        <summary className="panel-head"><span className="chev" aria-hidden="true">▶</span><h3>{group.name}</h3>
+        open={!!component} data-testid={`compatibility-group-${group.name}`}>
+        <summary className="panel-head"><span className="chev" aria-hidden="true">▶</span><h3>{universalComponentMetadata[group.name]?.label ?? group.name}</h3>
           <span className="count">{new Set(group.rows.map((row) => row.app_id)).size} 个 App</span></summary>
         <div className="panel-body p-0"><AppsTable rows={group.rows} /></div>
       </details>)}
-      {pending.length > 0 && <section data-testid="compatibility-pending">
-        <div className="panel-body"><h3>范围待确认（{new Set(pending.map((row) => row.app_id)).size} 个 App）</h3>
-          <p className="hint">这些 App 已成功发布，但依赖声明或依赖分类仍需确认。平台和关键词筛选照常生效，导出包含此部分并标注范围状态。</p>
-        </div>
-        <AppsTable rows={pending} />
-      </section>}
     </>}
   </div>;
 }

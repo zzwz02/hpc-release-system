@@ -87,7 +87,7 @@ flowchart LR
 
 - 发布说明只列当月发布的 App；使用手册和 AI4Sci 手册覆盖所有运行中 App 的当前正式版，每月更新。手册资料（描述、文档字段、测试说明、社区信息）是可选的，在 App 工作台「资料」维护。
 - 「QA → 兼容性验证」（`/dependencies`）只纳入 CICD 仍在运行且存在有效成功发布的 App，按 App ID 判断，每个 App 取最近一次有效成功发布；从未成功发布的 App 不列入清单。按依赖组件及 Python/PyTorch 组合分类，展开组件、App 查看明细；同一 App 可属于多个分类，计数按 App ID 去重，CSV 不因分组重复导出。每个 QA report 交付镜像分别通过 digest → Harbor tags → commit → Gerrit app_info 实时生成平台、依赖和测试命令，显示该镜像自己的 app_info commit；不同镜像允许来自不同 commit。禁用构建不生成命令，最新 app_info 明确 enabled=false 的构建也从当前兼容性范围排除。镜像查询失败、commit 冲突、App/分支或构建不匹配时明确显示错误，不套用发布快照命令。发布记录与封存清单保留原样。历史交付缺 tag 时仅用 Harbor 实际 tags 补全 image:tag@digest；缺少交付镜像仍保留报名范围的模板，其镜像 commit 留空。
-- 兼容性验证支持组件、CPU、OS、GPU、Python/PyTorch 及关键词筛选，CSV 导出当前明细结果。每个合法构建／GPU／测试项单独一行，组合不跨构建拼接；有交付镜像的依赖来自镜像自己的历史 app_info。已识别的运行时组合直接归类，缺少组件声明时在 App 行标注范围待确认；已发布但未识别依赖或来源失败的记录单列待确认，选组件时仍保留供 QA 核实。每行说明按同周期、同 App ID／分支／App 版本／平台／GPU／Python／PyTorch／测试项引用 QA log，列出具体 HPC 版本与 pass/fail；pass 不显示原因，其余状态显示 qa_comment，不同测试镜像显示「note: 测试镜像与 QA report 交付镜像不同，仅作历史参考」。页面、筛选及 CSV 使用相同说明。
+- 兼容性验证支持组件、CPU、OS、GPU 及关键词筛选，CSV 导出当前明细结果。选定组件后只显示该组件的分类与明细；SDK、driver 覆盖清单内全部已成功发布且仍在运行的 App，不要求声明依赖，仍可按平台和关键词筛选。不再显示范围待确认分区、提示及 CSV 范围状态列；未声明依赖的 App 可在 SDK、driver 中查看。每个合法构建／GPU／测试项单独一行，组合不跨构建拼接；有交付镜像的依赖来自镜像自己的历史 app_info。每行说明按同周期、同 App ID／分支／App 版本／平台／GPU／Python／PyTorch／测试项引用 QA log，列出具体 HPC 版本与 pass/fail；pass 不显示原因，其余状态显示 qa_comment，不同测试镜像显示「note: 测试镜像与 QA report 交付镜像不同，仅作历史参考」。页面、筛选及 CSV 使用相同说明。
 - 成功发布时，在同一事务内为每条 `official_versions` 写入版本化 `test_manifest_json`，封存发布记录 ID、App/周期身份与环境、发布人/时间、完整 app_info 与 commit、组件依赖、启用构建、纳入/排除测试项、镜像组、完整 Docker 命令及原始 App 级 QA 结论/备注。缺少有效报名快照则整次发布回滚；缺失交付镜像允许保留并标注模板。按 App/已登记 digest 的历史接口优先读取封存内容；兼容性验证以封存记录定位交付镜像，再按各镜像实际 commit 实时生成，后续生成规则、开发配置或报名数据变化不改写已封存命令和 QA。同一 App/周期有数据库唯一约束；解锁删除该周期记录与清单，重新发布只保存替换后的最终清单；这不代表每个平台均已单独测试通过。
 - 旧库升级新增可空清单列，清理已撤销、同周期重复及未锁定周期的旧正式版记录，保留每个 App/周期最新有效记录后移除撤销字段并建立唯一约束；不回填或伪造旧发布的封存时间。旧记录保留历史配置还原，缺少有效历史快照时明确提示；存在但版本不支持或损坏的清单报错，不静默重算。App 详情 `/api/apps/detail` 的 `official_versions[].test_manifest` 可读取各周期最终保留的完整清单。历史查询页面的 Harbor/Gerrit 镜像还原流程仍独立，统一发布详情页面留待后续。
 - 「最新正式版」统一按发布周期的 `release_date` 选择，同日再按周期创建时间及创建顺序确定先后，不按版本名字符串、正式版记录 ID 或重新发布时间排序。更正旧周期不会覆盖已有较新周期；最新周期解锁时回退到此前成功周期，重新发布后恢复。周期列表、App 发布历史、兼容性清单与旧迁移记录回查共用这一顺序。
@@ -257,6 +257,8 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 ## 集成配置
 
 LDAP、JIRA、大模型、CICD Agent、网站对外地址和各组 JIRA 数字员工的配置统一放在根目录 `release_system.conf`（已 gitignore），分为 `[ldap]`、`[jira]`、`[llm]`、`[cicd_agent]`、`[hpc_manifest_archive]`、`[proxy]`、`[site]`、`[jira_agent:<组名>]`、`[jira_learning:<组名>]`、`[jira_evaluation:<组名>]` 几节。大模型一节供 QA AI 分析和周报等所有功能共用，代码里统一经 [llm.py](app/integrations/llm.py) 的 `ask_json()` 调用；原来的 `[qa_llm]` 已改名为 `[llm]`，键名去掉 `QA_` 前缀，仍写旧节名时会提示如何改。复制 `release_system.conf.example` 起步，各键含义与必填规则见其中注释。配置在每次使用时现读，修改后即时生效。旧的 `ldap.conf` / `jira.conf` / `qa_llm.env` / `jira_agent.conf` 已不再读取，升级时把内容搬到对应节。
+
+配置值支持成对的单引号或双引号，例如 `CODEX_WS_URL = "ws://127.0.0.1:4510"`；也兼容 URL 协议冒号写成 `\:`，其他反斜杠保持原样。引号内的空白保留，`""` 和 `''` 均表示空值。
 
 `[jira_agent:<组名>]` 可用 `MODEL_PROVIDER` 和 `MODEL` 设置本站新对话的默认服务商及模型，配置示例见 [对话模型设置](docs/jira-agent.md#对话服务商模型与-effort)。
 

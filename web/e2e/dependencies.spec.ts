@@ -5,7 +5,7 @@ const base = process.env.DEPENDENCIES_E2E_URL ?? "";
 test.skip(!/^http:\/\/127\.0\.0\.1:\d+$/.test(base), "Requires tests.run_app_info_site --dependencies and isolated Vite");
 
 for (const username of ["app_owner", "app_qa"]) {
-  test(`${username} filters the merged inventory using release dependencies and keeps unknown scope visible`, async ({ page }) => {
+  test(`${username} filters exact components and uses all published Apps for SDK and driver`, async ({ page }) => {
     expect((await page.request.post(base + "/api/login", {
       data: { username, password: "test-password" },
     })).ok()).toBeTruthy();
@@ -13,7 +13,7 @@ for (const username of ["app_owner", "app_qa"]) {
     const pane = page.getByTestId("compatibility-pane");
     let selector = page.getByRole("combobox", { name: "按组件筛选" });
     await expect(selector.locator("option")).toHaveText([
-      "全部组件", "sdk（1）", "torch 2.4 + py310（2）", "torch 2.8 + py312（2）",
+      "全部组件", "driver（2）", "SDK（2）", "torch 2.4 + py310（2）", "torch 2.8 + py312（2）",
     ]);
     await expect(pane).toContainText("成功发布过一次");
     await expect(pane.getByTestId("compat-app-runtime-unpublished")).toHaveCount(0);
@@ -27,7 +27,10 @@ for (const username of ["app_owner", "app_qa"]) {
     await selector.selectOption(selected);
     const category = pane.getByTestId(`compatibility-group-${selected}`);
     await expect(category.locator("summary")).toContainText("2 个 App");
-    await category.locator("summary").click();
+    await expect(category).toHaveAttribute("open", "");
+    await expect(pane.getByTestId("compatibility-pending")).toHaveCount(0);
+    await expect(pane.getByRole("combobox", { name: "按Python 配置筛选" })).toHaveCount(0);
+    await expect(pane.getByRole("combobox", { name: "按PyTorch 配置筛选" })).toHaveCount(0);
     const published = category.getByTestId("compat-app-runtime-published");
     await expect(pane.getByRole("columnheader", { name: "app_id", exact: true }).first()).toBeVisible();
     await expect(published.locator("td").nth(1)).toHaveText("runtime-published");
@@ -62,14 +65,16 @@ for (const username of ["app_owner", "app_qa"]) {
     await expect(detail).toBeVisible();
     await selector.selectOption("sdk");
     const sdk = pane.getByTestId("compatibility-group-sdk");
-    await sdk.locator("summary").click();
-    await expect(pane.getByTestId("compatibility-pending")).toContainText("runtime-unknown");
+    await expect(sdk).toHaveAttribute("open", "");
+    await expect(pane.locator(".dependency-group")).toHaveCount(1);
+    await expect(sdk.locator("summary")).toContainText("2 个 App");
     await pane.getByRole("button", { name: "展开 runtime-unknown 的镜像和测试命令", exact: true }).click();
     await expect(pane.getByTestId("compat-detail-runtime-unknown")).toContainText("根据历史配置生成（未在发布时封存）");
     const exported = page.waitForEvent("download");
     await pane.getByRole("button", { name: "导出当前测试清单 CSV" }).click();
     const csv = await readFile((await (await exported).path())!, "utf8");
-    for (const value of ["runtime-published", "runtime-unknown", "范围待确认", selected, "sanity", "centos9", "命令为模板"]) expect(csv).toContain(value);
+    for (const value of ["runtime-published", "runtime-unknown", selected, "sanity", "centos9", "命令为模板"]) expect(csv).toContain(value);
+    expect(csv).not.toContain("范围待确认");
     for (const value of ["runtime-stopped", "runtime-never", "never-registered-component", "info-error", "development-sdk", "py313"]) expect(csv).not.toContain(value);
     expect(csv).toContain("app_info commit id");
     expect(csv.split("\n")[0]).toContain("App,app_id,Owner");
@@ -88,10 +93,13 @@ for (const username of ["app_owner", "app_qa"]) {
     await pane.getByRole("textbox", { name: "筛选兼容性验证" }).fill("");
     // Only Apps with a successful publication belong to the compatibility export.
     expect(csv).not.toContain("runtime-unpublished");
+    await selector.selectOption("driver");
+    const driver = pane.getByTestId("compatibility-group-driver");
+    await expect(driver.locator("summary")).toContainText("2 个 App");
+    await expect(driver.getByTestId("compat-app-runtime-unknown")).toBeVisible();
     await selector.selectOption(selected);
-    await category.locator("summary").click();
     await published.getByRole("button").click();
-    for (const [label, value] of [["CPU 架构", "arm64"], ["OS", "ubuntu20.04"], ["GPU 芯片", "C500"], ["Python 配置", "py312"], ["PyTorch 配置", "torch2.8"]]) {
+    for (const [label, value] of [["CPU 架构", "arm64"], ["OS", "ubuntu20.04"], ["GPU 芯片", "C500"]]) {
       await pane.getByRole("combobox", { name: `按${label}筛选`, exact: true }).selectOption(value);
     }
     await expect(detail.locator("tbody tr")).toHaveCount(1);

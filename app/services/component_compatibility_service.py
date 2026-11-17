@@ -13,6 +13,7 @@ from copy import deepcopy
 from app.api.errors import ApiError, AuthzError
 from app.db.connection import transaction
 from app.domain.permissions import has_capability
+from app.domain.shared_metadata import mapping_section
 from app.domain.test_commands import image_tag_version
 from app.repositories import app_info_repo, apps_repo, official_repo
 from app.repositories import component_compatibility_repo as repo
@@ -24,7 +25,7 @@ from app.timeutil import beijing_timestamp
 MAX_LABEL_LENGTH = 120
 MAX_COMMENT_LENGTH = 10000
 # These runtime components apply to every App in the compatibility inventory.
-UNIVERSAL_COMPONENTS = ("driver", "sdk")
+UNIVERSAL_COMPONENTS = tuple(mapping_section("universal_components"))
 # One new-report form prepares its scope once; normal lookups never use this.
 PREVIEW_TTL_SECONDS = 300
 MAX_PREVIEWS = 8

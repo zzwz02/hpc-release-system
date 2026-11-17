@@ -46,12 +46,59 @@ def test_agent_groups_are_collected_by_prefix(conf: Path) -> None:
     }
 
 
+@pytest.mark.parametrize("quote", ["", "'", '"'])
+def test_quoted_values_and_escaped_url_scheme(conf: Path, quote: str) -> None:
+    conf.write_text(
+        "[cicd_agent]\n"
+        f'BASE_URL = {quote}http://agent{quote}\n'
+        f'TIMEOUT_SECONDS = {quote}7{quote}\n'
+        "[jira_agent:HPC]\n"
+        f'CODEX_WS_URL = {quote}ws\\://127.0.0.1:4510{quote}\n'
+        "[jira_learning:HPC]\n"
+        f'CODEX_WS_URL = {quote}ws://127.0.0.1:4520{quote}\n',
+        encoding="utf-8",
+    )
+
+    assert cicd_agent._agent_url("/x") == "http://agent/x"
+    assert cicd_agent._agent_timeout_seconds() == 7
+    assert runtime_config.agent_group_sections()["HPC"]["CODEX_WS_URL"] == "ws://127.0.0.1:4510"
+    assert runtime_config.learning_group_sections()["HPC"]["CODEX_WS_URL"] == "ws://127.0.0.1:4520"
+
+
+def test_quotes_preserve_literal_contents_and_empty_values(conf: Path) -> None:
+    conf.write_text(
+        "[jira]\n"
+        "TOKEN =  \" a=b%c#;\\token' \"  \n"
+        "PATH = 'C:\\new\\tokens'\n"
+        "NESTED = \"'literal'\"\n"
+        "UNMATCHED = 'literal\"\n"
+        "BARE = a'b\"c\\path\n"
+        "EMPTY_DOUBLE = \"\"\n"
+        "EMPTY_SINGLE = ''\n",
+        encoding="utf-8",
+    )
+
+    values = runtime_config.section("jira")
+    assert values == {
+        "TOKEN": " a=b%c#;\\token' ",
+        "PATH": r"C:\new\tokens",
+        "NESTED": "'literal'",
+        "UNMATCHED": "'literal\"",
+        "BARE": "a'b\"c\\path",
+        "EMPTY_DOUBLE": "",
+        "EMPTY_SINGLE": "",
+    }
+    for key in ("EMPTY_DOUBLE", "EMPTY_SINGLE"):
+        with pytest.raises(runtime_config.ConfigError, match=key):
+            runtime_config.required("jira", values, key)
+
+
 def test_edits_apply_on_next_read(conf: Path) -> None:
     conf.write_text("[cicd_agent]\nBASE_URL = http://old:1/\nTIMEOUT_SECONDS = 5\n", encoding="utf-8")
     assert cicd_agent._agent_url("/x") == "http://old:1/x"
     assert cicd_agent._agent_timeout_seconds() == 5
 
-    conf.write_text("[cicd_agent]\nBASE_URL = http://new:2\nTIMEOUT_SECONDS = 7\n", encoding="utf-8")
+    conf.write_text('[cicd_agent]\nBASE_URL = "http://new:2"\nTIMEOUT_SECONDS = \'7\'\n', encoding="utf-8")
     assert cicd_agent._agent_url("/x") == "http://new:2/x"
     assert cicd_agent._agent_timeout_seconds() == 7
 
@@ -86,7 +133,7 @@ def test_example_file_parses_into_every_section(monkeypatch: pytest.MonkeyPatch)
     example = Path(__file__).resolve().parents[1] / "release_system.conf.example"
     monkeypatch.setattr(settings, "runtime_conf_path", example)
 
-    assert ldap.current_ldap_config()["uri"].startswith("ldap://")
+    assert ldap.current_ldap_config()["uri"].startswith(("ldap://", "ldaps://"))
     assert runtime_config.section("jira")["JIRA_BASE_URL"]
     assert runtime_config.section("llm")["LLM_MODEL"]
     assert cicd_agent._agent_timeout_seconds() == 90
@@ -98,6 +145,7 @@ def test_example_file_parses_into_every_section(monkeypatch: pytest.MonkeyPatch)
     assert runtime_config.section("hpc_manifest_archive")["BASE_URL"].startswith("https://")
     [group] = domain.groups_from_sections(runtime_config.agent_group_sections()).values()
     assert (group.name, group.max_concurrent, group.components) == ("HPC", 2, ("PDE_HPC",))
+    assert group.ws_url == "ws://127.0.0.1:4510"
 
     from app.domain import jira_learning
 

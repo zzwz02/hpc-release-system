@@ -5,6 +5,8 @@
 # 旧的 ldap.conf / jira.conf / qa_llm.env / jira_agent.conf 已不再读取，内容请搬到对应节。
 #
 # 格式：INI。以 # 或 ; 开头的整行是注释；值中的 # 不会被当作注释。空值写成 "KEY ="。
+# 值可用成对的单引号或双引号包裹；只去掉最外层引号，保留引号内的空白与其他内容。
+# URL 协议后的冒号也可写为 \:（如 "ws\://127.0.0.1:4510"）；其他反斜杠保持原样。
 # 代码里没有任何默认值：整节缺省表示该集成未配置；节内标“可选”的键可留空（留空即不使用该功能），
 # 其余键必须填写，缺失时使用处会报错并指出缺少的键。
 
@@ -19,7 +21,7 @@
 # true / false：是否启用域账号登录
 ENABLED = true
 # LDAP 服务器地址，支持 ldap:// 与 ldaps://
-URI = ldap://ad-ldap.metax-tech.com
+URI = ldaps://ad-ldap.metax-tech.com
 # 搜索基础 DN
 BASE = DC=metax-tech,DC=com
 # 只读服务账号，用于搜索用户 DN
@@ -40,7 +42,7 @@ TIMEOUT = 10
 # 固定在代码里（app/integrations/jira.py，对应 jira.metax-tech.com）。
 [jira]
 # 必填：地址与 token
-JIRA_BASE_URL = http://jira.metax-tech.com
+JIRA_BASE_URL = https://jira.metax-tech.com
 JIRA_TOKEN = <personal-access-token>
 # JIRA agent RM 默认列表中的 QA 报单人用户组；未配置时默认 dl.sw_qa
 # JIRA_AGENT_OWNER_QA_REPORTER_GROUP = dl.sw_qa
