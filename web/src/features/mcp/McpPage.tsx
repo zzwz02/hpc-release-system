@@ -79,7 +79,7 @@ export function McpPage() {
       </div>
       {infoQuery.error && <div className="pane-error">{errorMessage(infoQuery.error)}</div>}
       {pane === "setup" ? (
-        <SetupPane viewer={viewer} tools={infoQuery.data?.tools ?? []} />
+        <SetupPane viewer={viewer} tools={infoQuery.data?.tools ?? []} jiraProjects={infoQuery.data?.jira_read_projects ?? null} />
       ) : (
         <StatsPane viewer={viewer} canViewAll={infoQuery.data?.can_view_all ?? false} />
       )}
@@ -91,9 +91,10 @@ export function McpPage() {
 // 接入配置
 // ─────────────────────────────────────────────────────────────
 
-function SetupPane({ viewer, tools }: {
+function SetupPane({ viewer, tools, jiraProjects }: {
   viewer: string;
   tools: { name: string; title: string; category: string; read_only: boolean; description: string }[];
+  jiraProjects: string[] | null;
 }) {
   const queryClient = useQueryClient();
   const tokensKey = ["mcp", "tokens", viewer];
@@ -326,10 +327,12 @@ function SetupPane({ viewer, tools }: {
       <div className="panel">
         <div className="panel-head"><h3>可用工具</h3></div>
         <div className="panel-body">
+          {jiraProjects && <p className="hint mt-0">当前账号仅可读取 {jiraProjects.join("、")} 项目的 JIRA，并使用下方列出的工具。</p>}
           <p className="hint mt-0">
-            用自然语言即可，例如「MC3-7672 当前是什么状态」「把 MC3-7672 下载到本地」「搜索我名下未关闭的 JIRA」「把这个结论评论到 MC3-7672」「把 build.log 上传到 MC3-7672」。
+            用自然语言即可，例如「MC3-7672 当前是什么状态」「把 MC3-7672 下载到本地」「搜索我名下未关闭的 JIRA」。
             查询只返回工单信息，不保存本地文件或下载附件；明确要求下载或保存时才落盘，优先使用指定目录，未指定时使用 <code>jira/&lt;KEY&gt;/</code>。
-            评论和上传附件只限该单 assignee 或 RM，以发布系统 JIRA 账号发出（评论注明你的名字）。
+            {tools.some(tool => tool.name === "jira_add_comment") && <>可要求「把这个结论评论到 MC3-7672」；评论只限该单 assignee 或 RM，以发布系统 JIRA 账号发出并注明你的名字。</>}
+            {tools.some(tool => tool.name === "jira_upload_attachment") && <>可要求「把 build.log 上传到 MC3-7672」；上传附件只限该单 assignee 或 RM。</>}
             问到 cu-bridge、CUDA 迁移 MACA 的问题时，客户端会自动调用 <code>skill_load</code> 取内部方法再作答，不必自己提。
           </p>
           <div className="table">

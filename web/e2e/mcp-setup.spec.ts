@@ -2,8 +2,38 @@ import { test, expect } from "@playwright/test";
 
 const base = process.env.MCP_SETUP_E2E_URL ?? "";
 const mcpBase = base.replace(/^https:/, "http:");
+// Vite forwards /api only; set the isolated FastAPI URL for direct MCP RPC.
+const rpcBase = process.env.MCP_SETUP_API_URL ?? base;
 test.skip(!/^https?:\/\/127\.0\.0\.1:\d+$/.test(base), "Requires tests.run_mcp_setup_site and isolated Vite");
+test.skip(!/^https?:\/\/127\.0\.0\.1:\d+$/.test(rpcBase), "MCP RPC must target the isolated local site");
 test.use({ ignoreHTTPSErrors: true });
+
+test("Guest MCP exposes only four tools and the MC3 project scope", async ({ page }) => {
+  expect((await page.request.post(base + "/api/login", {
+    data: { username: "mcp_guest_test", password: "test-password" },
+  })).ok()).toBeTruthy();
+  await page.goto(base + "/mcp-console");
+  const tools = page.locator(".panel").filter({ has: page.getByRole("heading", { name: "可用工具", exact: true }) });
+  await expect(tools).toContainText("当前账号仅可读取 MC3 项目的 JIRA");
+  const names = ["jira_search", "jira_pull_issue", "jira_read_attachment", "skill_load"];
+  for (const name of names) await expect(tools.locator("tbody").getByText(name, { exact: true })).toBeVisible();
+  await expect(tools.locator("tbody tr")).toHaveCount(4);
+  await expect(tools.locator("tbody").getByText("jira_add_comment", { exact: true })).toHaveCount(0);
+  await expect(tools.locator("tbody").getByText("jenkins_search_failures", { exact: true })).toHaveCount(0);
+  await expect(tools).not.toContainText("把这个结论评论到");
+  const info = await (await page.request.get(base + "/api/mcp/info")).json();
+  expect(info.jira_read_projects).toEqual(["MC3"]);
+  expect(info.tools.map((tool: { name: string }) => tool.name).sort()).toEqual([...names].sort());
+  const created = await (await page.request.post(base + "/api/mcp/tokens", { data: { name: "browser-guest" } })).json();
+  const response = await page.request.post(rpcBase + "/mcp", {
+    headers: { Authorization: `Bearer ${created.token.token}` },
+    data: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "jira_add_comment", arguments: { issue_key: "MC3-1", body: "forbidden" } } },
+  });
+  expect(response.status()).toBe(200);
+  expect((await response.json()).error.code).toBe(-32602);
+  await page.getByRole("button", { name: "使用统计", exact: true }).click();
+  await expect(page.getByText("仅显示你本人的使用记录", { exact: true })).toBeVisible();
+});
 
 test("MCP client setup: collapsed sections and copyable single-line commands", async ({ page, context }) => {
   const errors: string[] = [];

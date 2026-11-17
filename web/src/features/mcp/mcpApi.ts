@@ -29,6 +29,7 @@ export interface McpInfo {
   server_name: string;
   tools: McpToolInfo[];
   can_view_all: boolean;
+  jira_read_projects: string[] | null;
 }
 
 export interface McpStats {

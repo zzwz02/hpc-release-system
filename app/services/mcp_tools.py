@@ -8,6 +8,8 @@ statistics page without touching them:
 
   * ``category``  groups the tool on the statistics page (jira, ...)
   * ``roles``     extra role limit on top of the MCP tab permission
+  * shared ``mcp.tools.all`` / ``mcp.tool.<name>`` capabilities grant tool
+                  access; limited users do not inherit newly registered tools
   * ``handler``   returns ToolResult; ``ToolResult.log`` says what the call
                   acted on (target) and any tool-specific fields (extra)
   * ``log_args``  optional redaction of arguments before they are stored
@@ -27,6 +29,8 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+from app.domain.mcp_access import can_use_tool
 
 # Stored argument values are cut to this many characters each, so a pasted
 # log or long comment cannot bloat the log table.
@@ -122,7 +126,7 @@ class Tool:
         }
 
     def allowed(self, role: str) -> bool:
-        return not self.roles or role in self.roles
+        return can_use_tool(role, self.name) and (not self.roles or role in self.roles)
 
     def logged_args(self, arguments: dict[str, Any]) -> str:
         values = self.log_args(arguments) if self.log_args else arguments

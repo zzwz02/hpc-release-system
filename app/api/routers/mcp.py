@@ -36,6 +36,7 @@ from app.api.errors import ApiError, AuthzError
 from app.config import settings
 from app.db.connection import connect
 from app.deps import get_db, require_tab_access
+from app.domain.mcp_access import LIMITED_JIRA_PROJECT, limited_jira_reader, require_jira_read
 from app.integrations import jira
 from app.services import mcp_protocol, mcp_service
 
@@ -134,6 +135,14 @@ async def mcp_delete(request: Request) -> Response:
 def mcp_download(ticket: str) -> Response:
     entry = mcp_service.redeem_ticket(ticket)
     caller = mcp_service.refresh_caller(entry.caller)
+    require_jira_read(caller.user["role"], entry.issue_key)
+    if limited_jira_reader(caller.user["role"]):
+        # A previously issued ticket may outlive an issue move or an attachment
+        # removal. Recheck the live issue before returning the stored URL's data.
+        issue = jira.get_issue(entry.issue_key)
+        require_jira_read(caller.user["role"], issue["key"])
+        if not any(a["content_url"] == entry.content_url for a in issue["attachments"]):
+            raise ApiError(403, "附件已不属于此 MC3 工单，请重新查询")
     started = time.monotonic()
     log = dict(caller=caller, session=entry.session, kind="download", category="jira",
                tool="jira_attachment", target_type="jira_issue", target=entry.issue_key,
@@ -337,6 +346,7 @@ def info(request: Request, user: dict = Depends(require_view)) -> dict:
         "tools": [{"name": t.name, "title": t.title, "category": t.category, "read_only": t.read_only,
                    "description": t.description} for t in tools_for(user["role"])],
         "can_view_all": mcp_service.can_view_all(user["role"]),
+        "jira_read_projects": [LIMITED_JIRA_PROJECT] if limited_jira_reader(user["role"]) else None,
     }
 
 

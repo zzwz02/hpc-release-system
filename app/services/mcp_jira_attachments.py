@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.domain.mcp_access import require_jira_read
 from app.integrations import jira
 from app.services.mcp_jira_tools import _jira_call, _key
 from app.services.mcp_tools import Tool, ToolContext, ToolError, ToolLog, ToolResult, register
@@ -30,8 +31,10 @@ def _read_attachment(ctx: ToolContext, args: dict) -> ToolResult:
     try:
         query = AttachmentQuery.model_validate(args)
         key = _key(query.issue_key)
+        require_jira_read(ctx.user['role'], key)
         ctx.log = ToolLog(target_type='jira_attachment', target=f'{key}/{query.attachment_id}')
         issue = _jira_call(jira.get_issue, key, issue_key=key)
+        require_jira_read(ctx.user['role'], issue['key'])
         attachment = next((a for a in issue['attachments'] if str(a['id']) == query.attachment_id), None)
         if attachment is None:
             raise ToolError('此工单中不存在该附件或无权访问，请使用 jira_pull_issue 获取附件 ID')

@@ -109,14 +109,14 @@ def test_requires_valid_token_and_role(site):
 
     # A role change applies to existing tokens immediately.
     conn = connect(settings.db_path)
-    conn.execute("UPDATE users SET role = 'Guest' WHERE username = 'alice'")
+    conn.execute("UPDATE users SET role = 'Admin' WHERE username = 'alice'")
     conn.commit()
     conn.close()
     assert rpc(client, token, "ping").status_code == 403
 
-    # Guests cannot even create a token.
+    # Guests may create a token, with tool and project limits checked later.
     current.update(username="guest", role="Guest")
-    assert client.post("/api/mcp/tokens", json={"name": "x"}).status_code == 403
+    assert client.post("/api/mcp/tokens", json={"name": "x"}).status_code == 200
 
 
 def test_revoked_token_and_foreign_revoke(site):
@@ -576,7 +576,13 @@ def test_account_rejects_bad_password_role_and_throttles(site):
     _set_password("guest", "pw-guest")
     client.app.dependency_overrides.clear()
     guest = account(client, "regenerate", "pw-guest", plain=True, username="guest")
-    assert guest.status_code == 403 and "无权使用 MCP" in guest.text
+    assert guest.status_code == 200 and guest.text.strip().startswith("rsmcp_")
+    conn = connect(settings.db_path)
+    conn.execute("UPDATE users SET role = 'Admin' WHERE username = 'guest'")
+    conn.commit()
+    conn.close()
+    denied = account(client, "status", "pw-guest", plain=True, username="guest")
+    assert denied.status_code == 403 and "无权使用 MCP" in denied.text
 
     for _ in range(5):
         assert account(client, "status", "bad").status_code == 401
@@ -700,10 +706,10 @@ def test_attachment_tickets_recheck_current_identity(site, monkeypatch, change, 
     conn.commit()
     conn.close()
     assert client.put(upload_url, content=b'x').status_code == expected
-    # An Owner may still read, but loses the RM exemption for others' issues.
-    if change != 'owner':
+    # Owner and Guest may still read MC3; neither retains RM write authority.
+    if change not in ('owner', 'guest'):
         monkeypatch.setattr(jira, 'download_attachment', lambda *a: pytest.fail('must not download'))
-    assert client.get(download_url).status_code == (200 if change == 'owner' else expected)
+    assert client.get(download_url).status_code == (200 if change in ('owner', 'guest') else expected)
 
 
 @pytest.mark.parametrize('session_kind', ['missing', 'unknown', 'foreign', 'ended'])

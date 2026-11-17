@@ -18,7 +18,11 @@ describe("shared access control", () => {
     expect(rolesForTab("cicd-assistant-v2")).toEqual(["RM", "Owner", "SPD"]);
     expect(rolesForTab("jira-agent")).toEqual(["RM", "Owner"]);
     expect(rolesForTab("weekly-report")).toEqual(["RM", "Owner"]);
-    expect(rolesForTab("mcp")).toEqual(["RM", "Owner", "QA", "SPD"]);
+    expect(rolesForTab("mcp")).toEqual(["RM", "Owner", "QA", "SPD", "Guest"]);
+    expect(canAccessTab("Guest", "mcp")).toBe(true);
+    expect(can("Guest", "mcp.tools.all")).toBe(false);
+    expect(can("Guest", "mcp.tool.jira_search")).toBe(true);
+    expect(can("Guest", "mcp.jira.read.all_projects")).toBe(false);
     expect(rolesForCapability("mcp.logs.view.all")).toEqual(["RM"]);
     expect(canAccessTab("Admin", "admin")).toBe(true);
     expect(canAccessTab("Admin", "dashboard")).toBe(false);

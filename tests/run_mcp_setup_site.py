@@ -26,6 +26,8 @@ def main():
         conn = connect(settings.db_path)
         conn.execute('INSERT INTO users(username,password_hash,role,display_name) VALUES (?,?,?,?)',
                      ('mcp_setup_test', hash_password('test-password'), 'Owner', 'MCP setup test'))
+        conn.execute('INSERT INTO users(username,password_hash,role,display_name) VALUES (?,?,?,?)',
+                     ('mcp_guest_test', hash_password('test-password'), 'Guest', 'MCP Guest test'))
         conn.commit()
         conn.close()
         uvicorn.run(create_app(), host='127.0.0.1', port=args.port)

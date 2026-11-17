@@ -20,6 +20,7 @@ from typing import Any
 from urllib.parse import quote
 
 from app.domain.jira_format import format_jira_comment
+from app.domain.mcp_access import can_use_tool, require_jira_read, scope_jql
 from app.services.mcp_evidence import correlations
 from app.integrations import jira
 from app.services import jira_agent_service, mcp_service
@@ -75,11 +76,15 @@ def _search(ctx: ToolContext, args: dict) -> ToolResult:
     if not query:
         jql = f'assignee = "{jira.agent_username(ctx.user)}" AND status != Closed ORDER BY updated DESC'
     elif re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*-\d+", query):
+        require_jira_read(ctx.user["role"], query.upper())
         jql = f"key = {query.upper()}"
     else:
         jql = query
+    jql = scope_jql(ctx.user["role"], jql)
     ctx.log.extra = {"jql": jql}
     found = _jira_call(jira.search_issues, jql, max_results=limit)
+    for item in found["issues"]:
+        require_jira_read(ctx.user["role"], item["key"])
     lines = [f"JQL: {jql}", f"共 {found['total']} 条，显示 {len(found['issues'])} 条", ""]
     lines += ["| Key | 类型 | 状态 | 优先级 | Assignee | 更新 | 标题 |", "| --- | --- | --- | --- | --- | --- | --- |"]
     for item in found["issues"]:
@@ -187,6 +192,7 @@ def _safe_filename(name: str, attachment_id: str, seen: set[str]) -> str:
 
 def _pull(ctx: ToolContext, args: dict) -> ToolResult:
     key = _key(args.get("issue_key"))
+    require_jira_read(ctx.user["role"], key)
     ctx.log.target_type, ctx.log.target = "jira_issue", key
     save_to_local = args.get("save_to_local", False)
     if not isinstance(save_to_local, bool):
@@ -194,6 +200,7 @@ def _pull(ctx: ToolContext, args: dict) -> ToolResult:
     target_dir = str(args.get("target_dir") or "").strip() or f"jira/{key}"
     with_attachments = args.get("include_attachments", True) is not False
     issue = _jira_call(jira.get_issue_snapshot, key, issue_key=key)
+    require_jira_read(ctx.user["role"], issue["key"])
     markdown = render_issue_markdown(issue)
 
     commands, seen = [], set()
@@ -276,6 +283,9 @@ register(Tool(
 
 def check_can_write(user: dict, key: str, action: str = "评论") -> dict:
     """Check live issue authority for MCP writes, independently of agent execution locks."""
+    name = "jira_add_comment" if action == "评论" else "jira_upload_attachment"
+    if not can_use_tool(user["role"], name):
+        raise ToolError(f"当前角色无权{action}")
     issue = _jira_call(jira.get_issue, key, issue_key=key)
     if not jira_agent_service.is_assignee_or_rm(user, issue):
         raise ToolError(

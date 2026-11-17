@@ -12,7 +12,7 @@
 | Owner | App 工作台：为单个或本人名下多个运行中 App 报名、编辑分类和可选手册资料；提交新增 App、CICD 配置和启停申请 |
 | QA | QA：处理测试范围扩大申请、查看测试范围与命令、上传 QA log、查看失败汇总、填写结论、交付镜像和各 App 的 QA comment |
 | SPD | CICD：查看交付任务、确认交付或退回；Jenkins 失败查询和 CICD 助手辅助排查 |
-| Guest | 查看总览、App 和 QA 等矩阵允许的页面；不编辑业务数据 |
+| Guest | 查看总览、App 和 QA 等矩阵允许的页面；MCP 仅可读取 MC3 工单及其附件、加载技能，不编辑业务数据 |
 | Admin | 系统管理：角色维护、数据库清理、全局 App 删除；前端只进入 `/admin`，不承担 RM 审批职责 |
 
 这是职责摘要，不是权限实现。角色、页签与命名能力以 [access_control.json](shared/access_control.json) 为准；所有权、阶段、锁定与申请状态还会进一步限制操作。后端鉴权是最终边界，前端按钮仅用于展示。
@@ -173,6 +173,8 @@ RM 每周上传 PDE HPC Project Plan 周报（.xlsx，每人一页，A 列日期
 实现入口：[weekly_report.py](app/domain/weekly_report.py)（解析、日期规则、问题判定）、[weekly_report_prompts.py](app/domain/weekly_report_prompts.py)（两个 prompt）、[weekly_report_service.py](app/services/weekly_report_service.py)（一次检查、入库、导出）、[weekly_report_jobs.py](app/services/weekly_report_jobs.py)（内存中的上传与后台作业）、[WeeklyReportPage.tsx](web/src/features/weeklyReport/WeeklyReportPage.tsx)。没有单独的配置节：JIRA 用 `[jira]`，大模型用 `[llm]`；JIRA 更新窗口默认 192 小时，在上传周报后的分析窗口里可改。
 
 ## MCP（AI助手 → MCP）
+
+Guest 可登录 MCP 页面、创建或复用个人 token，只开放 `jira_search`、`jira_pull_issue`、`jira_read_attachment` 和 `skill_load`。JIRA 读取范围限定为 MC3：搜索在后端将完整 JQL 条件与 `project = MC3` 取交集，保留合法排序；读取详情、文本附件及附件下载票据均重新检查项目范围，非 MC3 请求在读取前拒绝，工单移出 MC3 后已有下载票据也不再可用。MC3 工单正文中的跨项目引用不授予被引用工单的读取权限。Guest 不能调用 Jenkins、评论或上传工具，即使是工单 assignee 也不能写入，旧上传票据在账号降为 Guest 后失效。工具列表和实际调用使用同一权限判断；Guest 的工具授权按 `shared/access_control.json` 的明确白名单执行，新增工具不会自动开放。Guest 仅能查看本人的使用记录。其他 MCP 角色保留原有权限。
 
 网站在 `POST /mcp` 提供 MCP Streamable HTTP 服务（普通请求返回 JSON，用户名确认使用 SSE），供 Claude Code、Codex 等客户端连接。页面地址是 `/mcp-console`（不能用 `/mcp`，否则浏览器刷新会打到 MCP 接口；浏览器直接访问 `/mcp` 会被跳转到页面）。「接入配置」生成个人 token（只显示一次，库里只存 SHA-256），并给出 Claude Code / Codex 的接入命令；「使用统计」展示调用量、失败率、每日调用、按工具/用户的统计及调用日志，不展示会话数、按 token 表格、客户端分类和常操作对象统计。列表最多显示 10 行，超出后内部滚动；调用日志标题与筛选框水平排列。仍可按 token 筛选（只显示 token 名称和前缀）。`initialize` 握手不计入各项使用统计，也不出现在调用日志及其分页计数中；原始连接记录保留用于排障。
 
