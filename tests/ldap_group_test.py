@@ -30,7 +30,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent if SCRIPT_DIR.name == "tests" else SCRIPT_DIR
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from release_system import core
+from app.domain import permissions
 
 try:
     from ldap3 import ALL, SIMPLE, SUBTREE, Connection, Server
@@ -135,7 +135,7 @@ def query_groups(cfg: dict[str, Any], username: str) -> dict[str, Any]:
             "username": username,
             "display_name": entry_value(entry, cfg["name_attr"]),
             "entry_dn": entry.entry_dn or entry_value(entry, "distinguishedName"),
-            "predicted_role": core.ldap_role_from_groups(group_dns),
+            "predicted_role": permissions.ldap_role_from_groups(group_dns),
             "groups": groups,
             "group_dns": group_dns,
         }

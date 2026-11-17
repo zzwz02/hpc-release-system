@@ -2,10 +2,9 @@
 
 Faithful port of server.py GET/POST /api/cicd/* handlers.
 
-Phase 4 additions (all wired):
-  POST /api/cicd/apps/new/decision-preview — per-release create decision preview
-  POST /api/cicd/apps/fetch-preview — Gerrit preview wizard (Wave 3)
-  POST /api/cicd/apps/new           — cicd_first_new_app (Wave 3)
+New Apps:
+  POST /api/cicd/apps/fetch-preview — identity + app_info preview for the new-App form
+  POST /api/cicd/apps/new           — submit a create request
 
 Paths match server.py exactly (do_GET:447-499, do_POST:1021-1199).
 GET handlers are plain `def` (thread pool — no blocking concern).
@@ -20,7 +19,7 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from app.deps import get_db, require_capability, require_login
 from app.domain.access_actions import cicd_request_allowed_actions
-from app.domain.cicd_config import CICD_REPO_TYPE_DEFAULT, CICD_TEST_TIMEOUT_DEFAULT
+from app.domain.cicd_config import CICD_REPO_TYPE_DEFAULT
 from app.domain.cicd_requests import lifecycle_fields
 from app.domain.permissions import has_capability
 from app.integrations import jira as jira_integration
@@ -33,10 +32,6 @@ router = APIRouter(prefix="/api/cicd", tags=["cicd"])
 require_cicd_submit = require_capability(
     "cicd.request.submit",
     message="只有 Owner、RM 可以提交 CICD 任务申请",
-)
-require_cicd_decision_preview = require_capability(
-    "cicd.request.submit",
-    message="只有 Owner、RM 可以预览 CICD-first release 决策",
 )
 require_cicd_fetch_preview = require_capability(
     "cicd.request.submit",
@@ -512,66 +507,21 @@ async def post_apply_returned(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/apps/new/decision-preview")
-async def post_cicd_apps_new_decision_preview(
-    request: Request,
-    user: dict = Depends(require_cicd_decision_preview),
-    conn: sqlite3.Connection = Depends(get_db),
-) -> dict:
-    """Preview current/future CICD-first decisions without writing data."""
-    body: dict = await request.json()
-    return cicd_service.preview_cicd_first_release_decisions(
-        conn,
-        release_id=body.get("release_id", ""),
-        release_decision=body.get("release_decision", "cicd_only"),
-    )
-
-
 @router.post("/apps/fetch-preview")
 async def post_cicd_apps_fetch_preview(
     request: Request,
     user: dict = Depends(require_cicd_fetch_preview),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """POST /api/cicd/apps/fetch-preview — Gerrit app_info preview for CICD-first wizard.
-
-    Derives the git identity from repo info, fetches app_info.json from Gerrit,
-    and returns the parsed preview fields so the frontend can show the user what
-    will be created before they confirm.  NO database writes.
-
-    Auth: Owner or RM (CICD_CREATE_ROLES; Admin excluded — Ruling C).
-
-    Request body:
-      repo_type  str  — 'git' | 'repo' | 'manifest' (advisory; dispatch by name)
-      repo_name  str  — short name ('hpc_hpl') or .xml manifest path
-      branch     str  — git branch / revision
-
-    Success response (200):
-      {
-        git_url, git_branch,
-        app_version, x86_chips, arm_chips,
-        python_label, pytorch_label, os, arch,
-        commit_id,
-        parsed   — full parsed blob; pass to POST /api/cicd/apps/new as app_info_parsed
-      }
-
-    Error responses:
-      403 — role not in CICD_CREATE_ROLES
-      400 — identity resolution failed (empty repo_name, manifest parse error)
-      502 — Gerrit unreachable or git archive failed
-    """
+    """Resolve the repo identity, reject duplicates and preview app_info (no writes)."""
     body: dict = await request.json()
-    role = user["role"]
-
-    result = cicd_service.preview_cicd_app_info_for_create(
+    return cicd_service.preview_app_info(
         conn,
         repo_type=body.get("repo_type", CICD_REPO_TYPE_DEFAULT),
         repo_name=body.get("repo_name", ""),
         branch=body.get("branch", ""),
-        submitter_role=role,
-        official_name=body.get("official_name", ""),
+        submitter_role=user["role"],
     )
-    return result
 
 
 @router.post("/apps/new")
@@ -580,89 +530,32 @@ async def post_cicd_apps_new(
     user: dict = Depends(require_cicd_first_create),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """POST /api/cicd/apps/new — CICD-first app creation (Wave 3, plan §3.5 a).
+    """Submit a request for a new App.  The App is created when it takes effect.
 
-    Body carries repo config (repo_type/repo_name/branch + build fields) but
-    NO git_url/git_branch — identity is derived server-side via the repo seam
-    (may do network I/O for .xml manifests; done OUTSIDE the write transaction).
-
-    Auth: Owner or RM (CICD_CREATE_ROLES; Admin excluded — Ruling C).
-
-    Request body fields:
-      doc_target         str   — manual (HPC) | ai4sci (required)
-      app_type           str   — user-supplied APP type (required, nonblank)
-      official_name      str   — human-readable app name (required)
-      repo_type          str   — 'git' | 'repo' | 'manifest' (advisory; dispatch
-                                 by repo_name shape per identity.py)
-      repo_name          str   — short name ('hpc_hpl') or .xml manifest path
-      branch             str   — git branch / revision
-      release_id         str   — release currently selected in the App workbench
-      release_decision   str   — Owner decision: release | cicd_only
-      app_version        str   — optional build version label
-      build_product      list  — build output identifiers
-      community_artifact list  — community artifact identifiers
-      build_image        str   — container image for building
-      test_timeout       int   — timeout in minutes (shared CICD default)
-      notes              str   — free-form notes
-      app_name           str   — override display name in CICD task (optional;
-                                 defaults to official_name)
-      app_info_parsed    dict  — optional: the `parsed` blob returned by
-                                 POST /api/cicd/apps/fetch-preview; when
-                                 provided the initial snapshot gets the
-                                 Gerrit app_info attached and owner_confirmed
-                                 is set to True
-      app_info_commit_id str   — optional: commit_id from fetch-preview (for
-                                 source attribution in the snapshot)
-
-    Success response shape:
-      {ok: true, action: "created"|"associated", app_id, git_url, git_branch,
-       request: <pending cicd_task_requests row>}
-
-    Error responses (400/403):
-      403 — role not in CICD_CREATE_ROLES
-      400 — identity cannot be resolved, or "该 app 已有 CICD 任务"
+    Body: official_name, doc_target (manual|ai4sci), app_type, repo_type,
+    repo_name, branch, and optional CICD config (cicd_build_image,
+    cicd_test_timeout, cicd_community_artifact, cicd_notes, app_version).
     """
     body: dict = await request.json()
-    role = user["role"]
-
-    from app.domain.snapshots import DOC_TARGETS
+    from app.domain.app_profile import DOC_TARGETS
 
     if not isinstance(body.get("doc_target"), str) or body["doc_target"] not in DOC_TARGETS:
         raise ValueError("请选择类型（HPC/AI4Sci）")
     if not isinstance(body.get("app_type"), str) or not body["app_type"].strip():
         raise ValueError("请填写 APP 类型")
-
-    result = cicd_service.cicd_first_new_app(
+    return cicd_service.submit_new_app(
         conn,
         official_name=body.get("official_name", ""),
         repo_type=body.get("repo_type", CICD_REPO_TYPE_DEFAULT),
         repo_name=body.get("repo_name", ""),
         branch=body.get("branch", ""),
+        doc_target=body["doc_target"],
+        app_type=body["app_type"],
+        config=body,
         submitter=user["username"],
-        submitter_role=role,
+        submitter_role=user["role"],
         submitter_display=user.get("display_name", ""),
-        release_id=body.get("release_id", ""),
-        release_decision=body.get("release_decision", "cicd_only"),
-        payload={
-            "doc_target": body["doc_target"],
-            "app_type": body["app_type"].strip(),
-            "app_name": body.get("app_name", ""),
-            "app_version": body.get("app_version", ""),
-            "build_product": body.get("build_product", []),
-            "community_artifact": body.get("community_artifact", []),
-            "build_image": body.get("build_image", ""),
-            "test_timeout": body.get("test_timeout", CICD_TEST_TIMEOUT_DEFAULT),
-            "notes": body.get("notes", ""),
-            "cicd_repo_type": body.get("cicd_repo_type", ""),
-            "cicd_community_artifact": body.get("cicd_community_artifact", ""),
-            "cicd_build_image": body.get("cicd_build_image", ""),
-            "cicd_test_timeout": body.get("cicd_test_timeout", ""),
-            "cicd_notes": body.get("cicd_notes", ""),
-        },
-        app_info_parsed=body.get("app_info_parsed") or None,
-        app_info_commit_id=body.get("app_info_commit_id", ""),
     )
-    return result
 
 
 # ---------------------------------------------------------------------------

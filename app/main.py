@@ -23,10 +23,13 @@ from app.api.routers import (
     auth,
     cicd,
     cicd_agent,
+    component_compatibility,
+    entries,
     jira_agent,
     notifications,
     jira_learning,
     jira_testing,
+    lookup,
     mcp,
     qa,
     releases,
@@ -91,6 +94,9 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(state.router)
     app.include_router(apps.router)
+    app.include_router(entries.router)
+    app.include_router(lookup.router)
+    app.include_router(component_compatibility.router)
     app.include_router(cicd.router)
     app.include_router(cicd_agent.router)
     app.include_router(jira_agent.router)

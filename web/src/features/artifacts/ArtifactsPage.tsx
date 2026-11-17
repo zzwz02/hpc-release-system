@@ -268,7 +268,7 @@ function ManagerReviewPane({ releaseId, onGenerated }: ManagerReviewPaneProps) {
   return (
     <div className="manager-review-pane mt-12">
       <p className="hint mt-0">
-        Manager Review CSV 包含当前 release 的所有 app。请选择需要输出的字段。
+        Manager Review CSV 包含当前版本的所有报名 App。请选择需要输出的字段。
       </p>
       <div
         className="form grid-4col mt-12"
@@ -450,7 +450,6 @@ export function ArtifactsPage() {
             {releases.map((r) => (
               <option key={r.id} value={r.id}>
                 {r.name}
-                {r.maca_version ? ` (${r.maca_version})` : ""}
               </option>
             ))}
           </select>

@@ -68,13 +68,9 @@ class NotificationPoller:
         self._next_jenkins = None
 
     def status(self):
-        try:
-            enabled = dingtalk.configuration() is not None
-            config_error = ""
-        except runtime_config.ConfigError as exc:
-            enabled, config_error = False, str(exc)
-        return {"enabled": enabled, "last_check": self.last_check,
-                "errors": {**self.errors, **({"config": config_error} if config_error else {})}}
+        channels = _poller_channels()
+        return {"enabled": any(channels.values()), "last_check": self.last_check,
+                "errors": dict(self.errors)}
 
     async def start(self):
         self.errors.clear()
@@ -98,14 +94,14 @@ class NotificationPoller:
             boundary = now.replace(minute=0, second=0) + timedelta(hours=1)
             await asyncio.sleep(min(POLL_SECONDS, (boundary - now).total_seconds()))
 
-    async def _send_once(self, conn, key: str, message: str):
+    async def _send_once(self, conn, channel: dict, key: str, message: str):
         if conn.execute("SELECT 1 FROM notification_receipts WHERE event_key=?", (key,)).fetchone():
             return
-        if await dingtalk.send_text(message):
-            with conn:
-                conn.execute("INSERT INTO notification_receipts VALUES (?, ?)", (key, beijing_timestamp()))
+        await dingtalk.send_text(channel, message)
+        with conn:
+            conn.execute("INSERT INTO notification_receipts VALUES (?, ?)", (key, beijing_timestamp()))
 
-    async def _jira(self, conn):
+    async def _jira(self, conn, channel):
         # Persist activation time: no historical flood, but downtime is replayed.
         with conn:
             conn.execute("INSERT OR IGNORE INTO notification_receipts VALUES ('activation', ?)",
@@ -128,9 +124,9 @@ class NotificationPoller:
             names = users_repo.display_names_for(users, usernames)
         for turn in turns:
             name = (names.get(turn["created_by"]) or "").strip()
-            await self._send_once(conn, "jira:" + turn["id"], jira_message(turn, name))
+            await self._send_once(conn, channel, "jira:" + turn["id"], jira_message(turn, name))
 
-    async def _jenkins(self, conn):
+    async def _jenkins(self, conn, channel):
         if not runtime_config.section("cicd_agent"):
             return
         # Reuse the exact gateway, auth and query contract used by the website.
@@ -143,34 +139,36 @@ class NotificationPoller:
             raise RuntimeError(f"Jenkins 查询失败（HTTP {status}）")
         counts = jenkins_counts(payload)
         if any(counts[role] > limit for role, limit in THRESHOLDS.items()):
-            await self._send_once(conn, f"jenkins:{today}",
+            await self._send_once(conn, channel, f"jenkins:{today}",
                                   f"{today} Jenkins 当天错误：Code Owner {counts['Code Owner']} 个（阈值 20），"
                                   f"SPD / DevOps {counts['SPD']} 个（阈值 30）；已触发超限提醒")
 
     async def tick(self):
         conn = None
         try:
-            if dingtalk.configuration() is None:
+            channels = _poller_channels()
+            if not any(channels.values()):
                 self.errors.clear()
                 self._next_jenkins = None
                 return
-            self.errors.pop("config", None)
             conn = connect_jira_agent(settings.jira_agent_database_url)
             with conn:
                 conn.execute("CREATE TABLE IF NOT EXISTS notification_receipts "
                              "(event_key TEXT PRIMARY KEY, sent_at TEXT NOT NULL)")
-            jobs = [("jira", self._jira)]
+            jobs = []
+            if channels["jira_agent_turn"]:
+                jobs.append(("jira", self._jira, channels["jira_agent_turn"]))
             now = datetime.strptime(beijing_timestamp(), "%Y-%m-%d %H:%M:%S")
             hour = now.replace(minute=0, second=0)
             if self._next_jenkins is None:
                 self._next_jenkins = hour if now == hour else hour + timedelta(hours=1)
             if now >= self._next_jenkins:
-                if JENKINS_START_HOUR <= now.hour <= JENKINS_END_HOUR:
-                    jobs.append(("jenkins", self._jenkins))
+                if JENKINS_START_HOUR <= now.hour <= JENKINS_END_HOUR and channels["jenkins_failures"]:
+                    jobs.append(("jenkins", self._jenkins, channels["jenkins_failures"]))
                 self._next_jenkins = hour + timedelta(hours=1)
-            for name, job in jobs:
+            for name, job, channel in jobs:
                 try:
-                    await job(conn)
+                    await job(conn, channel)
                     self.errors.pop(name, None)
                 except Exception as exc:
                     # Only our sanitized errors/config diagnostics are surfaced.
@@ -183,6 +181,21 @@ class NotificationPoller:
         finally:
             if conn is not None:
                 conn.close()
+
+
+def _poller_channels() -> dict[str, dict | None]:
+    """Enabled robots for the two polled kinds, read from the main DB."""
+    from app.db.connection import connect
+    from app.services import notification_channels
+
+    main = connect(settings.db_path)
+    try:
+        return {
+            kind: notification_channels.enabled_channel(main, kind)
+            for kind in ("jira_agent_turn", "jenkins_failures")
+        }
+    finally:
+        main.close()
 
 
 poller = NotificationPoller()

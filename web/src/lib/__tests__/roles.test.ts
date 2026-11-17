@@ -12,10 +12,10 @@ import {
   canCreateApp,
   canEditWiki,
   canEdit,
-  canUpdateAppInfo,
+  canSyncAppInfo,
   isOwnApp,
 } from "../roles";
-import type { User, Snapshot } from "../../types";
+import type { User, App } from "../../types";
 
 const makeUser = (role: string, username = "u1"): User => ({
   username,
@@ -23,11 +23,11 @@ const makeUser = (role: string, username = "u1"): User => ({
   display_name: "",
 });
 
-const makeSnap = (owners: string[] = []): Snapshot =>
+const makeSnap = (owners: string[] = []): App =>
   ({
-    app_id: "app1",
+    id: "app1",
     owners,
-  }) as unknown as Snapshot;
+  }) as unknown as App;
 
 describe("role predicates", () => {
   it("isRM", () => {
@@ -167,20 +167,17 @@ describe("canEdit (snapshot permission)", () => {
   });
 });
 
-describe("canUpdateAppInfo (app_info permission)", () => {
-  it("QA can update app_info of an app it does not own", () => {
-    expect(canUpdateAppInfo(makeUser("QA", "qa_user"), makeSnap(["owner1"]))).toBe(true);
+describe("canSyncAppInfo", () => {
+  it("RM can sync any App, Owner only its own", () => {
+    expect(canSyncAppInfo(makeUser("RM", "rm"), makeSnap(["owner1"]))).toBe(true);
+    expect(canSyncAppInfo(makeUser("Owner", "owner1"), makeSnap(["owner1"]))).toBe(true);
+    expect(canSyncAppInfo(makeUser("Owner", "owner1"), makeSnap(["owner2"]))).toBe(false);
   });
 
-  it("RM can update any app_info, Owner only its own", () => {
-    expect(canUpdateAppInfo(makeUser("RM", "rm"), makeSnap(["owner1"]))).toBe(true);
-    expect(canUpdateAppInfo(makeUser("Owner", "owner1"), makeSnap(["owner1"]))).toBe(true);
-    expect(canUpdateAppInfo(makeUser("Owner", "owner1"), makeSnap(["owner2"]))).toBe(false);
-  });
-
-  it("Guest and anonymous cannot update app_info", () => {
-    expect(canUpdateAppInfo(makeUser("Guest", "guest"), makeSnap(["owner1"]))).toBe(false);
-    expect(canUpdateAppInfo(null, makeSnap(["owner1"]))).toBe(false);
+  it("QA, Guest and anonymous cannot sync", () => {
+    expect(canSyncAppInfo(makeUser("QA", "qa"), makeSnap(["owner1"]))).toBe(false);
+    expect(canSyncAppInfo(makeUser("Guest", "guest"), makeSnap(["owner1"]))).toBe(false);
+    expect(canSyncAppInfo(null, makeSnap(["owner1"]))).toBe(false);
   });
 });
 

@@ -5,8 +5,8 @@
  * Tabs whose roles don't include the current user's role are hidden (not
  * disabled) — identical to the legacy `el.hidden = !allowed` behavior.
  *
- * Routes sharing a group (AI助手) render as one tab; while one of them is
- * open, a second row lists the group's sub-tabs the role may open.
+ * Routes sharing a group (QA, AI助手) render as one tab; while one of them is
+ * open, AI助手 shows a second row. QA renders its peer tabs inside the page.
  *
  * The CICD tab shows a notification badge (red dot) when count > 0.
  * Mirrors legacy cicdBadge logic (index.html:3940).
@@ -58,11 +58,13 @@ export function TabNav() {
   // never interferes with navigation when the form is clean.
   function refreshRoute(view: string) {
     if (view === "artifacts") return;
-    if (["dashboard", "init", "apps", "qa", "admin"].includes(view)) {
+    if (["dashboard", "init", "apps", "admin"].includes(view)) {
       void queryClient.invalidateQueries({ queryKey: ["state"] });
     }
     if (view === "qa") {
-      void queryClient.invalidateQueries({ queryKey: ["qa-reports"] });
+      void queryClient.invalidateQueries({ queryKey: ["state"], refetchType: "none" });
+      void queryClient.invalidateQueries({ queryKey: ["qa-report"], refetchType: "none" });
+      void queryClient.invalidateQueries({ queryKey: ["qa-reports"], refetchType: "none" });
     }
     if (view === "cicd") {
       void queryClient.invalidateQueries({ queryKey: ["cicd"] });
@@ -89,7 +91,7 @@ export function TabNav() {
     view: string,
     path: string,
   ) {
-    if (useUiStore.getState().appDetailDirty) {
+    if (useUiStore.getState().appDetailDirty || useUiStore.getState().componentCompatibilityDirty) {
       // Block navigation now; resume it programmatically if confirmed.
       e.preventDefault();
       void confirmDialog({
@@ -100,6 +102,7 @@ export function TabNav() {
       }).then((ok) => {
         if (!ok) return;
         useUiStore.getState().setAppDetailDirty(false);
+        useUiStore.getState().setComponentCompatibilityDirty(false);
         navigate(path);
         refreshRoute(view);
       });
@@ -142,7 +145,7 @@ export function TabNav() {
           <span className="tab invisible">&nbsp;</span>
         )}
       </nav>
-      {activeGroup && (
+      {activeGroup && activeGroup.key !== "qa" && (
         <nav className="tab-subnav" aria-label={activeGroup.label}>
           <div className="subtabs">
             {activeGroup.children.map((route) => (

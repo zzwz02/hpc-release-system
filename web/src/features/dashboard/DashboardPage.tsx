@@ -1,6 +1,5 @@
 /**
- * DashboardPage — 总览 tab (index.html:583-612, renderSummary, renderSchedule,
- * renderDashboardOwner).
+ * DashboardPage — 总览: cycle statistics, components and App status.
  *
  * Roles: RM / Owner / QA / Guest.
  *
@@ -8,43 +7,39 @@
  * content-fetch time from the TanStack Query dataUpdatedAt — NOT page-load time.
  *
  * Sections:
- *   1. Stats row — app counts, release-decision count, doc-incomplete count,
- *      QA breakdown (not_checked / qa_passed / has_issues / cannot_release).
- *   2. Schedule timeline — version/branch-cut/release-at/note rows.
- *      RM can add/edit/delete entries.
+ *   1. Stats row — App counts, signups of the selected cycle, pending scope
+ *      requests, QA breakdown (not_checked / qa_passed / has_issues / cannot_release).
+ *   2. Components of the selected cycle — component/version/note rows.
  *   3. App status grid — owner-scoped for Owner role, full list for others.
  */
 
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { DateInput } from "../../components/DateInput";
 import { RefreshBar } from "../../components/RefreshBar";
 import { ReleaseDeadlines } from "../../components/ReleaseDeadlines";
-import { apiGet, apiPost } from "../../api/http";
+import { apiGet } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
 import { isOwner } from "../../lib/roles";
-import { can } from "../../lib/accessControl";
 import { displayName } from "../../lib/identity";
-import { formatDateValue, formatServerTime } from "../../lib/time";
-import { qaStatusLabels } from "../../lib/labels";
-import { normalizeDocTarget, QA_STATUS_DEFAULT } from "../../lib/domainMetadata";
-import { toast } from "../../lib/toast";
-import { confirmDialog } from "../../lib/confirm";
+import { normalizeDocTarget } from "../../lib/domainMetadata";
 import {
   APP_STATUS_FILTER_OPTIONS,
-  docsItems,
+  appEntry,
+  compareAppRows,
   matchesAppStatusFilter,
+  usersLabel,
+  versionTag,
   type AppStatusFilter,
 } from "../appWorkbench/helpers";
+import { CicdStatusPill, EntryPill, QaPill } from "../appWorkbench/pills";
 import type {
   StatePayload,
-  Snapshot,
-  ReleaseScheduleEntry,
+  ReleaseDetail,
   ReleaseSummary,
   App,
-  QaStatus,
+  Entry,
 } from "../../types";
 
 // ---------------------------------------------------------------------------
@@ -60,90 +55,26 @@ async function fetchState(releaseId?: string): Promise<StatePayload> {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers (mirror index.html logic)
+// Helpers
 // ---------------------------------------------------------------------------
-
-function releaseSnap(
-  payload: StatePayload | undefined,
-  appId: string,
-): Snapshot | null {
-  return payload?.release?.snapshots?.[appId] ?? null;
-}
-
-function isReleaseSnap(snap: Snapshot | null | undefined): boolean {
-  return snap?.release_decision === "release";
-}
 
 function initials(name: string): string {
   const s = String(name || "").replace(/[^a-zA-Z0-9一-龥]/g, "");
   return (s.slice(0, 2) || "··").toUpperCase();
 }
 
-function usersLabel(
-  usernames: string[] | null | undefined,
-  displayNames: Record<string, string>,
-): string {
-  const items = (usernames ?? []).map((u) => {
-    const dn = displayNames[u];
-    return dn && dn !== u ? dn : u;
-  }).filter(Boolean);
-  return items.join(",") || "无 owner";
+interface Row {
+  app: App;
+  entry: Entry | null;
 }
 
-function daysUntil(dateStr: string): number {
-  const target = new Date(dateStr + "T00:00:00");
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
-  return Math.round((target.getTime() - now.getTime()) / 86400000);
-}
-
-const releaseDecisionOrder: Record<string, number> = {
-  release: 0,
-  cicd_only: 1,
-  stopped: 2,
-};
-
-function compareAppRows(
-  a: { snap: Snapshot },
-  b: { snap: Snapshot },
-  userIsOwner: boolean,
-  username: string,
-): number {
-  if (userIsOwner) {
-    const ownA = (a.snap.owners ?? []).includes(username) ? 0 : 1;
-    const ownB = (b.snap.owners ?? []).includes(username) ? 0 : 1;
-    if (ownA !== ownB) return ownA - ownB;
-  }
-  const da = releaseDecisionOrder[a.snap.release_decision] ?? 99;
-  const db = releaseDecisionOrder[b.snap.release_decision] ?? 99;
-  if (da !== db) return da - db;
-  return displayName(a.snap).localeCompare(displayName(b.snap), "zh-CN");
+function rowsFor(payload: StatePayload, userIsOwner: boolean, username: string): Row[] {
+  const rows = (payload.apps ?? []).map((app) => ({ app, entry: appEntry(payload.release, app.id) }));
+  return userIsOwner ? rows.filter((row) => row.app.owners.includes(username)) : rows;
 }
 
 // ---------------------------------------------------------------------------
-// Sub-components
-// ---------------------------------------------------------------------------
-
-/** Colored "pill" badge for release_decision. */
-function DecisionPill({ decision }: { decision: string }) {
-  if (decision === "release") return <span className="pill accent">release</span>;
-  if (decision === "cicd_only") return <span className="pill">仅 CICD</span>;
-  if (decision === "stopped") return <span className="pill bad">已停止</span>;
-  return <span className="pill">{decision || ""}</span>;
-}
-
-/** Colored pill for QA status. */
-function QaPill({ status }: { status?: string }) {
-  const s: QaStatus = (status as QaStatus) || "not_checked";
-  const cls =
-    s === "qa_passed" ? "ok" :
-    s === "has_issues" ? "warnp" :
-    s === "cannot_release" ? "bad" : "";
-  return <span className={`pill ${cls}`}>{qaStatusLabels[s] ?? s}</span>;
-}
-
-// ---------------------------------------------------------------------------
-// Stats row (index.html:1802-1837)
+// Stats row
 // ---------------------------------------------------------------------------
 
 interface StatsRowProps {
@@ -153,55 +84,35 @@ interface StatsRowProps {
 }
 
 function StatsRow({ payload, userIsOwner, username }: StatsRowProps) {
-  const apps = payload.apps ?? [];
-  const allRows = apps
-    .map((app) => ({ app, snap: releaseSnap(payload, app.id) }))
-    .filter((x): x is { app: App; snap: Snapshot } => x.snap !== null);
-
-  const rows = userIsOwner
-    ? allRows.filter((x) => (x.snap.owners ?? []).includes(username))
-    : allRows;
-
-  const releaseRows = rows.filter((x) => isReleaseSnap(x.snap));
-
-  const byTarget = (list: typeof rows, t: string) =>
-    list.filter((x) => normalizeDocTarget(x.snap.doc_target) === t).length;
-
-  const hpcAll = byTarget(rows, "manual");
-  const aiAll = byTarget(rows, "ai4sci");
-  const hpcRel = byTarget(releaseRows, "manual");
-  const aiRel = byTarget(releaseRows, "ai4sci");
-  const docIncomplete = releaseRows.filter((row) => docsItems(row.snap).length > 0).length;
-
+  const rows = rowsFor(payload, userIsOwner, username);
+  const running = rows.filter((row) => row.app.cicd_status === "running");
+  const signed = rows.filter((row) => row.entry?.status === "active");
+  const byTarget = (list: Row[], t: string) =>
+    list.filter((row) => normalizeDocTarget(row.app.doc_target) === t).length;
+  const pendingScope = signed.filter((row) => row.entry?.pending_scope_request).length;
   const qa = {
-    not_checked: releaseRows.filter((x) => (x.snap.qa_status || QA_STATUS_DEFAULT) === "not_checked").length,
-    qa_passed: releaseRows.filter((x) => x.snap.qa_status === "qa_passed").length,
-    has_issues: releaseRows.filter((x) => x.snap.qa_status === "has_issues").length,
-    cannot_release: releaseRows.filter((x) => x.snap.qa_status === "cannot_release").length,
+    not_checked: signed.filter((row) => row.entry?.qa_status === "not_checked").length,
+    qa_passed: signed.filter((row) => row.entry?.qa_status === "qa_passed").length,
+    has_issues: signed.filter((row) => row.entry?.qa_status === "has_issues").length,
+    cannot_release: signed.filter((row) => row.entry?.qa_status === "cannot_release").length,
   };
 
   return (
     <div id="summary" className="stats">
-      {/* Total app count */}
       <div className="stat">
-        <div className="num">{rows.length}</div>
-        <div className="lbl">App 总数</div>
-        <div className="sub">HPC {hpcAll} · AI4S {aiAll}</div>
+        <div className="num">{running.length}</div>
+        <div className="lbl">CICD 运行中 App</div>
+        <div className="sub">HPC {byTarget(running, "manual")} · AI4S {byTarget(running, "ai4sci")} · 已停止 {rows.length - running.length}</div>
       </div>
-
-      {/* Release decision count */}
       <div className="stat accent">
-        <div className="num">{releaseRows.length}</div>
-        <div className="lbl">release 决策</div>
-        <div className="sub">HPC {hpcRel} · AI4S {aiRel}</div>
+        <div className="num">{signed.length}</div>
+        <div className="lbl">本期报名</div>
+        <div className="sub">HPC {byTarget(signed, "manual")} · AI4S {byTarget(signed, "ai4sci")}</div>
       </div>
-
-      <div className={`stat ${docIncomplete ? "warn" : "ok"}`}>
-        <div className="num">{docIncomplete}</div>
-        <div className="lbl">Doc 未完成 App 数</div>
+      <div className={`stat ${pendingScope ? "warn" : "ok"}`}>
+        <div className="num">{pendingScope}</div>
+        <div className="lbl">范围扩大待 QA 审批</div>
       </div>
-
-      {/* QA breakdown */}
       <div className="stat qa-split">
         <div className="num">
           <span className="seg-todo">{qa.not_checked}</span>
@@ -219,270 +130,36 @@ function StatsRow({ payload, userIsOwner, username }: StatsRowProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Schedule timeline (index.html:1842-1938)
+// Selected cycle components
 // ---------------------------------------------------------------------------
 
-interface ScheduleForm {
-  version: string;
-  branch_cut_at: string;
-  release_at: string;
-  note: string;
-}
-
-const emptyForm = (): ScheduleForm => ({
-  version: "",
-  branch_cut_at: "",
-  release_at: "",
-  note: "",
-});
-
-function entryToForm(e: ReleaseScheduleEntry): ScheduleForm {
-  return {
-    version: e.version ?? "",
-    branch_cut_at: formatDateValue(e.branch_cut_at),
-    release_at: formatDateValue(e.release_at),
-    note: e.note ?? "",
-  };
-}
-
-interface SchedulePanelProps {
-  entries: ReleaseScheduleEntry[];
-  canManage: boolean;
-  onMutated: () => void;
-}
-
-function SchedulePanel({ entries, canManage, onMutated }: SchedulePanelProps) {
-  // editId: entry.id being edited, "__new__" for add row, null for read-only
-  const [editId, setEditId] = useState<string | null>(null);
-  const [form, setForm] = useState<ScheduleForm>(emptyForm());
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  const today = new Date().toISOString().slice(0, 10);
-
-  function startEdit(entry: ReleaseScheduleEntry) {
-    setEditId(entry.id);
-    setForm(entryToForm(entry));
-    setError("");
-  }
-
-  function startNew() {
-    setEditId("__new__");
-    setForm(emptyForm());
-    setError("");
-  }
-
-  function cancelEdit() {
-    setEditId(null);
-    setError("");
-  }
-
-  async function save() {
-    if (!form.version.trim()) {
-      setError("请填写版本号");
-      return;
-    }
-    setSaving(true);
-    setError("");
-    try {
-      await apiPost("/api/release-schedule/upsert", {
-        id: editId === "__new__" ? "" : editId,
-        version: form.version.trim(),
-        branch_cut_at: formatDateValue(form.branch_cut_at),
-        release_at: formatDateValue(form.release_at),
-        note: form.note.trim(),
-      });
-      setEditId(null);
-      onMutated();
-    } catch (e) {
-      setError("保存失败：" + (e instanceof Error ? e.message : String(e)));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function deleteEntry(entry: ReleaseScheduleEntry) {
-    if (!(await confirmDialog({
-      body: `确定删除发布时间线"${entry.version || entry.id}"？`,
-      danger: true,
-      confirmText: "删除",
-    }))) return;
-    try {
-      await apiPost("/api/release-schedule/delete", { id: entry.id });
-      onMutated();
-    } catch (e) {
-      toast.error("删除失败：" + (e instanceof Error ? e.message : String(e)));
-    }
-  }
-
-  const cols = canManage ? 5 : 4;
-
+function ComponentsPanel({ release }: { release: ReleaseDetail | null }) {
   return (
-    <div id="scheduleePanel" className="panel">
+    <div className="panel" data-testid="dashboard-components">
       <div className="panel-head">
-        <h2>发布时间线</h2>
-        <span className="count" id="scheduleCount">
-          {entries.length ? `共 ${entries.length} 个版本` : ""}
-        </span>
-        <span className="flex-1" />
-        {canManage && (
-          <button
-            className="btn sm primary"
-            onClick={startNew}
-            disabled={editId !== null}
-          >
-            + 新增
-          </button>
-        )}
+        <h2>组件信息</h2>
+        {release && <span className="count">{release.name}</span>}
       </div>
       <div className="panel-body p-0">
-        {error && <div className="lerr p-8-12">{error}</div>}
-        <div id="scheduleBox" className="schedule-box">
+        <div className="table">
           <table>
-            <thead>
-              <tr>
-                <th className="w-25p">版本号</th>
-                <th className="w-25p">拉 branch 时间</th>
-                <th className="w-25p">Release 发布时间</th>
-                <th>备注</th>
-                {canManage && <th className="w-120 ta-r">操作</th>}
-              </tr>
-            </thead>
+            <thead><tr><th>组件</th><th>版本</th><th>说明</th></tr></thead>
             <tbody>
-              {entries.map((entry) =>
-                editId === entry.id ? (
-                  <ScheduleEditRow
-                    key={entry.id}
-                    form={form}
-                    onChange={(f) => setForm(f)}
-                    onSave={save}
-                    onCancel={cancelEdit}
-                    saving={saving}
-                  />
-                ) : (
-                  <ScheduleReadRow
-                    key={entry.id}
-                    entry={entry}
-                    canManage={canManage}
-                    today={today}
-                    onEdit={() => startEdit(entry)}
-                    onDelete={() => deleteEntry(entry)}
-                  />
-                )
-              )}
-              {canManage && editId === "__new__" && (
-                <ScheduleEditRow
-                  key="__new__"
-                  form={form}
-                  onChange={(f) => setForm(f)}
-                  onSave={save}
-                  onCancel={cancelEdit}
-                  saving={saving}
-                />
-              )}
-              {entries.length === 0 && editId !== "__new__" && (
-                <tr className="empty-row">
-                  <td colSpan={cols} className="muted ta-c p-14">
-                    {canManage
-                      ? '尚未维护发布时间线，点击右上角"+ 新增"填入版本号、拉 branch 时间、发布时间。'
-                      : "尚未维护发布时间线。"}
-                  </td>
+              {(release?.environment ?? []).map((row, index) => (
+                <tr key={row.id ?? index}>
+                  <td>{row.component}</td><td>{row.version || "未设置"}</td><td>{row.note || "—"}</td>
                 </tr>
+              ))}
+              {!release?.environment.length && (
+                <tr><td colSpan={3} className="muted p-14">
+                  {release ? "RM 尚未填写该版本的组件信息。" : "还没有版本，等待 RM 新建版本。"}
+                </td></tr>
               )}
             </tbody>
           </table>
         </div>
       </div>
     </div>
-  );
-}
-
-interface ScheduleReadRowProps {
-  entry: ReleaseScheduleEntry;
-  canManage: boolean;
-  today: string;
-  onEdit: () => void;
-  onDelete: () => void;
-}
-
-function ScheduleReadRow({ entry, canManage, today, onEdit, onDelete }: ScheduleReadRowProps) {
-  const rel = entry.release_at ?? "";
-  const cls = rel && rel < today ? "past" : "";
-  const soon = rel && rel >= today && daysUntil(rel) <= 14 ? "soon" : "";
-  return (
-    <tr className={cls}>
-      <td className="ver">{entry.version}</td>
-      <td>{formatServerTime(entry.branch_cut_at) || "—"}</td>
-      <td className={soon}>{formatServerTime(rel) || "—"}</td>
-      <td>{entry.note || ""}</td>
-      {canManage && (
-        <td>
-          <div className="cell-actions">
-            <button className="btn sm" onClick={onEdit}>编辑</button>
-            <button className="btn sm danger" onClick={onDelete}>删除</button>
-          </div>
-        </td>
-      )}
-    </tr>
-  );
-}
-
-interface ScheduleEditRowProps {
-  form: ScheduleForm;
-  onChange: (f: ScheduleForm) => void;
-  onSave: () => void;
-  onCancel: () => void;
-  saving: boolean;
-}
-
-function ScheduleEditRow({ form, onChange, onSave, onCancel, saving }: ScheduleEditRowProps) {
-  return (
-    <tr>
-      <td>
-        <input
-          className="input sm"
-          value={form.version}
-          placeholder="例：3.0.0"
-          onChange={(e) => onChange({ ...form, version: e.target.value })}
-        />
-      </td>
-      <td>
-        <DateInput
-          value={form.branch_cut_at}
-          onChange={(value) => onChange({ ...form, branch_cut_at: value })}
-          testId="schedule-branch-cut"
-          ariaLabel="拉 branch 时间"
-          size="sm"
-        />
-      </td>
-      <td>
-        <DateInput
-          value={form.release_at}
-          onChange={(value) => onChange({ ...form, release_at: value })}
-          testId="schedule-release-at"
-          ariaLabel="Release 发布时间"
-          size="sm"
-        />
-      </td>
-      <td>
-        <input
-          className="input sm"
-          value={form.note}
-          placeholder="选填"
-          onChange={(e) => onChange({ ...form, note: e.target.value })}
-        />
-      </td>
-      <td>
-        <div className="cell-actions">
-          <button className="btn sm primary" onClick={onSave} disabled={saving}>
-            {saving ? "…" : "保存"}
-          </button>
-          <button className="btn sm" onClick={onCancel} disabled={saving}>
-            取消
-          </button>
-        </div>
-      </td>
-    </tr>
   );
 }
 
@@ -499,19 +176,10 @@ interface OwnerGridProps {
 
 function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridProps) {
   const [statusFilter, setStatusFilter] = useState<AppStatusFilter>("all");
-
-  const apps = payload.apps ?? [];
-  const allRows = apps
-    .map((app) => ({ app, snap: releaseSnap(payload, app.id) }))
-    .filter((x): x is { app: App; snap: Snapshot } => x.snap !== null);
-
-  const gridRows = (userIsOwner
-    ? allRows.filter((x) => (x.snap.owners ?? []).includes(username))
-    : allRows.slice()
-  )
-    .filter((x) => matchesAppStatusFilter(x.snap, statusFilter))
-    .sort((a, b) => compareAppRows(a, b, userIsOwner, username));
-
+  const user = { username, role: userIsOwner ? "Owner" : "", display_name: "" };
+  const gridRows = rowsFor(payload, userIsOwner, username)
+    .filter((row) => matchesAppStatusFilter(row.app, row.entry, statusFilter))
+    .sort((a, b) => compareAppRows(a, b, user));
   const displayNames = payload.user_display_names ?? {};
   const title = userIsOwner ? "我的 App 状态概览" : "App 状态概览";
 
@@ -520,32 +188,19 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
       <div className="panel-head">
         <h2 id="dashboardOwnerTitle">{title}</h2>
         <span className="count" id="dashboardOwnerCount">共 {gridRows.length} 个</span>
-        <select
-          className="select sm select-inline"
-          aria-label="App 状态筛选"
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value as AppStatusFilter)}
-          data-testid="dashboard-app-status-filter"
-        >
+        <select className="select sm select-inline" aria-label="App 状态筛选" value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as AppStatusFilter)} data-testid="dashboard-app-status-filter">
           {APP_STATUS_FILTER_OPTIONS.map((option) => (
             <option key={option.value} value={option.value}>{option.label}</option>
           ))}
         </select>
         <span className="flex-1" />
-        <span className="muted small">点击行 → App 工作台查看 / 编辑</span>
+        <span className="muted small">点击行 → App 工作台查看 / 报名</span>
       </div>
       <div className="panel-body p-0">
         <div id="dashboardOwnerGrid">
           {gridRows.length === 0 ? (
-            <p className="muted small p-14">
-              {statusFilter === "qa_anomaly"
-                ? "没有 QA 异常的 app。"
-                : statusFilter === "doc_incomplete"
-                  ? "没有 doc 未完成的 app。"
-                  : userIsOwner
-                    ? "本 release 没有归属于你的 app。"
-                    : "本 release 暂无 app。"}
-            </p>
+            <p className="muted small p-14">{userIsOwner ? "没有符合条件的、归属于你的 app。" : "没有符合条件的 app。"}</p>
           ) : (
             <table className="app-overview-table" data-testid="dashboard-app-table">
               <thead>
@@ -553,41 +208,32 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
                   <th>App 名称</th>
                   <th>类型</th>
                   {!userIsOwner && <th>Owner</th>}
-                  <th>决策</th>
+                  <th>CICD</th>
+                  <th>本期</th>
                   <th>QA</th>
-                  <th>Doc</th>
+                  <th>正式版</th>
                   <th className="w-40" aria-label="跳转" />
                 </tr>
               </thead>
               <tbody>
-                {gridRows.map(({ app, snap }) => {
-                  const rel = isReleaseSnap(snap);
-                  const docMissing = docsItems(snap).length;
-                  const ownersLabel = usersLabel(snap.owners, displayNames);
+                {gridRows.map(({ app, entry }) => {
+                  const active = entry?.status === "active" ? entry : null;
                   return (
-                    <tr
-                      key={app.id}
-                      onClick={() => onJumpToApp(app.id)}
-                      title="在 App 工作台中打开"
-                      data-testid={`dashboard-app-row-${app.id}`}
-                    >
+                    <tr key={app.id} onClick={() => onJumpToApp(app.id)} title="在 App 工作台中打开"
+                      data-testid={`dashboard-app-row-${app.id}`}>
                       <td>
                         <span className="row2 gap-8 nowrap-flex">
-                          <span className="app-ico">{initials(displayName(snap))}</span>
-                          <span className="ov-name">{displayName(snap)}</span>
-                          {rel && snap.owner_confirmed && <span className="pill ok">已确认</span>}
+                          <span className="app-ico">{initials(displayName(app))}</span>
+                          <span className="ov-name">{displayName(app)}</span>
+                          {active?.target_version && <span className="ver-tag">{versionTag(active.target_version)}</span>}
                         </span>
                       </td>
-                      <td className="muted">{snap.type ?? "—"}</td>
-                      {!userIsOwner && <td className="muted">{ownersLabel}</td>}
-                      <td><DecisionPill decision={snap.release_decision} /></td>
-                      <td>{rel ? <QaPill status={snap.qa_status} /> : <span className="muted">—</span>}</td>
-                      <td>{rel
-                        ? docMissing > 0
-                          ? <span className="pill warnp">待补 {docMissing} 项</span>
-                          : <span className="pill ok">齐全</span>
-                        : <span className="muted">—</span>}
-                      </td>
+                      <td className="muted">{app.type || "—"}</td>
+                      {!userIsOwner && <td className="muted">{usersLabel(app.owners, displayNames)}</td>}
+                      <td><CicdStatusPill app={app} /></td>
+                      <td><EntryPill entry={entry} /></td>
+                      <td>{active ? <QaPill status={active.qa_status} /> : <span className="muted">—</span>}</td>
+                      <td className="muted">{app.official ? `${app.official.version}（${app.official.release_name}）` : "—"}</td>
                       <td className="ov-jump ta-c">›</td>
                     </tr>
                   );
@@ -602,7 +248,7 @@ function OwnerGrid({ payload, userIsOwner, username, onJumpToApp }: OwnerGridPro
 }
 
 // ---------------------------------------------------------------------------
-// Release selector (mirrors index.html release select in the header)
+// Release selector
 // ---------------------------------------------------------------------------
 
 interface ReleaseSelectorProps {
@@ -612,21 +258,11 @@ interface ReleaseSelectorProps {
 }
 
 function ReleaseSelector({ releases, selectedId, onChange }: ReleaseSelectorProps) {
-  if (!releases.length) {
-    return <span className="muted small">暂无 release</span>;
-  }
+  if (!releases.length) return <span className="muted small">暂无版本</span>;
   return (
-    <select
-      className="input select-inline"
-      value={selectedId ?? ""}
-      onChange={(e) => onChange(e.target.value)}
-      aria-label="选择 release"
-    >
-      {releases.map((r) => (
-        <option key={r.id} value={r.id}>
-          {r.name}{r.maca_version ? ` (${r.maca_version})` : ""}
-        </option>
-      ))}
+    <select className="input select-inline" value={selectedId ?? ""} onChange={(e) => onChange(e.target.value)}
+      aria-label="选择版本">
+      {releases.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
     </select>
   );
 }
@@ -667,7 +303,6 @@ export function DashboardPage() {
     refetchOnMount: true,
   });
 
-  const canManageSchedule = can(user?.role, "release.manage");
   const userIsOwner = isOwner(user ?? undefined);
   const username = user?.username ?? "";
 
@@ -688,10 +323,6 @@ export function DashboardPage() {
   }
 
   function handleRefresh() {
-    void refetch();
-  }
-
-  function handleScheduleMutated() {
     void refetch();
   }
 
@@ -734,11 +365,7 @@ export function DashboardPage() {
               username={username}
             />
 
-            <SchedulePanel
-              entries={data.release_schedule ?? []}
-              canManage={canManageSchedule}
-              onMutated={handleScheduleMutated}
-            />
+            <ComponentsPanel release={data.release} />
           </div>
 
           <OwnerGrid

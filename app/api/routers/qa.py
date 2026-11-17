@@ -1,22 +1,32 @@
-"""QA router — QA status, log upload/download, LLM analysis.
+"""QA router — App verdicts, report failures, workbooks and legacy log analysis.
 
 Faithful port of server.py GET/POST QA handlers.
 
-Endpoint paths (exact from server.py):
+Endpoint paths (legacy release routes retain their original paths):
   GET  /api/qa/analyze-log/status
   GET  /api/qa-log/download           (note: NOT under /api/qa prefix)
   GET  /api/qa-reports                (note: NOT under /api/qa prefix)
   POST /api/qa/status-batch
-  POST /api/qa/upload-log
+  POST /api/qa/upload-log            (retired, returns 410)
+  GET  /api/qa/failure-summary
+  GET  /api/qa/report
+  GET  /api/qa/delivery-images
   POST /api/qa/analyze-log
   POST /api/qa/analyze-log/start
+  GET  /api/qa/test-results
+  GET  /api/qa/test-results/export
+  POST /api/qa/test-results/upload
+  GET  /api/qa/test-results/{report_id}/download
 
 The router prefix is left empty (tags=["qa"]) so we can host paths both
 under /api/qa/ and at /api/qa-* to match the old server exactly.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
+from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
@@ -25,7 +35,7 @@ from app.api.errors import ApiError
 from app.config import settings
 from app.deps import get_db, require_capability, require_tab_access
 from app.services import community_artifacts_service
-from app.services import qa_service
+from app.services import qa_service, qa_results_service, qa_report_service
 
 router = APIRouter(tags=["qa"])
 require_qa_tab_access = require_tab_access("qa", message="无权访问 QA 页签")
@@ -41,6 +51,9 @@ require_qa_status_edit = require_capability(
 require_qa_log_upload = require_capability(
     "qa.edit",
     message="只有 QA 或 RM 可上传 QA log",
+)
+require_qa_results_upload = require_capability(
+    "qa.edit", message="只有 QA 或 RM 可上传测试结果",
 )
 require_qa_analysis = require_capability(
     "qa.edit",
@@ -122,6 +135,20 @@ def api_qa_reports(
     return qa_service.get_qa_reports(conn, release_id, compare_release_id)
 
 
+@router.get("/api/qa/test-commands")
+def version_test_commands(
+    response: Response,
+    release_id: str = Query(),
+    hpc_version: str = Query(default="latest"),
+    _user: dict = Depends(require_qa_tab_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    from app.services import qa_commands_service
+
+    response.headers["Cache-Control"] = "no-store"
+    return qa_commands_service.query(conn, release_id=release_id, hpc_version=hpc_version)
+
+
 # ---------------------------------------------------------------------------
 # POST /api/qa/community-artifacts
 # ---------------------------------------------------------------------------
@@ -171,22 +198,43 @@ def api_qa_status_batch(
 
 @router.post("/api/qa/upload-log")
 def api_qa_upload_log(
-    body: dict,
-    user: dict = Depends(require_qa_log_upload),
+    _user: dict = Depends(require_qa_log_upload),
+) -> dict:
+    """Old upload clients must use the validated QA-report workflow."""
+    raise ApiError(410, "旧日志上传接口已停用，请在 QA log 上传测试结果 Excel；QA report 自动汇总失败项")
+
+
+@router.get("/api/qa/report")
+def qa_report(
+    response: Response,
+    release_id: str = Query(default=""),
+    user: dict = Depends(require_qa_tab_access),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    """Accept a base64-encoded QA log file and persist it.
+    response.headers["Cache-Control"] = "no-store"
+    return qa_report_service.get_report(conn, user=user, release_id=release_id)
 
-    Mirrors server.py:954-971.
-    """
-    return qa_service.upload_qa_log(
-        conn,
-        body["release_id"],
-        content_b64=body.get("content_base64", ""),
-        filename=body.get("filename", "qa_log"),
-        user=user["username"],
-        role=user["role"],
-    )
+
+@router.get("/api/qa/failure-summary")
+def qa_failure_summary(
+    response: Response,
+    release_id: str = Query(),
+    _user: dict = Depends(require_qa_tab_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    return qa_results_service.failure_summary(conn, release_id)
+
+
+@router.get("/api/qa/delivery-images")
+def qa_delivery_images(
+    response: Response,
+    release_id: str = Query(),
+    _user: dict = Depends(require_qa_tab_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    return qa_service.delivery_images_view(conn, release_id)
 
 
 # ---------------------------------------------------------------------------
@@ -290,3 +338,96 @@ def api_qa_analyze_log_start(
         role=user["role"],
         db_path=settings.db_path,
     )
+
+
+@router.post("/api/qa/test-results/upload")
+def upload_test_results(
+    body: dict,
+    user: dict = Depends(require_qa_results_upload),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    return qa_results_service.upload(
+        conn,
+        filename=body.get("filename", ""),
+        content_b64=body.get("content_base64", ""),
+        user=user["username"],
+        role=user["role"],
+        release_id=body.get('release_id', ''),
+        revision=body.get('revision'),
+    )
+
+
+def result_filters(
+    release_id: str = Query(),
+    search: str = Query(default=""),
+    table_filter: str = Query(default="", alias="filter"),
+    column_filters: str = Query(default="{}"),
+    sort_by: str = Query(default=""),
+    sort_direction: Literal["asc", "desc"] = Query(default="asc"),
+) -> dict:
+    try:
+        columns = json.loads(column_filters)
+    except ValueError as exc:
+        raise ApiError(400, "列筛选须为 JSON 对象") from exc
+    if not isinstance(columns, dict):
+        raise ApiError(400, "列筛选须为 JSON 对象")
+    return {'release_id': release_id, "search": search, "table_filter": table_filter, "column_filters": columns,
+            "sort_by": sort_by, "sort_direction": sort_direction}
+
+
+@router.get("/api/qa/test-results")
+def test_results(
+    response: Response,
+    filters: dict = Depends(result_filters),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    all_rows: bool = Query(default=False),
+    user: dict = Depends(require_qa_tab_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    return qa_results_service.query(conn, **filters, offset=0 if all_rows else offset,
+                                    limit=None if all_rows else limit)
+
+
+@router.get("/api/qa/test-results/export")
+def export_test_results(
+    filters: dict = Depends(result_filters),
+    user: dict = Depends(require_qa_tab_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    return Response(
+        qa_results_service.export_csv(conn, **filters),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="qa_test_results.csv"',
+                 "Cache-Control": "no-store"},
+    )
+
+
+@router.get("/api/qa/test-results/{report_id}/download")
+def download_test_results(
+    report_id: int,
+    user: dict = Depends(require_qa_tab_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    content, filename = qa_results_service.download(conn, report_id)
+    return Response(
+        content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": "attachment; filename*=UTF-8''" + quote(filename),
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get("/api/qa/test-results/{report_id}/environment")
+def preview_test_environment(
+    report_id: int,
+    response: Response,
+    name: str = Query(min_length=1),
+    user: dict = Depends(require_qa_tab_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    return qa_results_service.environment_preview(conn, report_id, name)

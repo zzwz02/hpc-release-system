@@ -101,6 +101,27 @@ describe("TabNav", () => {
 
   // ── AI助手 group ───────────────────────────────────────────────────────────
 
+  it.each(["RM", "Owner", "QA"] as const)("groups history and dependencies under QA without an extra tab row for %s", (role) => {
+    renderTabNav(role, "/lookup");
+    expect(linkLabels("nav.tabs a")).toContain("QA");
+    expect(linkLabels("nav.tabs a")).not.toContain("历史查询");
+    expect(linkLabels("nav.tabs a")).not.toContain("兼容性验证");
+    expect(document.querySelector(".tab-subnav")).toBeNull();
+    expect(document.querySelector('nav.tabs a[href="/qa"]')).toHaveClass("active");
+  });
+
+  it("keeps the QA parent active for a dependencies deep link", () => {
+    renderTabNav("Owner", "/dependencies?component=sdk");
+    expect(document.querySelector('nav.tabs a[href="/qa"]')).toHaveClass("active");
+    expect(document.querySelector(".tab-subnav")).toBeNull();
+  });
+
+  it.each(["Guest", "SPD", "Admin"] as const)("hides QA history and dependencies for %s", (role) => {
+    renderTabNav(role, "/qa");
+    expect(screen.queryByRole("link", { name: "历史查询" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "兼容性验证" })).toBeNull();
+  });
+
   it("collapses the AI助手 routes into one tab", () => {
     renderTabNav("RM");
     const labels = linkLabels("nav.tabs a");

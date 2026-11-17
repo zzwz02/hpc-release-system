@@ -13,7 +13,6 @@ from app.domain.qa import QA_STATUSES, QA_STATUS_DEFAULT, QA_STATUS_OPTIONS
 from app.integrations import llm
 from app.repositories import apps_repo, qa_repo
 from app.repositories.audit_repo import log_audit
-from app.services import release_reads
 from app.timeutil import beijing_timestamp
 
 _QA_TEST_RESULT_STATUSES = {"pass", "fail", "skip", "unknown"}
@@ -39,33 +38,34 @@ _QA_ANALYSIS_SYSTEM = (
 )
 
 
-def _analysis_inventory(
-    release: dict[str, Any],
-    apps: dict[str, dict[str, Any]],
-) -> list[dict[str, Any]]:
+def _analysis_inventory(conn: sqlite3.Connection, release_id: str) -> list[dict[str, Any]]:
+    """Signed-up Apps with the tests in their locked scope.
+
+    Tests come from each entry's locked app_info version minus the tests the
+    Owner removed (the old code read a ``tests`` key snapshots never had).
+    """
+    from app.services import catalog_service, cycle_service
+
+    apps = {app["id"]: app for app in apps_repo.list_apps(conn)}
     inventory: list[dict[str, Any]] = []
-    for app_id, snapshot in release["snapshots"].items():
-        if snapshot.get("release_decision") != "release":
-            continue
-        app = apps.get(app_id) or {}
-        tests = []
-        for test in snapshot.get("tests") or []:
-            if not test.get("enabled", True):
-                continue
-            tests.append(
-                {
-                    "name": test.get("name") or test.get("path") or "",
-                    "path": test.get("path") or "",
-                    "command": test.get("command") or "",
-                    "supported_chips": test.get("supported_chips") or [],
-                    "arches": test.get("arch_list") or [],
-                }
-            )
+    for entry in cycle_service.list_entry_views(conn, release_id, include_withdrawn=False):
+        app = apps.get(entry["app_id"]) or {"id": entry["app_id"]}
+        tests = [
+            {
+                "name": test["path"].rsplit(".", 1)[-1],
+                "path": test["path"],
+                "command": test["command"],
+                "supported_chips": test.get("supported_chips") or [],
+                "arches": test.get("arch_list") or [],
+            }
+            for test in entry["scope_tests"]
+            if not test["excluded"]
+        ]
         inventory.append(
             {
-                "app_id": app_id,
-                "app_name": snapshot.get("app_name") or app.get("name") or app_id,
-                "version": snapshot.get("version") or snapshot.get("app_version") or "",
+                "app_id": entry["app_id"],
+                "app_name": catalog_service.app_name(app),
+                "version": entry["target_version"],
                 "tests": tests,
             }
         )
@@ -190,11 +190,9 @@ def analyze_qa_log(
         truncated = True
 
     _progress(progress, "building_inventory", "正在准备 app 和测试清单")
-    release = release_reads.get_release(conn, release_id)
-    apps = {app["id"]: app for app in apps_repo.list_apps(conn)}
-    inventory = _analysis_inventory(release, apps)
+    inventory = _analysis_inventory(conn, release_id)
     if not inventory:
-        raise RuntimeError("本 release 没有 release 决策为 release 的 app，无法分析")
+        raise RuntimeError("本版本没有报名的 App，无法分析")
 
     _progress(progress, "building_prompt", "正在构造 LLM 分析上下文")
     user_payload = json.dumps({"inventory": inventory, "log": text}, ensure_ascii=False)

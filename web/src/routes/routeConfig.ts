@@ -20,6 +20,7 @@ export type RouteView = TabView;
 
 /** Top-level tabs that hold several routes as sub-tabs. */
 export const ROUTE_GROUPS = {
+  qa: { label: "QA" },
   "ai-assistant": { label: "AI助手" },
 } as const;
 export type RouteGroupId = keyof typeof ROUTE_GROUPS;
@@ -41,7 +42,9 @@ export const ROUTES: RouteConfig[] = [
   { path: "/",          view: "dashboard", label: "总览",       roles: rolesForTab("dashboard") },
   { path: "/init",      view: "init",      label: "周期管理",   roles: rolesForTab("init") },
   { path: "/apps",      view: "apps",      label: "App 工作台", roles: rolesForTab("apps") },
-  { path: "/qa",        view: "qa",        label: "QA",         roles: rolesForTab("qa") },
+  { path: "/qa",        view: "qa",        label: "QA",         roles: rolesForTab("qa"), group: "qa" },
+  { path: "/lookup",    view: "lookup",    label: "历史查询",   roles: rolesForTab("lookup"), group: "qa" },
+  { path: "/dependencies", view: "dependencies", label: "兼容性验证", roles: rolesForTab("dependencies"), group: "qa" },
   { path: "/artifacts", view: "artifacts", label: "发布文档",   roles: rolesForTab("artifacts") },
   { path: "/cicd",      view: "cicd",      label: "CICD 工作台", roles: rolesForTab("cicd") },
   { path: "/jenkins-failures", view: "jenkins-failures", label: "Jenkins失败查询", roles: rolesForTab("jenkins-failures"), group: "ai-assistant" },

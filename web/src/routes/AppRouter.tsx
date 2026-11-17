@@ -34,6 +34,8 @@ import { ReleaseCyclePage } from "../features/init/ReleaseCyclePage";
 import { AppWorkbenchPage } from "../features/appWorkbench/AppWorkbenchPage";
 import { QaPage } from "../features/qa/QaPage";
 import { ArtifactsPage } from "../features/artifacts/ArtifactsPage";
+import { DependenciesPage } from "../features/dependencies/DependenciesPage";
+import { LookupPage } from "../features/lookup/LookupPage";
 import { CicdPage } from "../features/cicd/CicdPage";
 import { CicdAssistantPage } from "../features/cicdAgent/CicdAssistantPage";
 import { JenkinsFailuresPage } from "../features/cicdAgent/JenkinsFailuresPage";
@@ -65,6 +67,8 @@ const FEATURE_MAP: Record<string, React.ReactNode> = {
   apps:      <AppWorkbenchPage />,
   qa:        <QaPage />,
   artifacts: <ArtifactsPage />,
+  dependencies: <DependenciesPage />,
+  lookup:    <LookupPage />,
   cicd:      <CicdPage />,
   "jenkins-failures": <JenkinsFailuresPage />,
   "cicd-assistant":   <CicdAssistantPage />,

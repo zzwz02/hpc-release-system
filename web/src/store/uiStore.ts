@@ -103,6 +103,8 @@ export interface UiStore {
   /** True when the detail form has unsaved edits (index.html:1230) */
   appDetailDirty: boolean;
   setAppDetailDirty: (v: boolean) => void;
+  componentCompatibilityDirty: boolean;
+  setComponentCompatibilityDirty: (v: boolean) => void;
 
   /** True when the detail panel is in edit mode (index.html:1231) */
   appDetailEditMode: boolean;
@@ -197,6 +199,8 @@ export const useUiStore = create<UiStore>((set) => ({
 
   appDetailDirty: false,
   setAppDetailDirty: (v) => set({ appDetailDirty: v }),
+  componentCompatibilityDirty: false,
+  setComponentCompatibilityDirty: (v) => set({ componentCompatibilityDirty: v }),
 
   appDetailEditMode: false,
   setAppDetailEditMode: (v) => set({ appDetailEditMode: v }),

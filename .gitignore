@@ -5,6 +5,8 @@ __pycache__/
 *.bak
 *.sqlite
 *.sqlite3
+/release_system_cutover*/
+/.cutover-*/
 admin_password.local
 release_system.conf
 .venv/

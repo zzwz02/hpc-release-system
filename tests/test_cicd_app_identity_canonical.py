@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from app.config import settings
 from app.db.connection import connect, init_db, reset_init_state
 from app.repositories import apps_repo
-from app.services import app_service, cicd_service
+from app.services import catalog_service, cicd_service
 
 _GERRIT_BASE = settings.gerrit_hpc_base_url
 
@@ -18,43 +16,18 @@ def fresh_conn():
 
 
 def seed_app_release(conn) -> None:
-    conn.execute(
-        """
-        INSERT INTO releases(
-            id, name, maca_version, app_freeze_deadline, doc_deadline,
-            released_locked, created_at, source
-        )
-        VALUES ('rel-1', '3.0', '3.0', '2099-01-01 00:00:00',
-                '2099-02-01 00:00:00', 0, '2026-01-01 00:00:00', 'manual')
-        """
-    )
-    apps_repo.save_app(conn, {
+    """One running App with a manifest-free git identity (no cycle needed)."""
+    apps_repo.insert_app(conn, {
         "id": "app1",
         "git_url": "hpc_app_new",
         "git_branch": "maca_new",
         "aliases": ["App One"],
+        "owners": ["owner"],
+        "official_name": "App One",
+        "type": "tool",
         "created_by": "test",
         "created_at": "2026-01-01 00:00:00",
     })
-    snapshot = {
-        "app_id": "app1",
-        "official_name": "App One",
-        "version": "1.0",
-        "release_decision": "release",
-        "owners": ["owner"],
-        "owner_confirmed": False,
-        "doc_target": "manual",
-        "type": "tool",
-        "doc": {},
-        "community": {},
-        "test_docs": [],
-        "app_info": None,
-        "app_info_diffs": [],
-    }
-    conn.execute(
-        "INSERT INTO snapshots(release_id, app_id, data_json) VALUES (?, ?, ?)",
-        ("rel-1", "app1", json.dumps(snapshot)),
-    )
     conn.commit()
 
 
@@ -67,7 +40,8 @@ def test_cicd_task_display_is_derived_from_app_identity():
         assert task["app_id"] == "app1"
         assert task["repo_name"] == "hpc_app_new"
         assert task["branch"] == "maca_new"
-        assert task["status"] == "Running"
+        assert task["status"] == "running"
+        assert task["app_name"] == "App One"
     finally:
         conn.close()
 
@@ -122,58 +96,30 @@ def test_cicd_modify_approval_updates_app_cicd_config_columns():
         conn.close()
 
 
-def test_rm_app_git_identity_update_changes_app_table_only():
-    conn = fresh_conn()
-    try:
-        seed_app_release(conn)
-        app_service.update_snapshot(
-            conn,
-            "rel-1",
-            "app1",
-            user="rm",
-            role="RM",
-            fields={
-                "app": {"git_url": "hpc_app_latest", "git_branch": "maca_latest"},
-                "snapshot": {},
-            },
-        )
-        app = apps_repo.get_app(conn, "app1")
-        assert app["git_url"] == "hpc_app_latest"
-        assert app["git_branch"] == "maca_latest"
-        assert not conn.execute("SELECT 1 FROM cicd_tasks").fetchone()
-    finally:
-        conn.close()
-
-
-def test_app_workbench_audit_uses_naive_beijing_timestamp(monkeypatch):
+def test_app_profile_audit_uses_naive_beijing_timestamp(monkeypatch):
     conn = fresh_conn()
     try:
         seed_app_release(conn)
         monkeypatch.setattr(
-            "app.timeutil.beijing_timestamp",
-            lambda: "2026-06-24 15:30:00",
-        )
-        monkeypatch.setattr(
-            app_service,
-            "beijing_timestamp",
+            "app.services.catalog_service.beijing_timestamp",
             lambda: "2026-06-24 15:30:00",
         )
 
-        app_service.update_snapshot(
+        catalog_service.update_profile(
             conn,
-            "rel-1",
             "app1",
+            {"official_url": "https://example.com/abacus"},
             user="rm",
             role="RM",
-            fields={"snapshot": {"official_url": "https://example.com/abacus"}},
         )
 
         row = conn.execute(
             "SELECT ts, event FROM audit WHERE app_id = ? ORDER BY id DESC LIMIT 1",
             ("app1",),
         ).fetchone()
-        assert row["event"] == "update_app_meta"
+        assert row["event"] == "update_app_profile"
         assert row["ts"] == "2026-06-24 15:30:00"
+        assert apps_repo.get_app(conn, "app1")["official_url"] == "https://example.com/abacus"
     finally:
         conn.close()
 

@@ -3,44 +3,56 @@
  *
  * Roles: RM / Owner / QA / Guest.
  *
- * Three subtabs (index.html:721-728):
- *   1. QA 标注  — log upload, AI analyze (1 s poll while running), status-batch editor
- *   2. Release Report — filterable/sortable/column-pick/CSV-export table
- *   3. Test 命令 — same table machinery, no column picker
+ * QA tools:
+ *   1. QA report — report failure summary, scope requests, verdicts, delivery images and App comments
+ *   2. 本期发布app — filterable/sortable/column-pick/CSV-export table
+ *   3. 测试命令 — same table machinery, no column picker
+ *   4. QA log — upload Excel results and compare live / uploaded commands
+ *   5. 开发者社区产物
+ *   历史查询 / 兼容性验证 — independent routes, shared QA tab row
  *
  * Data:
- *   - QA annotation + log: from GET /api/state (via shared uiStore selectedReleaseId)
- *   - QA reports: GET /api/qa-reports (fetched on demand, not from state)
- *   - AI job: POST /api/qa/analyze-log/start → GET /api/qa/analyze-log/status (1 s poll)
- *
- * R2: the 1 s interval is the ONLY allowed poll in the entire app.
- *     It is cancelled on unmount AND when the release changes.
+ *   - QA report: GET /api/qa/report (state, failures, delivery tags and audit)
+ *   - Release report / command tables: GET /api/qa-reports (fetched on demand, not from state)
+ *   - All data refreshes on entry, explicit refresh or a successful write; no polling.
  */
 
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "react-router-dom";
+import { QaTabs } from "./QaTabs";
+import { QaResultsPane } from "./QaResultsPane";
+import { QaTestCommandsPane } from "./QaTestCommandsPane";
+import { QaFailureDetails, type QaFailureSummary } from "./QaFailureDetails";
+import { qaPaneFromSearch } from "./qaNavigation";
 import { RefreshBar } from "../../components/RefreshBar";
+import { TestScopeTable } from "../../components/TestScopeTable";
+import { DeliveryImages } from "../../components/DeliveryImages";
+import { recordedImages } from "../../lib/deliveryImages";
 import { apiGet, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { useUiStore } from "../../store/uiStore";
-import { formatLlmProgress } from "../../lib/llmProgress";
 import { canEditQa, canViewQa } from "../../lib/roles";
 import { displayName } from "../../lib/identity";
 import { formatGerritUrl } from "../../lib/git";
 import { formatServerTime } from "../../lib/time";
 import { downloadCsv } from "../../lib/csv";
 import { qaStatusLabels, qaStatusOptions } from "../../lib/labels";
-import { qaStatusRequiresIssueNote } from "../../lib/domainMetadata";
-import { confirmDialog } from "../../lib/confirm";
+import { shortCommit, versionTag } from "../appWorkbench/helpers";
+import { confirmDialog, promptDialog } from "../../lib/confirm";
 import { toast } from "../../lib/toast";
 import type {
   StatePayload,
-  Snapshot,
+  Entry,
   App,
   QaStatus,
-  QaAnalysisJob,
   QaReportsResponse,
+  QaReportRowMeta,
+  ScopeRequest,
+  DeliveryImage,
 } from "../../types";
+import { can } from "../../lib/accessControl";
+import { scopeRequestStatusLabel } from "../../lib/domainMetadata";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -59,6 +71,8 @@ const CHIP_LEGEND =
 // ---------------------------------------------------------------------------
 
 const STATE_QK = (releaseId: string) => ["state", releaseId];
+const QA_REPORT_QK = (username: string | undefined, role: string | undefined, releaseId: string) =>
+  ["qa-report", username, role, releaseId];
 
 async function fetchState(releaseId: string): Promise<StatePayload> {
   return apiGet<StatePayload>(`/api/state?release_id=${encodeURIComponent(releaseId)}`);
@@ -77,734 +91,212 @@ async function fetchQaReports(
 }
 
 // ---------------------------------------------------------------------------
-// AI job progress display (mirrors index.html:1504-1519)
+// QA annotation pane: report-derived failures and manually reviewed App verdicts.
 // ---------------------------------------------------------------------------
-
-interface AiProgressProps {
-  job: QaAnalysisJob;
-  /** Present while the job runs and the viewer may stop it. */
-  onStop?: () => void;
-}
-
-function AiProgress({ job, onStop }: AiProgressProps) {
-  const statusLabel =
-    job.status === "completed" ? "完成" :
-    job.status === "failed" ? "失败" :
-    job.status === "cancelled" ? "已中止" : "进行中";
-  const pillClass =
-    job.status === "completed" ? "pill ok" :
-    job.status === "failed" ? "pill bad" :
-    job.status === "cancelled" ? "pill" : "pill accent";
-  const progressClass =
-    job.status === "completed" ? "qa-ai-progress ok" :
-    job.status === "failed" ? "qa-ai-progress bad" : "qa-ai-progress";
-  const message = (job as unknown as Record<string, string>)["error"] ||
-    (job as unknown as Record<string, string>)["message"] || "等待进度更新";
-  const stage = (job as unknown as Record<string, string>)["stage"] || job.status || "";
-  const usageText = formatLlmProgress(job.elapsed_seconds ?? 0, job.llm);
-
-  return (
-    <div id="qaAiProgress" className={progressClass}>
-      <div className="row">
-        <span className={pillClass}>{statusLabel}</span>
-        <b>{message}</b>
-        <span className="stage">{stage}</span>
-        {job.user && <span className="muted small">{job.user} 发起</span>}
-        {onStop && job.status === "running" && (
-          <button type="button" className="btn sm danger" disabled={job.stopping} onClick={onStop}>
-            {job.stopping ? "正在中止…" : "中止分析"}
-          </button>
-        )}
-      </div>
-      <div className="small muted mt-4">
-        {usageText}；进度会在当前提示中更新。
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// QA test result row
-// ---------------------------------------------------------------------------
-
-interface TestResult {
-  test?: string;
-  arch?: string;
-  status?: string;
-  perf?: string;
-  note?: string;
-}
-
-function qaTestResultPillClass(status?: string): string {
-  const s = (status || "unknown").toLowerCase();
-  return s === "pass" ? "pill ok" : s === "fail" ? "pill bad" : s === "skip" ? "pill warnp" : "pill";
-}
-
-function qaTestResultLabel(status?: string): string {
-  const s = (status || "unknown").toLowerCase();
-  return ({ pass: "PASS", fail: "FAIL", skip: "SKIP", unknown: "?" } as Record<string, string>)[s] ?? s;
-}
-
-// ---------------------------------------------------------------------------
-// QA annotation pane (subtab 1)
-// ---------------------------------------------------------------------------
-
-type AiResult = {
-  apps?: Array<{ app_id: string; qa_status?: string; qa_issue_note?: string; test_results?: unknown[] }>;
-  log_truncated?: boolean;
-};
-
-function suggestionsFrom(result: AiResult | undefined) {
-  const suggestions: Record<string, { qa_status: string; qa_issue_note: string; test_results: unknown[] }> = {};
-  for (const item of result?.apps ?? []) {
-    suggestions[item.app_id] = {
-      qa_status: item.qa_status || "not_checked",
-      qa_issue_note: item.qa_issue_note || "",
-      test_results: item.test_results || [],
-    };
-  }
-  return suggestions;
-}
-
-interface SavedSuggestions {
-  log_filename: string;
-  analyzed_by: string;
-  analyzed_at: string;
-  result: AiResult;
-}
 
 interface QaMarkPaneProps {
   payload: StatePayload;
   onStateRefresh: () => void;
+  report?: QaReportData;
+  isFetching: boolean;
+  dataUpdatedAt: number;
 }
 
-function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
+interface QaDeliveryImages {
+  entries: Record<string, { revision: string; images: Array<DeliveryImage & { reference_error?: string }> }>;
+}
+
+interface QaReportData {
+  failure_summary: QaFailureSummary | null;
+  delivery_images: QaDeliveryImages | null;
+  errors: { failure_summary?: string; delivery_images?: string };
+}
+type QaReportPayload = StatePayload & { qa_report?: QaReportData };
+
+function QaMarkPane({ payload, onStateRefresh, report, isFetching, dataUpdatedAt }: QaMarkPaneProps) {
   const { user } = useAuth();
   const uiStore = useUiStore();
   const release = payload.release;
   const releaseId = release?.id ?? "";
-  const releaseLocked = !!release?.released_locked;
-  const writable = canEditQa(user ?? undefined) && !releaseLocked;
+  const writable = canEditQa(user ?? undefined) && !release?.released_locked;
+  const editMode = uiStore.qaEditMode;
+  const rows = qaRows(payload);
+  const [formState, setFormState] = useState<Record<string, QaForm>>({});
+  const [saving, setSaving] = useState(false);
+  const editingReleaseRef = useRef<string | null>(null);
+  const identityRef = useRef(`${user?.username}:${user?.role}`);
+  const saveGeneration = useRef({ value: 0 }).current;
+  const identity = `${user?.username}:${user?.role}`;
 
-  // ── Local state ──────────────────────────────────────────────────────────
-  // Reset edit state when release changes (mirrors index.html:2580)
   useEffect(() => {
-    if (releaseId && uiStore.qaEditReleaseId !== releaseId) {
+    saveGeneration.value++;
+    setSaving(false);
+    if (identityRef.current !== identity || uiStore.qaEditReleaseId !== releaseId || !writable) {
+      identityRef.current = identity;
       uiStore.setQaEditReleaseId(releaseId);
       uiStore.setQaEditMode(false);
-      uiStore.clearQaAiSuggestions();
-      uiStore.setQaAiJob(null);
+      setFormState({});
+      editingReleaseRef.current = null;
     }
-    if (!writable) {
-      uiStore.setQaEditMode(false);
-      uiStore.clearQaAiSuggestions();
-      uiStore.setQaAiJob(null);
-    }
+    return () => { saveGeneration.value++; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [releaseId, writable]);
-
-  const editMode = uiStore.qaEditMode;
-  const aiJob = uiStore.qaAiJob;
-  const aiSuggestions = uiStore.qaAiSuggestions;
-
-  // ── Per-card editable state ───────────────────────────────────────────────
-  // Local form state: map from app_id → { status, note }
-  const rows = qaRows(payload);
-  const [formState, setFormState] = useState<
-    Record<string, { status: string; note: string }>
-  >({});
-
-  // Sync form state when entering edit mode or when AI suggestions arrive
-  useEffect(() => {
-    if (!editMode) return;
-    const next: Record<string, { status: string; note: string }> = {};
-    for (const { app, snap } of rows) {
-      const suggestion = aiSuggestions[app.id];
-      next[app.id] = {
-        status: suggestion?.qa_status ?? (snap.qa_status || "not_checked"),
-        note: suggestion?.qa_issue_note ?? (snap.qa_issue_note || ""),
-      };
-    }
-    setFormState(next);
-  // Run only when editMode turns on or suggestions change
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editMode, aiSuggestions]);
-
-  // The last AI analysis's suggestions, saved on the server until reviewed.
-  const canRunAnalysis = canEditQa(user ?? undefined);
-  const savedQuery = useQuery({
-    queryKey: ["qa-ai-suggestions", releaseId, user?.username ?? ""],
-    queryFn: () =>
-      apiGet<{ suggestions: SavedSuggestions | null }>(
-        `/api/qa/ai-suggestions?release_id=${encodeURIComponent(releaseId)}`,
-      ).then((data) => data?.suggestions ?? null),
-    enabled: Boolean(releaseId) && canRunAnalysis,
-    refetchOnMount: "always",
-  });
-  const saved = savedQuery.data ?? null;
-  const refetchSaved = savedQuery.refetch;
-
-  // ── AI poll ───────────────────────────────────────────────────────────────
-  // Refs so the interval callback always sees current values without re-creation
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const releaseIdRef = useRef(releaseId);
-  useEffect(() => { releaseIdRef.current = releaseId; }, [releaseId]);
-
-  const stopPoll = useCallback(() => {
-    if (pollRef.current !== null) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
-
-  // Cancel poll on unmount (critical cleanup)
-  useEffect(() => () => stopPoll(), [stopPoll]);
-
-  // Cancel poll when release changes
-  useEffect(() => {
-    stopPoll();
-  }, [releaseId, stopPoll]);
-
-  const startPoll = useCallback(
-    (jobId: string) => {
-      stopPoll();
-      // QA job progress is the polling exception documented in web/README-web.md.
-      pollRef.current = setInterval(async () => {
-        try {
-          const job = await apiGet<QaAnalysisJob>(
-            `/api/qa/analyze-log/status?job_id=${encodeURIComponent(jobId)}`,
-          );
-          // Stale if release changed or job replaced
-          const currentJob = useUiStore.getState().qaAiJob;
-          if (!currentJob || currentJob.job_id !== jobId) {
-            stopPoll();
-            return;
-          }
-          if (job.release_id && job.release_id !== releaseIdRef.current) {
-            stopPoll();
-            return;
-          }
-          uiStore.setQaAiJob(job);
-
-          if (job.status === "running") return; // keep polling
-
-          stopPoll();
-          if (job.status === "cancelled") {
-            toast.info("AI 分析已中止");
-          } else if (job.status === "completed") {
-            // Apply suggestions to store and enter edit mode; the server has
-            // already saved them, so a refresh does not lose them.
-            const res = (job as unknown as Record<string, unknown>)["result"] as AiResult | undefined;
-            const suggestions = suggestionsFrom(res);
-            uiStore.setQaAiSuggestions(suggestions);
-            void refetchSaved();
-            uiStore.setQaEditMode(true);
-            const n = Object.keys(suggestions).length;
-            const truncNote = (res as Record<string, unknown> | undefined)?.["log_truncated"]
-              ? "\n注意：log 过长已截断中段送给 LLM。"
-              : "";
-            toast.success(
-              `AI 分析完成：已为 ${n} 个 app 预填 QA 状态，请核对后点「保存 QA 状态」${truncNote}`,
-            );
-          } else {
-            const errMsg =
-              (job as unknown as Record<string, string>)["error"] ||
-              (job as unknown as Record<string, string>)["message"] ||
-              "未知错误";
-            toast.error("AI 分析失败：" + errMsg);
-          }
-        } catch (e) {
-          stopPoll();
-          uiStore.setQaAiJob({
-            job_id: "",
-            release_id: releaseId,
-            status: "failed",
-            started_at: "",
-            finished_at: null,
-            summary: "",
-            error: e instanceof Error ? e.message : String(e),
-            progress: null,
-          });
-        }
-      }, 1000);
-    },
-    [releaseId, stopPoll, uiStore, refetchSaved],
-  );
-
-  // ── Pick up after a refresh or a visit to another page ──────────────────
-  // The analysis runs on the server; a page opened while it runs follows it
-  // again, and the last analysis's suggestions are saved until reviewed.
-  useEffect(() => {
-    if (saved && Object.keys(useUiStore.getState().qaAiSuggestions).length === 0) {
-      uiStore.setQaAiSuggestions(suggestionsFrom(saved.result));
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [saved]);
+  }, [releaseId, identity, writable, saveGeneration]);
 
   useEffect(() => {
-    if (!releaseId || !canRunAnalysis) return;
-    const stored = useUiStore.getState().qaAiJob;
-    if (stored?.status === "running" && stored.job_id && stored.release_id === releaseId) {
-      startPoll(stored.job_id);
-      return;
-    }
-    let ignore = false;
-    apiGet<{ job: QaAnalysisJob | null }>(
-      `/api/qa/analyze-log/current?release_id=${encodeURIComponent(releaseId)}`,
-    )
-      .then((data) => {
-        if (ignore || !data?.job) return;
-        uiStore.setQaAiJob(data.job);
-        startPoll(data.job.job_id);
-      })
-      .catch(() => {
-        /* nothing to pick up */
-      });
-    return () => {
-      ignore = true;
-    };
+    if (!editMode) { editingReleaseRef.current = null; return; }
+    const continuing = editingReleaseRef.current === releaseId;
+    editingReleaseRef.current = releaseId;
+    setFormState(previous => Object.fromEntries(rows.map(({ app, entry }) => {
+      const draft = continuing ? previous[app.id] : undefined;
+      return [app.id, draft ?? {
+        status: entry.qa_status || "not_checked", note: entry.qa_note || "",
+        images: recordedImages(entry.deliverable_images, entry.deliverable_image, entry.deliverable_digest),
+        revision: entry.delivery_revision ?? "",
+      }];
+    })));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [releaseId, canRunAnalysis]);
+  }, [editMode, releaseId]);
 
-  async function handleStopAnalysis() {
-    const jobId = aiJob?.job_id;
-    if (!jobId) return;
-    const ok = await confirmDialog({
-      title: "中止 AI 分析",
-      body: "会立即断开进行中的 LLM 请求并停止，本次分析不会生成建议。确认中止？",
-      confirmText: "中止分析",
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      const job = await apiPost<QaAnalysisJob>("/api/qa/analyze-log/cancel", { job_id: jobId });
-      uiStore.setQaAiJob(job);
-    } catch (ex) {
-      toast.error("中止失败：" + (ex instanceof Error ? ex.message : String(ex)));
-    }
-  }
-
-  async function discardSaved() {
-    try {
-      await apiPost("/api/qa/ai-suggestions/discard", { release_id: releaseId });
-    } finally {
-      void refetchSaved();
-    }
-  }
-
-  async function handleDiscardSuggestions() {
-    const ok = await confirmDialog({
-      title: "丢弃 AI 建议",
-      body: "丢弃后需要重新分析才能再得到这些建议。确认丢弃？",
-      confirmText: "丢弃",
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      await discardSaved();
-      uiStore.clearQaAiSuggestions();
-      toast.success("已丢弃 AI 建议");
-    } catch (ex) {
-      toast.error("丢弃失败：" + (ex instanceof Error ? ex.message : String(ex)));
-    }
-  }
-
-  // ── Handlers ─────────────────────────────────────────────────────────────
-
-  async function handleUpload(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const form = e.currentTarget;
-    const fileInput = form.elements.namedItem("qaLogFile") as HTMLInputElement;
-    const file = fileInput?.files?.[0];
-    if (!file) { toast.info("请选择 log 文件"); return; }
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    let bin = "";
-    const CHUNK = 0x8000;
-    for (let i = 0; i < bytes.length; i += CHUNK) {
-      bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-    }
-    const b64 = btoa(bin);
-    try {
-      await apiPost("/api/qa/upload-log", {
-        release_id: releaseId,
-        filename: file.name,
-        content_base64: b64,
-      });
-      uiStore.setQaAiJob(null);
-      uiStore.clearQaAiSuggestions();
-      void refetchSaved();
-      onStateRefresh();
-      toast.success("QA log 上传成功");
-    } catch (ex) {
-      toast.error("上传失败：" + (ex instanceof Error ? ex.message : String(ex)));
-    }
-  }
-
-  async function handleAnalyze() {
-    if (!payload.qa_log) { toast.info("请先上传 QA log"); return; }
-    if (aiJob?.status === "running") return;
-    try {
-      const job = await apiPost<QaAnalysisJob>(
-        "/api/qa/analyze-log/start",
-        { release_id: releaseId },
-      );
-      uiStore.setQaAiJob(job);
-      startPoll(job.job_id);
-    } catch (ex) {
-      const running = await apiGet<{ job: QaAnalysisJob | null }>(
-        `/api/qa/analyze-log/current?release_id=${encodeURIComponent(releaseId)}`,
-      ).catch(() => null);
-      if (running?.job) {
-        uiStore.setQaAiJob(running.job);
-        startPoll(running.job.job_id);
-        toast.info(ex instanceof Error ? ex.message : String(ex));
-        return;
-      }
-      uiStore.setQaAiJob({
-        job_id: "",
-        release_id: releaseId,
-        status: "failed",
-        started_at: "",
-        finished_at: null,
-        summary: "",
-        error: ex instanceof Error ? ex.message : String(ex),
-        progress: null,
-      });
-      toast.error("AI 分析失败：" + (ex instanceof Error ? ex.message : String(ex)));
-    }
-  }
-
-  function handleEnterEdit() {
-    uiStore.setQaEditMode(true);
-  }
+  const summary = { data: report?.failure_summary, isFetching, dataUpdatedAt,
+    error: report?.errors.failure_summary ? new Error(report.errors.failure_summary) : null };
+  const summaryAvailable = !summary.isFetching && !summary.error && !!summary.data;
+  const groups = summaryAvailable ? summary.data?.groups ?? [] : [];
+  const failures = new Map(groups.filter(group => group.app_id).map(group => [group.app_id!, group.failures]));
+  const signedUp = new Set(rows.map(({ app }) => app.id));
+  const unmatched = groups.filter(group => !group.app_id || !signedUp.has(group.app_id));
+  const deliveryView = { data: report?.delivery_images, isFetching,
+    error: report?.errors.delivery_images ? new Error(report.errors.delivery_images) : null };
+  const displayedImages = !deliveryView.isFetching && !deliveryView.error ? deliveryView.data?.entries ?? {} : {};
 
   function handleCancel() {
     uiStore.setQaEditMode(false);
-    // Saved AI suggestions stay (they come back on the next edit) until
-    // reviewed or discarded; a running analysis keeps running.
-    if (!saved) uiStore.clearQaAiSuggestions();
-    if (aiJob?.status !== "running") uiStore.setQaAiJob(null);
+    setFormState({});
   }
 
   async function handleSave() {
-    const items = rows
-      .map(({ app, snap }) => {
-        const f = formState[app.id];
-        return {
-          app_id: app.id,
-          status: f?.status ?? (snap.qa_status || "not_checked"),
-          issue_note: f?.note ?? (snap.qa_issue_note || ""),
-        };
-      })
-      .filter(item => {
-        const snap = (payload.release?.snapshots?.[item.app_id] ?? {}) as Snapshot;
-        return (
-          (snap.qa_status || "not_checked") !== item.status ||
-          (snap.qa_issue_note || "") !== item.issue_note
-        );
-      });
-
-    if (!items.length) {
-      // Nothing differs: the suggestions were reviewed and match what is saved.
-      if (saved) await discardSaved().catch(() => undefined);
-      uiStore.setQaEditMode(false);
-      uiStore.clearQaAiSuggestions();
-      uiStore.setQaAiJob(null);
-      return;
-    }
-    const missingNote = items.find(
-      (item) => qaStatusRequiresIssueNote(item.status) && !item.issue_note.trim(),
-    );
-    if (missingNote) {
-      toast.info(
-        `标注「${qaStatusLabels[missingNote.status as QaStatus] ?? missingNote.status}」时必须填写问题说明`,
-      );
-      return;
-    }
+    if (!writable || saving) return;
+    const items = rows.flatMap(({ app, entry }) => {
+      const draft = formState[app.id];
+      const status = draft?.status ?? (entry.qa_status || "not_checked");
+      const note = draft?.note ?? (entry.qa_note || "");
+      const images = draft?.images ?? recordedImages(entry.deliverable_images, entry.deliverable_image, entry.deliverable_digest);
+      const imagesChanged = JSON.stringify(images) !== JSON.stringify(recordedImages(entry.deliverable_images, entry.deliverable_image, entry.deliverable_digest));
+      if (status === entry.qa_status && note === entry.qa_note && !imagesChanged) return [];
+      return [{ app_id: app.id, status, issue_note: note,
+        delivery_revision: draft?.revision ?? entry.delivery_revision ?? "",
+        ...(imagesChanged ? { deliverable_images: images } : {}),
+      }];
+    });
+    if (!items.length) { handleCancel(); return; }
+    const generation = ++saveGeneration.value;
+    setSaving(true);
     try {
       await apiPost("/api/qa/status-batch", { release_id: releaseId, items });
-      uiStore.setQaEditMode(false);
-      uiStore.clearQaAiSuggestions();
-      uiStore.setQaAiJob(null);
-      void refetchSaved();
+      if (generation !== saveGeneration.value) return;
+      handleCancel();
       onStateRefresh();
-      toast.success("QA 状态已保存");
-    } catch (ex) {
-      toast.error(
-        "保存失败，未保存任何改动，请修正后重试：\n\n" +
-          (ex instanceof Error ? ex.message : String(ex)),
-      );
+      toast.success("QA 状态和 comment 已保存");
+    } catch (error) {
+      if (generation === saveGeneration.value) toast.error("保存失败，未保存任何改动，请修正后重试：\n\n" +
+        (error instanceof Error ? error.message : String(error)));
+    } finally {
+      if (generation === saveGeneration.value) setSaving(false);
     }
   }
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  if (!release) return <div className="panel"><div className="panel-body"><p className="muted">请选择版本。</p></div></div>;
+  const qaFieldsWritable = writable && editMode && !saving;
+  const actionBar = canEditQa(user ?? undefined) ? <div className="qa-actions">
+    {editMode ? <>
+      <button className="btn primary qaSaveAll" disabled={!writable || saving} onClick={() => void handleSave()}>保存 QA 状态</button>
+      <button className="btn ghost qaCancel" disabled={saving} onClick={handleCancel}>取消编辑</button>
+    </> : <button className="btn primary qaEdit" disabled={!writable} onClick={() => uiStore.setQaEditMode(true)}>
+      ✎ 修改（填写 QA 结论、交付镜像和 comment）
+    </button>}
+  </div> : null;
 
-  if (!release) {
-    return (
-      <div className="panel">
-        <div className="panel-body">
-          <p className="muted">请选择 release。</p>
-        </div>
+  return <div id="qaPanel">
+    <ScopeRequestsPanel payload={payload} onDecided={onStateRefresh} />
+    {actionBar}
+    {deliveryView.isFetching && <p className="muted small" role="status">正在补全历史交付镜像的 tag…</p>}
+    {deliveryView.error && <p className="lerr" role="alert">交付镜像 tag 读取失败：{deliveryView.error.message}</p>}
+    <div className="panel" data-testid="qa-failure-summary">
+      <div className="panel-head">
+        <h2>QA log 失败汇总</h2>
+        {summaryAvailable && <span className="count">{summary.data?.failed_rows ?? 0} 条失败 / {summary.data?.total_rows ?? 0} 条结果</span>}
+        <span className="spacer" />
+        <RefreshBar dataUpdatedAt={summary.dataUpdatedAt} isFetching={summary.isFetching} onRefresh={onStateRefresh} />
       </div>
-    );
-  }
-
-  const aiJobRunning = aiJob?.status === "running";
-  const canAnalyze = writable && !!payload.qa_log && !aiJobRunning;
-  const qaFieldsWritable = writable && editMode;
-
-  const actionBar = canEditQa(user ?? undefined) ? (
-    <div className="qa-actions">
-      {editMode ? (
-        <>
-          <button className="btn primary qaSaveAll" disabled={!writable} onClick={handleSave}>
-            保存 QA 状态
-          </button>
-          <button className="btn ghost qaCancel" onClick={handleCancel}>
-            取消编辑
-          </button>
-        </>
-      ) : (
-        <button className="btn primary qaEdit" disabled={!writable} onClick={handleEnterEdit}>
-          ✎ 修改（上传 log / 填写 QA 状态）
-        </button>
-      )}
+      <div className="panel-body">
+        <p className="hint">来自本版本当前 QA log，按 App、分支、GPU 和测试项汇总 fail 结果，保留具体 HPC/App 版本与 QA log 的 QA comment。汇总不自动修改 App 的 QA 结论；每个 App 的手填 QA comment 位于卡片末尾。</p>
+        {summary.error && <p className="lerr" role="alert">失败汇总加载失败：{summary.error.message}</p>}
+        {summary.isFetching && <p className="muted" role="status">正在读取 QA log 失败项…</p>}
+        {summaryAvailable && !(summary.data?.total_rows) && <p className="muted">本版本尚无 QA log 测试结果，请在 QA log 上传 Excel。</p>}
+        {summaryAvailable && !!summary.data?.total_rows && !summary.data.failed_rows && <p className="muted">当前 QA log 没有标为 fail 的测试结果。</p>}
+        {unmatched.length > 0 && <details open>
+          <summary>未关联本期有效报名的失败记录</summary>
+          {unmatched.map(group => <section key={JSON.stringify([group.reported_app_id, group.app_name, group.git_branch])}>
+            <h3>{group.app_name} <span className="small muted">{[group.reported_app_id, group.git_branch].filter(Boolean).join(" · ")}</span></h3>
+            <QaFailureDetails failures={group.failures} />
+          </section>)}
+        </details>}
+      </div>
     </div>
-  ) : null;
-
-  return (
-    <div id="qaPanel">
-      {actionBar}
-
-      {/* Log file panel */}
-      <div className="panel">
-        <div className="panel-head">
-          <h2>QA log 文件</h2>
-          <span className="count">{editMode ? "编辑中 · 单个 · 覆盖式上传" : "查看模式"}</span>
-        </div>
-        <div className="panel-body">
-          {payload.qa_log ? (
-            <div className="row">
-              <span className="pill ok">已上传：{payload.qa_log.filename}</span>
-              <span className="muted small">
-                {formatServerTime(payload.qa_log.uploaded_at)} · {payload.qa_log.uploaded_by}
-              </span>
-              <a
-                href={`/api/qa-log/download?release_id=${encodeURIComponent(releaseId)}`}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <button className="btn ghost sm">下载</button>
-              </a>
+    {editMode && <div className="banner warnp mt-14">编辑中 · 刷新前请先保存或取消。QA 状态、交付镜像和手填 comment 在保存后生效。</div>}
+    {rows.length === 0 ? <div className="banner mt-14">本版本暂无报名的 App。</div> : <div className="qa-grid">
+      {rows.map(({ app, entry }) => {
+        const draft = editMode ? formState[app.id] : undefined;
+        const status = (draft?.status ?? entry.qa_status ?? "not_checked") as QaStatus;
+        const inScope = entry.scope_tests.filter(test => !test.excluded);
+        const failed = failures.get(app.id) ?? [];
+        const imageView = displayedImages[app.id];
+        const matchingImages = imageView && imageView.revision === entry.delivery_revision ? imageView.images : null;
+        const pillClass = status === "qa_passed" ? "ok" : status === "has_issues" ? "warnp" : status === "cannot_release" ? "bad" : "";
+        return <div key={app.id} className="qa-card" data-qa-app={app.id}>
+          <div className="qa-card-h">
+            <span className="app-ico">{initials(displayName(app))}</span>
+            <div><div className="name">{displayName(app)}{" "}
+              {entry.target_version && <span className="ver-tag">{versionTag(entry.target_version)}</span>}{" "}
+              {entry.pending_scope_request && <span className="pill warnp">范围扩大待审批</span>}
+            </div><div className="sub">{usersLabel(app.owners, payload.user_display_names ?? {})}</div></div>
+            <span className="qa-cur"><span className={`pill ${pillClass}`}>{qaStatusLabels[status] ?? status}</span></span>
+          </div>
+          <div className="qa-card-b">
+            <label>QA 状态<select className="select" disabled={!qaFieldsWritable} value={status}
+              onChange={event => setFormState(previous => ({ ...previous, [app.id]: { ...previous[app.id], status: event.target.value } }))}
+              data-testid={`qa-status-${app.id}`}>
+              {qaStatusOptions.map(value => <option key={value} value={value}>{qaStatusLabels[value]}</option>)}
+            </select></label>
+            {summaryAvailable && <details className="mt-6 mb-6" data-testid={`qa-app-failures-${app.id}`}>
+              <summary><b>QA log 失败项（{failed.length}）</b></summary>
+              {failed.length ? <QaFailureDetails failures={failed} /> : <p className="muted small">QA log 未记录本 App 的失败项。</p>}
+            </details>}
+            <div className="qa-delivery-images"><b>交付镜像（按报名 app_info 的 app_build）</b>
+              <DeliveryImages images={!editMode && matchingImages ? matchingImages : draft?.images ?? recordedImages(entry.deliverable_images, entry.deliverable_image, entry.deliverable_digest)}
+                builds={entry.delivery_builds} onChange={qaFieldsWritable ? images => setFormState(previous => ({ ...previous, [app.id]: { ...previous[app.id], images } })) : undefined} />
+              {!editMode && matchingImages?.filter(image => image.reference_error).map(image => <p className="lerr small" key={image.build_key}>
+                {image.os || "未指定构建"} · {image.arch} · {image.image_target}：交付镜像 tag 未能补全，{image.reference_error}
+              </p>)}
+              {!editMode && imageView && !matchingImages && <p className="muted small">交付镜像记录已变化，请刷新当前页。</p>}
             </div>
-          ) : (
-            <p className="muted small">本 release 暂无 QA log。</p>
-          )}
-
-          {editMode && (
-            <form onSubmit={handleUpload} className="mt-9">
-              <div className="row">
-                <input id="qaLogFile" name="qaLogFile" type="file" className="input" />
-                <button
-                  type="submit"
-                  className="btn primary"
-                  disabled={aiJobRunning}
-                >
-                  上传 log（覆盖）
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!canAnalyze}
-                  title={
-                    canAnalyze
-                      ? "调用 LLM 分析已上传的 log，自动填写各 app 的 QA 状态"
-                      : aiJobRunning
-                      ? "AI 分析进行中"
-                      : "需先上传 log"
-                  }
-                  onClick={handleAnalyze}
-                  data-testid="qa-analyze-btn"
-                >
-                  {aiJobRunning ? "AI 分析中…" : "🤖 AI 分析 log"}
-                </button>
-              </div>
-            </form>
-          )}
-
-          {aiJob && (
-            <AiProgress job={aiJob} onStop={canRunAnalysis ? () => void handleStopAnalysis() : undefined} />
-          )}
-        </div>
-      </div>
-
-      {saved && (
-        <div className="banner mt-14 row" data-testid="qa-ai-saved">
-          <span>
-            <span className="pill ai">AI 建议</span> {saved.analyzed_by || "AI"} 于 {formatServerTime(saved.analyzed_at)}
-            分析了 {saved.log_filename}，有 {Object.keys(suggestionsFrom(saved.result)).length} 个 app 的建议待核对
-            {editMode ? "：核对后点「保存 QA 状态」。" : "：点「修改」查看，核对后保存。"}
-          </span>
-          {writable && (
-            <button type="button" className="btn ghost sm" onClick={() => void handleDiscardSuggestions()}>
-              丢弃 AI 建议
-            </button>
-          )}
-        </div>
-      )}
-
-      {editMode && (
-        <div className="banner warnp mt-14">
-          编辑中 · 刷新前请先保存或取消。QA 状态在保存后才生效；上传的 log 和 AI 分析结果会立即保存。
-        </div>
-      )}
-
-      {/* App QA cards */}
-      {rows.length === 0 ? (
-        <div className="banner mt-14">
-          本 release 暂无 release 决策为 release 的 app。
-        </div>
-      ) : (
-        <div className="qa-grid">
-          {rows.map(({ app, snap }) => {
-            const suggestion = aiSuggestions[app.id];
-            const useSuggestion = editMode && !!suggestion;
-            const f = formState[app.id];
-            const status: QaStatus =
-              (f?.status as QaStatus) ??
-              (useSuggestion
-                ? (suggestion.qa_status as QaStatus)
-                : ((snap.qa_status as QaStatus) || "not_checked"));
-            const note =
-              f?.note ??
-              (useSuggestion ? (suggestion.qa_issue_note || "") : (snap.qa_issue_note || ""));
-            const testResults: TestResult[] = useSuggestion
-              ? ((suggestion.test_results as TestResult[]) ?? [])
-              : [];
-
-            const pillCls =
-              status === "qa_passed"
-                ? "ok"
-                : status === "has_issues"
-                ? "warnp"
-                : status === "cannot_release"
-                ? "bad"
-                : "";
-
-            return (
-              <div key={app.id} className="qa-card" data-qa-app={app.id}>
-                <div className="qa-card-h">
-                  <span className="app-ico">
-                    {initials(displayName(snap))}
-                  </span>
-                  <div>
-                    <div className="name">
-                      {displayName(snap)}{" "}
-                      {(app.cicd_release_pending || app.cicd_onboarding_status === "pending_create") && (
-                        <span className="pill warnp">CICD待完成</span>
-                      )}
-                      {useSuggestion && (
-                        <span className="pill ai">AI 建议</span>
-                      )}
-                    </div>
-                    <div className="sub">
-                      {usersLabel(snap.owners, payload.user_display_names ?? {})}
-                    </div>
-                  </div>
-                  <span className="qa-cur">
-                    <span className={`pill ${pillCls}`}>{qaStatusLabels[status] ?? status}</span>
-                  </span>
-                </div>
-                <div className="qa-card-b">
-                  <label>
-                    QA 状态
-                    <select
-                      className="select"
-                      disabled={!qaFieldsWritable}
-                      value={f?.status ?? status}
-                      onChange={(e) =>
-                        setFormState((prev) => ({
-                          ...prev,
-                          [app.id]: { ...prev[app.id], status: e.target.value },
-                        }))
-                      }
-                      data-testid={`qa-status-${app.id}`}
-                    >
-                      {qaStatusOptions.map((s) => (
-                        <option key={s} value={s}>
-                          {qaStatusLabels[s]}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    问题说明{" "}
-                    {qaStatusRequiresIssueNote(status) ? (
-                      <span className="req">必填</span>
-                    ) : (
-                      "(可选)"
-                    )}
-                    <textarea
-                      disabled={!qaFieldsWritable}
-                      placeholder={qaFieldsWritable ? "标注「存在问题」或「不可发布」时必填；保存后会写入 Release Note" : ""}
-                      value={f?.note ?? note}
-                      onChange={(e) =>
-                        setFormState((prev) => ({
-                          ...prev,
-                          [app.id]: { ...prev[app.id], note: e.target.value },
-                        }))
-                      }
-                    />
-                  </label>
-                  <p className="small muted">
-                    Gerrit: {formatGerritUrl(app.git_url)} {app.git_branch || ""}
-                  </p>
-                  {testResults.length > 0 && (
-                    <details className="qa-test-results mt-6">
-                      <summary className="small muted">
-                        测试结果（{testResults.length}）{useSuggestion ? " · 来自 AI 分析" : ""}
-                      </summary>
-                      <table className="qa-test-results-tbl">
-                        <thead>
-                          <tr>
-                            <th className="ta-l">测试</th>
-                            <th>arch</th>
-                            <th>状态</th>
-                            <th>性能</th>
-                            <th className="ta-l">说明</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {testResults.map((r, i) => (
-                            <tr key={i}>
-                              <td>{r.test || ""}</td>
-                              <td className="ta-c">{r.arch || ""}</td>
-                              <td className="ta-c">
-                                <span className={qaTestResultPillClass(r.status)}>
-                                  {qaTestResultLabel(r.status)}
-                                </span>
-                              </td>
-                              <td className="ta-c">{r.perf || ""}</td>
-                              <td>{r.note || ""}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </details>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {actionBar}
-
-      {/* QA change log (audit) panel — loaded lazily per app */}
-      <QaChangeLogPanel payload={payload} rows={rows} releaseId={releaseId} />
-    </div>
-  );
+            <details className="mt-6"><summary className="small muted">测试范围 {inScope.length} 项{entry.planned_features ? " · 计划 feature" : ""}</summary>
+              {entry.planned_features && <p className="small">{entry.planned_features}</p>}
+              <TestScopeTable tests={inScope} />
+            </details>
+            <p className="small muted">Gerrit: {formatGerritUrl(app.git_url)} {app.git_branch || ""}</p>
+            <label>QA comment (可选)
+              <textarea aria-label={`${app.official_name?.trim() || displayName(app)} QA comment`} disabled={!qaFieldsWritable}
+                placeholder={qaFieldsWritable ? "可填写测试结论或其他说明" : ""}
+                value={draft?.note ?? entry.qa_note ?? ""}
+                onChange={event => setFormState(previous => ({ ...previous, [app.id]: { ...previous[app.id], note: event.target.value } }))} />
+            </label>
+          </div>
+        </div>;
+      })}
+    </div>}
+    {actionBar}
+    <QaChangeLogPanel payload={payload} rows={rows} />
+  </div>;
 }
 
 // ---------------------------------------------------------------------------
@@ -813,65 +305,17 @@ function QaMarkPane({ payload, onStateRefresh }: QaMarkPaneProps) {
 
 interface QaChangeLogPanelProps {
   payload: StatePayload;
-  rows: Array<{ app: App; snap: Snapshot }>;
-  releaseId: string;
+  rows: Array<{ app: App; entry: Entry }>;
 }
 
-function QaChangeLogPanel({ payload, rows, releaseId }: QaChangeLogPanelProps) {
-  // Lazy-load audit entries per app (mirrors loadMissingQaChangeLogs)
-  const [auditLogs, setAuditLogs] = useState<
-    Record<string, Array<{ ts: string; app_id: string; user: string; role: string; message: string; detail: Array<{ field: string; label: string; old: unknown; new: unknown }> }>>
-  >({});
-  const [loading, setLoading] = useState<Set<string>>(new Set());
-  const [errors, setErrors] = useState<Record<string, string>>({});
-
-  // Seed from state payload's qa_audit_logs if present
-  useEffect(() => {
-    const stateAudit = payload.qa_audit_logs ?? {};
-    setAuditLogs((prev) => ({ ...stateAudit, ...prev }));
-  }, [payload.qa_audit_logs]);
-
-  // Fetch missing logs
-  useEffect(() => {
-    for (const { app } of rows) {
-      const appId = app.id;
-      if (appId in auditLogs || loading.has(appId)) continue;
-      setLoading((prev) => new Set(prev).add(appId));
-      apiGet<{ entries: Array<{ ts: string; app_id?: string; user: string; role: string; event: string; message: string; detail: unknown[] }> }>(
-        `/api/app-audit?app_id=${encodeURIComponent(appId)}&release_id=${encodeURIComponent(releaseId)}`,
-      )
-        .then((data) => {
-          const entries = (data.entries || [])
-            .filter((e) => e.event === "qa_set_status")
-            .map((e) => ({
-              ...e,
-              app_id: appId,
-              detail: (e.detail as Array<{ field: string; label: string; old: unknown; new: unknown }>) || [],
-            }));
-          setAuditLogs((prev) => ({ ...prev, [appId]: entries }));
-        })
-        .catch((err) => {
-          setErrors((prev) => ({
-            ...prev,
-            [appId]: err instanceof Error ? err.message : String(err),
-          }));
-        })
-        .finally(() => {
-          setLoading((prev) => {
-            const s = new Set(prev);
-            s.delete(appId);
-            return s;
-          });
-        });
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows.map((r) => r.app.id).join(","), releaseId]);
+function QaChangeLogPanel({ payload, rows }: QaChangeLogPanelProps) {
+  const auditLogs = payload.qa_audit_logs ?? {};
 
   // Flatten + sort all entries by timestamp descending
-  const allEntries = rows.flatMap(({ app, snap }) =>
+  const allEntries = rows.flatMap(({ app }) =>
     (auditLogs[app.id] ?? []).map((e) => ({
       ...e,
-      app_label: displayName(snap),
+      app_label: displayName(app),
     })),
   ).sort((a, b) => {
     const at = new Date(a.ts || "").getTime() || 0;
@@ -879,28 +323,15 @@ function QaChangeLogPanel({ payload, rows, releaseId }: QaChangeLogPanelProps) {
     return bt - at;
   });
 
-  const loadingCount = loading.size;
-  const countText = loadingCount
-    ? `加载中 · 已有 ${allEntries.length} 条`
-    : `${allEntries.length} 条`;
-
-  const errorApps = rows.filter(({ app }) => errors[app.id]);
+  const countText = `${allEntries.length} 条`;
 
   return (
     <details className="section qa-change-log-panel" id="qaChangeLogPanel">
       <summary>
-        <span className="chev">▶</span> QA 变更记录（本 release）
+        <span className="chev">▶</span> QA 变更记录（本版本）
         <span className="badge">{countText}</span>
       </summary>
       <div className="section-body">
-        {errorApps.length > 0 && (
-          <div className="banner bad mb-12">
-            部分变更记录加载失败：
-            {errorApps
-              .map(({ app, snap }) => `${displayName(snap)}: ${errors[app.id]}`)
-              .join("；")}
-          </div>
-        )}
         <div className="table">
           <table>
             <thead>
@@ -1055,6 +486,15 @@ function ReportPane({ releaseId, kind, title, hint, releases }: ReportPaneProps)
     prevCompareRef.current = filterState.compareId;
   }, [filterState.compareId, data, refetch]);
 
+  const columnsKey = (kind === "release" ? data?.release_report.columns : data?.test_cmd.columns)?.join("\0") ?? "";
+  const previousColumns = useRef("");
+  useEffect(() => {
+    if (previousColumns.current && columnsKey && previousColumns.current !== columnsKey) {
+      setFilterState((previous) => ({ ...previous, colFilters: {}, sort: { col: -1, dir: 1 } }));
+    }
+    if (columnsKey) previousColumns.current = columnsKey;
+  }, [columnsKey]);
+
   if (!releaseId) {
     return (
       <div className="panel">
@@ -1124,11 +564,7 @@ interface ReportTableProps {
   data: {
     columns: string[];
     rows: string[][];
-    rows_meta?: Array<{
-      is_release: boolean;
-      release_decision: string;
-      cicd_pending?: boolean;
-    }>;
+    rows_meta?: QaReportRowMeta[];
   };
   filterState: ReportFilterState;
   onFilterChange: React.Dispatch<React.SetStateAction<ReportFilterState>>;
@@ -1382,8 +818,7 @@ function ReportTable({
             ) : (
               filteredRows.map(({ row, meta }, ri) => {
                 const trCls = [
-                  meta && meta.is_release === false ? "row-not-release" : "",
-                  meta?.cicd_pending ? "row-cicd-pending" : "",
+                  meta && meta.signed_up === false ? "row-not-release" : "",
                 ].filter(Boolean).join(" ");
                 return (
                   <tr key={ri} className={trCls}>
@@ -1392,6 +827,8 @@ function ReportTable({
                       const c = columns[i];
                       if (kind === "test" && c === "docker_cmd")
                         return <td key={i} className="cmd">{v}</td>;
+                      if (kind === "test" && c === "commit_id")
+                        return <td key={i} title={v}>{shortCommit(v)}</td>;
                       if (kind === "test" && c === "cicd_status" && v)
                         return <td key={i}><span className="pill warnp">{v}</span></td>;
                       if (kind === "release") {
@@ -1675,18 +1112,110 @@ function downloadCommunityArtifactsZip(data: CommunityArtifactsResponse) {
 // Helpers shared within this file
 // ---------------------------------------------------------------------------
 
-function qaRows(
-  payload: StatePayload,
-): Array<{ app: App; snap: Snapshot }> {
-  return (payload.apps ?? [])
-    .map((app) => ({ app, snap: payload.release?.snapshots?.[app.id] ?? null }))
-    .filter(
-      (x): x is { app: App; snap: Snapshot } =>
-        x.snap !== null && x.snap.release_decision === "release",
-    )
-    .sort((a, b) =>
-      displayName(a.snap).localeCompare(displayName(b.snap), "zh-CN"),
-    );
+interface QaForm {
+  status: string;
+  note: string;
+  images: DeliveryImage[];
+  revision: string;
+}
+
+/** Active signups of the selected cycle with their App. */
+function qaRows(payload: StatePayload): Array<{ app: App; entry: Entry }> {
+  const apps = new Map((payload.apps ?? []).map((app) => [app.id, app]));
+  return (payload.release?.entries ?? [])
+    .filter((entry) => entry.status === "active" && apps.has(entry.app_id))
+    .map((entry) => ({ app: apps.get(entry.app_id)!, entry }))
+    .sort((a, b) => displayName(a.app).localeCompare(displayName(b.app), "zh-CN"));
+}
+
+// ---------------------------------------------------------------------------
+// Scope-expansion requests (QA approves or rejects)
+// ---------------------------------------------------------------------------
+
+function ScopeRequestsPanel({ payload, onDecided }: { payload: StatePayload; onDecided: () => void }) {
+  const { user } = useAuth();
+  const [showAll, setShowAll] = useState(false);
+  const requests: ScopeRequest[] = payload.release?.scope_requests ?? [];
+  const canDecide = can(user?.role, "app.app_info.expand_qa_scope")
+    && ["in_progress", "qa_closed"].includes(payload.release?.phase ?? "");
+  const pending = requests.filter((r) => r.status === "pending");
+  const shown = showAll ? requests : pending;
+  if (!requests.length) return null;
+
+  async function decide(request: ScopeRequest, approve: boolean) {
+    let note = "";
+    if (!approve) {
+      const reason = await promptDialog({
+        title: "拒绝测试范围扩大",
+        body: `${request.app_name}：拒绝后本期仍按原 app_info 测试。请填写理由。`,
+        confirmText: "拒绝",
+        danger: true,
+      });
+      if (reason === null) return;
+      note = reason;
+    } else if (!(await confirmDialog({
+      title: "同意测试范围扩大",
+      body: `${request.app_name}：同意后报名条目改用新的 app_info，测试范围扩大为：\n${request.additions.join("\n")}`,
+      confirmText: "同意",
+    }))) {
+      return;
+    }
+    try {
+      await apiPost("/api/scope-requests/decide", { request_id: request.id, approve, note });
+      toast.success(approve ? "已同意" : "已拒绝");
+      onDecided();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  return (
+    <div className="panel" data-testid="scope-requests-panel">
+      <div className="panel-head">
+        <h2>测试范围扩大申请</h2>
+        <span className="count">待处理 {pending.length} 条</span>
+        <span className="flex-1" />
+        <label className="check small">
+          <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
+          显示已处理
+        </label>
+      </div>
+      <div className="panel-body">
+        <p className="hint mt-0">报名截止后 app_info 扩大了测试范围（新增芯片、测试项、构建等）时自动生成；同意前报名条目按原版本测试。</p>
+        {shown.length === 0 ? (
+          <p className="muted small">没有待处理的申请。</p>
+        ) : (
+          <div className="table">
+            <table>
+              <thead><tr><th>#</th><th>App</th><th>扩大内容</th><th>时间</th><th>状态</th><th /></tr></thead>
+              <tbody>
+                {shown.map((request) => (
+                  <tr key={request.id} data-testid={`scope-request-${request.id}`}>
+                    <td>{request.id}</td>
+                    <td>{request.app_name}</td>
+                    <td><ul className="small m-0">{request.additions.map((a) => <li key={a}>{a}</li>)}</ul></td>
+                    <td className="small">{formatServerTime(request.created_at)}</td>
+                    <td className="small">
+                      {scopeRequestStatusLabel(request.status)}
+                      {request.decided_by && <div className="muted">{request.decided_by} {request.decision_note}</div>}
+                    </td>
+                    <td className="nowrap">
+                      {request.status === "pending" && canDecide && (
+                        <>
+                          <button className="btn primary sm" onClick={() => void decide(request, true)}>同意</button>
+                          <button className="btn ghost sm" onClick={() => void decide(request, false)}>拒绝</button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function initials(name: string): string {
@@ -1711,45 +1240,52 @@ function usersLabel(
 // QaPage — top-level component
 // ---------------------------------------------------------------------------
 
-type QaSubtab = "mark" | "release" | "test" | "community";
-
 export function QaPage() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const selectedReleaseId = useUiStore((s) => s.selectedReleaseId);
   const setSelectedReleaseId = useUiStore((s) => s.setSelectedReleaseId);
-  const [subtab, setSubtab] = useState<QaSubtab>("mark");
+  const { search } = useLocation();
+  const subtab = qaPaneFromSearch(search);
 
-  const { data, isFetching, dataUpdatedAt, refetch, error } = useQuery({
-    queryKey: STATE_QK(selectedReleaseId),
-    queryFn: () => fetchState(selectedReleaseId),
-    enabled: !!selectedReleaseId,
+  const { data, isFetching, dataUpdatedAt, refetch, error } = useQuery<QaReportPayload>({
+    queryKey: subtab === "mark" ? QA_REPORT_QK(user?.username, user?.role, selectedReleaseId) : STATE_QK(selectedReleaseId),
+    queryFn: () => subtab === "mark"
+      ? apiGet<QaReportPayload>(`/api/qa/report?release_id=${encodeURIComponent(selectedReleaseId)}`)
+      : fetchState(selectedReleaseId),
+    enabled: !!user && (subtab === "mark" || !!selectedReleaseId),
     staleTime: Infinity,
     refetchInterval: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
-    refetchOnMount: true,
+    refetchOnMount: "always",
   });
 
   // Seed selectedReleaseId from first data load if not set
   useEffect(() => {
     if (data?.release?.id && !selectedReleaseId) {
+      if (subtab === "mark") {
+        queryClient.setQueryData(QA_REPORT_QK(user?.username, user?.role, data.release.id), data);
+      }
       setSelectedReleaseId(data.release.id);
     }
-    if (data?.release?.id) {
+    if (data?.release?.id && subtab !== "mark") {
       // Populate cache for other tabs too
       queryClient.setQueryData(STATE_QK(data.release.id), data);
     }
-  }, [data, selectedReleaseId, setSelectedReleaseId, queryClient]);
+  }, [data, selectedReleaseId, setSelectedReleaseId, queryClient, subtab, user?.username, user?.role]);
 
   function handleRefresh() {
     void refetch();
+    if (subtab === "mark") {
+      void queryClient.invalidateQueries({ queryKey: STATE_QK(selectedReleaseId), refetchType: "none" });
+    }
+    if (subtab === 'report') {
+      void queryClient.invalidateQueries({ queryKey: ['qa-test-results', user?.username, user?.role, selectedReleaseId] });
+    }
   }
 
   const canView = canViewQa(user ?? undefined);
-  const currentRelease = data
-    ? (data.releases ?? []).find((r) => r.id === (selectedReleaseId || data.release?.id)) ?? data.release
-    : null;
 
   if (!canView) {
     return (
@@ -1785,13 +1321,18 @@ export function QaPage() {
         />
       </div>
 
+      <QaTabs />
+      {subtab === "report" && <QaResultsPane key={`${user?.username}:${user?.role}:${selectedReleaseId}`}
+        releaseId={selectedReleaseId || data?.release?.id || ''}
+        releaseName={data?.releases.find(release => release.id === selectedReleaseId)?.name || data?.release?.name || ''} />}
+
       {error && (
         <div className="lerr p-12-16">
           加载失败：{error instanceof Error ? error.message : String(error)}
         </div>
       )}
 
-      {!data && isFetching && (
+      {subtab !== "report" && !data && isFetching && (
         <div className="muted p-1r">
           加载中…
         </div>
@@ -1799,36 +1340,10 @@ export function QaPage() {
 
       {data && (
         <>
-          <div className="subtabs">
-            <button
-              className={`subtab ${subtab === "mark" ? "active" : ""}`}
-              onClick={() => setSubtab("mark")}
-            >
-              QA 标注
-            </button>
-            <button
-              className={`subtab ${subtab === "release" ? "active" : ""}`}
-              onClick={() => setSubtab("release")}
-            >
-              Release Report
-            </button>
-            <button
-              className={`subtab ${subtab === "test" ? "active" : ""}`}
-              onClick={() => setSubtab("test")}
-            >
-              Test 命令
-            </button>
-            <button
-              className={`subtab ${subtab === "community" ? "active" : ""}`}
-              onClick={() => setSubtab("community")}
-            >
-              开发者社区产物
-            </button>
-          </div>
-
           {subtab === "mark" && (
             <div id="qaMarkPane" className="qa-pane active">
-              <QaMarkPane payload={data} onStateRefresh={handleRefresh} />
+              <QaMarkPane payload={data} report={error ? undefined : data.qa_report} onStateRefresh={handleRefresh}
+                isFetching={isFetching} dataUpdatedAt={dataUpdatedAt} />
             </div>
           )}
           {subtab === "release" && (
@@ -1836,26 +1351,24 @@ export function QaPage() {
               <ReportPane
                 releaseId={selectedReleaseId || data.release?.id || ""}
                 kind="release"
-                title="Release Report"
-                hint="本 release 全部 app 的发布信息汇总（列结构参考 release_report.csv，系统未跟踪的列留空）。"
+                title="本期发布app"
+                hint="本版本报名 App 的发布信息汇总（列结构参考 release_report.csv，系统未跟踪的列留空）。"
                 releases={data.releases ?? []}
               />
             </div>
           )}
           {subtab === "test" && (
             <div id="qaTestCmdPane" className="qa-pane active">
-              <ReportPane
-                releaseId={selectedReleaseId || data.release?.id || ""}
-                kind="test"
-                title="Test 命令"
-                hint="由各 app 已上传的 app_info 生成的测试命令清单（输出对应 get_release_report_test_cmd.py）。"
-                releases={data.releases ?? []}
-              />
+              <QaTestCommandsPane releaseId={selectedReleaseId || data.release?.id || ""} />
             </div>
           )}
           {subtab === "community" && (
             <div id="qaCommunityArtifactsPane" className="qa-pane active">
-              <CommunityArtifactsPane defaultSdkversion={currentRelease?.maca_version ?? ""} />
+              <CommunityArtifactsPane
+                defaultSdkversion={
+                  data.release?.environment.find((row) => /maca|sdk/i.test(row.component))?.version ?? ""
+                }
+              />
             </div>
           )}
         </>
@@ -1879,7 +1392,7 @@ function ReleaseSelector({
   selectedId,
   onChange,
 }: ReleaseSelectorProps) {
-  if (!releases.length) return <span className="muted small">暂无 release</span>;
+  if (!releases.length) return <span className="muted small">暂无版本</span>;
   return (
     <select
       className="input select-inline"
@@ -1890,7 +1403,6 @@ function ReleaseSelector({
       {releases.map((r) => (
         <option key={r.id} value={r.id}>
           {r.name}
-          {r.maca_version ? ` (${r.maca_version})` : ""}
         </option>
       ))}
     </select>

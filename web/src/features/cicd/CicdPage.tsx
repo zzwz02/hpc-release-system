@@ -29,6 +29,7 @@ import { formatServerTime } from "../../lib/time";
 import {
   cicdCommunityArtifactMetadata,
   cicdPayloadConfigLabels,
+  cicdStatusLabel,
   type CicdCommunityArtifact,
 } from "../../lib/domainMetadata";
 import { formatCicdRepoPath } from "../../lib/git";
@@ -70,17 +71,16 @@ const REQ_TYPE_LABEL: Record<string, string> = {
   owner_transfer: "负责人变更",
 };
 
-/** Marks requests auto-created by App release-decision sync (R3 Ruling D)
- *  so reviewers can tell them apart from build-config (workbench) requests.
- *  Renders nothing for ordinary "cicd_workbench" requests. */
+/** Historical requests created by the retired release-decision sync keep
+ *  their origin; mark them so the history stays readable. */
 function OriginBadge({ origin }: { origin?: string }) {
   if (origin !== "release_decision_sync") return null;
   return (
     <span
       className="pill accent fs-11 ml-4"
-      title="由 App 发布决策自动联动创建（Ruling D）"
+      title="旧发布模型中由 App 发布决策自动联动创建的历史申请"
     >
-      同步联动
+      决策联动（历史）
     </span>
   );
 }
@@ -101,10 +101,11 @@ const FIELD_LABEL: Record<string, string> = {
   app_version: "项目版本",
   repo_name: "仓库名",
   branch: "分支",
-  release_decision: "Release 决策",
+  doc_target: "类型",
+  app_type: "App 类型",
   build_product: "构建产物",
   owner_username: "负责人",
-  status: "状态",
+  status: "CICD 状态",
   ...cicdPayloadConfigLabels,
 };
 
@@ -197,8 +198,7 @@ function diffSide(payload: Record<string, unknown>, field: string, side: "old" |
 function isStopModifyRequest(req: CicdRequest, payload: Record<string, unknown>): boolean {
   return (
     req.request_type === "modify" &&
-    diffSide(payload, "status", "old") === "Running" &&
-    diffSide(payload, "status", "new") === "Stopped"
+    diffSide(payload, "status", "new") === "stopped"
   );
 }
 
@@ -211,8 +211,8 @@ function userLabel(username: string, display?: string): string {
 }
 
 function StatusPill({ status }: { status: string }) {
-  const cls = status === "Running" ? "ok" : status === "Stopped" ? "warnp" : "";
-  return <span className={`pill ${cls}`}>{status}</span>;
+  const cls = status === "running" ? "ok" : status === "stopped" ? "warnp" : "";
+  return <span className={`pill ${cls}`}>{cicdStatusLabel(status)}</span>;
 }
 
 // ---------------------------------------------------------------------------

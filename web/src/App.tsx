@@ -9,7 +9,7 @@
  * The header + sessionBox are rendered here; TabNav provides the tab bar.
  */
 import { useEffect } from "react";
-import { BrowserRouter } from "react-router-dom";
+import { BrowserRouter, useLocation } from "react-router-dom";
 import { useAuth } from "./api/AuthContext";
 import { apiGet } from "./api/http";
 import { useUiStore } from "./store/uiStore";
@@ -19,6 +19,8 @@ import { TabNav } from "./routes/TabNav";
 import { AppRouter } from "./routes/AppRouter";
 import { Toaster } from "./components/Toaster";
 import { ConfirmHost } from "./components/ConfirmHost";
+import { qaPaneFromSearch } from "./features/qa/qaNavigation";
+import { pathMatches, routeForView } from "./routes/routeConfig";
 import "./App.css";
 
 /**
@@ -28,13 +30,16 @@ import "./App.css";
  * query on a release id (QA, 发布文档) deadlocks — the id is never set because
  * the query never runs, and the query never runs because the id is unset —
  * leaving the page blank below the header. One-shot, only while unset, no
- * polling (R2-compliant).
+ * polling (R2-compliant). QA report selects its cycle through its aggregate
+ * response and skips this extra state read.
  */
 function ReleaseSeeder() {
+  const { pathname, search } = useLocation();
+  const qaReportSelectsRelease = pathMatches(pathname, routeForView("qa").path) && qaPaneFromSearch(search) === "mark";
   const selectedReleaseId = useUiStore((s) => s.selectedReleaseId);
   const setSelectedReleaseId = useUiStore((s) => s.setSelectedReleaseId);
   useEffect(() => {
-    if (selectedReleaseId) return;
+    if (selectedReleaseId || qaReportSelectsRelease) return;
     let cancelled = false;
     apiGet<StatePayload>("/api/state")
       .then((s) => {
@@ -46,7 +51,7 @@ function ReleaseSeeder() {
     return () => {
       cancelled = true;
     };
-  }, [selectedReleaseId, setSelectedReleaseId]);
+  }, [selectedReleaseId, setSelectedReleaseId, qaReportSelectsRelease]);
   return null;
 }
 

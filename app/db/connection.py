@@ -2,7 +2,7 @@
 
 The legacy ``cicd_tasks`` table is still created so old DB files and frozen
 reference tests can open cleanly. Cutover runtime code derives CICD task-shaped
-API rows from ``apps`` plus snapshots, and persists workflow state in
+API rows from ``apps``, and persists workflow state in
 ``cicd_task_requests``.
 
 Schema additions kept for current runtime:
@@ -35,6 +35,7 @@ class ManagedConnection(sqlite3.Connection):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._transaction_depth = 0
+        self._after_commit: list[Any] = []
 
     def commit(self) -> None:
         if self._transaction_depth:
@@ -46,7 +47,7 @@ class ManagedConnection(sqlite3.Connection):
 
 
 @contextmanager
-def transaction(conn: sqlite3.Connection) -> Iterator[None]:
+def transaction(conn: sqlite3.Connection, *, immediate: bool = False) -> Iterator[None]:
     """Commit once on success and rollback all pending writes on failure.
 
     Connections returned by connect() suppress nested helper commit() calls
@@ -56,8 +57,11 @@ def transaction(conn: sqlite3.Connection) -> Iterator[None]:
     SAVEPOINT nesting: if a transaction() is already active on a
     ManagedConnection, opens a SAVEPOINT instead of a plain BEGIN so that
     the inner block is atomic relative to the outer one.
+    ``immediate=True`` reserves the write lock before validating mutable state.
     """
     if not isinstance(conn, ManagedConnection):
+        if immediate and not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
         try:
             yield
         except Exception:
@@ -86,15 +90,27 @@ def transaction(conn: sqlite3.Connection) -> Iterator[None]:
     conn._transaction_depth = 1
     try:
         if not conn.in_transaction:
-            conn.execute("BEGIN")
+            conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
         yield
     except Exception:
         conn.rollback()
+        conn._after_commit.clear()
         raise
     else:
         conn.commit_now()
     finally:
         conn._transaction_depth = 0
+    callbacks, conn._after_commit = conn._after_commit, []
+    for callback in callbacks:
+        callback()
+
+
+def run_after_commit(conn: sqlite3.Connection, callback: Any) -> None:
+    """Run *callback* once the enclosing transaction() commits (now if none)."""
+    if isinstance(conn, ManagedConnection) and conn._transaction_depth:
+        conn._after_commit.append(callback)
+    else:
+        callback()
 
 
 def backup_sqlite(src_path: str | Path, dest_path: str | Path) -> None:
@@ -156,10 +172,15 @@ def init_db(conn: sqlite3.Connection) -> None:
     Legacy cicd_tasks columns/indexes are kept only for old DB compatibility
     and frozen reference tests. Current CICD runtime is app-backed.
 
-    Current runtime additions:
-      - cicd_task_requests.origin  — 'cicd_workbench' | 'release_decision_sync'
-      - Additional performance indexes
+    A database still on the per-release snapshot model is converted once to
+    the monthly signup model (app/db/monthly_migration.py) before the
+    current DDL runs.
     """
+    from app.db import monthly_migration
+
+    legacy_snapshots = monthly_migration.needs_migration(conn)
+    if legacy_snapshots:
+        monthly_migration.rebuild_tables(conn)
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS apps (
@@ -173,28 +194,150 @@ def init_db(conn: sqlite3.Connection) -> None:
             cicd_community_artifact TEXT NOT NULL DEFAULT '',
             cicd_build_image TEXT NOT NULL DEFAULT '',
             cicd_test_timeout TEXT NOT NULL DEFAULT '',
-            cicd_notes TEXT NOT NULL DEFAULT ''
+            cicd_notes TEXT NOT NULL DEFAULT '',
+            -- running | stopped; changed only when a CICD status request takes effect
+            cicd_status TEXT NOT NULL DEFAULT 'running',
+            -- Optional Owner profile (not a release prerequisite)
+            official_name TEXT NOT NULL DEFAULT '',
+            app_type TEXT NOT NULL DEFAULT '',
+            official_url TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            doc_target TEXT NOT NULL DEFAULT 'manual',
+            owners_json TEXT NOT NULL DEFAULT '[]',
+            doc_json TEXT NOT NULL DEFAULT '{}',
+            community_json TEXT NOT NULL DEFAULT '{}',
+            sanity_json TEXT NOT NULL DEFAULT '{}',
+            test_docs_json TEXT NOT NULL DEFAULT '[]',
+            -- app_info auto-sync state
+            sync_head_commit TEXT NOT NULL DEFAULT '',
+            sync_checked_at TEXT NOT NULL DEFAULT '',
+            sync_error TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS releases (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
-            maca_version TEXT NOT NULL DEFAULT '',
-            app_freeze_deadline TEXT NOT NULL DEFAULT '',
-            doc_deadline TEXT NOT NULL DEFAULT '',
+            signup_deadline TEXT NOT NULL DEFAULT '',
+            qa_deadline TEXT NOT NULL DEFAULT '',
+            release_date TEXT NOT NULL DEFAULT '',
             released_locked INTEGER NOT NULL DEFAULT 0,
             released_locked_at TEXT NOT NULL DEFAULT '',
             released_locked_by TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
-            source TEXT NOT NULL,
-            cloned_from TEXT NOT NULL DEFAULT ''
+            created_by TEXT NOT NULL DEFAULT ''
         );
 
-        CREATE TABLE IF NOT EXISTS snapshots (
+        -- Every app_info.json content seen for an App (deduplicated by hash).
+        CREATE TABLE IF NOT EXISTS app_info_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+            commit_id TEXT NOT NULL DEFAULT '',
+            content_hash TEXT NOT NULL,
+            raw_json TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT '',
+            fetched_at TEXT NOT NULL,
+            fetched_by TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_app_info_versions_app
+            ON app_info_versions(app_id, id);
+
+        -- Components an App declares in app_info ``app_dependency``.
+        -- ``apps`` without any row and without a declaration are "未声明".
+        CREATE TABLE IF NOT EXISTS app_dependencies (
+            app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+            component TEXT NOT NULL,
+            PRIMARY KEY (app_id, component)
+        );
+
+        -- Monthly environment entered by RM (component/version rows).
+        CREATE TABLE IF NOT EXISTS cycle_environment (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+            component TEXT NOT NULL,
+            version TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            sort INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS base_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            image TEXT NOT NULL DEFAULT '',
+            digest TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT ''
+        );
+
+        -- One signup per (release, app). Withdrawn rows are reused on re-signup.
+        CREATE TABLE IF NOT EXISTS entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
             app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
-            data_json TEXT NOT NULL,
-            PRIMARY KEY (release_id, app_id)
+            status TEXT NOT NULL DEFAULT 'active',
+            base_image_id INTEGER REFERENCES base_images(id) ON DELETE SET NULL,
+            target_version TEXT NOT NULL DEFAULT '',
+            planned_features TEXT NOT NULL DEFAULT '',
+            actual_delivery TEXT NOT NULL DEFAULT '',
+            known_issues TEXT NOT NULL DEFAULT '',
+            locked_version_id INTEGER REFERENCES app_info_versions(id),
+            excluded_tests_json TEXT NOT NULL DEFAULT '[]',
+            qa_status TEXT NOT NULL DEFAULT 'not_checked',
+            qa_note TEXT NOT NULL DEFAULT '',
+            deliverable_image TEXT NOT NULL DEFAULT '',
+            deliverable_digest TEXT NOT NULL DEFAULT '',
+            deliverable_commit TEXT NOT NULL DEFAULT '',
+            deliverable_images_json TEXT NOT NULL DEFAULT '[]',
+            result TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            created_by TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT '',
+            updated_by TEXT NOT NULL DEFAULT '',
+            UNIQUE (release_id, app_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_entries_app ON entries(app_id);
+        CREATE INDEX IF NOT EXISTS idx_entries_digest ON entries(deliverable_digest);
+
+        -- QA approval for app_info changes that widen a signed-up entry's scope
+        -- after the signup deadline.
+        CREATE TABLE IF NOT EXISTS scope_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+            base_version_id INTEGER NOT NULL REFERENCES app_info_versions(id),
+            target_version_id INTEGER NOT NULL REFERENCES app_info_versions(id),
+            additions_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            decided_by TEXT NOT NULL DEFAULT '',
+            decided_at TEXT NOT NULL DEFAULT '',
+            decision_note TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_scope_requests_entry
+            ON scope_requests(entry_id, status);
+
+        -- One final publication per App/cycle. Current official is selected by cycle date.
+        CREATE TABLE IF NOT EXISTS official_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+            release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+            entry_id INTEGER REFERENCES entries(id) ON DELETE SET NULL,
+            version TEXT NOT NULL DEFAULT '',
+            app_info_version_id INTEGER REFERENCES app_info_versions(id),
+            image TEXT NOT NULL DEFAULT '',
+            digest TEXT NOT NULL DEFAULT '',
+            released_at TEXT NOT NULL,
+            images_json TEXT NOT NULL DEFAULT '[]',
+            test_manifest_json TEXT
+        );
+
+        -- One DingTalk robot per notification kind, managed by RM in the UI.
+        CREATE TABLE IF NOT EXISTS notification_channels (
+            kind TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            access_token TEXT NOT NULL DEFAULT '',
+            secret TEXT NOT NULL DEFAULT '',
+            at_user_ids_json TEXT NOT NULL DEFAULT '[]',
+            updated_at TEXT NOT NULL DEFAULT '',
+            updated_by TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS artifacts (
@@ -214,6 +357,48 @@ def init_db(conn: sqlite3.Connection) -> None:
             storage_path TEXT NOT NULL DEFAULT '',
             uploaded_at TEXT NOT NULL,
             uploaded_by TEXT NOT NULL
+        );
+
+        -- One current QA workbook per cycle (environment sheets untouched),
+        -- and its test configurations. Old unassigned files are read until replaced.
+        CREATE TABLE IF NOT EXISTS qa_test_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            release_id TEXT REFERENCES releases(id) ON DELETE CASCADE,
+            filename TEXT NOT NULL,
+            content BLOB NOT NULL,
+            environments_json TEXT NOT NULL,
+            uploaded_at TEXT NOT NULL,
+            uploaded_by TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS qa_test_results (
+            result_key TEXT PRIMARY KEY,
+            report_id INTEGER NOT NULL REFERENCES qa_test_reports(id),
+            data_json TEXT NOT NULL,
+            image_reference TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_qa_test_results_report ON qa_test_results(report_id);
+        CREATE INDEX IF NOT EXISTS idx_qa_test_results_history_key
+        ON qa_test_results(json_extract(data_json, '$.historical_result_key'));
+
+        -- Component validations are independent of monthly release QA results.
+        CREATE TABLE IF NOT EXISTS component_compatibility_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            component TEXT NOT NULL,
+            component_version TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            UNIQUE(component, component_version)
+        );
+        CREATE TABLE IF NOT EXISTS component_compatibility_apps (
+            report_id INTEGER NOT NULL REFERENCES component_compatibility_reports(id) ON DELETE CASCADE,
+            app_id TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            qa_status TEXT NOT NULL DEFAULT '' CHECK(qa_status IN ('', 'pass', 'fail')),
+            qa_comment TEXT NOT NULL DEFAULT '',
+            revision INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT '',
+            updated_by TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(report_id, app_id)
         );
 
         -- The latest AI analysis of a release's QA log, kept until it is
@@ -314,7 +499,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             returned_reason TEXT NOT NULL DEFAULT '',
             returned_at TEXT NOT NULL DEFAULT '',
             -- Phase 0 addition: distinguishes workbench requests from
-            -- decision-sync requests ('cicd_workbench' | 'release_decision_sync')
+            -- historical rows may say 'release_decision_sync' (removed workflow)
             origin TEXT NOT NULL DEFAULT 'cicd_workbench'
         );
 
@@ -334,9 +519,6 @@ def init_db(conn: sqlite3.Connection) -> None:
         -- Additional indexes (plan §4.1)
         CREATE INDEX IF NOT EXISTS idx_audit_app_release
             ON audit(app_id, release_id);
-
-        CREATE INDEX IF NOT EXISTS idx_snapshots_app_id
-            ON snapshots(app_id);
         """
     )
 
@@ -500,6 +682,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             pass  # column already exists
 
     for _tbl, _col, _col_def in [
+        ("entries", "deliverable_images_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("qa_test_reports", "release_id", "TEXT REFERENCES releases(id) ON DELETE CASCADE"),
+        ("official_versions", "images_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("official_versions", "test_manifest_json", "TEXT"),
         ("apps", "cicd_repo_type", "TEXT NOT NULL DEFAULT ''"),
         ("apps", "cicd_community_artifact", "TEXT NOT NULL DEFAULT ''"),
         ("apps", "cicd_build_image", "TEXT NOT NULL DEFAULT ''"),
@@ -528,6 +714,13 @@ def init_db(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             pass  # column already exists
 
+    conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_qa_test_reports_release '
+                 'ON qa_test_reports(release_id) WHERE release_id IS NOT NULL')
+    # Also cascade results in older databases whose report FK predates CASCADE.
+    conn.execute('CREATE TRIGGER IF NOT EXISTS qa_test_reports_delete_results '
+                 'BEFORE DELETE ON qa_test_reports BEGIN '
+                 'DELETE FROM qa_test_results WHERE report_id=OLD.id; END')
+
     # Legacy index retained so old DBs remain openable; app-backed CICD runtime
     # does not write cicd_tasks.
     try:
@@ -540,8 +733,32 @@ def init_db(conn: sqlite3.Connection) -> None:
 
     _migrate_repo_manifest_paths(conn)
     _migrate_qa_log_files(conn)
+    if legacy_snapshots:
+        monthly_migration.convert_snapshots(conn)
+
+    _migrate_official_versions(conn)
 
     conn.commit()
+
+
+def _migrate_official_versions(conn: sqlite3.Connection) -> None:
+    """Retire revision history and enforce one final record per App/cycle, without backfilling manifests."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(official_versions)")}
+    unique_index = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_official_versions_app_release'"
+    ).fetchone()
+    if "withdrawn" not in columns and unique_index:
+        return
+    with transaction(conn, immediate=True):
+        conn.execute("DROP INDEX IF EXISTS idx_official_versions_app")
+        if "withdrawn" in columns:
+            conn.execute("DELETE FROM official_versions WHERE withdrawn <> 0")
+            conn.execute("ALTER TABLE official_versions DROP COLUMN withdrawn")
+        conn.execute("DELETE FROM official_versions WHERE release_id IN (SELECT id FROM releases WHERE released_locked=0)")
+        conn.execute("DELETE FROM official_versions WHERE id NOT IN "
+                     "(SELECT MAX(id) FROM official_versions GROUP BY app_id,release_id)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_official_versions_app_release "
+                     "ON official_versions(app_id,release_id)")
 
 
 def _migrate_repo_manifest_paths(conn: sqlite3.Connection) -> None:

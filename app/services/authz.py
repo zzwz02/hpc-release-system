@@ -1,10 +1,6 @@
 """Authorization helpers that need DB data.
 
-Functions here require DB access so they cannot live in domain/permissions.py.
-Used by service methods (not as FastAPI Depends — they need conn + context args).
-
-Faithful port of server.py:1356-1381 (require_owner_or_rm,
-require_app_audit_access).
+Used by service methods (not as FastAPI Depends — they need conn + context).
 """
 from __future__ import annotations
 
@@ -12,64 +8,7 @@ import sqlite3
 
 from app.api.errors import AuthzError
 from app.domain.permissions import has_capability
-from app.repositories import snapshots_repo
-
-
-def require_owner_or_rm(
-    conn: sqlite3.Connection,
-    app_id: str,
-    username: str,
-    role: str,
-) -> None:
-    """Dead stub — this signature cannot work without an owners list.
-
-    Use require_owner_or_rm_with_owners(owners, username, role) instead;
-    callers already have the snapshot in hand.
-    """
-    raise NotImplementedError(
-        "require_owner_or_rm needs an owners list — use require_owner_or_rm_with_owners"
-    )
-
-
-def require_owner_or_rm_with_owners(
-    owners: list[str] | None,
-    username: str,
-    role: str,
-) -> None:
-    """Raise AuthzError if user is neither the app owner nor RM.
-
-    Mirrors server.py:require_owner_or_rm:
-      - RM: always allowed
-      - Owner: allowed iff username in owners
-      - else: denied
-    """
-    if has_capability(role, "app.edit.any"):
-        return
-    if has_capability(role, "app.edit.owned") and username in (owners or []):
-        return
-    raise AuthzError("Owner permission required")
-
-
-def require_app_info_update(
-    owners: list[str] | None,
-    username: str,
-    role: str,
-) -> None:
-    """Raise AuthzError if the user may not update an app's Gerrit app_info.
-
-    Wider than require_owner_or_rm_with_owners: QA also maintains app_info so
-    the QA scope stays current until the doc deadline.  Roles whose edit rights
-    are scoped to their own apps (Owner) stay scoped here too; roles with a
-    release-wide capability (RM, QA) may update any app.  Phase and lock gating
-    still happen in app_service.
-    """
-    if not has_capability(role, "app.app_info.update"):
-        raise AuthzError("app_info permission required")
-    scoped_to_owned = has_capability(role, "app.edit.owned") and not has_capability(
-        role, "app.edit.any"
-    )
-    if scoped_to_owned and username not in (owners or []):
-        raise AuthzError("Owner permission required")
+from app.repositories import apps_repo
 
 
 def require_app_audit_access(
@@ -77,28 +16,12 @@ def require_app_audit_access(
     app_id: str,
     username: str,
     role: str,
-    release_id: str = "",
 ) -> None:
-    """Raise AuthzError if user cannot view app audit log.
-
-    Mirrors server.py:1363-1381:
-      - RM / Admin / QA: always allowed
-      - Owner: allowed iff username in owners on any (or specified) release snapshot
-      - else: denied
-    """
+    """RM / Admin / QA see every App's history; Owners see their own Apps."""
     if has_capability(role, "app.audit.view.any"):
         return
-    if not has_capability(role, "app.audit.view.owned"):
-        raise AuthzError("App audit access denied")
-
-    # Owner: check snapshot ownership
-    if release_id:
-        snapshot = snapshots_repo.get_snapshot(conn, release_id, app_id)
-        if snapshot and username in (snapshot.get("owners") or []):
-            return
-        raise AuthzError("App audit access denied")
-
-    for snapshot in snapshots_repo.get_snapshots_for_app(conn, app_id):
-        if username in (snapshot.get("owners") or []):
+    if has_capability(role, "app.audit.view.owned"):
+        app = apps_repo.get_app(conn, app_id)
+        if app and username in (app.get("owners") or []):
             return
     raise AuthzError("App audit access denied")

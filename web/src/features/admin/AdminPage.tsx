@@ -220,10 +220,8 @@ function DbPanel({ payload, onStateRefresh }: DbPanelProps) {
               <tbody>
                 {apps.length > 0 ? (
                   apps.map((app) => {
-                    const snap =
-                      payload?.release?.snapshots?.[app.id];
-                    const name = snap ? displayName(snap) : app.id;
-                    const owners = snap?.owners ?? [];
+                    const name = displayName(app);
+                    const owners = app.owners ?? [];
                     return (
                       <tr key={app.id}>
                         <td>

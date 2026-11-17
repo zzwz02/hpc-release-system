@@ -383,7 +383,7 @@ export function JenkinsFailuresPage() {
       ...Object.fromEntries(Object.entries(filters).filter(([key, value]) => value && (!isTrashed || !["pending_rm_review", "has_repro"].includes(key)))),
       ...(isTrashed ? { record_state: "trashed" as const } : {}),
     }),
-    [filters, isRm, isTrashed],
+    [filters, isTrashed],
   );
 
   useEffect(() => {

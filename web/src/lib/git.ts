@@ -54,3 +54,8 @@ export function formatCicdRepoPath(
   }
   return hpcPath;
 }
+
+/** Display the same commit prefix in App, QA, and digest command tables. */
+export function shortCommit(commit: string | null | undefined): string {
+  return (commit ?? "").slice(0, 12);
+}

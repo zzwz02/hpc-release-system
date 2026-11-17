@@ -106,7 +106,7 @@ describe("QA AI suggestions", () => {
   });
 });
 
-describe("QA report filters", () => {
+describe("QA log filters", () => {
   it("setQaReportFilter updates the text filter for a kind", () => {
     useUiStore.getState().setQaReportFilter("release", "search text");
     expect(useUiStore.getState().qaReportFilters.release.filter).toBe("search text");

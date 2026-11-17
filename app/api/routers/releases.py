@@ -1,27 +1,25 @@
-"""Releases router — release lifecycle and schedule management.
+"""Monthly cycles (RM) and the dashboard release timeline.
 
-Wave 2 endpoints (faithful port of server.py handlers):
-  POST /api/import-initial          — bootstrap first release from CSV (RM only)
-  POST /api/releases/create         — clone most-recent release (RM only)
-  POST /api/releases/deadlines      — update name/deadlines (RM only)
-  POST /api/releases/final-lock     — final lock + artifact generation (RM only)
-  POST /api/releases/final-unlock   — reverse final lock (RM only)
-  POST /api/release-schedule/upsert — create or update schedule entry (RM only)
-  POST /api/release-schedule/delete — delete schedule entry (RM only)
-
-R3 stubs (NOT implemented — Phase 4):
-  GET /api/releases  — per-section refresh list
-  GET /api/releases/{release_id}
+  GET  /api/releases/defaults      — default dates for a month
+  POST /api/releases/create        — new empty cycle
+  POST /api/releases/update        — name and dates
+  POST /api/releases/environment   — replace the cycle environment
+  POST /api/releases/base-image    — add / update a base image
+  POST /api/releases/base-image/delete
+  POST /api/releases/publish       — publish (results, official versions, final docs)
+  POST /api/releases/unlock        — reopen a published cycle for corrections
+  POST /api/release-schedule/upsert | delete
 """
 from __future__ import annotations
 
 import sqlite3
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 
 from app.deps import get_db, require_capability
-from app.services import release_service
+from app.domain import cycles as cycles_domain
+from app.services import cycle_service, release_service
 
 router = APIRouter(tags=["releases"])
 require_release_management_access = require_capability(
@@ -30,142 +28,110 @@ require_release_management_access = require_capability(
 )
 
 
-# ---------------------------------------------------------------------------
-# POST /api/import-initial  (lives outside /api/releases/ prefix)
-# ---------------------------------------------------------------------------
-
-@router.post("/api/import-initial")
-async def post_import_initial(
-    request: Request,
+@router.get("/api/releases/defaults")
+def get_release_defaults(
+    month: str = Query(..., description="YYYY-MM"),
     user: dict = Depends(require_release_management_access),
-    conn: sqlite3.Connection = Depends(get_db),
-) -> JSONResponse:
-    """Bootstrap the first release from a CSV payload.
+) -> dict:
+    try:
+        year, mon = (int(part) for part in month.split("-"))
+        return cycles_domain.default_dates(year, mon)
+    except ValueError as exc:
+        raise ValueError(f"月份格式错误：{month!r}，应为 YYYY-MM") from exc
 
-    Body: {csv, release_name?, maca_version?, app_freeze_deadline?, doc_deadline?}
-    Returns: {"release_id": ...}
-    Mirrors server.py:669-682.
-    """
-    body = await request.json()
-    result = release_service.import_initial(
-        conn,
-        csv=body.get("csv", ""),
-        release_name=body.get("release_name") or None,
-        maca_version=body.get("maca_version") or None,
-        app_freeze_deadline=body.get("app_freeze_deadline", ""),
-        doc_deadline=body.get("doc_deadline", ""),
-    )
-    return JSONResponse(result)
-
-
-# ---------------------------------------------------------------------------
-# POST /api/releases/create
-# ---------------------------------------------------------------------------
 
 @router.post("/api/releases/create")
-async def post_releases_create(
-    request: Request,
+def post_releases_create(
+    body: dict,
     user: dict = Depends(require_release_management_access),
     conn: sqlite3.Connection = Depends(get_db),
-) -> JSONResponse:
-    """Clone the most recent release into a new one.
-
-    Body: {name, maca_version?, app_freeze_deadline?, doc_deadline?}
-    Returns: {"release_id": ...}
-    Mirrors server.py:682-695.
-    """
-    body = await request.json()
-    result = release_service.create_release(
+) -> dict:
+    return cycle_service.create_cycle(
         conn,
-        name=body["name"],
-        maca_version=body.get("maca_version", ""),
-        app_freeze_deadline=body.get("app_freeze_deadline", ""),
-        doc_deadline=body.get("doc_deadline", ""),
+        name=body.get("name", ""),
+        signup_deadline=body.get("signup_deadline", ""),
+        qa_deadline=body.get("qa_deadline", ""),
+        release_date=body.get("release_date", ""),
         user=user["username"],
         role=user["role"],
     )
-    return JSONResponse(result)
 
 
-# ---------------------------------------------------------------------------
-# POST /api/releases/deadlines
-# ---------------------------------------------------------------------------
-
-@router.post("/api/releases/deadlines")
-async def post_releases_deadlines(
-    request: Request,
+@router.post("/api/releases/update")
+def post_releases_update(
+    body: dict,
     user: dict = Depends(require_release_management_access),
     conn: sqlite3.Connection = Depends(get_db),
-) -> JSONResponse:
-    """Update a release's name and/or deadline fields.
-
-    Body: {release_id, name?, app_freeze_deadline?, doc_deadline?}
-    Returns: {"release": <serialized release with phase>}
-    Mirrors server.py:696-709.
-    """
-    body = await request.json()
-    result = release_service.update_deadlines(
-        conn,
-        release_id=body["release_id"],
-        name=body.get("name"),
-        app_freeze_deadline=body.get("app_freeze_deadline"),
-        doc_deadline=body.get("doc_deadline"),
-        user=user["username"],
-        role=user["role"],
-    )
-    return JSONResponse(result)
+) -> dict:
+    return {
+        "release": cycle_service.update_cycle(
+            conn,
+            body["release_id"],
+            name=body.get("name", ""),
+            signup_deadline=body.get("signup_deadline", ""),
+            qa_deadline=body.get("qa_deadline", ""),
+            release_date=body.get("release_date", ""),
+            user=user["username"],
+            role=user["role"],
+        )
+    }
 
 
-# ---------------------------------------------------------------------------
-# POST /api/releases/final-lock
-# ---------------------------------------------------------------------------
-
-@router.post("/api/releases/final-lock")
-async def post_releases_final_lock(
-    request: Request,
+@router.post("/api/releases/environment")
+def post_releases_environment(
+    body: dict,
     user: dict = Depends(require_release_management_access),
     conn: sqlite3.Connection = Depends(get_db),
-) -> JSONResponse:
-    """Final-lock a release and generate final artifacts.
-
-    Body: {release_id}
-    Returns: {"artifacts": [...]}
-    Mirrors server.py:710-715.
-    """
-    body = await request.json()
-    result = release_service.final_lock(
-        conn,
-        release_id=body["release_id"],
-        user=user["username"],
-        role=user["role"],
+) -> dict:
+    rows = cycle_service.save_environment(
+        conn, body["release_id"], body.get("rows") or [], user=user["username"], role=user["role"]
     )
-    return JSONResponse(result)
+    return {"environment": rows}
 
 
-# ---------------------------------------------------------------------------
-# POST /api/releases/final-unlock
-# ---------------------------------------------------------------------------
-
-@router.post("/api/releases/final-unlock")
-async def post_releases_final_unlock(
-    request: Request,
+@router.post("/api/releases/base-image")
+def post_releases_base_image(
+    body: dict,
     user: dict = Depends(require_release_management_access),
     conn: sqlite3.Connection = Depends(get_db),
-) -> JSONResponse:
-    """Reverse a final lock.
-
-    Body: {release_id}
-    Returns: {"ok": true}
-    Mirrors server.py:716-721.
-    """
-    body = await request.json()
-    result = release_service.final_unlock(
-        conn,
-        release_id=body["release_id"],
-        user=user["username"],
-        role=user["role"],
+) -> dict:
+    images = cycle_service.save_base_image(
+        conn, body["release_id"], body.get("image") or {}, user=user["username"], role=user["role"]
     )
-    return JSONResponse(result)
+    return {"base_images": images}
+
+
+@router.post("/api/releases/base-image/delete")
+def post_releases_base_image_delete(
+    body: dict,
+    user: dict = Depends(require_release_management_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    images = cycle_service.delete_base_image(
+        conn, body["release_id"], int(body["image_id"]), user=user["username"], role=user["role"]
+    )
+    return {"base_images": images}
+
+
+@router.post("/api/releases/publish")
+def post_releases_publish(
+    body: dict,
+    user: dict = Depends(require_release_management_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    result = cycle_service.publish(conn, body["release_id"], user=user["username"], role=user["role"])
+    return {"released": result["released"], "failed": result["failed"], "artifacts": list(result["artifacts"])}
+
+
+@router.post("/api/releases/unlock")
+def post_releases_unlock(
+    body: dict,
+    user: dict = Depends(require_release_management_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    return cycle_service.unlock(
+        conn, body["release_id"], reason=body.get("reason", ""), user=user["username"], role=user["role"]
+    )
 
 
 # ---------------------------------------------------------------------------
