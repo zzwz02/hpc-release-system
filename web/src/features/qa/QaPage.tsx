@@ -39,6 +39,7 @@ import { formatServerTime } from "../../lib/time";
 import { downloadCsv } from "../../lib/csv";
 import { qaStatusLabels, qaStatusOptions } from "../../lib/labels";
 import { shortCommit, versionTag } from "../appWorkbench/helpers";
+import { BuildLockPill } from "../appWorkbench/pills";
 import { confirmDialog, promptDialog } from "../../lib/confirm";
 import { toast } from "../../lib/toast";
 import type {
@@ -115,6 +116,7 @@ type QaReportPayload = StatePayload & { qa_report?: QaReportData };
 
 function QaMarkPane({ payload, onStateRefresh, report, isFetching, dataUpdatedAt }: QaMarkPaneProps) {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const uiStore = useUiStore();
   const release = payload.release;
   const releaseId = release?.id ?? "";
@@ -123,6 +125,9 @@ function QaMarkPane({ payload, onStateRefresh, report, isFetching, dataUpdatedAt
   const rows = qaRows(payload);
   const [formState, setFormState] = useState<Record<string, QaForm>>({});
   const [saving, setSaving] = useState(false);
+  const [lockingApp, setLockingApp] = useState<string | null>(null);
+  const [lockingAll, setLockingAll] = useState<boolean | null>(null);
+  const lockBusy = !!lockingApp || lockingAll !== null;
   const editingReleaseRef = useRef<string | null>(null);
   const identityRef = useRef(`${user?.username}:${user?.role}`);
   const saveGeneration = useRef({ value: 0 }).current;
@@ -131,6 +136,8 @@ function QaMarkPane({ payload, onStateRefresh, report, isFetching, dataUpdatedAt
   useEffect(() => {
     saveGeneration.value++;
     setSaving(false);
+    setLockingApp(null);
+    setLockingAll(null);
     if (identityRef.current !== identity || uiStore.qaEditReleaseId !== releaseId || !writable) {
       identityRef.current = identity;
       uiStore.setQaEditReleaseId(releaseId);
@@ -173,6 +180,44 @@ function QaMarkPane({ payload, onStateRefresh, report, isFetching, dataUpdatedAt
     setFormState({});
   }
 
+  async function toggleBuildLock(entry: Entry) {
+    if (lockBusy || editMode || isFetching || !entry.allowed_actions?.includes("qa.build_lock")) return;
+    const generation = saveGeneration.value;
+    setLockingApp(entry.app_id);
+    try {
+      await apiPost("/api/qa/build-lock", { release_id: releaseId, app_id: entry.app_id,
+        locked: !entry.build_locked, expected_revision: entry.build_lock_revision });
+      if (generation !== saveGeneration.value) return;
+      void queryClient.invalidateQueries({ queryKey: ["state"] });
+      onStateRefresh();
+      toast.success(entry.build_locked ? "已解锁本 App 在当前版本的构建" : "已锁定本 App 在当前版本的构建");
+    } catch (error) {
+      if (generation === saveGeneration.value) toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (generation === saveGeneration.value) setLockingApp(null);
+    }
+  }
+
+  async function setAllBuildLocks(locked: boolean) {
+    if (lockBusy || editMode || isFetching || !rows.length ||
+      !rows.every(({ entry }) => entry.allowed_actions?.includes("qa.build_lock"))) return;
+    const generation = saveGeneration.value;
+    setLockingAll(locked);
+    try {
+      const result = await apiPost<{ updated: number }>("/api/qa/build-lock-batch", { release_id: releaseId, locked,
+        items: rows.map(({ entry }) => ({ app_id: entry.app_id, expected_revision: entry.build_lock_revision })),
+      });
+      if (generation !== saveGeneration.value) return;
+      void queryClient.invalidateQueries({ queryKey: ["state"] });
+      onStateRefresh();
+      toast.success(`已${locked ? "锁定" : "解锁"}本版本 ${result.updated} 个 App 的构建`);
+    } catch (error) {
+      if (generation === saveGeneration.value) toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (generation === saveGeneration.value) setLockingAll(null);
+    }
+  }
+
   async function handleSave() {
     if (!writable || saving) return;
     const items = rows.flatMap(({ app, entry }) => {
@@ -206,11 +251,13 @@ function QaMarkPane({ payload, onStateRefresh, report, isFetching, dataUpdatedAt
 
   if (!release) return <div className="panel"><div className="panel-body"><p className="muted">请选择版本。</p></div></div>;
   const qaFieldsWritable = writable && editMode && !saving;
+  const batchLocksDisabled = lockBusy || editMode || isFetching || !rows.length ||
+    !rows.every(({ entry }) => entry.allowed_actions?.includes("qa.build_lock"));
   const actionBar = canEditQa(user ?? undefined) ? <div className="qa-actions">
     {editMode ? <>
       <button className="btn primary qaSaveAll" disabled={!writable || saving} onClick={() => void handleSave()}>保存 QA 状态</button>
       <button className="btn ghost qaCancel" disabled={saving} onClick={handleCancel}>取消编辑</button>
-    </> : <button className="btn primary qaEdit" disabled={!writable} onClick={() => uiStore.setQaEditMode(true)}>
+    </> : <button className="btn primary qaEdit" disabled={!writable || lockBusy} onClick={() => uiStore.setQaEditMode(true)}>
       ✎ 修改（填写 QA 结论、交付镜像和 comment）
     </button>}
   </div> : null;
@@ -221,10 +268,17 @@ function QaMarkPane({ payload, onStateRefresh, report, isFetching, dataUpdatedAt
     {deliveryView.isFetching && <p className="muted small" role="status">正在补全历史交付镜像的 tag…</p>}
     {deliveryView.error && <p className="lerr" role="alert">交付镜像 tag 读取失败：{deliveryView.error.message}</p>}
     <div className="panel" data-testid="qa-failure-summary">
-      <div className="panel-head">
+      <div className="panel-head qa-failure-summary-head">
         <h2>QA log 失败汇总</h2>
         {summaryAvailable && <span className="count">{summary.data?.failed_rows ?? 0} 条失败 / {summary.data?.total_rows ?? 0} 条结果</span>}
         <span className="spacer" />
+        {can(user?.role, "qa.build_lock") && <div className="qa-build-lock-actions"
+          title={editMode ? "请先保存或取消 QA 编辑" : release.released_locked ? "版本已发布，不可修改构建锁定状态" : "对当前版本全部有效报名 App 生效"}>
+          <button className="btn sm" disabled={batchLocksDisabled || rows.every(({ entry }) => !entry.build_locked)}
+            onClick={() => void setAllBuildLocks(false)}>{lockingAll === false ? "解锁中…" : "全部解锁"}</button>
+          <button className="btn sm" disabled={batchLocksDisabled || rows.every(({ entry }) => entry.build_locked)}
+            onClick={() => void setAllBuildLocks(true)}>{lockingAll === true ? "锁定中…" : "全部锁定"}</button>
+        </div>}
         <RefreshBar dataUpdatedAt={summary.dataUpdatedAt} isFetching={summary.isFetching} onRefresh={onStateRefresh} />
       </div>
       <div className="panel-body">
@@ -251,34 +305,53 @@ function QaMarkPane({ payload, onStateRefresh, report, isFetching, dataUpdatedAt
         const failed = failures.get(app.id) ?? [];
         const imageView = displayedImages[app.id];
         const matchingImages = imageView && imageView.revision === entry.delivery_revision ? imageView.images : null;
+        const images = !editMode && matchingImages ? matchingImages : draft?.images ?? recordedImages(entry.deliverable_images, entry.deliverable_image, entry.deliverable_digest);
+        const builds = entry.delivery_builds ?? [];
+        const filledBuilds = builds.filter(build => images.some(image => image.build_key === build.build_key &&
+          (image.reference?.trim() || image.image?.trim()))).length;
         const pillClass = status === "qa_passed" ? "ok" : status === "has_issues" ? "warnp" : status === "cannot_release" ? "bad" : "";
         return <div key={app.id} className="qa-card" data-qa-app={app.id}>
           <div className="qa-card-h">
             <span className="app-ico">{initials(displayName(app))}</span>
-            <div><div className="name">{displayName(app)}{" "}
+            <div className="qa-app-heading"><div className="name">{displayName(app)}{" "}
               {entry.target_version && <span className="ver-tag">{versionTag(entry.target_version)}</span>}{" "}
               {entry.pending_scope_request && <span className="pill warnp">范围扩大待审批</span>}
             </div><div className="sub">{usersLabel(app.owners, payload.user_display_names ?? {})}</div></div>
-            <span className="qa-cur"><span className={`pill ${pillClass}`}>{qaStatusLabels[status] ?? status}</span></span>
+            <span className="qa-cur">
+              <span className={`pill ${pillClass}`}>{qaStatusLabels[status] ?? status}</span>
+              <BuildLockPill entry={entry} title={entry.build_lock_updated_at
+                ? `${entry.build_locked ? "构建已锁定" : "构建未锁定"} · ${payload.user_display_names?.[entry.build_lock_updated_by] || entry.build_lock_updated_by} · ${formatServerTime(entry.build_lock_updated_at)}`
+                : undefined} />
+            </span>
           </div>
           <div className="qa-card-b">
-            <label>QA 状态<select className="select" disabled={!qaFieldsWritable} value={status}
-              onChange={event => setFormState(previous => ({ ...previous, [app.id]: { ...previous[app.id], status: event.target.value } }))}
-              data-testid={`qa-status-${app.id}`}>
-              {qaStatusOptions.map(value => <option key={value} value={value}>{qaStatusLabels[value]}</option>)}
-            </select></label>
+            <div className="qa-status-controls" data-testid={`qa-build-lock-${app.id}`}>
+              <label className="qa-status-select"><span>QA 状态</span>
+                <select className="select" disabled={!qaFieldsWritable} value={status}
+                  onChange={event => setFormState(previous => ({ ...previous, [app.id]: { ...previous[app.id], status: event.target.value } }))}
+                  data-testid={`qa-status-${app.id}`}>
+                  {qaStatusOptions.map(value => <option key={value} value={value}>{qaStatusLabels[value]}</option>)}
+                </select>
+              </label>
+              {entry.allowed_actions?.includes("qa.build_lock") && <button type="button" className="btn sm"
+                disabled={lockBusy || editMode || isFetching} onClick={() => void toggleBuildLock(entry)}
+                title={editMode ? "请先保存或取消 QA 编辑" : "锁定后，CICD 不再触发本 App 在当前发布版本的构建"}>
+                {lockingApp === app.id ? "保存中…" : entry.build_locked ? "解锁构建" : "锁定构建"}
+              </button>}
+            </div>
             {summaryAvailable && <details className="mt-6 mb-6" data-testid={`qa-app-failures-${app.id}`}>
               <summary><b>QA log 失败项（{failed.length}）</b></summary>
               {failed.length ? <QaFailureDetails failures={failed} /> : <p className="muted small">QA log 未记录本 App 的失败项。</p>}
             </details>}
-            <div className="qa-delivery-images"><b>交付镜像（按报名 app_info 的 app_build）</b>
-              <DeliveryImages images={!editMode && matchingImages ? matchingImages : draft?.images ?? recordedImages(entry.deliverable_images, entry.deliverable_image, entry.deliverable_digest)}
-                builds={entry.delivery_builds} onChange={qaFieldsWritable ? images => setFormState(previous => ({ ...previous, [app.id]: { ...previous[app.id], images } })) : undefined} />
+            <details key={releaseId} className="qa-delivery-images" data-testid={`qa-app-delivery-${app.id}`}>
+              <summary title="已填写 / 应交付（按报名 app_info 的 app_build）"><b>交付镜像（{filledBuilds}/{builds.length}）</b></summary>
+              <DeliveryImages images={images}
+                builds={builds} onChange={qaFieldsWritable ? images => setFormState(previous => ({ ...previous, [app.id]: { ...previous[app.id], images } })) : undefined} />
               {!editMode && matchingImages?.filter(image => image.reference_error).map(image => <p className="lerr small" key={image.build_key}>
                 {image.os || "未指定构建"} · {image.arch} · {image.image_target}：交付镜像 tag 未能补全，{image.reference_error}
               </p>)}
               {!editMode && imageView && !matchingImages && <p className="muted small">交付镜像记录已变化，请刷新当前页。</p>}
-            </div>
+            </details>
             <details className="mt-6"><summary className="small muted">测试范围 {inScope.length} 项{entry.planned_features ? " · 计划 feature" : ""}</summary>
               {entry.planned_features && <p className="small">{entry.planned_features}</p>}
               <TestScopeTable tests={inScope} />
@@ -312,12 +385,16 @@ function QaChangeLogPanel({ payload, rows }: QaChangeLogPanelProps) {
   const auditLogs = payload.qa_audit_logs ?? {};
 
   // Flatten + sort all entries by timestamp descending
-  const allEntries = rows.flatMap(({ app }) =>
+  const appEntries = rows.flatMap(({ app }) =>
     (auditLogs[app.id] ?? []).map((e) => ({
       ...e,
       app_label: displayName(app),
     })),
-  ).sort((a, b) => {
+  );
+  const allEntries = [
+    ...appEntries,
+    ...(payload.qa_batch_audit_logs ?? []).map(entry => ({ ...entry, app_label: `批量（${entry.detail.length} 个 App）` })),
+  ].sort((a, b) => {
     const at = new Date(a.ts || "").getTime() || 0;
     const bt = new Date(b.ts || "").getTime() || 0;
     return bt - at;
@@ -407,8 +484,8 @@ function ChangeLogRow({ entry }: ChangeLogRowProps) {
                 {entry.detail.map((d, i) => (
                   <tr key={i}>
                     <td>{d.label || d.field || ""}</td>
-                    <td>{auditDetailValue(d.old)}</td>
-                    <td>{auditDetailValue(d.new)}</td>
+                    <td>{auditDetailValue(d.old, d.field)}</td>
+                    <td>{auditDetailValue(d.new, d.field)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -420,8 +497,9 @@ function ChangeLogRow({ entry }: ChangeLogRowProps) {
   );
 }
 
-function auditDetailValue(v: unknown): string {
+function auditDetailValue(v: unknown, field?: string): string {
   if (v === null || v === undefined) return "";
+  if (field === "build_locked" && typeof v === "boolean") return v ? "已锁定" : "未锁定";
   if (typeof v === "object") return JSON.stringify(v);
   return String(v);
 }

@@ -14,7 +14,7 @@ from app.repositories import qa_results_repo
 from app.services import lookup_service, qa_commands_service, qa_results_service
 from tests.conftest import seed_cycle
 from tests.test_image_lookup import IMAGE, TAGS
-from tests.test_qa_commands import filled_row, scope as scope
+from tests.test_qa_commands import filled_row, missing_image, scope as scope
 from tests.test_qa_results import live as live
 
 
@@ -41,7 +41,7 @@ def save(conn, release_id, rows, **kwargs):
 def cycles(temp_db, scope, monkeypatch):
     base = filled_row(temp_db, scope)
     rows = qa_commands_service.query(temp_db, release_id=scope[0], hpc_version='3.10.1.2')['rows']
-    other = next(row for row in rows if row['website_docker_cmd'] != 'no_image' and row['test_name'] != base['test_name'])
+    other = next(row for row in rows if not missing_image(row) and row['test_name'] != base['test_name'])
     other = {**base, **other, 'qa_digest': IMAGE, 'qa_env': 'C500_server_1', 'qa_status': 'pass',
              'qa_result': 'B', 'qa_docker_cmd': other['website_docker_cmd']}
     versions = ['3.10.1.2', '3.10.0.7', '3.10.0.8', '3.9.0.20']

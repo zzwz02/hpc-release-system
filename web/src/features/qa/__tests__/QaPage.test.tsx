@@ -19,7 +19,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { QaPage } from "../QaPage";
-import type { StatePayload, Entry } from "../../../types";
+import type { StatePayload, Entry, DeliveryImage } from "../../../types";
 import { makeApp as baseApp, makeEntry, makeRelease as baseRelease, makeState } from "../../../test/fixtures";
 
 // ---------------------------------------------------------------------------
@@ -521,8 +521,8 @@ describe("QaPage delivery image display", () => {
   const bare = `${repository}@${digest}`;
   const tagged = `${repository}:1.0-3.10.0.7-ubuntu22.04-amd64@${digest}`;
   const image = { ...makeEntry("app1").delivery_builds![0], image: repository, digest, reference: bare };
-  function routeImages(response: () => unknown, builds = makeEntry("app1").delivery_builds) {
-    const payload = makePayload({ release: makeRelease([makeEntry("app1", { deliverable_images: [image], delivery_builds: builds })]) });
+  function routeImages(response: () => unknown, builds = makeEntry("app1").delivery_builds, images: DeliveryImage[] = [image]) {
+    const payload = makePayload({ release: makeRelease([makeEntry("app1", { deliverable_images: images, delivery_builds: builds })]) });
     vi.mocked(apiGet).mockImplementation(async path => {
       if (path.startsWith("/api/qa/report?")) {
         try {
@@ -536,7 +536,7 @@ describe("QaPage delivery image display", () => {
     });
   }
 
-  it("keeps unfilled locked builds visible outside edit mode", async () => {
+  it("collapses delivery images by default and counts filled locked builds", async () => {
     const build = makeEntry("app1").delivery_builds![0];
     routeImages(() => ({ entries: { app1: { revision: "revision-1", images: [{ ...image, reference: tagged }] } } }), [
       build,
@@ -544,7 +544,12 @@ describe("QaPage delivery image display", () => {
       { ...build, build_key: "ubuntu22.04_amd64_py312", python_label: "py312" },
     ]);
     renderQaPage(makeQClient());
-    expect(await screen.findByText(tagged)).toBeVisible();
+    expect(await screen.findByText(tagged)).not.toBeVisible();
+    const section = screen.getByTestId("qa-app-delivery-app1");
+    expect(section).not.toHaveAttribute("open");
+    expect(within(section).getByText("交付镜像（1/3）")).toBeVisible();
+    fireEvent.click(section.querySelector("summary")!);
+    expect(screen.getByText(tagged)).toBeVisible();
     const table = screen.getByTestId("delivery-images");
     expect(within(table).getAllByText("未填写交付镜像")).toHaveLength(2);
     expect(within(table).getByRole("cell", { name: "dbg" })).toBeVisible();
@@ -557,6 +562,8 @@ describe("QaPage delivery image display", () => {
     vi.mocked(apiPost).mockResolvedValue({ ok: true });
     const qc = makeQClient();
     const view = renderQaPage(qc);
+    await screen.findByText(tagged);
+    fireEvent.click(screen.getByTestId("qa-app-delivery-app1").querySelector("summary")!);
     expect(await screen.findByText(tagged)).toBeVisible();
     uiStoreMod.__setState({ qaEditMode: true, qaEditReleaseId: "rel-1" });
     view.rerender(<QueryClientProvider client={qc}><MemoryRouter initialEntries={["/qa"]}><QaPage /></MemoryRouter></QueryClientProvider>);
@@ -570,6 +577,8 @@ describe("QaPage delivery image display", () => {
   it("never applies a display reference from a different entry revision", async () => {
     routeImages(() => ({ entries: { app1: { revision: "newer-revision", images: [{ ...image, reference: tagged }] } } }));
     renderQaPage(makeQClient());
+    await screen.findByText(bare);
+    fireEvent.click(screen.getByTestId("qa-app-delivery-app1").querySelector("summary")!);
     expect(await screen.findByText("交付镜像记录已变化，请刷新当前页。")).toBeVisible();
     expect(screen.getByText(bare)).toBeVisible();
     expect(screen.queryByText(tagged)).toBeNull();
@@ -579,7 +588,134 @@ describe("QaPage delivery image display", () => {
     routeImages(() => { throw new Error("Harbor 不可达"); });
     renderQaPage(makeQClient());
     expect(await screen.findByRole("alert")).toHaveTextContent("交付镜像 tag 读取失败：Harbor 不可达");
+    fireEvent.click(screen.getByTestId("qa-app-delivery-app1").querySelector("summary")!);
     expect(screen.getByText(bare)).toBeVisible();
+  });
+
+  it("updates delivery counts for edits and clears without counting unassigned legacy images", async () => {
+    const build = makeEntry("app1").delivery_builds![0];
+    routeImages(() => ({ entries: {} }), [build, { ...build, build_key: "debug", image_target: "dbg" }],
+      [image, { ...image, build_key: "legacy" }]);
+    uiStoreMod.__setState({ qaEditMode: true, qaEditReleaseId: "rel-1" });
+    renderQaPage(makeQClient());
+    const section = await screen.findByTestId("qa-app-delivery-app1");
+    expect(section).not.toHaveAttribute("open");
+    expect(within(section).getByText("交付镜像（1/2）")).toBeVisible();
+    fireEvent.click(section.querySelector("summary")!);
+    const inputs = within(section).getAllByTestId("delivery-reference");
+    fireEvent.change(inputs[1], { target: { value: tagged } });
+    expect(within(section).getByText("交付镜像（2/2）")).toBeVisible();
+    fireEvent.change(inputs[0], { target: { value: "" } });
+    expect(within(section).getByText("交付镜像（1/2）")).toBeVisible();
+    fireEvent.change(inputs[1], { target: { value: " " } });
+    expect(within(section).getByText("交付镜像（0/2）")).toBeVisible();
+  });
+});
+
+describe("QaPage build locks", () => {
+  it("shows one expandable audit row for a batch while keeping individual operations separate", async () => {
+    const detail = [{ app_id: "app1", field: "build_locked", label: "App 1（app1）构建锁定", old: false, new: true },
+      { app_id: "app2", field: "build_locked", label: "App 2（app2）构建锁定", old: false, new: true }];
+    const audit = { ts: "2026-11-17 16:00:00", user: "qa", role: "QA", app_id: "", release_id: "rel-1",
+      event: "qa_build_lock_batch", message: "全部锁定「本版本」的 CICD 构建：变更 2 个 App", detail };
+    vi.mocked(apiGet).mockResolvedValue(makePayload({
+      qa_batch_audit_logs: [audit], qa_audit_logs: { app1: [{ ...audit, app_id: "app1", event: "qa_build_lock",
+        message: "单个 App 解锁", detail: [{ field: "build_locked", label: "构建锁定", old: true, new: false }] }] },
+    }));
+    renderQaPage(makeQClient());
+    const message = await screen.findByText(audit.message);
+    fireEvent.click(document.querySelector("#qaChangeLogPanel > summary")!);
+    const panel = document.querySelector("#qaChangeLogPanel")! as HTMLElement;
+    expect(within(panel).getByText("2 条")).toBeVisible();
+    expect(within(panel).getByText("批量（2 个 App）")).toBeVisible();
+    expect(within(panel).getByText("单个 App 解锁")).toBeVisible();
+    expect(within(panel).queryByText(detail[1].label)).toBeNull();
+    fireEvent.click(message);
+    expect(within(panel).getByText(detail[0].label)).toBeVisible();
+    expect(within(panel).getByText(detail[1].label)).toBeVisible();
+    expect(within(panel).getAllByText("未锁定")).toHaveLength(2);
+    expect(within(panel).getAllByText("已锁定")).toHaveLength(2);
+  });
+
+  it("atomically locks and unlocks every App in the selected cycle", async () => {
+    const entries = [makeEntry("app1", { allowed_actions: ["qa.build_lock"] }),
+      makeEntry("app2", { id: 2, allowed_actions: ["qa.build_lock"] })];
+    const payload = makePayload({ apps: [makeApp("app1"), makeApp("app2")], release: makeRelease(entries) });
+    vi.mocked(apiGet).mockResolvedValue(payload);
+    vi.mocked(apiPost).mockImplementation(async (_path, body) => {
+      const change = body as { locked: boolean };
+      for (const entry of entries) { entry.build_locked = change.locked; entry.build_lock_revision++; }
+      return { updated: 2 };
+    });
+    renderQaPage(makeQClient());
+    const lock = await screen.findByRole("button", { name: "全部锁定" });
+    expect(screen.getByRole("button", { name: "全部解锁" })).toBeDisabled();
+    await waitFor(() => expect(lock).toBeEnabled());
+    fireEvent.click(lock);
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/qa/build-lock-batch", {
+      release_id: "rel-1", locked: true,
+      items: [{ app_id: "app1", expected_revision: 0 }, { app_id: "app2", expected_revision: 0 }],
+    }));
+    await waitFor(() => expect(screen.getAllByText("构建已锁定")).toHaveLength(2));
+    const unlock = screen.getByRole("button", { name: "全部解锁" });
+    await waitFor(() => expect(unlock).toBeEnabled());
+    expect(lock).toBeDisabled();
+    fireEvent.click(unlock);
+    await waitFor(() => expect(apiPost).toHaveBeenLastCalledWith("/api/qa/build-lock-batch", {
+      release_id: "rel-1", locked: false,
+      items: [{ app_id: "app1", expected_revision: 1 }, { app_id: "app2", expected_revision: 1 }],
+    }));
+    await waitFor(() => expect(screen.getAllByText("构建未锁定")).toHaveLength(2));
+  });
+
+  it("locks and unlocks the selected App/cycle with the current revision", async () => {
+    const entry = makeEntry("app1", { allowed_actions: ["qa.build_lock"] });
+    const payload = makePayload({ release: makeRelease([entry]) });
+    vi.mocked(apiGet).mockResolvedValue(payload);
+    vi.mocked(apiPost).mockImplementation(async (_path, body) => {
+      const change = body as { locked: boolean; expected_revision: number };
+      entry.build_locked = change.locked;
+      entry.build_lock_revision++;
+      return { ok: true };
+    });
+    renderQaPage(makeQClient());
+    fireEvent.click(await screen.findByRole("button", { name: "锁定构建" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/qa/build-lock", {
+      release_id: "rel-1", app_id: "app1", locked: true, expected_revision: 0,
+    }));
+    expect(await screen.findByText("构建已锁定")).toBeVisible();
+    const unlock = await screen.findByRole("button", { name: "解锁构建" });
+    await waitFor(() => expect(unlock).toBeEnabled());
+    fireEvent.click(unlock);
+    await waitFor(() => expect(apiPost).toHaveBeenLastCalledWith("/api/qa/build-lock", {
+      release_id: "rel-1", app_id: "app1", locked: false, expected_revision: 1,
+    }));
+    expect(await screen.findByText("构建未锁定")).toBeVisible();
+  });
+
+  it("keeps unsaved QA drafts and disables build-lock changes until editing ends", async () => {
+    uiStoreMod.__setState({ qaEditMode: true, qaEditReleaseId: "rel-1" });
+    vi.mocked(apiGet).mockResolvedValue(makePayload({ release: makeRelease([
+      makeEntry("app1", { allowed_actions: ["qa.build_lock"] }),
+    ]) }));
+    renderQaPage(makeQClient());
+    const button = await screen.findByRole("button", { name: "锁定构建" });
+    fireEvent.change(screen.getByRole("textbox", { name: /QA comment/ }), { target: { value: "未保存" } });
+    expect(button).toBeDisabled();
+    expect(screen.getByRole("button", { name: "全部锁定" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "全部解锁" })).toBeDisabled();
+    fireEvent.click(button);
+    expect(apiPost).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: /QA comment/ })).toHaveValue("未保存");
+  });
+
+  it("shows a read-only lock when backend actions forbid changes", async () => {
+    vi.mocked(apiGet).mockResolvedValue(makePayload({ release: makeRelease([
+      makeEntry("app1", { build_locked: true, allowed_actions: [] }),
+    ]) }));
+    renderQaPage(makeQClient());
+    expect(await screen.findByText("构建已锁定")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "解锁构建" })).toBeNull();
   });
 });
 

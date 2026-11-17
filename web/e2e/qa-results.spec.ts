@@ -61,8 +61,8 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   expect(commands.rows.every((row: Record<string, unknown>) => row.app_id === "lookup-image" && !("app_name" in row))).toBe(true);
   const qaColumns = expectedColumns.filter(column => column.startsWith("qa_"));
   expect(commands.rows.every((row: Record<string, unknown>) => qaColumns.every(column => row[column] === ""))).toBe(true);
-  expect(commands.rows.some((row: Record<string, unknown>) => row.website_docker_cmd === "no_image")).toBe(true);
-  expect(commands.rows.filter((row: Record<string, unknown>) => row.website_docker_cmd !== "no_image").every((row: Record<string, unknown>) => String(row.website_docker_cmd).includes(taggedImage))).toBe(true);
+  expect(commands.rows.some((row: Record<string, unknown>) => String(row.website_docker_cmd).includes("<hpc_version>"))).toBe(true);
+  expect(commands.rows.filter((row: Record<string, unknown>) => !String(row.website_docker_cmd).includes("<hpc_version>")).every((row: Record<string, unknown>) => String(row.website_docker_cmd).includes(taggedImage))).toBe(true);
   const commandsPane = page.locator("#qaTestCmdPane");
   await expect(commandsPane.getByRole("heading", { name: "测试命令", exact: true })).toHaveCount(1);
   await expect(commandsPane.getByPlaceholder("全表关键词筛选…")).toHaveCount(0);
@@ -77,10 +77,13 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   const parsed = parseCsvRows(await readFile((await (await exported).path())!, "utf8"));
   expect(parsed[0]).toEqual(expectedColumns);
   expect(parsed.slice(1)).toHaveLength(commands.rows.length);
-  for (const row of parsed.slice(1)) expect(row.slice(-6)).toEqual(["", "", "", "", "", ""]);
+  for (const [index, row] of parsed.slice(1).entries()) {
+    expect(row.slice(-6)).toEqual(["", "", "", "", "", ""]);
+    expect(row[12]).toBe(commands.rows[index].website_docker_cmd);
+  }
 
   let index = 0;
-  const rows = commands.rows.map((row: Record<string, unknown>) => row.website_docker_cmd === "no_image" ? row : ({
+  const rows = commands.rows.map((row: Record<string, unknown>) => String(row.website_docker_cmd).includes("<hpc_version>") ? row : ({
     ...row, qa_result: index++ === 0 ? 0 : "pass", qa_digest: image,
     qa_docker_cmd: row.website_docker_cmd + " # QA Excel command", qa_env: "C500_server_1", qa_status: "pass", qa_comment: "中文备注",
     website_docker_cmd: "=1+2",
@@ -110,7 +113,7 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   expect(saved.release_name).toBe("3.10.1");
   expect(saved.release_test_count).toBe(commands.rows.length);
   expect(saved.total_rows).toBe(saved.rows + saved.skipped_rows + saved.duplicate_rows);
-  expect(saved.skipped_rows).toBe(commands.rows.filter((row: Record<string, unknown>) => row.website_docker_cmd === "no_image").length);
+  expect(saved.skipped_rows).toBe(commands.rows.filter((row: Record<string, unknown>) => String(row.website_docker_cmd).includes("<hpc_version>")).length);
   expect(saved.skipped_apps).toEqual([{ app_id: "lookup-image", git_branch: "maca", rows: saved.skipped_rows }]);
   await expect(page.getByText("已保存 3.10.1 的 2 行，清除旧结果 0 行。", { exact: true })).toBeVisible();
   const uploadSummary = page.getByTestId("qa-upload-summary");

@@ -68,19 +68,23 @@ def app_audit_log(
     """
     cols = (
         "SELECT ts, user, role, release_id, event, message, detail "
-        "FROM audit WHERE app_id = ?"
+        "FROM audit WHERE (app_id = ? OR (event = 'qa_build_lock_batch' AND EXISTS "
+        "(SELECT 1 FROM json_each(CASE WHEN json_valid(detail) THEN detail ELSE '[]' END) "
+        "WHERE json_extract(value, '$.app_id') = ?)))"
     )
     if release_id:
         rows = conn.execute(
-            cols + " AND release_id IN (?, '') ORDER BY id DESC", (app_id, release_id)
+            cols + " AND release_id IN (?, '') ORDER BY id DESC", (app_id, app_id, release_id)
         )
     else:
-        rows = conn.execute(cols + " ORDER BY id DESC", (app_id,))
+        rows = conn.execute(cols + " ORDER BY id DESC", (app_id, app_id))
 
     entries = []
     for row in rows:
         entry = row_to_dict(row)
         entry["detail"] = _parse_detail(entry.get("detail"))
+        if entry["event"] == "qa_build_lock_batch":
+            entry["detail"] = [item for item in entry["detail"] if isinstance(item, dict) and item.get("app_id") == app_id]
         entries.append(entry)
     return entries
 
@@ -116,19 +120,19 @@ def qa_audit_logs_by_app(
     release_id: str,
     app_ids: list[str],
 ) -> dict[str, list[dict[str, Any]]]:
-    """Return QA status-change audit entries grouped by app_id.
+    """Return QA verdict and build-lock audit entries grouped by app_id.
 
     Mirrors core.py:release_qa_audit_logs (inner query only).
     """
     if not app_ids:
         return {}
     placeholders = ",".join("?" for _ in app_ids)
-    params: list[Any] = [release_id, "qa_set_status", *app_ids]
+    params: list[Any] = [release_id, "qa_set_status", "qa_build_lock", *app_ids]
     rows = conn.execute(
         f"""
         SELECT ts, user, role, app_id, release_id, event, message, detail
         FROM audit
-        WHERE release_id = ? AND event = ? AND app_id IN ({placeholders})
+        WHERE release_id = ? AND event IN (?, ?) AND app_id IN ({placeholders})
         ORDER BY id DESC
         """,
         params,

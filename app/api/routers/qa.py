@@ -7,6 +7,8 @@ Endpoint paths (legacy release routes retain their original paths):
   GET  /api/qa-log/download           (note: NOT under /api/qa prefix)
   GET  /api/qa-reports                (note: NOT under /api/qa prefix)
   POST /api/qa/status-batch
+  POST /api/qa/build-lock
+  POST /api/qa/build-lock-batch
   POST /api/qa/upload-log            (retired, returns 410)
   GET  /api/qa/failure-summary
   GET  /api/qa/report
@@ -30,6 +32,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from app.api.errors import ApiError
 from app.config import settings
@@ -48,6 +51,8 @@ require_qa_status_edit = require_capability(
     "qa.edit",
     message="只有 QA 或 RM 可标注 QA 状态",
 )
+require_build_lock_edit = require_capability("qa.build_lock", message="只有 QA 或 RM 可锁定或解锁构建")
+
 require_qa_log_upload = require_capability(
     "qa.edit",
     message="只有 QA 或 RM 可上传 QA log",
@@ -202,6 +207,42 @@ def api_qa_upload_log(
 ) -> dict:
     """Old upload clients must use the validated QA-report workflow."""
     raise ApiError(410, "旧日志上传接口已停用，请在 QA log 上传测试结果 Excel；QA report 自动汇总失败项")
+
+
+class BuildLockRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    release_id: str = Field(min_length=1)
+    app_id: str = Field(min_length=1)
+    locked: StrictBool
+    expected_revision: int = Field(strict=True, ge=0)
+
+
+@router.post("/api/qa/build-lock")
+def set_build_lock(body: BuildLockRequest, user: dict = Depends(require_build_lock_edit),
+                   conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    return qa_service.set_build_lock(conn, body.release_id, body.app_id, locked=body.locked,
+                                    expected_revision=body.expected_revision, user=user["username"], role=user["role"])
+
+
+class BuildLockBatchItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    app_id: str = Field(min_length=1)
+    expected_revision: int = Field(strict=True, ge=0)
+
+
+class BuildLockBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    release_id: str = Field(min_length=1)
+    locked: StrictBool
+    items: list[BuildLockBatchItem] = Field(min_length=1)
+
+
+@router.post("/api/qa/build-lock-batch")
+def set_build_locks_batch(body: BuildLockBatchRequest, user: dict = Depends(require_build_lock_edit),
+                         conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    return qa_service.set_build_locks_batch(conn, body.release_id, locked=body.locked,
+                                           items=[item.model_dump() for item in body.items],
+                                           user=user["username"], role=user["role"])
 
 
 @router.get("/api/qa/report")

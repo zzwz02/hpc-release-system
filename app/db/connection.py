@@ -283,6 +283,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             excluded_tests_json TEXT NOT NULL DEFAULT '[]',
             qa_status TEXT NOT NULL DEFAULT 'not_checked',
             qa_note TEXT NOT NULL DEFAULT '',
+            build_locked INTEGER NOT NULL DEFAULT 0 CHECK (build_locked IN (0, 1)),
+            build_lock_revision INTEGER NOT NULL DEFAULT 0,
+            build_lock_updated_at TEXT NOT NULL DEFAULT '',
+            build_lock_updated_by TEXT NOT NULL DEFAULT '',
             deliverable_image TEXT NOT NULL DEFAULT '',
             deliverable_digest TEXT NOT NULL DEFAULT '',
             deliverable_commit TEXT NOT NULL DEFAULT '',
@@ -682,6 +686,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             pass  # column already exists
 
     for _tbl, _col, _col_def in [
+        ("entries", "build_locked", "INTEGER NOT NULL DEFAULT 0 CHECK (build_locked IN (0, 1))"),
+        ("entries", "build_lock_revision", "INTEGER NOT NULL DEFAULT 0"),
+        ("entries", "build_lock_updated_at", "TEXT NOT NULL DEFAULT ''"),
+        ("entries", "build_lock_updated_by", "TEXT NOT NULL DEFAULT ''"),
         ("entries", "deliverable_images_json", "TEXT NOT NULL DEFAULT '[]'"),
         ("qa_test_reports", "release_id", "TEXT REFERENCES releases(id) ON DELETE CASCADE"),
         ("official_versions", "images_json", "TEXT NOT NULL DEFAULT '[]'"),
@@ -737,8 +745,26 @@ def init_db(conn: sqlite3.Connection) -> None:
         monthly_migration.convert_snapshots(conn)
 
     _migrate_official_versions(conn)
+    _migrate_published_build_locks(conn)
 
     conn.commit()
+
+
+def _migrate_published_build_locks(conn: sqlite3.Connection) -> None:
+    """Existing final cycles must also stop builds after this feature is installed."""
+    from app.repositories.audit_repo import log_audit
+    from app.timeutil import beijing_timestamp
+
+    ts = beijing_timestamp()
+    for entry in conn.execute(
+        "SELECT e.id, e.app_id, e.release_id, r.name FROM entries e JOIN releases r ON r.id=e.release_id "
+        "WHERE r.released_locked=1 AND e.build_locked=0"
+    ).fetchall():
+        conn.execute("UPDATE entries SET build_locked=1, build_lock_revision=build_lock_revision+1, "
+                     "build_lock_updated_at=?, build_lock_updated_by='system' WHERE id=?", (ts, entry["id"]))
+        log_audit(conn, f"补齐已发布版本「{entry['name']}」的 {entry['app_id']} 构建锁定",
+                  ts=ts, user="system", role="system", app_id=entry["app_id"], release_id=entry["release_id"],
+                  event="qa_build_lock", detail=[{"field": "build_locked", "label": "构建锁定", "old": False, "new": True}])
 
 
 def _migrate_official_versions(conn: sqlite3.Connection) -> None:

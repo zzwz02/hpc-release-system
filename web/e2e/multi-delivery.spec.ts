@@ -34,6 +34,8 @@ test("QA records separate OS/CPU images and publication/history retain both dige
   await expect(page.getByRole("heading", { name: "QA log 失败汇总", exact: true })).toBeVisible();
   await expect(page.locator("#qaLogFile")).toHaveCount(0);
   const card = page.locator('[data-qa-app="platform-check"]');
+  await expect(card.getByText("交付镜像（0/3）", { exact: true })).toBeVisible();
+  await card.getByTestId("qa-app-delivery-platform-check").locator("summary").click();
   const table = card.getByTestId("delivery-images");
   const x86 = table.locator("tbody").filter({ hasText: "ubuntu20.04" }).filter({ has: page.getByRole("cell", { name: "x86", exact: true }) });
   const arm = table.locator("tbody").filter({ hasText: "ubuntu20.04" }).filter({ has: page.getByRole("cell", { name: "ARM", exact: true }) });
@@ -42,6 +44,7 @@ test("QA records separate OS/CPU images and publication/history retain both dige
   const armImage = repository + ":0.9.0-abcdef1-ubuntu20.04-arm64@sha256:";
   await x86.getByTestId("delivery-reference").fill(image + "b".repeat(64));
   await arm.getByTestId("delivery-reference").fill(armImage + "b".repeat(64));
+  await expect(card.getByText("交付镜像（2/3）", { exact: true })).toBeVisible();
   await card.getByTestId("qa-status-platform-check").selectOption("qa_passed");
   const missingTag = repository + "@sha256:" + "a".repeat(64);
   await x86.getByTestId("delivery-reference").fill(missingTag);
@@ -73,7 +76,11 @@ test("QA records separate OS/CPU images and publication/history retain both dige
   expect(item.deliverable_images).toHaveLength(2);
   expect(item.delivery_revision).toHaveLength(64);
   await page.reload();
-  await expect(table.locator("tbody")).toHaveCount(2);
+  await expect(card.getByText("交付镜像（2/3）", { exact: true })).toBeVisible();
+  await expect(card.getByTestId("qa-app-delivery-platform-check")).toHaveJSProperty("open", false);
+  await card.getByTestId("qa-app-delivery-platform-check").locator("summary").click();
+  await expect(table.locator("tbody")).toHaveCount(3);
+  await expect(table.getByText("未填写交付镜像", { exact: true })).toHaveCount(1);
   await expect(x86).toContainText(image + "a".repeat(64));
   await expect(arm).toContainText(armImage + "b".repeat(64));
   await page.screenshot({ path: "/tmp/qa-multi-delivery.png", fullPage: true });

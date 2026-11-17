@@ -48,8 +48,7 @@ test("App details, QA and image history keep OS/CPU/chip relationships", async (
   const kylinReport = reportRows.filter({ hasText: "kylinv11" });
   await expect(kylinReport).toHaveCount(2);
   expect(await kylinReport.locator(`td:nth-child(${chipColumn + 1})`).allTextContents()).toEqual(["C600", "X201"]);
-  await expect(reportRows).toContainText(Array(12).fill("no_image"));
-  await expect(report).not.toContainText("<hpc_version>");
+  await expect(reportRows).toContainText(Array(12).fill("<hpc_version>"));
   const referenceAppearance = await commandTableAppearance(page.locator("#qaTestCmdPane"));
   const exported = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出 CSV", exact: true }).click();
@@ -58,8 +57,7 @@ test("App details, QA and image history keep OS/CPU/chip relationships", async (
   expect(csv).toContain("website_docker_cmd,qa_digest,qa_docker_cmd,qa_result,qa_env,qa_status,qa_comment");
   expect(csv).not.toContain('"C600,X201"');
   expect(csv.split("\n").filter((line) => line.startsWith("HPCG,")).length).toBe(12);
-  expect(csv).toContain("no_image");
-  expect(csv).not.toContain("<hpc_version>");
+  expect(csv).toContain("<hpc_version>");
 
   await qaTabs.getByRole("link", { name: "历史查询", exact: true }).click();
   await page.getByRole("button", { name: "按镜像 digest", exact: true }).click();

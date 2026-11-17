@@ -48,9 +48,11 @@ _PHASE_POLICY: dict[str, set[str]] = {
         "edit_environment",      # RM: environment rows and base images
         "edit_deliverable",      # Owner: actual delivery / known issues
         "edit_qa",               # QA: verdict, note, digest
+        "edit_build_lock",       # QA/RM: per-App build lock for this cycle
         "upload_qa_log",
     },
     IN_PROGRESS: {
+        "edit_build_lock",
         "exclude_tests",
         "withdraw",
         "edit_deliverable",
@@ -59,6 +61,7 @@ _PHASE_POLICY: dict[str, set[str]] = {
         "decide_scope_request",
     },
     QA_CLOSED: {
+        "edit_build_lock",
         "withdraw",
         "edit_deliverable",
         "edit_qa",               # QA finalises verdicts until RM publishes

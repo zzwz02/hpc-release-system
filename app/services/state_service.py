@@ -12,9 +12,10 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from app.domain.app_types import list_app_types
+from app.domain.access_actions import entry_allowed_actions
 from app.domain.permissions import has_capability
 from app.repositories import app_info_repo, apps_repo, qa_repo, schedule_repo
-from app.repositories.audit_repo import app_audit_log, qa_audit_logs_by_app
+from app.repositories.audit_repo import app_audit_log, qa_audit_logs_by_app, release_audit_log
 from app.services import catalog_service, cicd_service, cycle_service
 from app.services.authz import require_app_audit_access
 
@@ -72,11 +73,14 @@ def get_state(
         },
         "qa_log": None,
         "qa_audit_logs": {},
+        "qa_batch_audit_logs": [],
         "release_schedule": schedule_repo.list_schedule(conn),
     }
     if release_id:
         release = cycle_service.release_detail(conn, release_id)
         release["entries"] = cycle_service.list_entry_views(conn, release_id)
+        for entry in release["entries"]:
+            entry["allowed_actions"] = entry_allowed_actions(entry, release, role=user["role"])
         release["scope_requests"] = cycle_service.list_scope_requests(conn, release_id)
         payload["release"] = release
         payload["artifacts"] = [
@@ -89,6 +93,10 @@ def get_state(
         if has_capability(user["role"], "qa.audit.view"):
             app_ids = [e["app_id"] for e in release["entries"] if e["status"] == "active"]
             payload["qa_audit_logs"] = qa_audit_logs_by_app(conn, release_id, app_ids) if app_ids else {}
+            payload["qa_batch_audit_logs"] = [
+                {**entry, "release_id": release_id}
+                for entry in release_audit_log(conn, release_id, "qa_build_lock_batch")
+            ]
     return payload
 
 

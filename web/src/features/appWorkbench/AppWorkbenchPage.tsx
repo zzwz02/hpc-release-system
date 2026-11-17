@@ -17,8 +17,6 @@ import { ReleaseDeadlines } from "../../components/ReleaseDeadlines";
 import { apiGet, apiPost } from "../../api/http";
 import { useAuth } from "../../api/AuthContext";
 import { confirmDialog } from "../../lib/confirm";
-import { docTargetLabels } from "../../lib/labels";
-import { normalizeDocTarget } from "../../lib/domainMetadata";
 import { canCreateApp, canEdit, canEditRmFields, canSyncAppInfo, isOwner, isRM } from "../../lib/roles";
 import { can } from "../../lib/accessControl";
 import { signupOpen } from "../../lib/phase";
@@ -38,7 +36,7 @@ import {
   type AppStatusFilter,
 } from "./helpers";
 import { NewAppDialog } from "./NewAppDialog";
-import { ChangeLogTable, CicdPendingPill, CicdStatusPill, EntryPill, QaDot, QaPill } from "./pills";
+import { BuildLockPill, ChangeLogTable, CicdPendingPill, CicdStatusPill, EntryPill, QaDot, QaPill } from "./pills";
 import { ProfilePane } from "./ProfilePane";
 import { SignupDialog } from "./SignupDialog";
 
@@ -134,6 +132,7 @@ function AppListPanel({
                   {app.cicd_status === "stopped" && <CicdStatusPill app={app} />}
                   <EntryPill entry={entry} />
                   {active && <QaPill status={active.qa_status} />}
+                  {entry && <BuildLockPill entry={entry} />}
                   {active?.pending_scope_request && <span className="pill warnp">范围扩大待审批</span>}
                   {app.sync_error && app.cicd_status === "running" && <span className="pill bad">app_info 同步失败</span>}
                   <CicdPendingPill count={cicdPendingCounts[app.id] ?? 0} />
@@ -260,8 +259,7 @@ function DetailPanel({ app, entry, release, openRequests, onSaved, onSignup }: D
             <CicdStatusPill app={app} />
             <EntryPill entry={entry} />
             {active && <QaPill status={active.qa_status} />}
-            <span className="pill">{docTargetLabels[normalizeDocTarget(app.doc_target)]}</span>
-            {app.official && <span className="pill" title={`${app.official.release_name} 发布`}>正式版 {app.official.version}</span>}
+            {entry && <BuildLockPill entry={entry} />}
             <CicdPendingPill count={uniqueCicdRequestCount(appOpen)} />
           </div>
         </div>

@@ -24,6 +24,13 @@ test("QA report displays a real tag while comment saves preserve the original de
   const card = page.locator('[data-qa-app="platform-check"]');
   await expect(card.locator(".qa-card-b > :first-child")).toContainText("QA 状态");
   await expect(card.getByTestId("qa-app-failures-platform-check")).toHaveJSProperty("open", false);
+  const deliverySection = card.getByTestId("qa-app-delivery-platform-check");
+  await expect(deliverySection).toHaveJSProperty("open", false);
+  await expect(deliverySection.locator("summary")).toHaveText("交付镜像（1/3）");
+  await expect(card.getByText(tagged, { exact: true })).not.toBeVisible();
+  await page.setViewportSize({ width: 390, height: 900 });
+  await card.screenshot({ path: "/tmp/qa-delivery-collapsed.png" });
+  await deliverySection.locator("summary").click();
   await expect(card.getByText(tagged, { exact: true })).toBeVisible();
   const delivery = card.getByTestId("delivery-images");
   await expect(delivery.locator("tbody")).toHaveCount(3);
@@ -56,6 +63,8 @@ test("QA report displays a real tag while comment saves preserve the original de
   expect(entry.deliverable_images[0].reference).toBe(bare);
   await page.reload();
   await page.getByLabel("选择 release").selectOption(release.id);
+  await expect(deliverySection).toHaveJSProperty("open", false);
+  await deliverySection.locator("summary").click();
   await expect(card.getByText(tagged, { exact: true })).toBeVisible();
   await page.route("**/api/qa/report?*", async route => {
     const response = await route.fetch();
@@ -68,6 +77,9 @@ test("QA report displays a real tag while comment saves preserve the original de
   await expect(card.getByText(bare, { exact: true })).toBeVisible();
   await expect(card.getByText(tagged, { exact: true })).toHaveCount(0);
   await page.getByLabel("选择 release").selectOption({ label: "browser-cycle-b" });
+  await expect(deliverySection).toHaveJSProperty("open", false);
+  await expect(deliverySection.locator("summary")).toHaveText("交付镜像（0/3）");
+  await deliverySection.locator("summary").click();
   await expect(card.getByText(bare, { exact: true })).toHaveCount(0);
   await expect(card.getByText(tagged, { exact: true })).toHaveCount(0);
   await expect(delivery.getByText("未填写交付镜像", { exact: true })).toHaveCount(3);

@@ -21,7 +21,7 @@ App 工作台和 Jenkins 失败查询中，Owner 默认勾选“只看我的”�
 
 总览在统计卡片旁展示当前所选周期的组件、版本和说明，内容来自 RM 在周期管理填写的当月环境（Driver、SDK、PyTorch 等），随版本选择和显式刷新更新；不再显示独立的发布时间线。上方仍展示报名截止、QA 截止和发布日。
 
-App 详情默认打开「基本信息和app_info」，顶部为官方名称、Owner、类型和 App 类型；官方名称与 Owner 仍仅 RM 可改。「资料」保留官方 URL、描述、手册和测试说明等内容，不再显示「本期报名」tab。单个 App 的「立即同步app_info」位于「最新 app_info」标题旁。有未保存修改时需先保存或取消再同步；切换 App、周期或刷新前会提示确认放弃修改。
+App 详情默认打开「基本信息和app_info」，顶部为官方名称、Owner、类型和 App 类型；官方名称与 Owner 仍仅 RM 可改。标题状态栏移除文档目标（如 HPC）和「正式版 x」标签；列表及详情状态栏显示所选周期的构建锁定状态。「资料」保留官方 URL、描述、手册和测试说明等内容，不再显示「本期报名」tab。单个 App 的「立即同步app_info」位于「最新 app_info」标题旁。有未保存修改时需先保存或取消再同步；切换 App、周期或刷新前会提示确认放弃修改。
 
 基本信息底部「正式版发布历史」列出该 App 的全部有效发布，每个 App/周期只保留一份，按周期发布日倒序展示周期、App 版本、整组交付镜像和发布时间。每个周期可有多条镜像，按报名锁定 app_info 的启用 `app_build` 区分 OS、CPU 架构、Python/PyTorch 标签及 release/dbg 镜像类型，逐条显示包含 digest 的完整镜像名。早期迁移仅写入最新正式版的情况，从已冻结周期的成功发布报名补充历史，不新增正式版记录；同一 App 版本在不同周期分别列出；解锁删除该周期的原记录和清单，重新发布保存替换后的最终结果。切换 App、重新进入基本信息和手动刷新都会更新历史。
 
@@ -43,11 +43,11 @@ app_info 同步成功与报名版本跟随分别显示：仓库新版本会正�
 6. QA 填结论（四个取值沿用）、备注，并在启用 app_build 的各构建行按 `image:tag@digest` 填写完整交付镜像名（tag 和 digest 均必填），QA report 自动统计本周期 QA log 的 fail 项，按 App/GPU/测试项展示来源 QA comment 及具体 HPC/App 版本；QA 在各 App 卡片末尾填写独立的手工 QA comment，通过、未测试状态也保留备注。失败汇总不自动更改 App 的 QA 结论，所有 QA 状态的 comment 均为选填，允许留空，也可清空已保存的备注。保存时校验构建归属和 digest 格式，并用完整仓库路径和 digest 实时查询 Harbor：镜像必须存在，OS 和 CPU 架构均以实际 tags 校验，QA 填写的 tag 必须属于该 digest 的实际 tags，并且该条 tag 须匹配锁定 app_info 生成的完整构建 tag（含 OS、CPU 架构、版本及 Python/PyTorch 配置，允许 HPC 版本或 commit 以及末尾构建号）。release/dbg 按镜像名区分（分别为 `*-maca` / `*-maca-dbg`），须与所选构建一致，digest 也必须存在于该类型对应的仓库中。Python/PyTorch 标签须与所选构建完全一致，且必须在同一条实际 tag 中同时匹配，不能跨 tags 拼接。不使用 Harbor 的 architecture/os 元数据，逐项校验输入引用中自带的 tag；缺少可用 tags、平台不符或 Harbor 查询失败均报错，整批不保存。单次保存内对相同镜像去重查询，不跨请求缓存；网络查询在写事务之外，写入前重新检查 QA/镜像/锁定版本及发布状态，拒绝并发覆盖。重新提交的未指定构建旧镜像必须先改填到明确构建行；旧标量写接口不能新增或修改非空交付字段以绕过校验。发布冻结整组交付镜像。旧单镜像数据保留为「未指定构建」，可移除并改填到正确构建行，不根据 digest 猜测 OS/架构。
 7. QA 截止后 RM 发布：`qa_passed`、`has_issues`（备注进已知问题）记为已发布并写入正式版；`not_checked`、`cannot_release` 记为本期发布失败，App 保持原正式版。发布同时生成 final 文档并锁定；RM 可填写原因解锁更正，解锁会删除本期正式版记录、封存清单和 final 文档。
 
-QA report 已取消文件上传及页面上的旧日志 AI 分析入口，通过 `GET /api/qa/report?release_id=…` 一次读取页面状态、QA log 失败汇总、交付镜像展示和变更记录；首次打开可省略周期，由响应确定当前版本，不再额外读取 state 或逐 App 查询审计。失败汇总只读数据库，不访问 Harbor/Gerrit。以 qa_status=fail 为准；旧记录没有 qa_status 时仅用 qa_result 的 fail 文本补充，不凭数值或备注猜测性能回退。按唯一 app_id 和分支关联本期 App 卡片，保留实际测试的 App/HPC 版本；无法唯一关联或未在本期有效报名的记录单独展示，不隐藏。每个 App 的手填 comment 沿用 entries.qa_note，独立于 QA log 单行 qa_comment，随「保存 QA 状态」保存，任何 QA 状态均保留；保存时校验 revision，已发布周期只读。仅改 comment/结论时不重传或重验未改动的交付镜像。旧上传接口 `/api/qa/upload-log` 返回 410，引导上传 QA log；已有历史日志保留只读下载。 QA report 查看模式在同一响应的 `qa_report.delivery_images` 中将历史 image@digest 按锁定 app_info 的构建匹配 Harbor 实际 tag，显示 image:tag@digest；同请求去重并行查询 Harbor。已保存 tag 原样显示，缺少构建或查询失败明确提示；此查询不改写交付记录，编辑和保存仍使用 QA 输入的原值。QA report 的查看与编辑模式均列出报名锁定 app_info 的全部启用构建，未提供镜像的构建保留平台、release/dbg 及 Python/PyTorch 配置，并显示「未填写交付镜像」；空展示行不作为交付记录保存。每个 App 卡片正文首先显示 QA 状态，其后为默认折叠的 QA log 失败项，标题保留数量，点击展开详情。展示响应按 entry revision 核对，旧结果不覆盖新记录；页面、保存后的刷新和切换版本统一读取聚合接口；失败汇总与镜像解析的错误分别返回，某部分失败时保留其余结果及编辑草稿。
+QA report 已取消文件上传及页面上的旧日志 AI 分析入口，通过 `GET /api/qa/report?release_id=…` 一次读取页面状态、QA log 失败汇总、交付镜像展示和变更记录；首次打开可省略周期，由响应确定当前版本，不再额外读取 state 或逐 App 查询审计。失败汇总只读数据库，不访问 Harbor/Gerrit。以 qa_status=fail 为准；旧记录没有 qa_status 时仅用 qa_result 的 fail 文本补充，不凭数值或备注猜测性能回退。按唯一 app_id 和分支关联本期 App 卡片，保留实际测试的 App/HPC 版本；无法唯一关联或未在本期有效报名的记录单独展示，不隐藏。每个 App 的手填 comment 沿用 entries.qa_note，独立于 QA log 单行 qa_comment，随「保存 QA 状态」保存，任何 QA 状态均保留；保存时校验 revision，已发布周期只读。仅改 comment/结论时不重传或重验未改动的交付镜像。旧上传接口 `/api/qa/upload-log` 返回 410，引导上传 QA log；已有历史日志保留只读下载。 QA report 查看模式在同一响应的 `qa_report.delivery_images` 中将历史 image@digest 按锁定 app_info 的构建匹配 Harbor 实际 tag，显示 image:tag@digest；同请求去重并行查询 Harbor。已保存 tag 原样显示，缺少构建或查询失败明确提示；此查询不改写交付记录，编辑和保存仍使用 QA 输入的原值。QA report 的查看与编辑模式均列出报名锁定 app_info 的全部启用构建，未提供镜像的构建保留平台、release/dbg 及 Python/PyTorch 配置，并显示「未填写交付镜像」；空展示行不作为交付记录保存。每个 App 卡片正文首先显示 QA 状态，其后为默认折叠的 QA log 失败项，标题保留数量，点击展开详情。交付镜像也默认折叠，标题显示「已填写 / 应交付」构建数（如 `交付镜像（1/3）`），编辑时随草稿更新；未指定构建的旧镜像不计入已填写构建数。展示响应按 entry revision 核对，旧结果不覆盖新记录；页面、保存后的刷新和切换版本统一读取聚合接口；失败汇总与镜像解析的错误分别返回，某部分失败时保留其余结果及编辑草稿。
 
 QA 的测试命令、按镜像 digest 查询及 QA log 表格以 `app_id` 为首列，替代旧 `app_name`；上传须使用网站导出的 ID，按 ID、分支、HPC/App 版本、平台、GPU、Python/PyTorch 和测试项分别校验与保存。官方名称仅用于展示，不参与测试结果身份匹配；同名不同仓库的 App 不合并。本期发布 App、历史发布 App 列表及兼容性验证保留官方名称，单独增加 `app_id` 列。旧报告读取时结合已存 commit、镜像仓库、版本和分支识别 ID，不能唯一识别的保留并提示重新上传；不改原始文件或数据库。
 
-QA「测试命令」仅查询 MACA 镜像（`*-maca`、`*-maca-dbg`），不查询或回退到 HPCC；`latest` 也只根据 MACA tags 选取版本。选择发布周期后输入具体 `hpc_version`（如 `3.10.0.7`）或 `latest`，再查询。`latest` 在所选周期的版本系列（如 `3.10.0.x`）内，为每个 App／构建分别按版本数字选择最大补丁号，不按 tag 写入顺序或字符串排序；OS、CPU 架构、Python/PyTorch 标签及 release/dbg 分别选取，同一表可同时包含多个实际 HPC 版本。每行 hpc_version 为该构建选中的实际版本；latest 下无可用镜像的构建保持 no_image，hpc_version 留空，不借用其他构建的版本。按该周期有效报名的锁定构建和测试范围展开 OS、CPU 架构、GPU、Python/PyTorch 与测试项；每次公开读取 Harbor 实际 tags，命中镜像后通过 digest → commit → Gerrit 历史 app_info 实时组装命令，镜像参数使用完整 `镜像:tag@digest`，tag 必须是该 digest 的实际 tag，且与行内 HPC 版本和构建配置一致；优先不带构建号的版本 tag，只有带构建号的 tag 时选择实际构建号最大的 tag。缺少镜像的组合保留，`website_docker_cmd=no_image`；上游查询或来源解析失败另报错误，不冒充缺镜像。每个支持 GPU 单独一行；未声明芯片时保留空芯片行。所有 `qa_*` 列始终为空，不预填 digest 或历史结果。
+QA「测试命令」仅查询 MACA 镜像（`*-maca`、`*-maca-dbg`），不查询或回退到 HPCC；`latest` 也只根据 MACA tags 选取版本。选择发布周期后输入具体 `hpc_version`（如 `3.10.0.7`）或 `latest`，再查询。`latest` 在所选周期的版本系列（如 `3.10.0.x`）内，为每个 App／构建分别按版本数字选择最大补丁号，不按 tag 写入顺序或字符串排序；OS、CPU 架构、Python/PyTorch 标签及 release/dbg 分别选取，同一表可同时包含多个实际 HPC 版本。每行 hpc_version 为该构建选中的实际版本；latest 下无可用镜像的构建保留带镜像占位符的完整测试命令，hpc_version 留空，不借用其他构建的版本。按该周期有效报名的锁定构建和测试范围展开 OS、CPU 架构、GPU、Python/PyTorch 与测试项；每次公开读取 Harbor 实际 tags，命中镜像后通过 digest → commit → Gerrit 历史 app_info 实时组装命令，镜像参数使用完整 `镜像:tag@digest`，tag 必须是该 digest 的实际 tag，且与行内 HPC 版本和构建配置一致；优先不带构建号的版本 tag，只有带构建号的 tag 时选择实际构建号最大的 tag。缺少镜像的组合保留，`website_docker_cmd` 使用镜像 tag 中的 `<hpc_version>` 占位符保留完整命令；上游查询或来源解析失败另报错误，不冒充缺镜像。每个支持 GPU 单独一行；未声明芯片时保留空芯片行。所有 `qa_*` 列始终为空，不预填 digest 或历史结果。
 
 网页及 CSV 使用相同顺序：`app_id、git_branch、hpc_version、app_version、arch、OS、GPU、py_label、torch_label、test_name、perf_golden、perf_unit、website_docker_cmd、qa_digest、qa_docker_cmd、qa_result、qa_env、qa_status、qa_comment`。app_id 取工作台中的固定唯一标识，不填写官方名称。下载 CSV 后另存为 `.xlsx`，填写 QA 列，并添加与 `qa_env` 同名的环境页，从「QA log」上传。
 
@@ -82,6 +82,21 @@ flowchart LR
 - 审批可立即应用，也可派发 SPD，等交付确认再应用。SPD 可以退回；RM 可以重新派发、直接生效，或填写原因后拒绝退回申请。配置编辑与启停入口在 App 工作台的 CICD tab。
 
 实现入口：[cycle_service.py](app/services/cycle_service.py)、[catalog_service.py](app/services/catalog_service.py)、[cicd_service.py](app/services/cicd_service.py)、[identity.py](app/identity.py)。
+
+QA report 每个 App 的构建锁定状态显示在卡片顶部 QA 状态标签旁；「QA 状态」、下拉框和「锁定构建 / 解锁构建」按钮同行显示，锁定操作人和时间可悬停构建锁定标签查看。汇总标题右侧提供「全部解锁 / 全部锁定」，仅作用于当前版本全部有效报名 App，整批核对报名清单和锁定 revision 后在同一事务内保存；有并发变化时整批拒绝，不保存部分改动。每次批量操作仅写一条审计日志，显示实际变更的 App 数量，展开详情查看各 App 的原锁定状态和新状态；单 App 的变更记录也可查询到该批次中属于自己的明细。仅 QA / RM 可操作；编辑 QA 草稿时先保存或取消再改锁定状态。锁定以 `entries` 的 `(release_id, app_id)` 为范围：同一 App 在 `3.9.0` 锁定，不影响 `3.10.0`。默认未锁定，锁定只控制该版本的 CICD 构建，不更改 App 的全局 `cicd_status`、QA 结论、镜像或 app_info。撤回后重新报名保留该 App/版本的构建锁。最终发布在同一事务内将该周期全部报名记录（含发布失败和已撤回记录）上锁；发布失败时一起回滚。已发布周期禁止单独解锁构建，先由 RM 解锁周期更正，再由 QA / RM 按需解锁构建。数据库升级会为既有最终发布周期补齐构建锁。
+
+CICD 脚本不在本仓库，由外部脚本在触发构建前读取数据库：`entries.build_locked` 为 `1` 表示禁止该 App 在该发布版本继续构建，`0` 表示未单独锁定。必须同时按 App ID 和发布周期 ID 查询，不能只按 App 名称或读取其他周期的状态。`build_lock_revision` 用于网站并发修改校验，`build_lock_updated_at` / `build_lock_updated_by` 记录最近操作，时间为北京时间；QA 变更记录及 App 变更记录保留锁定/解锁审计。只读查询示例：
+
+```sql
+SELECT e.app_id, e.release_id, r.name AS hpc_version,
+       CASE WHEN r.released_locked = 1 OR e.build_locked = 1 THEN 1 ELSE 0 END AS build_locked,
+       e.build_lock_updated_at, e.build_lock_updated_by
+FROM entries AS e
+JOIN releases AS r ON r.id = e.release_id
+WHERE e.app_id = :app_id AND e.release_id = :release_id;
+```
+
+没有匹配行表示该 App 在该周期没有报名记录。外部脚本仍按自身流程处理报名及全局 CICD 运行状态；网站保存锁定数据，实际构建跳过由脚本执行。
 
 ## 文档产物与查询
 

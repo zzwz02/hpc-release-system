@@ -29,6 +29,7 @@
     "app.audit.view.any": ["RM", "Admin", "QA"],
     "app.audit.view.owned": ["Owner"],
     "qa.edit": ["RM", "QA"],
+    "qa.build_lock": ["RM", "QA"],
     "qa.audit.view": ["RM", "Owner", "QA", "Guest"],
     "artifact.generate": ["RM", "Owner"],
     "artifact.view.internal": ["RM"],

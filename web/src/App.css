@@ -885,6 +885,15 @@ th.sortable.sorted .sort-ind { opacity: 1; color: var(--accent); }
   display: grid; gap: 12px;
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
 }
+.qa-card-h { flex-wrap: wrap; }
+.qa-app-heading { flex: 1 1 120px; min-width: 0; overflow-wrap: anywhere; }
+.qa-cur { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.qa-status-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.qa-status-select { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.qa-status-select > span, .qa-status-controls > button { flex-shrink: 0; white-space: nowrap; }
+.qa-status-select > .select { flex: 1; width: auto; min-width: 0; }
+.qa-failure-summary-head, .qa-build-lock-actions { flex-wrap: wrap; }
+.qa-build-lock-actions { display: flex; align-items: center; gap: 8px; }
 .csv-grid, .cicd-context-grid, .wiki-list-grid {
   display: grid; gap: 12px;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));

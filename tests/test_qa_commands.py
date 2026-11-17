@@ -42,9 +42,14 @@ def scope(temp_db, live, monkeypatch):
     return release_id, state
 
 
+def missing_image(row):
+    return any("<hpc_version>" in image
+               for image in qa_results.docker_images(row["website_docker_cmd"]))
+
+
 def filled_row(temp_db, scope):
     result = qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="3.10.1.2")
-    row = next(row for row in result["rows"] if row["website_docker_cmd"] != "no_image")
+    row = next(row for row in result["rows"] if not missing_image(row))
     return {**row, "qa_digest": IMAGE, "qa_docker_cmd": row["website_docker_cmd"],
             "qa_result": 0, "qa_env": "C500_server_1", "qa_status": "pass", "qa_comment": "中文备注\n第二行"}
 
@@ -72,13 +77,13 @@ def test_exact_version_preserves_missing_builds_and_all_qa_cells_blank(temp_db, 
     result = qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="3.10.1.2")
     assert result["columns"] == qa_results.WORKSHEET_COLUMNS
     assert list(result["rows"][0]) == result["columns"]
-    real = [row for row in result["rows"] if row["website_docker_cmd"] != "no_image"]
+    real = [row for row in result["rows"] if not missing_image(row)]
     assert len(real) == 3
     assert [(row["test_name"], row["GPU"]) for row in real] == [
         ("nested.daily", "C500"), ("sanity", "C500"), ("sanity", "X201")]
     assert all(TAGGED_IMAGE in row["website_docker_cmd"] for row in real)
-    assert any(row["arch"] == "arm" and row["website_docker_cmd"] == "no_image" for row in result["rows"])
-    assert any(row["OS"] == "ubuntu24.04" and row["website_docker_cmd"] == "no_image" for row in result["rows"])
+    assert any(row["arch"] == "arm" and missing_image(row) for row in result["rows"])
+    assert any(row["OS"] == "ubuntu24.04" and missing_image(row) for row in result["rows"])
     for row in result["rows"]:
         assert row["hpc_version"] == "3.10.1.2"
         assert all(row[column] == "" for column in qa_results.WORKSHEET_QA_COLUMNS)
@@ -109,7 +114,7 @@ def test_hpcc_only_artifact_cannot_fill_a_missing_maca_image(temp_db, scope, mon
         return []
     monkeypatch.setattr(harbor, "list_artifacts", listing)
     result = qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="3.10.1.2")
-    assert result["rows"] and all(row["website_docker_cmd"] == "no_image" for row in result["rows"])
+    assert result["rows"] and all(missing_image(row) for row in result["rows"])
     with pytest.raises(ValueError, match="没有.*可用镜像"):
         qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="latest")
 
@@ -133,7 +138,7 @@ def test_website_command_uses_actual_numbered_tag_when_standard_alias_is_absent(
     result = qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="3.10.1.2")
     expected = IMAGE.replace("@", ":" + TAGS[1] + "@")
     assert all(expected in row["website_docker_cmd"] for row in result["rows"]
-               if row["website_docker_cmd"] != "no_image")
+               if not missing_image(row))
 
 
 def test_website_tag_changes_only_image_operand_preserving_env_and_quoted_script(temp_db, scope, live):
@@ -163,7 +168,7 @@ def test_latest_uses_numeric_patch_order_and_stays_inside_selected_cycle(temp_db
     else:
         assert not result["errors"]
         assert any(IMAGE.replace("@", ":" + TAGS[2].replace("3.10.1.2", "3.10.1.10") + "@") in row["website_docker_cmd"] for row in result["rows"])
-        assert all(row["hpc_version"] == ("" if row["website_docker_cmd"] == "no_image" else "3.10.1.10")
+        assert all(row["hpc_version"] == ("" if missing_image(row) else "3.10.1.10")
                    for row in result["rows"])
 
 
@@ -186,7 +191,7 @@ def test_latest_selects_each_app_independently_instead_of_omitting_older_app_ima
     assert not result["errors"]
     assert result["hpc_versions"] == ["3.10.1.8", "3.10.1.12"]
     for app, version in [("equiformerv2", "3.10.1.8"), ("testapp", "3.10.1.12")]:
-        rows = [row for row in result["rows"] if row["app_id"] == app and row["website_docker_cmd"] != "no_image"]
+        rows = [row for row in result["rows"] if row["app_id"] == app and not missing_image(row)]
         assert rows and all(row["hpc_version"] == version and version in row["website_docker_cmd"] for row in rows)
 
 
@@ -205,7 +210,7 @@ def test_latest_selects_each_platform_and_debug_build_even_when_one_digest_has_m
     assert result["hpc_versions"] == ["3.10.1.6", "3.10.1.7", "3.10.1.8", "3.10.1.10"]
     expected = {("ubuntu22.04", "x86", False): "3.10.1.10", ("ubuntu24.04", "x86", False): "3.10.1.8",
                 ("ubuntu22.04", "arm", False): "3.10.1.7", ("ubuntu22.04", "x86", True): "3.10.1.6"}
-    assert result["rows"] and all(row["website_docker_cmd"] != "no_image" for row in result["rows"])
+    assert result["rows"] and all(not missing_image(row) for row in result["rows"])
     assert len({tuple(row[column] for column in qa_results.WORKSHEET_METADATA_COLUMNS) for row in result["rows"]}) == len(result["rows"])
     for row in result["rows"]:
         assert row["hpc_version"] == expected[row["OS"], row["arch"], row["test_name"] == "debug"]
@@ -255,10 +260,10 @@ def test_latest_selects_python_and_torch_builds_independently(temp_db, scope, li
     monkeypatch.setattr(harbor, "get_artifact", lambda *a: artifact)
     result = qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="latest")
     assert not result["errors"]
-    real = [row for row in result["rows"] if row["website_docker_cmd"] != "no_image"]
+    real = [row for row in result["rows"] if not missing_image(row)]
     assert {(row["py_label"], row["torch_label"], row["hpc_version"]) for row in real} == {
         ("py310", "torch2.4", "3.10.1.10"), ("py312", "torch2.8", "3.10.1.8")}
-    assert all(row["hpc_version"] == "" for row in result["rows"] if row["website_docker_cmd"] == "no_image")
+    assert all(row["hpc_version"] == "" for row in result["rows"] if missing_image(row))
 
 
 def test_all_blank_qa_upload_reports_skipped_count_and_preserves_existing_report(temp_db, scope):
@@ -277,7 +282,16 @@ def test_missing_exact_version_keeps_whole_cartesian_scope(temp_db, scope):
     scope[1]["missing"] = True
     result = qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="3.10.1.7")
     assert len(result["rows"]) > 3
-    assert all(row["website_docker_cmd"] == "no_image" for row in result["rows"])
+    assert all(missing_image(row) for row in result["rows"])
+    for row in result["rows"]:
+        suffix = "-dbg" if row["test_name"] == "debug" else ""
+        arch = "amd64" if row["arch"] == "x86" else "arm64"
+        command = row["website_docker_cmd"]
+        assert qa_results.docker_images(command) == [f"abacus-maca{suffix}:3.9.0.27-<hpc_version>-{row['OS']}-{arch}"]
+        assert "-v /pde_hpc/dataset:/hpc_dataset:ro" in command
+        assert "--device=/dev/dri -u 0" in command
+        assert "sh -c '" in command
+        assert row["hpc_version"] == "3.10.1.7"
     with pytest.raises(ValueError, match="没有.*可用镜像"):
         qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="latest")
 

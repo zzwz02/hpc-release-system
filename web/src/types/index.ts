@@ -263,6 +263,11 @@ export interface Entry {
   excluded_tests: string[];
   qa_status: QaStatus;
   qa_note: string;
+  build_locked: boolean;
+  build_lock_revision: number;
+  build_lock_updated_at: string;
+  build_lock_updated_by: string;
+  allowed_actions?: string[];
   deliverable_image: string;
   deliverable_digest: string;
   deliverable_commit: string;
@@ -324,6 +329,7 @@ export interface QaLog {
 // ---------------------------------------------------------------------------
 
 export interface QaAuditDetail {
+  app_id?: string;
   field: string;
   label: string;
   old: unknown;
@@ -390,6 +396,7 @@ export interface StatePayload {
   user_display_names: Record<string, string>;
   qa_log: QaLog | null;
   qa_audit_logs: Record<string, QaAuditEntry[]>;
+  qa_batch_audit_logs?: QaAuditEntry[];
   release_schedule: ReleaseScheduleEntry[];
 }
 

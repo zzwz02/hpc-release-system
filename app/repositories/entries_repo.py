@@ -22,6 +22,10 @@ MUTABLE_COLUMNS = frozenset(
         "excluded_tests",
         "qa_status",
         "qa_note",
+        "build_locked",
+        "build_lock_revision",
+        "build_lock_updated_at",
+        "build_lock_updated_by",
         "deliverable_image",
         "deliverable_digest",
         "deliverable_commit",
@@ -33,6 +37,7 @@ MUTABLE_COLUMNS = frozenset(
 
 def _entry(row: sqlite3.Row) -> dict[str, Any]:
     data = row_to_dict(row)
+    data["build_locked"] = bool(data["build_locked"])
     data["excluded_tests"] = loads_json(data.pop("excluded_tests_json", None), [])
     data["deliverable_images"] = loads_json(data.pop("deliverable_images_json", None), [])
     return data

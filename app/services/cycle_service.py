@@ -782,7 +782,7 @@ def publish(
     role: str,
 ) -> dict[str, Any]:
     """Record results, write official versions, lock, generate final docs."""
-    from app.services import artifact_service
+    from app.services import artifact_service, qa_service
 
     _require_rm(role)
     released, failed = [], []
@@ -829,6 +829,7 @@ def publish(
             if pending["status"] == cycles_domain.SCOPE_PENDING:
                 entries_repo.close_scope_request(conn, pending["id"], status=cycles_domain.SCOPE_CLOSED,
                                                  decided_by=user, decided_at=ts, note="版本已发布")
+        qa_service.lock_release_builds(conn, release, ts=ts, user=user, role=role)
         releases_repo.lock_release(conn, release_id, locked_at=ts, locked_by=user)
         artifacts = artifact_service.generate_final_artifacts(conn, release_id)
         log_audit(

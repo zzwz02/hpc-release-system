@@ -119,7 +119,7 @@ def worksheet_commands(result: dict, *, hpc_version: str | None = None) -> list[
 def _website_command(result: dict, command: dict, hpc_version: str | None) -> str:
     reference = result.get("image", "")
     if not reference:
-        return command["command"]  # The caller marks missing-image rows no_image.
+        return command["command"]  # Keep the caller's missing-image placeholder.
     pattern = command["image_pattern"].partition(":")[2]
     wanted = {value.strip() for value in str(
         result.get("hpc_version", "") if hpc_version is None else hpc_version).split(",") if value.strip()}

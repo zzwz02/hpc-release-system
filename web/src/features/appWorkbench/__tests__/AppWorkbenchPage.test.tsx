@@ -63,6 +63,28 @@ beforeEach(() => {
 });
 
 describe("App list", () => {
+  it("keeps the version build lock visible after a signup is withdrawn", async () => {
+    mockApi(makeState([makeApp("a")], makeRelease([makeEntry("a", { status: "withdrawn", build_locked: true })])));
+    renderPage("a");
+    const row = await screen.findByTestId("app-row-a");
+    expect(within(row).getByText("已撤回")).toBeVisible();
+    expect(within(row).getByText("构建已锁定")).toBeVisible();
+    expect(within(screen.getByTestId("app-detail-header")).getByText("构建已锁定")).toBeVisible();
+  });
+
+  it("shows the cycle build lock in both list and detail without document-target or official badges", async () => {
+    mockApi(makeState([makeApp("a", { official: { release_id: "old-cycle", release_name: "3.9.0",
+      version: "0.9", image: "", digest: "", released_at: "2026-10-31 10:00:00" } })],
+      makeRelease([makeEntry("a", { build_locked: true })])));
+    renderPage("a");
+    const row = await screen.findByTestId("app-row-a");
+    expect(within(row).getByText("构建已锁定")).toBeVisible();
+    const header = screen.getByTestId("app-detail-header");
+    expect(within(header).getByText("构建已锁定")).toBeVisible();
+    expect(within(header).queryByText("HPC", { exact: true })).toBeNull();
+    expect(within(header).queryByText(/^正式版 /)).toBeNull();
+  });
+
   it("lets RM confirm a full sync only for the selected signup cycle", async () => {
     setUser("rm", "RM");
     mockApi(makeState([makeApp("a")], makeRelease([])));

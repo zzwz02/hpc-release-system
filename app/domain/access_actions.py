@@ -11,6 +11,13 @@ from collections.abc import Mapping
 from typing import Any
 
 from app.domain.permissions import has_capability
+from app.domain import phases
+
+
+def entry_allowed_actions(entry: Mapping[str, Any], release: dict, *, role: str) -> list[str]:
+    if entry.get("status") == "active" and has_capability(role, "qa.build_lock") and phases.can(release, "edit_build_lock"):
+        return ["qa.build_lock"]
+    return []
 
 
 def cicd_request_allowed_actions(

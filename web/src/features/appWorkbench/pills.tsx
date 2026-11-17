@@ -17,6 +17,13 @@ export function QaDot({ entry }: { entry: Entry | null }) {
   return <span className={`app-dot ${qaDotClass(entry)}`} title={qaDotTitle(entry)} />;
 }
 
+export function BuildLockPill({ entry, title }: { entry: Entry; title?: string }) {
+  return <span className={`pill ${entry.build_locked ? "warnp" : ""}`}
+    title={title ?? (entry.build_locked ? "当前 App 在本发布版本的 CICD 构建已锁定" : "当前 App 在本发布版本的 CICD 构建未锁定")}>
+    {entry.build_locked ? "构建已锁定" : "构建未锁定"}
+  </span>;
+}
+
 export function CicdStatusPill({ app }: { app: App }) {
   const running = app.cicd_status === "running";
   return (

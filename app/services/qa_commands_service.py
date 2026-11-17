@@ -132,11 +132,9 @@ def query(conn, *, release_id, hpc_version):
                     continue
                 rows.extend(row for row in generated if row["test_name"] not in scope[source])
             continue
-        no_image = {"app_id": variant["app_id"], "git_branch": variant["branch"],
-                    "app_version": variant["version"], "commit_id": "", "test_commands": variant["commands"]}
-        for row in qa_results.worksheet_commands(no_image, hpc_version=selected):
-            row["website_docker_cmd"] = "no_image"
-            rows.append(row)
+        missing_image = {"app_id": variant["app_id"], "git_branch": variant["branch"],
+                         "app_version": variant["version"], "commit_id": "", "test_commands": variant["commands"]}
+        rows.extend(qa_results.worksheet_commands(missing_image, hpc_version=selected))
     rows.sort(key=lambda row: tuple(str(row[column]).casefold() for column in (
         "app_id", "git_branch", "app_version", "arch", "OS", "GPU", "py_label", "torch_label", "test_name", "hpc_version", "website_docker_cmd")))
     errors = list({(item["image"], item["error"]): item for item in errors}.values())

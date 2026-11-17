@@ -126,6 +126,72 @@ def set_qa_status_batch(
         return _apply_qa_status_batch(conn, release_id, current, user=user, role=role)
 
 
+def set_build_lock(conn, release_id, app_id, *, locked, expected_revision, user, role):
+    """Persist a cycle-scoped build lock; external CICD reads entries.build_locked."""
+    if not has_capability(role, "qa.build_lock"):
+        raise AuthzError("只有 QA、RM 可以锁定或解锁构建")
+    with transaction(conn, immediate=True):
+        release = cycle_service.get_release(conn, release_id)
+        phase_policy.require_can(release, "edit_build_lock", "版本已发布，不可修改构建锁定状态")
+        entry = entries_repo.find_entry(conn, release_id, app_id)
+        if not entry or entry["status"] != cycles_domain.ENTRY_ACTIVE:
+            raise ApiError(404, "该 App 未报名本版本或已撤回")
+        if entry["build_lock_revision"] != expected_revision:
+            raise ApiError(409, "构建锁定状态已变化，请刷新后重试")
+        _write_build_lock(conn, release, entry, locked=locked, ts=beijing_timestamp(), user=user, role=role)
+    return {"ok": True}
+
+
+def lock_release_builds(conn, release, *, ts, user, role):
+    """Called inside publication's transaction, including failed/withdrawn signups."""
+    for entry in entries_repo.list_for_release(conn, release["id"], include_withdrawn=True):
+        _write_build_lock(conn, release, entry, locked=True, ts=ts, user=user, role=role, automatic=True)
+
+
+def set_build_locks_batch(conn, release_id, *, locked, items, user, role):
+    """Change all active signups atomically after checking the caller's complete snapshot."""
+    if not has_capability(role, "qa.build_lock"):
+        raise AuthzError("只有 QA、RM 可以锁定或解锁构建")
+    expected = {item["app_id"]: item["expected_revision"] for item in items}
+    if not expected or len(expected) != len(items):
+        raise ValueError("批量构建锁定需提供完整报名清单，App ID 不能重复")
+    with transaction(conn, immediate=True):
+        release = cycle_service.get_release(conn, release_id)
+        phase_policy.require_can(release, "edit_build_lock", "版本已发布，不可修改构建锁定状态")
+        entries = entries_repo.list_for_release(conn, release_id)
+        if expected != {entry["app_id"]: entry["build_lock_revision"] for entry in entries}:
+            raise ApiError(409, "本版本报名或构建锁定状态已变化，未保存任何改动，请刷新后重试")
+        changed = [entry for entry in entries if entry["build_locked"] != locked]
+        updated = len(changed)
+        ts = beijing_timestamp()
+        for entry in changed:
+            _write_build_lock(conn, release, entry, locked=locked, ts=ts, user=user, role=role, record_audit=False)
+        if changed:
+            names = {app["id"]: catalog_service.app_name(app) for app in apps_repo.list_apps(conn)}
+            log_audit(conn, f"全部{'锁定' if locked else '解锁'}「{release['name']}」的 CICD 构建：变更 {updated} 个 App",
+                      ts=ts, user=user, role=role, release_id=release_id, event="qa_build_lock_batch",
+                      detail=[{"app_id": entry["app_id"], "field": "build_locked",
+                               "label": f"{names.get(entry['app_id'], entry['app_id'])}（{entry['app_id']}）构建锁定",
+                               "old": entry["build_locked"], "new": locked} for entry in changed])
+    return {"ok": True, "updated": updated}
+
+
+def _write_build_lock(conn, release, entry, *, locked, ts, user, role, automatic=False, record_audit=True):
+    if entry["build_locked"] == locked:
+        return
+    entries_repo.update_entry(conn, entry["id"], {
+        "build_locked": locked, "build_lock_revision": entry["build_lock_revision"] + 1,
+        "build_lock_updated_at": ts, "build_lock_updated_by": user,
+    }, updated_at=ts, updated_by=user)
+    if not record_audit:
+        return
+    action = "发布自动锁定" if automatic else "锁定" if locked else "解锁"
+    log_audit(conn, f"{action} {entry['app_id']} 在「{release['name']}」的 CICD 构建",
+              ts=ts, user=user, role=role, app_id=entry["app_id"], release_id=release["id"],
+              event="qa_build_lock", detail=[{"field": "build_locked", "label": "构建锁定",
+                                             "old": entry["build_locked"], "new": locked}])
+
+
 def _prepare_qa_status_batch(conn, release_id, items):
     release = cycle_service.get_release(conn, release_id)
     phase_policy.require_can(release, "edit_qa", "版本已发布，不可修改 QA 结论")
