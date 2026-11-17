@@ -34,6 +34,7 @@ from app.api.routers import (
     mcp,
     qa,
     releases,
+    release_gate,
     state,
     weekly_report,
     wiki,
@@ -99,6 +100,7 @@ def create_app() -> FastAPI:
     app.include_router(lookup.router)
     app.include_router(component_compatibility.router)
     app.include_router(cicd.router)
+    app.include_router(release_gate.router)
     app.include_router(cicd_agent.router)
     app.include_router(jira_agent.router)
     app.include_router(notifications.router)

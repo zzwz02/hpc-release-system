@@ -183,6 +183,15 @@ def init_db(conn: sqlite3.Connection) -> None:
         monthly_migration.rebuild_tables(conn)
     conn.executescript(
         """
+        CREATE TABLE IF NOT EXISTS release_build_versions (
+            maca_version TEXT PRIMARY KEY,
+            release_id TEXT NOT NULL REFERENCES releases(id),
+            enabled INTEGER NOT NULL DEFAULT 1,
+            note TEXT NOT NULL DEFAULT '',
+            revision INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            updated_by TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS apps (
             id TEXT PRIMARY KEY,
             git_url TEXT NOT NULL DEFAULT '',

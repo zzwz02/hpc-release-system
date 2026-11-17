@@ -57,6 +57,7 @@ import type { CicdTask, CicdRequest } from "../../types";
 import { toast } from "../../lib/toast";
 import { confirmDialog, promptDialog } from "../../lib/confirm";
 import { can } from "../../lib/accessControl";
+import { ReleaseGatePane } from "./ReleaseGatePane";
 
 // Re-export so consumers (tests, TabNav) can import from either location.
 export { CICD_CONFIG_KEY, CICD_TASKS_KEY, CICD_NOTIFICATIONS_KEY };
@@ -1474,6 +1475,7 @@ type SubPane =
   | "recent"
   | "pending"
   | "delivery"
+  | "release-gate"
   | "delivered";
 
 export function CicdPage() {
@@ -1490,10 +1492,10 @@ export function CicdPage() {
   // Pane visibility by role (mirrors bindCicd:4738-4754)
   const isSPD = can(role, "cicd.delivery.return") && !canApprove;
   const availablePanes: SubPane[] = isSPD
-    ? ["info", "delivery", "delivered"]
+    ? ["info", "delivery", "delivered", "release-gate"]
     : canDelivery
-    ? ["info", "recent", "pending", "delivery", "delivered"]
-    : ["info", "recent", "pending"];
+    ? ["info", "recent", "pending", "delivery", "delivered", "release-gate"]
+    : ["info", "recent", "pending", "release-gate"];
 
   const defaultPane: SubPane = isSPD ? "delivery" : "info";
   const [activePane, setActivePane] = useState<SubPane>(defaultPane);
@@ -1602,6 +1604,7 @@ export function CicdPage() {
     pending: "待审批",
     delivery: "待交付",
     delivered: "已交付",
+    "release-gate": "Release 构建准入",
   };
 
   return (
@@ -1647,7 +1650,7 @@ export function CicdPage() {
       </div>
 
       {/* Sub-tab nav */}
-      <div className="cicd-subtabs">
+      <div className="cicd-subtabs cicd-workbench-tabs">
         {availablePanes.map((pane) => {
           let label = PANE_LABELS[pane];
           if (pane === "pending" && pendingBadge > 0) label += ` (${pendingBadge})`;
@@ -1665,6 +1668,7 @@ export function CicdPage() {
       </div>
 
       {/* Pane content */}
+      {activePane === "release-gate" && <ReleaseGatePane canManage={can(role, "release.manage")} />}
       {activePane === "info" && (
         <TaskInfoSection
           tasks={tasks}

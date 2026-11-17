@@ -53,7 +53,7 @@ export interface FailureRecordFilters {
 
 export interface FailureRecordListItem {
   id: number;
-  record_source?: "pipeline_diagnosis" | "test_case_result";
+  record_source?: "pipeline_diagnosis" | "test_case_result" | "release_gate";
   record_state?: FailureRecordState;
   record_state_updated_by?: string | null;
   record_state_updated_at?: string | null;

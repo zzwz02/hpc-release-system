@@ -89,6 +89,16 @@ describe("JenkinsFailuresPage", () => {
 
   afterEach(() => vi.useRealTimers());
 
+  it("release gate records use rule labels and cannot start a repro", async () => {
+    currentRecord = { ...failureRecord, record_source: "release_gate", normalized_stage: "release admission" };
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: "查看详情" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("发布准入规则分配")).toBeInTheDocument();
+    expect(within(dialog).queryByText("AI建议")).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "复议诊断" })).not.toBeInTheDocument();
+  });
+
   it("shows a single build with ECC case groups and rule-assigned responsibility", async () => {
     currentRecord = {...failureRecord, record_source: "test_case_result", normalized_stage: "test case results",
       test_summary: {total: 2, counts: {Failed: 1, Timeout: 1}, expected_ecc_states: ["ON", "OFF"],
