@@ -345,19 +345,19 @@ def store_app_info(
     user: str,
     role: str = "system",
 ) -> int | None:
-    """Store app_info content if it differs from the App's latest version.
+    """Store app_info when its commit differs from the latest saved snapshot.
 
-    Returns the new version id, or None when the content is unchanged.  Must
-    be called inside a transaction; it also lets signup entries react.
+    Identical JSON at a new commit still creates a version.  An unchanged
+    commit returns None.  Call inside a transaction so entries react together.
     """
+    latest = app_info_repo.latest_version(conn, app_id)
+    if latest and latest["commit_id"] == commit_id:
+        return None
     data = json.loads(raw) if isinstance(raw, str) else raw
     if not isinstance(data, dict):
         raise ValueError("app_info.json 必须是 JSON 对象")
     app_info_domain.parse_app_info(data)  # validates shape before storing
     digest = app_info_domain.content_hash(data)
-    latest = app_info_repo.latest_version(conn, app_id)
-    if latest and latest["content_hash"] == digest:
-        return None
     ts = beijing_timestamp()
     version_id = app_info_repo.insert_version(
         conn,
@@ -432,10 +432,11 @@ def sync_app(
     _prepared: dict | None = None,
     _release_id: str | None = None,
 ) -> dict[str, Any]:
-    """Check one App's branch head and store app_info when it changed.
+    """Store app_info at a new commit, or skip saving an unchanged commit.
 
     Network I/O runs outside any transaction. Source errors are recorded on
     the App and returned; an expired bulk-sync window aborts the batch.
+    Force rechecks the file, but never creates a duplicate current commit.
     """
     app = _prepared["app"] if _prepared is not None else get_app_or_raise(conn, app_id)
     prepared = _read_sync_app(app, force=force) if _prepared is None else _prepared

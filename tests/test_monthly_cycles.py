@@ -671,7 +671,12 @@ def test_entry_test_commands_follow_the_locked_scope(cycle_with_entry) -> None:
     assert qa_service.entry_test_commands(conn, entries_repo.get_entry(conn, entry["id"])) == []
 
 
-def test_storing_the_same_app_info_twice_adds_no_version(cycle_with_app) -> None:
+def test_storing_identical_app_info_preserves_history_and_updates_commit(cycle_with_app) -> None:
     conn, _release_id, app_id = cycle_with_app
-    assert store_app_info(conn, app_id, APP_INFO, commit_id="same") is None
-    assert len(catalog_service.app_detail(conn, app_id)["app_info_versions"]) == 1
+    version_id = store_app_info(conn, app_id, APP_INFO, commit_id="new-commit")
+    detail = catalog_service.app_detail(conn, app_id)
+    assert len(detail["app_info_versions"]) == 2
+    assert detail["app_info_versions"][0]["id"] == version_id
+    assert detail["app_info_versions"][0]["commit_id"] == "new-commit"
+    assert store_app_info(conn, app_id, APP_INFO, commit_id="new-commit") is None
+    assert len(catalog_service.app_detail(conn, app_id)["app_info_versions"]) == 2

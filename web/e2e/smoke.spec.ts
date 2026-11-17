@@ -296,7 +296,7 @@ test.describe("App 工作台 details", () => {
     await expect(page.getByTestId("basic-info-section")).toBeVisible();
     await expect(page.getByTestId("detail-tab-app_info")).toHaveText("基本信息和app_info");
     await expect(page.getByTestId("detail-tab-signup")).toHaveCount(0);
-    await expect(page.getByTestId("latest-app-info-section").locator("summary").getByRole("button", { name: "立即同步app_info", exact: true })).toBeVisible();
+    await expect(page.getByTestId("latest-app-info-section").locator("summary").getByRole("button", { name: "更新 commit 和 app_info", exact: true })).toBeVisible();
   });
 });
 

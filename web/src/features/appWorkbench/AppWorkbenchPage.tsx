@@ -209,8 +209,8 @@ function DetailPanel({ app, entry, release, openRequests, onSaved, onSignup }: D
         "/api/app-info/sync", { app_id: app.id, force: true },
       );
       if (result.status === "error") toast.error(`同步失败：${result.error ?? ""}`);
-      else if (result.status === "updated") toast.success("已同步到新的 app_info");
-      else toast.info("app_info 没有变化");
+      else if (result.status === "updated") toast.success("已更新 commit 和 app_info");
+      else toast.info("仓库 commit 未变化");
     } catch (e) {
       toast.error(`同步失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {

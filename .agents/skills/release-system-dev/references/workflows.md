@@ -6,7 +6,7 @@
 
 - App 的身份、CICD 配置、`cicd_status`、可选资料（官方名称、类型、Owner、文档字段、测试说明、社区、Sanity）都在 `apps` 表；没有按周期复制的 App 数据。
 - `entries` 是 App 在某个版本的报名，`UNIQUE(release_id, app_id)`；撤回后再报名复用原行并清空计划、交付和 QA 字段。
-- app_info 只来自仓库：`catalog_service.store_app_info()` 按内容哈希去重，新版本必须在同一事务里交给 `cycle_service.on_app_info_version()`。不要加手工上传入口。
+- app_info 只来自仓库：`catalog_service.store_app_info()` 按最新已保存版本的 commit 判断是否更新，不按内容哈希去重；commit 不变时跳过保存，commit 变化时保存新版本，即使 JSON 内容相同也保存。单 App 手动更新会重新核对文件；全量同步仍在 HEAD 未变化时跳过读取。新版本必须在同一事务里交给 `cycle_service.on_app_info_version()`。不要加手工上传入口。
 - `official_versions` 的最新未撤销行是 App 的当前正式版；解锁版本时撤销该版本写入的行，不删除。
 
 ## 阶段

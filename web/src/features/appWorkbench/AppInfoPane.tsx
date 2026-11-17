@@ -1,7 +1,6 @@
 /**
- * app_info — the latest app_info.json from the App's repository (synced
- * automatically every day), the stored version history and the App's
- * official (released) versions.
+ * app_info — the latest app_info.json from the App's repository, manual
+ * synchronization, stored history and official (released) versions.
  */
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../api/http";
@@ -62,14 +61,14 @@ export function AppInfoPane({ app, canEdit, canEditRmFields, onSaved, onDirtyCha
           <span className="chev">▶</span> 最新 app_info
           {onSync && (
             <button type="button" className="btn sm" disabled={syncing || syncDisabled}
-              title={syncDisabled ? "请先保存或取消修改，再同步 app_info" : "立即同步app_info"}
+              title={syncDisabled ? "请先保存或取消修改，再同步 app_info" : "commit 不变时跳过；commit 变化时更新 app_info，即使 JSON 内容相同也保存新版本"}
               data-testid="app-info-sync"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
                 onSync();
               }}>
-              {syncing ? "同步中…" : "立即同步app_info"}
+              {syncing ? "同步中…" : "更新 commit 和 app_info"}
             </button>
           )}
         </summary>

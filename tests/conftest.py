@@ -12,6 +12,7 @@ They are plain functions (not fixtures) so tests and scripts can import them:
 from __future__ import annotations
 
 import tempfile
+from uuid import uuid4
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -287,7 +288,7 @@ def store_app_info(
             conn,
             app_id,
             deepcopy(app_info),
-            commit_id=commit_id or f"commit{beijing_timestamp()}",
+            commit_id=commit_id or f"commit{uuid4().hex}",
             source="conftest",
             user=user,
         )

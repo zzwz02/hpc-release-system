@@ -21,7 +21,8 @@ test("RM edits metadata, preserves drafts, syncs and sees scope warnings across 
   await expect(page.getByTestId("detail-tab-app_info")).toHaveText("基本信息和app_info");
   await expect(page.getByTestId("app-detail-header").getByTestId("app-info-sync")).toHaveCount(0);
   const latestInfo = page.getByTestId("latest-app-info-section");
-  await expect(latestInfo.locator("summary").getByRole("button", { name: "立即同步app_info", exact: true })).toBeVisible();
+  await expect(latestInfo.locator("summary").getByRole("button", { name: "更新 commit 和 app_info", exact: true })).toBeVisible();
+  await expect(page.getByTestId("app-info-sync")).toHaveAttribute("title", "commit 不变时跳过；commit 变化时更新 app_info，即使 JSON 内容相同也保存新版本");
   expect(await page.getByTestId("app-info-pane").locator(":scope > :first-child").getAttribute("data-testid"))
     .toBe("basic-info-section");
   await page.screenshot({ path: "/tmp/app-info-basic-check.png", fullPage: true });
@@ -67,7 +68,18 @@ test("RM edits metadata, preserves drafts, syncs and sees scope warnings across 
   await page.getByTestId("detail-tab-app_info").click();
   const syncResponse = page.waitForResponse(r => r.url().endsWith("/api/app-info/sync"));
   await page.getByTestId("app-info-sync").click();
-  expect((await (await syncResponse).json()).status).toBe("updated");
+  const firstSync = await (await syncResponse).json();
+  expect(firstSync.status).toBe("updated");
+  // An unchanged commit must not add another app_info version.
+  const repeatedResponse = page.waitForResponse(r => r.url().endsWith("/api/app-info/sync"));
+  await page.getByTestId("app-info-sync").click();
+  const repeatedSync = await (await repeatedResponse).json();
+  expect(repeatedSync.status).toBe("unchanged");
+  expect(repeatedSync.commit_id).toBe(firstSync.commit_id);
+  expect(repeatedSync.version_id).toBeNull();
+  const history = await (await page.request.get(base + "/api/apps/detail?app_id=info-check")).json();
+  expect(history.app_info_versions[0].id).toBe(firstSync.version_id);
+  expect(history.app_info_versions.filter((version: { commit_id: string }) => version.commit_id === firstSync.commit_id)).toHaveLength(1);
   await expect(latestInfo).toHaveAttribute("open", "");
   await expect(page.getByTestId("app-scope-warning")).toContainText("待 QA 审批");
   await expect(page.getByTestId("app-scope-warning")).toContainText("C600");

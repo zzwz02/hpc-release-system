@@ -262,16 +262,46 @@ describe("basic information and app_info", () => {
     const header = await screen.findByTestId("app-detail-header");
     expect(within(header).queryByTestId("app-info-sync")).toBeNull();
     const section = screen.getByTestId("latest-app-info-section");
-    expect(within(section.querySelector("summary")!).getByRole("button", { name: "立即同步app_info" })).toBeInTheDocument();
+    expect(within(section.querySelector("summary")!).getByRole("button", { name: "更新 commit 和 app_info" })).toBeInTheDocument();
+    expect(screen.getByTestId("app-info-sync")).toHaveAttribute("title", "commit 不变时跳过；commit 变化时更新 app_info，即使 JSON 内容相同也保存新版本");
     fireEvent.click(screen.getByTestId("detail-tab-profile"));
     expect(screen.queryByTestId("app-info-sync")).toBeNull();
     fireEvent.click(screen.getByTestId("detail-tab-app_info"));
-    fireEvent.click(screen.getByRole("button", { name: "立即同步app_info" }));
+    fireEvent.click(screen.getByRole("button", { name: "更新 commit 和 app_info" }));
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/app-info/sync", { app_id: "a", force: true }));
     expect(await screen.findByTestId("app-scope-warning")).toHaveTextContent("新增芯片 C600");
     expect(screen.getByTestId("app-scope-warning")).toHaveTextContent("最新 app_info 已同步");
     expect(screen.getByTestId("latest-app-info-section")).toHaveAttribute("open");
-    expect(toast.success).toHaveBeenCalledWith("已同步到新的 app_info");
+    expect(toast.success).toHaveBeenCalledWith("已更新 commit 和 app_info");
+  });
+
+  it("refreshes the commit after saving identical app_info content", async () => {
+    const initial = makeAppInfo({ id: 1, commit_id: "1111111111111111111111111111111111111111" });
+    const state = makeState([makeApp("a", { latest_app_info: initial })], makeRelease([makeEntry("a")]));
+    mockApi(state);
+    vi.mocked(apiPost).mockImplementation(async () => {
+      state.apps[0] = { ...state.apps[0], latest_app_info: { ...initial, id: 2, commit_id: "2222222222222222222222222222222222222222" } };
+      return { status: "updated" };
+    });
+    renderPage("a");
+    const section = await screen.findByTestId("latest-app-info-section");
+    const previousVersion = within(section).getByLabelText("版本").getAttribute("value");
+    fireEvent.click(screen.getByRole("button", { name: "更新 commit 和 app_info" }));
+    await waitFor(() => expect(within(section).getByLabelText("Commit")).toHaveValue("222222222222"));
+    expect(within(section).getByLabelText("版本")).toHaveValue(previousVersion);
+    expect(toast.success).toHaveBeenCalledWith("已更新 commit 和 app_info");
+  });
+
+  it("reports an unchanged commit without replacing the displayed version", async () => {
+    const info = makeAppInfo({ id: 1, commit_id: "1111111111111111111111111111111111111111" });
+    mockApi(makeState([makeApp("a", { latest_app_info: info })], makeRelease([makeEntry("a")])));
+    vi.mocked(apiPost).mockResolvedValue({ status: "unchanged", commit_id: info.commit_id });
+    renderPage("a");
+    const section = await screen.findByTestId("latest-app-info-section");
+    fireEvent.click(screen.getByRole("button", { name: "更新 commit 和 app_info" }));
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith("仓库 commit 未变化"));
+    expect(within(section).getByLabelText("Commit")).toHaveValue("111111111111");
+    expect(toast.success).not.toHaveBeenCalled();
   });
 
   it("keeps synchronization available before the first app_info is fetched", async () => {
@@ -279,7 +309,7 @@ describe("basic information and app_info", () => {
     renderPage("a");
     const section = await screen.findByTestId("latest-app-info-section");
     expect(within(section).getByText("尚未取得 app_info。")).toBeInTheDocument();
-    fireEvent.click(within(section).getByRole("button", { name: "立即同步app_info" }));
+    fireEvent.click(within(section).getByRole("button", { name: "更新 commit 和 app_info" }));
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/app-info/sync", { app_id: "a", force: true }));
   });
 

@@ -40,7 +40,7 @@ from tests.conftest import (
 # ---------------------------------------------------------------------------
 
 
-def test_sync_stores_a_new_version_only_when_the_content_changed(temp_db, monkeypatch) -> None:
+def test_sync_stores_current_commit_even_when_content_is_identical(temp_db, monkeypatch) -> None:
     app_id = seed_app(temp_db, app_info=None)
     raw = json.dumps(APP_INFO)
     head = {"value": "commit1"}
@@ -53,16 +53,76 @@ def test_sync_stores_a_new_version_only_when_the_content_changed(temp_db, monkey
 
     # Same head: no fetch, no version.
     assert catalog_service.sync_app(temp_db, app_id, user="rm")["status"] == "unchanged"
-    # New head but identical content: still one version.
+    # New head with identical content still records a new snapshot.
     head["value"] = "commit2"
-    assert catalog_service.sync_app(temp_db, app_id, user="rm")["status"] == "unchanged"
-    assert len(catalog_service.app_detail(temp_db, app_id)["app_info_versions"]) == 1
+    second = catalog_service.sync_app(temp_db, app_id, user="rm")
+    assert second["status"] == "updated"
+    latest = app_info_repo.latest_version(temp_db, app_id)
+    assert latest["id"] == second["version_id"] != first["version_id"]
+    assert latest["commit_id"] == "commit2" and latest["raw"] == APP_INFO
+    assert app_info_repo.get_version(temp_db, first["version_id"])["commit_id"] == "commit1"
+    assert len(catalog_service.app_detail(temp_db, app_id)["app_info_versions"]) == 2
+
+    # Manual updates skip saving when the commit has not changed.
+    repeated = catalog_service.sync_app(temp_db, app_id, user="rm", force=True)
+    assert repeated["status"] == "unchanged" and repeated["version_id"] is None
+    assert app_info_repo.latest_version(temp_db, app_id)["commit_id"] == "commit2"
 
     head["value"] = "commit3"
     raw = json.dumps(make_app_info(app_version="2.0"))
     monkeypatch.setattr(gerrit_integration, "fetch_app_info_at", lambda *a, **k: raw)
     assert catalog_service.sync_app(temp_db, app_id, user="rm")["status"] == "updated"
-    assert len(catalog_service.app_detail(temp_db, app_id)["app_info_versions"]) == 2
+    assert len(catalog_service.app_detail(temp_db, app_id)["app_info_versions"]) == 3
+
+
+@pytest.mark.parametrize("head", ["old-head", "new-head"])
+def test_http_manual_sync_refreshes_identical_content_and_follows_unpublished_entries(
+    temp_db_with_path, monkeypatch, head,
+) -> None:
+    conn, path = temp_db_with_path
+    monkeypatch.setattr(settings, "db_path", path)
+    app_id = seed_app(conn, commit_id="old-head")
+    release_id = seed_cycle(conn)
+    entry = seed_signup(conn, release_id, app_id)
+    close_signup(conn, release_id)
+    frozen_id = seed_cycle(conn, name="published")
+    frozen_entry = seed_signup(conn, frozen_id, app_id)
+    conn.execute("UPDATE releases SET released_locked = 1 WHERE id = ?", (frozen_id,))
+    # Reproduce an earlier content-deduplicated sync whose HEAD was already recorded.
+    apps_repo.update_sync_state(conn, app_id, checked_at="previous-check", error="", head_commit=head)
+    conn.commit()
+    original = app_info_repo.latest_version(conn, app_id)
+    monkeypatch.setattr(gerrit_integration, "head_commit", lambda *a, **kw: head)
+    monkeypatch.setattr(gerrit_integration, "fetch_app_info_at", lambda *a, **kw: json.dumps(APP_INFO))
+    app = create_app()
+    app.dependency_overrides[require_login] = lambda: {"username": "owner_test", "role": "Owner"}
+
+    def connection():
+        yield conn
+
+    app.dependency_overrides[get_db] = connection
+    client = TestClient(app)
+    response = client.post("/api/app-info/sync", json={"app_id": app_id, "force": True})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["commit_id"] == head
+    if head == "old-head":
+        assert result["status"] == "unchanged" and result["version_id"] is None
+        assert app_info_repo.latest_version(conn, app_id)["id"] == original["id"]
+        assert len(app_info_repo.list_versions(conn, app_id)) == 1
+        assert entries_repo.get_entry(conn, entry["id"])["locked_version_id"] == original["id"]
+        assert apps_repo.get_app(conn, app_id)["sync_checked_at"] != "previous-check"
+        return
+    assert result["status"] == "updated"
+    latest = app_info_repo.latest_version(conn, app_id)
+    assert latest["id"] == result["version_id"] != original["id"]
+    assert latest["commit_id"] == head and latest["raw"] == original["raw"]
+    assert app_info_repo.get_version(conn, original["id"])["commit_id"] == "old-head"
+    current = cycle_service.entry_view(conn, entries_repo.get_entry(conn, entry["id"]))
+    assert current["locked_version_id"] == latest["id"]
+    assert current["locked_app_info"]["commit_id"] == head
+    assert not current["behind_latest"] and current["pending_scope_request"] is None
+    assert entries_repo.get_entry(conn, frozen_entry["id"])["locked_version_id"] == original["id"]
 
 
 def test_a_sync_failure_is_recorded_on_the_app_and_never_raised(temp_db, monkeypatch) -> None:

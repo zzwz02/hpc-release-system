@@ -76,11 +76,12 @@ def test_shared_repository_is_read_once_per_batch_and_changes_are_seen_next_batc
     assert calls.count("head") == calls.count("file") == 1
     assert catalog_service.sync_all(temp_db, release_id=release_id, user="rm")["updated"] == 0
     assert calls.count("head") == 2 and calls.count("file") == 1
-    state.update(head="b" * 40, version="3.0")
+    state.update(head="b" * 40)
     assert catalog_service.sync_all(temp_db, release_id=release_id, user="rm")["updated"] == 2
     assert calls.count("head") == 3 and calls.count("file") == 2
     assert all(
-        app_info_repo.latest_version(temp_db, app)["raw"]["app_version"] == "3.0"
+        app_info_repo.latest_version(temp_db, app)["raw"]["app_version"] == "2.0"
+        and app_info_repo.latest_version(temp_db, app)["commit_id"] == "b" * 40
         for app in ["left", "right"]
     )
 
