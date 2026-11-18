@@ -19,6 +19,7 @@
     "admin": ["Admin"]
   },
   "capabilities": {
+    "ci.automation": ["RM", "Owner", "SPD"],
     "admin.manage": ["Admin"],
     "release.manage": ["RM"],
     "app.edit.any": ["RM"],

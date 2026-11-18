@@ -111,6 +111,10 @@ async function login(page: Page, username: string, password = username) {
 }
 
 async function logout(page: Page): Promise<void> {
+  const settings = page.getByRole("button", { name: "账号设置", exact: true });
+  if (await settings.isVisible() && await settings.getAttribute("aria-expanded") !== "true") {
+    await settings.click();
+  }
   // Click logout button if present
   const logoutBtn = page.locator('button:has-text("退出"), button:has-text("Logout"), [data-testid="logout-btn"]').first();
   if (await logoutBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
@@ -557,12 +561,7 @@ test.describe("W3 App 工作台 sub-tabs", () => {
 async function freshLogin(page: Page, username: string): Promise<void> {
   // Navigate to base; if already logged in there may be no login form.
   await page.goto(BASE);
-  // Try to find logout button (user might already be logged in from a prior test).
-  const logoutBtn = page.locator('button:has-text("退出"), button:has-text("Logout"), [data-testid="logout-btn"]').first();
-  if (await logoutBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
-    await logoutBtn.click();
-    await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
-  }
+  await logout(page);
   // Also clear session via the API logout endpoint for certainty.
   await page.evaluate(() => {
     return fetch("/api/logout", { method: "POST", credentials: "include" }).catch(() => {});

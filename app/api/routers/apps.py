@@ -19,6 +19,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query, Response
 
 from app.api.errors import AuthzError
+from app.api.ci_auth import owner_lookup_identity
 from app.deps import get_db, require_capability, require_login, require_tab_access
 from app.domain.permissions import has_capability
 from app.services import catalog_service, state_service
@@ -33,7 +34,7 @@ require_dependencies_tab = require_tab_access("dependencies", message="无权查
 def api_apps_owner_lookup(
     git_url: str = Query(...),
     branch: str = Query(...),
-    user: dict = Depends(require_login),
+    user: dict = Depends(owner_lookup_identity),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     return state_service.lookup_latest_app_owner(conn, git_url=git_url, branch=branch)

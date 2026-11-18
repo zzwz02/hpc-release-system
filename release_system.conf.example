@@ -68,8 +68,10 @@ LLM_API_KEY = <api-key>
 
 # ── Release 构建准入 ─────────────────────────────────────────
 [release_gate]
-# Scoped Jenkins admission/report credential; same value as backend RELEASE_BUILD_TOKEN.
-# Keep real values out of Git and Jenkins command-line arguments.
+# Account API Tokens are managed in the account UI; no new shared secret is needed here.
+# Set false after Jenkins uses HPC_API_TOKEN. This affects ONLY the old gate credential.
+ALLOW_LEGACY_CI_AUTH = true
+# Legacy Jenkins admission/report credential; unnecessary after account-token migration.
 RELEASE_BUILD_TOKEN =
 
 # ── CICD Agent（Jenkins 失败诊断助手） ─────────────────────────

@@ -1,0 +1,24 @@
+.dialog-backdrop.account-token-backdrop { z-index: 90; }
+.dialog-card.account-token-dialog { width: min(680px, 100%); max-height: calc(100dvh - 32px); display: flex; flex-direction: column; border-radius: 8px; }
+.account-token-dialog > .dialog-body { overflow: auto; min-height: 0; }
+.account-token-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 18px 0; }
+.account-token-heading h3 { margin: 0 0 4px; font-size: 18px; }
+.account-token-create { display: flex; gap: 12px; align-items: end; }
+.account-token-create label { display: grid; gap: 6px; flex: 1; min-width: 0; }
+.account-token-create .input { width: 100%; min-width: 0; }
+.account-token-create button { flex-shrink: 0; }
+.account-token-secret { display: grid; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.account-token-secret textarea { width: 100%; min-width: 0; box-sizing: border-box; resize: none; overflow-wrap: anywhere; font-family: monospace; }
+.account-token-secret-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.account-token-list-heading { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding-top: 8px; }
+.account-token-row { position: relative; padding: 14px 80px 14px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.account-token-summary { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.account-token-summary code { white-space: nowrap; }
+.account-token-dates { display: grid; gap: 4px; margin-top: 6px; }
+.account-token-revoke { position: absolute; top: 12px; right: 0; color: #b42318; }
+.account-token-row.revoked { opacity: .65; }
+@media (max-width: 480px) {
+  .account-token-create { flex-wrap: wrap; }
+  .account-token-create label { flex-basis: 100%; }
+  .account-token-row { padding-right: 70px; }
+}

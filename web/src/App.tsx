@@ -15,6 +15,7 @@ import { apiGet } from "./api/http";
 import { useUiStore } from "./store/uiStore";
 import type { StatePayload } from "./types";
 import { LoginPage } from "./features/auth/LoginPage";
+import { AccountMenu } from "./features/auth/AccountMenu";
 import { TabNav } from "./routes/TabNav";
 import { AppRouter } from "./routes/AppRouter";
 import { Toaster } from "./components/Toaster";
@@ -80,24 +81,19 @@ function AppShell() {
 
   return (
     <>
-      <header className="topbar">
+      <header className="topbar has-account-settings">
         <div className="brand">
           <span className="logo">HPC</span>
           <span>发布信息协作系统</span>
         </div>
         <div className="spacer" />
-        <span id="sessionBox" className="sessionbox">
+        <div id="sessionBox" className="sessionbox">
           <span className="userchip">
             <span className="avatar" id="meAvatar">{avatar}</span>
-            <span id="meBox">{user.role} · {label}</span>
+            <span id="meBox" title={label}>{label}</span>
           </span>
-          <button
-            className="btn ghost sm"
-            onClick={() => void logout()}
-          >
-            退出
-          </button>
-        </span>
+          <AccountMenu key={user.username} user={user} logout={logout} />
+        </div>
       </header>
 
       <ReleaseSeeder />

@@ -9,6 +9,7 @@ from app import runtime_config
 from app.deps import get_db, require_capability, require_tab_access
 from app.repositories import release_gate_repo, releases_repo
 from app.services import release_gate_service
+from app.services import api_token_service
 
 router = APIRouter(prefix="/api/cicd/release-gate", tags=["release-gate"])
 
@@ -35,7 +36,11 @@ class GateCheck(BaseModel):
     source_project: str = Field(default="", max_length=512)
 
 
-def require_ci(authorization: str = Header(default="")):
+def require_ci(authorization: str = Header(default=""), conn=Depends(get_db)):
+    if authorization.partition(" ")[2].strip().startswith(api_token_service.TOKEN_PREFIX):
+        return api_token_service.authenticate(conn, authorization, "release_check")
+    if runtime_config.section("release_gate").get("ALLOW_LEGACY_CI_AUTH", "true").lower() != "true":
+        raise HTTPException(401, "Platform API Token required")
     token = runtime_config.section("release_gate").get("RELEASE_BUILD_TOKEN", "")
     if not token:
         raise HTTPException(503, "Release build checks are not configured")
