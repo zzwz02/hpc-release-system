@@ -91,8 +91,6 @@ def query(conn, *, release_id, hpc_version):
             found[key] = matches
             available = {version for _, versions in matches for version in versions}
             selected_versions[key] = max(available, key=_version, default="") if latest else requested
-        if latest and not any(selected_versions.values()):
-            raise ValueError(f"Harbor 中没有 {family} 系列可用镜像，请填写具体 hpc_version 查询缺失项")
         references = list(dict.fromkeys(ref for key, matches in found.items()
                                         for ref, versions in matches if selected_versions[key] in versions))
         images, errors = [], []

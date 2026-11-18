@@ -107,16 +107,16 @@ def test_version_queries_only_read_maca_and_ignore_newer_hpcc_images(temp_db, sc
     assert any(TAGGED_IMAGE in row["website_docker_cmd"] for row in result["rows"])
 
 
-def test_hpcc_only_artifact_cannot_fill_a_missing_maca_image(temp_db, scope, monkeypatch):
+@pytest.mark.parametrize("requested", ["3.10.1.2", "latest"])
+def test_hpcc_only_artifact_cannot_fill_a_missing_maca_image(temp_db, scope, monkeypatch, requested):
     def listing(project, repository, version):
         if repository.endswith(("-hpcc", "-hpcc-dbg")):
             return [{"digest": DIGEST, "tags": [{"name": tag} for tag in TAGS]}]
         return []
     monkeypatch.setattr(harbor, "list_artifacts", listing)
-    result = qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="3.10.1.2")
+    result = qa_commands_service.query(temp_db, release_id=scope[0], hpc_version=requested)
     assert result["rows"] and all(missing_image(row) for row in result["rows"])
-    with pytest.raises(ValueError, match="没有.*可用镜像"):
-        qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="latest")
+    assert not result["errors"]
 
 
 def test_maca_debug_images_are_still_resolved(temp_db, scope, monkeypatch):
@@ -251,7 +251,8 @@ def test_scope_count_tracks_locked_tests_and_signups_without_reading_harbor(temp
 def test_latest_selects_python_and_torch_builds_independently(temp_db, scope, live, monkeypatch):
     raw = live[0]
     raw["app_build"]["ubuntu22.04_amd64"].update(python_label="py310,py312", pytorch_label="torch2.4,torch2.8")
-    store_app_info(temp_db, "testapp", raw, commit_id="bb46c60")
+    # A changed app_info needs a new commit; the same commit intentionally skips storage.
+    store_app_info(temp_db, "testapp", raw, commit_id="bb46c61")
     tags = [tag.replace("3.10.1.2", version).replace("-ubuntu22.04", f"-{torch}-{py}-ubuntu22.04")
             for py, torch, version in [("py310", "torch2.4", "3.10.1.10"), ("py312", "torch2.8", "3.10.1.8")]
             for tag in TAGS]
@@ -278,10 +279,15 @@ def test_all_blank_qa_upload_reports_skipped_count_and_preserves_existing_report
     assert qa_results_service.download(temp_db, saved["report_id"])[0] == original
 
 
-def test_missing_exact_version_keeps_whole_cartesian_scope(temp_db, scope):
-    scope[1]["missing"] = True
-    result = qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="3.10.1.7")
-    assert len(result["rows"]) > 3
+@pytest.mark.parametrize("requested", ["3.10.1.7", "latest"])
+@pytest.mark.parametrize("available", [[], ["3.9.0.99"], ["3.10.2.1"]])
+def test_missing_version_keeps_whole_cartesian_scope(temp_db, scope, requested, available):
+    scope[1]["versions"] = available
+    result = qa_commands_service.query(temp_db, release_id=scope[0], hpc_version=requested)
+    assert len(result["rows"]) == qa_commands_service.count_scope_tests(temp_db, scope[0]) > 3
+    assert result["hpc_version"] == requested
+    assert result["hpc_versions"] == ([] if requested == "latest" else [requested])
+    assert not result["errors"]
     assert all(missing_image(row) for row in result["rows"])
     for row in result["rows"]:
         suffix = "-dbg" if row["test_name"] == "debug" else ""
@@ -291,9 +297,8 @@ def test_missing_exact_version_keeps_whole_cartesian_scope(temp_db, scope):
         assert "-v /pde_hpc/dataset:/hpc_dataset:ro" in command
         assert "--device=/dev/dri -u 0" in command
         assert "sh -c '" in command
-        assert row["hpc_version"] == "3.10.1.7"
-    with pytest.raises(ValueError, match="没有.*可用镜像"):
-        qa_commands_service.query(temp_db, release_id=scope[0], hpc_version="latest")
+        assert row["hpc_version"] == ("" if requested == "latest" else requested)
+        assert all(row[column] == "" for column in qa_results.WORKSHEET_QA_COLUMNS)
 
 
 def test_version_export_upload_roundtrip_and_download_keeps_environment_bytes(temp_db, scope):
@@ -447,6 +452,24 @@ def test_real_http_payload_and_no_store_contract(temp_db, scope):
         assert response.status_code == 200, response.text
         assert response.headers["cache-control"] == "no-store"
         assert response.json()["columns"] == qa_results.WORKSHEET_COLUMNS
+
+
+def test_latest_without_images_returns_placeholder_commands_over_http(temp_db, scope):
+    scope[1]["missing"] = True
+    app = create_app()
+    app.dependency_overrides[get_db] = lambda: temp_db
+    app.dependency_overrides[require_login] = lambda: {"username": "qa", "role": "QA"}
+    with TestClient(app) as client:
+        response = client.get("/api/qa/test-commands", params={"release_id": scope[0], "hpc_version": "latest"})
+        assert response.status_code == 200, response.text
+        assert response.headers["cache-control"] == "no-store"
+        result = response.json()
+        assert result["hpc_version"] == "latest"
+        assert result["hpc_versions"] == []
+        assert result["columns"] == qa_results.WORKSHEET_COLUMNS
+        assert len(result["rows"]) == qa_commands_service.count_scope_tests(temp_db, scope[0])
+        assert all(missing_image(row) and row["hpc_version"] == "" for row in result["rows"])
+        assert not result["errors"]
 
 
 def test_harbor_artifact_pagination_404_and_failure(monkeypatch):

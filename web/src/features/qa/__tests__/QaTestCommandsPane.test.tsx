@@ -54,6 +54,26 @@ it("merges only GPU differences on screen and exports individual records with bu
   expect(vi.mocked(downloadCsv).mock.calls[1][2]).toEqual([data.columns.map(column => String(rows[1][column] ?? ""))]);
 });
 
+it("displays and exports placeholder commands when latest has no available images", async () => {
+  const missing = { ...data, hpc_versions: [], rows: [data.rows[2]] };
+  vi.mocked(apiGet).mockResolvedValue(missing);
+  render(<QaTestCommandsPane releaseId="release1" />);
+  fireEvent.click(screen.getByRole("button", { name: "查询测试命令" }));
+  expect(await screen.findByText("未找到可用镜像，已显示占位符命令")).toBeVisible();
+  expect(screen.getByText(missing.rows[0].website_docker_cmd)).toBeVisible();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "导出 CSV" }));
+  expect(downloadCsv).toHaveBeenCalledWith("test_commands_latest.csv", missing.columns,
+    missing.rows.map(row => missing.columns.map(column => String((row as CommandRow)[column] ?? ""))));
+});
+
+it("shows an empty scope message when the release has no test commands", async () => {
+  vi.mocked(apiGet).mockResolvedValue({ ...data, hpc_versions: [], rows: [] });
+  render(<QaTestCommandsPane releaseId="release1" />);
+  fireEvent.click(screen.getByRole("button", { name: "查询测试命令" }));
+  expect(await screen.findByText("当前发布周期没有测试命令")).toBeVisible();
+});
+
 it("clears old results on failure and discards a response after changing release", async () => {
   vi.mocked(apiGet).mockResolvedValueOnce(data).mockRejectedValueOnce(new Error("Harbor 查询失败"));
   const view = render(<QaTestCommandsPane releaseId="release1" />);

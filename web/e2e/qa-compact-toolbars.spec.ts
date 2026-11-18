@@ -10,6 +10,36 @@ async function sameLine(items: Locator[]) {
   expect(Math.max(...centers) - Math.min(...centers)).toBeLessThan(3);
 }
 
+test("latest without any matching images displays and exports placeholder commands", async ({ page }) => {
+  expect((await page.request.post(base + "/api/login", { data: { username: "app_qa", password: "test-password" } })).ok()).toBeTruthy();
+  await page.goto(base + "/qa?tab=test");
+  await page.getByLabel("选择 release").selectOption({ label: "3.10.2" });
+  const response = page.waitForResponse(r => r.url().includes("/api/qa/test-commands?"));
+  await page.getByRole("button", { name: "查询测试命令", exact: true }).click();
+  const resolved = await response;
+  expect(resolved.status(), await resolved.text()).toBe(200);
+  expect(new URL(resolved.url()).searchParams.get("hpc_version")).toBe("latest");
+  const result = await resolved.json();
+  expect(result.hpc_versions).toEqual([]);
+  expect(result.errors).toEqual([]);
+  expect(result.rows.length).toBeGreaterThan(0);
+  expect(result.rows.every((row: { hpc_version: string; website_docker_cmd: string }) =>
+    row.hpc_version === "" && row.website_docker_cmd.includes("<hpc_version>"))).toBeTruthy();
+  await expect(page.getByText("未找到可用镜像，已显示占位符命令", { exact: true })).toBeVisible();
+  await expect(page.getByRole("cell", { name: /docker run.*<hpc_version>/ }).first()).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出 CSV" }).click();
+  const csv = await download;
+  expect(csv.suggestedFilename()).toBe("test_commands_latest.csv");
+  const stream = await csv.createReadStream();
+  const chunks = [];
+  for await (const chunk of stream!) chunks.push(chunk);
+  const content = Buffer.concat(chunks).toString("utf8");
+  for (const row of result.rows) expect(content).toContain(row.website_docker_cmd.replaceAll('"', '""'));
+  await page.screenshot({ path: "/tmp/qa-latest-placeholder-commands.png", fullPage: true });
+});
+
 test("QA queries latest without a version input and community toolbar submits its version", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   expect((await page.request.post(base + "/api/login", { data: { username: "app_qa", password: "test-password" } })).ok()).toBeTruthy();

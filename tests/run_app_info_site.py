@@ -312,6 +312,10 @@ def main():
                 seed_signup(conn, release_id, "platform-check")
             historical_id = conn.execute("SELECT id FROM app_info_versions WHERE app_id='lookup-image' AND commit_id='bb46c60'").fetchone()[0]
             conn.execute("UPDATE entries SET locked_version_id=? WHERE id=?", (historical_id, entry["id"]))
+            if args.qa_commands:
+                missing_release = seed_cycle(conn, name="3.10.2")
+                missing_entry = seed_signup(conn, missing_release, "lookup-image")
+                conn.execute("UPDATE entries SET locked_version_id=? WHERE id=?", (historical_id, missing_entry["id"]))
             conn.commit()
         if args.qa_report_pagination:
             from app.domain import qa_results
