@@ -4,7 +4,7 @@ import { useAuth } from "../../api/AuthContext";
 import { apiGet } from "../../api/http";
 import { RefreshBar } from "../../components/RefreshBar";
 import { downloadCsv } from "../../lib/csv";
-import { publicationManifestSourceLabel, universalComponentMetadata, type PublicationManifestSource } from "../../lib/domainMetadata";
+import { compatibilityComponentLabel, publicationManifestSourceLabel, universalComponentGroupMetadata, universalComponentMetadata, type PublicationManifestSource } from "../../lib/domainMetadata";
 
 interface ReleaseRow {
   app_id: string;
@@ -33,9 +33,7 @@ const columns = ["App", "app_id", "Owner", "依赖组件", "HPC version", "App v
 const archName = (arch?: string) => arch === "amd64" ? "x86" : arch === "arm64" ? "ARM" : arch || "";
 const universalComponents = new Set(Object.keys(universalComponentMetadata));
 // These components share the entire inventory, so one display group is sufficient.
-const universalGroup = [...universalComponents].sort().join("-");
-const universalGroupLabel = [...universalComponents].sort().map(name => universalComponentMetadata[name].label).join(" / ");
-const componentLabel = (name: string) => name === universalGroup ? universalGroupLabel : name;
+const universalGroup = universalComponentGroupMetadata.key;
 function cells(row: ReleaseRow): string[] {
   return [row.app_name, row.app_id, row.owners.join(", "), row.dependencies.join(", "),
     row.hpc_version, row.app_version, publicationManifestSourceLabel(row.manifest_source), row.os || "", archName(row.arch), row.GPU || "", row.image_target || "",
@@ -138,7 +136,7 @@ export function CompatibilityPane() {
       <div className="row compatibility-filters">
         <label>组件<select className="select select-inline" value={component} onChange={(event) => setComponent(event.target.value)} aria-label="按组件筛选">
           <option value="">全部组件</option>
-          {[...components].sort(([a], [b]) => a.localeCompare(b)).map(([name, apps]) => <option key={name} value={name}>{componentLabel(name)}（{apps.size}）</option>)}
+          {[...components].sort(([a], [b]) => a.localeCompare(b)).map(([name, apps]) => <option key={name} value={name}>{compatibilityComponentLabel(name)}（{apps.size}）</option>)}
         </select></label>
         {platformFilters.map(([key, label]) => {
           const values = [...new Set(inventory.flatMap((row) => key === "chip" ? row.chips ?? [] : [row[key] ?? ""]).filter(Boolean))].sort();
@@ -164,7 +162,7 @@ export function CompatibilityPane() {
       {rows.length === 0 && <p className="muted p-12-16">{result.data.app_count ? "没有匹配的记录。" : "暂无 CICD 仍在运行且成功发布过的 App。"}</p>}
       {groups.map((group) => <details key={group.name} className="panel section dependency-group"
         open={!!component} data-testid={`compatibility-group-${group.name}`}>
-        <summary className="panel-head"><span className="chev" aria-hidden="true">▶</span><h3>{componentLabel(group.name)}</h3>
+        <summary className="panel-head"><span className="chev" aria-hidden="true">▶</span><h3>{compatibilityComponentLabel(group.name)}</h3>
           <span className="count">{new Set(group.rows.map((row) => row.app_id)).size} 个 App</span></summary>
         <div className="panel-body p-0"><AppsTable rows={group.rows} /></div>
       </details>)}

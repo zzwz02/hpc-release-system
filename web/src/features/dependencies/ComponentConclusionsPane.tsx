@@ -7,6 +7,7 @@ import { TestScopeTable } from "../../components/TestScopeTable";
 import { can } from "../../lib/accessControl";
 import { confirmDialog } from "../../lib/confirm";
 import { formatServerTime } from "../../lib/time";
+import { compatibilityComponentLabel, universalComponentGroupMetadata, universalComponentMetadata } from "../../lib/domainMetadata";
 import { useUiStore } from "../../store/uiStore";
 
 interface ReportSummary {
@@ -25,6 +26,11 @@ const COLUMNS = [
   ["app_id", "app_id"], ["app_name", "App"], ["app_version", "app_version"],
   ["hpc_version", "hpc_version"], ["qa_status", "QA 结论"], ["qa_comment", "comment（选填）"],
 ] as const;
+
+function reportComponentLabel(component: string) {
+  const legacy = universalComponentMetadata[component.toLowerCase()];
+  return legacy ? `${legacy.label}（历史独立记录）` : compatibilityComponentLabel(component);
+}
 
 export function ComponentConclusionsPane() {
   const { user } = useAuth();
@@ -98,7 +104,7 @@ function Workspace() {
       if (generation.current !== current) return;
       setSelectedId(report.id); setCreating(false); setComponent(""); setVersion("");
       setFilter(""); setColumnFilters({});
-      setMessage(`已创建 ${report.component} / ${report.component_version}，共 ${report.apps.length} 个 App。`);
+      setMessage(`已创建 ${reportComponentLabel(report.component)} / ${report.component_version}，共 ${report.apps.length} 个 App。`);
     } catch (e) { if (generation.current === current) setError(e instanceof Error ? e.message : String(e)); }
     finally { if (generation.current === current) setBusy(false); }
   }
@@ -149,11 +155,11 @@ function Workspace() {
       <div className="form">
         <label>组件<select className="select" value={component} onChange={event => setComponent(event.target.value)} required disabled={busy || choices.isFetching || !!choices.error}>
           <option value="">{choices.isFetching ? "正在查询最新组件…" : "请选择组件"}</option>
-          {(choices.data?.components ?? []).map(item => <option key={item.component} value={item.component}>{item.component}（{item.all_apps ? "全部 " : ""}{item.app_count} 个 App）</option>)}
+          {(choices.data?.components ?? []).map(item => <option key={item.component} value={item.component}>{compatibilityComponentLabel(item.component)}（{item.all_apps ? "全部 " : ""}{item.app_count} 个 App）</option>)}
         </select></label>
         <label>组件版本（MACA 版本）<input className="input" value={version} onChange={event => setVersion(event.target.value)} placeholder="例如 3.10.1" maxLength={120} required disabled={busy} /></label>
       </div>
-      <p className="hint">driver、sdk 覆盖兼容性验证清单中的全部 App，不要求声明组件依赖；其他组件按依赖筛选。优先使用各 App 最近一次成功发布，创建后保留当时的版本和测试范围；尚无成功发布的 App 单独标注。</p>
+      <p className="hint">{universalComponentGroupMetadata.label} 合并验证，覆盖兼容性验证清单中的全部 App，同一 MACA 版本填写一份联合结论；其他组件按依赖筛选。使用各 App 最近一次成功发布，创建后保留当时的版本和测试范围。</p>
       {choices.error && <p className="lerr" role="alert">{choices.error.message}<button type="button" className="btn ghost sm" onClick={() => void choices.refetch()}>重试</button></p>}
       {!choices.isFetching && !choices.error && choices.data?.components.length === 0 && <p className="muted">暂无可用组件，请先确认兼容性验证中的发布记录和依赖声明。</p>}
       {error && <p className="lerr" role="alert">{error}</p>}
@@ -167,13 +173,13 @@ function Workspace() {
       <div className="panel-body">
         <label className="component-conclusion-picker">查看已有记录<select className="select" value={activeId ?? ""} disabled={busy || !!list.error || !reports.length} onChange={event => void selectReport(Number(event.target.value))}>
           {!reports.length && <option value="">暂无记录</option>}
-          {reports.map(item => <option key={item.id} value={item.id}>{item.component} / {item.component_version}</option>)}
+          {reports.map(item => <option key={item.id} value={item.id}>{reportComponentLabel(item.component)} / {item.component_version}</option>)}
         </select></label>
         {list.error && <p className="lerr" role="alert">{list.error.message}</p>}
         {detail.error && <p className="lerr" role="alert">{detail.error.message}</p>}
         {(list.isPending || detail.isFetching) && <p className="muted" role="status">正在加载组件兼容性记录…</p>}
         {!list.isPending && !list.error && !reports.length && <p className="hint">暂无组件兼容性结论。{editable ? "点击“新建”，选择组件并输入组件版本。" : "等待 QA 创建并填写。"}</p>}
-        {report && <><div className="row mt-12 component-conclusion-summary"><b>{report.component} · {report.component_version}</b><span>{rows.length} 个 App</span>
+        {report && <><div className="row mt-12 component-conclusion-summary"><b>{reportComponentLabel(report.component)} · {report.component_version}</b><span>{rows.length} 个 App</span>
           <span className="count">pass {rows.filter(app => app.qa_status === "pass").length}</span><span className="count">fail {rows.filter(app => app.qa_status === "fail").length}</span><span className="count">未汇报 {rows.filter(app => !app.qa_status).length}</span></div>
           <p className="hint">创建于 {formatServerTime(report.created_at)} · {report.created_by}；测试范围保留创建时的发布配置。</p>
           <input className="input" aria-label="筛选组件兼容性结论" value={filter} onChange={event => setFilter(event.target.value)} placeholder="筛选 App、版本、结论或 comment…" />

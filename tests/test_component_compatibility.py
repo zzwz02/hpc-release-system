@@ -28,25 +28,57 @@ def source(temp_db, monkeypatch):
     return rows
 
 
-def create(conn, component="sdk", version="3.10.0"):
+def create(conn, component="driver-sdk", version="3.10.0"):
     return service.create(conn, {"component": component, "component_version": version}, user="qa", role="QA")
 
 
-@pytest.mark.parametrize("component", ["driver", "sdk"])
+@pytest.mark.parametrize("component", ["driver-sdk", "driver / SDK", "driver", "sdk", "SDK"])
 def test_universal_components_include_published_apps_without_dependency_declarations(temp_db, source, component):
     source.append({**source[0], "app_id": "undeclared", "dependencies": []})
     report = create(temp_db, component=component)
+    assert report["component"] == "driver-sdk"
     assert {app["app_id"] for app in report["apps"]} == {"pyg", "hpl", "undeclared"}
-    assert service.components(temp_db)["components"][:2] == [
-        {"component": "driver", "app_count": 3, "all_apps": True},
-        {"component": "sdk", "app_count": 3, "all_apps": True}]
+    assert service.components(temp_db)["components"] == [
+        {"component": "driver-sdk", "app_count": 3, "all_apps": True},
+        {"component": "torch 2.8 + py312", "app_count": 1, "all_apps": False}]
 
 
 def test_universal_choices_exist_without_dependency_declarations(temp_db, source):
     for row in source:
         row["dependencies"] = []
-    assert [item["component"] for item in service.components(temp_db)["components"]] == ["driver", "sdk"]
+    assert [item["component"] for item in service.components(temp_db)["components"]] == ["driver-sdk"]
     assert len(create(temp_db, component="SDK")["apps"]) == 2
+
+
+def test_combined_component_aliases_cannot_create_duplicate_versions(temp_db, source):
+    report = create(temp_db)
+    for alias in ("driver", "sdk", "SDK", "DRIVER-SDK", "driver / SDK"):
+        with pytest.raises(ApiError, match="已存在") as exc:
+            create(temp_db, component=alias)
+        assert exc.value.status_code == 409
+    assert len(service.list_reports(temp_db)["reports"]) == 1
+    assert service.get_report(temp_db, report["id"]) == report
+
+
+def test_combined_reports_preserve_separate_legacy_verdicts_and_scopes(temp_db, source):
+    legacy_apps = [{"app_id": "pyg", "app_name": "PyG", "app_version": "older", "tests": []}]
+    history = []
+    for component, verdict in (("driver", "fail"), ("sdk", "pass")):
+        report_id = repo.create(temp_db, component, "3.10.0", legacy_apps, timestamp="2026-11-16 10:00:00", user="qa")
+        temp_db.commit()
+        service.save_app(temp_db, report_id, "pyg", {
+            "qa_status": verdict, "qa_comment": f"{component} only", "revision": 0,
+        }, user="qa", role="QA")
+        history.append(service.get_report(temp_db, report_id))
+    combined = create(temp_db)
+    assert combined["component"] == "driver-sdk"
+    assert {app["app_id"] for app in combined["apps"]} == {"pyg", "hpl"}
+    assert all(app["qa_status"] == app["qa_comment"] == "" for app in combined["apps"])
+    service.save_app(temp_db, combined["id"], "pyg", {
+        "qa_status": "pass", "qa_comment": "joint validation", "revision": 0,
+    }, user="qa", role="QA")
+    assert [service.get_report(temp_db, report["id"]) for report in history] == history
+    assert {report["component"] for report in service.list_reports(temp_db)["reports"]} == {"driver", "sdk", "driver-sdk"}
 
 
 def test_prepared_scope_saves_without_repeating_remote_reads(temp_db, source, monkeypatch):
@@ -93,8 +125,7 @@ def test_records_the_actual_hpc_patch_version_from_the_delivery_tag(temp_db, sou
 
 def test_freezes_published_scope_and_deduplicates_supported_gpu_rows(temp_db, source):
     assert service.components(temp_db)["components"] == [
-        {"component": "driver", "app_count": 2, "all_apps": True},
-        {"component": "sdk", "app_count": 2, "all_apps": True},
+        {"component": "driver-sdk", "app_count": 2, "all_apps": True},
         {"component": "torch 2.8 + py312", "app_count": 1, "all_apps": False}]
     report = create(temp_db, component="torch 2.8 + py312")
     assert [app["app_id"] for app in report["apps"]] == ["pyg"]
@@ -221,10 +252,11 @@ def test_http_permissions_payload_and_readback(temp_db, source, role, read, writ
         if read == 200:
             assert response.headers["cache-control"] == "no-store"
         preview_id = response.json().get("preview_id") if read == 200 else None
-        response = client.post("/api/component-compatibility", json={"component": "sdk", "component_version": "3.10.0", "preview_id": preview_id})
+        response = client.post("/api/component-compatibility", json={"component": "driver-sdk", "component_version": "3.10.0", "preview_id": preview_id})
         assert response.status_code == write
         if write == 200:
             report = response.json()
+            assert report["component"] == "driver-sdk"
             assert len(report["apps"]) == 2
             response = client.post(f"/api/component-compatibility/{report['id']}/apps/pyg", json={"qa_status": "pass", "qa_comment": "<script>literal</script>", "revision": 0})
             assert response.status_code == 200

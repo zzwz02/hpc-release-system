@@ -3,6 +3,10 @@
     "driver": { "label": "driver" },
     "sdk": { "label": "SDK" }
   },
+  "universal_component_group": {
+    "key": "driver-sdk",
+    "label": "driver / SDK"
+  },
   "publication_manifest_sources": {
     "sealed": { "label": "发布时封存" },
     "reconstructed": { "label": "根据历史配置生成" },

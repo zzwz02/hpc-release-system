@@ -75,22 +75,46 @@ it("creates a component version before filling its App conclusions", async () =>
   expect(await screen.findByLabelText("PyG 的结论")).toHaveValue("");
 });
 
-it("offers driver/sdk for all Apps and submits the scope prepared for this form", async () => {
+it("offers one combined driver/SDK choice for all Apps and submits the prepared scope", async () => {
   show(); await screen.findByText("PyG");
   vi.mocked(apiGet).mockResolvedValueOnce({ components: [
-    { component: "driver", app_count: 3, all_apps: true }, { component: "sdk", app_count: 3, all_apps: true },
+    { component: "driver-sdk", app_count: 3, all_apps: true },
   ], preview_id: "prepared-for-qa" });
   fireEvent.click(screen.getByRole("button", { name: /新建/ }));
   const form = await screen.findByRole("form", { name: "新建组件兼容性结论" });
-  expect(await within(form).findByRole("option", { name: /driver.*全部.*3/ })).toBeInTheDocument();
-  expect(within(form).getByRole("option", { name: /sdk.*全部.*3/ })).toBeInTheDocument();
-  fireEvent.change(within(form).getByLabelText("组件"), { target: { value: "driver" } });
+  expect(await within(form).findByRole("option", { name: "driver / SDK（全部 3 个 App）" })).toBeInTheDocument();
+  expect(within(form).getAllByRole("option")).toHaveLength(2); // Placeholder and the combined component.
+  fireEvent.change(within(form).getByLabelText("组件"), { target: { value: "driver-sdk" } });
   fireEvent.change(within(form).getByLabelText("组件版本（MACA 版本）"), { target: { value: "3.10.1" } });
   fireEvent.submit(form);
   await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/component-compatibility", {
-    component: "driver", component_version: "3.10.1", preview_id: "prepared-for-qa",
+    component: "driver-sdk", component_version: "3.10.1", preview_id: "prepared-for-qa",
   }));
   await waitFor(() => expect(screen.getByLabelText("查看已有记录")).toHaveValue("2"));
+  expect(await screen.findByText("driver / SDK · 3.10.1")).toBeVisible();
+  expect(screen.getByRole("option", { name: "driver / SDK / 3.10.1" })).toBeInTheDocument();
+});
+
+it("keeps historical driver and SDK verdicts separate from the new combined record", async () => {
+  reports = [
+    { ...structuredClone(initial), component: "driver-sdk" },
+    { ...structuredClone(initial), id: 2, component: "driver", apps: [{ ...structuredClone(app), qa_status: "fail", qa_comment: "driver only" }] },
+    { ...structuredClone(initial), id: 3, component: "sdk", apps: [{ ...structuredClone(app), qa_status: "pass", qa_comment: "SDK only" }] },
+  ];
+  show(); await screen.findByText("PyG");
+  expect(screen.getByRole("option", { name: "driver / SDK / 3.10.0" })).toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "driver（历史独立记录） / 3.10.0" })).toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "SDK（历史独立记录） / 3.10.0" })).toBeInTheDocument();
+  expect(screen.getByLabelText("PyG 的结论")).toHaveValue("");
+  fireEvent.change(screen.getByLabelText("查看已有记录"), { target: { value: "2" } });
+  await waitFor(() => expect(screen.getByLabelText("PyG 的 comment")).toHaveValue("driver only"));
+  expect(screen.getByLabelText("PyG 的结论")).toHaveValue("fail");
+  fireEvent.change(screen.getByLabelText("查看已有记录"), { target: { value: "3" } });
+  await waitFor(() => expect(screen.getByLabelText("PyG 的 comment")).toHaveValue("SDK only"));
+  expect(screen.getByLabelText("PyG 的结论")).toHaveValue("pass");
+  fireEvent.change(screen.getByLabelText("查看已有记录"), { target: { value: "1" } });
+  await waitFor(() => expect(screen.getByLabelText("PyG 的 comment")).toHaveValue(""));
+  expect(screen.getByLabelText("PyG 的结论")).toHaveValue("");
 });
 
 it("shows creation errors beside the create controls and preserves entered values", async () => {

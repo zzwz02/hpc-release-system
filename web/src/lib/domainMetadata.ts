@@ -7,6 +7,11 @@ function orderedKeys<T extends Record<string, { order: number }>>(items: T): Arr
 
 export const releasePhaseMetadata = metadata.release_phases;
 export const universalComponentMetadata: Record<string, { label: string }> = metadata.universal_components;
+export const universalComponentGroupMetadata = metadata.universal_component_group;
+
+export function compatibilityComponentLabel(component: string): string {
+  return component === universalComponentGroupMetadata.key ? universalComponentGroupMetadata.label : component;
+}
 export const publicationManifestSourceMetadata = metadata.publication_manifest_sources;
 export type PublicationManifestSource = keyof typeof publicationManifestSourceMetadata;
 

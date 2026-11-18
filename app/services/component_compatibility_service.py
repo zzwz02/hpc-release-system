@@ -26,6 +26,8 @@ MAX_LABEL_LENGTH = 120
 MAX_COMMENT_LENGTH = 10000
 # These runtime components apply to every App in the compatibility inventory.
 UNIVERSAL_COMPONENTS = tuple(mapping_section("universal_components"))
+# The same combined identity is used by both compatibility pages.
+UNIVERSAL_GROUP = mapping_section("universal_component_group")
 # One new-report form prepares its scope once; normal lookups never use this.
 PREVIEW_TTL_SECONDS = 300
 MAX_PREVIEWS = 8
@@ -53,6 +55,12 @@ def _source_revision(conn):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
+def _component(value):
+    if value.casefold() in (*UNIVERSAL_COMPONENTS, UNIVERSAL_GROUP["key"].casefold(), UNIVERSAL_GROUP["label"].casefold()):
+        return UNIVERSAL_GROUP["key"]
+    return value
+
+
 def _inventory(conn):
     rows = lookup_service.latest_running_releases(conn)["rows"]
     errors = [row for row in rows if row.get("note", "").startswith("交付镜像解析失败")]
@@ -67,12 +75,12 @@ def components(conn, *, user="", role=""):
     rows = _inventory(conn)
     if _source_revision(conn) != revision:
         raise ApiError(409, "发布或 App 配置在生成组件列表期间发生变化，请刷新组件列表")
-    groups = {name: {row["app_id"] for row in rows} for name in UNIVERSAL_COMPONENTS}
+    groups = {UNIVERSAL_GROUP["key"]: {row["app_id"] for row in rows}}
     for row in rows:
         if not row.get("release_id") or row.get("manifest_source") == "unpublished":
             continue
         for name in row.get("dependencies", []):
-            if name.casefold() in UNIVERSAL_COMPONENTS:
+            if _component(name) == UNIVERSAL_GROUP["key"]:
                 continue
             groups.setdefault(name, set()).add(row["app_id"])
     token = secrets.token_urlsafe(24)
@@ -86,7 +94,7 @@ def components(conn, *, user="", role=""):
         _previews[token] = {"created": now, "owner": (user, role), "revision": revision,
                             "rows": deepcopy([{key: value for key, value in row.items() if key not in ("command", "note")}
                                               for row in rows])}
-    return {"components": [{"component": name, "app_count": len(ids), "all_apps": name in UNIVERSAL_COMPONENTS}
+    return {"components": [{"component": name, "app_count": len(ids), "all_apps": name == UNIVERSAL_GROUP["key"]}
                            for name, ids in sorted(groups.items())], "preview_id": token}
 
 
@@ -107,7 +115,7 @@ def _prepared_scope(conn, token, *, user, role):
 def _snapshots(rows, component):
     apps = {}
     for row in rows:
-        if component not in UNIVERSAL_COMPONENTS and (
+        if component != UNIVERSAL_GROUP["key"] and (
             not row.get("release_id") or row.get("manifest_source") == "unpublished"
             or component not in row.get("dependencies", [])
         ):
@@ -163,9 +171,7 @@ def get_report(conn, report_id):
 
 def create(conn, body, *, user, role):
     _edit(role)
-    component = _label(body.get("component"), "组件")
-    if component.casefold() in UNIVERSAL_COMPONENTS:
-        component = component.casefold()
+    component = _component(_label(body.get("component"), "组件"))
     version = _label(body.get("component_version"), "组件版本")
     if repo.find_report(conn, component, version):
         raise ApiError(409, "该组件版本的记录已存在，请选择已有记录填写")
