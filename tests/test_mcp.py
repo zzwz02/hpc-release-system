@@ -1320,9 +1320,15 @@ def test_attachment_read_paginates_long_lines_and_checks_identity(site, monkeypa
 
 
 @pytest.mark.parametrize('data', [b'\x00\x01binary', b'\xff\x00\xaa', b'x'*(2*1024*1024+1)])
-def test_attachment_rejects_binary_or_oversized_content(site, monkeypatch, data):
+def test_attachment_reports_unread_binary_and_rejects_oversized_content(site, monkeypatch, data):
     client, _, token_for, _ = site
     token = token_for('alice','Owner')
     session, _ = connect_client(client, token)
     monkeypatch.setattr(jira, 'download_attachment', lambda *a, **kw: data)
-    assert call(client,token,session,'jira_read_attachment',{'issue_key':'MC3-1','attachment_id':'77'})['isError']
+    result = call(client,token,session,'jira_read_attachment',{'issue_key':'MC3-1','attachment_id':'77'})
+    if len(data) > 2*1024*1024:
+        assert result['isError']
+    else:
+        metadata = json.loads(result['content'][0]['text'])
+        assert not result['isError'] and metadata['status'] == 'needs_user_action'
+        assert metadata['content_returned'] is False and '保存本地文件' in metadata['suggested_question']
