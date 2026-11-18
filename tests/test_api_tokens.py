@@ -110,7 +110,7 @@ def test_unrelated_mcp_sessions_and_jira_unchanged(client, temp_db):
         tokens.authenticate(temp_db, "Bearer " + original["token"], "owner_lookup")
 
 
-def test_lookup_all_apps_and_check_only_not_configuration_write(client, temp_db, monkeypatch):
+def test_lookup_all_apps_and_check_only_not_configuration_write(client, temp_db):
     seed_app(temp_db, git_url="hpc_example", owners=["another-owner"])
     created = issue(client)
     client.cookies.clear()
@@ -118,7 +118,6 @@ def test_lookup_all_apps_and_check_only_not_configuration_write(client, temp_db,
     response = client.get("/api/apps/owner-lookup", params={"git_url": "hpc_example", "branch": "maca"}, headers=headers)
     assert response.status_code == 200, response.text
     assert response.json()["matches"][0]["owners"] == ["another-owner"]
-    monkeypatch.setattr(release_gate.runtime_config, "section", lambda section: {"ALLOW_LEGACY_CI_AUTH": "false"})
     checked = client.post("/api/cicd/release-gate/check", json={"build_type": "release", "maca_version": "3.10.2.11", "git_url": "hpc_example", "git_branch": "maca"}, headers=headers)
     assert checked.status_code == 200, checked.text
     assert checked.json()["reason"] == "version_unauthorized"

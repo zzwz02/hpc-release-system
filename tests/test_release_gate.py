@@ -99,12 +99,14 @@ def test_version_write_is_rm_only(temp_db, enrolled, role, status):
     assert response.status_code == status, response.text
 
 
-def test_machine_check_requires_scoped_token(temp_db, enrolled, monkeypatch):
-    app = FastAPI(); app.include_router(release_gate.router)
+def test_machine_check_requires_platform_token(temp_db, enrolled):
+    from app.services import api_token_service
+    created = api_token_service.create(temp_db, {"username": "owner_test", "role": "Owner"}, "Jenkins")
+    app = FastAPI(); register_error_handlers(app); app.include_router(release_gate.router)
     app.dependency_overrides[get_db] = lambda: temp_db
     with TestClient(app) as client:
-        monkeypatch.setattr(release_gate.runtime_config, "section", lambda section: {})
-        assert client.post("/api/cicd/release-gate/check", json=request().model_dump()).status_code == 503
-        monkeypatch.setattr(release_gate.runtime_config, "section", lambda section: {"RELEASE_BUILD_TOKEN":"test"})
-        assert client.post("/api/cicd/release-gate/check", json=request().model_dump()).status_code == 403
-        assert client.post("/api/cicd/release-gate/check", json=request().model_dump(),headers={"Authorization":"Bearer test"}).status_code == 200
+        for authorization in ("", "Bearer old", "Bearer rsapi_invalid", "Basic cm06cm0="):
+            assert client.post("/api/cicd/release-gate/check", json=request().model_dump(),
+                               headers={"Authorization": authorization}).status_code == 401
+        assert client.post("/api/cicd/release-gate/check", json=request().model_dump(),
+                           headers={"Authorization": "Bearer " + created["token"]}).status_code == 200
