@@ -44,7 +44,7 @@ export function ReleaseGatePane({ canManage }: { canManage: boolean }) {
       <button className="btn" title="刷新准入版本" aria-label="刷新准入版本" disabled={query.isFetching || busy} onClick={() => void query.refetch()}><RefreshCw size={16} /></button>
     </div>
     {canManage && <form className="cicd-toolbar release-gate-form" onSubmit={e => { e.preventDefault(); void save(); }}>
-      <label>MACA_VERSION<input className="input" required pattern="[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" maxLength={100} placeholder="3.10.2.11" value={version} disabled={busy || !!editing} onChange={e => setVersion(e.target.value)} /></label>
+      <label>MACA_VERSION<input className="input" required pattern="[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" maxLength={100} placeholder="请输入基础镜像版本" value={version} disabled={busy || !!editing} onChange={e => setVersion(e.target.value)} /></label>
       <label>发布版本<select className="input" aria-label="发布版本" required value={release} disabled={busy || !!editing} onChange={e => setRelease(e.target.value)}>
         <option value="">选择发布版本</option>
         {query.data?.releases.filter(r => !r.released_locked || r.id === editing?.release_id).map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
