@@ -23,6 +23,7 @@ import { useLocation } from "react-router-dom";
 import { QaTabs } from "./QaTabs";
 import { QaResultsPane } from "./QaResultsPane";
 import { QaTestCommandsPane } from "./QaTestCommandsPane";
+import { QaChipLegend } from "./QaChipLegend";
 import { QaFailureDetails, type QaFailureSummary } from "./QaFailureDetails";
 import { qaPaneFromSearch } from "./qaNavigation";
 import { RefreshBar } from "../../components/RefreshBar";
@@ -65,8 +66,6 @@ const QA_RELEASE_REPORT_DEFAULT_HIDDEN = new Set([
   "开发者社区发布包支持python版本", "开发者社区发布包支持的底层框架及版本",
 ]);
 
-const CHIP_LEGEND =
-  "x201系列芯片包括x201, x203 · x301系列芯片 · x302系列芯片 · C500系列芯片包括C500, C550 · C600系列芯片包括C600 · N300系列芯片包括N300";
 // ---------------------------------------------------------------------------
 // Query key + fetchers
 // ---------------------------------------------------------------------------
@@ -846,7 +845,7 @@ function ReportTable({
       </div>
 
       {kind === "release" && (
-        <p className="qa-chip-legend">芯片系列说明：{CHIP_LEGEND}</p>
+        <QaChipLegend />
       )}
 
       <div className="table report-table sticky-first-col" data-testid={`qa-report-table-${kind}`}>

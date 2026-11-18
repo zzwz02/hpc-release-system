@@ -308,6 +308,8 @@ def main():
                 seed_cycle(conn, name='3.9.0')
             release_id = seed_cycle(conn, name="3.10.1")
             entry = seed_signup(conn, release_id, "lookup-image")
+            if args.platforms:
+                seed_signup(conn, release_id, "platform-check")
             historical_id = conn.execute("SELECT id FROM app_info_versions WHERE app_id='lookup-image' AND commit_id='bb46c60'").fetchone()[0]
             conn.execute("UPDATE entries SET locked_version_id=? WHERE id=?", (historical_id, entry["id"]))
             conn.commit()

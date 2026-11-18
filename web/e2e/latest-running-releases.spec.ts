@@ -12,7 +12,7 @@ for (const username of ["app_rm", "app_qa", "app_owner"]) {
     await expect(page.getByRole("button", { name: "兼容性测试基线", exact: true })).toHaveCount(0);
     await page.getByRole("link", { name: "兼容性验证", exact: true }).click();
     const pane = page.getByTestId("compatibility-pane");
-    const group = pane.getByTestId("compatibility-group-sdk");
+    const group = pane.getByTestId("compatibility-group-driver-sdk");
     await group.locator("summary").click();
     await expect(group.getByTestId("compat-app-amber").locator("td").nth(4)).toHaveText("3.9");
     await expect(group.getByTestId("compat-app-hpl").locator("td").nth(4)).toHaveText("3.10");

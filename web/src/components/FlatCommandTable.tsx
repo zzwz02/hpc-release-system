@@ -20,7 +20,7 @@ interface RemoteTable {
 
 /** Share the QA command table's typography, controls, and column filtering. */
 export function FlatCommandTable({ columns, rows, filename, label, renderCell, onRefresh, remote,
-  showHeading = true, showSearch = true, showExport = true }: {
+  showHeading = true, showSearch = true, showExport = true, hiddenColumns = [], groupRows }: {
   columns: string[];
   rows: CommandRow[];
   filename: string;
@@ -31,7 +31,11 @@ export function FlatCommandTable({ columns, rows, filename, label, renderCell, o
   showHeading?: boolean;
   showSearch?: boolean;
   showExport?: boolean;
+  hiddenColumns?: string[];
+  /** Group filtered rows for display; CSV keeps the original individual records. */
+  groupRows?: (rows: CommandRow[]) => CommandRow[];
 }) {
+  const displayColumns = columns.filter(column => !hiddenColumns.includes(column));
   const [localFilters, setLocalFilters] = useState<CommandTableFilters>({ filter: "", columnFilters: {}, sort: null });
   const { filter, columnFilters, sort } = remote?.filters ?? localFilters;
   const setFilters = remote?.onChange ?? setLocalFilters;
@@ -48,6 +52,7 @@ export function FlatCommandTable({ columns, rows, filename, label, renderCell, o
     }
     return result;
   }, [columns, rows, filter, columnFilters, sort, remote]);
+  const displayed = useMemo(() => groupRows ? groupRows(visible) : visible, [groupRows, visible]);
 
   function sortBy(column: string) {
     setFilters({ filter, columnFilters, sort: { column, direction: sort?.column === column && sort.direction === 1 ? -1 : 1 } });
@@ -60,12 +65,12 @@ export function FlatCommandTable({ columns, rows, filename, label, renderCell, o
         {onRefresh && <button className="btn ghost sm" disabled={remote?.busy} onClick={onRefresh}>↻ 刷新</button>}
         {showExport && <button className="btn primary sm qa-report-export" disabled={remote ? remote.busy || remote.exporting || !remote.total : !visible.length} onClick={() => remote ? remote.onExport() : downloadCsv(filename, columns, visible.map(row => columns.map(column => String(row[column] ?? ""))))}>{remote?.exporting ? "正在导出…" : "导出 CSV"}</button>}
         {showSearch && <input className="input qa-report-search" aria-label={`筛选${label}`} placeholder="全表关键词筛选…" value={filter} onChange={e => setFilters({ filter: e.target.value, columnFilters, sort })} />}
-        <span className="muted small count">{remote ? remote.busy ? "正在筛选…" : `${remote.total} 行` : visible.length === rows.length ? `${rows.length} 行` : `${visible.length} / ${rows.length} 行`}</span>
+        <span className="muted small count">{remote ? remote.busy ? "正在筛选…" : `${remote.total} 行` : displayed.length !== visible.length ? `${displayed.length} 行（${visible.length} 条记录）` : visible.length === rows.length ? `${rows.length} 行` : `${visible.length} / ${rows.length} 行`}</span>
       </div>
       <div className="table report-table sticky-first-col">
         <table aria-label={label}>
           <thead>
-            <tr>{columns.map(column => {
+            <tr>{displayColumns.map(column => {
               const sorted = sort?.column === column;
               return <th key={column} className={`sortable${sorted ? " sorted" : ""}`} tabIndex={0}
                 aria-sort={sorted ? sort.direction === 1 ? "ascending" : "descending" : "none"}
@@ -75,19 +80,19 @@ export function FlatCommandTable({ columns, rows, filename, label, renderCell, o
                 <span className="th-text">{column}<span className="sort-ind" aria-hidden="true">{sorted && sort.direction < 0 ? "▼" : "▲"}</span></span>
               </th>;
             })}</tr>
-            <tr className="colfilter-row">{columns.map(column => <th key={column}>
+            <tr className="colfilter-row">{displayColumns.map(column => <th key={column}>
               <input aria-label={`${column} 列筛选`} placeholder="筛选…" autoComplete="off" value={columnFilters[column] ?? ""}
                 onChange={e => setFilters({ filter, columnFilters: { ...columnFilters, [column]: e.target.value }, sort })} />
             </th>)}</tr>
           </thead>
-          <tbody>{visible.map((row, index) => <tr key={index}>{columns.map(column => {
+          <tbody>{displayed.map((row, index) => <tr key={index}>{displayColumns.map(column => {
             const value = String(row[column] ?? "");
             return <td key={column} className={/command|docker_cmd|命令/.test(column) ? "cmd" : undefined}
               title={column === "commit_id" ? value : undefined}>
               {column === "commit_id" ? shortCommit(value) : renderCell ? renderCell(column, row) : value}
             </td>;
           })}</tr>)}
-          {!visible.length && <tr><td colSpan={columns.length} className="muted">{remote?.busy ? "正在查询全部匹配结果…" : "无匹配数据"}</td></tr>}</tbody>
+          {!displayed.length && <tr><td colSpan={displayColumns.length} className="muted">{remote?.busy ? "正在查询全部匹配结果…" : "无匹配数据"}</td></tr>}</tbody>
         </table>
       </div>
     </div>

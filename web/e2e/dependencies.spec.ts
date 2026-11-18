@@ -13,7 +13,7 @@ for (const username of ["app_owner", "app_qa"]) {
     const pane = page.getByTestId("compatibility-pane");
     let selector = page.getByRole("combobox", { name: "按组件筛选" });
     await expect(selector.locator("option")).toHaveText([
-      "全部组件", "driver（2）", "SDK（2）", "torch 2.4 + py310（2）", "torch 2.8 + py312（2）",
+      "全部组件", "driver / SDK（2）", "torch 2.4 + py310（2）", "torch 2.8 + py312（2）",
     ]);
     await expect(pane).toContainText("成功发布过一次");
     await expect(pane.getByTestId("compat-app-runtime-unpublished")).toHaveCount(0);
@@ -63,8 +63,8 @@ for (const username of ["app_owner", "app_qa"]) {
     await expect(detail).toHaveCount(0);
     await toggle.press("Enter");
     await expect(detail).toBeVisible();
-    await selector.selectOption("sdk");
-    const sdk = pane.getByTestId("compatibility-group-sdk");
+    await selector.selectOption("driver-sdk");
+    const sdk = pane.getByTestId("compatibility-group-driver-sdk");
     await expect(sdk).toHaveAttribute("open", "");
     await expect(pane.locator(".dependency-group")).toHaveCount(1);
     await expect(sdk.locator("summary")).toContainText("2 个 App");
@@ -93,10 +93,6 @@ for (const username of ["app_owner", "app_qa"]) {
     await pane.getByRole("textbox", { name: "筛选兼容性验证" }).fill("");
     // Only Apps with a successful publication belong to the compatibility export.
     expect(csv).not.toContain("runtime-unpublished");
-    await selector.selectOption("driver");
-    const driver = pane.getByTestId("compatibility-group-driver");
-    await expect(driver.locator("summary")).toContainText("2 个 App");
-    await expect(driver.getByTestId("compat-app-runtime-unknown")).toBeVisible();
     await selector.selectOption(selected);
     await published.getByRole("button").click();
     for (const [label, value] of [["CPU 架构", "arm64"], ["OS", "ubuntu20.04"], ["GPU 芯片", "C500"]]) {
@@ -147,7 +143,7 @@ test("refresh failure hides the previous inventory and disables export", async (
   expect((await page.request.post(base + "/api/login", { data: { username: "app_qa", password: "test-password" } })).ok()).toBeTruthy();
   await page.goto(base + "/dependencies");
   const pane = page.getByTestId("compatibility-pane");
-  const category = pane.getByTestId("compatibility-group-sdk");
+  const category = pane.getByTestId("compatibility-group-driver-sdk");
   await category.locator("summary").click();
   await expect(category.getByTestId("compat-app-runtime-published")).toBeVisible();
   await page.route("**/api/lookup/latest-running", (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "读取发布清单失败" }) }));

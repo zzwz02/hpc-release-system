@@ -10,22 +10,21 @@ async function sameLine(items: Locator[]) {
   expect(Math.max(...centers) - Math.min(...centers)).toBeLessThan(3);
 }
 
-test("QA version toolbars stay on one line and submit the entered versions", async ({ page }) => {
+test("QA queries latest without a version input and community toolbar submits its version", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   expect((await page.request.post(base + "/api/login", { data: { username: "app_qa", password: "test-password" } })).ok()).toBeTruthy();
   await page.goto(base + "/qa?tab=test");
   await page.getByLabel("选择 release").selectOption({ label: "3.10.1" });
   const query = page.locator(".qa-test-command-query");
-  const version = query.getByLabel("hpc_version", { exact: true });
+  await expect(query.getByLabel("hpc_version", { exact: true })).toHaveCount(0);
   const submit = query.getByRole("button", { name: "查询测试命令", exact: true });
-  await sameLine([query.locator("label"), version, submit]);
-  await version.fill("3.10.1.2");
   const response = page.waitForResponse(r => r.url().includes("/api/qa/test-commands?"));
   await submit.click();
   const resolved = await response;
   expect(resolved.ok(), await resolved.text()).toBeTruthy();
-  expect(new URL(resolved.url()).searchParams.get("hpc_version")).toBe("3.10.1.2");
+  expect(new URL(resolved.url()).searchParams.get("hpc_version")).toBe("latest");
   await expect(query.getByRole("status")).toContainText("3.10.1.2");
+  await sameLine([submit, query.getByRole("status")]);
   await page.screenshot({ path: "/tmp/qa-compact-test-commands.png", fullPage: true });
 
   await page.goto(base + "/qa?tab=community");

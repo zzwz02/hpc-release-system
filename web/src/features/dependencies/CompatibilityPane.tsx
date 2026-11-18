@@ -32,6 +32,10 @@ interface ReleaseRow {
 const columns = ["App", "app_id", "Owner", "依赖组件", "HPC version", "App version", "发布记录来源", "OS", "CPU 架构", "GPU", "镜像类型", "Python label", "PyTorch label", "完整镜像名", "镜像 app_info commit id", "测试项", "测试命令", "说明"];
 const archName = (arch?: string) => arch === "amd64" ? "x86" : arch === "arm64" ? "ARM" : arch || "";
 const universalComponents = new Set(Object.keys(universalComponentMetadata));
+// These components share the entire inventory, so one display group is sufficient.
+const universalGroup = [...universalComponents].sort().join("-");
+const universalGroupLabel = [...universalComponents].sort().map(name => universalComponentMetadata[name].label).join(" / ");
+const componentLabel = (name: string) => name === universalGroup ? universalGroupLabel : name;
 function cells(row: ReleaseRow): string[] {
   return [row.app_name, row.app_id, row.owners.join(", "), row.dependencies.join(", "),
     row.hpc_version, row.app_version, publicationManifestSourceLabel(row.manifest_source), row.os || "", archName(row.arch), row.GPU || "", row.image_target || "",
@@ -107,9 +111,7 @@ export function CompatibilityPane() {
   });
   const inventory = result.data?.rows ?? [];
   const components = new Map<string, Set<string>>();
-  for (const name of Object.keys(universalComponentMetadata)) {
-    components.set(name, new Set(inventory.map((row) => row.app_id)));
-  }
+  components.set(universalGroup, new Set(inventory.map((row) => row.app_id)));
   for (const row of inventory) for (const name of row.dependencies) {
     if (universalComponents.has(name.toLowerCase())) continue;
     if (!components.has(name)) components.set(name, new Set());
@@ -117,12 +119,12 @@ export function CompatibilityPane() {
   }
   const needle = filter.trim().toLocaleLowerCase();
   const rows = inventory.filter((row) =>
-    (!component || universalComponents.has(component) || row.dependencies.includes(component))
+    (!component || component === universalGroup || row.dependencies.includes(component))
     && platformFilters.every(([key]) => !platform[key] || (key === "chip" ? row.chips?.includes(platform[key]) : row[key] === platform[key]))
     && (!needle || [row.app_id, ...cells(row)].join(" ").toLocaleLowerCase().includes(needle)));
   const groups = [...components.keys()].sort((a, b) => a.localeCompare(b))
     .filter((name) => !component || name === component)
-    .map((name) => ({ name, rows: universalComponents.has(name) ? rows : rows.filter((row) => row.dependencies.includes(name)) }))
+    .map((name) => ({ name, rows: name === universalGroup ? rows : rows.filter((row) => row.dependencies.includes(name)) }))
     .filter((group) => group.rows.length > 0);
   return <div className="panel" data-testid="compatibility-pane">
     <div className="panel-head">
@@ -136,7 +138,7 @@ export function CompatibilityPane() {
       <div className="row compatibility-filters">
         <label>组件<select className="select select-inline" value={component} onChange={(event) => setComponent(event.target.value)} aria-label="按组件筛选">
           <option value="">全部组件</option>
-          {[...components].sort(([a], [b]) => a.localeCompare(b)).map(([name, apps]) => <option key={name} value={name}>{universalComponentMetadata[name]?.label ?? name}（{apps.size}）</option>)}
+          {[...components].sort(([a], [b]) => a.localeCompare(b)).map(([name, apps]) => <option key={name} value={name}>{componentLabel(name)}（{apps.size}）</option>)}
         </select></label>
         {platformFilters.map(([key, label]) => {
           const values = [...new Set(inventory.flatMap((row) => key === "chip" ? row.chips ?? [] : [row[key] ?? ""]).filter(Boolean))].sort();
@@ -162,7 +164,7 @@ export function CompatibilityPane() {
       {rows.length === 0 && <p className="muted p-12-16">{result.data.app_count ? "没有匹配的记录。" : "暂无 CICD 仍在运行且成功发布过的 App。"}</p>}
       {groups.map((group) => <details key={group.name} className="panel section dependency-group"
         open={!!component} data-testid={`compatibility-group-${group.name}`}>
-        <summary className="panel-head"><span className="chev" aria-hidden="true">▶</span><h3>{universalComponentMetadata[group.name]?.label ?? group.name}</h3>
+        <summary className="panel-head"><span className="chev" aria-hidden="true">▶</span><h3>{componentLabel(group.name)}</h3>
           <span className="count">{new Set(group.rows.map((row) => row.app_id)).size} 个 App</span></summary>
         <div className="panel-body p-0"><AppsTable rows={group.rows} /></div>
       </details>)}

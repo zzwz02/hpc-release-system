@@ -48,7 +48,7 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   await expect(page.getByRole("cell", { name: "lookup-image", exact: true })).toBeVisible();
   await page.goto(base + "/qa?tab=test");
   await page.getByLabel("选择 release").selectOption({ label: "3.10.1" });
-  await page.getByLabel("hpc_version", { exact: true }).fill("latest");
+  await expect(page.getByLabel("hpc_version", { exact: true })).toHaveCount(0);
   const commandsResponse = page.waitForResponse(r => r.url().includes("/api/qa/test-commands?"));
   await page.getByRole("button", { name: "查询测试命令", exact: true }).click();
   const response = await commandsResponse;
@@ -64,6 +64,9 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   expect(commands.rows.some((row: Record<string, unknown>) => String(row.website_docker_cmd).includes("<hpc_version>"))).toBe(true);
   expect(commands.rows.filter((row: Record<string, unknown>) => !String(row.website_docker_cmd).includes("<hpc_version>")).every((row: Record<string, unknown>) => String(row.website_docker_cmd).includes(taggedImage))).toBe(true);
   const commandsPane = page.locator("#qaTestCmdPane");
+  for (const name of ["py_label", "torch_label"]) {
+    await expect(commandsPane.getByRole("columnheader", { name, exact: true })).toHaveCount(0);
+  }
   await expect(commandsPane.getByRole("heading", { name: "测试命令", exact: true })).toHaveCount(1);
   await expect(commandsPane.getByPlaceholder("全表关键词筛选…")).toHaveCount(0);
   await expect(commandsPane.locator("form").getByRole("status")).toContainText("3.10.1.2");

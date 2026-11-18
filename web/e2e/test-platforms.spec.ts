@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { commandTableAppearance } from "./helpers/commandTableAppearance";
 
 const base = process.env.TEST_PLATFORMS_E2E_URL ?? "";
-test.skip(!/^http:\/\/127\.0\.0\.1:\d+$/.test(base), "Requires tests.run_app_info_site --lookup --platforms and isolated Vite");
+test.skip(!/^http:\/\/127\.0\.0\.1:\d+$/.test(base), "Requires tests.run_app_info_site --lookup --platforms --qa-commands and isolated Vite");
 
 test("App details, QA and image history keep OS/CPU/chip relationships", async ({ page }) => {
   const errors: string[] = [];
@@ -36,19 +36,26 @@ test("App details, QA and image history keep OS/CPU/chip relationships", async (
   await expect(card.getByTestId("test-scope-table").locator("tbody tr")).toHaveCount(3);
   const qaTabs = page.getByRole("navigation", { name: "QA", exact: true });
   await qaTabs.getByRole("link", { name: "测试命令", exact: true }).click();
-  await page.getByLabel("hpc_version", { exact: true }).fill("3.10.1.2");
+  await page.getByLabel("选择 release").selectOption({ label: "3.10.1" });
+  await expect(page.getByLabel("hpc_version", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "查询测试命令", exact: true }).click();
   const report = page.locator("#qaTestCmdPane table");
-  const reportRows = report.locator("tbody tr").filter({ hasText: "HPCG" });
-  await expect(reportRows).toHaveCount(12);
+  const reportRows = report.locator("tbody tr").filter({ hasText: "platform-check" });
+  await expect(reportRows).toHaveCount(3);
   const headings = await report.locator("thead tr").first().locator("th").allTextContents();
   const chipColumn = headings.findIndex(heading => heading.includes("GPU"));
   expect(headings.some(heading => heading.includes("commit_id") || heading.includes("构建平台"))).toBe(false);
   expect(chipColumn).toBeGreaterThan(-1);
+  for (const name of ["py_label", "torch_label"]) {
+    await expect(report.getByRole("columnheader", { name, exact: true })).toHaveCount(0);
+  }
+  const ubuntuX86 = reportRows.filter({ hasText: "ubuntu20.04" }).filter({ hasText: "benchmark" }).filter({ hasText: "X301" });
+  await expect(ubuntuX86).toHaveCount(1);
+  await expect(ubuntuX86).toContainText("C500, C588, C600");
   const kylinReport = reportRows.filter({ hasText: "kylinv11" });
-  await expect(kylinReport).toHaveCount(2);
-  expect(await kylinReport.locator(`td:nth-child(${chipColumn + 1})`).allTextContents()).toEqual(["C600", "X201"]);
-  await expect(reportRows).toContainText(Array(12).fill("<hpc_version>"));
+  await expect(kylinReport).toHaveCount(1);
+  expect(await kylinReport.locator(`td:nth-child(${chipColumn + 1})`).allTextContents()).toEqual(["C600, X201"]);
+  await expect(reportRows).toContainText(Array(3).fill("<hpc_version>"));
   const referenceAppearance = await commandTableAppearance(page.locator("#qaTestCmdPane"));
   const exported = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出 CSV", exact: true }).click();
@@ -56,7 +63,7 @@ test("App details, QA and image history keep OS/CPU/chip relationships", async (
   expect(csv).toContain("OS,GPU,py_label,torch_label");
   expect(csv).toContain("website_docker_cmd,qa_digest,qa_docker_cmd,qa_result,qa_env,qa_status,qa_comment");
   expect(csv).not.toContain('"C600,X201"');
-  expect(csv.split("\n").filter((line) => line.startsWith("HPCG,")).length).toBe(12);
+  expect(csv.split("\n").filter((line) => line.startsWith("platform-check,")).length).toBe(12);
   expect(csv).toContain("<hpc_version>");
 
   await qaTabs.getByRole("link", { name: "历史查询", exact: true }).click();

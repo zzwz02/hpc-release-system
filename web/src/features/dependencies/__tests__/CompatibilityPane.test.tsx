@@ -39,15 +39,16 @@ it("groups known runtime dependencies even without app_dependency and counts uni
   expect(group.querySelector("summary")).toHaveTextContent("1 个 App");
   expect(within(group).getByTestId("compat-app-pyg")).toHaveTextContent("2 条命令");
   expect(screen.getByTestId("compatibility-group-torch 2.8 + py312")).toHaveTextContent("1 条命令");
-  expect(screen.getByTestId("compatibility-group-sdk")).toHaveTextContent("HPL");
+  expect(screen.getByTestId("compatibility-group-driver-sdk")).toHaveTextContent("HPL");
   expect(screen.queryByTestId("compatibility-pending")).not.toBeInTheDocument();
   expect(screen.queryByText("范围待确认")).not.toBeInTheDocument();
-  for (const component of ["sdk", "driver"]) {
-    const group = screen.getByTestId(`compatibility-group-${component}`);
-    expect(group.querySelector("summary")).toHaveTextContent("3 个 App");
-    expect(within(group).getByTestId("compat-app-unknown")).toBeInTheDocument();
-    expect(within(group).getByTestId("compat-app-pyg")).toBeInTheDocument();
-  }
+  const universal = screen.getByTestId("compatibility-group-driver-sdk");
+  expect(universal.querySelector("summary")).toHaveTextContent("driver / SDK3 个 App");
+  expect(within(universal).getByTestId("compat-app-unknown")).toBeInTheDocument();
+  expect(within(universal).getByTestId("compat-app-pyg")).toBeInTheDocument();
+  expect(screen.queryByTestId("compatibility-group-sdk")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("compatibility-group-driver")).not.toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "driver / SDK（3）" })).toHaveValue("driver-sdk");
   expect(screen.queryByLabelText("按Python 配置筛选")).not.toBeInTheDocument();
   expect(screen.queryByLabelText("按PyTorch 配置筛选")).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "导出当前测试清单 CSV" }));
@@ -58,7 +59,7 @@ it("combines component and platform filters and exports only those rows", async 
   show();
   await screen.findByTestId("compatibility-group-torch 2.4 + py310");
   fireEvent.change(screen.getByLabelText("按组件筛选"), { target: { value: "torch 2.4 + py310" } });
-  expect(screen.queryByTestId("compatibility-group-sdk")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("compatibility-group-driver-sdk")).not.toBeInTheDocument();
   expect(screen.queryByTestId("compatibility-group-torch 2.8 + py312")).not.toBeInTheDocument();
   expect(screen.queryByTestId("compat-app-unknown")).not.toBeInTheDocument();
   expect(screen.getByTestId("compatibility-group-torch 2.4 + py310")).toHaveAttribute("open");
@@ -72,10 +73,10 @@ it("combines component and platform filters and exports only those rows", async 
   expect(exported[0]).toContain("a".repeat(40));
 });
 
-it.each(["sdk", "driver"])("%s includes every App regardless of dependency declaration and respects remaining filters", async (component) => {
+it("driver / sdk includes every App regardless of dependency declaration and respects remaining filters", async () => {
   show();
-  await screen.findByTestId("compatibility-group-sdk");
-  fireEvent.change(screen.getByLabelText("按组件筛选"), { target: { value: component } });
+  await screen.findByTestId("compatibility-group-driver-sdk");
+  fireEvent.change(screen.getByLabelText("按组件筛选"), { target: { value: "driver-sdk" } });
   expect(screen.getAllByTestId(/^compatibility-group-/)).toHaveLength(1);
   expect(screen.getByTestId("compat-app-unknown")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "导出当前测试清单 CSV" }));
