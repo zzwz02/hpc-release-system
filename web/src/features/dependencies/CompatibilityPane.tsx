@@ -40,13 +40,30 @@ function cells(row: ReleaseRow): string[] {
     row.python_label || "", row.pytorch_label || "", row.delivery_reference || "", row.app_info_commit_id, row.path || "", row.command || "", row.note];
 }
 
+function groupGpuRows(rows: ReleaseRow[]): ReleaseRow[] {
+  const groups = new Map<string, { row: ReleaseRow; chips: Set<string> }>();
+  for (const row of rows) {
+    // Keep build identities, commands and GPU-specific QA notes separate.
+    const key = JSON.stringify(Object.keys(row).filter(key => key !== "GPU" && key !== "chips").sort()
+      .map(key => [key, row[key as keyof ReleaseRow]]));
+    let group = groups.get(key);
+    if (!group) {
+      group = { row, chips: new Set() };
+      groups.set(key, group);
+    }
+    for (const chip of row.GPU ? [row.GPU] : row.chips ?? []) group.chips.add(chip);
+  }
+  return [...groups.values()].map(({ row, chips }) => ({ ...row, GPU: [...chips].join(", "), chips: [...chips] }));
+}
+
 function AppRows({ rows }: { rows: ReleaseRow[] }) {
   const [expanded, setExpanded] = React.useState(false);
   const detailId = React.useId();
   const app = rows[0];
+  const displayed = React.useMemo(() => groupGpuRows(rows), [rows]);
   const imageCount = new Set(rows.map((row) => row.delivery_reference).filter(Boolean)).size;
   const testCount = new Set(rows.filter((row) => row.command).map((row) => row.path)).size;
-  const commandCount = rows.filter((row) => row.command).length;
+  const commandCount = displayed.filter((row) => row.command).length;
   const versions = [...new Set(rows.map((row) => row.app_version).filter(Boolean))];
   const dependencies = [...new Set(rows.flatMap((row) => row.dependencies))];
   return <>
@@ -65,7 +82,7 @@ function AppRows({ rows }: { rows: ReleaseRow[] }) {
     {expanded && <tr id={detailId} data-testid={`compat-detail-${app.app_id}`}><td colSpan={8}>
       <div className="table"><table className="compatibility-detail-table">
         <thead><tr><th>OS</th><th>CPU 架构</th><th>GPU</th><th>镜像配置</th><th>交付镜像:tag@digest</th><th title="该交付镜像对应的 app_info commit id">commit id</th><th>测试项</th><th>测试命令</th><th>说明</th></tr></thead>
-        <tbody>{rows.map((row, index) => <tr key={index}>
+        <tbody>{displayed.map((row, index) => <tr key={index}>
           <td>{row.os || "—"}</td><td>{archName(row.arch) || "—"}</td><td>{row.GPU || "—"}</td>
           <td>{[row.image_target, row.python_label, row.pytorch_label].filter(Boolean).join(" · ") || "—"}</td>
           <td className="mono small break">{row.delivery_reference || "—"}</td>
