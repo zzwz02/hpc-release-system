@@ -35,7 +35,7 @@ function AppRows({ rows }: { rows: ReleaseRow[] }) {
     </tr>
     {expanded && <tr id={detailId} data-testid={`compat-detail-${app.app_id}`}><td colSpan={8}>
       <div className="table"><table className="compatibility-detail-table">
-        <thead><tr><th>OS</th><th>CPU 架构</th><th>GPU</th><th>镜像配置</th><th>交付镜像:tag@digest</th><th title="该交付镜像对应的 app_info commit id">commit id</th><th>测试项</th><th>测试命令</th><th>说明</th></tr></thead>
+        <thead><tr><th>OS</th><th>CPU 架构</th><th>GPU</th><th>镜像配置</th><th>交付镜像:tag@digest</th><th title="该交付镜像对应的 app_info commit id">commit id</th><th>测试项</th><th>测试命令</th></tr></thead>
         <tbody>{displayed.map((row, index) => <tr key={index}>
           <td>{row.os || "—"}</td><td>{archName(row.arch) || "—"}</td><td>{row.GPU || "—"}</td>
           <td>{imageConfig(row) || "—"}</td>
@@ -43,7 +43,6 @@ function AppRows({ rows }: { rows: ReleaseRow[] }) {
           <td className="mono small" title={row.app_info_commit_id} data-testid="compat-app-info-commit">{row.app_info_commit_id?.slice(0, 12) || "—"}</td>
           <td className="mono small">{row.path || "—"}</td>
           <td><div className="mono small cell-wrap" data-testid="compat-command">{row.command || "—"}</div></td>
-          <td className="small break cell-wrap">{row.note || "—"}</td>
         </tr>)}</tbody>
       </table></div>
     </td></tr>}

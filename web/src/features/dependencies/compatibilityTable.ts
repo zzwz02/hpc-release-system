@@ -39,8 +39,9 @@ export function cells(row: ReleaseRow): string[] {
 
 export function groupGpuRows(rows: ReleaseRow[]): ReleaseRow[] {
   const groups = new Map<string, { row: ReleaseRow; chips: Set<string> }>();
+  const ignored = new Set([...compatibilityTableMetadata.gpu_fields, ...compatibilityTableMetadata.group_ignored_fields]);
   for (const row of rows) {
-    const key = JSON.stringify(Object.keys(row).filter(key => !compatibilityTableMetadata.gpu_fields.includes(key)).sort()
+    const key = JSON.stringify(Object.keys(row).filter(key => !ignored.has(key)).sort()
       .map(key => [key, row[key as keyof ReleaseRow]]));
     let group = groups.get(key);
     if (!group) {

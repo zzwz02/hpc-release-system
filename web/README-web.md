@@ -123,7 +123,7 @@ QA report 历史镜像显示验证使用隔离后端参数 `--platforms --qa-del
 
 QA 导航与权限验证使用不带 `--signup` 的同一隔离后端，执行 `QA_NAV_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/qa-navigation.spec.ts`。覆盖 Owner/QA 子页签、历史查询、兼容性验证导出及深链接，以及 Guest/SPD 的界面和接口拒绝访问。
 
-组合依赖验证使用隔离后端参数 `--dependencies`，执行 `DEPENDENCIES_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/dependencies.spec.ts`。覆盖 Owner/QA 的 App 默认收起、展开与键盘操作、正式版/开发态来源切换、组合配对与去重、两个入口均排除未报名 App、SDK/driver 全量范围、组件精确筛选、隐藏范围待确认、GPU 展开、QA report 镜像优先及 QA log 版本/结论/原因说明、平台组合筛选及导出一致、缺失镜像模板、无关联测试镜像、刷新失败隐藏旧清单，以及窄屏展示。
+组合依赖验证使用隔离后端参数 `--dependencies`，执行 `DEPENDENCIES_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/dependencies.spec.ts`。覆盖 Owner/QA 的 App 默认收起、展开与键盘操作、正式版/开发态来源切换、组合配对与去重、两个入口均排除未报名 App、SDK/driver 全量范围、组件精确筛选、隐藏范围待确认、GPU 展开、QA report 镜像优先、隐藏说明列并忽略说明差异合并 GPU、平台组合筛选及导出一致、缺失镜像模板、无关联测试镜像、刷新失败隐藏旧清单，以及窄屏展示。
 
 基础镜像验证使用同一隔离后端，执行 `BASE_IMAGE_E2E_URL=http://127.0.0.1:18788 npx playwright test e2e/base-images.spec.ts`。覆盖完整引用新增及解析回读、旧记录编辑、格式错误保留、digest 查询、跨周期显示和发布后只读。
 

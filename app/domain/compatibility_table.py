@@ -31,8 +31,9 @@ def cells(row):
 
 def group_gpu_rows(rows):
     groups = {}
+    ignored = {*TABLE["gpu_fields"], *TABLE["group_ignored_fields"]}
     for row in rows:
-        key = json.dumps({key: value for key, value in row.items() if key not in TABLE["gpu_fields"]}, sort_keys=True)
+        key = json.dumps({key: value for key, value in row.items() if key not in ignored}, sort_keys=True)
         if key not in groups:
             groups[key] = ({**row}, [])
         _item, chips = groups[key]

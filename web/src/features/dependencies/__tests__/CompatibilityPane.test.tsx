@@ -100,7 +100,7 @@ it("shows each image's commit separately within an App", async () => {
 });
 
 it("exports the same merged GPUs and image configuration as displayed after filtering", async () => {
-  const gpuRows = ["C500", "C600", "X301"].map(GPU => ({ ...rows[0], GPU, chips: [GPU] }));
+  const gpuRows = ["C500", "C600", "X301"].map(GPU => ({ ...rows[0], GPU, chips: [GPU], note: `QA log: ${GPU} result` }));
   vi.mocked(apiGet).mockResolvedValue({ app_count: 1, rows: gpuRows });
   show();
   const group = await screen.findByTestId("compatibility-group-driver-sdk");
@@ -109,12 +109,16 @@ it("exports the same merged GPUs and image configuration as displayed after filt
   const detail = within(group).getByTestId("compat-detail-pyg");
   expect(within(detail).getByRole("cell", { name: "C500, C600, X301" })).toBeVisible();
   expect(within(detail).getAllByTestId("compat-command")).toHaveLength(1);
+  expect(within(detail).queryByRole("columnheader", { name: "说明" })).not.toBeInTheDocument();
+  expect(within(detail).queryByText(/QA log:/)).not.toBeInTheDocument();
   expect(within(group).getByTestId("compat-app-pyg")).toHaveTextContent("1 个测试项 / 1 条命令");
   fireEvent.click(screen.getByRole("button", { name: "导出当前测试清单 CSV" }));
   expect(vi.mocked(downloadCsv).mock.calls[0][2].map(row => row[9])).toEqual(["C500, C600, X301"]);
   expect(vi.mocked(downloadCsv).mock.calls[0][2][0][10]).toBe("release · py310 · torch2.4");
   expect(vi.mocked(downloadCsv).mock.calls[0][1]).toContain("镜像配置");
   expect(vi.mocked(downloadCsv).mock.calls[0][1]).not.toContain("Python label");
+  expect(vi.mocked(downloadCsv).mock.calls[0][1]).not.toContain("说明");
+  expect(JSON.stringify(vi.mocked(downloadCsv).mock.calls[0][2])).not.toContain("QA log:");
   fireEvent.change(screen.getByLabelText("按GPU 芯片筛选"), { target: { value: "C600" } });
   expect(within(detail).getByRole("cell", { name: "C600" })).toBeVisible();
   expect(within(detail).queryByText("C500, C600, X301")).not.toBeInTheDocument();
@@ -122,9 +126,11 @@ it("exports the same merged GPUs and image configuration as displayed after filt
   expect(vi.mocked(downloadCsv).mock.calls[1][2].map(row => row[9])).toEqual(["C600"]);
   fireEvent.click(screen.getByRole("button", { name: "清除筛选" }));
   expect(within(detail).getByRole("cell", { name: "C500, C600, X301" })).toBeVisible();
+  fireEvent.change(screen.getByLabelText("筛选兼容性验证"), { target: { value: "QA log:" } });
+  expect(screen.getByText("没有匹配的记录。")).toBeVisible();
 });
 
-it("keeps different build configurations, images, commands and QA notes in separate rows", async () => {
+it("keeps different build configurations, images and commands separate while merging different notes", async () => {
   const otherGpu = { ...rows[0], GPU: "C600", chips: ["C600"] };
   const distinct = [
     { ...otherGpu, image_target: "dbg" },
@@ -140,6 +146,7 @@ it("keeps different build configurations, images, commands and QA notes in separ
   fireEvent.click(group.querySelector("summary")!);
   fireEvent.click(within(group).getByRole("button", { name: "展开 PyG 的镜像和测试命令" }));
   const detail = within(group).getByTestId("compat-detail-pyg");
-  expect(within(detail).getAllByTestId("compat-command")).toHaveLength(7);
-  expect(within(detail).getByText("QA log: fail on C600")).toBeVisible();
+  expect(within(detail).getAllByTestId("compat-command")).toHaveLength(6);
+  expect(within(detail).getByRole("cell", { name: "C500, C600" })).toBeVisible();
+  expect(within(detail).queryByText("QA log: fail on C600")).not.toBeInTheDocument();
 });
