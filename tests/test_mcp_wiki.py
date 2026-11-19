@@ -13,6 +13,7 @@ from tests.test_mcp import call, connect_client, rpc, site  # noqa: F401
 from tests.test_mcp_jenkins_access import listed, membership, set_identity
 
 BASE = "https://wiki.example"
+HTTP_BASE = "http://wiki.example"
 SPACE = ("3. Organizations", "PDE", "C500")
 HOME = xwiki.PageRef(SPACE)
 GUIDE = xwiki.PageRef((*SPACE, "指南"), "Getting Started")
@@ -74,10 +75,13 @@ class Wiki:
         assert request.url.params["q"] == "快速入门"
         hits = [
             {"title": "快速入门", "links": [
-                {"rel": "http://www.xwiki.org/rel/page", "href": BASE + GUIDE.rest_path + "/translations/zh"},
+                {"rel": "http://www.xwiki.org/rel/page", "href": HTTP_BASE + GUIDE.rest_path + "/translations/zh"},
             ]},
             {"title": "其他空间", "links": [
                 {"rel": "http://www.xwiki.org/rel/page", "href": BASE + OTHER.rest_path},
+            ]},
+            {"title": "其他站点", "links": [
+                {"rel": "http://www.xwiki.org/rel/page", "href": "http://other.example" + GUIDE.rest_path},
             ]},
         ]
         return httpx.Response(200, json={"searchResults": hits if logged_in else []})
@@ -110,17 +114,20 @@ def test_mcp_wiki_renews_shared_session_and_reads_across_spaces(site, wiki):
     client, _, token_for, _ = site
     owner_token = token_for("alice", "Owner")
     session, _ = connect_client(client, owner_token)
-    search = call(client, owner_token, session, "wiki_search", {"keyword": "快速入门", "limit": 2})
-    assert json.loads(search["content"][0]["text"]) == {
+    search = call(client, owner_token, session, "wiki_search", {"keyword": "快速入门", "limit": 3})
+    search_data = json.loads(search["content"][0]["text"])
+    assert search_data == {
         "results": [
             {"title": "快速入门", "space": list(GUIDE.spaces), "url": BASE + GUIDE.view_path},
             {"title": "其他空间", "space": list(OTHER.spaces), "url": BASE + OTHER.view_path},
         ],
-        "next_offset": 2,
+        "next_offset": 3,
     }
     rm_token = token_for("rm", "RM")
     rm_session, _ = connect_client(client, rm_token)
-    read = call(client, rm_token, rm_session, "wiki_read_page", {"url": BASE + GUIDE.view_path + "?xpage=plain#H测试"})
+    read = call(client, rm_token, rm_session, "wiki_read_page", {
+        "url": search_data["results"][0]["url"] + "?xpage=plain#H测试",
+    })
     data = json.loads(read["content"][0]["text"])
     assert data["content"] == wiki.body[:24_000]
     assert data["next_offset"] == 24_000 and data["url"] == BASE + GUIDE.view_path
@@ -150,7 +157,7 @@ def test_mcp_wiki_denies_guest_invalid_links_and_pages_denied_by_wiki(site, wiki
     session, _ = connect_client(client, token)
     names = {tool["name"] for tool in rpc(client, token, "tools/list", session=session).json()["result"]["tools"]}
     assert {"wiki_search", "wiki_read_page"} <= names
-    for url in ("https://other.example" + HOME.view_path,
+    for url in ("https://other.example" + HOME.view_path, HTTP_BASE + GUIDE.view_path,
                 BASE + HOME.view_path + "%2e%2e/Page", BASE + HOME.rest_path + "/history"):
         response = call(client, token, session, "wiki_read_page", {"url": url})
         assert response["isError"]

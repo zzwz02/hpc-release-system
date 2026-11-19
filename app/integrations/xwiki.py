@@ -251,6 +251,10 @@ class WikiClient:
             if not isinstance(href, str):
                 continue
             try:
+                # A TLS-terminating proxy can leave HTTP links in XWiki metadata.
+                # Parse the page reference against the configured HTTPS origin.
+                if href.lower().startswith("http://"):
+                    href = "https://" + href.split("://", 1)[1]
                 # A localized search hit links to the translation. Read the canonical page.
                 href = re.sub(r"/translations/[^/?#]+$", "", href)
                 return PageRef.from_url(href, self.config.base_url)
