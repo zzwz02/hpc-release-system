@@ -31,6 +31,7 @@ describe("Release gate versions", () => {
   it("RM adds an exact release version", async () => {
     mount(); const user = userEvent.setup();
     await screen.findByText("3.10.2.11");
+    expect(screen.getByLabelText("MACA_VERSION")).toHaveAttribute("placeholder", "请输入基础镜像版本");
     await user.type(screen.getByLabelText("MACA_VERSION"), "3.10.2.12");
     await user.selectOptions(screen.getByLabelText("发布版本"), "r");
     await user.type(screen.getByLabelText("备注"), "QA approved");
@@ -38,6 +39,17 @@ describe("Release gate versions", () => {
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/cicd/release-gate/versions", {
       maca_version: "3.10.2.12", release_id: "r", enabled: true, note: "QA approved", expected_revision: -1,
     }));
+  });
+  it("offers every unsealed release instead of only one version", async () => {
+    vi.mocked(apiGet).mockResolvedValue({ versions: [], releases: [
+      { id: "old", name: "3.10.1", released_locked: true },
+      { id: "r", name: "3.10.2", released_locked: false },
+      { id: "next", name: "3.10.3", released_locked: false },
+    ] });
+    mount();
+    expect(await screen.findByRole("option", { name: "3.10.3" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "3.10.2" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "3.10.1" })).not.toBeInTheDocument();
   });
   it("toggle requires confirmation and carries revision", async () => {
     mount(); const user = userEvent.setup();

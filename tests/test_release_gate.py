@@ -7,7 +7,7 @@ from app.api.routers import release_gate
 from app.deps import get_db, require_login
 from app.repositories import release_gate_repo
 from app.services import release_gate_service as gate
-from tests.conftest import seed_app, seed_cycle, seed_signup
+from tests.conftest import close_qa, close_signup, seed_app, seed_cycle, seed_signup
 
 SHA = "a" * 40
 
@@ -89,6 +89,24 @@ def test_version_change_audited_stale_write_rejected_and_published_cannot_enable
     with pytest.raises(ValueError): gate.save_version(temp_db, body.model_copy(update={"enabled":True,"expected_revision":1}), {"username":"rm","role":"RM"})
 
 
+@pytest.mark.parametrize("advance", [close_signup, close_qa], ids=["signup_closed", "qa_closed"])
+def test_unsealed_release_can_add_admission_after_deadlines(temp_db, enrolled, advance):
+    advance(temp_db, enrolled["release_id"])
+    app = FastAPI()
+    register_error_handlers(app)
+    app.include_router(release_gate.router)
+    app.dependency_overrides[get_db] = lambda: temp_db
+    app.dependency_overrides[require_login] = lambda: {"username": "rm", "role": "RM"}
+    with TestClient(app) as client:
+        releases = client.get("/api/cicd/release-gate/versions").json()["releases"]
+        assert any(r["id"] == enrolled["release_id"] and not r["released_locked"] for r in releases)
+        response = client.post("/api/cicd/release-gate/versions", json={
+            "maca_version": "3.10.2.12", "release_id": enrolled["release_id"],
+        })
+        assert response.status_code == 200, response.text
+    assert gate.check(temp_db, request(maca_version="3.10.2.12"))["reason"] == "preflight_passed"
+
+
 @pytest.mark.parametrize("role,status", [("RM",200),("SPD",403),("Owner",403),("QA",403),("Admin",403)])
 def test_version_write_is_rm_only(temp_db, enrolled, role, status):
     app = FastAPI(); register_error_handlers(app); app.include_router(release_gate.router)
@@ -99,12 +117,14 @@ def test_version_write_is_rm_only(temp_db, enrolled, role, status):
     assert response.status_code == status, response.text
 
 
-def test_machine_check_requires_scoped_token(temp_db, enrolled, monkeypatch):
-    app = FastAPI(); app.include_router(release_gate.router)
+def test_machine_check_requires_platform_token(temp_db, enrolled):
+    from app.services import api_token_service
+    created = api_token_service.create(temp_db, {"username": "owner_test", "role": "Owner"}, "Jenkins")
+    app = FastAPI(); register_error_handlers(app); app.include_router(release_gate.router)
     app.dependency_overrides[get_db] = lambda: temp_db
     with TestClient(app) as client:
-        monkeypatch.setattr(release_gate.runtime_config, "section", lambda section: {})
-        assert client.post("/api/cicd/release-gate/check", json=request().model_dump()).status_code == 503
-        monkeypatch.setattr(release_gate.runtime_config, "section", lambda section: {"RELEASE_BUILD_TOKEN":"test"})
-        assert client.post("/api/cicd/release-gate/check", json=request().model_dump()).status_code == 403
-        assert client.post("/api/cicd/release-gate/check", json=request().model_dump(),headers={"Authorization":"Bearer test"}).status_code == 200
+        for authorization in ("", "Bearer old", "Bearer rsapi_invalid", "Basic cm06cm0="):
+            assert client.post("/api/cicd/release-gate/check", json=request().model_dump(),
+                               headers={"Authorization": authorization}).status_code == 401
+        assert client.post("/api/cicd/release-gate/check", json=request().model_dump(),
+                           headers={"Authorization": "Bearer " + created["token"]}).status_code == 200

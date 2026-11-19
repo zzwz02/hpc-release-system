@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.api.errors import register_error_handlers
 from app.api.routers import (
+    api_tokens,
     admin,
     auto_weekly_report,
     apps,
@@ -94,6 +95,7 @@ def create_app() -> FastAPI:
 
     # Include all routers — auth first so /api/login etc. are available
     app.include_router(auth.router)
+    app.include_router(api_tokens.router)
     app.include_router(state.router)
     app.include_router(apps.router)
     app.include_router(entries.router)

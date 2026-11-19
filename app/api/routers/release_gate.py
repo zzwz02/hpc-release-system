@@ -1,14 +1,13 @@
 """RM manages admission; a scoped CI credential can only perform checks."""
-import hmac
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
-from app import runtime_config
 from app.deps import get_db, require_capability, require_tab_access
 from app.repositories import release_gate_repo, releases_repo
 from app.services import release_gate_service
+from app.services import api_token_service
 
 router = APIRouter(prefix="/api/cicd/release-gate", tags=["release-gate"])
 
@@ -35,12 +34,8 @@ class GateCheck(BaseModel):
     source_project: str = Field(default="", max_length=512)
 
 
-def require_ci(authorization: str = Header(default="")):
-    token = runtime_config.section("release_gate").get("RELEASE_BUILD_TOKEN", "")
-    if not token:
-        raise HTTPException(503, "Release build checks are not configured")
-    if not hmac.compare_digest(authorization.encode(), f"Bearer {token}".encode()):
-        raise HTTPException(403, "Trusted release builder required")
+def require_ci(authorization: str = Header(default=""), conn=Depends(get_db)):
+    return api_token_service.authenticate(conn, authorization, "release_check")
 
 
 @router.get("/versions")

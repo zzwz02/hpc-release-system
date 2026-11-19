@@ -66,11 +66,7 @@ LLM_MODEL = your-model-name
 LLM_API_KEY = <api-key>
 
 
-# ── Release 构建准入 ─────────────────────────────────────────
-[release_gate]
-# Scoped Jenkins admission/report credential; same value as backend RELEASE_BUILD_TOKEN.
-# Keep real values out of Git and Jenkins command-line arguments.
-RELEASE_BUILD_TOKEN =
+# Release 构建准入使用账号页面创建的 API Token，无需单独配置密钥。
 
 # ── CICD Agent（Jenkins 失败诊断助手） ─────────────────────────
 # 浏览器经同源 /api/cicd-agent/* 由后端代理访问。两个键都必须填写。

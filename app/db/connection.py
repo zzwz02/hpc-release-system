@@ -450,6 +450,19 @@ def init_db(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS api_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            token_hint TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            last_used_at TEXT NOT NULL DEFAULT '',
+            last_operation TEXT NOT NULL DEFAULT '',
+            revoked_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(username);
+
         CREATE TABLE IF NOT EXISTS release_schedule (
             id TEXT PRIMARY KEY,
             version TEXT NOT NULL,
