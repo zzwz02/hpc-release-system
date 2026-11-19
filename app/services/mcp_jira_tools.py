@@ -20,7 +20,7 @@ from typing import Any
 from urllib.parse import quote
 
 from app.domain.jira_format import format_jira_comment
-from app.domain.mcp_access import can_use_tool, require_jira_read, scope_jql
+from app.domain.mcp_access import require_jira_read, scope_jql
 from app.services.mcp_evidence import correlations
 from app.integrations import jira
 from app.services import jira_agent_service, mcp_service
@@ -284,10 +284,9 @@ register(Tool(
 
 def check_can_write(user: dict, key: str, action: str = "评论") -> dict:
     """Check live issue authority for MCP writes, independently of agent execution locks."""
-    name = "jira_add_comment" if action == "评论" else "jira_upload_attachment"
-    if not can_use_tool(user["role"], name):
-        raise ToolError(f"当前角色无权{action}")
+    require_jira_read(user["role"], key)
     issue = _jira_call(jira.get_issue, key, issue_key=key)
+    require_jira_read(user["role"], issue.get("key") or key)
     if not jira_agent_service.is_assignee_or_rm(user, issue):
         raise ToolError(
             f"只有当前 JIRA assignee 或 RM 可以{action}；{key} 的 assignee 是 "

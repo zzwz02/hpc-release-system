@@ -39,6 +39,7 @@
     "wiki.edit": ["RM"],
     "weekly-report.run": ["RM"],
     "mcp.logs.view.all": ["RM"],
+    "mcp.permissions.manage": ["RM"],
     "mcp.tools.all": ["RM", "Owner", "QA", "SPD"],
     "mcp.jenkins.all": ["RM"],
     "mcp.jenkins.pde": ["RM", "Owner", "QA", "SPD"],

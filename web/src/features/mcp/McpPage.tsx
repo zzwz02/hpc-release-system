@@ -9,9 +9,11 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../../api/AuthContext";
+import { can } from "../../lib/accessControl";
 import mcpHarnesses from "../../../../shared/mcp_harnesses.json" with { type: "json" };
 import { confirmDialog } from "../../lib/confirm";
 import { toast } from "../../lib/toast";
+import { McpPermissionsPane } from "./McpPermissionsPane";
 import {
   LOG_PAGE_SIZE,
   createToken,
@@ -25,7 +27,7 @@ import {
   type McpToken,
 } from "./mcpApi";
 
-type Pane = "setup" | "stats";
+type Pane = "setup" | "stats" | "permissions";
 const DAY_OPTIONS = [7, 30, 90, 365];
 /** How each harness handles a server-requested confirmation (shared/mcp_harnesses.json). */
 const CONFIRM_MARKS: Record<string, { label: string; pill: string }> = {
@@ -65,6 +67,7 @@ export function McpPage() {
   const { user } = useAuth();
   const viewer = `${user?.username ?? ""}:${user?.role ?? ""}`;
   const [pane, setPane] = useState<Pane>("setup");
+  const canManagePermissions = can(user?.role, "mcp.permissions.manage");
   const infoQuery = useQuery({ queryKey: ["mcp", "info", viewer], queryFn: getInfo });
 
   return (
@@ -76,12 +79,21 @@ export function McpPage() {
         <button className={`subtab${pane === "stats" ? " active" : ""}`} onClick={() => setPane("stats")}>
           使用统计
         </button>
+        {canManagePermissions && (
+          <button className={`subtab${pane === "permissions" ? " active" : ""}`} onClick={() => setPane("permissions")}>
+            权限配置
+          </button>
+        )}
       </div>
-      {infoQuery.error && <div className="pane-error">{errorMessage(infoQuery.error)}</div>}
-      {pane === "setup" ? (
+      {infoQuery.error && pane !== "permissions" && <div className="pane-error">{errorMessage(infoQuery.error)}</div>}
+      {(pane === "setup" || (pane === "permissions" && !canManagePermissions)) && (
         <SetupPane viewer={viewer} tools={infoQuery.data?.tools ?? []} jiraProjects={infoQuery.data?.jira_read_projects ?? null} accessWarnings={infoQuery.data?.access_warnings ?? []} />
-      ) : (
+      )}
+      {pane === "stats" && (
         <StatsPane viewer={viewer} canViewAll={infoQuery.data?.can_view_all ?? false} />
+      )}
+      {canManagePermissions && (
+        <McpPermissionsPane key={viewer} viewer={viewer} active={pane === "permissions"} />
       )}
     </section>
   );

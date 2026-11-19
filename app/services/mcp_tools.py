@@ -7,11 +7,8 @@ so a new tool gets connection auth, permission checks, logging and the
 statistics page without touching them:
 
   * ``category``  groups the tool on the statistics page (jira, ...)
-  * ``roles``     extra role limit on top of the MCP tab permission
-  * shared ``mcp.tools.all`` / ``mcp.tool.<name>`` capabilities grant tool
-                  access; limited users do not inherit newly registered tools
-  * ``jenkins_site`` uses the site role/group grant instead of generic tool grants
-  * ``ldap_group_grant`` grants access to a read-only tool by LDAP group
+  * ``roles``, ``jenkins_site`` and ``ldap_group_grant`` define the initial
+                  matrix together with the shared MCP role and LDAP grants
   * ``available`` hides optional integrations until configured
   * ``handler``   returns ToolResult; ``ToolResult.log`` says what the call
                   acted on (target) and any tool-specific fields (extra)
@@ -29,11 +26,12 @@ user-facing failure; it becomes an ``isError`` result and an error log row.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.domain.mcp_access import can_use_jenkins, can_use_tool, has_ldap_tool_grant
+from app.domain.mcp_access import MCP_LDAP_PATTERNS, MCP_ROLES, can_use_jenkins, can_use_tool
+from app.domain.permissions import LDAP_GROUP_GRANTS, ldap_group_matches
 
 # Stored argument values are cut to this many characters each, so a pasted
 # log or long comment cannot bloat the log table.
@@ -135,18 +133,20 @@ class Tool:
     def enabled(self) -> bool:
         return self.available is None or self.available()
 
-    def needs_ldap_groups(self, role: str) -> bool:
-        uses_group_grant = self.jenkins_site or (self.read_only and self.ldap_group_grant)
-        return bool(uses_group_grant) and self.enabled and not self.allowed(role)
-
-    def allowed(self, role: str, *, groups: tuple[str, ...] = ()) -> bool:
-        if not self.enabled:
-            return False
+    def default_grants(self) -> tuple[str, ...]:
         if self.jenkins_site:
-            return can_use_jenkins(role, self.jenkins_site, groups)
-        if self.read_only and self.ldap_group_grant and has_ldap_tool_grant(role, self.ldap_group_grant, groups):
-            return True
-        return can_use_tool(role, self.name) and (not self.roles or role in self.roles)
+            roles = tuple(role for role in MCP_ROLES if can_use_jenkins(role, self.jenkins_site))
+            return roles + LDAP_GROUP_GRANTS.get(f"mcp.jenkins.{self.jenkins_site}", ())
+        roles = tuple(role for role in MCP_ROLES if can_use_tool(role, self.name)
+                      and (not self.roles or role in self.roles))
+        return roles + (LDAP_GROUP_GRANTS.get(self.ldap_group_grant, ()) if self.read_only else ())
+
+    def allowed(self, role: str, *, groups: tuple[str, ...] = (), grants: Sequence[str] | None = None) -> bool:
+        selected = self.default_grants() if grants is None else grants
+        return self.enabled and role in MCP_ROLES and (
+            role in selected or any(ldap_group_matches(group, pattern)
+                                    for pattern in MCP_LDAP_PATTERNS if pattern in selected for group in groups)
+        )
 
     def logged_args(self, arguments: dict[str, Any]) -> str:
         values = self.log_args(arguments) if self.log_args else arguments
@@ -173,14 +173,9 @@ def load_tools() -> None:
     from app.services import mcp_wiki_tools  # noqa: F401
 
 
-def tools_for(role: str, *, groups: tuple[str, ...] = ()) -> list[Tool]:
+def registered_tools() -> list[Tool]:
     load_tools()
-    return [tool for tool in _REGISTRY.values() if tool.allowed(role, groups=groups)]
-
-
-def needs_ldap_groups(role: str) -> bool:
-    load_tools()
-    return any(tool.needs_ldap_groups(role) for tool in _REGISTRY.values())
+    return list(_REGISTRY.values())
 
 
 def get_tool(name: str) -> Tool | None:

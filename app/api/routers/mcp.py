@@ -30,18 +30,19 @@ from urllib.parse import parse_qs, quote
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.errors import ApiError, AuthzError
 from app.config import settings
 from app.db.connection import connect
-from app.deps import get_db, require_tab_access
+from app.deps import get_db, require_capability, require_tab_access
 from app.domain.mcp_access import LIMITED_JIRA_PROJECT, limited_jira_reader, require_jira_read
 from app.integrations import jira
-from app.services import mcp_protocol, mcp_service
+from app.services import mcp_access_service, mcp_protocol, mcp_service
 
 router = APIRouter(tags=["mcp"])
 require_view = require_tab_access("mcp", message="无权访问 MCP")
+require_permission_manager = require_capability("mcp.permissions.manage", message="无权管理 MCP 工具权限")
 MAX_BODY_BYTES = 4 * 1024 * 1024
 # The website page (AI助手 → MCP). It must not be /mcp: that is the MCP
 # endpoint, and a browser refresh there would hit it instead of the SPA.
@@ -135,6 +136,7 @@ async def mcp_delete(request: Request) -> Response:
 def mcp_download(ticket: str) -> Response:
     entry = mcp_service.redeem_ticket(ticket)
     caller = mcp_service.refresh_caller(entry.caller)
+    mcp_access_service.require_tool_access(caller.user, "jira_pull_issue")
     require_jira_read(caller.user["role"], entry.issue_key)
     if limited_jira_reader(caller.user["role"]):
         # A previously issued ticket may outlive an issue move or an attachment
@@ -194,6 +196,7 @@ async def mcp_upload(ticket: str, request: Request) -> Response:
         # Permission again: the assignee may have changed since the link was issued.
         caller = await run_in_threadpool(mcp_service.refresh_caller, entry.caller)
         log["caller"] = caller
+        await run_in_threadpool(mcp_access_service.require_tool_access, caller.user, "jira_upload_attachment")
         await run_in_threadpool(check_can_write, caller.user, entry.issue_key, "上传附件")
         attachment_id = await run_in_threadpool(jira.upload_agent_attachment, entry.issue_key, entry.filename, data)
         succeeded = True
@@ -319,6 +322,24 @@ class TokenBody(BaseModel):
     name: str = ""
 
 
+class PermissionsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: int = Field(ge=0, strict=True)
+    grants: dict[str, list[str]]
+
+
+@router.get("/api/mcp/permissions")
+def permissions(_user: dict = Depends(require_permission_manager),
+                conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    return mcp_access_service.permission_matrix(conn)
+
+
+@router.post("/api/mcp/permissions")
+def save_permissions(body: PermissionsBody, user: dict = Depends(require_permission_manager),
+                     conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    return mcp_access_service.save_permissions(conn, user, body.revision, body.grants)
+
+
 @router.get("/api/mcp/tokens")
 def list_tokens(user: dict = Depends(require_view), conn: sqlite3.Connection = Depends(get_db)) -> dict:
     return {"tokens": mcp_service.list_tokens(conn, user),
@@ -340,14 +361,12 @@ def revoke_token(token_id: int, user: dict = Depends(require_view),
 @router.get("/api/mcp/info")
 def info(request: Request, user: dict = Depends(require_view),
          conn: sqlite3.Connection = Depends(get_db)) -> dict:
-    from app.services.mcp_access_service import ldap_groups
-    from app.services.mcp_tools import tools_for
-    groups, warning = ldap_groups(conn, user)
+    tools, warning = mcp_access_service.ToolAccess(conn, user).list_tools()
     return {
         "endpoint": f"{_request_base(request)}/mcp",
         "server_name": mcp_protocol.SERVER_NAME,
         "tools": [{"name": t.name, "title": t.title, "category": t.category, "read_only": t.read_only,
-                   "description": t.description} for t in tools_for(user["role"], groups=groups)],
+                   "description": t.description} for t in tools],
         "access_warnings": [warning] if warning else [],
         "can_view_all": mcp_service.can_view_all(user["role"]),
         "jira_read_projects": [LIMITED_JIRA_PROJECT] if limited_jira_reader(user["role"]) else None,

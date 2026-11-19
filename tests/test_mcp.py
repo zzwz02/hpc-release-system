@@ -931,7 +931,7 @@ def test_confirmation_times_out_without_posting(site, monkeypatch):
     assert json.loads(logs(client, tool="jira_add_comment")[0]["extra_json"])["confirm"] == "timeout"
 
 
-@pytest.mark.parametrize('change', ['revoke', 'demote'])
+@pytest.mark.parametrize('change', ['revoke', 'demote', 'permission'])
 def test_confirmation_revalidates_before_publish(site, change):
     from app.services import mcp_service
     client, _, token_for, calls = site
@@ -947,8 +947,11 @@ def test_confirmation_revalidates_before_publish(site, change):
         ask = next(events)
         if change == 'revoke':
             conn.execute("UPDATE mcp_tokens SET revoked_at='revoked' WHERE username='rm'")
-        else:
+        elif change == 'demote':
             conn.execute("UPDATE users SET role='Owner' WHERE username='rm'")
+        else:
+            response = client.post('/api/mcp/permissions', json={'revision': 0, 'grants': {'jira_add_comment': []}})
+            assert response.status_code == 200
         conn.commit()
         assert mcp_protocol._settle({'id': ask['id'], 'result': {'action': 'accept', 'content': {'username': 'rm'}}},
                                     caller, {'session_id': session})

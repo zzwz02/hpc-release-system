@@ -4,7 +4,20 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from app.repositories.base import row_to_dict
+from app.repositories.base import dumps_json, loads_json, row_to_dict
+
+
+def read_tool_permissions(conn: sqlite3.Connection) -> tuple[int, dict[str, list[str]]]:
+    row = conn.execute("SELECT revision, grants_json FROM mcp_tool_permissions WHERE id = 1").fetchone()
+    return (row["revision"], loads_json(row["grants_json"], {})) if row else (0, {})
+
+
+def write_tool_permissions(conn: sqlite3.Connection, revision: int, grants: dict[str, list[str]]) -> None:
+    conn.execute(
+        "INSERT INTO mcp_tool_permissions(id, revision, grants_json) VALUES (1, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET revision = excluded.revision, grants_json = excluded.grants_json",
+        (revision, dumps_json(grants)),
+    )
 
 # ---------------------------------------------------------------------------
 # Tokens

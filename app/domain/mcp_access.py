@@ -4,13 +4,16 @@ from __future__ import annotations
 import re
 
 from app.api.errors import ApiError
-from app.domain.permissions import (
-    CAPABILITY_PERMISSIONS, LDAP_GROUP_GRANTS, has_capability, ldap_group_matches, roles_for_tab,
-)
+from app.domain.permissions import CAPABILITY_PERMISSIONS, LDAP_GROUP_GRANTS, has_capability, roles_for_tab
 
 # Guests may read this JIRA project only. This is a fixed product permission,
 # independent of which server hosts the website or the JIRA integration.
 LIMITED_JIRA_PROJECT = "MC3"
+MCP_ROLES = roles_for_tab("mcp")
+MCP_LDAP_PATTERNS = tuple(dict.fromkeys(
+    pattern for capability, patterns in LDAP_GROUP_GRANTS.items()
+    if capability.startswith("mcp.") for pattern in patterns
+))
 _ORDER_BY = re.compile(r"\border\s+by\b", re.I)
 _ORDER_FIELD = r'''(?:[A-Za-z_][A-Za-z0-9_.]*|cf\[\d+\]|"(?:[^"\\]|\\.)+"|'(?:[^'\\]|\\.)+')'''
 _ORDER_ITEM = rf"{_ORDER_FIELD}(?:\s+(?:ASC|DESC))?"
@@ -23,20 +26,12 @@ def can_use_tool(role: str, name: str) -> bool:
             or role in CAPABILITY_PERMISSIONS.get(f"mcp.tool.{name}", ()))
 
 
-def has_ldap_tool_grant(role: str, capability: str, groups: tuple[str, ...]) -> bool:
-    return role in roles_for_tab("mcp") and any(
-        ldap_group_matches(group, pattern)
-        for group in groups for pattern in LDAP_GROUP_GRANTS.get(capability, ())
-    )
-
-
-def can_use_jenkins(role: str, site: str, groups: tuple[str, ...] = ()) -> bool:
-    """Site grants are independent of broad MCP grants and JIRA project scope."""
+def can_use_jenkins(role: str, site: str) -> bool:
+    """Default role grants for the two Jenkins sites."""
     capability = f"mcp.jenkins.{site}"
-    return role in roles_for_tab("mcp") and (
+    return role in MCP_ROLES and (
         has_capability(role, "mcp.jenkins.all")
         or role in CAPABILITY_PERMISSIONS.get(capability, ())
-        or has_ldap_tool_grant(role, capability, groups)
     )
 
 

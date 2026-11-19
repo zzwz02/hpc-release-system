@@ -676,6 +676,12 @@ def init_db(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_mcp_tokens_user ON mcp_tokens(username);
 
+        CREATE TABLE IF NOT EXISTS mcp_tool_permissions (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            revision INTEGER NOT NULL,
+            grants_json TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS mcp_sessions (
             id TEXT PRIMARY KEY,
             token_id INTEGER NOT NULL,

@@ -33,6 +33,24 @@ export interface McpInfo {
   access_warnings?: string[];
 }
 
+export interface McpPermissions {
+  revision: number;
+  columns: { id: string; label: string; kind: "role" | "group" }[];
+  tools: {
+    name: string;
+    title: string;
+    category: string;
+    jenkins_site: string;
+    read_only: boolean;
+    enabled: boolean;
+    grants: string[];
+  }[];
+}
+
+export const getPermissions = () => apiGet<McpPermissions>("/api/mcp/permissions");
+export const savePermissions = (revision: number, grants: Record<string, string[]>) =>
+  apiPost<McpPermissions>("/api/mcp/permissions", { revision, grants });
+
 export interface McpStats {
   since: string;
   scope: "all" | "mine";
