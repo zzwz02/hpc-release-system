@@ -23,14 +23,20 @@ def can_use_tool(role: str, name: str) -> bool:
             or role in CAPABILITY_PERMISSIONS.get(f"mcp.tool.{name}", ()))
 
 
+def has_ldap_tool_grant(role: str, capability: str, groups: tuple[str, ...]) -> bool:
+    return role in roles_for_tab("mcp") and any(
+        ldap_group_matches(group, pattern)
+        for group in groups for pattern in LDAP_GROUP_GRANTS.get(capability, ())
+    )
+
+
 def can_use_jenkins(role: str, site: str, groups: tuple[str, ...] = ()) -> bool:
     """Site grants are independent of broad MCP grants and JIRA project scope."""
     capability = f"mcp.jenkins.{site}"
     return role in roles_for_tab("mcp") and (
         has_capability(role, "mcp.jenkins.all")
         or role in CAPABILITY_PERMISSIONS.get(capability, ())
-        or any(ldap_group_matches(group, pattern)
-               for group in groups for pattern in LDAP_GROUP_GRANTS.get(capability, ()))
+        or has_ldap_tool_grant(role, capability, groups)
     )
 
 

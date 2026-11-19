@@ -116,12 +116,12 @@ class Exchange:
         self.allow_stream = allow_stream
         self.session = mcp_service.session_client(conn, caller, session_id)
         self.new_session_id = ""
-        self._jenkins_groups: tuple[tuple[str, ...], str] | None = None
+        self._ldap_groups: tuple[tuple[str, ...], str] | None = None
 
-    def _groups(self) -> tuple[str, ...]:
-        if self._jenkins_groups is None:
-            self._jenkins_groups = mcp_access_service.jenkins_groups(self.conn, self.caller.user)
-        return self._jenkins_groups[0]
+    def _group_access(self) -> tuple[tuple[str, ...], str]:
+        if self._ldap_groups is None:
+            self._ldap_groups = mcp_access_service.ldap_groups(self.conn, self.caller.user)
+        return self._ldap_groups
 
     def handle(self, message: Any) -> dict | _Stream | None:
         if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
@@ -141,9 +141,10 @@ class Exchange:
         if method == "ping":
             return _result(msg_id, {})
         if method == "tools/list":
-            result = {"tools": [t.definition() for t in tools_for(self.caller.user["role"], groups=self._groups())]}
-            if self._jenkins_groups[1]:
-                result["_meta"] = {"access_warnings": [self._jenkins_groups[1]]}
+            groups, warning = self._group_access()
+            result = {"tools": [t.definition() for t in tools_for(self.caller.user["role"], groups=groups)]}
+            if warning:
+                result["_meta"] = {"access_warnings": [warning]}
             return _result(msg_id, result)
         if method == "tools/call":
             return self._call(msg_id, params)
@@ -182,13 +183,11 @@ class Exchange:
         name = params.get("name")
         arguments = params.get("arguments") or {}
         tool = get_tool(name) if isinstance(name, str) else None
-        if tool and tool.jenkins_site and not tool.allowed(self.caller.user["role"]):
-            groups = self._groups()
-            if not tool.allowed(self.caller.user["role"], groups=groups) and self._jenkins_groups[1]:
-                return _result(msg_id, {"content": [{"type": "text", "text": self._jenkins_groups[1]}], "isError": True})
-        else:
-            groups = ()
-        if not tool or not tool.allowed(self.caller.user["role"], groups=groups):
+        role = self.caller.user["role"]
+        groups, warning = self._group_access() if tool and tool.needs_ldap_groups(role) else ((), "")
+        if not tool or not tool.allowed(role, groups=groups):
+            if warning:
+                return _result(msg_id, {"content": [{"type": "text", "text": warning}], "isError": True})
             return _error(msg_id, INVALID_PARAMS, f"Unknown tool: {name}")
         if not isinstance(arguments, dict):
             return _error(msg_id, INVALID_PARAMS, "arguments must be an object")

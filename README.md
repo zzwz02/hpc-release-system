@@ -12,7 +12,7 @@
 | Owner | App 工作台：为单个或本人名下多个运行中 App 报名、编辑分类和可选手册资料；提交新增 App、CICD 配置和启停申请 |
 | QA | QA：处理测试范围扩大申请、查看测试范围与命令、上传 QA log、查看失败汇总、填写结论、交付镜像和各 App 的 QA comment |
 | SPD | CICD：查看交付任务、确认交付或退回；Jenkins 失败查询和 CICD 助手辅助排查 |
-| Guest | 查看总览、App 和 QA 等矩阵允许的页面；MCP 可读取 MC3 工单及其附件、加载技能，Jenkins 按域组授权，不编辑业务数据 |
+| Guest | 查看总览、App 和 QA 等矩阵允许的页面；MCP 可读取 MC3 工单及其附件、加载技能，Jenkins 和 Wiki 按域组授权，不编辑业务数据 |
 | Admin | 系统管理：角色维护、数据库清理、全局 App 删除；前端只进入 `/admin`，不承担 RM 审批职责 |
 
 这是职责摘要，不是权限实现。角色、页签与命名能力以 [access_control.json](shared/access_control.json) 为准；所有权、阶段、锁定与申请状态还会进一步限制操作。后端鉴权是最终边界，前端按钮仅用于展示。
@@ -188,7 +188,9 @@ RM 每周上传 PDE HPC Project Plan 周报（.xlsx，每人一页，A 列日期
 
 ## MCP（AI助手 → MCP）
 
-Guest 可登录 MCP 页面、创建或复用个人 token，基础工具为 `jira_search`、`jira_pull_issue`、`jira_read_attachment` 和 `skill_load`，另按域组开放 Jenkins 工具。JIRA 读取范围限定为 MC3：搜索在后端将完整 JQL 条件与 `project = MC3` 取交集，保留合法排序；读取详情、文本附件及附件下载票据均重新检查项目范围，非 MC3 请求在读取前拒绝，工单移出 MC3 后已有下载票据也不再可用。MC3 工单正文中的跨项目引用不授予被引用工单的读取权限。Guest 的 Jenkins 读取权限按下方站点规则单独授权；不能调用评论或上传工具，即使是工单 assignee 也不能写入，旧上传票据在账号降为 Guest 后失效。工具列表和实际调用使用同一权限判断；Guest 的工具授权按 `shared/access_control.json` 的明确白名单执行，新增工具不会自动开放。Guest 仅能查看本人的使用记录。Jenkins 按角色与域组组合授权，其余 MCP 权限不变。
+开发 Wiki 可通过 `wiki_search` 搜索标题、页面名和正文，通过 `wiki_read_page` 按链接读取正文。管理员在 `release_system.conf` 的 `[xwiki]` 中配置专用只读账号。RM、Owner 以及属于 `dl.pde_` 或 `dl.sw_` 开头域组的 MCP 用户可以使用这两个工具，共享该公共账号可读的页面。域组授权也适用于符合条件的 Guest。用户直接访问 Wiki 网页时，可读范围由个人 Wiki 账号决定，两处的访问结果可能不同。发布系统在服务端保存 Wiki 会话并按需续期。调用日志仍记录个人 MCP token 所属的用户。配置示例见 [release_system.conf.example](release_system.conf.example)。
+
+Guest 可登录 MCP 页面、创建或复用个人 token，基础工具为 `jira_search`、`jira_pull_issue`、`jira_read_attachment` 和 `skill_load`，另按域组开放 Jenkins 和 Wiki 工具。JIRA 读取范围限定为 MC3：搜索在后端将完整 JQL 条件与 `project = MC3` 取交集，保留合法排序；读取详情、文本附件及附件下载票据均重新检查项目范围，非 MC3 请求在读取前拒绝，工单移出 MC3 后已有下载票据也不再可用。MC3 工单正文中的跨项目引用不授予被引用工单的读取权限。Guest 的 Jenkins 读取权限按下方站点规则单独授权；不能调用评论或上传工具，即使是工单 assignee 也不能写入，旧上传票据在账号降为 Guest 后失效。工具列表和实际调用使用同一权限判断；Guest 的工具授权按 `shared/access_control.json` 的明确白名单执行，新增工具不会自动开放。Guest 仅能查看本人的使用记录。Jenkins 按角色与域组组合授权，其余 MCP 权限不变。
 
 网站在 `POST /mcp` 提供 MCP Streamable HTTP 服务（普通请求返回 JSON，用户名确认使用 SSE），供 Claude Code、Codex 等客户端连接。页面地址是 `/mcp-console`（不能用 `/mcp`，否则浏览器刷新会打到 MCP 接口；浏览器直接访问 `/mcp` 会被跳转到页面）。「接入配置」生成个人 token（只显示一次，库里只存 SHA-256），并给出 Claude Code / Codex 的接入命令；「使用统计」展示调用量、失败率、每日调用、按工具/用户的统计及调用日志，不展示会话数、按 token 表格、客户端分类和常操作对象统计。列表最多显示 10 行，超出后内部滚动；调用日志标题与筛选框水平排列。仍可按 token 筛选（只显示 token 名称和前缀）。`initialize` 握手不计入各项使用统计，也不出现在调用日志及其分页计数中；原始连接记录保留用于排障。
 

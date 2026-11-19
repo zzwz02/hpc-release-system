@@ -63,6 +63,7 @@
   },
   "ldap_group_grants": {
     "mcp.jenkins.pde": ["dl.pde_*"],
-    "mcp.jenkins.cicd": ["dl.sw_*"]
+    "mcp.jenkins.cicd": ["dl.sw_*"],
+    "mcp.wiki": ["dl.pde_*", "dl.sw_*"]
   }
 }

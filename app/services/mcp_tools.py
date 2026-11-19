@@ -11,6 +11,8 @@ statistics page without touching them:
   * shared ``mcp.tools.all`` / ``mcp.tool.<name>`` capabilities grant tool
                   access; limited users do not inherit newly registered tools
   * ``jenkins_site`` uses the site role/group grant instead of generic tool grants
+  * ``ldap_group_grant`` grants access to a read-only tool by LDAP group
+  * ``available`` hides optional integrations until configured
   * ``handler``   returns ToolResult; ``ToolResult.log`` says what the call
                   acted on (target) and any tool-specific fields (extra)
   * ``log_args``  optional redaction of arguments before they are stored
@@ -31,7 +33,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.domain.mcp_access import can_use_jenkins, can_use_tool
+from app.domain.mcp_access import can_use_jenkins, can_use_tool, has_ldap_tool_grant
 
 # Stored argument values are cut to this many characters each, so a pasted
 # log or long comment cannot bloat the log table.
@@ -103,6 +105,8 @@ class Tool:
     confirm: Callable[[ToolContext, dict[str, Any]], str] | None = None
     prepare: Callable[[ToolContext, dict[str, Any]], dict[str, Any]] | None = None
     jenkins_site: str = ""
+    available: Callable[[], bool] | None = None
+    ldap_group_grant: str = ""
 
     @property
     def requires_confirmation(self) -> bool:
@@ -127,9 +131,21 @@ class Tool:
             "annotations": annotations,
         }
 
+    @property
+    def enabled(self) -> bool:
+        return self.available is None or self.available()
+
+    def needs_ldap_groups(self, role: str) -> bool:
+        uses_group_grant = self.jenkins_site or (self.read_only and self.ldap_group_grant)
+        return bool(uses_group_grant) and self.enabled and not self.allowed(role)
+
     def allowed(self, role: str, *, groups: tuple[str, ...] = ()) -> bool:
+        if not self.enabled:
+            return False
         if self.jenkins_site:
             return can_use_jenkins(role, self.jenkins_site, groups)
+        if self.read_only and self.ldap_group_grant and has_ldap_tool_grant(role, self.ldap_group_grant, groups):
+            return True
         return can_use_tool(role, self.name) and (not self.roles or role in self.roles)
 
     def logged_args(self, arguments: dict[str, Any]) -> str:
@@ -154,11 +170,17 @@ def register(tool: Tool) -> Tool:
 def load_tools() -> None:
     """Import every feature module so its tools register (idempotent)."""
     from app.services import mcp_jenkins_tools, mcp_jenkins_discovery, mcp_jira_tools, mcp_jira_attachments, mcp_skill_tools  # noqa: F401
+    from app.services import mcp_wiki_tools  # noqa: F401
 
 
 def tools_for(role: str, *, groups: tuple[str, ...] = ()) -> list[Tool]:
     load_tools()
     return [tool for tool in _REGISTRY.values() if tool.allowed(role, groups=groups)]
+
+
+def needs_ldap_groups(role: str) -> bool:
+    load_tools()
+    return any(tool.needs_ldap_groups(role) for tool in _REGISTRY.values())
 
 
 def get_tool(name: str) -> Tool | None:

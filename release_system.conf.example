@@ -92,6 +92,15 @@ USERNAME = fu_pde-hpc_bot
 API_TOKEN =
 TIMEOUT_SECONDS = 30
 
+# ── 开发 Wiki（MCP 可选） ──────────────────────────────────────
+# RM、Owner 和属于 dl.pde_ 或 dl.sw_ 开头域组的 MCP 用户共享公共账号可读的页面。
+# 请使用读取范围适合共享的专用只读账号，并将密码写入实际 release_system.conf。
+[xwiki]
+BASE_URL = https://sw-wiki.metax-tech.com/
+USERNAME =
+PASSWORD =
+TIMEOUT_SECONDS = 10
+
 # ── HPC repo 构建固定 manifest 公开归档 ──────────────────────────
 # digest 的实际 tags 为 repo 时，按发布版本和 Jenkins 构建号读取固定 XML，
 # 从 app_info.json linkfile 项目的完整 commit 实时读取 Gerrit。无需归档账号或 CI 数据库账号。
