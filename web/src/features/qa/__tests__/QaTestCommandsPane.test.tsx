@@ -32,7 +32,7 @@ it("queries latest manually and displays independently selected versions alongsi
   expect(apiGet).toHaveBeenLastCalledWith("/api/qa/test-commands?release_id=release1&hpc_version=latest");
 });
 
-it("exports displayed columns and merged GPUs, with a separate complete QA template", async () => {
+it("exports displayed columns and merged GPUs without a QA template button", async () => {
   const base = { ...data.rows[0], py_label: "py310", torch_label: "torch2.4" };
   const rows: CommandRow[] = ["C500", "C600", "X301"].map(GPU => ({ ...base, GPU }));
   rows.push({ ...rows[0], py_label: "py312" });
@@ -50,17 +50,13 @@ it("exports displayed columns and merged GPUs, with a separate complete QA templ
   const displayedRows = [{ ...rows[0], GPU: "C500, C600, X301" }, ...rows.slice(3)];
   expect(downloadCsv).toHaveBeenLastCalledWith("test_commands_latest.csv", displayedColumns,
     displayedRows.map(row => displayedColumns.map(column => String(row[column] ?? ""))));
-  fireEvent.click(screen.getByRole("button", { name: "下载 QA 回填模板" }));
-  expect(downloadCsv).toHaveBeenLastCalledWith("test_commands_latest_template.csv", data.columns,
-    rows.map(row => data.columns.map(column => String(row[column] ?? ""))));
+  expect(screen.queryByRole("button", { name: "下载 QA 回填模板" })).not.toBeInTheDocument();
+  expect(screen.queryByText(/填写 QA log 请下载 QA 回填模板/)).not.toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("GPU 列筛选"), { target: { value: "C600" } });
   expect(screen.getAllByRole("row")).toHaveLength(3);
   fireEvent.click(screen.getByRole("button", { name: "导出 CSV" }));
   expect(downloadCsv).toHaveBeenLastCalledWith("test_commands_latest.csv", displayedColumns,
     [displayedColumns.map(column => String(rows[1][column] ?? ""))]);
-  fireEvent.click(screen.getByRole("button", { name: "下载 QA 回填模板" }));
-  expect(downloadCsv).toHaveBeenLastCalledWith("test_commands_latest_template.csv", data.columns,
-    [data.columns.map(column => String(rows[1][column] ?? ""))]);
 });
 
 it("displays and exports placeholder commands when latest has no available images", async () => {

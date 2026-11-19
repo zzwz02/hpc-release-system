@@ -81,9 +81,15 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   expect(parsed[0]).toEqual(expectedColumns.filter(column => !["py_label", "torch_label"].includes(column)));
   expect(parsed.slice(1)).toEqual(await commandsPane.locator("tbody tr").evaluateAll(rows => rows.map(row =>
     [...row.querySelectorAll("td")].map(cell => cell.textContent ?? ""))));
-  const templateDownload = page.waitForEvent("download");
-  await commandsPane.getByRole("button", { name: "下载 QA 回填模板", exact: true }).click();
-  const template = parseCsvRows(await readFile((await (await templateDownload).path())!, "utf8"));
+  const exportParams = new URLSearchParams({ release_id: new URL(response.url()).searchParams.get("release_id")! });
+  const apiExport = await page.request.get(base + "/api/qa/test-commands/export?" + exportParams);
+  expect(apiExport.ok(), await apiExport.text()).toBeTruthy();
+  expect(apiExport.headers()["content-type"]).toContain("text/csv");
+  expect(parseCsvRows(await apiExport.text())).toEqual(parsed);
+  await expect(commandsPane.getByRole("button", { name: "下载 QA 回填模板", exact: true })).toHaveCount(0);
+  const apiTemplate = await page.request.get(base + "/api/qa/test-commands/export?" + exportParams + "&template=true");
+  expect(apiTemplate.ok(), await apiTemplate.text()).toBeTruthy();
+  const template = parseCsvRows(await apiTemplate.text());
   expect(template[0]).toEqual(expectedColumns);
   expect(template.slice(1)).toHaveLength(commands.rows.length);
   for (const [index, row] of template.slice(1).entries()) {

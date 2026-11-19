@@ -6,7 +6,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 
 from app.api.errors import ApiError
-from app.domain import qa_results, test_commands
+from app.domain import qa_commands_table, qa_results, test_commands
 from app.integrations import harbor
 from app.integrations.read_session import read_session
 from app.repositories import app_info_repo, apps_repo
@@ -46,6 +46,16 @@ def count_scope_tests(conn, release_id):
     variants, _ = _scope(conn, release_id)
     return sum(len(command["chips"]) or 1
                for variant in variants.values() for command in variant["commands"])
+
+
+def export_csv(conn, *, release_id, hpc_version="latest", template=False):
+    result = query(conn, release_id=release_id, hpc_version=hpc_version)
+    if result["errors"]:
+        details = "；".join(f'{item["image"]}：{item["error"]}' for item in result["errors"])
+        raise ApiError(502, f"测试命令生成不完整，未导出 CSV，请重试。{details}")
+    suffix = "_template" if template else ""
+    filename = f'test_commands_{result["hpc_version"]}{suffix}.csv'
+    return qa_commands_table.export_csv(result, template=template), filename
 
 
 def query(conn, *, release_id, hpc_version):

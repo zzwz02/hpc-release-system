@@ -9,6 +9,7 @@ export const releasePhaseMetadata = metadata.release_phases;
 export const universalComponentMetadata: Record<string, { label: string }> = metadata.universal_components;
 export const universalComponentGroupMetadata = metadata.universal_component_group;
 export const compatibilityTableMetadata = metadata.compatibility_table;
+export const qaTestCommandsTableMetadata = metadata.qa_test_commands_table;
 
 export function compatibilityComponentLabel(component: string): string {
   return component === universalComponentGroupMetadata.key ? universalComponentGroupMetadata.label : component;

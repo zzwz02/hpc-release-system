@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { commandTableAppearance } from "./helpers/commandTableAppearance";
+import { parseCsvRows } from "../src/lib/csv";
 
 const base = process.env.TEST_PLATFORMS_E2E_URL ?? "";
 test.skip(!/^http:\/\/127\.0\.0\.1:\d+$/.test(base), "Requires tests.run_app_info_site --lookup --platforms --qa-commands and isolated Vite");
@@ -67,6 +68,11 @@ test("App details, QA and image history keep OS/CPU/chip relationships", async (
   expect(csv).toContain('"C600, X201"');
   expect(csv.split("\n").filter((line) => line.startsWith("platform-check,")).length).toBe(3);
   expect(csv).toContain("<hpc_version>");
+  const apiExport = await page.request.get(base + "/api/qa/test-commands/export?" + new URLSearchParams({
+    release_id: await page.getByLabel("选择 release").inputValue(),
+  }));
+  expect(apiExport.ok(), await apiExport.text()).toBeTruthy();
+  expect(parseCsvRows(await apiExport.text())).toEqual(parseCsvRows(csv));
 
   await qaTabs.getByRole("link", { name: "历史查询", exact: true }).click();
   await page.getByRole("button", { name: "按镜像 digest", exact: true }).click();

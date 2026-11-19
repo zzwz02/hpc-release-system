@@ -7,6 +7,10 @@
     "key": "driver-sdk",
     "label": "driver / SDK"
   },
+  "qa_test_commands_table": {
+    "hidden_columns": ["py_label", "torch_label"],
+    "gpu_fields": ["GPU"]
+  },
   "compatibility_table": {
     "gpu_fields": ["GPU", "chips"],
     "architecture_labels": {"amd64": "x86", "arm64": "ARM"},

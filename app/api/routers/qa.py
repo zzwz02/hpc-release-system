@@ -16,6 +16,7 @@ Endpoint paths (legacy release routes retain their original paths):
   POST /api/qa/analyze-log
   POST /api/qa/analyze-log/start
   GET  /api/qa/test-results
+  GET  /api/qa/test-commands/export
   GET  /api/qa/test-results/export
   POST /api/qa/test-results/upload
   GET  /api/qa/test-results/{report_id}/download
@@ -152,6 +153,24 @@ def version_test_commands(
 
     response.headers["Cache-Control"] = "no-store"
     return qa_commands_service.query(conn, release_id=release_id, hpc_version=hpc_version)
+
+
+@router.get("/api/qa/test-commands/export")
+def export_version_test_commands(
+    release_id: str = Query(),
+    hpc_version: str = Query(default="latest"),
+    template: bool = Query(default=False),
+    _user: dict = Depends(require_qa_tab_access),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    from app.services import qa_commands_service
+
+    content, filename = qa_commands_service.export_csv(
+        conn, release_id=release_id, hpc_version=hpc_version, template=template,
+    )
+    return Response(content, media_type="text/csv; charset=utf-8", headers={
+        "Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store",
+    })
 
 
 # ---------------------------------------------------------------------------
