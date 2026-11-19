@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { readFile } from "node:fs/promises";
+import { parseCsvRows } from "../src/lib/csv";
 
 const base = process.env.DEPENDENCIES_E2E_URL ?? "";
 test.skip(!/^http:\/\/127\.0\.0\.1:\d+$/.test(base), "Requires tests.run_app_info_site --dependencies and isolated Vite");
@@ -83,6 +84,12 @@ for (const username of ["app_owner", "app_qa"]) {
     const exported = page.waitForEvent("download");
     await pane.getByRole("button", { name: "导出当前测试清单 CSV" }).click();
     const csv = await readFile((await (await exported).path())!, "utf8");
+    const apiCsv = await page.request.get(base + "/api/lookup/latest-running/export?component=driver-sdk");
+    expect(apiCsv.ok(), await apiCsv.text()).toBeTruthy();
+    expect(apiCsv.headers()["content-type"]).toContain("text/csv");
+    expect(parseCsvRows(await apiCsv.text())).toEqual(parseCsvRows(csv));
+    expect(parseCsvRows(csv)[0]).toContain("镜像配置");
+    expect(parseCsvRows(csv).some(row => row.includes("C500, C500X"))).toBe(true);
     for (const value of ["runtime-published", "runtime-unknown", selected, "sanity", "centos9", "命令为模板"]) expect(csv).toContain(value);
     expect(csv).not.toContain("范围待确认");
     for (const value of ["runtime-stopped", "runtime-never", "never-registered-component", "info-error", "development-sdk", "py313"]) expect(csv).not.toContain(value);
@@ -114,6 +121,11 @@ for (const username of ["app_owner", "app_qa"]) {
     const filteredExport = page.waitForEvent("download");
     await pane.getByRole("button", { name: "导出当前测试清单 CSV" }).click();
     const filteredCsv = await readFile((await (await filteredExport).path())!, "utf8");
+    const apiFiltered = await page.request.get(base + "/api/lookup/latest-running/export?" + new URLSearchParams({
+      component: selected, arch: "arm64", os: "ubuntu20.04", chip: "C500",
+    }));
+    expect(apiFiltered.ok(), await apiFiltered.text()).toBeTruthy();
+    expect(parseCsvRows(await apiFiltered.text())).toEqual(parseCsvRows(filteredCsv));
     expect(filteredCsv).toContain("ARM");
     expect(filteredCsv).not.toContain("x86");
     expect(filteredCsv).not.toContain("centos9");

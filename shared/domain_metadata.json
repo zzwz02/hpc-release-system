@@ -7,6 +7,17 @@
     "key": "driver-sdk",
     "label": "driver / SDK"
   },
+  "compatibility_table": {
+    "gpu_fields": ["GPU", "chips"],
+    "architecture_labels": {"amd64": "x86", "arm64": "ARM"},
+    "columns": [
+      ["app_name", "App"], ["app_id", "app_id"], ["owners", "Owner"],
+      ["dependencies", "依赖组件"], ["hpc_version", "HPC version"], ["app_version", "App version"],
+      ["manifest_source", "发布记录来源"], ["os", "OS"], ["arch", "CPU 架构"], ["GPU", "GPU"],
+      ["image_config", "镜像配置"], ["delivery_reference", "完整镜像名"],
+      ["app_info_commit_id", "镜像 app_info commit id"], ["path", "测试项"], ["command", "测试命令"], ["note", "说明"]
+    ]
+  },
   "publication_manifest_sources": {
     "sealed": { "label": "发布时封存" },
     "reconstructed": { "label": "根据历史配置生成" },

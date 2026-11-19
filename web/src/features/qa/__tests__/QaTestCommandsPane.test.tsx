@@ -32,7 +32,7 @@ it("queries latest manually and displays independently selected versions alongsi
   expect(apiGet).toHaveBeenLastCalledWith("/api/qa/test-commands?release_id=release1&hpc_version=latest");
 });
 
-it("merges only GPU differences on screen and exports individual records with build labels after filtering", async () => {
+it("exports displayed columns and merged GPUs, with a separate complete QA template", async () => {
   const base = { ...data.rows[0], py_label: "py310", torch_label: "torch2.4" };
   const rows: CommandRow[] = ["C500", "C600", "X301"].map(GPU => ({ ...base, GPU }));
   rows.push({ ...rows[0], py_label: "py312" });
@@ -46,12 +46,21 @@ it("merges only GPU differences on screen and exports individual records with bu
   expect(screen.queryByRole("columnheader", { name: "py_label" })).not.toBeInTheDocument();
   expect(screen.queryByRole("columnheader", { name: "torch_label" })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "导出 CSV" }));
-  expect(downloadCsv).toHaveBeenLastCalledWith("test_commands_latest.csv", data.columns,
+  const displayedColumns = data.columns.filter(column => !["py_label", "torch_label"].includes(column));
+  const displayedRows = [{ ...rows[0], GPU: "C500, C600, X301" }, ...rows.slice(3)];
+  expect(downloadCsv).toHaveBeenLastCalledWith("test_commands_latest.csv", displayedColumns,
+    displayedRows.map(row => displayedColumns.map(column => String(row[column] ?? ""))));
+  fireEvent.click(screen.getByRole("button", { name: "下载 QA 回填模板" }));
+  expect(downloadCsv).toHaveBeenLastCalledWith("test_commands_latest_template.csv", data.columns,
     rows.map(row => data.columns.map(column => String(row[column] ?? ""))));
   fireEvent.change(screen.getByLabelText("GPU 列筛选"), { target: { value: "C600" } });
   expect(screen.getAllByRole("row")).toHaveLength(3);
   fireEvent.click(screen.getByRole("button", { name: "导出 CSV" }));
-  expect(vi.mocked(downloadCsv).mock.calls[1][2]).toEqual([data.columns.map(column => String(rows[1][column] ?? ""))]);
+  expect(downloadCsv).toHaveBeenLastCalledWith("test_commands_latest.csv", displayedColumns,
+    [displayedColumns.map(column => String(rows[1][column] ?? ""))]);
+  fireEvent.click(screen.getByRole("button", { name: "下载 QA 回填模板" }));
+  expect(downloadCsv).toHaveBeenLastCalledWith("test_commands_latest_template.csv", data.columns,
+    [data.columns.map(column => String(rows[1][column] ?? ""))]);
 });
 
 it("displays and exports placeholder commands when latest has no available images", async () => {
@@ -63,8 +72,9 @@ it("displays and exports placeholder commands when latest has no available image
   expect(screen.getByText(missing.rows[0].website_docker_cmd)).toBeVisible();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "导出 CSV" }));
-  expect(downloadCsv).toHaveBeenCalledWith("test_commands_latest.csv", missing.columns,
-    missing.rows.map(row => missing.columns.map(column => String((row as CommandRow)[column] ?? ""))));
+  const visibleColumns = missing.columns.filter(column => !["py_label", "torch_label"].includes(column));
+  expect(downloadCsv).toHaveBeenCalledWith("test_commands_latest.csv", visibleColumns,
+    missing.rows.map(row => visibleColumns.map(column => String((row as CommandRow)[column] ?? ""))));
 });
 
 it("shows an empty scope message when the release has no test commands", async () => {

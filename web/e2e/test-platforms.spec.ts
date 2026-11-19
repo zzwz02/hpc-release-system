@@ -60,10 +60,12 @@ test("App details, QA and image history keep OS/CPU/chip relationships", async (
   const exported = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出 CSV", exact: true }).click();
   const csv = await readFile((await (await exported).path())!, "utf8");
-  expect(csv).toContain("OS,GPU,py_label,torch_label");
+  expect(csv).toContain("OS,GPU,test_name");
+  expect(csv).not.toContain("py_label");
+  expect(csv).not.toContain("torch_label");
   expect(csv).toContain("website_docker_cmd,qa_digest,qa_docker_cmd,qa_result,qa_env,qa_status,qa_comment");
-  expect(csv).not.toContain('"C600,X201"');
-  expect(csv.split("\n").filter((line) => line.startsWith("platform-check,")).length).toBe(12);
+  expect(csv).toContain('"C600, X201"');
+  expect(csv.split("\n").filter((line) => line.startsWith("platform-check,")).length).toBe(3);
   expect(csv).toContain("<hpc_version>");
 
   await qaTabs.getByRole("link", { name: "历史查询", exact: true }).click();

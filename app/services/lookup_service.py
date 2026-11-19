@@ -11,7 +11,7 @@ from typing import Any
 from app.api.errors import ApiError, GerritNetworkError
 from app.config import settings
 from app.identity import prefetch_manifests, repo_storage_path
-from app.domain import app_info, cycles, delivery_images, image_lookup, publication_manifest, qa_results, test_commands
+from app.domain import app_info, compatibility_table, cycles, delivery_images, image_lookup, publication_manifest, qa_results, test_commands
 from app.domain.container_image import delivered_image_reference
 from app.domain.test_platforms import is_enabled_value
 from app.integrations import gerrit, harbor, manifest_archive
@@ -498,6 +498,10 @@ def published_apps(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
         "release": {key: release[key] for key in ("id", "name", "release_date")},
         "apps": rows,
     }
+
+
+def export_latest_running_csv(conn: sqlite3.Connection, **filters) -> str:
+    return compatibility_table.export_csv(latest_running_releases(conn)["rows"], **filters)
 
 
 def latest_running_releases(conn: sqlite3.Connection) -> dict[str, Any]:

@@ -4,57 +4,11 @@ import { useAuth } from "../../api/AuthContext";
 import { apiGet } from "../../api/http";
 import { RefreshBar } from "../../components/RefreshBar";
 import { downloadCsv } from "../../lib/csv";
-import { compatibilityComponentLabel, publicationManifestSourceLabel, universalComponentGroupMetadata, universalComponentMetadata, type PublicationManifestSource } from "../../lib/domainMetadata";
+import { compatibilityComponentLabel, universalComponentGroupMetadata, universalComponentMetadata } from "../../lib/domainMetadata";
+import { archName, cells, columns, groupGpuRows, imageConfig, type ReleaseRow } from "./compatibilityTable";
 
-interface ReleaseRow {
-  app_id: string;
-  app_name: string;
-  owners: string[];
-  dependencies: string[];
-  scope_pending: boolean;
-  hpc_version: string;
-  app_version: string;
-  app_info_commit_id: string;
-  manifest_source: PublicationManifestSource;
-  os?: string;
-  arch?: string;
-  chips?: string[];
-  GPU?: string;
-  image_target?: string;
-  python_label?: string;
-  pytorch_label?: string;
-  delivery_reference?: string;
-  path?: string;
-  command?: string;
-  note: string;
-}
-
-const columns = ["App", "app_id", "Owner", "依赖组件", "HPC version", "App version", "发布记录来源", "OS", "CPU 架构", "GPU", "镜像类型", "Python label", "PyTorch label", "完整镜像名", "镜像 app_info commit id", "测试项", "测试命令", "说明"];
-const archName = (arch?: string) => arch === "amd64" ? "x86" : arch === "arm64" ? "ARM" : arch || "";
 const universalComponents = new Set(Object.keys(universalComponentMetadata));
-// These components share the entire inventory, so one display group is sufficient.
 const universalGroup = universalComponentGroupMetadata.key;
-function cells(row: ReleaseRow): string[] {
-  return [row.app_name, row.app_id, row.owners.join(", "), row.dependencies.join(", "),
-    row.hpc_version, row.app_version, publicationManifestSourceLabel(row.manifest_source), row.os || "", archName(row.arch), row.GPU || "", row.image_target || "",
-    row.python_label || "", row.pytorch_label || "", row.delivery_reference || "", row.app_info_commit_id, row.path || "", row.command || "", row.note];
-}
-
-function groupGpuRows(rows: ReleaseRow[]): ReleaseRow[] {
-  const groups = new Map<string, { row: ReleaseRow; chips: Set<string> }>();
-  for (const row of rows) {
-    // Keep build identities, commands and GPU-specific QA notes separate.
-    const key = JSON.stringify(Object.keys(row).filter(key => key !== "GPU" && key !== "chips").sort()
-      .map(key => [key, row[key as keyof ReleaseRow]]));
-    let group = groups.get(key);
-    if (!group) {
-      group = { row, chips: new Set() };
-      groups.set(key, group);
-    }
-    for (const chip of row.GPU ? [row.GPU] : row.chips ?? []) group.chips.add(chip);
-  }
-  return [...groups.values()].map(({ row, chips }) => ({ ...row, GPU: [...chips].join(", "), chips: [...chips] }));
-}
 
 function AppRows({ rows }: { rows: ReleaseRow[] }) {
   const [expanded, setExpanded] = React.useState(false);
@@ -84,7 +38,7 @@ function AppRows({ rows }: { rows: ReleaseRow[] }) {
         <thead><tr><th>OS</th><th>CPU 架构</th><th>GPU</th><th>镜像配置</th><th>交付镜像:tag@digest</th><th title="该交付镜像对应的 app_info commit id">commit id</th><th>测试项</th><th>测试命令</th><th>说明</th></tr></thead>
         <tbody>{displayed.map((row, index) => <tr key={index}>
           <td>{row.os || "—"}</td><td>{archName(row.arch) || "—"}</td><td>{row.GPU || "—"}</td>
-          <td>{[row.image_target, row.python_label, row.pytorch_label].filter(Boolean).join(" · ") || "—"}</td>
+          <td>{imageConfig(row) || "—"}</td>
           <td className="mono small break">{row.delivery_reference || "—"}</td>
           <td className="mono small" title={row.app_info_commit_id} data-testid="compat-app-info-commit">{row.app_info_commit_id?.slice(0, 12) || "—"}</td>
           <td className="mono small">{row.path || "—"}</td>
@@ -167,7 +121,7 @@ export function CompatibilityPane() {
         <input className="input flex-1" value={filter} onChange={(event) => setFilter(event.target.value)} aria-label="筛选兼容性验证"
           placeholder="筛选 App、Owner、HPC 版本、digest、commit id 或命令…" />
         <button type="button" className="btn sm" disabled={!result.data || result.isFetching || !!result.error}
-          onClick={() => downloadCsv("compatibility.csv", columns, rows.map(cells))}>导出当前测试清单 CSV</button>
+          onClick={() => downloadCsv("compatibility.csv", columns, groupGpuRows(rows).map(cells))}>导出当前测试清单 CSV</button>
         <button type="button" className="btn sm" onClick={() => {
           setFilter(""); setComponent(""); setPlatform({ arch: "", os: "", chip: "" });
         }}>清除筛选</button>

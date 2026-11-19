@@ -69,7 +69,7 @@ export function QaTestCommandsPane({ releaseId }: { releaseId: string }) {
           : `实际 hpc_version：${result.hpc_version}`}</span>}
       </form>
       <p className="hint">仅查询 MACA 镜像。latest 为每个 App／构建分别选择当前发布周期内最新的 HPC 版本，按版本数字比较。无可用镜像时保留完整测试命令，镜像 tag 中的 HPC 版本使用 {"<hpc_version>"} 占位符。</p>
-      <p className="hint">QA 下载 CSV 后另存为 Excel，填写 QA 列并添加与 qa_env 同名的环境页，再从 QA log 上传。</p>
+      <p className="hint">导出 CSV 与当前表格的列和 GPU 合并结果一致。填写 QA log 请下载 QA 回填模板，另存为 Excel，填写 QA 列并添加与 qa_env 同名的环境页后上传。</p>
       <QaChipLegend className="hint" />
       {!releaseId && <p className="muted">请选择发布周期。</p>}
       {busy && <p role="status">正在读取 Harbor 镜像及 Gerrit 历史配置…</p>}
@@ -79,6 +79,7 @@ export function QaTestCommandsPane({ releaseId }: { releaseId: string }) {
     </div>
     {result && <FlatCommandTable columns={result.columns} rows={result.rows}
       hiddenColumns={["py_label", "torch_label"]} groupRows={groupCommandGpus}
+      rawExport={{ label: "下载 QA 回填模板", filename: `test_commands_${result.hpc_version}_template.csv` }}
       filename={`test_commands_${result.hpc_version}.csv`} label="测试命令" showHeading={false} showSearch={false} onRefresh={() => void query()} />}
   </div>;
 }

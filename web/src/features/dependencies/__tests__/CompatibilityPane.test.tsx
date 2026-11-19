@@ -52,7 +52,7 @@ it("groups known runtime dependencies even without app_dependency and counts uni
   expect(screen.queryByLabelText("按Python 配置筛选")).not.toBeInTheDocument();
   expect(screen.queryByLabelText("按PyTorch 配置筛选")).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "导出当前测试清单 CSV" }));
-  expect(vi.mocked(downloadCsv).mock.calls[0][2]).toHaveLength(rows.length);
+  expect(vi.mocked(downloadCsv).mock.calls[0][2]).toHaveLength(4);
 });
 
 it("combines component and platform filters and exports only those rows", async () => {
@@ -64,7 +64,7 @@ it("combines component and platform filters and exports only those rows", async 
   expect(screen.queryByTestId("compat-app-unknown")).not.toBeInTheDocument();
   expect(screen.getByTestId("compatibility-group-torch 2.4 + py310")).toHaveAttribute("open");
   fireEvent.click(screen.getByRole("button", { name: "导出当前测试清单 CSV" }));
-  expect(vi.mocked(downloadCsv).mock.calls[0][2]).toHaveLength(2);
+  expect(vi.mocked(downloadCsv).mock.calls[0][2]).toHaveLength(1);
   fireEvent.change(screen.getByLabelText("按GPU 芯片筛选"), { target: { value: "C600" } });
   fireEvent.click(screen.getByRole("button", { name: "导出当前测试清单 CSV" }));
   const exported = vi.mocked(downloadCsv).mock.calls[1][2];
@@ -80,7 +80,7 @@ it("driver / sdk includes every App regardless of dependency declaration and res
   expect(screen.getAllByTestId(/^compatibility-group-/)).toHaveLength(1);
   expect(screen.getByTestId("compat-app-unknown")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "导出当前测试清单 CSV" }));
-  expect(vi.mocked(downloadCsv).mock.calls[0][2]).toHaveLength(rows.length);
+  expect(vi.mocked(downloadCsv).mock.calls[0][2]).toHaveLength(4);
   fireEvent.change(screen.getByLabelText("按GPU 芯片筛选"), { target: { value: "C600" } });
   expect(screen.queryByTestId("compat-app-unknown")).not.toBeInTheDocument();
   expect(screen.getByTestId("compat-app-pyg")).toBeInTheDocument();
@@ -99,7 +99,7 @@ it("shows each image's commit separately within an App", async () => {
   expect(within(group).getByTitle("该交付镜像对应的 app_info commit id")).toBeInTheDocument();
 });
 
-it("merges identical GPU commands after filtering while CSV retains individual GPU records", async () => {
+it("exports the same merged GPUs and image configuration as displayed after filtering", async () => {
   const gpuRows = ["C500", "C600", "X301"].map(GPU => ({ ...rows[0], GPU, chips: [GPU] }));
   vi.mocked(apiGet).mockResolvedValue({ app_count: 1, rows: gpuRows });
   show();
@@ -111,7 +111,10 @@ it("merges identical GPU commands after filtering while CSV retains individual G
   expect(within(detail).getAllByTestId("compat-command")).toHaveLength(1);
   expect(within(group).getByTestId("compat-app-pyg")).toHaveTextContent("1 个测试项 / 1 条命令");
   fireEvent.click(screen.getByRole("button", { name: "导出当前测试清单 CSV" }));
-  expect(vi.mocked(downloadCsv).mock.calls[0][2].map(row => row[9])).toEqual(["C500", "C600", "X301"]);
+  expect(vi.mocked(downloadCsv).mock.calls[0][2].map(row => row[9])).toEqual(["C500, C600, X301"]);
+  expect(vi.mocked(downloadCsv).mock.calls[0][2][0][10]).toBe("release · py310 · torch2.4");
+  expect(vi.mocked(downloadCsv).mock.calls[0][1]).toContain("镜像配置");
+  expect(vi.mocked(downloadCsv).mock.calls[0][1]).not.toContain("Python label");
   fireEvent.change(screen.getByLabelText("按GPU 芯片筛选"), { target: { value: "C600" } });
   expect(within(detail).getByRole("cell", { name: "C600" })).toBeVisible();
   expect(within(detail).queryByText("C500, C600, X301")).not.toBeInTheDocument();

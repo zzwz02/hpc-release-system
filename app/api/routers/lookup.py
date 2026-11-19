@@ -24,6 +24,23 @@ def latest_running_releases(
     return lookup_service.latest_running_releases(conn)
 
 
+@router.get("/latest-running/export")
+def export_latest_running(
+    component: str = Query(default=""),
+    arch: str = Query(default=""),
+    os: str = Query(default=""),
+    chip: str = Query(default=""),
+    search: str = Query(default=""),
+    user: dict = Depends(require_lookup_tab),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    return Response(
+        lookup_service.export_latest_running_csv(conn, component=component, arch=arch, os=os, chip=chip, search=search),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="compatibility.csv"', "Cache-Control": "no-store"},
+    )
+
+
 @router.get("/releases")
 def published_releases(
     user: dict = Depends(require_lookup_tab),

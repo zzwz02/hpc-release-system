@@ -78,15 +78,22 @@ test("HPC version worksheet CSV -> QA Excel validation -> report and fresh blank
   const exported = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出 CSV", exact: true }).click();
   const parsed = parseCsvRows(await readFile((await (await exported).path())!, "utf8"));
-  expect(parsed[0]).toEqual(expectedColumns);
-  expect(parsed.slice(1)).toHaveLength(commands.rows.length);
-  for (const [index, row] of parsed.slice(1).entries()) {
+  expect(parsed[0]).toEqual(expectedColumns.filter(column => !["py_label", "torch_label"].includes(column)));
+  expect(parsed.slice(1)).toEqual(await commandsPane.locator("tbody tr").evaluateAll(rows => rows.map(row =>
+    [...row.querySelectorAll("td")].map(cell => cell.textContent ?? ""))));
+  const templateDownload = page.waitForEvent("download");
+  await commandsPane.getByRole("button", { name: "下载 QA 回填模板", exact: true }).click();
+  const template = parseCsvRows(await readFile((await (await templateDownload).path())!, "utf8"));
+  expect(template[0]).toEqual(expectedColumns);
+  expect(template.slice(1)).toHaveLength(commands.rows.length);
+  for (const [index, row] of template.slice(1).entries()) {
     expect(row.slice(-6)).toEqual(["", "", "", "", "", ""]);
     expect(row[12]).toBe(commands.rows[index].website_docker_cmd);
   }
 
   let index = 0;
-  const rows = commands.rows.map((row: Record<string, unknown>) => String(row.website_docker_cmd).includes("<hpc_version>") ? row : ({
+  const templateRows = template.slice(1).map(row => Object.fromEntries(template[0].map((column, index) => [column, row[index]])));
+  const rows = templateRows.map((row: Record<string, unknown>) => String(row.website_docker_cmd).includes("<hpc_version>") ? row : ({
     ...row, qa_result: index++ === 0 ? 0 : "pass", qa_digest: image,
     qa_docker_cmd: row.website_docker_cmd + " # QA Excel command", qa_env: "C500_server_1", qa_status: "pass", qa_comment: "中文备注",
     website_docker_cmd: "=1+2",
