@@ -167,6 +167,53 @@ do_status
     assert not Path(str(codex) + '.bak-release-mcp').exists()
 
 
+@pytest.mark.parametrize(('action', 'mode'), [
+    ('configure', 'skip'),
+    ('regenerate', 'skip'),
+    ('configure', 'write-error'),
+    ('regenerate', 'missing-python'),
+    ('use_token', 'write-error'),
+])
+def test_full_token_is_displayed_when_local_configuration_is_skipped_or_fails(tmp_path, action, mode):
+    functions = tmp_path / 'setup-functions.sh'
+    functions.write_text(SCRIPT.read_text().split('action="${1:-}"')[0])
+    token = 'rsmcp_test_abcdefghijklmnopqrstuvwxyz0123456789'
+    command = '''TEST_MODE="$4"
+command() {
+  if [[ "${1:-}" == -v && "${2:-}" == python3 && "$TEST_MODE" != write-error ]]; then return 1; fi
+  builtin command "$@"
+}
+python3() { return 49; }
+source "$1"
+CLAUDE_JSON="$2/claude.json"
+CODEX_TOML="$2/codex.toml"
+MCP_CLIENTS=codex
+MCP_TOKEN="$5"
+server_status() { username="${USER:-test-user}"; active_prefix=""; active_line=""; }
+token_works() { [ "$1" = "$MCP_TOKEN" ]; }
+api() { [ "$1" = regenerate ] && printf '%s\\n' "$MCP_TOKEN"; }
+detect_clients() { if [ "$TEST_MODE" != skip ]; then echo codex; fi; }
+ask() { if [ "$TEST_MODE" = skip ]; then printf n; else printf y; fi; }
+"do_$3"
+'''
+    result = subprocess.run(['bash', '-c', command, 'test', str(functions), str(tmp_path), action, mode, token],
+                            env={**os.environ, 'NO_COLOR': '1'}, capture_output=True, text=True, timeout=10)
+    assert result.stderr.splitlines().count(f'   {token}') == 1
+    assert '完整 MCP Token' in result.stderr
+    assert '配置已写入' not in result.stderr
+    assert not (tmp_path / 'claude.json').exists()
+    assert not (tmp_path / 'codex.toml').exists()
+    if mode == 'skip':
+        assert result.returncode == 0, result.stderr
+        assert f'Bearer {token}' in result.stdout
+    else:
+        assert result.returncode != 0
+        assert '本机配置写入失败' in result.stderr
+        assert result.stdout == ''
+    if mode == 'missing-python':
+        assert '未检测到 python3' in result.stderr
+
+
 @pytest.mark.parametrize('action', ['configure', 'regenerate'])
 @pytest.mark.parametrize('reply', ['', 'n', 'N', 'invalid', 'y', 'Y'])
 def test_replacing_an_active_token_requires_confirmation_before_any_changes(tmp_path, action, reply):

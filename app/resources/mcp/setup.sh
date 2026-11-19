@@ -65,8 +65,6 @@ yes_no() {  # yes_no "question" default(y|n)
   case "$reply" in [Yy]*) return 0 ;; *) return 1 ;; esac
 }
 
-command -v python3 >/dev/null 2>&1 || die "未检测到 python3，无法读取和修改配置文件。"
-
 # ── server API (username + password) ─────────────────────────
 username=""
 password=""
@@ -112,6 +110,10 @@ token_works() {  # token_works TOKEN → 0 when this server accepts it
 
 # ── local config files ───────────────────────────────────────
 config() {  # config find|write|remove [TOKEN] [CLIENTS...]
+  if ! command -v python3 >/dev/null 2>&1; then
+    warn "未检测到 python3，无法读取或修改本机配置文件。"
+    return 127
+  fi
   SERVER_NAME="$SERVER_NAME" MCP_URL="$MCP_URL" CLAUDE_JSON="$CLAUDE_JSON" CODEX_TOML="$CODEX_TOML" \
     python3 - "$@" <<'PY'
 import json, os, re, shutil, sys, tempfile
@@ -228,7 +230,11 @@ LINKS
 label() { case "$1" in claude) echo "Claude Code" ;; codex) echo "Codex" ;; esac; }
 
 write_local() {  # write_local TOKEN
-  local clients; clients="$(detect_clients | tr '\n' ' ')"
+  local clients
+  if ! clients="$(detect_clients | tr '\n' ' ')"; then
+    show_token "$1"
+    die "未能检测本机客户端。请保存上方 Token，之后可直接复用。"
+  fi
   if [ -z "${clients// /}" ]; then
     warn "未在本机检测到 Claude Code 或 Codex（CLI 或 VS Code 扩展）。"
     if yes_no "是否仍为两者预先写入配置文件？[y/N] " n; then clients="claude codex"; else print_config "$1"; return; fi
@@ -240,7 +246,10 @@ write_local() {  # write_local TOKEN
     warn "   后续该用户运行的 Claude / Codex 都将以【$username】的身份调用发布系统！"
   fi
   # shellcheck disable=SC2086
-  config write "$1" $clients
+  if ! config write "$1" $clients; then
+    show_token "$1"
+    die "本机配置写入失败。请保存上方 Token，之后可直接复用。"
+  fi
   local client
   printf '\n' >&2
   for client in $clients; do success "✔ $(label "$client") 配置已写入"; done
@@ -258,6 +267,7 @@ write_local() {  # write_local TOKEN
 
 print_config() {  # print_config TOKEN
   local token="${1:-<你的 token>}"
+  if [[ "$token" =~ ^rsmcp_[A-Za-z0-9_-]+$ ]]; then show_token "$token"; fi
   cat <<EOF
 
 # ── 1. Claude Code（CLI 与 VS Code 扩展通用）──────────────────────────
@@ -284,7 +294,6 @@ startup_timeout_sec = 30
 
 EOF
   other_harnesses "$token"
-  if [[ "$token" =~ ^rsmcp_[A-Za-z0-9_-]+$ ]]; then show_token "$token"; fi
 }
 
 # ── actions ──────────────────────────────────────────────────
@@ -344,7 +353,8 @@ do_status() {
   else
     warn "☁️  服务端状态：当前没有任何有效 Token"
   fi
-  local found=0 client token current_token=""
+  local found=0 client token current_token="" local_config
+  local_config="$(config find)" || die "无法读取本机配置，无法查询本机 Token。"
   while read -r client token; do
     [ -n "$client" ] || continue
     found=1
@@ -359,7 +369,7 @@ do_status() {
            warn "💻 本机 $(label "$client")：$token（$state）"
          fi ;;
     esac
-  done < <(config find)
+  done <<<"$local_config"
   if [ "$found" != 1 ]; then
     say "💻 本机状态：尚未配置 $SERVER_NAME"
     dim "   提示：服务端仅保存摘要，无法反查完整 Token；如需复用请从其他已配置机器复制。"
