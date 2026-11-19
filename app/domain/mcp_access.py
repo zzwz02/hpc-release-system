@@ -4,7 +4,9 @@ from __future__ import annotations
 import re
 
 from app.api.errors import ApiError
-from app.domain.permissions import CAPABILITY_PERMISSIONS, has_capability
+from app.domain.permissions import (
+    CAPABILITY_PERMISSIONS, LDAP_GROUP_GRANTS, has_capability, ldap_group_matches, roles_for_tab,
+)
 
 # Guests may read this JIRA project only. This is a fixed product permission,
 # independent of which server hosts the website or the JIRA integration.
@@ -19,6 +21,17 @@ def can_use_tool(role: str, name: str) -> bool:
     """Explicit grants for limited users; future tools are denied by default."""
     return (has_capability(role, "mcp.tools.all")
             or role in CAPABILITY_PERMISSIONS.get(f"mcp.tool.{name}", ()))
+
+
+def can_use_jenkins(role: str, site: str, groups: tuple[str, ...] = ()) -> bool:
+    """Site grants are independent of broad MCP grants and JIRA project scope."""
+    capability = f"mcp.jenkins.{site}"
+    return role in roles_for_tab("mcp") and (
+        has_capability(role, "mcp.jenkins.all")
+        or role in CAPABILITY_PERMISSIONS.get(capability, ())
+        or any(ldap_group_matches(group, pattern)
+               for group in groups for pattern in LDAP_GROUP_GRANTS.get(capability, ()))
+    )
 
 
 def limited_jira_reader(role: str) -> bool:

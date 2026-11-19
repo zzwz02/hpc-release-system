@@ -30,6 +30,7 @@ export interface McpInfo {
   tools: McpToolInfo[];
   can_view_all: boolean;
   jira_read_projects: string[] | null;
+  access_warnings?: string[];
 }
 
 export interface McpStats {

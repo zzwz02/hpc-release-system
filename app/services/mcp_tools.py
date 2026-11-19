@@ -10,6 +10,7 @@ statistics page without touching them:
   * ``roles``     extra role limit on top of the MCP tab permission
   * shared ``mcp.tools.all`` / ``mcp.tool.<name>`` capabilities grant tool
                   access; limited users do not inherit newly registered tools
+  * ``jenkins_site`` uses the site role/group grant instead of generic tool grants
   * ``handler``   returns ToolResult; ``ToolResult.log`` says what the call
                   acted on (target) and any tool-specific fields (extra)
   * ``log_args``  optional redaction of arguments before they are stored
@@ -30,7 +31,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.domain.mcp_access import can_use_tool
+from app.domain.mcp_access import can_use_jenkins, can_use_tool
 
 # Stored argument values are cut to this many characters each, so a pasted
 # log or long comment cannot bloat the log table.
@@ -101,6 +102,7 @@ class Tool:
     log_args: Callable[[dict[str, Any]], dict[str, Any]] | None = None
     confirm: Callable[[ToolContext, dict[str, Any]], str] | None = None
     prepare: Callable[[ToolContext, dict[str, Any]], dict[str, Any]] | None = None
+    jenkins_site: str = ""
 
     @property
     def requires_confirmation(self) -> bool:
@@ -125,7 +127,9 @@ class Tool:
             "annotations": annotations,
         }
 
-    def allowed(self, role: str) -> bool:
+    def allowed(self, role: str, *, groups: tuple[str, ...] = ()) -> bool:
+        if self.jenkins_site:
+            return can_use_jenkins(role, self.jenkins_site, groups)
         return can_use_tool(role, self.name) and (not self.roles or role in self.roles)
 
     def logged_args(self, arguments: dict[str, Any]) -> str:
@@ -152,9 +156,9 @@ def load_tools() -> None:
     from app.services import mcp_jenkins_tools, mcp_jenkins_discovery, mcp_jira_tools, mcp_jira_attachments, mcp_skill_tools  # noqa: F401
 
 
-def tools_for(role: str) -> list[Tool]:
+def tools_for(role: str, *, groups: tuple[str, ...] = ()) -> list[Tool]:
     load_tools()
-    return [tool for tool in _REGISTRY.values() if tool.allowed(role)]
+    return [tool for tool in _REGISTRY.values() if tool.allowed(role, groups=groups)]
 
 
 def get_tool(name: str) -> Tool | None:

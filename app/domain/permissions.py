@@ -43,11 +43,12 @@ def _load_policy() -> tuple[
     tuple[str, ...],
     Mapping[str, tuple[str, ...]],
     Mapping[str, tuple[str, ...]],
+    Mapping[str, tuple[str, ...]],
 ]:
     raw = json.loads(_POLICY_PATH.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict) or set(raw) != {"roles", "tabs", "capabilities"}:
+    if not isinstance(raw, dict) or set(raw) != {"roles", "tabs", "capabilities", "ldap_group_grants"}:
         raise RuntimeError(
-            "shared/access_control.json must contain roles, tabs, and capabilities"
+            "shared/access_control.json must contain roles, tabs, capabilities, and ldap_group_grants"
         )
     roles = raw["roles"]
     if (
@@ -59,6 +60,13 @@ def _load_policy() -> tuple[
         raise RuntimeError("access_control.roles must be a non-empty unique string list")
     ordered_roles = tuple(roles)
     known_roles = frozenset(ordered_roles)
+    grants = raw["ldap_group_grants"]
+    if not isinstance(grants, dict) or any(
+        not isinstance(name, str) or not isinstance(patterns, list) or not patterns
+        or any(not isinstance(pattern, str) or not pattern for pattern in patterns)
+        for name, patterns in grants.items()
+    ):
+        raise RuntimeError("access_control.ldap_group_grants must map capabilities to group patterns")
     return (
         ordered_roles,
         _role_mapping(raw["tabs"], section="tabs", known_roles=known_roles),
@@ -67,10 +75,11 @@ def _load_policy() -> tuple[
             section="capabilities",
             known_roles=known_roles,
         ),
+        MappingProxyType({name: tuple(patterns) for name, patterns in grants.items()}),
     )
 
 
-ALL_ROLES, TAB_PERMISSIONS, CAPABILITY_PERMISSIONS = _load_policy()
+ALL_ROLES, TAB_PERMISSIONS, CAPABILITY_PERMISSIONS, LDAP_GROUP_GRANTS = _load_policy()
 ROLES: frozenset[str] = frozenset(ALL_ROLES)
 
 

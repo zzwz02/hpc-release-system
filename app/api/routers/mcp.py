@@ -338,13 +338,17 @@ def revoke_token(token_id: int, user: dict = Depends(require_view),
 
 
 @router.get("/api/mcp/info")
-def info(request: Request, user: dict = Depends(require_view)) -> dict:
+def info(request: Request, user: dict = Depends(require_view),
+         conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    from app.services.mcp_access_service import jenkins_groups
     from app.services.mcp_tools import tools_for
+    groups, warning = jenkins_groups(conn, user)
     return {
         "endpoint": f"{_request_base(request)}/mcp",
         "server_name": mcp_protocol.SERVER_NAME,
         "tools": [{"name": t.name, "title": t.title, "category": t.category, "read_only": t.read_only,
-                   "description": t.description} for t in tools_for(user["role"])],
+                   "description": t.description} for t in tools_for(user["role"], groups=groups)],
+        "access_warnings": [warning] if warning else [],
         "can_view_all": mcp_service.can_view_all(user["role"]),
         "jira_read_projects": [LIMITED_JIRA_PROJECT] if limited_jira_reader(user["role"]) else None,
     }

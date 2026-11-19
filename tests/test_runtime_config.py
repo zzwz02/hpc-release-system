@@ -137,11 +137,17 @@ def test_example_file_parses_into_every_section(monkeypatch: pytest.MonkeyPatch)
     assert runtime_config.section("jira")["JIRA_BASE_URL"]
     assert runtime_config.section("llm")["LLM_MODEL"]
     assert cicd_agent._agent_timeout_seconds() == 90
-    jenkins = runtime_config.section("cicd_agent")
-    assert jenkins["JENKINS_BASE_URL"].startswith("https://")
-    assert jenkins["JENKINS_USERNAME"] == "fu_pde-hpc_bot"
-    assert jenkins["JENKINS_API_TOKEN"] == ""
-    assert int(jenkins["JENKINS_TIMEOUT_SECONDS"]) > 0
+    jenkins = runtime_config.section("jenkins_pde")
+    assert jenkins["BASE_URL"].startswith("https://")
+    assert jenkins["USERNAME"] == "fu_pde-hpc_bot"
+    assert jenkins["API_TOKEN"] == ""
+    assert int(jenkins["TIMEOUT_SECONDS"]) > 0
+    cicd_jenkins = runtime_config.section("jenkins_cicd")
+    assert cicd_jenkins["BASE_URL"] == "https://cicd.sh.metax-internal.com/"
+    assert cicd_jenkins["USERNAME"] == jenkins["USERNAME"]
+    assert cicd_jenkins["API_TOKEN"] == ""
+    assert int(cicd_jenkins["TIMEOUT_SECONDS"]) > 0
+    assert not any(key.startswith("JENKINS_") for key in runtime_config.section("cicd_agent"))
     assert runtime_config.section("hpc_manifest_archive")["BASE_URL"].startswith("https://")
     [group] = domain.groups_from_sections(runtime_config.agent_group_sections()).values()
     assert (group.name, group.max_concurrent, group.components) == ("HPC", 2, ("PDE_HPC",))

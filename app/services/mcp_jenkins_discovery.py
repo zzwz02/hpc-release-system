@@ -9,7 +9,6 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app import runtime_config
-from app.domain.permissions import roles_for_tab
 from app.integrations.jenkins import JenkinsClient, JenkinsError
 from app.services.mcp_evidence import correlations
 from app.services.mcp_tools import Tool, ToolContext, ToolError, ToolLog, ToolResult, register
@@ -44,10 +43,10 @@ def _job_url(client: JenkinsClient, value: str) -> str:
     return client.build_url(value.rstrip('/') + '/1/').removesuffix('1/')
 
 
-def _discover(ctx: ToolContext, args: dict, *, builds: bool) -> ToolResult:
+def _discover(ctx: ToolContext, args: dict, *, builds: bool, site: str = 'pde') -> ToolResult:
     try:
         q = (BuildsQuery if builds else JobsQuery).model_validate(args)
-        client = JenkinsClient()
+        client = JenkinsClient(site)
         if builds:
             url = _job_url(client, q.job_url)
             field, columns = 'builds', 'number,url,result,building,timestamp,duration'
@@ -80,7 +79,7 @@ def _discover(ctx: ToolContext, args: dict, *, builds: bool) -> ToolResult:
                   'has_more': more, 'next_offset': end if more else None,
                   'timezone': 'Asia/Shanghai',
                   'scope': 'Filters apply to this page only; continue next_offset even if no matches. Folder queries are not recursive.',
-                  'hint': '构建 SUCCESS 不保证每个 case 通过；继续用 jenkins_get_build_errors 读取 case 结果。'}
+                  'hint': f'构建 SUCCESS 不保证每个 case 通过；继续用 {"cicd_" if site == "cicd" else ""}jenkins_get_build_errors 读取 case 结果。'}
         # Return folders even when a name filter matches no job, so nested jobs are discoverable.
         if not builds:
             result['folders'] = [j for j in raw if 'Folder' in j.get('_class', '') or 'MultiBranch' in j.get('_class', '')]
@@ -91,15 +90,29 @@ def _discover(ctx: ToolContext, args: dict, *, builds: bool) -> ToolResult:
         raise ToolError(str(exc)) from exc
 
 
-register(Tool(name='jenkins_list_jobs', category='jenkins', title='查找 Jenkins 任务',
-              description='List/search Jenkins jobs directly without the CICD Agent backend. Start at root; '
+register(Tool(name='jenkins_list_jobs', category='jenkins', title='查找 PDE Jenkins 任务',
+              description='List/search PDE Jenkins (jenkins-pde.sh.metax-internal.com) jobs directly without the CICD Agent backend. Start at root; '
                           'follow folders using parent_url for nested jobs. Name filter applies only to each '
                           'scanned page: continue next_offset even when jobs is empty. Returns source URLs.',
-              input_schema=JobsQuery.model_json_schema(), roles=roles_for_tab('jenkins-failures'),
+              input_schema=JobsQuery.model_json_schema(), jenkins_site='pde',
               handler=lambda ctx, args: _discover(ctx, args, builds=False)))
-register(Tool(name='jenkins_list_builds', category='jenkins', title='查询 Jenkins 构建',
-              description='List builds of a job_url from jenkins_list_jobs. Optional inclusive dates use Asia/Shanghai '
+register(Tool(name='jenkins_list_builds', category='jenkins', title='查询 PDE Jenkins 构建',
+              description='List PDE Jenkins builds of a job_url from jenkins_list_jobs. Optional inclusive dates use Asia/Shanghai '
                           'build-start time. All statuses are included: SUCCESS can contain failed cases. '
                           'Continue next_offset for more scanned builds. Does not depend on failure records.',
-              input_schema=BuildsQuery.model_json_schema(), roles=roles_for_tab('jenkins-failures'),
+              input_schema=BuildsQuery.model_json_schema(), jenkins_site='pde',
               handler=lambda ctx, args: _discover(ctx, args, builds=True)))
+
+register(Tool(name='cicd_jenkins_list_jobs', category='jenkins', title='查找 CICD Jenkins 任务',
+              description='List/search CICD Jenkins jobs (cicd.sh.metax-internal.com). Start at root; '
+                          'follow folders using parent_url. Filters apply to this scanned page only; '
+                          'continue next_offset even when empty. PDE URLs are rejected. Read-only.',
+              input_schema=JobsQuery.model_json_schema(), jenkins_site='cicd',
+              handler=lambda ctx, args: _discover(ctx, args, builds=False, site='cicd')))
+register(Tool(name='cicd_jenkins_list_builds', category='jenkins', title='查询 CICD Jenkins 构建',
+              description='List CICD Jenkins builds using job_url from cicd_jenkins_list_jobs. '
+                          'Inclusive date filters use Asia/Shanghai build-start time and apply to the scanned page; '
+                          'continue next_offset. Includes all statuses; SUCCESS does not prove case success. '
+                          'Use cicd_jenkins_get_build_errors for logs/cases. PDE URLs are rejected. Read-only.',
+              input_schema=BuildsQuery.model_json_schema(), jenkins_site='cicd',
+              handler=lambda ctx, args: _discover(ctx, args, builds=True, site='cicd')))

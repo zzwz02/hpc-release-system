@@ -16,8 +16,8 @@ from app.services.mcp_tools import ToolContext, ToolError
 @pytest.fixture
 def configured(tmp_path, monkeypatch):
     path = tmp_path / 'test.conf'
-    path.write_text('[cicd_agent]\nJENKINS_BASE_URL=https://ci.example/jenkins\n'
-                    'JENKINS_USERNAME=bot\nJENKINS_API_TOKEN=test-secret\nJENKINS_TIMEOUT_SECONDS=5\n')
+    path.write_text('[jenkins_pde]\nBASE_URL=https://ci.example/jenkins\n'
+                    'USERNAME=bot\nAPI_TOKEN=test-secret\nTIMEOUT_SECONDS=5\n')
     monkeypatch.setattr(settings, 'runtime_conf_path', path)
     return path
 
@@ -110,8 +110,8 @@ def test_credentials_refresh_and_missing_config(configured):
     assert jenkins.JenkinsClient().token == 'test-secret'
     configured.write_text(configured.read_text().replace('test-secret', 'rotated-secret'))
     assert jenkins.JenkinsClient().token == 'rotated-secret'
-    configured.write_text('[cicd_agent]\n')
-    with pytest.raises(ToolError, match='JENKINS_BASE_URL'):
+    configured.write_text('[jenkins_pde]\n')
+    with pytest.raises(ToolError, match=r'\[jenkins_pde\].*BASE_URL'):
         _build_errors(context(), {'build_url': 'https://ci.example/jenkins/job/models/7/'})
 
 
@@ -154,3 +154,105 @@ def test_artifacts_must_be_listed_json_reports(configured, monkeypatch, path, al
         with pytest.raises(ToolError):
             _build_errors(context(), args)
         assert not any('/artifact/' in p for p in requested)
+
+
+def configure_cicd(path, token='cicd-secret'):
+    path.write_text(path.read_text() + '\n[jenkins_cicd]\nBASE_URL=https://cicd.example\n'
+                    f'USERNAME=bot\nAPI_TOKEN={token}\nTIMEOUT_SECONDS=5\n')
+
+
+def test_each_site_uses_its_own_token_and_redaction(configured, monkeypatch):
+    configure_cicd(configured)
+    requests = []
+    def handler(request):
+        requests.append(request)
+        token = 'cicd-secret' if request.url.host == 'cicd.example' else 'test-secret'
+        assert request.headers['authorization'] == 'Basic ' + base64.b64encode(f'bot:{token}'.encode()).decode()
+        return httpx.Response(200, content=f'failure {token}'.encode())
+    install_transport(monkeypatch, handler)
+    for site, url in [('pde', 'https://ci.example/jenkins/job/models/7/'),
+                      ('cicd', 'https://cicd.example/job/compiler/7/')]:
+        result = _build_errors(context(), {'build_url': url, 'source': 'console'}, site=site)
+        assert json.loads(result.content[0]['text'])['content'] == 'failure [REDACTED]'
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize('site,url', [
+    ('cicd', 'https://ci.example/jenkins/job/models/7/'),
+    ('pde', 'https://cicd.example/job/compiler/7/'),
+])
+def test_cross_site_build_and_job_urls_never_send_credentials(configured, monkeypatch, site, url):
+    from app.services.mcp_jenkins_discovery import _discover
+    configure_cicd(configured)
+    install_transport(monkeypatch, lambda _: pytest.fail('must not send another site credential'))
+    with pytest.raises(ToolError, match='配置的 Jenkins'):
+        _build_errors(context(), {'build_url': url}, site=site)
+    with pytest.raises(ToolError, match='配置的 Jenkins'):
+        _discover(context(), {'job_url': url.rsplit('/7/', 1)[0]}, builds=True, site=site)
+    with pytest.raises(ToolError, match='配置的 Jenkins'):
+        _discover(context(), {'parent_url': url.rsplit('/7/', 1)[0]}, builds=False, site=site)
+
+
+def test_cicd_missing_token_has_no_pde_fallback_and_rotation_is_live(configured):
+    configure_cicd(configured, token='')
+    with pytest.raises(ToolError, match=r'\[jenkins_cicd\].*API_TOKEN'):
+        _build_errors(context(), {'build_url': 'https://cicd.example/job/compiler/7/'}, site='cicd')
+    configured.write_text(configured.read_text().replace('API_TOKEN=\n', 'API_TOKEN=rotated-cicd-secret\n'))
+    assert jenkins.JenkinsClient('cicd').token == 'rotated-cicd-secret'
+    assert jenkins.JenkinsClient('pde').token == 'test-secret'
+
+
+@pytest.mark.parametrize('builds', [False, True])
+def test_cicd_discovery_and_followup_hint(configured, monkeypatch, builds):
+    configure_cicd(configured)
+    def handler(request):
+        assert request.url.host == 'cicd.example'
+        return httpx.Response(200, json={'builds': [{'number': 7, 'timestamp': 1, 'url': 'https://cicd.example/job/compiler/7/'}]}
+                              if builds else {'jobs': [{'name': 'compiler', 'url': 'https://cicd.example/job/compiler/'}]})
+    install_transport(monkeypatch, handler)
+    tool_name = 'cicd_jenkins_list_builds' if builds else 'cicd_jenkins_list_jobs'
+    from app.services.mcp_tools import get_tool
+    args = {'job_url': 'https://cicd.example/job/compiler/'} if builds else {}
+    result = json.loads(get_tool(tool_name).handler(context(), args).content[0]['text'])
+    assert result['builds' if builds else 'jobs']
+    assert 'cicd_jenkins_get_build_errors' in result['hint']
+
+
+def legacy_pde_config():
+    return ('[cicd_agent]\nBASE_URL=https://agent.example\nTIMEOUT_SECONDS=90\n'
+            'JENKINS_BASE_URL=https://old-pde.example\nJENKINS_USERNAME=legacy-bot\n'
+            'JENKINS_API_TOKEN=legacy-secret\nJENKINS_TIMEOUT_SECONDS=7\n')
+
+
+def test_legacy_pde_configuration_still_works_and_refreshes(configured):
+    configured.write_text(legacy_pde_config())
+    client = jenkins.JenkinsClient('pde')
+    assert (client.base, client.username, client.timeout) == ('https://old-pde.example', 'legacy-bot', 7)
+    assert client.token == 'legacy-secret'
+    configured.write_text(configured.read_text().replace('legacy-secret', 'rotated-secret'))
+    assert jenkins.JenkinsClient('pde').token == 'rotated-secret'
+
+
+def test_new_pde_configuration_wins_as_a_whole(configured):
+    configured.write_text(configured.read_text() + legacy_pde_config())
+    client = jenkins.JenkinsClient('pde')
+    assert client.base == 'https://ci.example/jenkins'
+    assert client.username == 'bot' and client.token == 'test-secret' and client.timeout == 5
+
+
+@pytest.mark.parametrize('new_values,missing', [
+    ('', 'BASE_URL'),
+    ('BASE_URL=https://pde.example\nUSERNAME=bot\nTIMEOUT_SECONDS=5\n', 'API_TOKEN'),
+    ('BASE_URL=https://pde.example\nUSERNAME=bot\nAPI_TOKEN=\nTIMEOUT_SECONDS=5\n', 'API_TOKEN'),
+])
+def test_incomplete_new_pde_section_never_borrows_legacy_values(configured, new_values, missing):
+    configured.write_text(legacy_pde_config() + '\n[jenkins_pde]\n' + new_values)
+    with pytest.raises(runtime_config.ConfigError, match=rf'\[jenkins_pde\].*{missing}'):
+        jenkins.JenkinsClient('pde')
+
+
+def test_unconfigured_sites_report_their_own_section(configured):
+    configured.write_text('[cicd_agent]\nBASE_URL=https://agent.example\nTIMEOUT_SECONDS=90\n')
+    for site in ['pde', 'cicd']:
+        with pytest.raises(runtime_config.ConfigError, match=rf'\[jenkins_{site}\].*BASE_URL'):
+            jenkins.JenkinsClient(site)

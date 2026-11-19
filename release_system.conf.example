@@ -74,13 +74,23 @@ LLM_API_KEY = <api-key>
 BASE_URL = http://10.2.118.76:8056
 TIMEOUT_SECONDS = 90
 REPRO_GATEWAY_TOKEN =
-# MCP 直接读取 Jenkins 构建、测试报告及控制台日志（用户名 + API Token）。
-# 以下四项一起填写；API Token 只放真实 release_system.conf，不提交。
-JENKINS_BASE_URL = https://jenkins-pde.sh.metax-internal.com/
-JENKINS_USERNAME = fu_pde-hpc_bot
-JENKINS_API_TOKEN =
-JENKINS_TIMEOUT_SECONDS = 30
 
+# ── Jenkins（每个站点独立配置，RM 可访问全部站点） ────────────────
+[jenkins_pde]
+# MCP 直接读取 Jenkins 构建、测试报告及控制台日志（用户名 + API Token）。
+# 非 Guest MCP 角色或 dl.pde_ 开头域组可访问。
+# 以下四项一起填写；API Token 只放真实 release_system.conf，不提交。
+BASE_URL = https://jenkins-pde.sh.metax-internal.com/
+USERNAME = fu_pde-hpc_bot
+API_TOKEN =
+TIMEOUT_SECONDS = 30
+
+[jenkins_cicd]
+# RM 或 dl.sw_ 开头域组可访问。账号名可相同，Token 必须单独填写。
+BASE_URL = https://cicd.sh.metax-internal.com/
+USERNAME = fu_pde-hpc_bot
+API_TOKEN =
+TIMEOUT_SECONDS = 30
 
 # ── HPC repo 构建固定 manifest 公开归档 ──────────────────────────
 # digest 的实际 tags 为 repo 时，按发布版本和 Jenkins 构建号读取固定 XML，

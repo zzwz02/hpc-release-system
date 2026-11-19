@@ -40,6 +40,8 @@
     "weekly-report.run": ["RM"],
     "mcp.logs.view.all": ["RM"],
     "mcp.tools.all": ["RM", "Owner", "QA", "SPD"],
+    "mcp.jenkins.all": ["RM"],
+    "mcp.jenkins.pde": ["RM", "Owner", "QA", "SPD"],
     "mcp.tool.jira_search": ["Guest"],
     "mcp.tool.jira_pull_issue": ["Guest"],
     "mcp.tool.jira_read_attachment": ["Guest"],
@@ -58,5 +60,9 @@
     "cicd.delivery.apply_returned": ["RM"],
     "cicd.delivery.reject_returned": ["RM"],
     "notification.manage": ["RM"]
+  },
+  "ldap_group_grants": {
+    "mcp.jenkins.pde": ["dl.pde_*"],
+    "mcp.jenkins.cicd": ["dl.sw_*"]
   }
 }

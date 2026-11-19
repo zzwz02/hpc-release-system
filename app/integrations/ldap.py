@@ -121,11 +121,7 @@ def authenticate(
 
 
 def groups_for_user(username: str, *, ldap_config: dict) -> list[str]:
-    """Return group memberships for a user.
-
-    Not used in Phase 2 core flows but provided for completeness.
-    Raises RuntimeError if LDAP is not enabled or ldap3 is unavailable.
-    """
+    """Read current direct memberships for MCP authorization, without a user password."""
     cfg = ldap_config
     if not cfg.get("enabled"):
         raise RuntimeError("LDAP 登录未启用")
@@ -154,18 +150,19 @@ def groups_for_user(username: str, *, ldap_config: dict) -> list[str]:
     except LDAPException as exc:
         raise RuntimeError(f"LDAP 服务账号连接失败：{exc}") from exc
 
-    svc.search(
-        cfg["base"],
-        search_filter,
-        search_scope=LDAP_SUBTREE,
-        attributes=["memberOf"],
-    )
-    entries = svc.entries
-    svc.unbind()
-
-    if not entries:
-        return []
-    return _ldap_entry_values(entries[0], "memberOf")
+    try:
+        svc.search(cfg["base"], search_filter, search_scope=LDAP_SUBTREE, attributes=["memberOf"])
+        # ldap3 also returns False for a successful search with no matches.
+        if svc.result.get("result") != 0:
+            raise RuntimeError("LDAP 域组查询失败")
+        entries = svc.entries
+        if not entries:
+            return []
+        if len(entries) != 1:
+            raise RuntimeError("LDAP 域账号查询不唯一")
+        return _ldap_entry_values(entries[0], "memberOf")
+    finally:
+        svc.unbind()
 
 
 _LDAP_TEXT_KEYS = ("URI", "BASE", "BINDDN", "BINDPW", "USER_FILTER", "UID_ATTR", "NAME_ATTR")

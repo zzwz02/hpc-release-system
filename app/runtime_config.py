@@ -1,6 +1,6 @@
 """Runtime service configuration — one sectioned INI file, release_system.conf.
 
-Sections: [ldap] [jira] [llm] [cicd_agent] [hpc_manifest_archive] [dingtalk] [proxy] [site] and one
+Sections: [ldap] [jira] [llm] [cicd_agent] [jenkins_<site>] [hpc_manifest_archive] [dingtalk] [proxy] [site] and one
 [jira_agent:<group>] per JIRA agent and [jira_learning:<group>] per learning service and [jira_evaluation:<group>] per evaluator;
 release_system.conf.example documents every
 key.  Accessors re-read the file on every call (it is a few KB), so an edit
@@ -56,6 +56,11 @@ def section(name: str) -> dict[str, str]:
     """Return one section's unquoted string values; {} when absent."""
     parser = _read()
     return _values(parser, name) if parser.has_section(name) else {}
+
+
+def has_section(name: str) -> bool:
+    """Distinguish an explicitly empty section from an absent legacy replacement."""
+    return _read().has_section(name)
 
 
 def agent_group_sections() -> dict[str, dict[str, str]]:

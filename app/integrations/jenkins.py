@@ -20,12 +20,21 @@ class JenkinsError(Exception):
 
 
 class JenkinsClient:
-    def __init__(self):
-        section = runtime_config.section('cicd_agent')
-        self.base = runtime_config.required('cicd_agent', section, 'JENKINS_BASE_URL').rstrip('/')
-        self.username = runtime_config.required('cicd_agent', section, 'JENKINS_USERNAME')
-        self.token = runtime_config.required('cicd_agent', section, 'JENKINS_API_TOKEN')
-        self.timeout = runtime_config.required_int('cicd_agent', section, 'JENKINS_TIMEOUT_SECONDS')
+    def __init__(self, site: str = 'pde'):
+        if not re.fullmatch(r'[a-z][a-z0-9_]*', site):
+            raise JenkinsError('未知 Jenkins 站点')
+        name, prefix = f'jenkins_{site}', ''
+        section = runtime_config.section(name)
+        # Read the whole legacy PDE configuration only when the new section is
+        # absent. Never fill missing new keys from an old or another site's token.
+        if site == 'pde' and not section and not runtime_config.has_section(name):
+            legacy = runtime_config.section('cicd_agent')
+            if any(key.startswith('JENKINS_') for key in legacy):
+                name, prefix, section = 'cicd_agent', 'JENKINS_', legacy
+        self.base = runtime_config.required(name, section, prefix+'BASE_URL').rstrip('/')
+        self.username = runtime_config.required(name, section, prefix+'USERNAME')
+        self.token = runtime_config.required(name, section, prefix+'API_TOKEN')
+        self.timeout = runtime_config.required_int(name, section, prefix+'TIMEOUT_SECONDS')
         parsed = urlsplit(self.base)
         if parsed.scheme not in ('http', 'https') or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment or self.timeout <= 0:
             raise JenkinsError('Jenkins BASE_URL 或 TIMEOUT_SECONDS 配置无效')
