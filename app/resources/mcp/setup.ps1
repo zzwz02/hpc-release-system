@@ -297,9 +297,7 @@ function Save-TextAtomic {
         }
         throw
     }
-    if ($Client) {
-        [PSCustomObject]@{ Client = $Client; Path = $Path }
-    }
+    [PSCustomObject]@{ Client = $Client; Path = $Path }
 }
 
 function Get-JsoncTokens {
@@ -446,8 +444,7 @@ function Edit-McpJsonc {
             }
         }
     }
-    if ($writing) { Save-TextAtomic $Path $updated -Client $Client }
-    else { Save-TextAtomic $Path $updated }
+    Save-TextAtomic $Path $updated -Client $Client
 }
 
 function Remove-CodexSection {
@@ -737,7 +734,7 @@ function Invoke-Config {
                 Save-TextAtomic $CODEX_TOML $outText -Client "codex"
             } elseif ($stripped -ne ($text -replace '(\r?\n)+$', '')) {
                 $outText = if ($stripped) { "$stripped`n" } else { "" }
-                Save-TextAtomic $CODEX_TOML $outText
+                Save-TextAtomic $CODEX_TOML $outText -Client "codex"
             }
         }
     }
@@ -799,7 +796,7 @@ function Invoke-Config {
                 Save-TextAtomic $DSH_PATCH_YML ($base + (Format-DshBlock $Token)) -Client "dsh"
             } elseif ($stripped -ne ($text -replace '(\r?\n)+$', '')) {
                 $outText = if ([string]::IsNullOrWhiteSpace($stripped)) { "[]`n" } else { "$stripped`n" }
-                Save-TextAtomic $DSH_PATCH_YML $outText
+                Save-TextAtomic $DSH_PATCH_YML $outText -Client "dsh"
             }
         }
     }
@@ -1006,6 +1003,12 @@ codebuddy mcp add-json --scope user $SERVER_NAME '{"type":"http","url":"$MCP_URL
     Write-OtherHarnesses $displayToken
 }
 
+function Write-ConfigChange {
+    param($File, [string]$Action)
+    Write-Colored '✔ ' Green -NoNewline
+    Say ("{0,-16} {1}  {2}" -f (Get-ClientLabel $File.Client), $Action, $File.Path)
+}
+
 function Write-LocalConfig {
     param([string]$Token)
     $clients = @()
@@ -1043,8 +1046,7 @@ function Write-LocalConfig {
 
     Write-Host ""
     foreach ($file in $writtenFiles) {
-        Write-Colored '✔ ' Green -NoNewline
-        Say ("{0,-16} 配置已写入  {1}" -f (Get-ClientLabel $file.Client), $file.Path)
+        Write-ConfigChange $file '配置已写入'
     }
 
     if ($clients -contains "cursor") {
@@ -1191,9 +1193,16 @@ function Invoke-Regenerate {
 }
 
 function Invoke-Uninstall {
-    Invoke-Config -Op "remove" -Token "" -Clients $ALL_CLIENTS
-    Success "✔ 已从本机配置文件中移除 $SERVER_NAME"
-    Dim "  （被修改的原配置文件已自动备份为 *.bak-release-mcp）"
+    $removed = $false
+    Invoke-Config -Op "remove" -Clients $ALL_CLIENTS | ForEach-Object {
+        Write-ConfigChange $_ '配置已移除'
+        $removed = $true
+    }
+    if ($removed) {
+        Dim "  （被修改的原配置文件已自动备份为 *.bak-release-mcp）"
+    } else {
+        Say "本机配置中未找到 $SERVER_NAME"
+    }
     Write-Host ""
     Warn "ℹ️  说明：此操作仅移除本机配置，Token 本身依然有效。"
     Warn "   如需彻底作废 Token，请重新运行脚本选择「3) 重新生成 token」，或在网站「AI助手 → MCP」页面手动吊销。"

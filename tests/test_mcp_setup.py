@@ -423,6 +423,17 @@ exit $LASTEXITCODE
     return run
 
 
+def assert_config_changes(output, action, expected):
+    heading = f' {action}  '
+    lines = [line for line in output.splitlines() if heading in line]
+    assert len(lines) == len(expected), output
+    assert len({line.index(action) for line in lines}) == 1, output
+    assert {
+        (label.removeprefix('✔ ').strip(), Path(path))
+        for label, path in (line.split(heading, 1) for line in lines)
+    } == expected
+
+
 def test_installers_write_find_and_remove_all_supported_clients(
     run_installer, installer_profile, monkeypatch,
 ):
@@ -479,13 +490,7 @@ def test_installers_write_find_and_remove_all_supported_clients(
         result = run_installer(action)
         output = result.stdout + result.stderr
         assert result.returncode == 0, output
-        written_lines = [line for line in output.splitlines() if ' 配置已写入  ' in line]
-        assert len(written_lines) == len(expected_writes), output
-        assert len({line.index('配置已写入') for line in written_lines}) == 1, output
-        assert {
-            (label.removeprefix('✔ ').strip(), Path(path))
-            for label, path in (line.split(' 配置已写入  ', 1) for line in written_lines)
-        } == expected_writes
+        assert_config_changes(output, '配置已写入', expected_writes)
         assert 'Codex：若发评论时没有用户名弹窗' not in output
         assert TOKEN in output
         for path, (section, values) in json_configs.items():
@@ -526,7 +531,9 @@ def test_installers_write_find_and_remove_all_supported_clients(
     assert global_opencode.read_bytes() == global_opencode_original
 
     result = run_installer('uninstall')
-    assert result.returncode == 0, result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert_config_changes(output, '配置已移除', expected_writes | {('OpenCode', global_opencode)})
     for path, (section, _) in json_configs.items():
         assert json.loads(path.read_bytes()) == {section: {'other': {'command': 'other'}}}
     assert codex.read_text(encoding='utf-8') == codex_original
@@ -535,6 +542,27 @@ def test_installers_write_find_and_remove_all_supported_clients(
     assert global_opencode.with_suffix('.jsonc.bak-release-mcp').read_bytes() == global_opencode_original
     for path, content in configured.items():
         assert path.with_name(path.name + '.bak-release-mcp').read_bytes() == content
+
+    result = run_installer('uninstall')
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert '本机配置中未找到 release-system' in output
+    assert '配置已移除' not in output
+
+
+def test_installers_report_files_removed_before_an_uninstall_error(run_installer, installer_profile):
+    claude = installer_profile / '.claude.json'
+    claude.write_text('{"mcpServers":{"release-system":{"type":"http"}}}', encoding='utf-8')
+    cursor = installer_profile / '.cursor/mcp.json'
+    cursor.parent.mkdir()
+    cursor.write_text('{', encoding='utf-8')
+
+    result = run_installer('uninstall')
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert_config_changes(output, '配置已移除', {('Claude Code', claude)})
+    assert json.loads(claude.read_bytes()) == {'mcpServers': {}}
+    assert cursor.read_bytes() == b'{'
 
 
 def test_installers_validate_token_and_select_client_alias(run_installer, installer_profile):
@@ -623,7 +651,14 @@ def test_installers_use_priority_for_setup_and_remove_all_configs(
         assert not path.with_name(path.name + '.bak-release-mcp').exists()
 
     result = run_installer('uninstall')
-    assert result.returncode == 0, result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    expected_removals = {
+        (client, path)
+        for section, client in (('mcp', 'OpenCode'), ('mcpServers', 'CodeBuddy'))
+        for path in candidates[section][highest_existing:]
+    }
+    assert_config_changes(output, '配置已移除', expected_removals)
     for target in selected:
         updated = target.read_bytes().decode()
         assert '"release-system"' not in updated

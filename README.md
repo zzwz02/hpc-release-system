@@ -197,7 +197,7 @@ Guest 可登录 MCP 页面、创建或复用个人 token，默认工具为 `jira
 网站在 `POST /mcp` 提供 MCP Streamable HTTP 服务（普通请求返回 JSON，用户名确认使用 SSE），供 Claude Code、Codex 等客户端连接。页面地址是 `/mcp-console`（不能用 `/mcp`，否则浏览器刷新会打到 MCP 接口；浏览器直接访问 `/mcp` 会被跳转到页面）。「接入配置」生成个人 token（只显示一次，库里只存 SHA-256），并给出 Claude Code / Codex 的接入命令；「使用统计」展示调用量、失败率、每日调用、按工具/用户的统计及调用日志，不展示会话数、按 token 表格、客户端分类和常操作对象统计。列表最多显示 10 行，超出后内部滚动；调用日志标题与筛选框水平排列。仍可按 token 筛选（只显示 token 名称和前缀）。`initialize` 握手不计入各项使用统计，也不出现在调用日志及其分页计数中；原始连接记录保留用于排障。
 
 - 每人只有一个有效 token：生成新的会吊销旧的（鉴权也只认每人最新的一个）。网页「我的 token」只显示前几位，可重新生成或吊销。
-- MCP 接入配置页面统一生成 HTTP 的一键安装命令、各客户端命令和手动配置地址，沿用浏览器当前域名及非默认端口，不使用 `[site] PUBLIC_BASE_URL` 覆盖，也不提供协议选择；网站继续通过原地址访问。服务器须开放对应 HTTP 入口，容器无需配置网站证书；HTTP 会明文传输账号密码和 token，仅用于受控内网。安装脚本按下载请求的协议生成后续账号请求及 MCP 地址，已安装客户端可复用原 token 更新配置，无需卸载。
+- MCP 接入页提供可复制的 Bash 和 PowerShell 一键安装命令。手动配置直接展示 Claude Code 的 JSON 和 Codex 的 TOML，网页生成 token 后自动填入。命令与手动配置均使用浏览器当前域名及非默认端口的 HTTP 地址，不使用 `[site] PUBLIC_BASE_URL` 覆盖，也不提供协议选择；网站继续通过原地址访问。服务器须开放对应 HTTP 入口，容器无需配置网站证书；HTTP 会明文传输账号密码和 token，仅用于受控内网。安装脚本按下载请求的协议生成后续账号请求及 MCP 地址，已安装客户端可复用原 token 更新配置，无需卸载。
 - HTTPS 由 Nginx 等反向代理终止时，代理须覆盖设置 `proxy_set_header Host $http_host;` 和 `proxy_set_header X-Forwarded-Proto $scheme;`。MCP 返回的脚本、接入地址和附件传输链接会据此保留 HTTPS，避免登录 POST 请求误发到 HTTP 后遇到 301；不会使用 `X-Forwarded-Host` 替换目标主机，也不会将 HTTPS 降级到 HTTP。
 
 ### 一键配置客户端
@@ -216,20 +216,20 @@ bash <(curl -fsSL 'http://release.example/api/mcp/setup.sh')
 
 菜单提供 1 一键配置本机、2 查询 token 状态、3 重新生成 token、4 卸载本机配置。也可直接传入 `configure`、`status`、`regenerate` 或 `uninstall`。Bash 在命令末尾加动作，PowerShell 用 `& ([scriptblock]::Create((irm 'http://release.example/api/mcp/setup.ps1'))) status` 调用。查询和生成通过 `POST /api/mcp/account` 验证域账号，沿用网站登录的认证和 LDAP 组建用户规则。服务端对同一用户名 10 分钟内失败 5 次的请求实施锁定。
 
-两套脚本都可以自动检测客户端，直接配置其用户级文件，适用于只安装编辑器扩展的环境。脚本在修改前把现有文件备份为 `*.bak-release-mcp`，完成后逐行列出实际写入的文件路径。卸载仅移除本机的 `release-system` 配置项，已签发的 token 仍可在其他机器使用。
+两套脚本都可以自动检测客户端，直接配置其用户级文件，适用于只安装编辑器扩展的环境。脚本在修改前把现有文件备份为 `*.bak-release-mcp`，配置或卸载时逐行列出实际修改的文件路径。卸载仅移除本机的 `release-system` 配置项，已签发的 token 仍可在其他机器使用。
 
 | 客户端 | `MCP_CLIENTS` | 用户级配置 |
 | --- | --- | --- |
 | Claude Code | `claude` | `~/.claude.json` |
 | Codex | `codex` | `~/.codex/config.toml`，可由 `CODEX_HOME` 指定目录 |
 | Cursor | `cursor` | `~/.cursor/mcp.json` |
-| OpenCode | `opencode` | 优先使用 `OPENCODE_CONFIG` 指定的文件。默认始终写入全局目录下的 `opencode.jsonc`，文件不存在时创建。配置根目录可由 `XDG_CONFIG_HOME` 指定，默认是 `~/.config` |
-| CodeBuddy | `codebuddy` | CLI 始终写入 `~/.codebuddy/.mcp.json`。若该文件不存在，以优先级最高的现有旧文件为基础创建，保留其他配置。编辑器扩展使用各自的 `codebuddy_mcp_settings.json` |
+| OpenCode | `opencode` | 优先使用 `OPENCODE_CONFIG` 指定的文件，否则在全局目录下按 `opencode.jsonc` → `opencode.json` → `config.json` 选第一个现有文件，全部缺失时创建 `opencode.jsonc`。配置根目录可由 `XDG_CONFIG_HOME` 指定，默认是 `~/.config` |
+| CodeBuddy | `codebuddy` | CLI 按 `~/.codebuddy/.mcp.json` → `~/.codebuddy/mcp.json` → `~/.codebuddy.json` 选第一个现有文件，全部缺失时创建 `~/.codebuddy/.mcp.json`。编辑器扩展使用各自的 `codebuddy_mcp_settings.json` |
 | DeepSeek Harness | `dsh` 或 `deepseek-harness` | `~/.dsh/cordis.patch.yml`，可由 `DSH_HOME` 指定目录 |
 
 OpenCode V1 的 `mcp.release-system` 使用静态 Bearer Token，并通过 `"oauth": false` 关闭自动 OAuth，将 `"timeout"` 设为 `30000` 毫秒。
 
-OpenCode 查询本机 Token 时优先读取 `OPENCODE_CONFIG` 指定的文件，否则按 `opencode.jsonc` → `opencode.json` → `config.json` 读取第一个现有全局文件。CodeBuddy CLI 按 `~/.codebuddy/.mcp.json` → `~/.codebuddy/mcp.json` → `~/.codebuddy.json` 读取第一个现有文件。卸载会从所有已存在的候选用户配置文件中移除 `release-system` 条目，包括 `OPENCODE_CONFIG` 指定的文件和已检测到的 CodeBuddy 编辑器扩展配置。脚本按 JSONC 读取配置，并局部编辑该条目，保留其余注释和配置格式。
+OpenCode 和 CodeBuddy CLI 的查询和写入使用同一套优先级规则。卸载会从所有已存在的候选用户配置文件中移除 `release-system` 条目，包括 `OPENCODE_CONFIG` 指定的文件和已检测到的 CodeBuddy 编辑器扩展配置。脚本按 JSONC 读取配置，并局部编辑该条目，保留其余注释和配置格式。
 
 已有 token 时，使用 `use-token` 复用。用逗号指定多个客户端，或用 `all` 选择全部。脚本会验证 token，然后只更新所选客户端。以下示例会提示粘贴 token，也支持从 `MCP_TOKEN` 环境变量读取。
 

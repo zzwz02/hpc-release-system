@@ -35,7 +35,7 @@ test("Guest MCP exposes only four tools and the MC3 project scope", async ({ pag
   await expect(page.getByText("仅显示你本人的使用记录", { exact: true })).toBeVisible();
 });
 
-test("MCP client setup: collapsed sections and copyable single-line commands", async ({ page, context }) => {
+test("MCP setup offers Bash and PowerShell installers plus direct manual configuration", async ({ page, context }) => {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
@@ -44,38 +44,54 @@ test("MCP client setup: collapsed sections and copyable single-line commands", a
   })).ok()).toBeTruthy();
   await page.goto(base + "/mcp-console");
   const panel = page.locator(".panel").filter({ has: page.getByRole("heading", { name: "手动配置（CLI 与 VS Code 扩展通用）" }) });
-  await expect(page.locator(".panel").filter({ has: page.getByRole("heading", { name: "一键配置（推荐，无需登录网站）" }) }).locator(".mcp-code pre"))
-    .toHaveText(`bash <(curl -fsSL '${mcpBase}/api/mcp/setup.sh')`);
+  for (const [platform, command] of [
+    ["Linux / macOS / WSL（Bash）", `bash <(curl -fsSL '${mcpBase}/api/mcp/setup.sh')`],
+    ["Windows（PowerShell）", `irm '${mcpBase}/api/mcp/setup.ps1' | iex`],
+  ]) {
+    const installer = page.getByRole("group", { name: platform, exact: true });
+    await expect(installer.locator("pre")).toHaveText(command);
+    await installer.getByRole("button", { name: "复制", exact: true }).click();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(command);
+  }
+  const powershellScript = await page.request.get(base + "/api/mcp/setup.ps1");
+  expect(powershellScript.ok()).toBeTruthy();
+  expect(await powershellScript.text()).toContain("#Requires -Version 5.1");
   const section = (name: string) => panel.locator("details").filter({ has: page.locator(":scope > summary").filter({ hasText: new RegExp(`^${name}$`) }) });
+  const config = (name: string) => section(name).locator(":scope > .mcp-code");
   for (const name of ["Claude Code", "Codex", "其他 harness"]) {
     await expect(section(name)).toHaveJSProperty("open", false);
   }
-  for (const [name, client] of [["Claude Code", "claude"], ["Codex", "codex"]]) {
+  for (const name of ["Claude Code", "Codex"]) {
     const details = section(name);
     await details.locator(":scope > summary").click();
-    const command = details.locator(":scope > .mcp-code pre");
-    await expect(command).toContainText(`MCP_CLIENTS=${client}`);
-    await expect(command).toContainText(" use-token");
-    const text = await command.innerText();
-    expect(text).not.toContain("\n");
-    expect(text).toContain(`${mcpBase}/api/mcp/setup.sh`);
+    const snippet = config(name).locator("pre");
+    await expect(snippet).toBeVisible();
+    const text = await snippet.innerText();
+    expect(text).toContain(`${mcpBase}/mcp`);
+    expect(text).toContain("Bearer <你的 token>");
     expect(text).not.toContain("different.example");
-    expect(text).not.toContain("MCP_TOKEN=");
-    await details.locator(":scope > .mcp-code").getByRole("button", { name: "复制", exact: true }).click();
+    await config(name).getByRole("button", { name: "复制", exact: true }).click();
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(text);
   }
+  expect(JSON.parse(await config("Claude Code").locator("pre").innerText())).toEqual({
+    mcpServers: {
+      "release-system": {
+        type: "http",
+        url: `${mcpBase}/mcp`,
+        headers: { Authorization: "Bearer <你的 token>" },
+      },
+    },
+  });
+  await expect(config("Codex").locator("pre")).toContainText("[mcp_servers.release-system]");
+  await expect(panel.locator("pre").filter({ hasText: /setup\.sh|setup\.ps1|MCP_CLIENTS=/ })).toHaveCount(0);
+  await expect(panel.getByText("查看配置文件内容", { exact: true })).toHaveCount(0);
   await section("其他 harness").locator(":scope > summary").click();
   await expect(section("其他 harness")).toContainText("各客户端配置格式不同");
   const response = page.waitForResponse(r => r.url().endsWith("/api/mcp/tokens") && r.request().method() === "POST");
   await page.getByRole("button", { name: "生成 token", exact: true }).click();
   const token = (await (await response).json()).token.token;
   for (const name of ["Claude Code", "Codex"]) {
-    await expect(section(name).locator(":scope > .mcp-code pre")).toContainText(`MCP_TOKEN='${token}'`);
-  }
-  for (const name of ["Claude Code", "Codex"]) {
-    const config = section(name).locator("details").first();
-    await config.locator("summary").click();
-    await expect(config.locator("pre")).toContainText(`${mcpBase}/mcp`);
+    await expect(config(name).locator("pre")).toContainText(`Bearer ${token}`);
   }
   const permissions = section("Codex").locator(".mcp-codex-permissions");
   await permissions.locator("summary").click();

@@ -150,7 +150,7 @@ token_re = re.compile(r"Bearer\s+(rsmcp_[A-Za-z0-9_\-]+)")
 dsh_begin = f"# BEGIN {name}-mcp (managed by hpc-release-system)"
 dsh_end = f"# END {name}-mcp"
 
-def save(path, text, client=None):
+def save(path, text, client):
     folder = os.path.dirname(path) or "."
     os.makedirs(folder, exist_ok=True)
     if os.path.exists(path):
@@ -160,8 +160,7 @@ def save(path, text, client=None):
         out.write(text)
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
-    if client:
-        print(client, path.replace("\r", "\\r").replace("\n", "\\n"))
+    print(client, path.replace("\r", "\\r").replace("\n", "\\n"))
 
 def json_load(path):
     if not os.path.exists(path):
@@ -274,7 +273,7 @@ def edit_mcp_jsonc(path, section, client, entry):
                     updated = text[:preceding.start()] + text[preceding.end():start] + text[end:]
                 else:
                     updated = text[:start] + text[end:]
-    save(path, updated, client if entry is not None else None)
+    save(path, updated, client)
 
 def extract_bearer(auth):
     if isinstance(auth, str) and auth.startswith("Bearer "):
@@ -466,7 +465,7 @@ elif op in ("write", "remove"):
                 servers[name] = {"type": "http", "url": url, "headers": {"Authorization": f"Bearer {token}"}}
                 save(claude_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n", "claude")
             elif servers.pop(name, None) is not None:
-                save(claude_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+                save(claude_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n", "claude")
 
     if "codex" in clients:
         if op == "write" or os.path.exists(codex_path):
@@ -478,7 +477,7 @@ elif op in ("write", "remove"):
                          "enabled = true\nstartup_timeout_sec = 30\n")
                 save(codex_path, (stripped + "\n\n" if stripped else "") + block, "codex")
             elif stripped != text.rstrip("\n"):
-                save(codex_path, stripped + "\n" if stripped else "")
+                save(codex_path, stripped + "\n" if stripped else "", "codex")
 
     if "cursor" in clients:
         if op == "write" or os.path.exists(cursor_path):
@@ -488,7 +487,7 @@ elif op in ("write", "remove"):
                 servers[name] = {"url": url, "headers": {"Authorization": f"Bearer {token}"}}
                 save(cursor_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n", "cursor")
             elif servers.pop(name, None) is not None:
-                save(cursor_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+                save(cursor_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n", "cursor")
 
     if "opencode" in clients:
         entry = {
@@ -518,7 +517,7 @@ elif op in ("write", "remove"):
                 base = "" if (not stripped.strip() or dsh_is_empty_list(stripped)) else stripped + "\n\n"
                 save(dsh_path, base + dsh_block(token), "dsh")
             elif stripped != text.rstrip("\n"):
-                save(dsh_path, stripped + "\n" if stripped.strip() else "[]\n")
+                save(dsh_path, stripped + "\n" if stripped.strip() else "[]\n", "dsh")
 PY
 }
 
@@ -623,6 +622,16 @@ label() {
   esac
 }
 
+show_config_changes() {  # show_config_changes ACTION RECORDS
+  local entry message
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    printf '%s✔%s ' "$COLOR_SUCCESS" "$COLOR_RESET" >&2
+    printf -v message '%-16s %s  %s' "$(label "${entry%% *}")" "$1" "${entry#* }"
+    say "$message"
+  done <<< "$2"
+}
+
 write_local() {  # write_local TOKEN
   local clients written_files
   if ! clients="$(detect_clients | tr '\n' ' ')"; then
@@ -649,14 +658,8 @@ write_local() {  # write_local TOKEN
     show_token "$1"
     die "本机配置写入失败。请保存上方 Token，之后可直接复用。"
   fi
-  local entry message
   printf '\n' >&2
-  while IFS= read -r entry; do
-    [ -n "$entry" ] || continue
-    printf '%s✔%s ' "$COLOR_SUCCESS" "$COLOR_RESET" >&2
-    printf -v message '%-16s 配置已写入  %s' "$(label "${entry%% *}")" "${entry#* }"
-    say "$message"
-  done <<< "$written_files"
+  show_config_changes '配置已写入' "$written_files"
   if [[ " $clients " == *" cursor "* ]]; then
     say 'Cursor：IDE 与 Cursor CLI (agent) 共用 ~/.cursor/mcp.json；若未立即出现工具，请在 Cursor Settings → MCP 中刷新或启用。'
   fi
@@ -840,10 +843,19 @@ do_regenerate() {
 }
 
 do_uninstall() {
+  local removed_files remove_status=0
   # shellcheck disable=SC2086
-  config remove "" $ALL_CLIENTS
-  success "✔ 已从本机配置文件中移除 $SERVER_NAME"
-  dim "  （被修改的原配置文件已自动备份为 *.bak-release-mcp）"
+  removed_files="$(config remove "" $ALL_CLIENTS)" || remove_status=$?
+  show_config_changes '配置已移除' "$removed_files"
+  if (( remove_status != 0 )); then
+    colored "$COLOR_ERROR" "✘ 错误：本机配置移除失败。"
+    return "$remove_status"
+  fi
+  if [ -n "$removed_files" ]; then
+    dim "  （被修改的原配置文件已自动备份为 *.bak-release-mcp）"
+  else
+    say "本机配置中未找到 $SERVER_NAME"
+  fi
   printf '\n' >&2
   warn "ℹ️  说明：此操作仅移除本机配置，Token 本身依然有效。"
   warn "   如需彻底作废 Token，请重新运行脚本选择「3) 重新生成 token」，或在网站「AI助手 → MCP」页面手动吊销。"

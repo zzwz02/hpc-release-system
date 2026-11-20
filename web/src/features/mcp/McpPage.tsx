@@ -140,9 +140,8 @@ function SetupPane({ viewer, tools, jiraProjects, accessWarnings }: {
 
   const active = tokensQuery.data?.active ?? null;
   const history = (tokensQuery.data?.tokens ?? []).filter((token) => token.revoked_at);
-  const setupCommand = `bash <(curl -fsSL ${shellQuote(`${base}/api/mcp/setup.sh`)})`;
-  const clientCommand = (client: "claude" | "codex") =>
-    `${created?.token ? `MCP_TOKEN=${shellQuote(created.token)} ` : ""}MCP_CLIENTS=${client} ${setupCommand} use-token`;
+  const bashSetupCommand = `bash <(curl -fsSL ${shellQuote(`${base}/api/mcp/setup.sh`)})`;
+  const powershellSetupCommand = `irm '${base.replace(/'/g, "''")}/api/mcp/setup.ps1' | iex`;
 
   async function regenerate() {
     if (active) {
@@ -173,9 +172,16 @@ function SetupPane({ viewer, tools, jiraProjects, accessWarnings }: {
         <div className="panel-head"><h3>一键配置（推荐，无需登录网站）</h3></div>
         <div className="panel-body">
           <p className="mt-0">
-            在目标机器终端运行以下命令，输入<strong>域账号用户名和密码</strong>即可自动完成配置：
+            在目标机器终端运行对应命令，按提示输入<strong>域账号用户名和密码</strong>。
           </p>
-          <CodeBlock text={setupCommand} />
+          <div role="group" aria-labelledby="mcp-setup-bash">
+            <strong id="mcp-setup-bash">Linux / macOS / WSL（Bash）</strong>
+            <CodeBlock text={bashSetupCommand} />
+          </div>
+          <div role="group" aria-labelledby="mcp-setup-powershell" className="mt-12">
+            <strong id="mcp-setup-powershell">Windows（PowerShell）</strong>
+            <CodeBlock text={powershellSetupCommand} />
+          </div>
           <div className="mcp-token-notice">
             <p><strong>⚠️ 重要提醒（多机共用规则）：</strong></p>
             <ul>
@@ -257,39 +263,32 @@ function SetupPane({ viewer, tools, jiraProjects, accessWarnings }: {
         <div className="panel-head"><h3>手动配置（CLI 与 VS Code 扩展通用）</h3></div>
         <div className="panel-body">
           <p className="hint mt-0">
-            展开要使用的客户端，复制一条命令在目标机器的 Bash 中运行即可。无需安装客户端 CLI，VS Code 扩展也可用。
-            {created?.token ? "命令已填入刚生成的 token。" : "运行后粘贴已有 MCP token，无需再次输入域账号密码。"}
-            配置完成后重启客户端；VS Code 扩展执行「Developer: Reload Window」。
+            展开对应的客户端，将配置内容合并到指定文件。
+            {!created?.token && <>使用已有 MCP token 替换 <code>&lt;你的 token&gt;</code>。</>}
+            保存后重启客户端。VS Code 扩展可执行「Developer: Reload Window」。
           </p>
           <details className="mt-12">
             <summary>Claude Code</summary>
-            <p className="hint">自动备份并更新 <code>~/.claude.json</code>，保留其他 MCP 配置。</p>
-            <CodeBlock text={clientCommand("claude")} />
-            <details>
-              <summary className="small muted">查看配置文件内容</summary>
-              <CodeBlock text={JSON.stringify(
-                { "release-system": { type: "http", url, headers: { Authorization: `Bearer ${tokenText}` } } },
-                null, 2,
-              )} />
-            </details>
+            <p className="hint">将 <code>release-system</code> 条目合并到 <code>~/.claude.json</code> 的 <code>mcpServers</code> 中。</p>
+            <CodeBlock text={JSON.stringify({
+              mcpServers: {
+                "release-system": { type: "http", url, headers: { Authorization: `Bearer ${tokenText}` } },
+              },
+            }, null, 2)} />
           </details>
           <details className="mt-12">
             <summary>Codex</summary>
-            <p className="hint">自动备份并更新 <code>~/.codex/config.toml</code>（设置了 CODEX_HOME 时使用该目录），保留其他配置。</p>
-            <CodeBlock text={clientCommand("codex")} />
+            <p className="hint">在 <code>~/.codex/config.toml</code> 中添加或替换同名配置段。设置了 <code>CODEX_HOME</code> 时使用该目录。</p>
+            <CodeBlock text={[
+              "[mcp_servers.release-system]",
+              `url = "${url}"`,
+              `http_headers = { "Authorization" = "Bearer ${tokenText}" }`,
+              "enabled = true", "startup_timeout_sec = 30",
+            ].join("\n")} />
             <p className="hint">
               Codex 的 <code>approval_policy = "never"</code> 可能自动拒绝用户名输入表单，导致没有弹窗。
-              完全访问下也可通过细粒度审批单独允许 MCP 表单；接入脚本保留原审批和沙箱设置。
+              完全访问下可通过细粒度审批单独允许 MCP 表单。
             </p>
-            <details>
-              <summary className="small muted">查看配置文件内容</summary>
-              <CodeBlock text={[
-                "[mcp_servers.release-system]",
-                `url = "${url}"`,
-                `http_headers = { "Authorization" = "Bearer ${tokenText}" }`,
-                "enabled = true", "startup_timeout_sec = 30",
-              ].join("\n")} />
-            </details>
             <details className="mcp-codex-permissions">
               <summary className="small muted">完全访问下保留用户名弹窗</summary>
               <p className="hint">

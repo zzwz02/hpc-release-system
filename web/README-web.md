@@ -107,7 +107,7 @@ QA 的测试命令、按镜像 digest 查询及 QA log 表格以 `app_id` 为首
 
 ### MCP 配置页面隔离验证
 
-后端运行 `python -m tests.run_mcp_setup_site --port 18785`；前端在 `web/` 运行 `API_TARGET=http://127.0.0.1:18785 npm run dev -- --host 127.0.0.1 --port 18786 --strictPort`。再执行 `MCP_SETUP_E2E_URL=http://127.0.0.1:18786 npx playwright test e2e/mcp-setup.spec.ts`。测试使用临时数据库验证客户端折叠、复制命令和生成 token 后填充，不访问真实集成。
+后端运行 `python -m tests.run_mcp_setup_site --port 18785`。前端在 `web/` 运行 `API_TARGET=http://127.0.0.1:18785 npm run dev -- --host 127.0.0.1 --port 18786 --strictPort`。再执行 `MCP_SETUP_E2E_URL=http://127.0.0.1:18786 MCP_SETUP_API_URL=http://127.0.0.1:18785 npx playwright test e2e/mcp-setup.spec.ts`。测试使用临时数据库，验证复制 Bash 和 PowerShell 一键命令、打开和复制手动配置，以及生成 token 后自动填充。
 
 ### App 详情隔离验证
 
