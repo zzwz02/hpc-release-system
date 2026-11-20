@@ -199,9 +199,53 @@ Guest 可登录 MCP 页面、创建或复用个人 token，默认工具为 `jira
 - 每人只有一个有效 token：生成新的会吊销旧的（鉴权也只认每人最新的一个）。网页「我的 token」只显示前几位，可重新生成或吊销。
 - MCP 接入配置页面统一生成 HTTP 的一键安装命令、各客户端命令和手动配置地址，沿用浏览器当前域名及非默认端口，不使用 `[site] PUBLIC_BASE_URL` 覆盖，也不提供协议选择；网站继续通过原地址访问。服务器须开放对应 HTTP 入口，容器无需配置网站证书；HTTP 会明文传输账号密码和 token，仅用于受控内网。安装脚本按下载请求的协议生成后续账号请求及 MCP 地址，已安装客户端可复用原 token 更新配置，无需卸载。
 - HTTPS 由 Nginx 等反向代理终止时，代理须覆盖设置 `proxy_set_header Host $http_host;` 和 `proxy_set_header X-Forwarded-Proto $scheme;`。MCP 返回的脚本、接入地址和附件传输链接会据此保留 HTTPS，避免登录 POST 请求误发到 HTTP 后遇到 301；不会使用 `X-Forwarded-Host` 替换目标主机，也不会将 HTTPS 降级到 HTTP。
-- 一键配置：`bash <(curl -fsSL <网站>/api/mcp/setup.sh)`，菜单为 1 一键配置本机 / 2 查询完整 token / 3 重新生成 / 4 卸载本机配置（也可带参数 `configure|status|regenerate|uninstall`）。经 `POST /api/mcp/account`（action=status|regenerate）用域账号密码操作，与登录页同一认证，首次登录同样按 LDAP 组建用户，但不建网站会话；同一用户名 10 分钟内失败 5 次后锁定。脚本直接改 `~/.claude.json` 与 `~/.codex/config.toml`（先备份为 `*.bak-release-mcp`），不依赖 claude/codex 命令，只装 VS Code 扩展也可用；第二台机器复用本机配置里或粘贴的已有 token，选择重新生成则旧 token 在所有机器失效。 配置脚本以彩色区分提示、成功和错误，完整显示已生成或本机可读取的 token，并以加粗横幅提示跨环境复用和重新生成的失效规则；不再输出结尾的 Codex 重启提醒。服务器仍只存摘要，无法恢复未保存在本机的 token 原文。终端自动启用颜色，`NO_COLOR=1` 可关闭，`FORCE_COLOR=1` 可在重定向时保留颜色；API 数据及复制用的配置正文不含颜色控制字符。
-- 按客户端配置已有 token：页面“手动配置”按 Claude Code、Codex、其他 harness 折叠展示。Claude/Codex 的命令使用 `MCP_CLIENTS=claude|codex bash <(curl -fsSL <网站>/api/mcp/setup.sh) use-token`，校验已有 token 后只更新指定客户端；未提供 `MCP_TOKEN` 时安全提示粘贴，不创建或重置 token。脚本仅完成一次性配置，客户端仍直接通过 HTTP 连接网站，无需安装本地转发服务。
-- 脚本先显示 MCP URL。拿到完整 token 后，无论写入本机配置成功、失败还是跳过，都会在“重要提示”横幅中显示完整值及复用规则。写入失败时同时报错并返回非零退出码；跳过写入时也会给出手动配置方法，无需 `python3`。选项 2 显示本机可读取的完整 token 及其有效状态；服务器只保存摘要，无法恢复未保存的 token 原文。已有有效 token 时，一键配置中回车选择重新生成和菜单“重新生成”都会再次提示“其他机器上的旧 Token 将立即失效，是否继续？[y/N]”；回车或选 n 均取消，不生成 token，也不修改本机配置。菜单已移除“仅输出配置方法”；安装成功后不追加其他客户端的接入说明与文档链接。
+
+### 一键配置客户端
+
+在客户端实际运行的电脑上执行对应命令，将示例域名换成你的发布系统地址。Windows 上使用 Windows PowerShell 5.1 或 PowerShell 7 即可，整个流程由 PowerShell 完成。
+
+```powershell
+irm 'http://release.example/api/mcp/setup.ps1' | iex
+```
+
+在 Linux、macOS 或 WSL 中使用 Bash。下载脚本需要 `curl`，读取和写入配置需要 `python3`。
+
+```bash
+bash <(curl -fsSL 'http://release.example/api/mcp/setup.sh')
+```
+
+菜单提供 1 一键配置本机、2 查询 token 状态、3 重新生成 token、4 卸载本机配置。也可直接传入 `configure`、`status`、`regenerate` 或 `uninstall`。Bash 在命令末尾加动作，PowerShell 用 `& ([scriptblock]::Create((irm 'http://release.example/api/mcp/setup.ps1'))) status` 调用。查询和生成通过 `POST /api/mcp/account` 验证域账号，沿用网站登录的认证和 LDAP 组建用户规则。服务端对同一用户名 10 分钟内失败 5 次的请求实施锁定。
+
+两套脚本都可以自动检测客户端，直接配置其用户级文件，适用于只安装编辑器扩展的环境。脚本在修改前把现有文件备份为 `*.bak-release-mcp`，完成后逐行列出实际写入的文件路径。卸载仅移除本机的 `release-system` 配置项，已签发的 token 仍可在其他机器使用。
+
+| 客户端 | `MCP_CLIENTS` | 用户级配置 |
+| --- | --- | --- |
+| Claude Code | `claude` | `~/.claude.json` |
+| Codex | `codex` | `~/.codex/config.toml`，可由 `CODEX_HOME` 指定目录 |
+| Cursor | `cursor` | `~/.cursor/mcp.json` |
+| OpenCode | `opencode` | 优先使用 `OPENCODE_CONFIG` 指定的文件。默认始终写入全局目录下的 `opencode.jsonc`，文件不存在时创建。配置根目录可由 `XDG_CONFIG_HOME` 指定，默认是 `~/.config` |
+| CodeBuddy | `codebuddy` | CLI 始终写入 `~/.codebuddy/.mcp.json`。若该文件不存在，以优先级最高的现有旧文件为基础创建，保留其他配置。编辑器扩展使用各自的 `codebuddy_mcp_settings.json` |
+| DeepSeek Harness | `dsh` 或 `deepseek-harness` | `~/.dsh/cordis.patch.yml`，可由 `DSH_HOME` 指定目录 |
+
+OpenCode V1 的 `mcp.release-system` 使用静态 Bearer Token，并通过 `"oauth": false` 关闭自动 OAuth，将 `"timeout"` 设为 `30000` 毫秒。
+
+OpenCode 查询本机 Token 时优先读取 `OPENCODE_CONFIG` 指定的文件，否则按 `opencode.jsonc` → `opencode.json` → `config.json` 读取第一个现有全局文件。CodeBuddy CLI 按 `~/.codebuddy/.mcp.json` → `~/.codebuddy/mcp.json` → `~/.codebuddy.json` 读取第一个现有文件。卸载会从所有已存在的候选用户配置文件中移除 `release-system` 条目，包括 `OPENCODE_CONFIG` 指定的文件和已检测到的 CodeBuddy 编辑器扩展配置。脚本按 JSONC 读取配置，并局部编辑该条目，保留其余注释和配置格式。
+
+已有 token 时，使用 `use-token` 复用。用逗号指定多个客户端，或用 `all` 选择全部。脚本会验证 token，然后只更新所选客户端。以下示例会提示粘贴 token，也支持从 `MCP_TOKEN` 环境变量读取。
+
+```powershell
+$env:MCP_CLIENTS = 'claude,cursor'
+& ([scriptblock]::Create((irm 'http://release.example/api/mcp/setup.ps1'))) use-token
+```
+
+```bash
+MCP_CLIENTS=claude,cursor bash <(curl -fsSL 'http://release.example/api/mcp/setup.sh') use-token
+```
+
+脚本会显示 MCP URL 和已获得的完整 token，以便跨机器复用。选项 2 显示本机可读取的 token 及其状态。服务器只保存摘要，因此完整 token 需从已配置的机器上读取。重新生成前，脚本会要求确认旧 token 将在所有机器失效，默认取消。配置写入失败时会显示原因，跳过写入时会给出手动配置方法。两套脚本均可通过 `NO_COLOR` 关闭颜色，Bash 还支持 `FORCE_COLOR=1`。运行脚本完成一次配置后，客户端直接连接远程 MCP 服务。
+
+### 工具调用与确认
+
 - 确认等待期间每 15 秒发送 SSE 注释保活，并用 `X-Accel-Buffering: no` 禁用代理缓冲，避免等待用户输入时连接空闲断开、客户端只收到 `Transport closed`。用户名不匹配、拒绝、取消和超时均通过工具错误返回具体原因及 `structuredContent`（`status=not_executed`、`reason`、`retryable=false`），要求 agent 告知用户，不自动重试或代填用户名；再次尝试须由用户明确发起。确认失败日志保留目标工单号。真正的网络故障仍可能导致结果无法送达，不能仅凭断线判断 JIRA 是否已写入。
 - 写操作的用户确认：服务端统一按 `read_only=False` 且 `destructive=True` 决定是否要求用户名确认，不依赖工具名或是否提供预览函数；只读或非 destructive 工具无需确认。客户端支持 MCP form elicitation 时，`tools/call` 以 SSE 发出 `elicitation/create`（300 秒超时）。`jira_add_comment` 要求用户手工输入域账号用户名，不预填，去除首尾空白并忽略大小写后与 token 所属账号完整匹配才发送；空值、类型错误、不匹配、拒绝、取消、超时均不发送，不支持 form elicitation 的客户端不能发评论。协议仍使用 `action=accept` 表示提交表单，但仅 accept 不足以发布。评论先通过与网站 JIRA agent 共用的 `app/domain/jira_format.py` 处理格式（当前为 JIRA wiki 行内代码间距修正，保留代码块，不做通用 Markdown 转换），客户端调用前先在对话中展示拟发送的完整评论；确认弹窗对短评论展示全文，长评论只展示最多 240 字符、6 行的摘要并明确标注截断，输入框标题直接提示输入本人域账号用户名，发布时仍使用完整正文并追加署名；空正文和超长内容在弹窗前拒绝。`jira_upload_attachment` 不请求 elicitation 确认，直接返回上传命令；签发票据和实际上传时仍核验权限。日志 `extra_json.confirm` 记录 `username_matched` / `username_mismatch` / `client_cannot_confirm` / `decline` / `cancel` / `timeout`。待确认请求在进程内，须单 worker；所有写操作要求有效、未结束且属于当前 token 的会话，批量调用被拒绝；确认回复绑定发起 token 和会话，提交前再次核验 token 与当前角色。
 - 其他 harness 的配置文档链接和「能否弹确认」的核实结果维护在 [mcp_harnesses.json](shared/mcp_harnesses.json)（`confirm` 为 form/none/unknown），页面「手动配置」和脚本的配置/输出结果共用这份列表，对不支持的标注「不推荐」。

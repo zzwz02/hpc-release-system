@@ -5,7 +5,8 @@
   DELETE /mcp                         — end the Mcp-Session-Id session
   GET    /api/mcp/downloads/{ticket}  — attachment link handed out by jira_pull_issue
   PUT    /api/mcp/uploads/{ticket}    — raw file body for jira_upload_attachment (one use)
-  GET    /api/mcp/setup.sh            — setup script (configure / status / regenerate / uninstall)
+  GET    /api/mcp/setup.sh            — Bash setup script
+  GET    /api/mcp/setup.ps1           — PowerShell setup script
   POST   /api/mcp/account             — username + password + action=status|regenerate
                                         (JSON or form; Accept: text/plain → tab-separated for shell)
 
@@ -48,6 +49,7 @@ MAX_BODY_BYTES = 4 * 1024 * 1024
 # endpoint, and a browser refresh there would hit it instead of the SPA.
 PAGE_PATH = "/mcp-console"
 SETUP_SCRIPT = Path(__file__).resolve().parents[2] / "resources" / "mcp" / "setup.sh"
+POWERSHELL_SETUP_SCRIPT = SETUP_SCRIPT.with_suffix(".ps1")
 HARNESSES_FILE = Path(__file__).resolve().parents[3] / "shared" / "mcp_harnesses.json"
 # The base URL is pasted into a shell script; anything outside this set is refused.
 _SAFE_BASE_URL = re.compile(r"^https?://[A-Za-z0-9.\-]+(:\d+)?(/[A-Za-z0-9._\-/]*)?$")
@@ -260,14 +262,23 @@ def _plain_status(active: dict | None) -> str:
 
 @router.get("/api/mcp/setup.sh")
 def setup_script(request: Request) -> Response:
+    return _setup_script_response(request, SETUP_SCRIPT, "text/x-shellscript")
+
+
+@router.get("/api/mcp/setup.ps1")
+def powershell_setup_script(request: Request) -> Response:
+    return _setup_script_response(request, POWERSHELL_SETUP_SCRIPT, "text/plain")
+
+
+def _setup_script_response(request: Request, path: Path, media_type: str) -> Response:
     marks = {"form": "", "none": "（不推荐：不支持用户名确认，无法发评论；附件会直接提交）",
              "unknown": "（谨慎使用：未核实是否支持发布前确认）"}
     harnesses = json.loads(HARNESSES_FILE.read_text(encoding="utf-8"))["harnesses"]
     links = "\n".join(f"#   - {item['name']}：{item['url']}{marks.get(item.get('confirm'), '')}"
                       for item in harnesses)
-    script = (SETUP_SCRIPT.read_text(encoding="utf-8")
+    script = (path.read_text(encoding="utf-8")
               .replace("__BASE_URL__", _request_base(request)).replace("__HARNESS_LINKS__", links))
-    return Response(content=script, media_type="text/x-shellscript; charset=utf-8")
+    return Response(content=script, media_type=f"{media_type}; charset=utf-8")
 
 
 @router.post("/api/mcp/account")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -589,19 +590,26 @@ def test_account_rejects_bad_password_role_and_throttles(site):
     assert account(client, "status").status_code == 429
 
 
-def test_setup_script_points_at_this_site_and_is_valid_bash(site, tmp_path):
+@pytest.mark.parametrize(('suffix', 'media_type'), [
+    ('sh', 'text/x-shellscript'),
+    ('ps1', 'text/plain'),
+])
+def test_setup_script_points_at_this_site(site, tmp_path, suffix, media_type):
     import subprocess
     client, _, _, _ = site
-    response = client.get("/api/mcp/setup.sh")
+    response = client.get(f"/api/mcp/setup.{suffix}")
     assert response.status_code == 200 and "__BASE_URL__" not in response.text
-    assert 'BASE_URL="http://testserver"' in response.text
+    assert response.headers["content-type"] == f"{media_type}; charset=utf-8"
+    assert re.search(r'BASE_URL\s*=\s*"http://testserver"', response.text)
     harnesses = json.loads((Path(__file__).resolve().parents[1] / "shared" / "mcp_harnesses.json")
                            .read_text(encoding="utf-8"))["harnesses"]
     assert harnesses and all(item["url"] in response.text for item in harnesses)
     assert "__HARNESS_LINKS__" not in response.text
-    script = tmp_path / "setup.sh"
-    script.write_text(response.text, encoding="utf-8")
-    assert subprocess.run(["bash", "-n", str(script)], capture_output=True).returncode == 0
+    if suffix == 'sh':
+        script = tmp_path / "setup.sh"
+        script.write_text(response.text, encoding="utf-8")
+        result = subprocess.run(["bash", "-n", str(script)], capture_output=True)
+        assert result.returncode == 0, result.stderr
     from app.api.routers import mcp as mcp_router
     assert mcp_router._SAFE_BASE_URL.match("https://hpc-release.swlab.metax-tech.com")
     assert mcp_router._SAFE_BASE_URL.match("http://127.0.0.1:3577")
@@ -1054,7 +1062,8 @@ def test_confirmation_policy_comes_from_tool_flags(site, monkeypatch, read_only,
     assert executed == [args]
 
 
-def test_setup_endpoint_follows_request_origin_not_public_base(site, tmp_path, monkeypatch):
+@pytest.mark.parametrize('suffix', ['sh', 'ps1'])
+def test_setup_endpoint_follows_request_origin_not_public_base(site, tmp_path, monkeypatch, suffix):
     client, _, _, _ = site
     conf = tmp_path / 'site.conf'
     conf.write_text('[site]\nPUBLIC_BASE_URL = https://different.example\n')
@@ -1062,11 +1071,12 @@ def test_setup_endpoint_follows_request_origin_not_public_base(site, tmp_path, m
     origin = 'http://127.0.0.1:3577'
     info = client.get(origin + '/api/mcp/info')
     assert info.json()['endpoint'] == origin + '/mcp'
-    script = client.get(origin + '/api/mcp/setup.sh').text
-    assert f'BASE_URL="{origin}"' in script
+    script = client.get(f'{origin}/api/mcp/setup.{suffix}').text
+    assert re.search(rf'BASE_URL\s*=\s*"{re.escape(origin)}"', script)
     assert 'different.example' not in script
 
 
+@pytest.mark.parametrize('suffix', ['sh', 'ps1'])
 @pytest.mark.parametrize(('origin', 'forwarded_proto', 'expected'), [
     ('http://127.0.0.1:3577', '', 'http://127.0.0.1:3577'),
     ('http://release.example', 'https', 'https://release.example'),
@@ -1075,12 +1085,12 @@ def test_setup_endpoint_follows_request_origin_not_public_base(site, tmp_path, m
     ('http://release.example', 'ftp', 'http://release.example'),
     ('http://release.example', 'https, http', 'http://release.example'),
 ])
-def test_setup_preserves_https_behind_proxy(site, origin, forwarded_proto, expected):
+def test_setup_preserves_https_behind_proxy(site, origin, forwarded_proto, expected, suffix):
     client, _, _, _ = site
     headers = {'X-Forwarded-Proto': forwarded_proto, 'X-Forwarded-Host': 'other.example'}
-    response = client.get(origin + '/api/mcp/setup.sh', headers=headers)
+    response = client.get(f'{origin}/api/mcp/setup.{suffix}', headers=headers)
     assert response.status_code == 200
-    assert f'BASE_URL="{expected}"' in response.text
+    assert re.search(rf'BASE_URL\s*=\s*"{re.escape(expected)}"', response.text)
     info = client.get(origin + '/api/mcp/info', headers=headers)
     assert info.status_code == 200
     assert info.json()['endpoint'] == expected + '/mcp'
