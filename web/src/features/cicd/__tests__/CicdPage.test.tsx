@@ -244,15 +244,24 @@ describe("CicdPage", () => {
     expect(screen.getByRole("button", { name: "已交付" })).toBeInTheDocument();
   });
 
-  it("does not expose delivery panes for Owner when rendered directly", async () => {
+  it("opens only the recent requests pane for Owner with their own requests preselected", async () => {
     renderCicd("Owner");
+    const section = await screen.findByTestId("cicd-recent-section");
+    expect(screen.getByRole("button", { name: "近期申请" })).toHaveClass("active");
+    expect(within(section).getByRole("checkbox", { name: "只看我的" })).toBeChecked();
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "CICD 信息" })).toBeInTheDocument();
+      expect(vi.mocked(apiGet)).toHaveBeenCalledWith(
+        "/api/cicd/requests?only_mine=1&since_days=30&include_allowed_actions=1",
+      );
     });
-    expect(screen.getByRole("button", { name: "近期申请" })).toBeInTheDocument();
-    expect(screen.getByText("待审批")).toBeInTheDocument();
-    expect(screen.queryByText("待交付")).not.toBeInTheDocument();
-    expect(screen.queryByText("已交付")).not.toBeInTheDocument();
+    for (const name of ["CICD 信息", "待审批", "待交付", "已交付", "Release 构建准入"]) {
+      expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+    }
+    expect(vi.mocked(apiGet)).not.toHaveBeenCalledWith(expect.stringContaining("status=pending"));
+    expect(vi.mocked(apiGet)).not.toHaveBeenCalledWith(expect.stringContaining("/api/cicd/deliveries"));
+
+    await userEvent.click(within(section).getByRole("checkbox", { name: "只看我的" }));
+    expect(vi.mocked(apiGet)).toHaveBeenCalledWith("/api/cicd/requests?since_days=30&include_allowed_actions=1");
   });
 
   it("SPD role: sees CICD 信息, 待交付 and 已交付 panes", async () => {
@@ -652,6 +661,30 @@ describe("CicdPage", () => {
     expect(within(section).getByText("Carol")).toBeInTheDocument();
     expect(within(section).getByRole("button", { name: "详情" })).toBeInTheDocument();
     expect(within(section).queryByRole("button", { name: "重新编辑" })).not.toBeInTheDocument();
+  });
+
+  it("refreshes recent requests and shows delivery status alongside approval", async () => {
+    const recentReq = makeRequest({ id: 77, submitter: "alice", status: "approved", delivery_status: "pending" });
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes("/api/cicd/requests")) return Promise.resolve({ requests: [{ ...recentReq }] });
+      if (url.includes("/api/cicd/tasks")) return Promise.resolve({ tasks: [] });
+      return Promise.resolve({});
+    });
+
+    renderCicd("Owner");
+    const section = within(await screen.findByTestId("cicd-recent-section"));
+    expect(await section.findByText("待交付")).toBeInTheDocument();
+    expect(section.getByText("已通过")).toBeInTheDocument();
+
+    recentReq.delivery_status = "returned";
+    await userEvent.click(screen.getByRole("button", { name: "刷新当前页" }));
+    expect(await section.findByText("已退回")).toBeInTheDocument();
+    expect(section.queryByText("待交付")).not.toBeInTheDocument();
+
+    recentReq.delivery_status = "delivered";
+    await userEvent.click(screen.getByRole("button", { name: "刷新当前页" }));
+    expect(await section.findByText("已交付")).toBeInTheDocument();
+    expect(section.getByText("已通过")).toBeInTheDocument();
   });
 
   it("calls GET /api/cicd/notifications on mount", async () => {

@@ -1,24 +1,8 @@
 /**
  * CicdPage — CICD 工作台 tab.
  *
- * Mirrors index.html:857-972 (HTML) and index.html:3886-4857 (JS).
- *
- * Sub-panes:
- *   - CICD 信息 (TaskInfoSection) — read-only task details, all statuses
- *   - 近期申请 (RecentRequestsSection) — read-only recent request records
- *   - 待审批   (PendingPane)      — pending requests (RM/Admin can approve)
- *   - 待交付   (DeliveryPane)     — delivery workflow (SPD/RM/Admin)
- *   - 已交付   (DeliveredPane)    — delivered history
- *
- * Role visibility (mirrors bindCicd index.html:4738-4754):
- *   SPD:  CICD 信息 + 待交付 + 已交付 (read-only overview + delivery panes)
- *   RM: 待审批 + 待交付 + 已交付
- *
- * Build-config changes are submitted from App 工作台 → App-CICD only.
- * CICD 工作台 shows read-only CICD/request information, plus approval + delivery actions.
- *
- * On mount: fetches tasks + notifications + marks visited.
- * R2: no polling.  Only explicit refetch on user action.
+ * Owners track requests in 近期申请. Approval and delivery actions use the
+ * permissions returned by the API. Changes are submitted from App 工作台.
  */
 
 import React, { useState, useCallback, useEffect, useMemo } from "react";
@@ -224,6 +208,14 @@ function ReqStatusSpan({ status }: { status: string }) {
   return (
     <span className={`cicd-req-status-${status}`}>
       {REQ_STATUS_LABEL[status] ?? status}
+    </span>
+  );
+}
+
+function DeliveryStatusSpan({ status }: { status: string }) {
+  return (
+    <span className={`cicd-delivery-status-${status}`}>
+      {DELIVERY_STATUS_LABEL[status] ?? status}
     </span>
   );
 }
@@ -851,29 +843,30 @@ function TaskInfoSection({
 // ---------------------------------------------------------------------------
 
 interface RecentRequestsSectionProps {
+  requests: CicdRequest[];
+  isLoading: boolean;
+  error: Error | null;
   sinceDays: number;
   onSinceDaysChange: (days: number) => void;
+  onlyMine: boolean;
+  onOnlyMineChange: (checked: boolean) => void;
   onDetail: (req: CicdRequest) => void;
 }
 
 function RecentRequestsSection({
+  requests,
+  isLoading,
+  error,
   sinceDays,
   onSinceDaysChange,
+  onlyMine,
+  onOnlyMineChange,
   onDetail,
 }: RecentRequestsSectionProps) {
   const [search, setSearch] = useState("");
-  const [onlyMine, setOnlyMine] = useState(false);
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["cicd", "requests", "recent", sinceDays, onlyMine],
-    queryFn: () => fetchCicdRequests({ sinceDays, onlyMine }),
-    staleTime: 0,
-    refetchOnMount: true,
-  });
-
-  const reqs = data?.requests ?? [];
   const q = search.toLowerCase();
-  const filtered = reqs.filter(
+  const filtered = requests.filter(
     (r) =>
       !q ||
       ((r.payload as Record<string, unknown>)?.app_name as string || "")
@@ -913,7 +906,7 @@ function RecentRequestsSection({
           <input
             type="checkbox"
             checked={onlyMine}
-            onChange={(e) => setOnlyMine(e.target.checked)}
+            onChange={(e) => onOnlyMineChange(e.target.checked)}
           />{" "}
           只看我的
         </label>
@@ -971,7 +964,12 @@ function RecentRequestsSection({
                     <td className="small muted">
                       {formatServerTime(r.submitted_at ?? "")}
                     </td>
-                    <td><ReqStatusSpan status={r.status} /></td>
+                    <td>
+                      <div className="pill-group">
+                        <ReqStatusSpan status={r.status} />
+                        {r.delivery_status && <DeliveryStatusSpan status={r.delivery_status} />}
+                      </div>
+                    </td>
                     <td className="small muted">
                       {r.reviewer ? userLabel(r.reviewer) : "—"}
                     </td>
@@ -1401,9 +1399,7 @@ function DeliveryPane({
                       ) : d.jira_id || "—"}
                     </td>
                     <td>
-                      <span className={`cicd-delivery-status-${d.delivery_status}`}>
-                        {DELIVERY_STATUS_LABEL[d.delivery_status ?? ""] ?? d.delivery_status}
-                      </span>
+                      {d.delivery_status && <DeliveryStatusSpan status={d.delivery_status} />}
                       {d.returned_reason && (
                         <div className="small muted mt-2">
                           {d.returned_reason}
@@ -1489,22 +1485,25 @@ export function CicdPage() {
   const canApprove = can(role, "cicd.request.approve");
   const canDelivery = can(role, "cicd.delivery.confirm");
 
-  // Pane visibility by role (mirrors bindCicd:4738-4754)
   const isSPD = can(role, "cicd.delivery.return") && !canApprove;
-  const availablePanes: SubPane[] = isSPD
+  const availablePanes: SubPane[] = role === "Owner"
+    ? ["recent"]
+    : isSPD
     ? ["info", "delivery", "delivered", "release-gate"]
     : canDelivery
     ? ["info", "recent", "pending", "delivery", "delivered", "release-gate"]
     : ["info", "recent", "pending", "release-gate"];
 
-  const defaultPane: SubPane = isSPD ? "delivery" : "info";
-  const [activePane, setActivePane] = useState<SubPane>(defaultPane);
+  const defaultPane = isSPD ? "delivery" : availablePanes[0];
+  const [selectedPane, setActivePane] = useState<SubPane>(defaultPane);
+  const activePane = availablePanes.includes(selectedPane) ? selectedPane : defaultPane;
 
   // Dialog state
   const [approveReq, setApproveReq] = useState<CicdRequest | null>(null);
   const [historyTaskId, setHistoryTaskId] = useState<string | null>(null);
   const [detailReq, setDetailReq] = useState<CicdRequest | null>(null);
   const [recentSinceDays, setRecentSinceDays] = useState(30);
+  const [recentOnlyMine, setRecentOnlyMine] = useState(role === "Owner");
 
   // Badge / sub-tab counts
   const [pendingBadge, setPendingBadge] = useState(0);
@@ -1538,6 +1537,15 @@ export function CicdPage() {
     refetchOnMount: true,
   });
 
+  const recentRequests = useQuery({
+    queryKey: ["cicd", "requests", "recent", username, role, recentSinceDays, recentOnlyMine],
+    queryFn: () => fetchCicdRequests({ sinceDays: recentSinceDays, onlyMine: recentOnlyMine }),
+    enabled: activePane === "recent",
+    staleTime: 0,
+    refetchOnMount: true,
+  });
+  const { refetch: refetchRecentRequests } = recentRequests;
+
   // Notifications query (for badge in TabNav)
   const { data: notifData, refetch: refetchNotif } = useQuery({
     queryKey: CICD_NOTIFICATIONS_KEY,
@@ -1552,6 +1560,7 @@ export function CicdPage() {
   const { data: pendingCountData } = useQuery({
     queryKey: ["cicd", "requests", "pending", "count"],
     queryFn: () => fetchCicdRequests({ status: "pending" }),
+    enabled: availablePanes.includes("pending"),
     staleTime: 0,
     refetchInterval: 1000,
     refetchOnMount: true,
@@ -1560,6 +1569,7 @@ export function CicdPage() {
   const { data: deliveryCountData } = useQuery({
     queryKey: ["cicd", "deliveries", "pending-count", role],
     queryFn: () => fetchCicdDeliveries(isSPD ? "pending" : "pending_or_returned"),
+    enabled: availablePanes.includes("delivery"),
     staleTime: 0,
     refetchInterval: 1000,
     refetchOnMount: true,
@@ -1586,9 +1596,10 @@ export function CicdPage() {
   }, [deliveryCountData]);
 
   const handleRefresh = useCallback(() => {
+    if (activePane === "recent") void refetchRecentRequests();
     void refetchTasks();
     void refetchNotif();
-  }, [refetchTasks, refetchNotif]);
+  }, [activePane, refetchRecentRequests, refetchTasks, refetchNotif]);
 
   function handleMutated() {
     void refetchTasks();
@@ -1643,9 +1654,9 @@ export function CicdPage() {
         )}
         <span className="spacer" />
         <RefreshBar
-          dataUpdatedAt={dataUpdatedAt}
+          dataUpdatedAt={activePane === "recent" ? recentRequests.dataUpdatedAt : dataUpdatedAt}
           onRefresh={handleRefresh}
-          isFetching={isFetching}
+          isFetching={activePane === "recent" ? recentRequests.isFetching : isFetching}
         />
       </div>
 
@@ -1679,8 +1690,13 @@ export function CicdPage() {
       )}
       {activePane === "recent" && (
         <RecentRequestsSection
+          requests={recentRequests.data?.requests ?? []}
+          isLoading={recentRequests.isLoading}
+          error={recentRequests.error}
           sinceDays={recentSinceDays}
           onSinceDaysChange={setRecentSinceDays}
+          onlyMine={recentOnlyMine}
+          onOnlyMineChange={setRecentOnlyMine}
           onDetail={(r) => setDetailReq(r)}
         />
       )}

@@ -8,7 +8,7 @@
     "artifacts": ["RM", "Owner", "Guest"],
     "dependencies": ["RM", "Owner", "QA"],
     "lookup": ["RM", "Owner", "QA"],
-    "cicd": ["RM", "SPD"],
+    "cicd": ["RM", "Owner", "SPD"],
     "jenkins-failures": ["RM", "Owner", "SPD", "QA"],
     "cicd-assistant": ["RM", "Owner", "SPD"],
     "cicd-assistant-v2": ["RM", "Owner", "SPD"],

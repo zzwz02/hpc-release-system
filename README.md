@@ -9,7 +9,7 @@
 | 使用者 | 日常入口与职责 |
 | --- | --- |
 | RM | 周期管理：新建月度版本、填当月环境和基础镜像、发布与解锁、app_info 同步状态、通知设置；CICD：审批、交付处理；发布文档：导出和检查 |
-| Owner | App 工作台：为单个或本人名下多个运行中 App 报名、编辑分类和可选手册资料；提交新增 App、CICD 配置和启停申请 |
+| Owner | App 工作台：为单个或本人名下多个运行中 App 报名、编辑分类和可选手册资料；提交新增 App、CICD 配置和启停申请；CICD 工作台：查看近期申请及审批、交付状态 |
 | QA | QA：处理测试范围扩大申请、查看测试范围与命令、上传 QA log、查看失败汇总、填写结论、交付镜像和各 App 的 QA comment |
 | SPD | CICD：查看交付任务、确认交付或退回；Jenkins 失败查询和 CICD 助手辅助排查 |
 | Guest | 查看总览、App 和 QA 等矩阵允许的页面；MCP 可读取 MC3 工单及其附件、加载技能，Jenkins 和 Wiki 按域组授权，不编辑业务数据 |
@@ -82,6 +82,7 @@ flowchart LR
 - 新 App 先提交新建申请，申请生效时才建立 App 记录，状态为 `running`，随后自动同步 app_info。
 - `stopped` 的 App 视为停止维护：保留历史正式版和 digest 查询，不进累计手册和兼容验证清单，不做 app_info 自动同步。
 - 审批可立即应用，也可派发 SPD，等交付确认再应用。SPD 可以退回；RM 可以重新派发、直接生效，或填写原因后拒绝退回申请。配置编辑与启停入口在 App 工作台的 CICD tab。
+- Owner 进入 CICD 工作台时默认打开「近期申请」并勾选「只看我的」。近期申请的状态列同时显示审批状态，以及适用的待交付、已退回或已交付状态。
 
 实现入口：[cycle_service.py](app/services/cycle_service.py)、[catalog_service.py](app/services/catalog_service.py)、[cicd_service.py](app/services/cicd_service.py)、[identity.py](app/identity.py)。
 
