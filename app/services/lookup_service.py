@@ -536,7 +536,14 @@ def latest_running_releases(conn: sqlite3.Connection) -> dict[str, Any]:
                   "_disabled_builds": [alias for alias, cfg in ((latest["raw"].get("app_build") or {}).items() if latest else [])
                                        if isinstance(cfg, dict) and not is_enabled_value(cfg.get("enabled"))]}
         images = manifest["images"] if manifest else delivery_images.recorded(official["images"], official["image"], official["digest"])
-        commands = manifest["commands"] if manifest else []
+        commands = []
+        if manifest:
+            # Earlier manifests stored the test configuration but omitted its performance fields.
+            test_configs = dict(test_commands.release_tests(manifest["app_info"]["raw"]))
+            commands = [
+                {**test_commands.performance_fields(test_configs.get(command.get("path"), {})), **command}
+                for command in manifest["commands"]
+            ]
         builds = {build["build_key"]: build for build in manifest["builds"]} if manifest else {}
         used = {command["delivery_build_key"] for command in commands}
         inventory = list(commands)

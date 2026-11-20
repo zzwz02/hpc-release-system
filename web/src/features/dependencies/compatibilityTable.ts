@@ -20,21 +20,26 @@ export interface ReleaseRow {
   delivery_reference?: string;
   path?: string;
   command?: string;
+  perf_golden?: string;
+  perf_unit?: string;
   note: string;
 }
 
 export const columns = compatibilityTableMetadata.columns.map(([, label]) => label);
+const appColumns = new Set(["app_name", "app_id", "owners", "dependencies", "hpc_version", "app_version", "manifest_source"]);
+export const detailColumns = compatibilityTableMetadata.columns.filter(([key]) => !appColumns.has(key));
 export const archName = (arch?: string) => (compatibilityTableMetadata.architecture_labels as Record<string, string>)[arch ?? ""] ?? arch ?? "";
-export const imageConfig = (row: ReleaseRow) => [row.image_target, row.python_label, row.pytorch_label].filter(Boolean).join(" · ");
+
+export function cell(row: ReleaseRow, key: string): string {
+  if (key === "manifest_source") return publicationManifestSourceLabel(row.manifest_source);
+  if (key === "arch") return archName(row.arch);
+  if (key === "image_config") return [row.image_target, row.python_label, row.pytorch_label].filter(Boolean).join(" · ");
+  const value = row[key as keyof ReleaseRow];
+  return Array.isArray(value) ? value.join(", ") : String(value ?? "");
+}
 
 export function cells(row: ReleaseRow): string[] {
-  return compatibilityTableMetadata.columns.map(([key]) => {
-    if (key === "manifest_source") return publicationManifestSourceLabel(row.manifest_source);
-    if (key === "arch") return archName(row.arch);
-    if (key === "image_config") return imageConfig(row);
-    const value = row[key as keyof ReleaseRow];
-    return Array.isArray(value) ? value.join(", ") : String(value ?? "");
-  });
+  return compatibilityTableMetadata.columns.map(([key]) => cell(row, key));
 }
 
 export function groupGpuRows(rows: ReleaseRow[]): ReleaseRow[] {

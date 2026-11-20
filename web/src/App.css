@@ -533,16 +533,18 @@ tbody tr:hover td { background: var(--surface-2); }
 .compatibility-apps-table > tbody > tr > td:nth-child(1) { min-width: 150px; }
 .compatibility-apps-table > tbody > tr > td:nth-child(2),
 .compatibility-apps-table > tbody > tr > td:nth-child(6) { max-width: 240px; overflow-wrap: anywhere; }
-.compatibility-detail-table { table-layout: fixed; min-width: 1940px; }
-.compatibility-detail-table th:nth-child(1) { width: 120px; }
-.compatibility-detail-table th:nth-child(2) { width: 80px; }
-.compatibility-detail-table th:nth-child(3) { width: 140px; }
-.compatibility-detail-table th:nth-child(4) { width: 160px; }
-.compatibility-detail-table th:nth-child(5) { width: 330px; }
-.compatibility-detail-table th:nth-child(6) { width: 140px; }
-.compatibility-detail-table th:nth-child(7) { width: 140px; }
-.compatibility-detail-table th:nth-child(8) { width: 560px; }
-.compatibility-detail-table th:nth-child(9) { width: 230px; }
+.compatibility-detail-table { table-layout: fixed; min-width: 2160px; }
+.compatibility-detail-table th[data-column="os"] { width: 120px; }
+.compatibility-detail-table th[data-column="arch"] { width: 80px; }
+.compatibility-detail-table th[data-column="GPU"] { width: 140px; }
+.compatibility-detail-table th[data-column="image_config"] { width: 160px; }
+.compatibility-detail-table th[data-column="delivery_reference"] { width: 330px; }
+.compatibility-detail-table th[data-column="app_info_commit_id"],
+.compatibility-detail-table th[data-column="path"] { width: 140px; }
+.compatibility-detail-table th[data-column="app_info_commit_id"] { white-space: normal; }
+.compatibility-detail-table th[data-column="command"] { width: 560px; }
+.compatibility-detail-table th[data-column="perf_golden"],
+.compatibility-detail-table th[data-column="perf_unit"] { width: 110px; }
 .compatibility-detail-table td { vertical-align: top; overflow-wrap: anywhere; }
 .dependency-app-toggle { display: flex; align-items: baseline; gap: 8px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .dependency-app-toggle > .chev { flex-shrink: 0; font-size: 11px; }

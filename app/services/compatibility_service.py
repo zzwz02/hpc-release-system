@@ -8,6 +8,7 @@ from app.services import qa_result_identity_service
 
 def _failed_delivery(row, error):
     return {**row, "command": "", "path": "", "os": "", "arch": "", "chips": [],
+            "perf_golden": "", "perf_unit": "",
             "python_label": "", "pytorch_label": "", "image_target": "", "app_info_commit_id": "",
             "dependencies": [], "scope_pending": True, "note": f"交付镜像解析失败：{error}"}
 
@@ -42,6 +43,7 @@ def _delivery_rows(row, image):
                   "app_version": image["app_version"], "app_info_commit_id": image["commit_id"],
                   "dependencies": dependencies, "scope_pending": image["declared_dependencies"] is None or not dependencies,
                   "delivery_reference": reference, "image": reference, "digest": digest,
+                  "perf_golden": "", "perf_unit": "",
                   "note": ("根据历史配置生成（未在发布时封存）；" if row["manifest_source"] == "reconstructed" else "")
                           + "根据交付镜像 digest 实时生成"}
         commands = [command for command in image["test_commands"]

@@ -18,11 +18,13 @@ def rows():
             "app_version": "1.0", "hpc_version": "3.10.1", "manifest_source": "sealed", "os": "ubuntu24.04",
             "arch": "amd64", "image_target": "dbg", "python_label": "py312", "pytorch_label": "torch2.8",
             "delivery_reference": "image:tag@sha256:digest", "app_info_commit_id": "a" * 40,
-            "path": "unit_test", "command": "docker run image sh -c 'echo \"a,b\";\nrun_test'", "note": 'QA log: pass\n备注含逗号,和"引号"'}
+            "path": "unit_test", "perf_golden": "0", "perf_unit": "GFlops",
+            "command": "docker run image sh -c 'echo \"a,b\";\nrun_test'", "note": 'QA log: pass\n备注含逗号,和"引号"'}
     return [{**base, "GPU": chip, "chips": [chip]} for chip in ("C500", "C600", "X301")] + [
         {**base, "GPU": "C600", "chips": ["C600"], "note": "fail: C600 specific"},
         {**base, "GPU": "C500", "chips": ["C500"], "arch": "arm64"},
-        {**base, "app_id": "other", "app_name": "Other", "GPU": "", "chips": [], "dependencies": [], "command": ""},
+        {**base, "app_id": "other", "app_name": "Other", "GPU": "", "chips": [], "dependencies": [], "command": "",
+         "perf_golden": None, "perf_unit": ""},
     ]
 
 
@@ -42,8 +44,11 @@ def test_export_ignores_notes_when_combining_gpus_and_preserves_command_text(row
     assert "说明" not in exported[0]
     assert "C600 specific" not in result and "QA log:" not in result
     assert exported[0]["测试命令"] == rows[0]["command"]
+    assert list(exported[0])[-2:] == ["perf_golden", "perf_unit"]
+    assert (exported[0]["perf_golden"], exported[0]["perf_unit"]) == ("0", "GFlops")
     assert exported[1]["CPU 架构"] == "ARM"
     assert exported[2]["GPU"] == ""
+    assert exported[2]["perf_golden"] == exported[2]["perf_unit"] == ""
     assert exported[0]["镜像 app_info commit id"] == "a" * 40
     assert rows[0]["GPU"] == "C500"  # Export never rewrites the raw inventory.
     assert rows[3]["note"] == "fail: C600 specific"
@@ -66,6 +71,7 @@ def test_filters_apply_before_grouping(rows, filters, expected):
     {"image_target": "release"}, {"python_label": "py310"}, {"pytorch_label": "torch2.4"},
     {"delivery_reference": "different:tag@sha256:other"}, {"command": "different command"},
     {"app_info_commit_id": "b" * 40},
+    {"perf_golden": "max"}, {"perf_unit": "ns/day"},
 ])
 def test_export_keeps_different_builds_images_and_commands_separate(rows, change):
     selected = [rows[0], {**rows[1], "note": "different QA history", **change}]
@@ -93,6 +99,7 @@ def test_export_endpoint_permissions_filters_and_download_headers(temp_db, monke
         assert response.headers["cache-control"] == "no-store"
         exported = parse(response.text)
         assert len(exported) == 1 and exported[0]["GPU"] == "X301"
+        assert (exported[0]["perf_golden"], exported[0]["perf_unit"]) == ("0", "GFlops")
 
 
 def test_export_propagates_upstream_failure_instead_of_downloading_empty_csv(temp_db, monkeypatch):

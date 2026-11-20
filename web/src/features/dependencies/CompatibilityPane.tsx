@@ -5,7 +5,7 @@ import { apiGet } from "../../api/http";
 import { RefreshBar } from "../../components/RefreshBar";
 import { downloadCsv } from "../../lib/csv";
 import { compatibilityComponentLabel, universalComponentGroupMetadata, universalComponentMetadata } from "../../lib/domainMetadata";
-import { archName, cells, columns, groupGpuRows, imageConfig, type ReleaseRow } from "./compatibilityTable";
+import { archName, cell, cells, columns, detailColumns, groupGpuRows, type ReleaseRow } from "./compatibilityTable";
 
 const universalComponents = new Set(Object.keys(universalComponentMetadata));
 const universalGroup = universalComponentGroupMetadata.key;
@@ -35,14 +35,20 @@ function AppRows({ rows }: { rows: ReleaseRow[] }) {
     </tr>
     {expanded && <tr id={detailId} data-testid={`compat-detail-${app.app_id}`}><td colSpan={8}>
       <div className="table"><table className="compatibility-detail-table">
-        <thead><tr><th>OS</th><th>CPU 架构</th><th>GPU</th><th>镜像配置</th><th>交付镜像:tag@digest</th><th title="该交付镜像对应的 app_info commit id">commit id</th><th>测试项</th><th>测试命令</th></tr></thead>
+        <thead><tr>{detailColumns.map(([key, label]) => <th key={key} data-column={key}
+          title={key === "app_info_commit_id" ? "该交付镜像对应的 app_info commit id" : undefined}>{label}</th>)}</tr></thead>
         <tbody>{displayed.map((row, index) => <tr key={index}>
-          <td>{row.os || "—"}</td><td>{archName(row.arch) || "—"}</td><td>{row.GPU || "—"}</td>
-          <td>{imageConfig(row) || "—"}</td>
-          <td className="mono small break">{row.delivery_reference || "—"}</td>
-          <td className="mono small" title={row.app_info_commit_id} data-testid="compat-app-info-commit">{row.app_info_commit_id?.slice(0, 12) || "—"}</td>
-          <td className="mono small">{row.path || "—"}</td>
-          <td><div className="mono small cell-wrap" data-testid="compat-command">{row.command || "—"}</div></td>
+          {detailColumns.map(([key]) => {
+            const value = cell(row, key);
+            if (key === "app_info_commit_id") {
+              return <td key={key} className="mono small" title={value} data-testid="compat-app-info-commit">{value}</td>;
+            }
+            if (key === "command") {
+              return <td key={key}><div className="mono small cell-wrap" data-testid="compat-command">{value}</div></td>;
+            }
+            const className = key === "delivery_reference" ? "mono small break" : key === "path" ? "mono small" : undefined;
+            return <td key={key} className={className}>{value}</td>;
+          })}
         </tr>)}</tbody>
       </table></div>
     </td></tr>}

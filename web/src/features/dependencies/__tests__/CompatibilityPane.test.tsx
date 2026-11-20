@@ -100,7 +100,9 @@ it("shows each image's commit separately within an App", async () => {
 });
 
 it("exports the same merged GPUs and image configuration as displayed after filtering", async () => {
-  const gpuRows = ["C500", "C600", "X301"].map(GPU => ({ ...rows[0], GPU, chips: [GPU], note: `QA log: ${GPU} result` }));
+  const gpuRows = ["C500", "C600", "X301"].map(GPU => ({
+    ...rows[0], GPU, chips: [GPU], note: `QA log: ${GPU} result`, perf_golden: "0", perf_unit: "GFlops",
+  }));
   vi.mocked(apiGet).mockResolvedValue({ app_count: 1, rows: gpuRows });
   show();
   const group = await screen.findByTestId("compatibility-group-driver-sdk");
@@ -108,6 +110,8 @@ it("exports the same merged GPUs and image configuration as displayed after filt
   fireEvent.click(within(group).getByRole("button", { name: "展开 PyG 的镜像和测试命令" }));
   const detail = within(group).getByTestId("compat-detail-pyg");
   expect(within(detail).getByRole("cell", { name: "C500, C600, X301" })).toBeVisible();
+  expect(within(detail).getByRole("cell", { name: "0" })).toBeVisible();
+  expect(within(detail).getByRole("cell", { name: "GFlops" })).toBeVisible();
   expect(within(detail).getAllByTestId("compat-command")).toHaveLength(1);
   expect(within(detail).queryByRole("columnheader", { name: "说明" })).not.toBeInTheDocument();
   expect(within(detail).queryByText(/QA log:/)).not.toBeInTheDocument();
@@ -116,6 +120,14 @@ it("exports the same merged GPUs and image configuration as displayed after filt
   expect(vi.mocked(downloadCsv).mock.calls[0][2].map(row => row[9])).toEqual(["C500, C600, X301"]);
   expect(vi.mocked(downloadCsv).mock.calls[0][2][0][10]).toBe("release · py310 · torch2.4");
   expect(vi.mocked(downloadCsv).mock.calls[0][1]).toContain("镜像配置");
+  expect(vi.mocked(downloadCsv).mock.calls[0][1].slice(-2)).toEqual(["perf_golden", "perf_unit"]);
+  expect(vi.mocked(downloadCsv).mock.calls[0][2][0].slice(-2)).toEqual(["0", "GFlops"]);
+  const headers = vi.mocked(downloadCsv).mock.calls[0][1];
+  const detailTable = within(within(detail).getByRole("table"));
+  expect(detailTable.getAllByRole("columnheader").map((header) => header.textContent))
+    .toEqual(headers.slice(headers.indexOf("OS")));
+  expect(detailTable.getAllByRole("cell").map((item) => item.textContent))
+    .toEqual(vi.mocked(downloadCsv).mock.calls[0][2][0].slice(headers.indexOf("OS")));
   expect(vi.mocked(downloadCsv).mock.calls[0][1]).not.toContain("Python label");
   expect(vi.mocked(downloadCsv).mock.calls[0][1]).not.toContain("说明");
   expect(JSON.stringify(vi.mocked(downloadCsv).mock.calls[0][2])).not.toContain("QA log:");

@@ -109,7 +109,7 @@ WHERE e.app_id = :app_id AND e.release_id = :release_id;
 - 旧库升级新增可空清单列，清理已撤销、同周期重复及未锁定周期的旧正式版记录，保留每个 App/周期最新有效记录后移除撤销字段并建立唯一约束；不回填或伪造旧发布的封存时间。旧记录保留历史配置还原，缺少有效历史快照时明确提示；存在但版本不支持或损坏的清单报错，不静默重算。App 详情 `/api/apps/detail` 的 `official_versions[].test_manifest` 可读取各周期最终保留的完整清单。历史查询页面的 Harbor/Gerrit 镜像还原流程仍独立，统一发布详情页面留待后续。
 - 「最新正式版」统一按发布周期的 `release_date` 选择，同日再按周期创建时间及创建顺序确定先后，不按版本名字符串、正式版记录 ID 或重新发布时间排序。更正旧周期不会覆盖已有较新周期；最新周期解锁时回退到此前成功周期，重新发布后恢复。周期列表、App 发布历史、兼容性清单与旧迁移记录回查共用这一顺序。
 
-兼容性验证 CSV 可通过 `GET /api/lookup/latest-running/export` 下载，返回带 UTF-8 BOM 的 `compatibility.csv`。参数均可省略：`component`（如 `driver-sdk` 或 `torch 2.8 + py312`）、`arch`（`amd64` / `arm64`）、`os`、`chip`、`search`，对应页面的组件、CPU、OS、GPU 和关键词筛选，先筛选后合并。接口与页面共用 `shared/domain_metadata.json` 的 compatibility_table 列和 GPU 分组约定，不因组件分类重复导出；commit 在网页缩写显示，CSV 保留完整值。使用网站登录的 `hpc_session` Cookie，RM、QA、Owner 可访问；每次调用实时解析当前清单。旧 `/api/dependencies/compat.csv` 使用旧组件依赖清单口径，保留兼容；当前兼容性验证页面使用上述新接口。
+兼容性验证 CSV 可通过 `GET /api/lookup/latest-running/export` 下载，返回带 UTF-8 BOM 的 `compatibility.csv`。参数均可省略：`component`（如 `driver-sdk` 或 `torch 2.8 + py312`）、`arch`（`amd64` / `arm64`）、`os`、`chip`、`search`，对应页面的组件、CPU、OS、GPU 和关键词筛选，先筛选后合并。接口与页面共用 `shared/domain_metadata.json` 的 compatibility_table 列和 GPU 分组约定，不因组件分类重复导出；网页明细和 CSV 均使用完整的镜像 app_info commit id。网页测试命令明细和 CSV 末尾均显示每条命令对应的 `perf_golden` 和 `perf_unit`，按 QA 测试命令口径取自该测试配置。使用网站登录的 `hpc_session` Cookie，RM、QA、Owner 可访问；每次调用实时解析当前清单。旧 `/api/dependencies/compat.csv` 使用旧组件依赖清单口径，保留兼容；当前兼容性验证页面使用上述新接口。
 
 ```bash
 curl --fail --get -b cookies.txt \

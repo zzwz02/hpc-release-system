@@ -15,8 +15,12 @@ from tests.conftest import close_qa, make_dependency_app_info, seed_app, seed_cy
 
 @pytest.fixture()
 def inventory(temp_db, harbor_artifacts, monkeypatch):
-    monkeypatch.setattr(gerrit, "fetch_app_info_at", lambda url, *_a, **_k:
-                        json.dumps(make_dependency_app_info(url.rsplit("/hpc_", 1)[-1])))
+    def image_config(url, *_a, **_k):
+        document = make_dependency_app_info(url.rsplit("/hpc_", 1)[-1])
+        document["app_test"]["sanity"].update(perf_golden=0, perf_unit="GFlops")
+        return json.dumps(document)
+
+    monkeypatch.setattr(gerrit, "fetch_app_info_at", image_config)
     for name in ("amber", "hpl", "skipped", "withdrawn", "stopped", "never"):
         seed_app(temp_db, name, official_name=name.upper(), app_info=make_dependency_app_info(name), commit_id="published-config")
     cycles = []
@@ -72,6 +76,8 @@ def test_latest_success_retains_failed_skipped_and_withdrawn_apps_and_all_images
     assert {row["image_target"] for row in hpl} == {"release", "dbg"}
     assert all(row["delivery_reference"].endswith(row["digest"]) for row in hpl)
     assert all(row["delivery_reference"] in row["command"] for row in hpl if row.get("command"))
+    assert {(row["perf_golden"], row["perf_unit"]) for row in hpl if row.get("command")} == {("0", "GFlops")}
+    assert not any(row.get("perf_golden") or row.get("perf_unit") for row in hpl if not row.get("command"))
     assert not any("development-only-command" in row.get("command", "") for row in rows)
     assert all(row["dependencies"] == ["sdk", "torch 2.4 + py310"] if row["python_label"] == "py310"
                else row["dependencies"] == ["sdk", "torch 2.8 + py312"] for row in rows)
@@ -148,6 +154,31 @@ def test_inventory_api_permissions(temp_db, inventory, role, status):
 
 def test_empty_inventory(temp_db):
     assert lookup_service.latest_running_releases(temp_db) == {"app_count": 0, "rows": []}
+
+
+def test_legacy_templates_fill_missing_performance_fields_from_the_sealed_app_info(temp_db):
+    info = make_dependency_app_info("hpl")
+    info["app_test"]["sanity"].update(perf_golden=0, perf_unit="seconds")
+    seed_app(temp_db, "hpl", app_info=info)
+    release = seed_cycle(temp_db)
+    seed_signup(temp_db, release, "hpl")
+    qa_service.set_qa_status_batch(temp_db, release, [{"app_id": "hpl", "status": "qa_passed"}], user="qa", role="QA")
+    close_qa(temp_db, release)
+    cycle_service.publish(temp_db, release, user="rm", role="RM")
+
+    manifest = official_repo.current_by_app(temp_db)["hpl"]["test_manifest"]
+    for command in manifest["commands"]:
+        del command["perf_golden"], command["perf_unit"]
+    temp_db.execute("UPDATE official_versions SET test_manifest_json=? WHERE app_id='hpl'", (json.dumps(manifest),))
+    temp_db.commit()
+    updated = deepcopy(info)
+    updated["app_test"]["sanity"].update(perf_golden="max", perf_unit="GFlops")
+    store_app_info(temp_db, "hpl", updated, commit_id="new-metrics")
+
+    rows = lookup_service.latest_running_releases(temp_db)["rows"]
+    assert rows and all(row["command"] and not row["delivery_reference"] for row in rows)
+    assert {(row["perf_golden"], row["perf_unit"]) for row in rows} == {("0", "seconds")}
+    assert official_repo.current_by_app(temp_db)["hpl"]["test_manifest"] == manifest
 
 
 @pytest.mark.parametrize("sealed", [True, False])

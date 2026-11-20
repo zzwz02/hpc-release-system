@@ -42,7 +42,7 @@ for (const username of ["app_owner", "app_qa"]) {
     await expect(published).toContainText("1 个测试项 / 4 条命令");
     await toggle.click();
     const detail = category.getByTestId("compat-detail-runtime-published");
-    await expect(detail.getByRole("columnheader", { name: "commit id", exact: true })).toBeVisible();
+    await expect(detail.getByRole("columnheader", { name: "镜像 app_info commit id", exact: true })).toBeVisible();
     await expect(detail.getByTestId("compat-app-info-commit").first()).toHaveText("abcdef1");
     await expect(detail.getByTestId("compat-app-info-commit").first()).toHaveAttribute("title", "abcdef1");
     await expect(detail.getByTestId("compat-command")).toHaveCount(5);

@@ -143,6 +143,11 @@ def docker_cmd(test_cfg: dict[str, Any], docker_image: str | None = None) -> str
     return " ".join(parts)
 
 
+def performance_fields(test_cfg: dict[str, Any]) -> dict[str, str]:
+    return {field: "" if test_cfg.get(field) is None else str(test_cfg[field])
+            for field in ("perf_golden", "perf_unit")}
+
+
 def command_rows(raw: dict[str, Any], excluded: set[str] | None = None) -> list[dict[str, Any]]:
     rows = []
     platforms = build_platforms(raw)
@@ -156,7 +161,6 @@ def command_rows(raw: dict[str, Any], excluded: set[str] | None = None) -> list[
                         **{key: value for key, value in platform.items() if key not in ("config", "image_targets")},
                         "test": path, "image_target": target, "image": image,
                         "command": docker_cmd(cfg, image),
-                        **{field: "" if cfg.get(field) is None else str(cfg[field])
-                           for field in ("perf_golden", "perf_unit")},
+                        **performance_fields(cfg),
                     })
     return rows
