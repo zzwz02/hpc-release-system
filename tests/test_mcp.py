@@ -377,6 +377,89 @@ def test_skill_load_serves_the_method_and_its_pages_to_every_role(site):
     assert refused["target"] == "cu-bridge/../../../etc/passwd" and refused["error"]
 
 
+@pytest.mark.parametrize(("limit", "jira_page_size", "requested_size", "first_count"), [
+    (None, 50, 50, 50),
+    (10, 50, 10, 10),
+    (100, 30, 50, 30),
+])
+def test_jira_search_returns_one_page_and_next_offset(
+    site, monkeypatch, limit, jira_page_size, requested_size, first_count,
+):
+    client, _, token_for, _ = site
+    token = token_for("guest", "Guest")
+    session, _ = connect_client(client, token)
+    monkeypatch.setattr(jira, "_require_config", lambda: {
+        "JIRA_BASE_URL": "https://jira.example", "JIRA_TOKEN": "fake-token",
+    })
+    pages = []
+    scoped_jql = "project = MC3 AND (issuetype = Epic AND statusCategory != Done) ORDER BY key ASC"
+
+    def request(_base, _token, method, path, body):
+        assert (method, path) == ("POST", "/rest/api/2/search")
+        assert body["jql"] == scoped_jql
+        offset, max_results = body["startAt"], body["maxResults"]
+        pages.append((offset, max_results))
+        end = min(81, offset + min(max_results, jira_page_size))
+        return {
+            "startAt": offset, "total": 81,
+            "issues": [
+                {"key": f"MC3-{index}", "fields": {"summary": f"Epic {index}"}}
+                for index in range(offset + 1, end + 1)
+            ],
+        }
+
+    monkeypatch.setattr(jira, "_request", request)
+    args = {"query": "issuetype = Epic AND statusCategory != Done ORDER BY key ASC"}
+    if limit is not None:
+        args["max_results"] = limit
+    for offset, count in ((0, first_count), (first_count, min(first_count, 81 - first_count))):
+        if offset:
+            args["start_at"] = offset
+        result = call(client, token, session, "jira_search", args)
+        assert not result["isError"], result
+        content = result["content"][0]["text"]
+        end = offset + count
+        assert f"共 81 条，显示 {count} 条" in content
+        assert f"本页为第 {offset + 1} 至 {end} 条" in content
+        assert re.findall(r"^\| (MC3-\d+) \|", content, re.MULTILINE) == [
+            f"MC3-{index}" for index in range(offset + 1, end + 1)
+        ]
+        next_offset = end if end < 81 else None
+        if next_offset is not None:
+            assert f"后面还有 {81 - end} 条" in content
+            assert f"start_at={next_offset}" in content
+        else:
+            assert "下一页" not in content
+        entry = logs(client, tool="jira_search")[0]
+        assert entry["result_summary"] == f"{count}/81 条"
+        assert json.loads(entry["extra_json"]) == {
+            "jql": scoped_jql, "total": 81, "returned": count,
+            "start_at": offset, "next_start_at": next_offset,
+        }
+        assert pages == ([(0, requested_size), (offset, requested_size)] if offset
+                         else [(0, requested_size)])
+
+
+@pytest.mark.parametrize(("page", "error"), [
+    ({"startAt": 0, "total": 2, "issues": [{"key": "MC3-2"}]}, "分页信息无效"),
+    ({"startAt": 1, "total": 2, "issues": []}, "空页"),
+    ({"startAt": 1, "total": 2, "issues": [{"key": "PHS-1"}]}, "仅允许读取 MC3"),
+])
+def test_jira_search_rejects_invalid_pages(site, monkeypatch, page, error):
+    client, _, token_for, _ = site
+    token = token_for("guest", "Guest")
+    session, _ = connect_client(client, token)
+    monkeypatch.setattr(jira, "_require_config", lambda: {
+        "JIRA_BASE_URL": "https://jira.example", "JIRA_TOKEN": "fake-token",
+    })
+    monkeypatch.setattr(jira, "_request", lambda *_args: page)
+    result = call(client, token, session, "jira_search", {"query": "ORDER BY key ASC", "start_at": 1})
+    assert result["isError"]
+    content = result["content"][0]["text"]
+    assert error in content
+    assert "| PHS-1 |" not in content
+
+
 def test_stats_scope_mine_vs_rm(site):
     client, current, token_for, _ = site
     for username, role in (("alice", "Owner"), ("carol", "Owner")):

@@ -594,17 +594,20 @@ def search_issues(
     *,
     max_results: int = 50,
     validate: bool = True,
+    start_at: int | None = None,
 ) -> dict:
-    """Run a JQL search; returns {"total", "issues": [summary dicts]}.
+    """Fetch one JQL search page with its total and normalized issue summaries.
 
     validate=False lets `key in (...)` skip keys that no longer exist instead
     of failing the whole query.
     """
     cfg = _require_config()
+    body = {"jql": jql, "maxResults": max_results, "fields": _SEARCH_FIELDS, "validateQuery": validate}
+    if start_at is not None:
+        body["startAt"] = start_at
     try:
         raw = _request(
-            cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"], "POST", "/rest/api/2/search",
-            {"jql": jql, "maxResults": max_results, "fields": _SEARCH_FIELDS, "validateQuery": validate},
+            cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"], "POST", "/rest/api/2/search", body,
         )
     except urllib.error.HTTPError as exc:
         if exc.code != 400:
@@ -614,6 +617,12 @@ def search_issues(
         except ValueError:
             messages = []
         raise JiraQueryError("；".join(messages) or "JQL 查询无效") from exc
+    if start_at is not None and (
+        type(raw.get("startAt")) is not int or raw["startAt"] != start_at
+        or type(raw.get("total")) is not int
+        or raw["total"] < 0 or not isinstance(raw.get("issues"), list)
+    ):
+        raise RuntimeError("JIRA 返回的分页信息无效")
     issues = []
     for item in raw.get("issues") or []:
         fields = item.get("fields") or {}

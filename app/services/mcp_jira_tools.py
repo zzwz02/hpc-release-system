@@ -72,7 +72,13 @@ def _person(value: dict | None) -> str:
 
 def _search(ctx: ToolContext, args: dict) -> ToolResult:
     query = str(args.get("query") or "").strip()
-    limit = max(1, min(int(args.get("max_results") or 20), SEARCH_MAX_RESULTS))
+    limit = args.get("max_results", SEARCH_MAX_RESULTS)
+    if type(limit) is not int or limit < 1:
+        raise ToolError("max_results 必须是正整数")
+    limit = min(limit, SEARCH_MAX_RESULTS)
+    start_at = args.get("start_at", 0)
+    if type(start_at) is not int or start_at < 0:
+        raise ToolError("start_at 必须是非负整数")
     if not query:
         jql = f'assignee = "{jira.agent_username(ctx.user)}" AND status != Closed ORDER BY updated DESC'
     elif re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*-\d+", query):
@@ -81,21 +87,36 @@ def _search(ctx: ToolContext, args: dict) -> ToolResult:
     else:
         jql = query
     jql = scope_jql(ctx.user["role"], jql)
-    ctx.log.extra = {"jql": jql}
-    found = _jira_call(jira.search_issues, jql, max_results=limit)
-    for item in found["issues"]:
+    ctx.log.extra = {"jql": jql, "start_at": start_at}
+    found = _jira_call(jira.search_issues, jql, max_results=limit, start_at=start_at)
+    issues, total = found["issues"], found["total"]
+    returned = len(issues)
+    end = start_at + returned
+    if returned > limit or (returned and end > total):
+        raise ToolError("JIRA 返回的分页条数无效")
+    if not returned and start_at < total:
+        raise ToolError("JIRA 返回了空页，请重新查询")
+    next_start_at = end if end < total else None
+    lines = [f"JQL: {jql}", f"共 {total} 条，显示 {returned} 条"]
+    if returned:
+        lines.append(f"本页为第 {start_at + 1} 至 {end} 条。")
+    if next_start_at is not None:
+        lines.append(
+            f"后面还有 {total - end} 条。需要下一页时，沿用原查询并传入 start_at={next_start_at}。"
+        )
+    lines += ["", "| Key | 类型 | 状态 | 优先级 | Assignee | 更新 | 标题 |",
+              "| --- | --- | --- | --- | --- | --- | --- |"]
+    for item in issues:
         require_jira_read(ctx.user["role"], item["key"])
-    lines = [f"JQL: {jql}", f"共 {found['total']} 条，显示 {len(found['issues'])} 条", ""]
-    lines += ["| Key | 类型 | 状态 | 优先级 | Assignee | 更新 | 标题 |", "| --- | --- | --- | --- | --- | --- | --- |"]
-    for item in found["issues"]:
         lines.append(
             f"| {item['key']} | {item['issue_type']} | {item['status']} | {item['priority']} | "
             f"{(item['assignee'] or {}).get('name', '')} | {item['updated'][:10]} | "
             f"{item['summary'].replace('|', '/')} |"
         )
     return ToolResult.text("\n".join(lines), log=ToolLog(
-        summary=f"{len(found['issues'])}/{found['total']} 条",
-        extra={"jql": jql, "returned": len(found["issues"]), "total": found["total"]},
+        summary=f"{returned}/{total} 条",
+        extra={"jql": jql, "start_at": start_at, "returned": returned, "total": total,
+               "next_start_at": next_start_at},
     ))
 
 
@@ -105,13 +126,17 @@ register(Tool(
     title="搜索 JIRA",
     description=(
         "Search JIRA issues. `query` may be empty (my open issues), one issue key such as MC3-7672, "
-        "or any JQL. Returns a Markdown table of key, type, status, priority, assignee, updated, summary."
+        "or any JQL. Returns one page of up to 50 issues and the total number of matches. "
+        "To see more results, send the same query with the next start_at shown in the response."
     ),
     input_schema={
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "Empty, an issue key, or JQL."},
-            "max_results": {"type": "integer", "minimum": 1, "maximum": SEARCH_MAX_RESULTS, "default": 20},
+            "max_results": {"type": "integer", "minimum": 1, "maximum": SEARCH_MAX_RESULTS,
+                            "default": SEARCH_MAX_RESULTS, "description": "Page size."},
+            "start_at": {"type": "integer", "minimum": 0, "default": 0,
+                         "description": "Zero-based result offset. Use the returned offset for the next page."},
         },
     },
     handler=_search,
