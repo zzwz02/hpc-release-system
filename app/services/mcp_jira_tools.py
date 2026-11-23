@@ -7,7 +7,7 @@ attachment download commands (short-lived /api/mcp/downloads/... tickets).
 
 Reads use the [jira] service account's visibility, like the JIRA agent page.
 Comments are posted by that account too, so the body gets a footer naming
-the website user; only the current assignee or RM may comment. The JIRA
+the website user. Write access depends on the issue and the caller's grants. The JIRA
 agent cybersecurity risk lock does not restrict MCP comments or attachment uploads.
 """
 from __future__ import annotations
@@ -282,8 +282,10 @@ register(Tool(
 # jira_add_comment
 # ─────────────────────────────────────────────────────────────
 
-def check_can_write(user: dict, key: str, action: str = "评论") -> dict:
+def check_can_write(user: dict, key: str, action: str = "评论", *, all_issues: bool = False) -> dict:
     """Check live issue authority for MCP writes, independently of agent execution locks."""
+    if all_issues:
+        return _jira_call(jira.get_issue, key, issue_key=key)
     require_jira_read(user["role"], key)
     issue = _jira_call(jira.get_issue, key, issue_key=key)
     require_jira_read(user["role"], issue.get("key") or key)
@@ -333,7 +335,7 @@ def _comment(ctx: ToolContext, args: dict) -> ToolResult:
         raise ToolError("评论内容不能为空")
     if len(body) > COMMENT_MAX_CHARS:
         raise ToolError(f"评论超过 {COMMENT_MAX_CHARS} 字符")
-    issue = check_can_write(ctx.user, key)
+    issue = check_can_write(ctx.user, key, all_issues=ctx.jira_write_all)
     comment_id = _jira_call(jira.add_comment, key, body + comment_footer(ctx), issue_key=key)
     url = f"{issue['url']}?focusedCommentId={comment_id}"
     return ToolResult.text(f"已在 {key} 发布评论（ID {comment_id}）：{url}", log=ToolLog(
@@ -347,8 +349,8 @@ register(Tool(
     category=CATEGORY,
     title="评论 JIRA",
     description=(
-        "Append a comment (JIRA wiki markup) to an issue. Only the issue's current assignee or an RM may "
-        "comment. Call directly when the issue key and information needed for the comment are already known; "
+        "Append a comment (JIRA wiki markup) to an issue. The current assignee, an RM, or a Guest with "
+        "an explicit all-issues write grant may comment. Call directly when the issue key and comment are known; "
         "no prior jira_pull_issue is required. The server checks issue access and current write permission. "
         "Pull only when the task needs missing issue context, comment history or existing attachment links. "
         "The JIRA agent cybersecurity risk lock does not block this user-confirmed comment. "
@@ -397,7 +399,7 @@ def _upload(ctx: ToolContext, args: dict) -> ToolResult:
     if not filename:
         raise ToolError("无法确定附件文件名，请传 filename")
     ctx.log.extra = {"filename": filename}
-    check_can_write(ctx.user, key, "上传附件")
+    check_can_write(ctx.user, key, "上传附件", all_issues=ctx.jira_write_all)
     ticket = mcp_service.issue_upload_ticket(ctx.caller, ctx.session, issue_key=key, filename=filename)
     url = f"{ctx.base_url}/api/mcp/uploads/{ticket}"
     # No -f: on failure the server's plain-text reason is what the agent needs to read.
@@ -422,8 +424,9 @@ register(Tool(
     category=CATEGORY,
     title="上传 JIRA 附件",
     description=(
-        "Attach a file from the user's machine to a JIRA issue. Only the issue's current assignee or an RM "
-        "may upload. Call directly with the issue key and local file path; no prior jira_pull_issue is required. "
+        "Attach a file from the user's machine to a JIRA issue. The current assignee, an RM, or a Guest "
+        "with an explicit all-issues write grant may upload. Call directly with the issue key and local file path; "
+        "no prior jira_pull_issue is required. "
         "Do not pull merely to verify the issue exists or permission to upload; the server checks both. "
         "This tool checks permission and returns a one-time curl command; run it locally to send "
         "the file (the MCP server cannot read local files). No elicitation confirmation is required for "

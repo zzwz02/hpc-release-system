@@ -939,31 +939,58 @@ def test_confirmation_times_out_without_posting(site, monkeypatch):
     assert json.loads(logs(client, tool="jira_add_comment")[0]["extra_json"])["confirm"] == "timeout"
 
 
-@pytest.mark.parametrize('change', ['revoke', 'demote', 'permission'])
-def test_confirmation_revalidates_before_publish(site, change):
+@pytest.mark.parametrize('change', ['revoke', 'demote', 'permission', 'guest_permission', 'guest_scope'])
+def test_confirmation_revalidates_before_publish(site, change, monkeypatch):
     from app.services import mcp_service
-    client, _, token_for, calls = site
-    token = token_for('rm', 'RM')
+    client, current, token_for, calls = site
+    guest_grant = change in ('guest_permission', 'guest_scope')
+    issue_key = 'PHS-1' if change == 'guest_scope' else 'MC3-1'
+    username = 'guest' if guest_grant else 'rm'
+    token = token_for(username, 'Guest' if guest_grant else 'RM')
+    if guest_grant:
+        current.update(username='rm', role='RM')
+        granted = client.post('/api/mcp/permissions', json={
+            'revision': 0, 'grants': {}, 'guest_jira_write': {'guest': True},
+            'guest_jira_write_all': {'guest': change == 'guest_scope'},
+        })
+        assert granted.status_code == 200
+        monkeypatch.setattr(
+            jira, 'get_issue', lambda key: {**ISSUE, 'key': key, 'assignee': {'name': 'guest'}},
+        )
     session = connect_confirming(client, token)
     conn = connect(settings.db_path)
     try:
         caller = mcp_service.authenticate(conn, f'Bearer {token}')
         stream, _ = mcp_protocol.handle_payload(conn, caller, session, 'http://testserver', {
             'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-            'params': {'name': 'jira_add_comment', 'arguments': {'issue_key': 'MC3-1', 'body': 'no'}}})
+            'params': {'name': 'jira_add_comment', 'arguments': {'issue_key': issue_key, 'body': 'no'}}})
         events = stream.exchange.call_with_confirmation(stream.msg_id, stream.tool, stream.arguments)
         ask = next(events)
         if change == 'revoke':
             conn.execute("UPDATE mcp_tokens SET revoked_at='revoked' WHERE username='rm'")
         elif change == 'demote':
             conn.execute("UPDATE users SET role='Owner' WHERE username='rm'")
+        elif guest_grant:
+            field = 'guest_jira_write_all' if change == 'guest_scope' else 'guest_jira_write'
+            response = client.post('/api/mcp/permissions', json={
+                'revision': 1, 'grants': {}, field: {'guest': False},
+            })
+            assert response.status_code == 200
         else:
             response = client.post('/api/mcp/permissions', json={'revision': 0, 'grants': {'jira_add_comment': []}})
             assert response.status_code == 200
         conn.commit()
-        assert mcp_protocol._settle({'id': ask['id'], 'result': {'action': 'accept', 'content': {'username': 'rm'}}},
-                                    caller, {'session_id': session})
-        assert next(events)['result']['isError']
+        confirmation = {
+            'id': ask['id'],
+            'result': {'action': 'accept', 'content': {'username': username}},
+        }
+        assert mcp_protocol._settle(confirmation, caller, {'session_id': session})
+        result = next(events)['result']
+        assert result['isError']
+        if change == 'guest_permission':
+            assert '无权调用' in result['content'][0]['text']
+        if change == 'guest_scope':
+            assert 'MC3' in result['content'][0]['text']
         assert calls['comments'] == []
     finally:
         conn.close()

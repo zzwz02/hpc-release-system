@@ -30,11 +30,13 @@ export interface McpInfo {
   tools: McpToolInfo[];
   can_view_all: boolean;
   jira_read_projects: string[] | null;
+  guest_jira_write_all: boolean;
   access_warnings?: string[];
 }
 
 export interface McpPermissions {
   revision: number;
+  guests: { username: string; display_name: string; jira_write: boolean; jira_write_all: boolean }[];
   columns: { id: string; label: string; kind: "role" | "group" }[];
   tools: {
     name: string;
@@ -48,8 +50,10 @@ export interface McpPermissions {
 }
 
 export const getPermissions = () => apiGet<McpPermissions>("/api/mcp/permissions");
-export const savePermissions = (revision: number, grants: Record<string, string[]>) =>
-  apiPost<McpPermissions>("/api/mcp/permissions", { revision, grants });
+export const savePermissions = (revision: number, grants: Record<string, string[]>, guestGrants: {
+  guest_jira_write: Record<string, boolean>;
+  guest_jira_write_all: Record<string, boolean>;
+}) => apiPost<McpPermissions>("/api/mcp/permissions", { revision, grants, ...guestGrants });
 
 export interface McpStats {
   since: string;

@@ -31,7 +31,7 @@ from urllib.parse import parse_qs, quote
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from app.api.errors import ApiError, AuthzError
 from app.config import settings
@@ -198,8 +198,12 @@ async def mcp_upload(ticket: str, request: Request) -> Response:
         # Permission again: the assignee may have changed since the link was issued.
         caller = await run_in_threadpool(mcp_service.refresh_caller, entry.caller)
         log["caller"] = caller
-        await run_in_threadpool(mcp_access_service.require_tool_access, caller.user, "jira_upload_attachment")
-        await run_in_threadpool(check_can_write, caller.user, entry.issue_key, "上传附件")
+        scope = await run_in_threadpool(
+            mcp_access_service.require_tool_access, caller.user, "jira_upload_attachment",
+        )
+        await run_in_threadpool(
+            check_can_write, caller.user, entry.issue_key, "上传附件", all_issues=scope == "all",
+        )
         attachment_id = await run_in_threadpool(jira.upload_agent_attachment, entry.issue_key, entry.filename, data)
         succeeded = True
     except (ApiError, ToolError, ValueError, OSError, RuntimeError) as exc:
@@ -337,6 +341,8 @@ class PermissionsBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     revision: int = Field(ge=0, strict=True)
     grants: dict[str, list[str]]
+    guest_jira_write: dict[str, StrictBool] = Field(default_factory=dict)
+    guest_jira_write_all: dict[str, StrictBool] = Field(default_factory=dict)
 
 
 @router.get("/api/mcp/permissions")
@@ -348,7 +354,10 @@ def permissions(_user: dict = Depends(require_permission_manager),
 @router.post("/api/mcp/permissions")
 def save_permissions(body: PermissionsBody, user: dict = Depends(require_permission_manager),
                      conn: sqlite3.Connection = Depends(get_db)) -> dict:
-    return mcp_access_service.save_permissions(conn, user, body.revision, body.grants)
+    return mcp_access_service.save_permissions(
+        conn, user, body.revision, body.grants, guest_jira_write=body.guest_jira_write,
+        guest_jira_write_all=body.guest_jira_write_all,
+    )
 
 
 @router.get("/api/mcp/tokens")
@@ -372,7 +381,8 @@ def revoke_token(token_id: int, user: dict = Depends(require_view),
 @router.get("/api/mcp/info")
 def info(request: Request, user: dict = Depends(require_view),
          conn: sqlite3.Connection = Depends(get_db)) -> dict:
-    tools, warning = mcp_access_service.ToolAccess(conn, user).list_tools()
+    access = mcp_access_service.ToolAccess(conn, user)
+    tools, warning = access.list_tools()
     return {
         "endpoint": f"{_request_base(request)}/mcp",
         "server_name": mcp_protocol.SERVER_NAME,
@@ -381,6 +391,7 @@ def info(request: Request, user: dict = Depends(require_view),
         "access_warnings": [warning] if warning else [],
         "can_view_all": mcp_service.can_view_all(user["role"]),
         "jira_read_projects": [LIMITED_JIRA_PROJECT] if limited_jira_reader(user["role"]) else None,
+        "guest_jira_write_all": access.guest_jira_write_scope == "all",
     }
 
 

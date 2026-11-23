@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
+from functools import cached_property
 
 from app.api.errors import ApiError
 from app.config import settings
 from app.db.connection import connect, transaction
-from app.domain.mcp_access import MCP_LDAP_PATTERNS, MCP_ROLES
+from app.domain.mcp_access import GUEST_JIRA_WRITE_TOOLS, MCP_LDAP_PATTERNS, MCP_ROLES
 from app.integrations import ldap
 from app.repositories import audit_repo, mcp_repo
 from app.services.mcp_tools import Tool, get_tool, registered_tools
@@ -34,12 +35,20 @@ class ToolAccess:
         _, self.grants = mcp_repo.read_tool_permissions(conn)
         self._membership: tuple[tuple[str, ...], str] | None = None
 
+    @cached_property
+    def guest_jira_write_scope(self) -> str:
+        if self.user["role"] == "Guest":
+            return mcp_repo.guest_jira_write_scope(self.conn, self.user["username"])
+        return ""
+
     def check(self, tool: Tool) -> tuple[bool, str]:
         role = self.user["role"]
         if role not in MCP_ROLES or not tool.enabled:
             return False, ""
         selected = self.grants.get(tool.name, tool.default_grants())
         if role in selected:
+            return True, ""
+        if tool.name in GUEST_JIRA_WRITE_TOOLS and self.guest_jira_write_scope:
             return True, ""
         if not any(pattern in selected for pattern in MCP_LDAP_PATTERNS):
             return False, ""
@@ -59,22 +68,24 @@ class ToolAccess:
         return tools, warning
 
 
-def require_tool_access(user: dict, name: str) -> None:
-    """Recheck access when a confirmation or attachment ticket is used."""
+def require_tool_access(user: dict, name: str) -> str:
+    """Recheck live tool access and return the Guest write scope for JIRA write tools."""
     tool = get_tool(name)
     if tool:
         with closing(connect(settings.db_path)) as conn:
-            allowed, warning = ToolAccess(conn, user).check(tool)
-        if allowed:
-            return
+            access = ToolAccess(conn, user)
+            allowed, warning = access.check(tool)
+            if allowed:
+                return access.guest_jira_write_scope if name in GUEST_JIRA_WRITE_TOOLS else ""
         if warning:
             raise ApiError(403, warning)
     raise ApiError(403, f"当前账号无权调用 MCP 工具 {name}")
 
 
-def _permission_matrix(revision: int, grants: dict[str, list[str]]) -> dict:
+def _permission_matrix(revision: int, grants: dict[str, list[str]], guests: list[dict]) -> dict:
     return {
         "revision": revision,
+        "guests": guests,
         "columns": [
             *({"id": role, "label": role, "kind": "role"} for role in MCP_ROLES),
             *({"id": pattern, "label": pattern.removesuffix("*"), "kind": "group"}
@@ -95,10 +106,21 @@ def _permission_matrix(revision: int, grants: dict[str, list[str]]) -> dict:
 
 
 def permission_matrix(conn: sqlite3.Connection) -> dict:
-    return _permission_matrix(*mcp_repo.read_tool_permissions(conn))
+    with transaction(conn):
+        revision, grants = mcp_repo.read_tool_permissions(conn)
+        guests = mcp_repo.list_guest_jira_access(conn)
+    return _permission_matrix(revision, grants, guests)
 
 
-def save_permissions(conn: sqlite3.Connection, user: dict, revision: int, changes: dict[str, list[str]]) -> dict:
+def save_permissions(
+    conn: sqlite3.Connection,
+    user: dict,
+    revision: int,
+    changes: dict[str, list[str]],
+    *,
+    guest_jira_write: dict[str, bool],
+    guest_jira_write_all: dict[str, bool],
+) -> dict:
     principals = MCP_ROLES + MCP_LDAP_PATTERNS
     tools = {tool.name: tool for tool in registered_tools()}
     for name, selected in changes.items():
@@ -111,13 +133,33 @@ def save_permissions(conn: sqlite3.Connection, user: dict, revision: int, change
         current_revision, grants = mcp_repo.read_tool_permissions(conn)
         if revision != current_revision:
             raise ApiError(409, "权限配置已被其他人更新，请重新读取后再保存")
-        audit_changes = []
+        guests = mcp_repo.list_guest_jira_access(conn)
+        guests_by_username = {guest["username"]: guest for guest in guests}
+        audit_changes: list[dict] = []
         for name, selected in changes.items():
             before = list(grants.get(name, tools[name].default_grants()))
             if set(selected) != set(before):
                 after = [principal for principal in principals if principal in selected]
                 grants[name] = after
                 audit_changes.append({"tool": name, "before": before, "after": after})
+        for username in sorted(guest_jira_write.keys() | guest_jira_write_all.keys()):
+            guest = guests_by_username.get(username)
+            if guest is None:
+                raise ApiError(400, f"账号 {username} 当前不是 Guest，请重新读取权限配置")
+            guest_changes = []
+            for field, updates in (("jira_write", guest_jira_write), ("jira_write_all", guest_jira_write_all)):
+                before = guest[field]
+                after = updates.get(username, before)
+                if before != after:
+                    guest[field] = after
+                    guest_changes.append({
+                        "username": username, "permission": f"guest_{field}", "before": before, "after": after,
+                    })
+            if guest_changes:
+                mcp_repo.set_guest_jira_write(
+                    conn, username, jira_write=guest["jira_write"], jira_write_all=guest["jira_write_all"],
+                )
+                audit_changes.extend(guest_changes)
         if audit_changes:
             current_revision += 1
             mcp_repo.write_tool_permissions(conn, current_revision, grants)
@@ -125,4 +167,4 @@ def save_permissions(conn: sqlite3.Connection, user: dict, revision: int, change
                 conn, "更新 MCP 工具权限", ts=beijing_timestamp(), user=user["username"],
                 role=user["role"], event="mcp_tool_permissions", detail=audit_changes,
             )
-    return _permission_matrix(current_revision, grants)
+    return _permission_matrix(current_revision, grants, guests)

@@ -9,6 +9,7 @@ from app.domain.permissions import CAPABILITY_PERMISSIONS, LDAP_GROUP_GRANTS, ha
 # Guests may read this JIRA project only. This is a fixed product permission,
 # independent of which server hosts the website or the JIRA integration.
 LIMITED_JIRA_PROJECT = "MC3"
+GUEST_JIRA_WRITE_TOOLS = frozenset({"jira_add_comment", "jira_upload_attachment"})
 MCP_ROLES = roles_for_tab("mcp")
 MCP_LDAP_PATTERNS = tuple(dict.fromkeys(
     pattern for capability, patterns in LDAP_GROUP_GRANTS.items()

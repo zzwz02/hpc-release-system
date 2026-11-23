@@ -682,6 +682,19 @@ def init_db(conn: sqlite3.Connection) -> None:
             grants_json TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS mcp_guest_jira_writers (
+            username TEXT NOT NULL PRIMARY KEY REFERENCES users(username) ON DELETE CASCADE,
+            jira_write INTEGER NOT NULL DEFAULT 1 CHECK (jira_write IN (0, 1)),
+            jira_write_all INTEGER NOT NULL DEFAULT 0 CHECK (jira_write_all IN (0, 1))
+        );
+
+        CREATE TRIGGER IF NOT EXISTS mcp_guest_jira_write_role_change
+        AFTER UPDATE OF role ON users
+        WHEN OLD.role = 'Guest' AND NEW.role <> 'Guest'
+        BEGIN
+            DELETE FROM mcp_guest_jira_writers WHERE username = OLD.username;
+        END;
+
         CREATE TABLE IF NOT EXISTS mcp_sessions (
             id TEXT PRIMARY KEY,
             token_id INTEGER NOT NULL,
@@ -774,6 +787,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         # pre-cutover files. Current runtime writes the file body to ``content``.
         ("qa_logs",            "content",            "BLOB"),
         ("mcp_sessions",       "client_capabilities", "TEXT NOT NULL DEFAULT ''"),
+        # A row in the original table granted writes on the Guest's assigned issues.
+        ("mcp_guest_jira_writers", "jira_write", "INTEGER NOT NULL DEFAULT 1 CHECK (jira_write IN (0, 1))"),
+        ("mcp_guest_jira_writers", "jira_write_all", "INTEGER NOT NULL DEFAULT 0 CHECK (jira_write_all IN (0, 1))"),
     ]:
         try:
             conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} {_col_def}")

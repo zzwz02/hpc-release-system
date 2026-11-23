@@ -1,21 +1,24 @@
 """The website matrix governs MCP discovery, calls and outstanding tickets."""
-from contextlib import closing
 import json
 import re
+import sqlite3
+from contextlib import closing
 
 from app.config import settings
 from app.db.connection import connect
 from app.integrations import jira
+from app.repositories import mcp_repo, users_repo
 from app.services.mcp_tools import registered_tools
-from tests.test_mcp import ISSUE, call, connect_client, rpc, site  # noqa: F401
+from tests.test_mcp import ISSUE, call, confirmable_call, connect_client, connect_confirming, rpc
+from tests.test_mcp import site as site
 from tests.test_mcp_guest import download_path
 from tests.test_mcp_jenkins_access import listed, membership, set_identity
 
 PATH = "/api/mcp/permissions"
 
 
-def save(client, revision, grants):
-    return client.post(PATH, json={"revision": revision, "grants": grants})
+def save(client, revision, grants, **extra):
+    return client.post(PATH, json={"revision": revision, "grants": grants, **extra})
 
 
 def test_permission_matrix_defaults_validation_and_conflict(site):
@@ -28,6 +31,9 @@ def test_permission_matrix_defaults_validation_and_conflict(site):
     current.update(username="rm", role="RM")
     initial = client.get(PATH).json()
     assert initial["revision"] == 0
+    assert initial["guests"] == [
+        {"username": "guest", "display_name": "Guest", "jira_write": False, "jira_write_all": False},
+    ]
     assert {col["id"] for col in initial["columns"]} == {"RM", "Owner", "Guest", "QA", "SPD", "dl.pde_*", "dl.sw_*"}
     tools = {tool["name"]: tool for tool in initial["tools"]}
     assert set(tools) == {tool.name for tool in registered_tools()}
@@ -95,3 +101,180 @@ def test_matrix_can_grant_a_write_and_revoke_outstanding_tickets(site, monkeypat
     assert client.put(upload_path, content=b"x").status_code == 403
     assert client.get(download_path(pull)).status_code == 403
     assert uploads == []
+
+
+def test_rm_guest_jira_write_grants_are_validated_and_audited(site):
+    client, current, _, _ = site
+    flags = {"guest": True}
+    for role in ("Guest", "Owner", "Admin"):
+        current.update(role=role)
+        assert save(client, 0, {}, guest_jira_write=flags).status_code == 403
+        assert save(client, 0, {}, guest_jira_write_all=flags).status_code == 403
+    current.update(username="rm", role="RM")
+    assert save(client, 0, {}, guest_jira_write={"guest": "true"}).status_code == 422
+    assert save(client, 0, {}, guest_jira_write_all={"guest": "true"}).status_code == 422
+    for username in ("alice", "unknown"):
+        invalid = save(client, 0, {"skill_load": []}, guest_jira_write={**flags, username: True})
+        assert invalid.status_code == 400
+        assert save(client, 0, {}, guest_jira_write_all={username: True}).status_code == 400
+    matrix = client.get(PATH).json()
+    assert matrix["revision"] == 0
+    assert matrix["guests"][0]["jira_write"] is False
+    skill_load = next(tool for tool in matrix["tools"] if tool["name"] == "skill_load")
+    assert "Guest" in skill_load["grants"]
+    updated = save(client, 0, {}, guest_jira_write=flags)
+    assert updated.status_code == 200
+    assert updated.json()["revision"] == 1
+    assert updated.json()["guests"][0]["jira_write"] is True
+    assert save(client, 1, {}, guest_jira_write=flags).json() == updated.json()
+    assert save(client, 0, {}, guest_jira_write={"guest": False}).status_code == 409
+    with closing(connect(settings.db_path)) as conn:
+        audit = conn.execute(
+            "SELECT user, detail FROM audit WHERE event = 'mcp_tool_permissions'"
+        ).fetchall()
+        assert len(audit) == 1 and audit[0]["user"] == "rm"
+        assert json.loads(audit[0]["detail"]) == [{
+            "username": "guest", "permission": "guest_jira_write", "before": False, "after": True,
+        }]
+        users_repo.update_user_role(conn, "guest", role="QA")
+        users_repo.update_user_role(conn, "guest", role="Guest")
+        conn.commit()
+    assert client.get(PATH).json()["guests"][0]["jira_write"] is False
+    assert save(client, 1, {}, guest_jira_write=flags, guest_jira_write_all=flags).status_code == 200
+    with closing(connect(settings.db_path)) as conn:
+        users_repo.delete_user(conn, "guest")
+        users_repo.insert_user(conn, username="guest", password_hash="", role="Guest")
+        conn.commit()
+    assert client.get(PATH).json()["guests"][0]["jira_write"] is False
+    assert client.get(PATH).json()["guests"][0]["jira_write_all"] is False
+
+
+def test_guest_jira_write_is_individual_and_stays_within_guest_scope(site, monkeypatch):
+    client, current, token_for, calls = site
+    with closing(connect(settings.db_path)) as conn:
+        users_repo.insert_user(conn, username="other_guest", password_hash="", role="Guest")
+        conn.commit()
+    guest_token = token_for("guest", "Guest")
+    guest_session = connect_confirming(client, guest_token)
+    other_token = token_for("other_guest", "Guest")
+    other_session, _ = connect_client(client, other_token)
+    original_tools = listed(client, guest_token, guest_session)
+    writes = {"jira_add_comment", "jira_upload_attachment"}
+    assert not original_tools & writes
+    monkeypatch.setattr(jira, "get_issue", lambda key: {
+        **ISSUE, "key": key, "assignee": {"name": "guest" if key == "MC3-1" else "other_guest"},
+    })
+    uploads = []
+    monkeypatch.setattr(
+        jira, "upload_agent_attachment", lambda *args: uploads.append(args) or "900",
+    )
+
+    current.update(username="rm", role="RM")
+    assert save(client, 0, {}, guest_jira_write={"guest": True}).status_code == 200
+    assert listed(client, guest_token, guest_session) == original_tools | writes
+    assert listed(client, other_token, other_session) == original_tools
+    current.update(username="guest", role="Guest")
+    info = client.get("/api/mcp/info").json()
+    assert info["jira_read_projects"] == ["MC3"]
+    assert {tool["name"] for tool in info["tools"]} == original_tools | writes
+    assert info["can_view_all"] is False
+    for key, reason in (("PHS-1", "MC3"), ("MC3-2", "assignee")):
+        denied = call(client, guest_token, guest_session, "jira_upload_attachment",
+                      {"issue_key": key, "file_path": "test.txt"})
+        assert denied["isError"] and reason in denied["content"][0]["text"]
+    messages = confirmable_call(client, guest_token, guest_session, "jira_add_comment",
+                                {"issue_key": "MC3-1", "body": "guest comment"},
+                                {"result": {"action": "accept", "content": {"username": "guest"}}})
+    assert not messages[-1]["result"]["isError"]
+    assert [key for key, _ in calls["comments"]] == ["MC3-1"]
+
+    paths = []
+    for _ in range(2):
+        upload = call(client, guest_token, guest_session, "jira_upload_attachment",
+                      {"issue_key": "MC3-1", "file_path": "test.txt"})
+        assert not upload["isError"]
+        paths.append(re.search(r"(/api/mcp/uploads/[\w-]+)", upload["content"][0]["text"]).group(1))
+    assert client.put(paths[0], content=b"text").status_code == 200
+    current.update(username="rm", role="RM")
+    assert save(client, 1, {}, guest_jira_write={"guest": False}).status_code == 200
+    assert listed(client, guest_token, guest_session) == original_tools
+    assert client.put(paths[1], content=b"text").status_code == 403
+    assert uploads == [("MC3-1", "test.txt", b"text")]
+
+
+def test_all_jira_write_is_independent_of_read_and_assignee_permissions(site, monkeypatch):
+    client, current, token_for, calls = site
+    token = token_for("guest", "Guest")
+    session = connect_confirming(client, token)
+    original_tools = listed(client, token, session)
+    uploads = []
+    monkeypatch.setattr(
+        jira, "upload_agent_attachment", lambda *args: uploads.append(args) or "900",
+    )
+    # ISSUE names Alice as the assignee. Keep MC3-1 assigned to Guest to test
+    # fallback to the narrower grant after revoking the all-issues grant.
+    monkeypatch.setattr(jira, "get_issue", lambda key: {
+        **ISSUE, "key": key, "assignee": {"name": "guest"} if key == "MC3-1" else ISSUE["assignee"],
+    })
+    current.update(username="rm", role="RM")
+    enabled = save(client, 0, {}, guest_jira_write_all={"guest": True})
+    assert enabled.status_code == 200
+    assert enabled.json()["guests"][0]["jira_write"] is False
+    assert enabled.json()["guests"][0]["jira_write_all"] is True
+    assert listed(client, token, session) == original_tools | {"jira_add_comment", "jira_upload_attachment"}
+    current.update(username="guest", role="Guest")
+    info = client.get("/api/mcp/info").json()
+    assert info["guest_jira_write_all"] is True and info["jira_read_projects"] == ["MC3"]
+    read = call(client, token, session, "jira_pull_issue", {"issue_key": "PHS-1"})
+    assert read["isError"] and "仅允许读取 MC3" in read["content"][0]["text"]
+    comments = confirmable_call(client, token, session, "jira_add_comment",
+                                {"issue_key": "PHS-1", "body": "guest comment"},
+                                {"result": {"action": "accept", "content": {"username": "guest"}}})
+    assert not comments[-1]["result"]["isError"]
+    assert [key for key, _ in calls["comments"]] == ["PHS-1"]
+
+    def upload_path(key):
+        upload = call(client, token, session, "jira_upload_attachment",
+                      {"issue_key": key, "file_path": "test.txt"})
+        assert not upload["isError"]
+        return re.search(r"(/api/mcp/uploads/[\w-]+)", upload["content"][0]["text"]).group(1)
+
+    assert client.put(upload_path("PHS-1"), content=b"text").status_code == 200
+    pending = [upload_path("PHS-2"), upload_path("MC3-2")]
+    current.update(username="rm", role="RM")
+    assert save(client, 1, {}, guest_jira_write={"guest": True}).status_code == 200
+    assert save(client, 2, {}, guest_jira_write_all={"guest": False}).status_code == 200
+    for path in pending:
+        assert client.put(path, content=b"text").status_code == 403
+    assert client.put(upload_path("MC3-1"), content=b"text").status_code == 200
+    assert uploads == [("PHS-1", "test.txt", b"text"), ("MC3-1", "test.txt", b"text")]
+    with closing(connect(settings.db_path)) as conn:
+        last = conn.execute(
+            "SELECT detail FROM audit WHERE event = 'mcp_tool_permissions' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert json.loads(last["detail"]) == [{
+            "username": "guest", "permission": "guest_jira_write_all", "before": True, "after": False,
+        }]
+
+
+def test_existing_guest_jira_write_grants_keep_assigned_scope(tmp_path):
+    db = tmp_path / "previous.db"
+    with closing(sqlite3.connect(db)) as conn:
+        conn.executescript("""
+            CREATE TABLE users (
+                username TEXT PRIMARY KEY, password_hash TEXT NOT NULL DEFAULT '',
+                role TEXT NOT NULL, auth_source TEXT NOT NULL DEFAULT 'local',
+                display_name TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE mcp_guest_jira_writers (
+                username TEXT NOT NULL PRIMARY KEY REFERENCES users(username) ON DELETE CASCADE
+            );
+            INSERT INTO users(username, role) VALUES ('writer', 'Guest'), ('reader', 'Guest');
+            INSERT INTO mcp_guest_jira_writers(username) VALUES ('writer');
+        """)
+    with closing(connect(db)) as conn:
+        grants = {guest["username"]: guest for guest in mcp_repo.list_guest_jira_access(conn)}
+        assert grants["writer"]["jira_write"] is True
+        assert grants["writer"]["jira_write_all"] is False
+        assert grants["reader"]["jira_write"] is False
+        assert grants["reader"]["jira_write_all"] is False

@@ -3328,13 +3328,19 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .mcp-page { display: flex; flex-direction: column; gap: 0; }
 .mcp-permissions .panel-head, .mcp-permission-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .mcp-permissions .panel-head { justify-content: space-between; }
+.mcp-guest-jira-permissions { margin-bottom: 20px; }
+.mcp-guest-jira-permissions input[type="search"] { width: min(100%, 320px); margin-bottom: 8px; }
+.mcp-guest-jira-table { max-height: 300px; }
+.mcp-guest-jira-table thead th { position: sticky; top: 0; background: var(--surface-2); }
+.mcp-guest-jira-table tbody th { text-align: left; font-weight: normal; }
+.mcp-guest-jira-table :is(th, td):not(:first-child) { width: 1%; text-align: center; white-space: nowrap; }
 .mcp-permission-table { overflow-y: hidden; }
 .mcp-permission-table table { min-width: 720px; }
 .mcp-permission-table :is(th, td):not(:first-child) { text-align: center; white-space: nowrap; }
 .mcp-permission-table tbody th { text-align: left; font-weight: normal; }
 .mcp-permission-table .mcp-permission-group th { background: var(--surface-2); font-weight: 700; }
 .mcp-permission-table .mcp-permission-group:not(:first-child) th { border-top: 10px solid var(--surface); }
-.mcp-permission-table input[type="checkbox"] { width: 16px; height: 16px; margin: 0; vertical-align: middle; accent-color: var(--accent); }
+.mcp-permissions input[type="checkbox"] { width: 16px; height: 16px; margin: 0; vertical-align: middle; accent-color: var(--accent); }
 .mcp-stats > .page-toolbar > .select { width: auto; min-width: 160px; max-width: min(360px, 100%); }
 .mcp-setup { display: flex; flex-direction: column; gap: 12px; max-width: 1100px; }
 .mcp-code { position: relative; margin: 6px 0; }

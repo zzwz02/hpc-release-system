@@ -35,6 +35,68 @@ test("Guest MCP exposes only four tools and the MC3 project scope", async ({ pag
   await expect(page.getByText("仅显示你本人的使用记录", { exact: true })).toBeVisible();
 });
 
+test("RM grants and revokes JIRA writes for one Guest from MCP permissions", async ({ page, browser }) => {
+  const username = "mcp_guest_test";
+  const path = base + "/api/mcp/permissions";
+  expect((await page.request.post(base + "/api/login", {
+    data: { username: "mcp_rm_test", password: "test-password" },
+  })).ok()).toBeTruthy();
+  await page.goto(base + "/mcp-console");
+  await page.getByRole("button", { name: "权限配置", exact: true }).click();
+  const search = page.getByRole("searchbox", { name: "搜索 Guest 账号" });
+  await search.fill("不存在的账号");
+  await expect(page.getByText("没有匹配的 Guest 账号")).toBeVisible();
+  await search.fill("MCP Guest test");
+  const grant = page.getByRole("checkbox", { name: `允许 ${username} 写入 JIRA` });
+  const grantAll = page.getByRole("checkbox", { name: `允许 ${username} 写入所有 JIRA` });
+  await expect(grant).not.toBeChecked();
+  await expect(grantAll).not.toBeChecked();
+  const save = page.getByRole("button", { name: "保存权限" });
+  await grant.check();
+  await page.getByRole("button", { name: "放弃修改并重读" }).click();
+  await expect(grant).not.toBeChecked();
+  await expect(save).toBeDisabled();
+
+  async function saveGrant(enabled: boolean, all = false) {
+    await (all ? grantAll : grant).setChecked(enabled);
+    const responsePromise = page.waitForResponse(response => response.url() === path && response.request().method() === "POST");
+    await save.click();
+    const response = await responsePromise;
+    expect(response.ok()).toBeTruthy();
+    const field = all ? "jira_write_all" : "jira_write";
+    expect(response.request().postDataJSON()[`guest_${field}`]).toEqual({ [username]: enabled });
+    await expect(save).toBeDisabled();
+    expect(await (await page.request.get(path)).json()).toMatchObject({
+      guests: expect.arrayContaining([expect.objectContaining({ username, [field]: enabled })]),
+    });
+  }
+
+  await saveGrant(true);
+  const guestPage = await browser.newPage();
+  try {
+    expect((await guestPage.request.post(base + "/api/login", {
+      data: { username, password: "test-password" },
+    })).ok()).toBeTruthy();
+    await guestPage.goto(base + "/mcp-console");
+    await expect(guestPage.getByRole("button", { name: "权限配置" })).toHaveCount(0);
+    const tools = guestPage.locator("tbody");
+    await expect(tools.getByText("jira_add_comment", { exact: true })).toBeVisible();
+    await expect(tools.getByText("jira_upload_attachment", { exact: true })).toBeVisible();
+    await saveGrant(true, true);
+    await saveGrant(false);
+    await guestPage.reload();
+    await expect(guestPage.getByText("当前账号可给任意项目的 JIRA 工单评论和上传附件。")).toBeVisible();
+    await expect(tools.getByText("jira_add_comment", { exact: true })).toBeVisible();
+    await saveGrant(false, true);
+    await guestPage.reload();
+    await expect(tools.getByText("jira_pull_issue", { exact: true })).toBeVisible();
+    await expect(tools.getByText("jira_add_comment", { exact: true })).toHaveCount(0);
+    await expect(tools.getByText("jira_upload_attachment", { exact: true })).toHaveCount(0);
+  } finally {
+    await guestPage.close();
+  }
+});
+
 test("MCP setup offers Bash and PowerShell installers plus direct manual configuration", async ({ page, context }) => {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));

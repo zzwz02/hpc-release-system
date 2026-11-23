@@ -45,7 +45,9 @@ INSTRUCTIONS = (
     "客户端返回拒绝或取消不能证明用户看到了弹窗；也可能是客户端审批策略自动拒绝。"
     "拒绝或取消时，向用户原样展示工具返回的失败提示，不另行建议修改配置文件。"
     "客户端不支持时不能发评论。附件上传不需要确认，但仍检查权限。"
-    "MCP 评论和附件上传不受 JIRA agent 的 cybersecurity risk 锁限制，仍实时检查当前 assignee 或 RM 权限。"
+    "MCP 评论和附件上传实时检查工单经办人或 RM 权限。"
+    "被 RM 授予「允许写入所有 JIRA」的 Guest 可向任意项目的工单评论和上传附件。"
+    "这两项操作不受 JIRA agent 的 cybersecurity risk 锁限制。"
     "起草或发送 JIRA 评论前先调用 skill_load(skill=\"jira-format\") 读取格式规范；评论正文先统一处理格式，再弹窗确认。"
     "调用 jira_add_comment 前，先在对话中向用户展示拟发送的完整评论；长评论在确认弹窗中只展示摘要，发送时保留全文。"
     "可用 jira_read_attachment 按附件 ID 在内存中读取文本或图片，不必执行 curl 或创建附件文件。"
@@ -163,7 +165,7 @@ class Exchange:
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": SERVER_NAME, "title": "HPC 发布协作系统", "version": SERVER_VERSION},
             "instructions": (
-                (f"当前账号仅允许读取 {LIMITED_JIRA_PROJECT} 项目的 JIRA，写入也限该项目。"
+                (f"当前账号仅允许读取 {LIMITED_JIRA_PROJECT} 项目的 JIRA。写入范围由实时授权决定。"
                  if limited_jira_reader(self.caller.user["role"]) else "") + INSTRUCTIONS
             ),
         }
@@ -203,7 +205,7 @@ class Exchange:
             if not tool.read_only:
                 self.caller = mcp_service.refresh_caller(self.caller)
                 ctx.caller = self.caller
-                mcp_access_service.require_tool_access(ctx.user, tool.name)
+                ctx.jira_write_all = mcp_access_service.require_tool_access(ctx.user, tool.name) == "all"
             result = tool.handler(ctx, arguments)
         except (ToolError, ApiError) as exc:
             error = str(exc)

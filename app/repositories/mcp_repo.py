@@ -19,6 +19,47 @@ def write_tool_permissions(conn: sqlite3.Connection, revision: int, grants: dict
         (revision, dumps_json(grants)),
     )
 
+
+def list_guest_jira_access(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT users.username, users.display_name,
+               COALESCE(writers.jira_write, 0) AS jira_write,
+               COALESCE(writers.jira_write_all, 0) AS jira_write_all
+        FROM users LEFT JOIN mcp_guest_jira_writers AS writers USING (username)
+        WHERE users.role = 'Guest' ORDER BY users.username COLLATE NOCASE
+        """
+    )
+    return [{
+        "username": row["username"], "display_name": row["display_name"],
+        "jira_write": bool(row["jira_write"]), "jira_write_all": bool(row["jira_write_all"]),
+    } for row in rows]
+
+
+def guest_jira_write_scope(conn: sqlite3.Connection, username: str) -> str:
+    row = conn.execute(
+        "SELECT CASE WHEN jira_write_all THEN 'all' WHEN jira_write THEN 'assigned' ELSE '' END AS scope "
+        "FROM mcp_guest_jira_writers JOIN users USING (username) "
+        "WHERE username = ? AND users.role = 'Guest'",
+        (username,),
+    ).fetchone()
+    return row["scope"] if row else ""
+
+
+def set_guest_jira_write(
+    conn: sqlite3.Connection, username: str, *, jira_write: bool, jira_write_all: bool,
+) -> None:
+    if jira_write or jira_write_all:
+        conn.execute(
+            "INSERT INTO mcp_guest_jira_writers(username, jira_write, jira_write_all) VALUES (?, ?, ?) "
+            "ON CONFLICT(username) DO UPDATE SET jira_write = excluded.jira_write, "
+            "jira_write_all = excluded.jira_write_all",
+            (username, jira_write, jira_write_all),
+        )
+    else:
+        conn.execute("DELETE FROM mcp_guest_jira_writers WHERE username = ?", (username,))
+
+
 # ---------------------------------------------------------------------------
 # Tokens
 # ---------------------------------------------------------------------------

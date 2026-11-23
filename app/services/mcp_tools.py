@@ -73,6 +73,7 @@ class ToolContext:
     # Filled by the handler when it fails after identifying its target, so the
     # error row still records what the call was about.
     log: ToolLog = field(default_factory=ToolLog)
+    jira_write_all: bool = False
 
     @property
     def user(self) -> dict[str, Any]:
