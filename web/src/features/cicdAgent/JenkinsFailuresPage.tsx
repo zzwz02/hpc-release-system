@@ -9,6 +9,7 @@ import { FailureReproPanel, type ReproTask } from "./FailureReproPanel";
 import { FailureNotificationToggle } from "./FailureNotificationToggle";
 import { DingTalkNotificationSetting } from "./DingTalkNotificationSetting";
 import { FailureLifecycleDialog } from "./FailureLifecycleDialog";
+import { KnownFaultDialog } from "./KnownFaultRules";
 import {
   CICD_AGENT_FAILURES_KEY,
   CICD_AGENT_FILTER_OPTIONS_KEY,
@@ -48,6 +49,8 @@ const SUMMARY_GROUP_OPTIONS = [
 const SUMMARY_COLLAPSED_LIMIT = 12;
 
 const RESPONSIBILITY_STATUS_LABELS: Record<string, string> = {
+  known_fault_temporary: "临时故障挂靠",
+  known_fault_assigned: "已知故障规则分配",
   ai_suggested: "AI建议",
   disputed: "有争议",
   confirmed: "已确认",
@@ -358,6 +361,7 @@ export function JenkinsFailuresPage() {
     records: FailureRecordListItem[]; action: FailureLifecycleAction; batch: boolean;
   } | null>(null);
   const [checkedIds, setCheckedIds] = useState<number[]>([]);
+  const [ruleRecords, setRuleRecords] = useState<FailureRecordListItem[] | null>(null);
   const [batchResult, setBatchResult] = useState<(FailureBatchLifecycleResponse & { action: FailureLifecycleAction }) | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(() => linkedFailureId(search));
   const [initialRepro, setInitialRepro] = useState(false);
@@ -575,13 +579,13 @@ export function JenkinsFailuresPage() {
   }, [page, pageInfo, recordsQuery.isFetching, setPage]);
 
   useEffect(() => {
-    if (selectedId == null || lifecycle) return undefined;
+    if (selectedId == null || lifecycle || ruleRecords) return undefined;
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") closeDetail();
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [closeDetail, selectedId, lifecycle]);
+  }, [closeDetail, selectedId, lifecycle, ruleRecords]);
 
   return (
     <section className="view active cicd-agent-view">
@@ -772,6 +776,8 @@ export function JenkinsFailuresPage() {
         </div>
         {isRm && <div className="cicd-agent-batch-toolbar">
           <span className="muted small">已选 {checkedRecords.length} 条</span>
+          {!isTrashed && <button type="button" className="btn sm" disabled={!checkedRecords.length}
+            onClick={() => setRuleRecords(checkedRecords)}><FileSearch size={14} />故障规则 / 批量应用</button>}
           {isTrashed ? <>
             <button type="button" className="btn sm" disabled={!checkedRecords.length}
               onClick={() => openLifecycle("restore", checkedRecords, true)}>
@@ -921,14 +927,16 @@ export function JenkinsFailuresPage() {
         key={`${lifecycle.action}:${lifecycle.records.map(record => record.id).join(",")}`} records={lifecycle.records}
         batch={lifecycle.batch} action={lifecycle.action}
         onSubmit={submitLifecycle} onRefresh={refreshLifecycle} onClose={() => setLifecycle(null)} />}
+      {isRm && ruleRecords && <KnownFaultDialog records={ruleRecords} onClose={() => setRuleRecords(null)}
+        onApplied={() => { void queryClient.invalidateQueries({ queryKey: ["cicd-agent"] }); }} />}
 
       {selectedId != null ? (
         <div
           className="dialog-backdrop cicd-agent-detail-backdrop"
           role="dialog"
-          aria-modal={!lifecycle}
-          aria-hidden={lifecycle ? true : undefined}
-          ref={element => { element?.toggleAttribute("inert", Boolean(lifecycle)); }}
+          aria-modal={!lifecycle && !ruleRecords}
+          aria-hidden={lifecycle || ruleRecords ? true : undefined}
+          ref={element => { element?.toggleAttribute("inert", Boolean(lifecycle || ruleRecords)); }}
           aria-labelledby="failure-detail-title"
           onClick={closeDetail}
         >
@@ -945,6 +953,7 @@ export function JenkinsFailuresPage() {
             onFeedback={submitResponsibilityFeedback}
             onResolve={resolveResponsibility}
             onTrash={isRm && !isTrashed ? record => openLifecycle("trash", [record]) : undefined}
+            onRule={isRm && !isTrashed ? record => setRuleRecords([record]) : undefined}
             onClose={closeDetail}
           />
         </div>
@@ -999,6 +1008,7 @@ function FailureDetail({
   onFeedback,
   onResolve,
   onTrash,
+  onRule,
   onClose,
 }: {
   initialRepro: boolean;
@@ -1012,6 +1022,7 @@ function FailureDetail({
   onFeedback: (recordId: number, payload: FailureResponsibilityFeedbackPayload) => Promise<void>;
   onResolve: (recordId: number, payload: FailureResponsibilityResolutionPayload) => Promise<void>;
   onTrash?: (record: FailureRecordListItem) => void;
+  onRule?: (record: FailureRecordListItem) => void;
   onClose: () => void;
 }) {
   const { user } = useAuth();
@@ -1058,7 +1069,7 @@ function FailureDetail({
       evidence: "",
     });
     setResolutionForm({
-      action: record.responsibility_status === "disputed" ? "correct" : "confirm",
+      action: ["disputed", "known_fault_temporary", "known_fault_assigned"].includes(record.responsibility_status || "") ? "correct" : "confirm",
       final_owner_account: responsibilityOwnerAccount(record, resolutionRole),
       final_owner_role: resolutionRole,
       final_reason_summary: record.final_reason_summary || "",
@@ -1232,6 +1243,9 @@ function FailureDetail({
             <Trash2 size={18} strokeWidth={2.2} aria-hidden="true" />
             移入回收站
           </button>}
+          {!readOnly && onRule && record.record_source !== "release_gate" && <button className="btn sm" onClick={() => onRule(record)}>
+            <FileSearch size={16} />据此创建故障规则
+          </button>}
           <button className="btn sm cicd-agent-detail-close" type="button" onClick={onClose}>
             <span aria-hidden="true">×</span>
             关闭
@@ -1248,6 +1262,13 @@ function FailureDetail({
       </div>
       {!readOnly && supportsRepro(record) && reproExpanded && <FailureReproPanel key={record.id} recordId={record.id}
         canResolve={canAdopt} canRequest={canAdopt} onUseReport={useReproReport} />}
+      {record.known_fault && <div className="known-fault-record">
+        {record.known_fault.state === "conflict" ? <>已知故障规则冲突：{record.known_fault.rules?.map(r => `#${r.id} ${r.name}`).join("、")}；未自动改派。</>
+          : <><strong>{record.known_fault.name}</strong> · #{record.known_fault.rule_id} v{record.known_fault.revision}
+            <span> · {record.known_fault.state === "scope_changed" ? "后续批次超出匹配范围，已撤回自动挂靠" : ["known_fault_temporary", "known_fault_assigned"].includes(record.responsibility_status || "") ? "当前生效" : "后续已有人工处理"}</span>
+            {record.known_fault.config?.root_team && <div>关联团队：{record.known_fault.config.root_team}</div>}
+            <details><summary>命中证据</summary><pre>{record.known_fault.evidence?.quotes.join("\n")}</pre></details></>}
+      </div>}
       {responsibilityExpanded && (
         <section className="cicd-agent-responsibility-panel">
         <div className="cicd-agent-responsibility-head">

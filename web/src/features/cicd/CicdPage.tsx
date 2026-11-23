@@ -42,6 +42,7 @@ import { toast } from "../../lib/toast";
 import { confirmDialog, promptDialog } from "../../lib/confirm";
 import { can } from "../../lib/accessControl";
 import { ReleaseGatePane } from "./ReleaseGatePane";
+import { KnownFaultRules } from "../cicdAgent/KnownFaultRules";
 
 // Re-export so consumers (tests, TabNav) can import from either location.
 export { CICD_CONFIG_KEY, CICD_TASKS_KEY, CICD_NOTIFICATIONS_KEY };
@@ -1472,6 +1473,7 @@ type SubPane =
   | "pending"
   | "delivery"
   | "release-gate"
+  | "known-faults"
   | "delivered";
 
 export function CicdPage() {
@@ -1493,6 +1495,7 @@ export function CicdPage() {
     : canDelivery
     ? ["info", "recent", "pending", "delivery", "delivered", "release-gate"]
     : ["info", "recent", "pending", "release-gate"];
+  if (role === "RM") availablePanes.push("known-faults");
 
   const defaultPane = isSPD ? "delivery" : availablePanes[0];
   const [selectedPane, setActivePane] = useState<SubPane>(defaultPane);
@@ -1616,6 +1619,7 @@ export function CicdPage() {
     delivery: "待交付",
     delivered: "已交付",
     "release-gate": "Release 构建准入",
+    "known-faults": "已知故障规则",
   };
 
   return (
@@ -1680,6 +1684,7 @@ export function CicdPage() {
 
       {/* Pane content */}
       {activePane === "release-gate" && <ReleaseGatePane canManage={can(role, "release.manage")} />}
+      {activePane === "known-faults" && role === "RM" && <KnownFaultRules />}
       {activePane === "info" && (
         <TaskInfoSection
           tasks={tasks}

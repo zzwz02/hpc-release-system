@@ -41,6 +41,33 @@ require_assistant_access = require_tab_access(
     message="无权访问 CICD 助手",
 )
 require_failure_lifecycle = require_roles("RM", message="只有 RM 可以管理 Jenkins 失败回收站")
+require_known_fault_manager = require_roles("RM", message="只有 RM 可以管理已知故障规则")
+
+
+@router.get("/known-fault-rules")
+def known_fault_rules(user: dict = Depends(require_known_fault_manager)):
+    return _request_agent("GET", "/api/v1/known-fault-rules", actor=user)
+
+
+@router.post("/known-fault-rules")
+def create_known_fault_rule(payload: dict, user: dict = Depends(require_known_fault_manager)):
+    return _request_agent("POST", "/api/v1/known-fault-rules", body=payload, actor=user)
+
+
+@router.put("/known-fault-rules/{rule_id}")
+def update_known_fault_rule(rule_id: int, payload: dict, user: dict = Depends(require_known_fault_manager)):
+    return _request_agent("PUT", f"/api/v1/known-fault-rules/{rule_id}", body=payload, actor=user)
+
+
+@router.get("/known-fault-rules/{rule_id}/history")
+def known_fault_rule_history(rule_id: int, user: dict = Depends(require_known_fault_manager)):
+    return _request_agent("GET", f"/api/v1/known-fault-rules/{rule_id}/history", actor=user)
+
+
+@router.post("/known-fault-rules/{rule_id}/{action}")
+def apply_known_fault_rule(rule_id: int, action: Literal["preview", "apply"], payload: dict,
+                          user: dict = Depends(require_known_fault_manager)):
+    return _request_agent("POST", f"/api/v1/known-fault-rules/{rule_id}/{action}", body=payload, actor=user)
 
 
 class FailureLifecycleRequest(BaseModel):

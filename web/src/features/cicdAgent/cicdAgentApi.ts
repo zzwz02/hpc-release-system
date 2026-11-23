@@ -93,6 +93,9 @@ export interface FailureRecordListItem {
   responsibility_updated_by?: string | null;
   responsibility_updated_at?: string | null;
   responsibility_note?: string | null;
+  known_fault?: { state: string; name?: string; rule_id?: number; revision?: number; applied_at?: string;
+    config?: { root_team?: string; provisional?: boolean };
+    evidence?: { source: string; quotes: string[] }; rules?: { id: number; revision: number; name: string }[] } | null;
   pending_rm_review?: boolean;
   review_sources?: string[];
   repro_review_state?: "none" | "running" | "pending_review" | "reviewed" | "exception" | "stale" | "cancelled";

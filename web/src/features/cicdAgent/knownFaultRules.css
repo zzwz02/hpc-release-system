@@ -1,0 +1,34 @@
+.known-fault-rules { min-width: 0; color: var(--text, #21323b); letter-spacing: 0; }
+.known-fault-rules h2 { font-size: 19px; margin: 0; }
+.known-fault-rules h3 { font-size: 16px; margin: 0 0 16px; }
+.known-fault-rules .panel-head { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 18px; }
+.known-fault-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+.known-fault-actions .btn { display: inline-flex; gap: 6px; align-items: center; justify-content: center; }
+.known-fault-editor { border-block: 1px solid #dbe4e8; padding: 18px 0; margin: 16px 0; }
+.known-fault-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 20px; margin-bottom: 14px; }
+.known-fault-editor label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; min-width: 0; }
+.known-fault-editor .input { width: 100%; box-sizing: border-box; min-width: 0; }
+.known-fault-rules .known-fault-check { display: inline-flex; flex-direction: row; align-items: center; gap: 7px; }
+.known-fault-table { overflow-x: auto; max-width: 100%; margin: 12px 0; }
+.known-fault-table table { width: 100%; border-collapse: collapse; min-width: 720px; }
+.known-fault-table th, .known-fault-table td { padding: 12px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid #e1e7eb; white-space: normal; overflow-wrap: anywhere; max-width: 300px; font-size: 13px; }
+.known-fault-table th { background: #f4f7f8; color: #4a5d68; }
+.known-fault-state { font-size: 12px; white-space: nowrap; }
+.known-fault-state.active { color: #087b60; }
+.known-fault-state.expired, .known-fault-warning { color: #a74312; }
+.known-fault-notice { display: flex; align-items: center; gap: 8px; padding: 12px; background: #ecfaf4; color: #17664e; border-left: 3px solid #23845c; }
+.known-fault-preview { border-top: 1px solid #cbd8de; margin-top: 24px; padding-top: 20px; }
+.known-fault-preview-summary { font-size: 13px; margin-top: 12px; display: flex; flex-wrap: wrap; gap: 12px; }
+.known-fault-rules pre { font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; background: #f5f7f8; padding: 10px; }
+.known-fault-rules summary { cursor: pointer; }
+.known-fault-rules details { padding: 8px 0; }
+.dialog-backdrop.known-fault-backdrop { z-index: 1050; padding: 16px; }
+body:has(.known-fault-backdrop) .dialog-backdrop:has(> .confirm-card) { z-index: 1100; }
+.known-fault-dialog { background: #fff; border-radius: 8px; width: min(1180px, 100%); max-height: calc(100dvh - 32px); box-sizing: border-box; overflow: hidden; display: flex; flex-direction: column; }
+.known-fault-dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-shrink: 0; padding: 14px 24px; border-bottom: 1px solid #dbe4e8; }
+.known-fault-dialog-header h2 { margin: 0; font-size: 18px; overflow-wrap: anywhere; }
+.known-fault-dialog-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 16px 24px 24px; }
+.known-fault-dialog .known-fault-close { flex: 0 0 36px; width: 36px; height: 36px; padding: 0; color: #334155; }
+.known-fault-close svg { flex-shrink: 0; width: 20px; height: 20px; }
+.known-fault-record { margin: 12px 0; padding: 12px; border-left: 3px solid #bf8529; background: #fff9ec; font-size: 13px; overflow-wrap: anywhere; }
+@media (max-width: 640px) { .known-fault-form-grid { grid-template-columns: minmax(0, 1fr); } .known-fault-dialog-header { padding: 12px 16px; } .known-fault-dialog-body { padding: 16px; } .known-fault-rules .panel-head { align-items: flex-start; } }
