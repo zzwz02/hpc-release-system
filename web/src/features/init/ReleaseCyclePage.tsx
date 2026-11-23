@@ -579,6 +579,7 @@ function SyncStatusPane({ release }: { release: ReleaseDetail | null }) {
 interface ChannelSetting {
   kind: string;
   label: string;
+  description?: string;
   enabled: boolean;
   configured: boolean;
   access_token_mask: string;
@@ -635,7 +636,10 @@ function ChannelRow({ channel, onSaved }: { channel: ChannelSetting; onSaved: ()
 
   return (
     <tr data-testid={`channel-${channel.kind}`}>
-      <td><b>{channel.label}</b><div className="small muted">{channel.kind}</div></td>
+      <td>
+        <b>{channel.label}</b>
+        <div className="small muted">{channel.description || channel.kind}</div>
+      </td>
       <td><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} aria-label="启用" /></td>
       <td><input className="input sm" type="password" value={token} onChange={(e) => setToken(e.target.value)}
         placeholder={channel.access_token_mask || "未设置"} aria-label="ACCESS_TOKEN" autoComplete="off" /></td>

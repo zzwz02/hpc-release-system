@@ -48,6 +48,7 @@ def list_settings(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             {
                 "kind": kind,
                 "label": _KIND_METADATA[kind]["label"],
+                "description": _KIND_METADATA[kind].get("description", ""),
                 "enabled": bool(channel.get("enabled")),
                 "configured": bool(channel.get("access_token") and channel.get("secret")),
                 "access_token_mask": _mask(channel.get("access_token", "")),

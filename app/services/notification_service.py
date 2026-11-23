@@ -14,7 +14,7 @@ from app.config import settings
 from app.db.jira_agent_connection import connect_jira_agent
 from app.domain import jira_agent
 from app.integrations import dingtalk
-from app.repositories import users_repo
+from app.repositories import releases_repo, users_repo
 from app.timeutil import beijing_timestamp
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,15 @@ THRESHOLDS = {"Code Owner": 20, "SPD": 30}
 # Beijing-time hourly checks include both the 10:00 and 20:00 boundaries.
 JENKINS_START_HOUR = 10
 JENKINS_END_HOUR = 20
+# Each release milestone uses the same Beijing-time calendar-day schedule.
+RELEASE_REMINDER_HOUR = 10
+RELEASE_REMINDER_DAYS = (5, 1)
+RELEASE_MILESTONES = {
+    "signup_deadline": "报名截止",
+    "qa_deadline": "QA 截止",
+    "release_date": "发布日",
+}
+POLLED_KINDS = ("jira_agent_turn", "jenkins_failures", "release_deadlines")
 
 
 def jira_message(turn, submitter_name: str = "") -> str:
@@ -143,6 +152,38 @@ class NotificationPoller:
                                   f"{today} Jenkins 当天错误：Code Owner {counts['Code Owner']} 个（阈值 20），"
                                   f"SPD / DevOps {counts['SPD']} 个（阈值 30）；已触发超限提醒")
 
+    async def _release_deadlines(self, conn, channel):
+        from app.db.connection import connect
+
+        now = datetime.fromisoformat(beijing_timestamp())
+        if now.hour < RELEASE_REMINDER_HOUR:
+            return
+        days_until = {
+            (now.date() + timedelta(days=days)).isoformat(): days for days in RELEASE_REMINDER_DAYS
+        }
+        with closing(connect(settings.db_path)) as main:
+            releases = releases_repo.list_release_rows(main)
+
+        failure = None
+        for release in releases:
+            if release["released_locked"]:
+                continue
+            for field, label in RELEASE_MILESTONES.items():
+                # Deadlines store Beijing dates with an optional local time.
+                target_date = release[field].strip()[:10]
+                days = days_until.get(target_date)
+                if days is None:
+                    continue
+                key = f"release_deadlines:{release['id']}:{field}:{target_date}:{days}"
+                message = f"【版本截止日期提醒】{release['name']} 版本距离 {label}还有 {days} 天（{target_date}）"
+                try:
+                    await self._send_once(conn, channel, key, message)
+                except dingtalk.DingTalkError as exc:
+                    # Other milestones may still succeed. Failed sends have no receipt.
+                    failure = exc
+        if failure is not None:
+            raise failure
+
     async def tick(self):
         conn = None
         try:
@@ -156,6 +197,8 @@ class NotificationPoller:
                 conn.execute("CREATE TABLE IF NOT EXISTS notification_receipts "
                              "(event_key TEXT PRIMARY KEY, sent_at TEXT NOT NULL)")
             jobs = []
+            if channels["release_deadlines"]:
+                jobs.append(("release_deadlines", self._release_deadlines, channels["release_deadlines"]))
             if channels["jira_agent_turn"]:
                 jobs.append(("jira", self._jira, channels["jira_agent_turn"]))
             now = datetime.strptime(beijing_timestamp(), "%Y-%m-%d %H:%M:%S")
@@ -184,7 +227,7 @@ class NotificationPoller:
 
 
 def _poller_channels() -> dict[str, dict | None]:
-    """Enabled robots for the two polled kinds, read from the main DB."""
+    """Enabled robots for the polled kinds, read from the main DB."""
     from app.db.connection import connect
     from app.services import notification_channels
 
@@ -192,7 +235,7 @@ def _poller_channels() -> dict[str, dict | None]:
     try:
         return {
             kind: notification_channels.enabled_channel(main, kind)
-            for kind in ("jira_agent_turn", "jenkins_failures")
+            for kind in POLLED_KINDS
         }
     finally:
         main.close()

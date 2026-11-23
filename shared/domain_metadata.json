@@ -347,6 +347,11 @@
     "app_info_sync_failed": {
       "label": "app_info 同步失败汇总",
       "order": 4
+    },
+    "release_deadlines": {
+      "label": "版本截止日期提醒",
+      "description": "报名截止、QA 截止和发布日各提前 5 天、1 天，于北京时间 10:00 提醒。",
+      "order": 5
     }
   }
 }

@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+from contextlib import closing
 from urllib.parse import parse_qs
 
 import httpx
@@ -13,8 +14,10 @@ from app.config import settings
 from app.db.connection import connect, reset_init_state
 from app.db.jira_agent_connection import connect_jira_agent
 from app.integrations import dingtalk
-from app.services import notification_channels
+from app.repositories import releases_repo
+from app.services import cycle_service, notification_channels
 from app.services import notification_service as service
+from tests.conftest import seed_cycle
 
 
 CHANNEL = {'access_token': 'test-token', 'secret': 'test-secret', 'at_user_ids': ['u1', 'u2']}
@@ -161,6 +164,113 @@ def test_channel_settings_are_read_from_the_database_on_every_check(configured):
     assert poller.status()['enabled']  # the Jenkins robot is still on
     disable_channel('jenkins_failures')
     assert not poller.status()['enabled']
+
+
+@pytest.fixture
+def release_reminders(configured):
+    disable_channel("jira_agent_turn")
+    disable_channel("jenkins_failures")
+    with closing(connect(settings.db_path)) as conn:
+        notification_channels.save_settings(
+            conn, "release_deadlines", enabled=True, access_token="release-token",
+            secret="release-secret", at_user_ids=["release-rm"], user="rm", role="RM",
+        )
+
+
+def test_release_reminders_at_10_beijing_for_all_three_milestones(release_reminders, monkeypatch):
+    dates = dict(signup_deadline="2026-12-01 23:59", qa_deadline="2026-12-26",
+                 release_date="2026-12-31")
+    with closing(connect(settings.db_path)) as conn:
+        seed_cycle(conn, name="3.10.2", **dates)
+        published = seed_cycle(conn, name="已发布版本", **dates)
+        with conn:
+            releases_repo.lock_release(conn, published, locked_at="2026-11-01 12:00:00", locked_by="rm")
+    clock = ["2026-11-26 09:59:59"]
+    monkeypatch.setattr(service, "beijing_timestamp", lambda: clock[0])
+    sent = []
+
+    async def send(channel, message):
+        assert channel["access_token"] == "release-token"
+        assert channel["at_user_ids"] == ["release-rm"]
+        sent.append(message)
+
+    monkeypatch.setattr(dingtalk, "send_text", send)
+
+    async def scenario():
+        poller = service.NotificationPoller()
+        assert poller.status()["enabled"]
+        await poller.tick()
+        assert not sent
+        for day, label, days, target in (
+            ("2026-11-26", "报名截止", 5, "2026-12-01"),
+            ("2026-11-30", "报名截止", 1, "2026-12-01"),
+            ("2026-12-21", "QA 截止", 5, "2026-12-26"),
+            ("2026-12-25", "QA 截止", 1, "2026-12-26"),
+            ("2026-12-26", "发布日", 5, "2026-12-31"),
+            ("2026-12-30", "发布日", 1, "2026-12-31"),
+        ):
+            clock[0] = day + " 10:00:00"
+            await poller.tick()
+            assert sent == [f"【版本截止日期提醒】3.10.2 版本距离 {label}还有 {days} 天（{target}）"]
+            await service.NotificationPoller().tick()
+            assert len(sent) == 1
+            sent.clear()
+        clock[0] = "2026-12-31 10:00:00"
+        await poller.tick()
+        assert not sent
+
+    asyncio.run(scenario())
+
+
+def test_release_reminders_retry_and_follow_current_dates(release_reminders, monkeypatch):
+    dates = dict(signup_deadline="2026-12-01", qa_deadline="2026-12-01", release_date="2026-12-31")
+    with closing(connect(settings.db_path)) as conn:
+        release_id = seed_cycle(conn, name="3.10.2", **dates)
+    clock = ["2026-11-26 10:00:00"]
+    monkeypatch.setattr(service, "beijing_timestamp", lambda: clock[0])
+    sent = []
+    fail_signup = True
+
+    async def send(_channel, message):
+        if fail_signup and "报名截止" in message:
+            raise dingtalk.DingTalkError("钉钉请求失败")
+        sent.append(message)
+
+    monkeypatch.setattr(dingtalk, "send_text", send)
+
+    async def scenario():
+        nonlocal fail_signup
+        poller = service.NotificationPoller()
+        await poller.tick()
+        assert poller.status()["errors"] == {"release_deadlines": "钉钉请求失败"}
+        assert sent == ["【版本截止日期提醒】3.10.2 版本距离 QA 截止还有 5 天（2026-12-01）"]
+
+        clock[0] = "2026-11-26 10:01:00"
+        fail_signup = False
+        await poller.tick()
+        assert not poller.status()["errors"]
+        assert sent[-1] == "【版本截止日期提醒】3.10.2 版本距离 报名截止还有 5 天（2026-12-01）"
+
+        with closing(connect(settings.db_path)) as conn:
+            cycle_service.update_cycle(
+                conn, release_id, name="3.10.2", **(dates | {"qa_deadline": "2026-12-02"}),
+                user="rm", role="RM",
+            )
+        clock[0] = "2026-11-27 10:30:00"
+        await service.NotificationPoller().tick()
+        assert sent[-1] == "【版本截止日期提醒】3.10.2 版本距离 QA 截止还有 5 天（2026-12-02）"
+
+        clock[0] = "2026-11-30 10:00:00"
+        await poller.tick()
+        assert sent[-1] == "【版本截止日期提醒】3.10.2 版本距离 报名截止还有 1 天（2026-12-01）"
+        assert len(sent) == 4
+
+        disable_channel("release_deadlines")
+        clock[0] = "2026-12-01 10:00:00"
+        await poller.tick()
+        assert len(sent) == 4
+
+    asyncio.run(scenario())
 
 
 def test_enabling_a_robot_requires_a_token_and_a_secret(configured):
