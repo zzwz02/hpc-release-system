@@ -6,9 +6,9 @@ import re
 from app.api.errors import ApiError
 from app.domain.permissions import CAPABILITY_PERMISSIONS, LDAP_GROUP_GRANTS, has_capability, roles_for_tab
 
-# Guests may read this JIRA project only. This is a fixed product permission,
-# independent of which server hosts the website or the JIRA integration.
-LIMITED_JIRA_PROJECT = "MC3"
+# Default JIRA scope for an MCP session without domain identity confirmation.
+DEFAULT_JIRA_PROJECT = "MC3"
+MCP_VERIFY_IDENTITY_TOOL = "mcp_verify_identity"
 GUEST_JIRA_WRITE_TOOLS = frozenset({"jira_add_comment", "jira_upload_attachment"})
 MCP_ROLES = roles_for_tab("mcp")
 MCP_LDAP_PATTERNS = tuple(dict.fromkeys(
@@ -36,25 +36,20 @@ def can_use_jenkins(role: str, site: str) -> bool:
     )
 
 
-def limited_jira_reader(role: str) -> bool:
-    return not has_capability(role, "mcp.jira.read.all_projects")
+def project_key(issue_key: str) -> str:
+    return issue_key.upper().rsplit("-", 1)[0]
 
 
-def require_jira_read(role: str, key: str) -> None:
-    if limited_jira_reader(role) and not re.fullmatch(rf"{LIMITED_JIRA_PROJECT}-\d+", key):
-        raise ApiError(403, f"当前账号仅允许读取 {LIMITED_JIRA_PROJECT} 项目的 JIRA")
-
-
-def scope_jql(role: str, jql: str) -> str:
-    """Intersect a whole expression with MC3, preserving a terminal ORDER BY.
+def scope_jql(jql: str, projects: tuple[str, ...], *, exclude_secured: bool = False) -> str:
+    """Intersect a whole expression with allowed projects, preserving a terminal ORDER BY.
 
     JQL is still parsed by JIRA. This lexical pass only establishes a safe
     grouping boundary: quotes/parentheses must balance, and the sort suffix
     cannot contain another condition. See Atlassian's JQL keywords reference:
     https://confluence.atlassian.com/jiracoreserver/advanced-searching-keywords-reference-939937720.html
     """
-    if not limited_jira_reader(role):
-        return jql
+    if not projects or any(not re.fullmatch(r"[A-Z][A-Z0-9_]*", key) for key in projects):
+        raise ApiError(403, "没有可查询的 JIRA 项目")
     quote, escaped, depth, order = "", False, 0, None
     for index, char in enumerate(jql):
         if quote:
@@ -89,5 +84,9 @@ def scope_jql(role: str, jql: str) -> str:
         if not _ORDER_FIELDS.fullmatch(fields):
             raise ApiError(400, "JQL ORDER BY 只能包含排序字段和 ASC/DESC")
         sort = f" ORDER BY {fields}"
-    condition = f"project = {LIMITED_JIRA_PROJECT}"
+    condition = f'project in ({", ".join(f"{key!r}" for key in projects)})'
+    if len(projects) == 1:
+        condition = f"project = {projects[0]}"
+    if exclude_secured:
+        condition += " AND level IS EMPTY"
     return condition + (f" AND ({expression})" if expression else "") + sort

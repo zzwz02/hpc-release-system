@@ -37,9 +37,10 @@ from app.api.errors import ApiError, AuthzError
 from app.config import settings
 from app.db.connection import connect
 from app.deps import get_db, require_capability, require_tab_access
-from app.domain.mcp_access import LIMITED_JIRA_PROJECT, limited_jira_reader, require_jira_read
+from app.domain.mcp_access import DEFAULT_JIRA_PROJECT
 from app.integrations import jira
 from app.services import mcp_access_service, mcp_protocol, mcp_service
+from app.services.mcp_jira_access import JiraReadAccess
 
 router = APIRouter(tags=["mcp"])
 require_view = require_tab_access("mcp", message="无权访问 MCP")
@@ -137,16 +138,24 @@ async def mcp_delete(request: Request) -> Response:
 @router.get("/api/mcp/downloads/{ticket}")
 def mcp_download(ticket: str) -> Response:
     entry = mcp_service.redeem_ticket(ticket)
-    caller = mcp_service.refresh_caller(entry.caller)
-    mcp_access_service.require_tool_access(caller.user, "jira_pull_issue")
-    require_jira_read(caller.user["role"], entry.issue_key)
-    if limited_jira_reader(caller.user["role"]):
-        # A previously issued ticket may outlive an issue move or an attachment
-        # removal. Recheck the live issue before returning the stored URL's data.
+    caller, session = mcp_service.refresh_session(entry.caller, entry.session.get("session_id", ""))
+    verified = bool(entry.session.get("identity_verified"))
+    if verified and not session["identity_verified"]:
+        raise ApiError(403, "签发下载链接的已验证 MCP 会话已失效")
+    mcp_access_service.require_tool_access(caller.user, "jira_pull_issue", identity_verified=verified)
+    access = JiraReadAccess(caller.user["username"], verified)
+    access.require_issue(entry.issue_key)
+    try:
         issue = jira.get_issue(entry.issue_key)
-        require_jira_read(caller.user["role"], issue["key"])
-        if not any(a["content_url"] == entry.content_url for a in issue["attachments"]):
-            raise ApiError(403, "附件已不属于此 MC3 工单，请重新查询")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403, 404):
+            raise ApiError(403, "附件工单已不可访问，请重新查询") from exc
+        raise ApiError(502, "无法核对附件工单") from exc
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ApiError(502, "无法核对附件工单") from exc
+    access.require_issue(issue["key"])
+    if not any(a["content_url"] == entry.content_url for a in issue["attachments"]):
+        raise ApiError(403, "附件已不属于此工单，请重新查询")
     started = time.monotonic()
     log = dict(caller=caller, session=entry.session, kind="download", category="jira",
                tool="jira_attachment", target_type="jira_issue", target=entry.issue_key,
@@ -184,7 +193,11 @@ async def mcp_upload(ticket: str, request: Request) -> Response:
                tool="jira_attachment_upload", target_type="jira_issue", target=entry.issue_key)
     succeeded = False
     try:
-        caller = await run_in_threadpool(mcp_service.refresh_caller, entry.caller)
+        caller, session = await run_in_threadpool(
+            mcp_service.refresh_session, entry.caller, entry.session["session_id"],
+        )
+        if not session["identity_verified"]:
+            raise ApiError(403, "签发上传链接的已验证 MCP 会话已失效")
         log["caller"] = caller
         chunks, size = [], 0
         async for chunk in request.stream():
@@ -196,15 +209,19 @@ async def mcp_upload(ticket: str, request: Request) -> Response:
             raise ValueError("文件为空")
         data = b"".join(chunks)
         # Permission again: the assignee may have changed since the link was issued.
-        caller = await run_in_threadpool(mcp_service.refresh_caller, entry.caller)
+        caller, session = await run_in_threadpool(
+            mcp_service.refresh_session, entry.caller, entry.session["session_id"],
+        )
         log["caller"] = caller
         scope = await run_in_threadpool(
             mcp_access_service.require_tool_access, caller.user, "jira_upload_attachment",
+            identity_verified=session["identity_verified"],
         )
-        await run_in_threadpool(
-            check_can_write, caller.user, entry.issue_key, "上传附件", all_issues=scope == "all",
+        issue = await run_in_threadpool(
+            check_can_write, caller.user, JiraReadAccess(caller.user["username"], True),
+            entry.issue_key, "上传附件", all_issues=scope,
         )
-        attachment_id = await run_in_threadpool(jira.upload_agent_attachment, entry.issue_key, entry.filename, data)
+        attachment_id = await run_in_threadpool(jira.upload_agent_attachment, issue["key"], entry.filename, data)
         succeeded = True
     except (ApiError, ToolError, ValueError, OSError, RuntimeError) as exc:
         message = f"HTTP {exc.code}" if isinstance(exc, urllib.error.HTTPError) else str(exc)
@@ -275,7 +292,7 @@ def powershell_setup_script(request: Request) -> Response:
 
 
 def _setup_script_response(request: Request, path: Path, media_type: str) -> Response:
-    marks = {"form": "", "none": "（不推荐：不支持用户名确认，无法发评论；附件会直接提交）",
+    marks = {"form": "", "none": "（仅可使用默认只读权限）",
              "unknown": "（谨慎使用：未核实是否支持发布前确认）"}
     harnesses = json.loads(HARNESSES_FILE.read_text(encoding="utf-8"))["harnesses"]
     links = "\n".join(f"#   - {item['name']}：{item['url']}{marks.get(item.get('confirm'), '')}"
@@ -341,7 +358,6 @@ class PermissionsBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     revision: int = Field(ge=0, strict=True)
     grants: dict[str, list[str]]
-    guest_jira_write: dict[str, StrictBool] = Field(default_factory=dict)
     guest_jira_write_all: dict[str, StrictBool] = Field(default_factory=dict)
 
 
@@ -355,8 +371,7 @@ def permissions(_user: dict = Depends(require_permission_manager),
 def save_permissions(body: PermissionsBody, user: dict = Depends(require_permission_manager),
                      conn: sqlite3.Connection = Depends(get_db)) -> dict:
     return mcp_access_service.save_permissions(
-        conn, user, body.revision, body.grants, guest_jira_write=body.guest_jira_write,
-        guest_jira_write_all=body.guest_jira_write_all,
+        conn, user, body.revision, body.grants, guest_jira_write_all=body.guest_jira_write_all,
     )
 
 
@@ -390,8 +405,8 @@ def info(request: Request, user: dict = Depends(require_view),
                    "description": t.description} for t in tools],
         "access_warnings": [warning] if warning else [],
         "can_view_all": mcp_service.can_view_all(user["role"]),
-        "jira_read_projects": [LIMITED_JIRA_PROJECT] if limited_jira_reader(user["role"]) else None,
-        "guest_jira_write_all": access.guest_jira_write_scope == "all",
+        "default_jira_projects": [DEFAULT_JIRA_PROJECT],
+        "guest_jira_write_all": access.guest_can_write_all_jira,
     }
 
 

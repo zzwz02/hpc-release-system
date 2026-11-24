@@ -34,7 +34,7 @@ def http_site(site):
             assert not thread.is_alive(), 'Isolated HTTP server did not stop'
 
 
-@pytest.mark.parametrize('outcome', ['username_mismatch', 'decline', 'cancel', 'timeout', 'username_matched'])
+@pytest.mark.parametrize('outcome', ['not_confirmed', 'decline', 'cancel', 'timeout', 'approved'])
 def test_delayed_confirmation_returns_reason_over_live_http(http_site, monkeypatch, outcome):
     url, token, calls = http_site
     monkeypatch.setattr(mcp_protocol, 'SSE_HEARTBEAT_SECONDS', 0.05)
@@ -51,6 +51,25 @@ def test_delayed_confirmation_returns_reason_over_live_http(http_site, monkeypat
         })
         initialized.raise_for_status()
         headers['Mcp-Session-Id'] = initialized.headers['mcp-session-id']
+        with wire.stream('POST', url, headers=headers, json={
+            'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call',
+            'params': {'name': 'mcp_verify_identity', 'arguments': {}},
+        }) as verification:
+            verification.raise_for_status()
+            verified = None
+            for line in verification.iter_lines():
+                if not line.startswith('data: '):
+                    continue
+                message = json.loads(line[6:])
+                if message.get('method') == 'elicitation/create':
+                    response = wire.post(url, headers=headers, json={
+                        'jsonrpc': '2.0', 'id': message['id'],
+                        'result': {'action': 'accept', 'content': {'username': 'alice'}},
+                    })
+                    assert response.status_code == 202
+                elif message.get('id') == 3:
+                    verified = message['result']['structuredContent']['identity_verified']
+            assert verified is True
         request_id, heartbeats, answered, result = None, 0, False, None
         with wire.stream('POST', url, headers=headers, json={
             'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
@@ -68,9 +87,7 @@ def test_delayed_confirmation_returns_reason_over_live_http(http_site, monkeypat
                         result = message['result']
                 # Delay the answer beyond the 0.5-second idle threshold.
                 if heartbeats >= 12 and request_id and not answered and outcome != 'timeout':
-                    answer = {'action': 'accept', 'content': {
-                        'username': 'alice' if outcome == 'username_matched' else 'wrong-user',
-                    }}
+                    answer = {'action': 'accept', 'content': {'confirm': outcome == 'approved'}}
                     if outcome in ('decline', 'cancel'):
                         answer = {'action': outcome}
                     acknowledged = wire.post(url, headers=headers, json={
@@ -81,7 +98,7 @@ def test_delayed_confirmation_returns_reason_over_live_http(http_site, monkeypat
             assert response.headers['x-accel-buffering'] == 'no'
         assert heartbeats >= 12
         assert result is not None
-        if outcome == 'username_matched':
+        if outcome == 'approved':
             assert not result['isError'] and len(calls['comments']) == 1
         else:
             assert result['isError'] and calls['comments'] == []

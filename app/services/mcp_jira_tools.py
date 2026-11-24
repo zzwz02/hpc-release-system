@@ -5,7 +5,7 @@ disk. ``jira_pull_issue`` returns issue information for answering questions.
 Only an explicit save_to_local request adds local save instructions and
 attachment download commands (short-lived /api/mcp/downloads/... tickets).
 
-Reads use the [jira] service account's visibility, like the JIRA agent page.
+Reads use the [jira] service account after checking the MCP session's Jira scope.
 Comments are posted by that account too, so the body gets a footer naming
 the website user. Write access depends on the issue and the caller's grants. The JIRA
 agent cybersecurity risk lock does not restrict MCP comments or attachment uploads.
@@ -19,8 +19,10 @@ import urllib.error
 from typing import Any
 from urllib.parse import quote
 
+from app.api.errors import ApiError
 from app.domain.jira_format import format_jira_comment
-from app.domain.mcp_access import require_jira_read, scope_jql
+from app.domain.mcp_access import project_key, scope_jql
+from app.services.mcp_jira_access import JiraReadAccess
 from app.services.mcp_evidence import correlations
 from app.integrations import jira
 from app.services import jira_agent_service, mcp_service
@@ -79,14 +81,17 @@ def _search(ctx: ToolContext, args: dict) -> ToolResult:
     start_at = args.get("start_at", 0)
     if type(start_at) is not int or start_at < 0:
         raise ToolError("start_at 必须是非负整数")
+    issue_key = ""
     if not query:
         jql = f'assignee = "{jira.agent_username(ctx.user)}" AND status != Closed ORDER BY updated DESC'
     elif re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*-\d+", query):
-        require_jira_read(ctx.user["role"], query.upper())
-        jql = f"key = {query.upper()}"
+        issue_key = query.upper()
+        ctx.jira_read.require_issue(issue_key)
+        jql = f"key = {issue_key}"
     else:
         jql = query
-    jql = scope_jql(ctx.user["role"], jql)
+    projects = (project_key(issue_key),) if issue_key else ctx.jira_read.projects()
+    jql = scope_jql(jql, projects, exclude_secured=ctx.jira_read.verified and not issue_key)
     ctx.log.extra = {"jql": jql, "start_at": start_at}
     found = _jira_call(jira.search_issues, jql, max_results=limit, start_at=start_at)
     issues, total = found["issues"], found["total"]
@@ -107,7 +112,10 @@ def _search(ctx: ToolContext, args: dict) -> ToolResult:
     lines += ["", "| Key | 类型 | 状态 | 优先级 | Assignee | 更新 | 标题 |",
               "| --- | --- | --- | --- | --- | --- | --- |"]
     for item in issues:
-        require_jira_read(ctx.user["role"], item["key"])
+        if not ctx.jira_read.verified or issue_key:
+            ctx.jira_read.require_issue(item["key"])
+        if project_key(item["key"]) not in projects:
+            raise ApiError(502, "JIRA 返回的工单超出已授权的查询范围")
         lines.append(
             f"| {item['key']} | {item['issue_type']} | {item['status']} | {item['priority']} | "
             f"{(item['assignee'] or {}).get('name', '')} | {item['updated'][:10]} | "
@@ -217,7 +225,7 @@ def _safe_filename(name: str, attachment_id: str, seen: set[str]) -> str:
 
 def _pull(ctx: ToolContext, args: dict) -> ToolResult:
     key = _key(args.get("issue_key"))
-    require_jira_read(ctx.user["role"], key)
+    ctx.jira_read.require_issue(key)
     ctx.log.target_type, ctx.log.target = "jira_issue", key
     save_to_local = args.get("save_to_local", False)
     if not isinstance(save_to_local, bool):
@@ -225,7 +233,15 @@ def _pull(ctx: ToolContext, args: dict) -> ToolResult:
     target_dir = str(args.get("target_dir") or "").strip() or f"jira/{key}"
     with_attachments = args.get("include_attachments", True) is not False
     issue = _jira_call(jira.get_issue_snapshot, key, issue_key=key)
-    require_jira_read(ctx.user["role"], issue["key"])
+    ctx.jira_read.require_issue(issue["key"])
+    # The service token may see role- or group-restricted comments that the
+    # caller's project and issue browse permissions do not grant.
+    issue = {
+        **issue,
+        "comments": [comment for comment in issue["comments"] if not comment.get("visibility")],
+        "raw_fields": {name: value for name, value in (issue.get("raw_fields") or {}).items()
+                       if name != "comment"},
+    }
     markdown = render_issue_markdown(issue)
 
     commands, seen = [], set()
@@ -274,7 +290,7 @@ register(Tool(
     category=CATEGORY,
     title="查询或下载 JIRA",
     description=(
-        "Query one JIRA issue (fields, status, description, custom fields, all comments, attachment list). "
+        "Query one JIRA issue (fields, status, description, custom fields, unrestricted comments, attachment list). "
         "By default, answer the user's question directly from the returned content; do not write local files "
         "or download attachments. Set save_to_local=true ONLY when the user explicitly asks to download "
         "or save the issue locally. Only then does the result include issue.md save instructions and curl "
@@ -307,14 +323,13 @@ register(Tool(
 # jira_add_comment
 # ─────────────────────────────────────────────────────────────
 
-def check_can_write(user: dict, key: str, action: str = "评论", *, all_issues: bool = False) -> dict:
+def check_can_write(user: dict, jira_read: JiraReadAccess, key: str, action: str = "评论",
+                    *, all_issues: bool = False) -> dict:
     """Check live issue authority for MCP writes, independently of agent execution locks."""
-    if all_issues:
-        return _jira_call(jira.get_issue, key, issue_key=key)
-    require_jira_read(user["role"], key)
+    jira_read.require_issue(key)
     issue = _jira_call(jira.get_issue, key, issue_key=key)
-    require_jira_read(user["role"], issue.get("key") or key)
-    if not jira_agent_service.is_assignee_or_rm(user, issue):
+    jira_read.require_issue(issue.get("key") or key)
+    if not all_issues and not jira_agent_service.is_assignee_or_rm(user, issue):
         raise ToolError(
             f"只有当前 JIRA assignee 或 RM 可以{action}；{key} 的 assignee 是 "
             f"{jira_agent_service.assignee_name(issue) or '无'}"
@@ -339,12 +354,11 @@ def _confirm_comment(ctx: ToolContext, args: dict) -> str:
     preview = "".join(body.splitlines(keepends=True)[:COMMENT_PREVIEW_MAX_LINES])[:COMMENT_PREVIEW_MAX_CHARS]
     if len(preview) < len(body):
         return (f"即将在 JIRA {key} 发布评论（全文 {len(body)} 字符）。"
-                "请输入你本人的域账号用户名确认发送；发布后无法撤回。\n\n"
+                "请核对评论内容，确认后发送。发布后无法撤回。\n\n"
                 f"评论摘要：\n{preview.rstrip()}\n"
-                "…（摘要已截断，完整正文请在对话中核对；发送时保留全文。）\n"
-                "请输入本人域账号用户名：")
+                "…（摘要已截断，完整正文请在对话中核对。）")
     return (f"即将在 JIRA {key} 发布下面的评论。"
-            "请输入你本人的域账号用户名，匹配发布账号后发送；发布后无法撤回。\n\n"
+            "请核对评论内容，确认后发送。发布后无法撤回。\n\n"
             f"{body}")
 
 
@@ -360,8 +374,8 @@ def _comment(ctx: ToolContext, args: dict) -> ToolResult:
         raise ToolError("评论内容不能为空")
     if len(body) > COMMENT_MAX_CHARS:
         raise ToolError(f"评论超过 {COMMENT_MAX_CHARS} 字符")
-    issue = check_can_write(ctx.user, key, all_issues=ctx.jira_write_all)
-    comment_id = _jira_call(jira.add_comment, key, body + comment_footer(ctx), issue_key=key)
+    issue = check_can_write(ctx.user, ctx.jira_read, key, all_issues=ctx.jira_write_all)
+    comment_id = _jira_call(jira.add_comment, issue["key"], body + comment_footer(ctx), issue_key=key)
     url = f"{issue['url']}?focusedCommentId={comment_id}"
     return ToolResult.text(f"已在 {key} 发布评论（ID {comment_id}）：{url}", log=ToolLog(
         target_type="jira_issue", target=key, summary=f"comment {comment_id}",
@@ -385,11 +399,11 @@ register(Tool(
         "The confirmation dialog shows only a bounded excerpt for long comments; the full body is posted. "
         "To cite an attachment, use the [name|url] link that jira_pull_issue or the upload output "
         "gives (it targets the attachment id); [^name] may hit a same-named file. "
-        "Before posting, the user must type their own domain username in the MCP elicitation form. "
-        "The server compares it with the token owner (trimmed, case-insensitive). Missing or mismatched "
-        "usernames, cancellation and timeout do not post. Clients without form elicitation cannot post. "
+        "The session must be verified and the account must be able to browse the issue. Before posting, the user must check "
+        "the confirmation box and submit the MCP elicitation form. Decline, cancellation, timeout, "
+        "and submission without explicit approval do not post. Clients without form elicitation cannot post. "
         "When confirmation fails, explain the returned reason to the user. Do not automatically retry "
-        "or fill in the username; wait for the user to explicitly request another confirmation. "
+        "or confirm on the user's behalf. Wait for the user to explicitly request another confirmation. "
         "The comment is posted by the release-system JIRA account with a footer naming the token owner."
     ),
     input_schema={
@@ -424,7 +438,7 @@ def _upload(ctx: ToolContext, args: dict) -> ToolResult:
     if not filename:
         raise ToolError("无法确定附件文件名，请传 filename")
     ctx.log.extra = {"filename": filename}
-    check_can_write(ctx.user, key, "上传附件", all_issues=ctx.jira_write_all)
+    check_can_write(ctx.user, ctx.jira_read, key, "上传附件", all_issues=ctx.jira_write_all)
     ticket = mcp_service.issue_upload_ticket(ctx.caller, ctx.session, issue_key=key, filename=filename)
     url = f"{ctx.base_url}/api/mcp/uploads/{ticket}"
     # No -f: on failure the server's plain-text reason is what the agent needs to read.
@@ -454,7 +468,7 @@ register(Tool(
         "no prior jira_pull_issue is required. "
         "Do not pull merely to verify the issue exists or permission to upload; the server checks both. "
         "This tool checks permission and returns a one-time curl command; run it locally to send "
-        "the file (the MCP server cannot read local files). No elicitation confirmation is required for "
+        "the file (the MCP server cannot read local files). A verified session is required. No per-upload confirmation is required for "
         "attachments. The JIRA agent cybersecurity risk lock does not block attachment uploads. "
         "Permission is checked both when issuing the command and when receiving the upload."
     ),

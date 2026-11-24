@@ -8,7 +8,7 @@ from functools import cached_property
 from app.api.errors import ApiError
 from app.config import settings
 from app.db.connection import connect, transaction
-from app.domain.mcp_access import GUEST_JIRA_WRITE_TOOLS, MCP_LDAP_PATTERNS, MCP_ROLES
+from app.domain.mcp_access import DEFAULT_JIRA_PROJECT, GUEST_JIRA_WRITE_TOOLS, MCP_LDAP_PATTERNS, MCP_ROLES
 from app.integrations import ldap
 from app.repositories import audit_repo, mcp_repo
 from app.services.mcp_tools import Tool, get_tool, registered_tools
@@ -36,10 +36,10 @@ class ToolAccess:
         self._membership: tuple[tuple[str, ...], str] | None = None
 
     @cached_property
-    def guest_jira_write_scope(self) -> str:
+    def guest_can_write_all_jira(self) -> bool:
         if self.user["role"] == "Guest":
-            return mcp_repo.guest_jira_write_scope(self.conn, self.user["username"])
-        return ""
+            return mcp_repo.guest_can_write_all_jira(self.conn, self.user["username"])
+        return False
 
     def check(self, tool: Tool) -> tuple[bool, str]:
         role = self.user["role"]
@@ -48,7 +48,7 @@ class ToolAccess:
         selected = self.grants.get(tool.name, tool.default_grants())
         if role in selected:
             return True, ""
-        if tool.name in GUEST_JIRA_WRITE_TOOLS and self.guest_jira_write_scope:
+        if tool.name in GUEST_JIRA_WRITE_TOOLS and self.guest_can_write_all_jira:
             return True, ""
         if not any(pattern in selected for pattern in MCP_LDAP_PATTERNS):
             return False, ""
@@ -68,15 +68,17 @@ class ToolAccess:
         return tools, warning
 
 
-def require_tool_access(user: dict, name: str) -> str:
-    """Recheck live tool access and return the Guest write scope for JIRA write tools."""
+def require_tool_access(user: dict, name: str, *, identity_verified: bool) -> bool:
+    """Recheck the matrix and the verification requirement for deferred use."""
     tool = get_tool(name)
     if tool:
+        if not tool.read_only and not identity_verified:
+            raise ApiError(403, "当前 MCP 会话尚未验证域账号，仅可使用只读工具")
         with closing(connect(settings.db_path)) as conn:
             access = ToolAccess(conn, user)
             allowed, warning = access.check(tool)
             if allowed:
-                return access.guest_jira_write_scope if name in GUEST_JIRA_WRITE_TOOLS else ""
+                return name in GUEST_JIRA_WRITE_TOOLS and access.guest_can_write_all_jira
         if warning:
             raise ApiError(403, warning)
     raise ApiError(403, f"当前账号无权调用 MCP 工具 {name}")
@@ -86,6 +88,7 @@ def _permission_matrix(revision: int, grants: dict[str, list[str]], guests: list
     return {
         "revision": revision,
         "guests": guests,
+        "default_jira_projects": [DEFAULT_JIRA_PROJECT],
         "columns": [
             *({"id": role, "label": role, "kind": "role"} for role in MCP_ROLES),
             *({"id": pattern, "label": pattern.removesuffix("*"), "kind": "group"}
@@ -118,7 +121,6 @@ def save_permissions(
     revision: int,
     changes: dict[str, list[str]],
     *,
-    guest_jira_write: dict[str, bool],
     guest_jira_write_all: dict[str, bool],
 ) -> dict:
     principals = MCP_ROLES + MCP_LDAP_PATTERNS
@@ -142,24 +144,17 @@ def save_permissions(
                 after = [principal for principal in principals if principal in selected]
                 grants[name] = after
                 audit_changes.append({"tool": name, "before": before, "after": after})
-        for username in sorted(guest_jira_write.keys() | guest_jira_write_all.keys()):
+        for username, enabled in sorted(guest_jira_write_all.items()):
             guest = guests_by_username.get(username)
             if guest is None:
                 raise ApiError(400, f"账号 {username} 当前不是 Guest，请重新读取权限配置")
-            guest_changes = []
-            for field, updates in (("jira_write", guest_jira_write), ("jira_write_all", guest_jira_write_all)):
-                before = guest[field]
-                after = updates.get(username, before)
-                if before != after:
-                    guest[field] = after
-                    guest_changes.append({
-                        "username": username, "permission": f"guest_{field}", "before": before, "after": after,
-                    })
-            if guest_changes:
-                mcp_repo.set_guest_jira_write(
-                    conn, username, jira_write=guest["jira_write"], jira_write_all=guest["jira_write_all"],
-                )
-                audit_changes.extend(guest_changes)
+            before = guest["jira_write_all"]
+            if before != enabled:
+                guest["jira_write_all"] = enabled
+                mcp_repo.set_guest_jira_write_all(conn, username, enabled)
+                audit_changes.append({
+                    "username": username, "permission": "guest_jira_write_all", "before": before, "after": enabled,
+                })
         if audit_changes:
             current_revision += 1
             mcp_repo.write_tool_permissions(conn, current_revision, grants)

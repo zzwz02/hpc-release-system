@@ -684,7 +684,6 @@ def init_db(conn: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS mcp_guest_jira_writers (
             username TEXT NOT NULL PRIMARY KEY REFERENCES users(username) ON DELETE CASCADE,
-            jira_write INTEGER NOT NULL DEFAULT 1 CHECK (jira_write IN (0, 1)),
             jira_write_all INTEGER NOT NULL DEFAULT 0 CHECK (jira_write_all IN (0, 1))
         );
 
@@ -706,6 +705,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             -- client can show a server-requested confirmation to the user.
             client_capabilities TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
+            verified_at TEXT NOT NULL DEFAULT '',
             ended_at TEXT NOT NULL DEFAULT ''
         );
 
@@ -788,8 +788,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         ("qa_logs",            "content",            "BLOB"),
         ("mcp_sessions",       "client_capabilities", "TEXT NOT NULL DEFAULT ''"),
         # A row in the original table granted writes on the Guest's assigned issues.
-        ("mcp_guest_jira_writers", "jira_write", "INTEGER NOT NULL DEFAULT 1 CHECK (jira_write IN (0, 1))"),
         ("mcp_guest_jira_writers", "jira_write_all", "INTEGER NOT NULL DEFAULT 0 CHECK (jira_write_all IN (0, 1))"),
+        ("mcp_sessions", "verified_at", "TEXT NOT NULL DEFAULT ''"),
     ]:
         try:
             conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} {_col_def}")

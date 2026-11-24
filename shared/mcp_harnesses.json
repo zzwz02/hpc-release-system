@@ -1,5 +1,5 @@
 {
-  "note": "其他 harness 的 MCP 配置文档与「发评论前能否弹确认」的核实结果；AI助手 → MCP 页面与 /api/mcp/setup.sh 共用此列表。配置时使用同一个 MCP 地址与 Authorization: Bearer 请求头。confirm 取值：form=支持 MCP elicitation，发评论时还需客户端实际审批策略允许表单；none=不支持，无法发评论；unknown=文档未说明、未实测。附件上传无需确认。checked 为核实日期。",
+  "note": "其他 harness 的 MCP 配置文档与「发评论前能否弹确认」的核实结果；AI助手 → MCP 页面与 /api/mcp/setup.sh 共用此列表。配置时使用同一个 MCP 地址与 Authorization: Bearer 请求头。confirm 取值：form=支持 MCP elicitation 表单，仍需客户端允许弹窗；none=无法通过表单验证，仅可使用默认只读权限；unknown=文档未说明、未实测。checked 为核实日期。",
   "harnesses": [
     {
       "name": "Claude Code",

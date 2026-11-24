@@ -47,7 +47,6 @@
     "mcp.tool.jira_pull_issue": ["Guest"],
     "mcp.tool.jira_read_attachment": ["Guest"],
     "mcp.tool.skill_load": ["Guest"],
-    "mcp.jira.read.all_projects": ["RM", "Owner", "QA", "SPD"],
     "cicd.request.submit": ["RM", "Owner"],
     "cicd.request.approve": ["RM"],
     "cicd.request.reject": ["RM"],

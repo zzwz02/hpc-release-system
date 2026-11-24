@@ -32,9 +32,9 @@ const DAY_OPTIONS = [7, 30, 90, 365];
 const STATS_EXCLUDED_USERNAME = "zhawu";
 /** How each harness handles a server-requested confirmation (shared/mcp_harnesses.json). */
 const CONFIRM_MARKS: Record<string, { label: string; pill: string }> = {
-  form: { label: "支持发布前确认", pill: "ok" },
-  none: { label: "不支持用户名确认，无法发评论", pill: "bad" },
-  unknown: { label: "未核实确认支持", pill: "warn" },
+  form: { label: "支持域账号验证表单", pill: "ok" },
+  none: { label: "仅可使用默认只读权限", pill: "bad" },
+  unknown: { label: "表单支持待核实", pill: "warn" },
 };
 const KIND_LABELS: Record<string, string> = { connection: "连接", tool: "工具", download: "下载" };
 
@@ -89,7 +89,7 @@ export function McpPage() {
       {infoQuery.error && pane !== "permissions" && <div className="pane-error">{errorMessage(infoQuery.error)}</div>}
       {(pane === "setup" || (pane === "permissions" && !canManagePermissions)) && (
         <SetupPane viewer={viewer} tools={infoQuery.data?.tools ?? []}
-          jiraProjects={infoQuery.data?.jira_read_projects ?? null}
+          defaultJiraProjects={infoQuery.data?.default_jira_projects ?? []}
           jiraWriteAll={infoQuery.data?.guest_jira_write_all ?? false}
           accessWarnings={infoQuery.data?.access_warnings ?? []} />
       )}
@@ -107,10 +107,10 @@ export function McpPage() {
 // 接入配置
 // ─────────────────────────────────────────────────────────────
 
-function SetupPane({ viewer, tools, jiraProjects, jiraWriteAll, accessWarnings }: {
+function SetupPane({ viewer, tools, defaultJiraProjects, jiraWriteAll, accessWarnings }: {
   viewer: string;
   tools: { name: string; title: string; category: string; read_only: boolean; description: string }[];
-  jiraProjects: string[] | null;
+  defaultJiraProjects: string[];
   jiraWriteAll: boolean;
   accessWarnings: string[];
 }) {
@@ -321,8 +321,8 @@ function SetupPane({ viewer, tools, jiraProjects, jiraWriteAll, accessWarnings }
             </p>
             <CodeBlock text={`URL: ${url}\nAuthorization: Bearer ${tokenText}`} />
             <p className="hint">
-              发评论前需在 elicitation 表单中输入本人域账号用户名，匹配 token 所属账号才发送；
-              <strong>不支持 elicitation 的客户端无法发评论</strong>。附件上传不弹确认框，仍检查上传权限。
+              在对话中要求「验证 MCP 域账号」，按表单提示填写本人用户名。验证对本次 MCP 会话生效。
+              发评论前请在确认表单中勾选「确认执行」并提交。
             </p>
             <ul className="mcp-harnesses">
               {mcpHarnesses.harnesses.map((harness) => {
@@ -344,8 +344,8 @@ function SetupPane({ viewer, tools, jiraProjects, jiraWriteAll, accessWarnings }
       <div className="panel">
         <div className="panel-head"><h3>可用工具</h3></div>
         <div className="panel-body">
-          {jiraProjects && <p className="hint mt-0">当前账号仅可读取 {jiraProjects.join("、")} 项目的 JIRA，并使用下方列出的工具。</p>}
-          {jiraWriteAll && <p className="hint mt-0">当前账号可给任意项目的 JIRA 工单评论和上传附件。</p>}
+          {defaultJiraProjects.length > 0 && <p className="hint mt-0">默认可使用已授权的只读工具，JIRA 查询限 {defaultJiraProjects.join("、")}。完成域账号验证后，JIRA 按账号的浏览权限查询，写入按工具和工单权限开放。</p>}
+          {jiraWriteAll && <p className="hint mt-0">验证后可在本人有浏览权限的 JIRA 工单上评论和上传附件。</p>}
           {accessWarnings.map(warning => <p className="hint" key={warning}>{warning}</p>)}
           <p className="hint mt-0">
             用自然语言即可，例如「MC3-7672 当前是什么状态」「把 MC3-7672 下载到本地」「搜索我名下未关闭的 JIRA」。
@@ -362,7 +362,7 @@ function SetupPane({ viewer, tools, jiraProjects, jiraWriteAll, accessWarnings }
                   <tr key={tool.name}>
                     <td className="nowrap"><strong>{tool.title}</strong><div className="muted small"><code>{tool.name}</code></div></td>
                     <td>{tool.category}</td>
-                    <td>{tool.read_only ? <span className="pill">只读</span> : <span className="pill warn">写入</span>}</td>
+                    <td>{tool.read_only ? <span className="pill">只读</span> : <span className="pill warn">写入 · 需验证</span>}</td>
                     <td className="small">{tool.description}</td>
                   </tr>
                 ))}

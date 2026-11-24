@@ -7,7 +7,7 @@ import pytest
 from app.config import settings
 from app.db.connection import connect
 from app.integrations import cicd_agent, ldap
-from tests.test_mcp import call, connect_client, rpc, site  # noqa: F401
+from tests.test_mcp import call, connect_client, connect_verified, rpc, site  # noqa: F401
 from tests.test_mcp_jenkins_live import configured  # noqa: F401
 
 PDE = {'jenkins_search_failures', 'jenkins_get_failure', 'jenkins_get_build_errors',
@@ -72,6 +72,7 @@ def test_local_account_does_not_inherit_same_named_domain_account(site, monkeypa
     def forbidden(*_args, **_kwargs):
         pytest.fail('local users must not query a same-named domain identity')
     monkeypatch.setattr(ldap, 'groups_for_user', forbidden)
+    set_identity('guest', 'Guest', 'local')
     token = token_for('guest', 'Guest')
     session, _ = connect_client(client, token)
     assert not listed(client, token, session) & (PDE | CICD)
@@ -104,7 +105,7 @@ def test_ldap_failure_is_closed_and_visible_without_breaking_role_grants_or_jira
         raise RuntimeError('private-bind-secret')
     monkeypatch.setattr(ldap, 'groups_for_user', broken)
     token = token_for('alice', 'Owner')
-    session, _ = connect_client(client, token)
+    session = connect_verified(client, token)
     response = rpc(client, token, 'tools/list', session=session).json()['result']
     assert {t['name'] for t in response['tools']} & (PDE | CICD) == PDE
     assert 'LDAP' in response['_meta']['access_warnings'][0]

@@ -24,7 +24,6 @@ def list_guest_jira_access(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT users.username, users.display_name,
-               COALESCE(writers.jira_write, 0) AS jira_write,
                COALESCE(writers.jira_write_all, 0) AS jira_write_all
         FROM users LEFT JOIN mcp_guest_jira_writers AS writers USING (username)
         WHERE users.role = 'Guest' ORDER BY users.username COLLATE NOCASE
@@ -32,29 +31,26 @@ def list_guest_jira_access(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     )
     return [{
         "username": row["username"], "display_name": row["display_name"],
-        "jira_write": bool(row["jira_write"]), "jira_write_all": bool(row["jira_write_all"]),
+        "jira_write_all": bool(row["jira_write_all"]),
     } for row in rows]
 
 
-def guest_jira_write_scope(conn: sqlite3.Connection, username: str) -> str:
+def guest_can_write_all_jira(conn: sqlite3.Connection, username: str) -> bool:
     row = conn.execute(
-        "SELECT CASE WHEN jira_write_all THEN 'all' WHEN jira_write THEN 'assigned' ELSE '' END AS scope "
+        "SELECT jira_write_all "
         "FROM mcp_guest_jira_writers JOIN users USING (username) "
         "WHERE username = ? AND users.role = 'Guest'",
         (username,),
     ).fetchone()
-    return row["scope"] if row else ""
+    return bool(row and row["jira_write_all"])
 
 
-def set_guest_jira_write(
-    conn: sqlite3.Connection, username: str, *, jira_write: bool, jira_write_all: bool,
-) -> None:
-    if jira_write or jira_write_all:
+def set_guest_jira_write_all(conn: sqlite3.Connection, username: str, enabled: bool) -> None:
+    if enabled:
         conn.execute(
-            "INSERT INTO mcp_guest_jira_writers(username, jira_write, jira_write_all) VALUES (?, ?, ?) "
-            "ON CONFLICT(username) DO UPDATE SET jira_write = excluded.jira_write, "
-            "jira_write_all = excluded.jira_write_all",
-            (username, jira_write, jira_write_all),
+            "INSERT INTO mcp_guest_jira_writers(username, jira_write_all) VALUES (?, 1) "
+            "ON CONFLICT(username) DO UPDATE SET jira_write_all = 1",
+            (username,),
         )
     else:
         conn.execute("DELETE FROM mcp_guest_jira_writers WHERE username = ?", (username,))
@@ -118,7 +114,7 @@ def find_active_token_user(conn: sqlite3.Connection, token_hash: str | None = No
     """Active token joined with its user's current role (None for a deleted user)."""
     row = conn.execute(
         """
-        SELECT mcp_tokens.id AS token_id, users.username, users.role, users.display_name
+        SELECT mcp_tokens.id AS token_id, users.username, users.role, users.display_name, users.auth_source
         FROM mcp_tokens JOIN users ON users.username = mcp_tokens.username
         WHERE (mcp_tokens.token_hash = ? OR mcp_tokens.id = ?) AND mcp_tokens.revoked_at = ''
           -- One active token per user: only the newest counts, even if an
@@ -163,6 +159,14 @@ def end_session(conn: sqlite3.Connection, session_id: str, token_id: int, ended_
         "UPDATE mcp_sessions SET ended_at = ? WHERE id = ? AND token_id = ? AND ended_at = ''",
         (ended_at, session_id, token_id),
     )
+
+
+def verify_session(conn: sqlite3.Connection, session_id: str, token_id: int, username: str, verified_at: str) -> bool:
+    result = conn.execute(
+        "UPDATE mcp_sessions SET verified_at = ? WHERE id = ? AND token_id = ? AND username = ? AND ended_at = ''",
+        (verified_at, session_id, token_id, username),
+    )
+    return result.rowcount == 1
 
 
 # ---------------------------------------------------------------------------

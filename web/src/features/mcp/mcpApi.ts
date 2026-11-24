@@ -29,14 +29,15 @@ export interface McpInfo {
   server_name: string;
   tools: McpToolInfo[];
   can_view_all: boolean;
-  jira_read_projects: string[] | null;
+  default_jira_projects: string[];
   guest_jira_write_all: boolean;
   access_warnings?: string[];
 }
 
 export interface McpPermissions {
   revision: number;
-  guests: { username: string; display_name: string; jira_write: boolean; jira_write_all: boolean }[];
+  guests: { username: string; display_name: string; jira_write_all: boolean }[];
+  default_jira_projects: string[];
   columns: { id: string; label: string; kind: "role" | "group" }[];
   tools: {
     name: string;
@@ -50,10 +51,8 @@ export interface McpPermissions {
 }
 
 export const getPermissions = () => apiGet<McpPermissions>("/api/mcp/permissions");
-export const savePermissions = (revision: number, grants: Record<string, string[]>, guestGrants: {
-  guest_jira_write: Record<string, boolean>;
-  guest_jira_write_all: Record<string, boolean>;
-}) => apiPost<McpPermissions>("/api/mcp/permissions", { revision, grants, ...guestGrants });
+export const savePermissions = (revision: number, grants: Record<string, string[]>, guestWriteAll: Record<string, boolean>) =>
+  apiPost<McpPermissions>("/api/mcp/permissions", { revision, grants, guest_jira_write_all: guestWriteAll });
 
 export interface McpStats {
   since: string;

@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import time
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from app import runtime_config
 from app.config import settings
@@ -417,6 +418,43 @@ def get_issue(issue_key: str) -> dict:
         f"/rest/api/2/issue/{quote(issue_key)}?fields={_ISSUE_FIELDS}",
     )
     return _issue_data(raw, cfg["JIRA_BASE_URL"], issue_key)
+
+
+def visible_project_keys() -> tuple[str, ...]:
+    cfg = _require_config()
+    projects = _request(cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"], "GET", "/rest/api/2/project")
+    if not isinstance(projects, list):
+        raise RuntimeError("JIRA 返回的项目列表无效")
+    keys = []
+    for project in projects:
+        key = project.get("key") if isinstance(project, dict) else None
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
+            raise RuntimeError("JIRA 返回了无效的项目编号")
+        keys.append(key)
+    return tuple(sorted(set(keys)))
+
+
+def account_can_browse(username: str, *, project_key: str = "", issue_key: str = "") -> bool:
+    """Check a named Jira user, independent of the service account's own permissions."""
+    if bool(project_key) == bool(issue_key):
+        raise ValueError("JIRA 权限核验需要指定一个项目或工单")
+    cfg = _require_config()
+    params = {"username": username, "maxResults": 50}
+    params["projectKey" if project_key else "issueKey"] = project_key or issue_key
+    try:
+        users = _request(
+            cfg["JIRA_BASE_URL"], cfg["JIRA_TOKEN"], "GET",
+            f"/rest/api/2/user/viewissue/search?{urlencode(params)}",
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        raise
+    if not isinstance(users, list):
+        raise RuntimeError("JIRA 返回的账号权限结果无效")
+    return any(isinstance(user, dict) and user.get("active") is True
+               and isinstance(user.get("name"), str) and user["name"].casefold() == username.casefold()
+               for user in users)
 
 
 def _issue_data(raw: dict, base_url: str, issue_key: str) -> dict:

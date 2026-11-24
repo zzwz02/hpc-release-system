@@ -190,22 +190,16 @@ def authenticate(conn: sqlite3.Connection, authorization: str) -> McpCaller:
         mcp_repo.touch_token(conn, row["token_id"], beijing_timestamp())
     return McpCaller(
         token_id=row["token_id"],
-        user={"username": row["username"], "role": row["role"], "display_name": row["display_name"]},
+        user={key: row[key] for key in ("username", "role", "display_name", "auth_source")},
     )
 
 
-def refresh_caller(caller: McpCaller) -> McpCaller:
-    """Revalidate a deferred action against the current token and user."""
-    conn = connect(settings.db_path)
-    try:
-        row = mcp_repo.find_active_token_user(conn, token_id=caller.token_id)
-    finally:
-        conn.close()
+def _current_caller(row: dict | None, caller: McpCaller) -> McpCaller:
     if not row or row["username"] != caller.user["username"]:
         raise ApiError(401, "MCP token 无效或已吊销，请重新连接")
     if not can_use(row["role"]):
         raise ApiError(403, f"当前角色 {row['role']} 无权使用 MCP")
-    return McpCaller(row["token_id"], {k: row[k] for k in ("username", "role", "display_name")})
+    return McpCaller(row["token_id"], {key: row[key] for key in ("username", "role", "display_name", "auth_source")})
 
 
 # ─────────────────────────────────────────────────────────────
@@ -229,8 +223,10 @@ def start_session(conn: sqlite3.Connection, caller: McpCaller, client: dict, pro
 def session_client(conn: sqlite3.Connection, caller: McpCaller, session_id: str) -> dict:
     """The client a session belongs to; empty for an unknown or foreign session."""
     session = mcp_repo.get_session(conn, session_id) if session_id else None
-    if not session or session["token_id"] != caller.token_id or session["ended_at"]:
-        return {"session_id": "", "client_name": "", "client_version": "", "can_confirm": False}
+    if (not session or session["token_id"] != caller.token_id or session["ended_at"]
+            or session["username"] != caller.user["username"]):
+        return {"session_id": "", "client_name": "", "client_version": "", "can_confirm": False,
+                "identity_verified": False}
     try:
         capabilities = json.loads(session["client_capabilities"] or "{}")
     except ValueError:
@@ -238,10 +234,35 @@ def session_client(conn: sqlite3.Connection, caller: McpCaller, session_id: str)
     elicitation = capabilities.get("elicitation") if isinstance(capabilities, dict) else None
     return {"session_id": session_id, "client_name": session["client_name"],
             "client_version": session["client_version"],
+            "identity_verified": bool(session["verified_at"] and caller.user.get("auth_source") == "ldap"),
             # Empty capabilities are the older form-only declaration; URL-only
             # clients cannot show our requestedSchema form.
             "can_confirm": isinstance(elicitation, dict) and (
                 not elicitation or isinstance(elicitation.get("form"), dict))}
+
+
+def refresh_session(caller: McpCaller, session_id: str) -> tuple[McpCaller, dict]:
+    """Resolve a deferred action against fresh token and session state."""
+    conn = connect(settings.db_path)
+    try:
+        current = _current_caller(mcp_repo.find_active_token_user(conn, token_id=caller.token_id), caller)
+        return current, session_client(conn, current, session_id)
+    finally:
+        conn.close()
+
+
+def verify_session_identity(caller: McpCaller, session_id: str) -> None:
+    conn = connect(settings.db_path)
+    try:
+        with transaction(conn, immediate=True):
+            current = _current_caller(mcp_repo.find_active_token_user(conn, token_id=caller.token_id), caller)
+            if current.user["auth_source"] != "ldap":
+                raise ApiError(403, "请使用域账号登录发布系统并配置对应的个人 token")
+            if not mcp_repo.verify_session(conn, session_id, current.token_id,
+                                           current.user["username"], beijing_timestamp()):
+                raise ApiError(403, "MCP 会话已失效，请重新连接")
+    finally:
+        conn.close()
 
 
 def end_session(conn: sqlite3.Connection, caller: McpCaller, session_id: str) -> None:

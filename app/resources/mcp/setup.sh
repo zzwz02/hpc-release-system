@@ -603,7 +603,7 @@ other_harnesses() {  # other_harnesses TOKEN → doc links for clients this scri
 # 其他客户端（如 Windsurf / Cline 等）请按各自文档添加 HTTP MCP 服务器：
 #   地址：$MCP_URL
 #   请求头：Authorization: Bearer ${1:-<你的 token>}
-# 注意：发评论必须在 elicitation 表单中输入与 Token 账号匹配的用户名（不支持的客户端无法发评论）；附件上传不弹确认框，但仍校验权限。
+# 在客户端对话里要求「验证 MCP 域账号」，填写本人用户名。未验证时可使用已授权的只读工具，写入需要先验证。
 EOF
   cat <<'LINKS'
 __HARNESS_LINKS__

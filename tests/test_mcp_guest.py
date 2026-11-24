@@ -11,7 +11,7 @@ from app.config import settings
 from app.db.connection import connect
 from app.integrations import jira
 from app.services import mcp_tools
-from tests.test_mcp import ISSUE, call, connect_client, rpc, site  # noqa: F401
+from tests.test_mcp import ISSUE, call, connect_client, connect_verified, rpc, site  # noqa: F401
 
 GUEST_TOOLS = {"jira_search", "jira_pull_issue", "jira_read_attachment", "skill_load"}
 
@@ -27,17 +27,17 @@ def download_path(result):
     return re.search(r"http://testserver(/api/mcp/downloads/[^\s\x27]+)", result["content"][0]["text"]).group(1)
 
 
-def test_guest_can_connect_with_exactly_four_tools_and_load_skills(site):
+def test_guest_can_connect_with_default_read_tools_and_identity_verification(site):
     client, _, token_for, _ = site
     token = token_for("guest", "Guest")
     session, initialized = connect_client(client, token)
     tools = rpc(client, token, "tools/list", session=session).json()["result"]["tools"]
-    assert {tool["name"] for tool in tools} == GUEST_TOOLS
+    assert {tool["name"] for tool in tools} == GUEST_TOOLS | {"mcp_verify_identity"}
     assert all(tool["annotations"]["readOnlyHint"] for tool in tools)
-    assert "MC3" in initialized["instructions"] and "仅允许读取" in initialized["instructions"]
+    assert "MC3" in initialized["instructions"] and "默认只开放" in initialized["instructions"]
     info = client.get("/api/mcp/info").json()
     assert {tool["name"] for tool in info["tools"]} == GUEST_TOOLS
-    assert info["jira_read_projects"] == ["MC3"] and not info["can_view_all"]
+    assert info["default_jira_projects"] == ["MC3"] and not info["can_view_all"]
     skill = call(client, token, session, "skill_load", {"skill": "jira-format"})
     assert not skill["isError"] and skill["content"]
 
@@ -155,27 +155,28 @@ def test_guest_cannot_use_another_issues_attachment_id(site, monkeypatch):
     assert call(client, token, session, "jira_read_attachment", {"issue_key": "MC3-1", "attachment_id": "other-issue-file"})["isError"]
 
 
-def test_guest_can_download_mc3_but_cannot_reuse_a_foreign_ticket_after_role_change(site, monkeypatch):
+def test_guest_can_download_mc3_but_cannot_reuse_a_ticket_after_jira_access_revocation(site, monkeypatch):
     client, _, token_for, _ = site
     token = token_for("guest", "Guest")
     session, _ = connect_client(client, token)
     pull = call(client, token, session, "jira_pull_issue", {"issue_key": "MC3-1", "save_to_local": True})
     assert client.get(download_path(pull)).content == b"abc"
     owner = token_for("alice", "Owner")
-    owner_session, _ = connect_client(client, owner)
+    owner_session = connect_verified(client, owner)
     foreign = call(client, owner, owner_session, "jira_pull_issue", {"issue_key": "PHS-1", "save_to_local": True})
     path = download_path(foreign)
     change_role("alice", "Guest")
+    monkeypatch.setattr(jira, "account_can_browse", lambda username, **_: False)
     monkeypatch.setattr(jira, "download_attachment", lambda *_a, **_kw: pytest.fail("ticket must recheck project scope"))
     assert client.get(path).status_code == 403
     listed = rpc(client, owner, "tools/list", session=owner_session).json()["result"]["tools"]
-    assert {tool["name"] for tool in listed} == GUEST_TOOLS
+    assert {tool["name"] for tool in listed} == GUEST_TOOLS | {"mcp_verify_identity"}
 
 
 def test_guest_assignee_cannot_reuse_previously_issued_upload_ticket(site, monkeypatch):
     client, _, token_for, _ = site
     owner = token_for("alice", "Owner")
-    session, _ = connect_client(client, owner)
+    session = connect_verified(client, owner)
     upload = call(client, owner, session, "jira_upload_attachment", {"issue_key": "MC3-1", "file_path": "x.log"})
     path = re.search(r"http://testserver(/api/mcp/uploads/[^\s\x27]+)", upload["content"][0]["text"]).group(1)
     change_role("alice", "Guest")

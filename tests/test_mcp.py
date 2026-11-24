@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from app.config import settings
 from app.db.connection import connect
 from app.deps import require_login
-from app.integrations import jira
+from app.integrations import jira, ldap
 from app.main import create_app
 from app.services import mcp_protocol, mcp_tools
 from app.services.mcp_tools import Tool, ToolLog, ToolResult
@@ -36,7 +36,8 @@ def site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     conn = connect(settings.db_path)
     for username, role in (("alice", "Owner"), ("carol", "Owner"), ("zhawu", "Owner"),
                            ("rm", "RM"), ("guest", "Guest")):
-        conn.execute("INSERT OR REPLACE INTO users(username, password_hash, role, display_name) VALUES (?, '', ?, ?)",
+        conn.execute("INSERT OR REPLACE INTO users(username, password_hash, role, display_name, auth_source) "
+                     "VALUES (?, '', ?, ?, 'ldap')",
                      (username, role, username.title()))
     conn.commit()
     conn.close()
@@ -45,6 +46,9 @@ def site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     app.dependency_overrides[require_login] = lambda: {**current, "display_name": current["username"].title()}
     client = TestClient(app, raise_server_exceptions=False)
     calls: dict[str, list] = {"comments": []}
+    monkeypatch.setattr(ldap, "groups_for_user", lambda *_a, **_kw: ())
+    monkeypatch.setattr(jira, "visible_project_keys", lambda: ("MC3", "PHS"))
+    monkeypatch.setattr(jira, "account_can_browse", lambda *_a, **_kw: True)
     monkeypatch.setattr(jira, "get_issue_snapshot", lambda key, **_: {**ISSUE, "key": key})
     monkeypatch.setattr(jira, "get_issue", lambda key: {**ISSUE, "key": key})
     monkeypatch.setattr(jira, "download_attachment", lambda url, **_: b"abc")
@@ -144,7 +148,7 @@ def test_initialize_session_and_tool_list(site):
     assert rpc(client, token, "notifications/initialized", msg_id=None, session=session).status_code == 202
 
     tools = rpc(client, token, "tools/list", session=session).json()["result"]["tools"]
-    assert {tool["name"] for tool in tools} == {"jira_search", "jira_pull_issue", "jira_add_comment",
+    assert {tool["name"] for tool in tools} == {"mcp_verify_identity", "jira_search", "jira_pull_issue", "jira_add_comment",
                                                 "jira_upload_attachment", "skill_load",
                                                 "jenkins_search_failures", "jenkins_get_failure", "jenkins_get_build_errors", "jenkins_list_jobs", "jenkins_list_builds", "jira_read_attachment"}
     assert rpc(client, token, "nope", session=session).json()["error"]["code"] == -32601
@@ -230,25 +234,25 @@ def test_local_save_requires_a_boolean_option(site, value):
 def test_comment_limited_to_assignee_or_rm_and_attributed(site):
     client, _, token_for, calls = site
     carol = token_for("carol", "Owner")
-    session = connect_confirming(client, carol)
+    session = connect_verified(client, carol)
     denied = confirmable_call(client, carol, session, "jira_add_comment", {"issue_key": "MC3-1", "body": "hi"},
-                              {"result": {"action": "accept", "content": {"username": "carol"}}})[-1]["result"]
+                              {"result": {"action": "accept", "content": {"confirm": True}}})[-1]["result"]
     assert denied["isError"] and "assignee" in denied["content"][0]["text"]
     assert calls["comments"] == []
 
     alice = token_for("alice", "Owner")
-    session = connect_confirming(client, alice, "claude-code")
+    session = connect_verified(client, alice, "claude-code")
     posted = confirmable_call(client, alice, session, "jira_add_comment", {"issue_key": "MC3-1", "body": "root cause: X"},
-                              {"result": {"action": "accept", "content": {"username": "alice"}}})[-1]["result"]
+                              {"result": {"action": "accept", "content": {"confirm": True}}})[-1]["result"]
     assert not posted["isError"] and "focusedCommentId=1001" in posted["content"][0]["text"]
     [(key, body)] = calls["comments"]
     assert key == "MC3-1"
     assert body == "root cause: X\n\n----\n_由 Alice（alice） 通过发布系统 MCP 发布_"
 
     rm = token_for("rm", "RM")
-    session = connect_confirming(client, rm)
+    session = connect_verified(client, rm)
     assert not confirmable_call(client, rm, session, "jira_add_comment", {"issue_key": "MC3-1", "body": "rm"},
-                              {"result": {"action": "accept", "content": {"username": "rm"}}})[-1]["result"]["isError"]
+                              {"result": {"action": "accept", "content": {"confirm": True}}})[-1]["result"]["isError"]
 
 
 @pytest.fixture()
@@ -264,22 +268,22 @@ def locked_issue(site, tmp_path, monkeypatch):
     return site
 
 
-@pytest.mark.parametrize(("username", "role", "action", "typed", "posted"), [
-    ("alice", "Owner", "accept", "alice", True),
-    ("alice", "Owner", "decline", "alice", False),
-    ("alice", "Owner", "accept", "carol", False),
-    ("carol", "Owner", "accept", "carol", False),
-    ("rm", "RM", "accept", "rm", True),
+@pytest.mark.parametrize(("username", "role", "action", "checked", "posted"), [
+    ("alice", "Owner", "accept", True, True),
+    ("alice", "Owner", "decline", True, False),
+    ("alice", "Owner", "accept", False, False),
+    ("carol", "Owner", "accept", True, False),
+    ("rm", "RM", "accept", True, True),
 ])
-def test_confirmed_mcp_comment_is_independent_of_agent_risk_lock(locked_issue, username, role, action, typed, posted):
+def test_confirmed_mcp_comment_is_independent_of_agent_risk_lock(locked_issue, username, role, action, checked, posted):
     from app.services import jira_agent_service
 
     client, _, token_for, calls = locked_issue
     token = token_for(username, role)
-    session = connect_confirming(client, token, "codex-mcp-client")
+    session = connect_verified(client, token, "codex-mcp-client")
     result = confirmable_call(client, token, session, "jira_add_comment",
                               {"issue_key": "MC3-1", "body": "UMD 和编译器同事正在跟进该问题。"},
-                              {"result": {"action": action, "content": {"username": typed}}})[-1]["result"]
+                              {"result": {"action": action, "content": {"confirm": checked}}})[-1]["result"]
     assert result["isError"] is not posted
     assert len(calls["comments"]) == int(posted)
     if posted:
@@ -304,7 +308,7 @@ def test_mcp_upload_is_independent_of_agent_risk_lock(locked_issue, monkeypatch,
     monkeypatch.setattr(jira, "upload_agent_attachment", lambda *args: uploads.append(args) or "5001")
     monkeypatch.setattr(jira, "browse_url", lambda: "https://jira.example/browse/")
     token = token_for(username, role)
-    session, _ = connect_client(client, token)
+    session = connect_verified(client, token)
     ticket = call(client, token, session, "jira_upload_attachment", {
         "issue_key": "MC3-1", "file_path": "/tmp/log.txt",
     })
@@ -328,7 +332,7 @@ def test_mcp_upload_allows_warning_recorded_after_ticket(locked_issue, monkeypat
     monkeypatch.setattr(jira, "upload_agent_attachment", lambda *args: uploads.append(args) or "5001")
     monkeypatch.setattr(jira, "browse_url", lambda: "https://jira.example/browse/")
     token = token_for("alice", "Owner")
-    session, _ = connect_client(client, token)
+    session = connect_verified(client, token)
     args = {"issue_key": "MC3-1", "file_path": "/tmp/log.txt"}
     # A new warning after the ticket was issued must not block the upload either.
     conn = connect_jira_agent(settings.jira_agent_database_url)
@@ -765,7 +769,7 @@ def test_upload_attachment_via_one_time_link(site, monkeypatch):
     monkeypatch.setattr(jira, "upload_agent_attachment", upload)
     monkeypatch.setattr(jira, "browse_url", lambda: "https://jira.example/browse/")
     token = token_for("alice", "Owner")
-    session, _ = connect_client(client, token)
+    session = connect_verified(client, token)
     result = call(client, token, session, "jira_upload_attachment",
                   {"issue_key": "MC3-1", "file_path": "/home/a/run dir/fix.patch"})
     assert not result["isError"]
@@ -795,12 +799,12 @@ def test_upload_attachment_requires_assignee_at_link_and_upload_time(site, monke
     client, _, token_for, _ = site
     monkeypatch.setattr(jira, "upload_agent_attachment", lambda *args: pytest.fail("must not upload"))
     carol = token_for("carol", "Owner")
-    session, _ = connect_client(client, carol)
+    session = connect_verified(client, carol)
     denied = call(client, carol, session, "jira_upload_attachment", {"issue_key": "MC3-1", "file_path": "a.log"})
     assert denied["isError"] and "上传附件" in denied["content"][0]["text"]
 
     alice = token_for("alice", "Owner")
-    session, _ = connect_client(client, alice)
+    session = connect_verified(client, alice)
     url = _upload_url(call(client, alice, session, "jira_upload_attachment",
                            {"issue_key": "MC3-1", "file_path": "a.log"})["content"][0]["text"])
     reassigned = {**ISSUE, "assignee": {"name": "carol", "display_name": "Carol"}}
@@ -821,7 +825,7 @@ def test_image_attachment_reference_offers_embed():
 def test_attachment_tickets_recheck_current_identity(site, monkeypatch, change, expected):
     client, _, token_for, _ = site
     token = token_for('rm', 'RM')
-    session, _ = connect_client(client, token)
+    session = connect_verified(client, token)
     upload = call(client, token, session, 'jira_upload_attachment',
                   {'issue_key': 'MC3-1', 'file_path': 'a.log'})
     upload_url = _upload_url(upload['content'][0]['text'])
@@ -900,6 +904,18 @@ def connect_confirming(client, token, name="claude-code"):
     return response.headers["mcp-session-id"]
 
 
+def connect_verified(client, token, name="claude-code"):
+    """Prepare a verified session for tests focused on permissions or later tool calls."""
+    from contextlib import closing
+    from app.services import mcp_service
+
+    session = connect_confirming(client, token, name)
+    with closing(connect(settings.db_path)) as conn:
+        caller = mcp_service.authenticate(conn, f"Bearer {token}")
+    mcp_service.verify_session_identity(caller, session)
+    return session
+
+
 def sse_messages(response):
     return [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
 
@@ -951,34 +967,36 @@ def confirmable_call(site_client, token, session, name, arguments, payload):
 def test_comment_asks_the_user_to_confirm_and_posts_on_accept(site):
     client, _, token_for, calls = site
     token = token_for("alice", "Owner")
-    session = connect_confirming(client, token)
+    session = connect_verified(client, token)
     messages = confirmable_call(client, token, session, "jira_add_comment",
                                {"issue_key": "MC3-1", "body": "root cause: X"},
-                               {"result": {"action": "accept", "content": {"username": "alice"}}})
+                               {"result": {"action": "accept", "content": {"confirm": True}}})
     ask, result = messages
     assert ask["method"] == "elicitation/create"
     assert "MC3-1" in ask["params"]["message"] and "root cause: X" in ask["params"]["message"]
     assert "alice" not in json.dumps(ask["params"], ensure_ascii=False).casefold()
-    assert ask["params"]["requestedSchema"]["required"] == ["username"]
+    schema = ask["params"]["requestedSchema"]
+    assert schema["required"] == ["confirm"]
+    assert schema["properties"] == {"confirm": {"type": "boolean", "title": "确认执行", "default": False}}
     assert result["id"] == 90 and result["result"]["isError"] is False
     assert [key for key, _ in calls["comments"]] == ["MC3-1"]
-    assert json.loads(logs(client, tool="jira_add_comment")[0]["extra_json"])["confirm"] == "username_matched"
+    assert json.loads(logs(client, tool="jira_add_comment")[0]["extra_json"])["confirm"] == "approved"
 
 
 @pytest.mark.parametrize(("payload", "outcome"), [
     ({"result": {"action": "decline"}}, "decline"),
     ({"result": {"action": "cancel"}}, "cancel"),
-    ({"result": {"action": "accept", "content": {"confirm": True}}}, "username_mismatch"),
-    ({"result": {"action": "accept", "content": {"username": ""}}}, "username_mismatch"),
-    ({"result": {"action": "accept", "content": {"username": "carol"}}}, "username_mismatch"),
-    ({"result": {"action": "accept", "content": {"username": ["alice"]}}}, "username_mismatch"),
-    ({"result": {"action": "accept", "content": {"username": "alice-other"}}}, "username_mismatch"),
+    ({"result": {"action": "accept"}}, "not_confirmed"),
+    ({"result": {"action": "accept", "content": {"confirm": False}}}, "not_confirmed"),
+    ({"result": {"action": "accept", "content": {"confirm": "true"}}}, "not_confirmed"),
+    ({"result": {"action": "accept", "content": {"confirm": 1}}}, "not_confirmed"),
+    ({"result": {"action": "accept", "content": {"username": "alice"}}}, "not_confirmed"),
     ({"error": {"code": -1, "message": "no"}}, "no_answer"),
 ])
 def test_comment_is_not_posted_when_the_user_does_not_confirm(site, payload, outcome):
     client, _, token_for, calls = site
     token = token_for("alice", "Owner")
-    session = connect_confirming(client, token)
+    session = connect_verified(client, token)
     _, result = confirmable_call(client, token, session, "jira_add_comment",
                                  {"issue_key": "MC3-1", "body": "x"}, payload)
     assert result["result"]["isError"] is True
@@ -996,7 +1014,7 @@ def test_comment_is_not_posted_when_the_user_does_not_confirm(site, payload, out
 def test_codex_rejected_confirmation_suggests_approve_for_me_or_manual_comment(site, action):
     client, _, token_for, calls = site
     token = token_for("alice", "Owner")
-    session = connect_confirming(client, token, "codex-mcp-client")
+    session = connect_verified(client, token, "codex-mcp-client")
     result = confirmable_call(client, token, session, "jira_add_comment",
                               {"issue_key": "MC3-1", "body": "test comment"},
                               {"result": {"action": action}})[-1]["result"]
@@ -1005,18 +1023,17 @@ def test_codex_rejected_confirmation_suggests_approve_for_me_or_manual_comment(s
     assert text.startswith("客户端拒绝或取消，未执行。可能是用户拒绝，也可能是codex设置了Full Access模式。"
                            "如果是后者，请改为Approve for me，或手动评论。")
     assert "mcp_elicitations" not in text and "sandbox_mode" not in text
-    assert "不要自动重试或代填用户名" in text
+    assert "不要自动重试或替用户确认" in text
     assert result["structuredContent"] == {"status": "not_executed", "reason": action, "retryable": False}
 
 
-@pytest.mark.parametrize("confirming", [True, False])
-def test_upload_does_not_confirm_even_on_elicitation_client(site, monkeypatch, confirming):
+def test_verified_upload_does_not_prompt_for_per_operation_confirmation(site, monkeypatch):
     client, _, token_for, _ = site
     uploaded = []
     monkeypatch.setattr(jira, "upload_agent_attachment", lambda *args: uploaded.append(args) or "5001")
     monkeypatch.setattr(jira, "browse_url", lambda: "https://jira.example/browse/")
     token = token_for("alice", "Owner")
-    session = connect_confirming(client, token) if confirming else connect_client(client, token)[0]
+    session = connect_verified(client, token)
     response = rpc(client, token, "tools/call", {"name": "jira_upload_attachment", "arguments": {
         "issue_key": "MC3-1", "file_path": "/tmp/build.log"}}, session=session)
     assert response.headers["content-type"].startswith("application/json")
@@ -1035,11 +1052,17 @@ def test_client_without_elicitation_cannot_publish_comment(site):
     client, _, token_for, calls = site
     token = token_for("alice", "Owner")
     session, _ = connect_client(client, token, "deepseek-harness")
+    verification = call(client, token, session, "mcp_verify_identity", {})
+    assert verification["structuredContent"]["reason"] == "client_cannot_confirm"
+    message = verification["content"][0]["text"]
+    assert "当前客户端声明不支持 MCP elicitation 表单" in message
+    assert "请使用支持该表单的客户端并重新连接" in message
     result = call(client, token, session, "jira_add_comment", {"issue_key": "MC3-1", "body": "直接发布"})
     assert result["isError"] and calls["comments"] == []
-    assert "不支持" in result["content"][0]["text"]
-    entry = logs(client, tool="jira_add_comment")[0]
-    assert json.loads(entry["extra_json"])["confirm"] == "client_cannot_confirm"
+    assert result["structuredContent"]["status"] == "identity_required"
+    assert call(client, token, session, "jira_upload_attachment",
+                {"issue_key": "MC3-1", "file_path": "test.log"})["isError"]
+    assert not call(client, token, session, "jira_pull_issue", {"issue_key": "MC3-1"})["isError"]
     connection = initialization_log(session)
     assert json.loads(connection["extra_json"])["can_confirm"] is False
 
@@ -1056,7 +1079,7 @@ def test_confirmation_times_out_without_posting(site, monkeypatch):
     client, _, token_for, calls = site
     monkeypatch.setattr(mcp_protocol, "CONFIRM_TIMEOUT_SECONDS", 0.2)
     token = token_for("alice", "Owner")
-    session = connect_confirming(client, token)
+    session = connect_verified(client, token)
     response = client.post("/mcp", json={"jsonrpc": "2.0", "id": 91, "method": "tools/call",
                                          "params": {"name": "jira_add_comment",
                                                     "arguments": {"issue_key": "MC3-1", "body": "x"}}},
@@ -1067,25 +1090,24 @@ def test_confirmation_times_out_without_posting(site, monkeypatch):
     assert json.loads(logs(client, tool="jira_add_comment")[0]["extra_json"])["confirm"] == "timeout"
 
 
-@pytest.mark.parametrize('change', ['revoke', 'demote', 'permission', 'guest_permission', 'guest_scope'])
+@pytest.mark.parametrize('change', ['revoke', 'demote', 'permission', 'guest_permission', 'jira_access', 'session'])
 def test_confirmation_revalidates_before_publish(site, change, monkeypatch):
     from app.services import mcp_service
     client, current, token_for, calls = site
-    guest_grant = change in ('guest_permission', 'guest_scope')
-    issue_key = 'PHS-1' if change == 'guest_scope' else 'MC3-1'
+    guest_grant = change in ('guest_permission', 'jira_access')
+    issue_key = 'PHS-1' if change == 'jira_access' else 'MC3-1'
     username = 'guest' if guest_grant else 'rm'
     token = token_for(username, 'Guest' if guest_grant else 'RM')
     if guest_grant:
         current.update(username='rm', role='RM')
         granted = client.post('/api/mcp/permissions', json={
-            'revision': 0, 'grants': {}, 'guest_jira_write': {'guest': True},
-            'guest_jira_write_all': {'guest': change == 'guest_scope'},
+            'revision': 0, 'grants': {}, 'guest_jira_write_all': {'guest': True},
         })
         assert granted.status_code == 200
         monkeypatch.setattr(
             jira, 'get_issue', lambda key: {**ISSUE, 'key': key, 'assignee': {'name': 'guest'}},
         )
-    session = connect_confirming(client, token)
+    session = connect_verified(client, token)
     conn = connect(settings.db_path)
     try:
         caller = mcp_service.authenticate(conn, f'Bearer {token}')
@@ -1098,10 +1120,13 @@ def test_confirmation_revalidates_before_publish(site, change, monkeypatch):
             conn.execute("UPDATE mcp_tokens SET revoked_at='revoked' WHERE username='rm'")
         elif change == 'demote':
             conn.execute("UPDATE users SET role='Owner' WHERE username='rm'")
-        elif guest_grant:
-            field = 'guest_jira_write_all' if change == 'guest_scope' else 'guest_jira_write'
+        elif change == 'session':
+            mcp_service.end_session(conn, caller, session)
+        elif change == 'jira_access':
+            monkeypatch.setattr(jira, 'account_can_browse', lambda *args, **kwargs: False)
+        elif change == 'guest_permission':
             response = client.post('/api/mcp/permissions', json={
-                'revision': 1, 'grants': {}, field: {'guest': False},
+                'revision': 1, 'grants': {}, 'guest_jira_write_all': {'guest': False},
             })
             assert response.status_code == 200
         else:
@@ -1110,15 +1135,15 @@ def test_confirmation_revalidates_before_publish(site, change, monkeypatch):
         conn.commit()
         confirmation = {
             'id': ask['id'],
-            'result': {'action': 'accept', 'content': {'username': username}},
+            'result': {'action': 'accept', 'content': {'confirm': True}},
         }
         assert mcp_protocol._settle(confirmation, caller, {'session_id': session})
         result = next(events)['result']
         assert result['isError']
         if change == 'guest_permission':
             assert '无权调用' in result['content'][0]['text']
-        if change == 'guest_scope':
-            assert 'MC3' in result['content'][0]['text']
+        if change == 'jira_access':
+            assert '无权浏览 JIRA 项目 PHS' in result['content'][0]['text']
         assert calls['comments'] == []
     finally:
         conn.close()
@@ -1128,7 +1153,7 @@ def test_confirmation_response_is_bound_to_token_and_session(site):
     from app.services import mcp_service
     client, _, token_for, calls = site
     token = token_for('alice', 'Owner')
-    session = connect_confirming(client, token)
+    session = connect_verified(client, token)
     other_token = token_for('carol', 'Owner')
     conn = connect(settings.db_path)
     try:
@@ -1138,7 +1163,7 @@ def test_confirmation_response_is_bound_to_token_and_session(site):
         events = exchange.call_with_confirmation(1, mcp_tools.get_tool('jira_add_comment'),
                                                  {'issue_key': 'MC3-1', 'body': 'approved'})
         ask = next(events)
-        reply = {'id': ask['id'], 'result': {'action': 'accept', 'content': {'username': 'alice'}}}
+        reply = {'id': ask['id'], 'result': {'action': 'accept', 'content': {'confirm': True}}}
         assert not mcp_protocol._settle(reply, other, {'session_id': session})
         assert not mcp_protocol._settle(reply, caller, {'session_id': 'another-session'})
         assert calls['comments'] == []
@@ -1149,19 +1174,35 @@ def test_confirmation_response_is_bound_to_token_and_session(site):
         conn.close()
 
 
-def test_comment_username_normalizes_case_and_whitespace(site):
+@pytest.mark.parametrize(("username", "can_post"), [("alice", True), ("carol", False)])
+def test_initialize_uses_token_owner_for_comment_permissions_and_attribution(site, username, can_post):
     client, _, token_for, calls = site
-    token = token_for("alice", "Owner")
-    session = connect_confirming(client, token)
-    ask, result = confirmable_call(client, token, session, "jira_add_comment",
+    token = token_for(username, "Owner")
+    initialized = rpc(client, token, "initialize", {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {"elicitation": {}},
+        "clientInfo": {"name": "test-client"},
+        "username": "rm",
+    })
+    assert initialized.status_code == 200
+    session = initialized.headers["mcp-session-id"]
+    assert call(client, token, session, "jira_add_comment", {"issue_key": "MC3-1", "body": "test"})[
+        "structuredContent"]["status"] == "identity_required"
+    _, verification = confirmable_call(client, token, session, "mcp_verify_identity", {},
+                                        {"result": {"action": "accept", "content": {"username": username}}})
+    assert verification["result"]["structuredContent"]["identity_verified"] is True
+    _, result = confirmable_call(client, token, session, "jira_add_comment",
                                   {"issue_key": "MC3-1", "body": "test"},
-                                  {"result": {"action": "accept", "content": {"username": "  ALICE  "}}})
-    field = ask["params"]["requestedSchema"]["properties"]["username"]
-    assert field["type"] == "string" and "default" not in field
-    assert not result["result"]["isError"] and len(calls["comments"]) == 1
+                                  {"result": {"action": "accept", "content": {"confirm": True}}})
+    assert result["result"]["isError"] is not can_post
+    if can_post:
+        assert calls["comments"][0][1].endswith("_由 Alice（alice） 通过发布系统 MCP 发布_")
+    else:
+        assert "assignee" in result["result"]["content"][0]["text"]
+        assert calls["comments"] == []
 
 
-def test_url_only_elicitation_cannot_bypass_username_form(site):
+def test_url_only_elicitation_cannot_bypass_confirmation_form(site):
     client, _, token_for, calls = site
     token = token_for('alice', 'Owner')
     response = rpc(client, token, 'initialize', {
@@ -1169,6 +1210,8 @@ def test_url_only_elicitation_cannot_bypass_username_form(site):
         'clientInfo': {'name': 'url-only', 'version': '1'},
     })
     session = response.headers['mcp-session-id']
+    verify = call(client, token, session, 'mcp_verify_identity', {})
+    assert verify['structuredContent']['reason'] == 'client_cannot_confirm'
     result = call(client, token, session, 'jira_add_comment', {'issue_key': 'MC3-1', 'body': 'no'})
     assert result['isError'] and calls['comments'] == []
 
@@ -1190,16 +1233,16 @@ def test_confirmation_policy_comes_from_tool_flags(site, monkeypatch, read_only,
                 destructive=destructive, confirm=preview if custom_preview else None)
     monkeypatch.setitem(mcp_tools._REGISTRY, tool.name, tool)
     token = token_for('alice', 'Owner')
-    session = connect_confirming(client, token)
+    session = connect_verified(client, token)
     args = {'target': 'example'}
     if not read_only and destructive:
         # Even without a custom preview a destructive write must never bypass confirmation.
         _, refused = confirmable_call(client, token, session, tool.name, args,
-                                      {'result': {'action': 'accept', 'content': {'username': 'carol'}}})
+                                      {'result': {'action': 'accept', 'content': {'confirm': False}}})
         assert refused['result']['isError'] and executed == []
         ask, result = confirmable_call(client, token, session, tool.name, args,
-                                       {'result': {'action': 'accept', 'content': {'username': 'alice'}}})
-        assert ask['params']['requestedSchema']['required'] == ['username']
+                                       {'result': {'action': 'accept', 'content': {'confirm': True}}})
+        assert ask['params']['requestedSchema']['required'] == ['confirm']
         if custom_preview:
             assert ask['params']['message'] == 'Custom preview'
         else:
@@ -1264,7 +1307,7 @@ def test_proxy_https_used_for_account_config_and_attachment_commands(site, monke
     assert created['endpoint'] == origin + '/mcp'
     assert created['config']['claude_json']['mcpServers']['release-system']['url'] == origin + '/mcp'
     assert f'url = "{origin}/mcp"' in created['config']['codex_toml']
-    session, _ = connect_client(client, created['token'])
+    session = connect_verified(client, created['token'])
     for name, args, path in (
         ('jira_pull_issue', {'issue_key': 'MC3-1', 'save_to_local': True}, 'downloads'),
         ('jira_upload_attachment', {'issue_key': 'MC3-1', 'file_path': 'test.log'}, 'uploads'),
@@ -1411,12 +1454,12 @@ def test_comment_preview_and_published_body_share_formatting(site, repetitions):
     from app.domain.jira_format import format_jira_comment
     client, _, token_for, calls = site
     token = token_for('alice', 'Owner')
-    session = connect_confirming(client, token)
+    session = connect_verified(client, token)
     body = '设置{{VALUE}}后重试。\n{noformat}\necho 中{{raw}}文\n{noformat}\n' + '说明。' * repetitions + '\n结束{{END}}标记'
     expected = format_jira_comment(body)
     ask, result = confirmable_call(client, token, session, 'jira_add_comment',
                                   {'issue_key': 'MC3-1', 'body': body},
-                                  {'result': {'action': 'accept', 'content': {'username': 'alice'}}})
+                                  {'result': {'action': 'accept', 'content': {'confirm': True}}})
     assert not result['result']['isError']
     message = ask['params']['message']
     if repetitions == 1:
@@ -1435,23 +1478,20 @@ def test_comment_preview_and_published_body_share_formatting(site, repetitions):
 
 
 @pytest.mark.parametrize('body', ['长评论' * 10000, '逐行说明\n' * 1000, '首行\n' + '\n' * 1000 + '结束'])
-@pytest.mark.parametrize('username', ['alice', 'carol'])
-def test_long_comment_confirmation_is_compact_without_truncating_publication(site, body, username):
+@pytest.mark.parametrize('checked', [True, False])
+def test_long_comment_confirmation_is_compact_without_truncating_publication(site, body, checked):
     client, _, token_for, calls = site
     token = token_for('alice', 'Owner')
-    session = connect_confirming(client, token)
+    session = connect_verified(client, token)
     ask, result = confirmable_call(client, token, session, 'jira_add_comment',
                                   {'issue_key': 'MC3-1', 'body': body},
-                                  {'result': {'action': 'accept', 'content': {'username': username}}})
+                                  {'result': {'action': 'accept', 'content': {'confirm': checked}}})
     message = ask['params']['message']
     assert len(message) <= 500 and len(message.splitlines()) <= 13
     assert 'MC3-1' in message and '摘要已截断' in message
     assert '完整正文请在对话中核对' in message
-    assert message.endswith('请输入本人域账号用户名：')
-    field = ask['params']['requestedSchema']['properties']['username']
-    assert field['title'] == '请输入本人域账号用户名' and 'default' not in field
-    assert ask['params']['requestedSchema']['required'] == ['username']
-    if username == 'alice':
+    assert '确认后发送' in message
+    if checked:
         assert not result['result']['isError']
         assert calls['comments'][0][1].split('\n\n----\n', 1)[0] == body.strip()
     else:

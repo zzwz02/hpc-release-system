@@ -3,11 +3,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "../../lib/toast";
 import { getPermissions, savePermissions, type McpPermissions } from "./mcpApi";
 
-type GuestJiraPermission = "jira_write" | "jira_write_all";
 type Draft = {
   base: McpPermissions;
   grants: Record<string, string[]>;
-  guestGrants: Record<GuestJiraPermission, Map<string, boolean>>;
+  guestWriteAll: Map<string, boolean>;
 };
 
 const CATEGORY_TITLES: Record<string, string> = { jira: "JIRA", wiki: "WIKI", skill: "技能" };
@@ -20,11 +19,8 @@ export function McpPermissionsPane({ viewer, active }: { viewer: string; active:
   const [guestSearch, setGuestSearch] = useState("");
   const matrix = draft?.base ?? matrixQuery.data;
   const save = useMutation({
-    mutationFn: ({ base, grants, guestGrants }: Draft) =>
-      savePermissions(base.revision, grants, {
-        guest_jira_write: Object.fromEntries(guestGrants.jira_write),
-        guest_jira_write_all: Object.fromEntries(guestGrants.jira_write_all),
-      }),
+    mutationFn: ({ base, grants, guestWriteAll }: Draft) =>
+      savePermissions(base.revision, grants, Object.fromEntries(guestWriteAll)),
     onSuccess: (updated) => {
       queryClient.setQueryData(queryKey, updated);
       setDraft(null);
@@ -47,14 +43,10 @@ export function McpPermissionsPane({ viewer, active }: { viewer: string; active:
       const next = {
         base: previous?.base ?? matrix,
         grants: { ...previous?.grants },
-        guestGrants: {
-          jira_write: new Map(previous?.guestGrants.jira_write),
-          jira_write_all: new Map(previous?.guestGrants.jira_write_all),
-        },
+        guestWriteAll: new Map(previous?.guestWriteAll),
       };
       update(next);
-      const guestChanged = next.guestGrants.jira_write.size || next.guestGrants.jira_write_all.size;
-      return Object.keys(next.grants).length || guestChanged ? next : null;
+      return Object.keys(next.grants).length || next.guestWriteAll.size ? next : null;
     });
   }
 
@@ -69,11 +61,10 @@ export function McpPermissionsPane({ viewer, active }: { viewer: string; active:
     });
   }
 
-  function toggleGuest(guest: McpPermissions["guests"][number], permission: GuestJiraPermission, checked: boolean) {
-    changeDraft(({ guestGrants }) => {
-      const changes = guestGrants[permission];
-      if (checked === guest[permission]) changes.delete(guest.username);
-      else changes.set(guest.username, checked);
+  function toggleGuest(guest: McpPermissions["guests"][number], checked: boolean) {
+    changeDraft(({ guestWriteAll }) => {
+      if (checked === guest.jira_write_all) guestWriteAll.delete(guest.username);
+      else guestWriteAll.set(guest.username, checked);
     });
   }
 
@@ -106,7 +97,7 @@ export function McpPermissionsPane({ viewer, active }: { viewer: string; active:
         {matrix && (
           <section className="mcp-guest-jira-permissions">
             <h4>Guest JIRA 写入权限</h4>
-            <p className="hint">两项权限均允许评论和上传附件。「允许 JIRA 写入」限本人负责的 MC3 工单。「允许写入所有 JIRA」可独立开启，覆盖任意项目和经办人。搜索和读取权限仍按 Guest 角色执行。</p>
+            <p className="hint">「允许写入所有 JIRA」授权已验证的 Guest 在有浏览权限的工单上评论和上传附件，涵盖其他经办人及未分配工单。</p>
             {matrix.guests.length > 0 && (
               <input type="search" aria-label="搜索 Guest 账号" placeholder="搜索用户名或姓名"
                 value={guestSearch} onChange={(event) => setGuestSearch(event.target.value)} />
@@ -117,7 +108,6 @@ export function McpPermissionsPane({ viewer, active }: { viewer: string; active:
                   <thead>
                     <tr>
                       <th scope="col">Guest 账号</th>
-                      <th scope="col">允许 JIRA 写入</th>
                       <th scope="col">允许写入所有 JIRA</th>
                     </tr>
                   </thead>
@@ -129,14 +119,10 @@ export function McpPermissionsPane({ viewer, active }: { viewer: string; active:
                             <div className="muted small">{guest.username}</div>
                           )}
                         </th>
-                        <td><input type="checkbox" aria-label={`允许 ${guest.username} 写入 JIRA`}
-                          checked={draft?.guestGrants.jira_write.get(guest.username) ?? guest.jira_write}
-                          disabled={save.isPending}
-                          onChange={(event) => toggleGuest(guest, "jira_write", event.target.checked)} /></td>
                         <td><input type="checkbox" aria-label={`允许 ${guest.username} 写入所有 JIRA`}
-                          checked={draft?.guestGrants.jira_write_all.get(guest.username) ?? guest.jira_write_all}
+                          checked={draft?.guestWriteAll.get(guest.username) ?? guest.jira_write_all}
                           disabled={save.isPending}
-                          onChange={(event) => toggleGuest(guest, "jira_write_all", event.target.checked)} /></td>
+                          onChange={(event) => toggleGuest(guest, event.target.checked)} /></td>
                       </tr>
                     ))}
                   </tbody>
@@ -146,7 +132,8 @@ export function McpPermissionsPane({ viewer, active }: { viewer: string; active:
           </section>
         )}
         <h4>工具权限矩阵</h4>
-        <p className="hint">用户的角色或任一所属域组被勾选，即可使用该工具。域组列按名称前缀匹配。</p>
+        <p className="hint">授权按角色或所属域组匹配。域组列按名称前缀匹配。</p>
+        {matrix && <p className="hint">默认权限仅开放矩阵授权的只读工具，JIRA 查询限 {matrix.default_jira_projects.join("、")}。验证域账号后，写入仍须满足工具授权及工单权限，JIRA 查询按该账号的浏览权限执行。</p>}
         {matrix && (
           <div className="table mcp-permission-table">
             <table aria-label="MCP 工具权限矩阵">

@@ -14,7 +14,7 @@ statistics page without touching them:
                   acted on (target) and any tool-specific fields (extra)
   * ``log_args``  optional redaction of arguments before they are stored
   * ``read_only`` / ``destructive`` determine confirmation policy: only a
-                  destructive write requires a matching typed username.
+                  destructive write requires explicit user approval.
   * ``confirm``   optional custom preview; omitting it uses the generic preview
                   and never disables confirmation for a destructive write.
   * ``prepare``   optional pre-confirmation normalization; its returned arguments
@@ -28,10 +28,12 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Any
 
 from app.domain.mcp_access import MCP_LDAP_PATTERNS, MCP_ROLES, can_use_jenkins, can_use_tool
 from app.domain.permissions import LDAP_GROUP_GRANTS, ldap_group_matches
+from app.services.mcp_jira_access import JiraReadAccess
 
 # Stored argument values are cut to this many characters each, so a pasted
 # log or long comment cannot bloat the log table.
@@ -79,6 +81,10 @@ class ToolContext:
     def user(self) -> dict[str, Any]:
         return self.caller.user
 
+    @cached_property
+    def jira_read(self) -> JiraReadAccess:
+        return JiraReadAccess(self.user["username"], self.session.get("identity_verified", False))
+
     @property
     def client_name(self) -> str:
         return self.session.get("client_name") or "MCP 客户端"
@@ -115,7 +121,7 @@ class Tool:
         if self.confirm:
             return self.confirm(ctx, arguments)
         return (f"即将执行「{self.title}」（{self.name}）。"
-                "请输入你本人的域账号用户名，匹配账号后执行。\n\n"
+                "请核对操作参数，确认后执行。\n\n"
                 f"操作参数：\n{json.dumps(arguments, ensure_ascii=False, indent=2)}")
 
     def definition(self) -> dict[str, Any]:
