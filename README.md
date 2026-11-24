@@ -199,6 +199,8 @@ Guest 可登录 MCP 页面、创建或复用个人 token，默认工具为 `jira
 
 网站在 `POST /mcp` 提供 MCP Streamable HTTP 服务（普通请求返回 JSON，用户名确认使用 SSE），供 Claude Code、Codex 等客户端连接。页面地址是 `/mcp-console`（不能用 `/mcp`，否则浏览器刷新会打到 MCP 接口；浏览器直接访问 `/mcp` 会被跳转到页面）。「接入配置」生成个人 token（只显示一次，库里只存 SHA-256），并给出 Claude Code / Codex 的接入命令；「使用统计」展示调用量、失败率、每日调用、按工具/用户的统计及调用日志，不展示会话数、按 token 表格、客户端分类和常操作对象统计。列表最多显示 10 行，超出后内部滚动；调用日志标题与筛选框水平排列。仍可按 token 筛选（只显示 token 名称和前缀）。`initialize` 握手不计入各项使用统计，也不出现在调用日志及其分页计数中；原始连接记录保留用于排障。
 
+使用统计和调用日志默认排除 `zhawu`。勾选「包含 zhawu」后，两者会在当前账号有权查看的范围内纳入该用户的记录。直接查询 `/api/mcp/stats` 或 `/api/mcp/logs` 时，可传入 `include_zhawu=true`。
+
 - 每人只有一个有效 token：生成新的会吊销旧的（鉴权也只认每人最新的一个）。网页「我的 token」只显示前几位，可重新生成或吊销。
 - MCP 接入页提供可复制的 Bash 和 PowerShell 一键安装命令。手动配置直接展示 Claude Code 的 JSON 和 Codex 的 TOML，网页生成 token 后自动填入。命令与手动配置均使用浏览器当前域名及非默认端口的 HTTP 地址，不使用 `[site] PUBLIC_BASE_URL` 覆盖，也不提供协议选择；网站继续通过原地址访问。服务器须开放对应 HTTP 入口，容器无需配置网站证书；HTTP 会明文传输账号密码和 token，仅用于受控内网。安装脚本按下载请求的协议生成后续账号请求及 MCP 地址，已安装客户端可复用原 token 更新配置，无需卸载。
 - HTTPS 由 Nginx 等反向代理终止时，代理须覆盖设置 `proxy_set_header Host $http_host;` 和 `proxy_set_header X-Forwarded-Proto $scheme;`。MCP 返回的脚本、接入地址和附件传输链接会据此保留 HTTPS，避免登录 POST 请求误发到 HTTP 后遇到 301；不会使用 `X-Forwarded-Host` 替换目标主机，也不会将 HTTPS 降级到 HTTP。

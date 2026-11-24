@@ -8,6 +8,56 @@ test.skip(!/^https?:\/\/127\.0\.0\.1:\d+$/.test(base), "Requires tests.run_mcp_s
 test.skip(!/^https?:\/\/127\.0\.0\.1:\d+$/.test(rpcBase), "MCP RPC must target the isolated local site");
 test.use({ ignoreHTTPSErrors: true });
 
+test("MCP usage includes zhawu only when checked, with matching statistics and logs", async ({ page }) => {
+  expect((await page.request.post(base + "/api/login", {
+    data: { username: "mcp_rm_test", password: "test-password" },
+  })).ok()).toBeTruthy();
+  await page.goto(base + "/mcp-console");
+  await page.getByRole("button", { name: "使用统计", exact: true }).click();
+  const include = page.getByRole("checkbox", { name: "包含 zhawu" });
+  const user = page.getByRole("combobox", { name: "用户", exact: true });
+  const token = page.getByRole("combobox", { name: "Token", exact: true });
+  const calls = page.locator(".stat").filter({ has: page.getByText("总调用", { exact: true }) }).locator(".num");
+  const log = page.locator(".mcp-logs");
+  const pager = log.locator(".mcp-pager");
+  await expect(include).not.toBeChecked();
+  await expect(calls).toHaveText("51");
+  await expect(log.getByText("共 51 条", { exact: true })).toBeVisible();
+  await expect(user.locator('option[value="zhawu"]')).toHaveCount(0);
+
+  await log.getByRole("button", { name: "下一页" }).click();
+  await expect(pager).toContainText("2 / 2");
+  const updatedUsage = Promise.all(["stats", "logs"].map(endpoint => page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return url.pathname === `/api/mcp/${endpoint}` && url.searchParams.get("include_zhawu") === "true";
+  })));
+  await include.check();
+  const [stats, logs] = await updatedUsage;
+  expect((await stats.json()).totals).toMatchObject({ calls: 53, errors: 2, users: 2 });
+  expect(new URL(logs.url()).searchParams.get("offset")).toBe("0");
+  expect((await logs.json()).total).toBe(53);
+  await expect(pager).toContainText("1 / 2");
+  await expect(calls).toHaveText("53");
+  await expect(log.getByRole("cell", { name: "Zhawu usage test", exact: true }).first()).toBeVisible();
+  await expect(user.locator('option[value="zhawu"]')).toHaveCount(1);
+
+  const zhawuToken = token.locator("option").filter({ hasText: "zhawu-browser-usage" });
+  await token.selectOption(await zhawuToken.getAttribute("value") ?? "");
+  await expect(calls).toHaveText("2");
+  await include.uncheck();
+  await expect(token).toHaveValue("");
+  await expect(calls).toHaveText("51");
+  await expect(log.getByText("共 51 条", { exact: true })).toBeVisible();
+  await expect(log.getByRole("cell", { name: "Zhawu usage test", exact: true })).toHaveCount(0);
+
+  await include.check();
+  await user.selectOption("zhawu");
+  await expect(calls).toHaveText("2");
+  await include.uncheck();
+  await expect(user).toHaveValue("");
+  await expect(calls).toHaveText("51");
+});
+
 test("Guest MCP exposes only four tools and the MC3 project scope", async ({ page }) => {
   expect((await page.request.post(base + "/api/login", {
     data: { username: "mcp_guest_test", password: "test-password" },

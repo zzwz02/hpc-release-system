@@ -35,6 +35,8 @@ DOWNLOAD_TICKET_SECONDS = 30 * 60
 UPLOAD_TICKET_SECONDS = 30 * 60
 UPLOAD_MAX_BYTES = 50 * 1024 * 1024
 STATS_MAX_DAYS = 366
+# Keep this account's calls out of default usage reports.
+STATS_EXCLUDED_USERNAME = "zhawu"
 # Password → token setup: per-username failures before a cool-down, so a
 # retry loop cannot lock the domain account in LDAP.
 SETUP_MAX_FAILURES = 5
@@ -289,12 +291,17 @@ def record(
 # Statistics (AI助手 → MCP)
 # ─────────────────────────────────────────────────────────────
 
-def _filters(user: dict, *, days: int, username: str, **extra: str) -> dict[str, str]:
+def _filters(user: dict, *, days: int, username: str, include_zhawu: bool, **extra: str) -> dict[str, str]:
     days = max(1, min(int(days or 30), STATS_MAX_DAYS))
     since = (beijing_now() - dt.timedelta(days=days - 1)).strftime("%Y-%m-%d 00:00:00")
     if not can_view_all(user["role"]):
         username = user["username"]
-    return {"since": since, "username": (username or "").strip(), **{k: (v or "").strip() for k, v in extra.items()}}
+    return {
+        "since": since,
+        "username": (username or "").strip(),
+        "exclude_username": "" if include_zhawu else STATS_EXCLUDED_USERNAME,
+        **{k: (v or "").strip() for k, v in extra.items()},
+    }
 
 
 def _with_names(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]:
@@ -303,8 +310,8 @@ def _with_names(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]:
 
 
 def stats(conn: sqlite3.Connection, user: dict, *, days: int = 30, username: str = "",
-          token_id: str = "") -> dict:
-    filters = _filters(user, days=days, username=username, token_id=token_id)
+          token_id: str = "", include_zhawu: bool = False) -> dict:
+    filters = _filters(user, days=days, username=username, token_id=token_id, include_zhawu=include_zhawu)
     result = mcp_repo.stats(conn, filters)
     result["by_user"] = _with_names(conn, result["by_user"])
     result["by_token"] = _with_names(conn, result["by_token"])
@@ -314,9 +321,9 @@ def stats(conn: sqlite3.Connection, user: dict, *, days: int = 30, username: str
 
 def logs(conn: sqlite3.Connection, user: dict, *, days: int = 30, username: str = "", category: str = "",
          tool: str = "", status: str = "", kind: str = "", target: str = "", token_id: str = "",
-         limit: int = 50, offset: int = 0) -> dict:
+         limit: int = 50, offset: int = 0, include_zhawu: bool = False) -> dict:
     filters = _filters(user, days=days, username=username, category=category, tool=tool, status=status,
-                       kind=kind, target=target, token_id=token_id)
+                       kind=kind, target=target, token_id=token_id, include_zhawu=include_zhawu)
     page = mcp_repo.list_logs(conn, filters, limit=max(1, min(limit, LOG_PAGE_MAX)), offset=max(0, offset))
     page["items"] = _with_names(conn, page["items"])
     return page

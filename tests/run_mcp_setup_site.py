@@ -1,4 +1,4 @@
-"""Isolated website for the MCP setup browser test; no external integrations."""
+"""Isolated website for the MCP console browser tests; no external integrations."""
 import argparse
 import os
 from pathlib import Path
@@ -22,6 +22,9 @@ def main():
         from app.db.connection import connect
         from app.domain.authn import hash_password
         from app.main import create_app
+        from app.repositories import mcp_repo
+        from app.services import mcp_service
+        from app.timeutil import beijing_timestamp
         import uvicorn
         conn = connect(settings.db_path)
         conn.execute('INSERT INTO users(username,password_hash,role,display_name) VALUES (?,?,?,?)',
@@ -30,6 +33,17 @@ def main():
                      ('mcp_guest_test', hash_password('test-password'), 'Guest', 'MCP Guest test'))
         conn.execute('INSERT INTO users(username,password_hash,role,display_name) VALUES (?,?,?,?)',
                      ('mcp_rm_test', hash_password('test-password'), 'RM', 'MCP RM test'))
+        conn.execute('INSERT INTO users(username,password_hash,role,display_name) VALUES (?,?,?,?)',
+                     ('zhawu', hash_password('test-password'), 'Owner', 'Zhawu usage test'))
+        conn.commit()
+        for username, count, status in (('mcp_rm_test', 51, 'ok'), ('zhawu', 2, 'error')):
+            token = mcp_service.create_token(conn, {'username': username}, f'{username}-browser-usage')
+            entry = {
+                'created_at': beijing_timestamp(), 'username': username, 'token_id': token['id'],
+                'kind': 'tool', 'category': 'jira', 'tool': 'jira_search', 'status': status,
+            }
+            for _ in range(count):
+                mcp_repo.insert_log(conn, entry)
         conn.commit()
         conn.close()
         uvicorn.run(create_app(), host='127.0.0.1', port=args.port)

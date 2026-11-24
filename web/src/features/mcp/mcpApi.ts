@@ -107,6 +107,7 @@ export interface McpLog {
 export interface LogFilters {
   days: number;
   username: string;
+  include_zhawu: boolean;
   tool: string;
   status: string;
   target: string;
@@ -120,8 +121,8 @@ export const createToken = (name: string) =>
   apiPost<{ token: McpToken }>("/api/mcp/tokens", { name }).then((r) => r.token);
 export const revokeToken = (id: number) => apiPost<{ token: McpToken }>(`/api/mcp/tokens/${id}/revoke`, {});
 
-export function getStats(days: number, username: string, tokenId: string) {
-  const params = new URLSearchParams({ days: String(days) });
+export function getStats(days: number, username: string, tokenId: string, includeZhawu: boolean) {
+  const params = new URLSearchParams({ days: String(days), include_zhawu: String(includeZhawu) });
   if (username) params.set("username", username);
   if (tokenId) params.set("token_id", tokenId);
   return apiGet<McpStats>(`/api/mcp/stats?${params}`);
@@ -132,6 +133,7 @@ export const LOG_PAGE_SIZE = 50;
 export function getLogs(filters: LogFilters) {
   const params = new URLSearchParams({
     days: String(filters.days),
+    include_zhawu: String(filters.include_zhawu),
     limit: String(LOG_PAGE_SIZE),
     offset: String(filters.offset),
   });

@@ -34,7 +34,8 @@ ISSUE = {
 def site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(settings, "db_path", tmp_path / "main.db")
     conn = connect(settings.db_path)
-    for username, role in (("alice", "Owner"), ("carol", "Owner"), ("rm", "RM"), ("guest", "Guest")):
+    for username, role in (("alice", "Owner"), ("carol", "Owner"), ("zhawu", "Owner"),
+                           ("rm", "RM"), ("guest", "Guest")):
         conn.execute("INSERT OR REPLACE INTO users(username, password_hash, role, display_name) VALUES (?, '', ?, ?)",
                      (username, role, username.title()))
     conn.commit()
@@ -477,6 +478,50 @@ def test_stats_scope_mine_vs_rm(site):
     assert everyone["scope"] == "all" and everyone["totals"]["users"] == 2
     assert {(row["category"], row["tool"]) for row in everyone["by_tool"]} >= {("jira", "jira_search")}
     assert client.get("/api/mcp/stats", params={"username": "carol"}).json()["totals"]["users"] == 1
+
+
+def test_usage_excludes_zhawu_by_default_and_can_include_within_scope(site):
+    client, current, token_for, _ = site
+    alice_token = token_for("alice", "Owner")
+    alice_session, _ = connect_client(client, alice_token)
+    assert not call(client, alice_token, alice_session, "jira_pull_issue", {"issue_key": "MC3-1"})["isError"]
+    zhawu_token = token_for("zhawu", "Owner")
+    zhawu_token_id = client.get("/api/mcp/tokens").json()["active"]["id"]
+    zhawu_session, _ = connect_client(client, zhawu_token)
+    assert call(client, zhawu_token, zhawu_session, "jira_pull_issue", {"issue_key": "bad key"})["isError"]
+
+    current.update(username="rm", role="RM")
+    for include, users, errors in ((False, ["alice"], 0), (True, ["alice", "zhawu"], 1)):
+        params = {"include_zhawu": "true"} if include else {}
+        stats = client.get("/api/mcp/stats", params=params).json()
+        calls = len(users)
+        assert stats["totals"] == {
+            "calls": calls, "errors": errors, "users": calls, "sessions": calls, "tool_calls": calls,
+        }
+        assert sorted(row["username"] for row in stats["by_user"]) == users
+        assert sorted(row["username"] for row in stats["by_token"]) == users
+        for group in ("by_tool", "by_category", "by_client", "by_day"):
+            assert sum(row["calls"] for row in stats[group]) == calls
+        page = client.get("/api/mcp/logs", params={**params, "limit": 1}).json()
+        assert page["total"] == calls
+        assert [row["username"] for row in page["items"]] == users[-1:]
+
+    for params in ({"username": "zhawu"}, {"token_id": zhawu_token_id}):
+        assert client.get("/api/mcp/stats", params=params).json()["totals"]["calls"] == 0
+        assert client.get("/api/mcp/logs", params=params).json() == {"total": 0, "items": []}
+        assert client.get("/api/mcp/stats", params={**params, "include_zhawu": "true"}).json()["totals"]["calls"] == 1
+        assert [row["username"] for row in logs(client, **params, include_zhawu="true")] == ["zhawu"]
+
+    current.update(username="alice", role="Owner")
+    params = {"username": "zhawu", "include_zhawu": "true"}
+    assert [row["username"] for row in client.get("/api/mcp/stats", params=params).json()["by_user"]] == ["alice"]
+    assert [row["username"] for row in logs(client, **params)] == ["alice"]
+
+    current.update(username="zhawu", role="Owner")
+    assert client.get("/api/mcp/stats").json()["totals"]["calls"] == 0
+    assert logs(client) == []
+    assert client.get("/api/mcp/stats", params={"include_zhawu": "true"}).json()["totals"]["calls"] == 1
+    assert [row["username"] for row in logs(client, include_zhawu="true")] == ["zhawu"]
 
 
 def test_initialize_is_excluded_from_all_stats_and_log_pagination(site, monkeypatch):

@@ -13,8 +13,8 @@
   GET    /api/mcp/tokens              — my tokens, the active one first (never the secret)
   POST   /api/mcp/tokens              — (re)generate; revokes the active one; secret returned once
   POST   /api/mcp/tokens/{id}/revoke
-  GET    /api/mcp/stats?days=&username=&token_id=
-  GET    /api/mcp/logs?days=&username=&category=&tool=&status=&kind=&target=&token_id=&limit=&offset=
+  GET    /api/mcp/stats?days=&username=&token_id=&include_zhawu=
+  GET    /api/mcp/logs?days=&username=&category=&tool=&status=&kind=&target=&token_id=&limit=&offset=&include_zhawu=
 
 Statistics and logs: RM (mcp.logs.view.all) sees everyone, others only themselves.
 """
@@ -396,15 +396,17 @@ def info(request: Request, user: dict = Depends(require_view),
 
 
 @router.get("/api/mcp/stats")
-def stats(days: int = 30, username: str = "", token_id: int | None = None,
+def stats(days: int = 30, username: str = "", token_id: int | None = None, include_zhawu: bool = False,
           user: dict = Depends(require_view), conn: sqlite3.Connection = Depends(get_db)) -> dict:
-    return mcp_service.stats(conn, user, days=days, username=username, token_id=str(token_id or ""))
+    return mcp_service.stats(conn, user, days=days, username=username, token_id=str(token_id or ""),
+                             include_zhawu=include_zhawu)
 
 
 @router.get("/api/mcp/logs")
 def logs(days: int = 30, username: str = "", category: str = "", tool: str = "", status: str = "",
          kind: str = "", target: str = "", token_id: int | None = None, limit: int = 50, offset: int = 0,
+         include_zhawu: bool = False,
          user: dict = Depends(require_view), conn: sqlite3.Connection = Depends(get_db)) -> dict:
     return mcp_service.logs(conn, user, days=days, username=username, category=category, tool=tool,
                             status=status, kind=kind, target=target, token_id=str(token_id or ""),
-                            limit=limit, offset=offset)
+                            limit=limit, offset=offset, include_zhawu=include_zhawu)

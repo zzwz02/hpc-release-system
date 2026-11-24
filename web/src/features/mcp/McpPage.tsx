@@ -29,6 +29,7 @@ import {
 
 type Pane = "setup" | "stats" | "permissions";
 const DAY_OPTIONS = [7, 30, 90, 365];
+const STATS_EXCLUDED_USERNAME = "zhawu";
 /** How each harness handles a server-requested confirmation (shared/mcp_harnesses.json). */
 const CONFIRM_MARKS: Record<string, { label: string; pill: string }> = {
   form: { label: "支持发布前确认", pill: "ok" },
@@ -93,7 +94,7 @@ export function McpPage() {
           accessWarnings={infoQuery.data?.access_warnings ?? []} />
       )}
       {pane === "stats" && (
-        <StatsPane viewer={viewer} canViewAll={infoQuery.data?.can_view_all ?? false} />
+        <StatsPane key={viewer} viewer={viewer} canViewAll={infoQuery.data?.can_view_all ?? false} />
       )}
       {canManagePermissions && (
         <McpPermissionsPane key={viewer} viewer={viewer} active={pane === "permissions"} />
@@ -422,25 +423,44 @@ function percent(part: number, total: number) {
 function StatsPane({ viewer, canViewAll }: { viewer: string; canViewAll: boolean }) {
   const [days, setDays] = useState(30);
   const [username, setUsername] = useState("");
-  const [tokenId, setTokenId] = useState("");
+  const [token, setToken] = useState<{ id: string; username: string } | null>(null);
+  const [includeZhawu, setIncludeZhawu] = useState(false);
+  const [offset, setOffset] = useState(0);
+  const tokenId = token?.id ?? "";
   const statsQuery = useQuery({
-    queryKey: ["mcp", "stats", viewer, days, username, tokenId],
-    queryFn: () => getStats(days, username, tokenId),
+    queryKey: ["mcp", "stats", viewer, days, username, tokenId, includeZhawu],
+    queryFn: () => getStats(days, username, tokenId, includeZhawu),
   });
   const stats = statsQuery.data;
   const maxDay = Math.max(1, ...(stats?.by_day ?? []).map((day) => day.calls));
 
+  function filterByUser(value: string) {
+    setUsername(value);
+    setToken(null);
+    setOffset(0);
+  }
+
+  function toggleIncludeZhawu(checked: boolean) {
+    setIncludeZhawu(checked);
+    setOffset(0);
+    if (!checked && username.toLowerCase() === STATS_EXCLUDED_USERNAME) setUsername("");
+    if (!checked && token?.username.toLowerCase() === STATS_EXCLUDED_USERNAME) setToken(null);
+  }
+
   return (
     <div className="mcp-stats">
       <div className="page-toolbar">
-        <label className="small muted">时间范围</label>
-        <select className="select sm" value={days} onChange={(event) => setDays(Number(event.target.value))}>
+        <label className="small muted" htmlFor="mcp-stats-days">时间范围</label>
+        <select id="mcp-stats-days" className="select sm" value={days} onChange={(event) => {
+          setDays(Number(event.target.value));
+          setOffset(0);
+        }}>
           {DAY_OPTIONS.map((value) => <option key={value} value={value}>最近 {value} 天</option>)}
         </select>
         {canViewAll && (
           <>
-            <label className="small muted ml-8">用户</label>
-            <select className="select sm" value={username} onChange={(event) => { setUsername(event.target.value); setTokenId(""); }}>
+            <label className="small muted ml-8" htmlFor="mcp-stats-user">用户</label>
+            <select id="mcp-stats-user" className="select sm" value={username} onChange={(event) => filterByUser(event.target.value)}>
               <option value="">全部用户</option>
               {(stats?.by_user ?? []).map((row) => (
                 <option key={row.username} value={row.username}>{row.display_name || row.username}</option>
@@ -451,8 +471,13 @@ function StatsPane({ viewer, canViewAll }: { viewer: string; canViewAll: boolean
             </select>
           </>
         )}
-        <label className="small muted ml-8">Token</label>
-        <select className="select sm" value={tokenId} onChange={(event) => setTokenId(event.target.value)}>
+        <label className="small muted ml-8" htmlFor="mcp-stats-token">Token</label>
+        <select id="mcp-stats-token" className="select sm" value={tokenId} onChange={(event) => {
+          const id = event.target.value;
+          const selected = stats?.by_token.find((row) => String(row.token_id) === id);
+          setToken(selected ? { id, username: selected.username } : null);
+          setOffset(0);
+        }}>
           <option value="">全部 token</option>
           {(stats?.by_token ?? []).filter((row) => row.token_id !== null).map((row) => (
             <option key={row.token_id} value={String(row.token_id)}>{tokenLabel(row)}</option>
@@ -461,6 +486,10 @@ function StatsPane({ viewer, canViewAll }: { viewer: string; canViewAll: boolean
             <option value={tokenId}>#{tokenId}</option>
           )}
         </select>
+        <label className="check small ml-8">
+          <input type="checkbox" checked={includeZhawu} onChange={(event) => toggleIncludeZhawu(event.target.checked)} />
+          包含 {STATS_EXCLUDED_USERNAME}
+        </label>
         <span className="spacer" />
         <span className="muted small">{stats?.scope === "mine" ? "仅显示你本人的使用记录" : "全部用户"}</span>
         <button className="btn sm" onClick={() => void statsQuery.refetch()}>刷新</button>
@@ -528,7 +557,7 @@ function StatsPane({ viewer, canViewAll }: { viewer: string; canViewAll: boolean
                       {stats.by_user.map((row) => (
                         <tr key={row.username}>
                           <td>
-                            <button className="link-btn" onClick={() => setUsername(row.username)}>
+                            <button className="link-btn" onClick={() => filterByUser(row.username)}>
                               {row.display_name || row.username}
                             </button>
                             <span className="muted small"> {row.username}</span>
@@ -549,24 +578,31 @@ function StatsPane({ viewer, canViewAll }: { viewer: string; canViewAll: boolean
           </div>
         </>
       )}
-      <LogsPanel viewer={viewer} days={days} username={username} tokenId={tokenId} tools={(stats?.by_tool ?? []).map((row) => row.tool)} />
+      <LogsPanel
+        viewer={viewer} days={days} username={username} tokenId={tokenId} includeZhawu={includeZhawu}
+        offset={offset} setOffset={setOffset} tools={(stats?.by_tool ?? []).map((row) => row.tool)}
+      />
     </div>
   );
 }
 
-function LogsPanel({ viewer, days, username, tokenId, tools }: {
+function LogsPanel({ viewer, days, username, tokenId, includeZhawu, offset, setOffset, tools }: {
   viewer: string;
   days: number;
   username: string;
   tokenId: string;
+  includeZhawu: boolean;
+  offset: number;
+  setOffset: (offset: number) => void;
   tools: string[];
 }) {
   const [tool, setTool] = useState("");
   const [status, setStatus] = useState("");
   const [target, setTarget] = useState("");
-  const [offset, setOffset] = useState(0);
   const [expanded, setExpanded] = useState<number | null>(null);
-  const filters: LogFilters = { days, username, tool, status, target: target.trim().toUpperCase(), token_id: tokenId, offset };
+  const filters: LogFilters = {
+    days, username, include_zhawu: includeZhawu, tool, status, target: target.trim().toUpperCase(), token_id: tokenId, offset,
+  };
   const logsQuery = useQuery({ queryKey: ["mcp", "logs", viewer, filters], queryFn: () => getLogs(filters) });
   const total = logsQuery.data?.total ?? 0;
   const resetting = <T,>(setter: (value: T) => void) => (value: T) => { setter(value); setOffset(0); };
@@ -579,6 +615,7 @@ function LogsPanel({ viewer, days, username, tokenId, tools }: {
         <select className="select sm" aria-label="按工具筛选调用日志" value={tool} onChange={(event) => resetting(setTool)(event.target.value)}>
           <option value="">全部工具</option>
           {[...new Set(tools)].map((name) => <option key={name} value={name}>{name}</option>)}
+          {tool && !tools.includes(tool) && <option value={tool}>{tool}</option>}
         </select>
         <select className="select sm" aria-label="按状态筛选调用日志" value={status} onChange={(event) => resetting(setStatus)(event.target.value)}>
           <option value="">全部状态</option>
