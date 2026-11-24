@@ -91,7 +91,7 @@ def _search(ctx: ToolContext, args: dict) -> ToolResult:
     else:
         jql = query
     projects = (project_key(issue_key),) if issue_key else ctx.jira_read.projects()
-    jql = scope_jql(jql, projects, exclude_secured=ctx.jira_read.verified and not issue_key)
+    jql = scope_jql(jql, projects)
     ctx.log.extra = {"jql": jql, "start_at": start_at}
     found = _jira_call(jira.search_issues, jql, max_results=limit, start_at=start_at)
     issues, total = found["issues"], found["total"]

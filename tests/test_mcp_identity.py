@@ -181,8 +181,7 @@ def test_verified_search_scopes_jql_to_projects_for_exact_jira_account(site, mon
     assert set(checks) == {"MC3", "PHS", "SECRET"}
     assert searched == [
         (
-            "project in ('MC3', 'PHS') AND level IS EMPTY AND "
-            "(status = Open OR project = SECRET) ORDER BY key ASC",
+            "project in ('MC3', 'PHS') AND (status = Open OR project = SECRET) ORDER BY key ASC",
             {"max_results": 50, "start_at": 50},
         )
     ]

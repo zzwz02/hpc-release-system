@@ -40,7 +40,7 @@ def project_key(issue_key: str) -> str:
     return issue_key.upper().rsplit("-", 1)[0]
 
 
-def scope_jql(jql: str, projects: tuple[str, ...], *, exclude_secured: bool = False) -> str:
+def scope_jql(jql: str, projects: tuple[str, ...]) -> str:
     """Intersect a whole expression with allowed projects, preserving a terminal ORDER BY.
 
     JQL is still parsed by JIRA. This lexical pass only establishes a safe
@@ -87,6 +87,4 @@ def scope_jql(jql: str, projects: tuple[str, ...], *, exclude_secured: bool = Fa
     condition = f'project in ({", ".join(f"{key!r}" for key in projects)})'
     if len(projects) == 1:
         condition = f"project = {projects[0]}"
-    if exclude_secured:
-        condition += " AND level IS EMPTY"
     return condition + (f" AND ({expression})" if expression else "") + sort
