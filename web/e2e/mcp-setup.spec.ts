@@ -8,6 +8,26 @@ test.skip(!/^https?:\/\/127\.0\.0\.1:\d+$/.test(base), "Requires tests.run_mcp_s
 test.skip(!/^https?:\/\/127\.0\.0\.1:\d+$/.test(rpcBase), "MCP RPC must target the isolated local site");
 test.use({ ignoreHTTPSErrors: true });
 
+test("MCP pane switches show only the selected content", async ({ page }) => {
+  expect((await page.request.post(base + "/api/login", {
+    data: { username: "mcp_rm_test", password: "test-password" },
+  })).ok()).toBeTruthy();
+  await page.goto(base + "/mcp-console");
+  const stats = page.getByRole("combobox", { name: "时间范围" });
+  const setup = page.getByRole("heading", { name: /一键配置/ });
+  const permissions = page.getByRole("table", { name: "MCP 工具权限矩阵" });
+  for (const tab of ["接入配置", "权限配置"]) {
+    await page.getByRole("button", { name: "使用统计", exact: true }).click();
+    await expect(stats).toBeVisible();
+    await expect(setup).toBeHidden();
+    await expect(permissions).toBeHidden();
+    await page.getByRole("button", { name: tab, exact: true }).click();
+    await expect(tab === "接入配置" ? setup : permissions).toBeVisible();
+    await expect(stats).toBeHidden();
+    await expect(tab === "接入配置" ? permissions : setup).toBeHidden();
+  }
+});
+
 test("MCP usage includes zhawu only when checked, with matching statistics and logs", async ({ page }) => {
   expect((await page.request.post(base + "/api/login", {
     data: { username: "mcp_rm_test", password: "test-password" },

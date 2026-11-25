@@ -94,10 +94,10 @@ export function McpPage() {
           accessWarnings={infoQuery.data?.access_warnings ?? []} />
       )}
       {pane === "stats" && (
-        <StatsPane key={viewer} viewer={viewer} canViewAll={infoQuery.data?.can_view_all ?? false} />
+        <StatsPane key={`stats:${viewer}`} viewer={viewer} canViewAll={infoQuery.data?.can_view_all ?? false} />
       )}
       {canManagePermissions && (
-        <McpPermissionsPane key={viewer} viewer={viewer} active={pane === "permissions"} />
+        <McpPermissionsPane key={`permissions:${viewer}`} viewer={viewer} active={pane === "permissions"} />
       )}
     </section>
   );
